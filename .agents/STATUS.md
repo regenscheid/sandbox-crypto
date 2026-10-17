@@ -4,7 +4,7 @@ Updated 2026-10-16 on `codex/research-foundations`, based on main `57e29536`. Th
 
 ## Phase and focus
 
-- **Owner priority, 2026-10-16:** research foundations before the UI redesign. Parent ownership and orchestrator-led tree resume (D87), plus a separate orchestrator sandbox (D47), are confirmed. [Research continuity](../docs/specs/research-continuity.md) has a local durable tool journal (schema 58), exact-byte pages and bounded discovery by run. A 20 MiB read adds about 2 MiB peak RSS. Latest checks: 845 affected tests plus Python/web static checks pass. Independent review/integration, tree Resume, transcript RAM eviction and launcher confinement remain pending. Automatic crash resume is undecided.
+- **Owner priority, 2026-10-16:** research foundations before UI work. Parent ownership/tree Resume (D87) and a separate orchestrator sandbox (D47) are confirmed. [Research continuity](../docs/specs/research-continuity.md) has a local journal (schema 58), bounded reads/discovery and detached previews for large tool records. Forty 1 MiB results add about 10 MiB peak RSS through final save ([report](docs/agent-reports/tool-retention-2026-10-16.md)). Whole-run memory bounds, tree Resume, launcher confinement and independent review/integration remain pending. Automatic crash resume is undecided.
 
 - **Early prototype (owner assessment).** Historical labs exercised individual paths; they do not establish the intended long-running research product. The normal launcher still runs the orchestrator on the host. The personal services were inactive at the [foundation review](docs/agent-reports/openshell-foundations-review-2026-10-16.md); this work has not started or changed them.
 - **Context management is built; its acceptance is not met.** The owner approved the [spec](../docs/specs/context-management.md) on 2026-10-15 (#439). Steps (a) to (g) are merged: the archive and history tools, the ledger's research state, both adapters, token accounting and the session view, the digest, folds and their enrichment, overviews and retired markers, the region within its bound, the `research_state` stop, the refit on a switch to a smaller model, fold proposals and their GUI.
@@ -33,15 +33,15 @@ All used the real model and crypto-research-mcp.
 - **Delegation, ledger, skills, cost:** as in the specs. Cost is the gateway's, or priced from its model information and marked so; with a daily limit, an unpriced call counts it as reached.
 - **Workspace GUI:** documents, comments, reviews, plans, chat, jobs, kernels, provisioning, artifacts, a PDF viewer, the ledger with its research state, figures in text, fold proposals, the Skills page, the Memory page, a session's run tree.
 - **Not built:** Mermaid and the figure check, exports of figures, helper lineage, per-pack thresholds, approvals in the GUI, execution-pinned evidence.
-- **Tests:** this branch's affected gate passes 845 Python tests, including fresh-process retrieval/discovery memory checks. The full Python and browser suites have not been rerun on this branch.
+- **Tests:** 4,550 orchestrator/workspace tests pass (17 opt-in/dependency skips, 2 legacy-fixture warnings), plus all 2,179 browser tests and the browser build. Static checks pass; the repository-wide Python suite has not been rerun.
 
 ## What comes next
 
-1. Context management: the owner's checklist, then round 2.
-2. Figures F6 to F8, then F11b and exports; the browser lab for the frame.
-3. A skills lab on whether skills help; K7c, K8 and the generated deny-list.
-4. Other [BACKLOG](BACKLOG.md) items: questions from delegated runs, memory proposals' basis (PM-3, PM-4), vouching for PDFs, approvals in the GUI.
-5. Phase 5, which includes moving the domain packages out of the orchestrator.
+1. Bound historical model messages, per-call metadata, review caches and full-evidence exports.
+2. Durable work/attempt ownership, waiting parents and one orchestrator Resume for the tree.
+3. Scoped durable-state access and the normal launcher's separate orchestration sandbox.
+4. Role-specific folding, measured cache layout and generated skills restrictions.
+5. Remaining [BACKLOG](BACKLOG.md) and UI work after foundational acceptance.
 
 ## Known issues
 

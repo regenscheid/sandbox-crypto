@@ -322,7 +322,15 @@ With `--state-dir`, the harness keeps every run that reaches the tool loop, incl
 | `usage` | One entry per answered model call, in order: the model the gateway names and its input and output tokens, null where the gateway did not report them. Older records have none |
 | `summaries` | What a source reported at the run's end: the consistency review (`reviews`), the document math checks (`math`), the delegations the run started and the outcomes its tool calls returned (`delegations`), a delegated run's plan fence refusal (`fence`), and its result and errors (`outcome`). The record also shows them as `review_summary` and `math_summary` |
 | `messages` | The conversation in the OpenAI chat format the harness uses, system prompt first |
-| `tools` | One record per tool call, in order: its name, its arguments as the model wrote them, and its outcome (the worker's execution record, or an artifact, an error kind, …) |
+| `tools` | One record per tool call, in order. Small records keep name, arguments and outcome inline. Oversized archived records keep a bounded preview with `_record_storage` naming the full immutable journal record; omitted fields and shortened headers are marked ([retention](specs/research-continuity.md#retaining-bounded-structured-records)) |
+
+For archived tool records over 64 KiB, the saved run keeps at most 16 KiB per preview,
+including its project/message reference. Full evidence remains available through the
+tool-record API and its byte pages. The tool view labels these as **Record preview**,
+with the reference and an omission notice. Model messages still hold their original
+arguments and sampled results. The skills view marks omitted skill-use details as
+archived. Runs without a journal keep the original full records inline. Exporting the
+run JSON preserves these references; it does not bundle the journal's full payloads.
 
 Model, tool-loop, harness and cleanup exceptions keep the messages and completed tool outcomes observed so far. A failed record has `stopped="error"` and no final answer; the GUI labels it a failed run and shows its partial transcript. The command still exits 1. The failure field holds only a fixed phase, never exception text, an upstream error body or a traceback. Checked with the CLI and a browser ([report](../.agents/docs/agent-reports/failed-run-records-2026-10-12.md)).
 

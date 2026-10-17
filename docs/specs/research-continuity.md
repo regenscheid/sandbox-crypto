@@ -1,6 +1,6 @@
 # Research continuity
 
-Date: 2026-10-16. **Status: Draft.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed; the lifecycle, storage design and implementation sequence are proposed. Nothing on this page establishes that recovery, bounded run memory or normal-launcher orchestrator confinement is built. Baseline: main `57e29536`. The [tool journal](#first-implementation-increment-durable-tool-journal), bounded retrieval and metadata discovery increments are implemented locally; the remaining design is proposed.
+Date: 2026-10-16. **Status: Draft.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed; the lifecycle, storage design and implementation sequence are proposed. Nothing on this page establishes that recovery, bounded run memory or normal-launcher orchestrator confinement is built. Baseline: main `57e29536`. The [tool journal](#first-implementation-increment-durable-tool-journal), bounded retrieval/discovery and large-record retention are implemented locally; the remaining design is proposed.
 
 ## Purpose and confirmed requirements
 
@@ -186,6 +186,41 @@ memory fixture also enumerates metadata for the 2 MiB and 20 MiB records under t
 same 1 MiB Python / 8 MiB RSS additional-allocation gates used for byte retrieval.
 The combined local gate passes 845 affected tests, including the workspace package;
 Python/web static checks pass. Independent review and integration remain pending.
+
+## Retaining bounded structured records
+
+The local retention increment bounds each historical structured tool record, separately
+from model messages and per-run counts. After a successful archive append, a record
+larger than 64 KiB (or deeper than the bounded preview walker supports) retains at most
+16 KiB of preview JSON including an immutable project/message reference. Small records keep
+their existing representation. Whole small fields are retained within the preview
+budget; omitted fields and shortened tool/argument text are explicitly marked. The
+model's sampled result and original call messages are unchanged. The full record stays
+in the journal and is retrieved with the existing bounded APIs.
+
+Live observers and the on-tool callback receive the original current record before
+it is replaced, including when an observer fails or is cancelled. A run without an
+archive keeps its original inline evidence. The saved run and event fallback recognize
+the preview, and the workspace labels it as a preview rather than a full record.
+Acceptance checks the real tool loop, failure/cancellation boundaries, exact evidence
+after reopen, and final save without reloading original payloads. This does not yet
+bound retained model messages, the number of per-call summaries, review caches or
+total run memory; those remain subsequent work.
+
+The preview marker is `_record_storage`, with format `tool-record-v1`, project and
+message IDs, an omitted-field count, shortened header names and compact outcome
+metadata. Each retained nested field is complete, at most 4 KiB, within a shared
+16 KiB budget; at most 64 top-level fields are considered. The reference is created
+only after commit and never points at a replacement or re-encoded original. Previews
+are detached snapshots so an observer cannot change their content after measurement.
+
+The deterministic memory gate runs four and forty 1 MiB results in fresh processes,
+through the real tool loop, archive, validation and final save/export. Its fixed limits
+are 12 MiB additional Python peak allocations, 32 MiB additional peak RSS and a 256 KiB
+final record for this fixture. The inline positive control must exceed 32 MiB of both
+memory measures and retain more than 40 MiB of final JSON. The [local report](../../.agents/docs/agent-reports/tool-retention-2026-10-16.md)
+records the measurements and compatibility tests. This isolates structured output
+retention; it is not the complete RC-F9 long-history/folding acceptance.
 
 ## Acceptance
 

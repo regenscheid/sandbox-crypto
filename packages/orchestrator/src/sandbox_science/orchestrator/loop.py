@@ -647,8 +647,9 @@ async def _report(
             {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
             Appended("tool_result", call=call, outcome=outcome),
         )
+        record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
         transcript.tool_records.append(
-            {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            transcript.log.retained_tool(record) if transcript.log is not None else record
         )
     if reply.text:
         await _closing(hooks, transcript, reply.text)
@@ -724,15 +725,24 @@ async def _run_task(
                 {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
                 Appended("tool_result", call=call, outcome=outcome, operation_id=operation),
             )
-            transcript.tool_records.append(
-                {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            index = len(transcript.tool_records)
+            transcript.tool_records.append(record)
+            retained = (
+                transcript.log.retained_tool(record) if transcript.log is not None else record
             )
-            for hook in hooks:
-                await hook.observe_tool(transcript, outcome.record)
-            if on_tool is not None:
-                await on_tool(call.name, call.arguments, outcome)
-            if outcome.image is not None:
-                viewed.append(outcome.image)
+            try:
+                for hook in hooks:
+                    await hook.observe_tool(transcript, outcome.record)
+                if on_tool is not None:
+                    await on_tool(call.name, call.arguments, outcome)
+                if outcome.image is not None:
+                    viewed.append(outcome.image)
+            finally:
+                transcript.tool_records[index] = retained
+                # Coroutine locals otherwise retain the full last result across the
+                # next model call, including after observer failure or cancellation.
+                del record, outcome
         # Images go after all of the turn's results, in framed messages of their own
         # whose token each client turns into its API's image (docs/specs/figures.md, FG-37).
         for notice, token in viewed:

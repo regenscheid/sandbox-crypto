@@ -8,6 +8,23 @@
 import type { Json, ModelUsage, RunRecord, ToolRecord } from './api';
 import { formatCost } from './format';
 
+/** A preview's immutable full-record reference; legacy records have none. */
+export function storedRecord(record: ToolRecord | undefined): {
+  project: string;
+  message: string;
+} | null {
+  const stored = record?.['_record_storage'];
+  if (
+    !isObject(stored) ||
+    stored['format'] !== 'tool-record-v1' ||
+    typeof stored['project'] !== 'string' ||
+    typeof stored['message'] !== 'string' ||
+    !/^msg-[0-9a-f]{16}$/.test(stored['message'])
+  )
+    return null;
+  return { project: stored['project'], message: stored['message'] };
+}
+
 export interface ToolStep {
   name: string;
   /** The arguments as the model wrote them: JSON text, perhaps not valid. */

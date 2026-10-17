@@ -6,11 +6,12 @@
 -->
 <script lang="ts">
   import { visible, visibleOutput } from '../lib/text';
-  import { argumentFields, describeResult, type ToolStep } from '../lib/transcript';
+  import { argumentFields, describeResult, storedRecord, type ToolStep } from '../lib/transcript';
 
   let { step }: { step: ToolStep } = $props();
   const fields = $derived(argumentFields(step.arguments));
   const result = $derived(describeResult(step.result, step.record));
+  const stored = $derived(storedRecord(step.record));
   let showRecord = $state(false);
 </script>
 
@@ -65,8 +66,16 @@
 
   {#if step.record}
     <details class="record" bind:open={showRecord}>
-      <summary>Full record</summary>
+      <summary>{stored ? 'Record preview' : 'Full record'}</summary>
       {#if showRecord}
+        {#if stored}
+          <p class="muted">
+            Some fields are omitted or shortened here. The full record is preserved in project <code
+              >{visible(stored.project)}</code
+            >
+            as <code>{visible(stored.message)}</code>.
+          </p>
+        {/if}
         <pre>{visible(JSON.stringify(step.record, null, 2))}</pre>
       {/if}
     </details>

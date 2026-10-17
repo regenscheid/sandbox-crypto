@@ -156,6 +156,14 @@ export function runSkills(run: Pick<RunRecord, 'tools' | 'summaries' | 'delivere
     detail: word(record(raw).status),
   }));
   for (const tool of run.tools) {
+    if (tool.tool === 'skills' && !tool.skills && tool['_record_storage']) {
+      uses.push({
+        how: 'details archived',
+        skill: 'skills',
+        detail: 'Full skill-use details are in the archived tool record.',
+      });
+      continue;
+    }
     const call = record(tool.skills);
     if (call.action === 'load') {
       for (const raw of list(call.loads)) {

@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.notices import DELEGATIONS, REQUESTS
 from .archive import Archive, Archived, Entry
 from .operations import ToolJournal, ToolRecord
 from .reads import Read, reads_of
+from .retention import retain
 
 Json = dict[str, Any]
 _log = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ class RunArchive:
     ) -> None:
         self.archive, self.context, self.run, self.parent = archive, context, run, parent
         self.message_ids, self.patience, self.clock = tuple(message_ids), patience, clock
+        self.last_tool: str | None = None
 
     async def start_tool(self, call: ToolCall, operation_id: str) -> None:
         await _write(
@@ -71,6 +73,7 @@ class RunArchive:
         )
 
     async def append(self, message: Message, appended: Appended) -> Message:
+        self.last_tool = None
         entry = entry_of(message, appended, task_refs=self.message_ids)
         call, outcome = appended.call, appended.outcome
         reads = (
@@ -97,7 +100,15 @@ class RunArchive:
             clock=self.clock,
         )
         # The model's answer goes on as it wrote it; the platform's messages with headers.
+        if appended.kind == "tool_result" and call is not None and outcome is not None:
+            self.last_tool = archived.message_id
         return message if entry.role == "assistant" else archived.chat()
+
+    def retained_tool(self, record: Json) -> Json:
+        if self.last_tool is None:
+            raise RuntimeError("a retained tool record requires its committed result")
+        message, self.last_tool = self.last_tool, None
+        return retain(record, project=self.context.project_id, message=message)
 
 
 async def patiently(

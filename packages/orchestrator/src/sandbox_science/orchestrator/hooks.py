@@ -127,6 +127,11 @@ class MessageLog(Protocol):
         conversation holds it, with its ID header (CM-4a). A failure fails the run."""
         ...
 
+    def retained_tool(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Historical representation of the just-committed tool result. The loop keeps
+        the original current result through its observers before replacing it."""
+        ...
+
 
 class RunView(Protocol):
     """What a hook may read of the run in progress."""

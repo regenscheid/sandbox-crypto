@@ -4,7 +4,7 @@ Updated 2026-10-16 on `codex/research-foundations`, base `57e29536`. This file i
 
 ## Where things stand
 
-- **Research foundations first (D47/D87).** Local code has a tool journal (schema 58), 64 KiB byte pages and metadata discovery by run, with fresh-process memory gates and 845 affected tests passing. Tree Resume, transcript RAM eviction and separate orchestrator confinement remain pending; independent review/integration are pending too. See [research continuity](../docs/specs/research-continuity.md). Personal services remain untouched; no live lab was started.
+- **Research foundations first (D47/D87).** Local code has a journal (schema 58), bounded reads/discovery and large-record previews. Forty 1 MiB results add about 10 MiB RSS through final save; originals remain retrievable ([report](docs/agent-reports/tool-retention-2026-10-16.md)). Whole-run memory, tree Resume, confinement and independent review/integration remain pending. Personal services remain untouched; no live lab was started.
 - **Context management is built (steps a to g); its acceptance is not met.** Lab 44 was round 1 on GPT models ([STATUS](STATUS.md#phase-and-focus)). The owner's checklist in its report is pending. Round 2 needs the Claude arms, 600,000 arms that fold twice, the control repeated and the state block's placement (CM-25) measured first. Lanes: CM-A (archive, history tools, session view, the cite-handle and gateway fixes), CM-B (the ledger's fields and provenance, cache key), CM-D (the adapters, figure charts), G (the GUI), K (skills, images).
 - **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; the deny-list's tool families should be generated from the images, not listed by hand.
 - **Waiting for the owner:** lab 44's checklist, and Q12 to 14 of the skills spec, still the coordinator's reversible acceptance. The state block's placement is a design question for round 2, not for the owner yet.
@@ -39,7 +39,7 @@ The owner's research on other products' prompts lives outside this repository. T
 ## The code, briefly
 
 - **Loop and service:** features plug in as turn hooks (`hooks.py`). `Harness` is what `run` and `serve` build; `service.py` starts runs for chat messages and comments. Delegation is `delegation/`; skills are `skills/`, with the built-in pack in `skills/builtin/` at the repository root.
-- **Control store:** `orchestrator/control/`, schema version 56.
+- **Control store:** `orchestrator/control/`, schema version 58 on this branch.
 - **Context:** `history/` holds the session archive, the history tools, the session view, the read register and its descriptors; `responses.py` and `messages.py` are the GPT and Claude clients (`model.gateway_model` picks one per alias), `folds.py`, `overview.py`, `bound.py` and `markers.py` hold the folds, and `digest.py` the state block's digest; `consistency/archived.py` ties reviews to the archive. Figures: `view_image` in the orchestrator, the frame and charts in `web/workspace/src/figures`.
 - **Ledger rule** (the owner): weakening a settled state needs no authority; strengthening needs the user or a passing gate. The main agent reopens an obstructed question by itself, with a reason.
 - **Worker:** a change to an existing request or response raises `PROTOCOL_VERSION` (7); a new route does not ([compatibility](../docs/COMPATIBILITY.md)).
@@ -48,5 +48,6 @@ The owner's research on other products' prompts lives outside this repository. T
 
 ## What is next
 
-1. Context management: the owner's checklist for lab 44, then round 2. Claude thinking replay stays off until the gateway runs a stable LiteLLM release with the fixes (1.107.0 expected; it runs 1.102.1) and the live check passes.
-2. Figures F6 to F8 and F11b, a skills lab, K7c and K8, [BACKLOG](BACKLOG.md) and Phase 5.
+1. Bound historical messages, per-call metadata and review caches; design a portable full-evidence export. The current JSON export keeps references for large records.
+2. Durable work/attempt ownership, parent waiting and one tree Resume; then scoped state access and separate orchestrator confinement in the normal launcher.
+3. Role-specific folds, cache measurements and generated skills restrictions; see [research continuity](../docs/specs/research-continuity.md).

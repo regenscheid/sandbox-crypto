@@ -1,7 +1,41 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
+import { render } from 'svelte/server';
+import ToolCall from '../views/ToolCall.svelte';
 import type { RunRecord } from './api';
-import { argumentFields, describeResult, entries, usageLine } from './transcript';
+import { argumentFields, describeResult, entries, storedRecord, usageLine } from './transcript';
+
+it('labels a retained preview without presenting it as the full record', () => {
+  const record = {
+    tool: 'arithmetic',
+    arguments: '{}',
+    _record_storage: {
+      format: 'tool-record-v1',
+      project: 'p1',
+      message: 'msg-0123456789abcdef',
+    },
+  };
+  expect(storedRecord(record)).toEqual({ project: 'p1', message: 'msg-0123456789abcdef' });
+  const html = render(ToolCall, {
+    props: {
+      step: {
+        name: 'arithmetic',
+        arguments: '{}',
+        record,
+        result: '4 (sample)',
+      },
+    },
+  }).body;
+  expect(html).toContain('Record preview');
+  expect(html).not.toContain('Full record');
+  expect(storedRecord({ tool: 'legacy', arguments: '{}' })).toBeNull();
+  expect(
+    storedRecord({
+      ...record,
+      _record_storage: { ...record._record_storage, message: '<script>invalid</script>' },
+    }),
+  ).toBeNull();
+});
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {

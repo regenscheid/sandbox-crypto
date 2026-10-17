@@ -252,7 +252,8 @@ class RunRecord(Contract):
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""
     tools: list[dict[str, JsonValue]]
-    """One record per tool call, in order: its name, arguments and outcome."""
+    """One record per tool call, in order. Oversized archived records retain a bounded
+    preview with ``_record_storage`` naming the full immutable journal record."""
 
     @model_validator(mode="before")
     @classmethod
