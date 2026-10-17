@@ -400,17 +400,29 @@ class RunState:
         those an interrupted run saw, or a failing session's."""
         self._set_state(project, session, ids, "held", reason)
 
-    def resume(self, project: str, session: str, *, reason: str | None = None) -> int:
+    def resume(
+        self,
+        project: str,
+        session: str,
+        *,
+        reason: str | None = None,
+        clear_reason: bool = False,
+    ) -> int:
         """Queue the session's held messages again, or only those held for ``reason``;
-        how many."""
+        how many. Clear the old reason only when its prerequisite has changed.
+
+        This does not authorize continuing durable work: its original offered inputs
+        remain subject to reconciliation and an explicit research-tree Resume.
+        """
         now = self._now().isoformat()
         with self.control.write() as tx:
             _session(tx.sql, project, session)
             return tx.sql.execute(
-                "UPDATE session_messages SET state = 'queued', updated_at = ? "
+                "UPDATE session_messages SET state = 'queued', updated_at = ?, "
+                "reason = CASE WHEN ? THEN NULL ELSE reason END "
                 "WHERE project_id = ? AND session_id = ? AND state = 'held' "
                 "AND (? IS NULL OR reason = ?)",
-                (now, project, session, reason, reason),
+                (now, clear_reason, project, session, reason, reason),
             ).rowcount
 
     def held_for(self, reason: str) -> list[tuple[str, str]]:
@@ -437,7 +449,8 @@ class RunState:
                 (self._now().isoformat(), project, session),
             )
             tx.sql.execute(
-                "UPDATE session_messages AS m SET state='held',reason='interrupted',updated_at=? "
+                "UPDATE session_messages AS m SET state='held', "
+                "reason=coalesce(m.reason,'interrupted'),updated_at=? "
                 "WHERE m.project_id=? AND m.session_id=? AND m.state='queued' AND EXISTS "
                 "(SELECT 1 FROM research_attempts a JOIN research_work w "
                 "USING(project,session,work) WHERE a.project=m.project_id "
@@ -852,7 +865,8 @@ def _queue(
     except sqlite3.IntegrityError as error:
         raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
     pinned = _pin_chat(db, project, session, "message", message_id, text)
-    # Writing again is resuming: the session's held messages go with this one.
+    # Legacy held input can accompany fresh chat. Durable unfinished work is
+    # re-held by reconciliation unless a research-tree Resume authorized it.
     db.execute(
         "UPDATE session_messages SET state = 'queued', updated_at = ? "
         "WHERE project_id = ? AND session_id = ? AND state = 'held'",

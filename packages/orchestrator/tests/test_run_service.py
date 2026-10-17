@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import json
 import logging
 import signal
@@ -28,6 +27,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator import service as service_module
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import Harness as Core
@@ -555,21 +555,24 @@ async def test_a_cancel_during_a_foreground_tool_call(harness: Harness) -> None:
     assert states(harness) == {"m-1": "delivered"}  # the first call saw it
 
 
-async def test_a_failing_session_waits_longer_each_time_then_holds_its_messages(
+async def test_a_failing_session_holds_original_input_and_blocks_unknown_paid_replay(
     harness: Harness,
 ) -> None:
     post(harness, "m-1", "Hello?")
-    async with serving(harness, *[Reply(status=500) for _ in range(20)], retry=0.05):
+    async with serving(harness, Reply(status=500), Reply("Never sent."), retry=0.05) as service:
         await eventually(lambda: states(harness) == {"m-1": "held"}, timeout=20)
-        await asyncio.sleep(0.5)
-        assert len(names(harness)) == 5
+        await ended(harness)
+        assert await service.waiting_work() == ()
+        works = WorkRecords(service.stores.projects.control)
+        original = names(harness)[0]
+        assert works.get(PROJECT, SESSION, original).state == "paused"
+        assert works.request(PROJECT, SESSION, original) is not None
+        await eventually(lambda: works.get(PROJECT, SESSION, original).state == "blocked")
+        assert "unknown_model_usage" in (works.get(PROJECT, SESSION, original).reason or "")
+        assert len(names(harness)) == 1
+        assert len(harness.gateway.main) == 1
     (message,) = runs(harness).messages(PROJECT, SESSION)
-    assert message.reason == "5 runs failed in a row"
-    started = [datetime.strptime(name.split("-")[0], "%Y%m%dT%H%M%S%fZ") for name in names(harness)]
-    gaps = [(b - a).total_seconds() for a, b in itertools.pairwise(started)]
-    # Each run starts at least the doubled wait after the one before; a run's own
-    # duration, which varies under load, only adds to it.
-    assert [gap >= 0.05 * 2**n - 0.01 for n, gap in enumerate(gaps)] == [True] * 4, gaps
+    assert message.reason == "interrupted"
 
 
 async def test_sigterm_stops_serve_and_its_run_ends_interrupted(harness: Harness) -> None:
@@ -637,7 +640,15 @@ async def test_a_killed_service_leaves_a_run_the_next_one_ends_interrupted(
         await eventually(lambda: states(harness) == {"m-1": "held"})
         runs(harness).post(PROJECT, SESSION, "m-2", "Hello again.", author="user")
         (record,) = await ended(harness)
-    assert record.delivered["messages"] == ["m-1", "m-2"]  # writing again resumed m-1
+    assert record.delivered["messages"] == ["m-2"]
+    assert states(harness) == {"m-1": "held", "m-2": "delivered"}
+    # Fresh input does not replay the old unresolved model intent.
+    projects = ProjectStore(harness.state)
+    try:
+        old = WorkRecords(projects.control).get(PROJECT, SESSION, lease.run)
+        assert old.state == "paused"
+    finally:
+        projects.close()
 
 
 async def test_a_service_run_holds_the_session_against_the_command_line(
@@ -854,7 +865,7 @@ async def test_a_run_that_stops_for_its_lost_lease_ends_and_backs_off(
         e.data for e in runs(harness).events(PROJECT, SESSION, lease.run) if e.kind == "stopped"
     ]
     assert [data["stopped"] for data in stopped] == ["interrupted"]
-    assert states(harness) == {"m-1": "queued"}
+    assert states(harness) == {"m-1": "held"}
     assert names(harness) == []
 
 
@@ -866,7 +877,8 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
     then starts a consolidation run, told to propose how to consolidate them, and the
     held one still waits (the coordinator's decision of 2026-10-16). A change of the
     ledger that leaves the session's decisions as they were queues nothing; a change of
-    them queues the held messages again, and so does the user's resume."""
+    them clears the consolidation prerequisite but never restarts durable work.
+    Only explicit research-tree Resume can continue the original attempt."""
 
     async def research_state(self: Folder, transcript: Any) -> bool:
         self.geometry = self.start
@@ -879,9 +891,9 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
     monkeypatch.setattr(Ledger, "mark", lambda self, project: mark[0])
     monkeypatch.setattr(RunService, "_decided", lambda self, project, session: decided[0])
     post(harness, "m-1", "Go on.")
-    async with serving(harness, Reply("Shall I merge D-1 to D-4 into one decision?")):
+    async with serving(harness, Reply("Shall I merge D-1 to D-4 into one decision?")) as service:
         await eventually(lambda: states(harness) == {"m-1": "held"}, timeout=20)
-        (record,) = records(harness)
+        (record,) = await ended(harness)
         assert record.stopped == "context_limit"
         events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
         (stopped,) = [event.data for event in events if event.kind == "stopped"]
@@ -890,17 +902,61 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         await eventually(lambda: states(harness) == {"m-1": "held", "m-2": "delivered"}, timeout=20)
         (sent,) = harness.gateway.main
         assert any(CONSOLIDATION.text in str(message["content"]) for message in sent)
-        assert records(harness)[1].task == "What now?"  # the held one is not its task
+        _, consolidation = await ended(harness, 2)
+        assert consolidation.task == "What now?"  # the held one is not its task
         reasons = {m.message_id: m.reason for m in runs(harness).messages(PROJECT, SESSION)}
         assert reasons["m-1"] == "research_state"
         mark[0] = (2, 9)  # another session's change: these decisions are as they were
         await asyncio.sleep(0.3)
         assert (len(names(harness)), states(harness)["m-1"]) == (2, "held")
         mark[0], decided[0] = (3, 10), (("D-1", 2, "reversed"),)  # the user consolidated
-        await eventually(lambda: len(names(harness)) == 3, timeout=20)
-        await eventually(lambda: states(harness)["m-1"] == "held", timeout=20)
-        runs(harness).resume(PROJECT, SESSION)  # the user resumes: a run starts
-        await eventually(lambda: len(names(harness)) == 4, timeout=20)
+        await eventually(
+            lambda: runs(harness).messages(PROJECT, SESSION)[0].reason == "interrupted",
+            timeout=20,
+        )
+        assert await service.waiting_work() == ()
+        assert len(names(harness)) == 2
+        works = WorkRecords(service.stores.projects.control)
+        original = names(harness)[0]
+        assert works.request(PROJECT, SESSION, original) is not None
+        runs(harness).resume(PROJECT, SESSION)  # same explicit action as the workspace endpoint
+        await ended(harness, 3)
+        assert states(harness)["m-1"] == "held"
+        assert works.get(PROJECT, SESSION, original).current != original
+        assert runs(harness).messages(PROJECT, SESSION)[0].reason == "research_state"
+
+    # A replacement service first observes this held prerequisite without erasing
+    # it. Fresh input still receives consolidation guidance after another pause.
+    async with serving(harness, Reply("Consolidate the resumed state."), serve=False) as service:
+        await service.maintenance_tick()
+        assert states(harness)["m-1"] == "held"
+        assert runs(harness).messages(PROJECT, SESSION)[0].reason == "research_state"
+        assert await service.waiting_work() == ()
+        post(harness, "m-3", "Help consolidate again.")
+        await service.tick()
+        await ended(harness, 4)
+        assert any(CONSOLIDATION.text in str(m["content"]) for m in harness.gateway.main[-1])
+        assert states(harness) == {"m-1": "held", "m-2": "delivered", "m-3": "delivered"}
+        await service.close()
+
+
+async def test_research_state_hold_covers_more_than_one_input_page(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def research_state(self: Folder, transcript: Any) -> bool:
+        self.geometry = self.start
+        return self._stop("research_state", "the decisions do not fit")
+
+    monkeypatch.setattr(Folder, "before_call", research_state)
+    for number in range(205):
+        post(harness, f"m-{number}", "Review the current decisions.")
+    async with serving(harness, Reply("Never sent.")):
+        await ended(harness)
+    first = runs(harness).messages(PROJECT, SESSION)
+    second = runs(harness).messages(PROJECT, SESSION, after=first[-1].number)
+    assert len(first) + len(second) == 205
+    assert all((m.state, m.reason) == ("held", "research_state") for m in [*first, *second])
+    assert harness.gateway.main == []
 
 
 async def test_confined_queue_selection_does_not_start_roots_until_selected(

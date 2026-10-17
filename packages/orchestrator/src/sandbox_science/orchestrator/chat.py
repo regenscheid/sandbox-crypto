@@ -106,6 +106,8 @@ class RunChat:
         self.requests: Callable[[], bool] | None = None
         """Whether a work request waits that the run may be offered: the run's document
         tool says, once it has one."""
+        self.context_stop: Callable[[], str | None] | None = None
+        """The folder's exact stop reason, independent of compact record previews."""
         self.unavailable: Mapping[str, str] = {}
         """The MCP servers whose listing failed at the run's start, with why: the
         ``started`` event says so (lab 41, B4)."""
@@ -318,6 +320,31 @@ class UserMessages(TurnHook):
                 self.chat.run,
                 holding=True,
             )
+        if (
+            self.chat.parent is None
+            and record.stopped == "context_limit"
+            and self.chat.context_stop is not None
+            and self.chat.context_stop() == "research_state"
+        ):
+            # Common saved-run hook: resumed roots need the same consolidation
+            # hold as ordinary service runs, which have separate finalization.
+            context = self.chat.context
+            after = 0
+            while queued := await threaded(
+                self.chat.state.messages,
+                context.project_id,
+                context.session_id,
+                state="queued",
+                after=after,
+            ):
+                await threaded(
+                    self.chat.state.hold,
+                    context.project_id,
+                    context.session_id,
+                    [message.message_id for message in queued],
+                    "research_state",
+                )
+                after = queued[-1].number
 
 
 class EventLog(TurnHook):

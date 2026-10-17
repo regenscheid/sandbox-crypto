@@ -1,52 +1,22 @@
 # SPDX-License-Identifier: MIT
-"""The run service: the session's main agent, run for the GUI (docs/specs/run-service.md).
+"""Durable scheduling and bookkeeping for GUI chat and explicit tree recovery.
 
-``sandbox-science-harness serve`` builds one ``Harness`` and runs a ``RunService`` on it
-until it is stopped (RS-1). The service and the workspace share the control store
-(RS-2): about once a ``poll``, the service
+The normal launcher delegates agent-loop execution to its separate OpenShell
+runtime. This service renews authority, reconciles receipts and expired leases,
+validates runtime-selected admissions, and owns cancellation/final cleanup.
+Research code executes through scoped worker capabilities.
 
-- renews its heartbeat, which the workspace shows (RS-3);
-- ends every run whose lease expired, its holder dead, unless the run is one of its
-  own (a lease can look expired while its holder lives, as after a suspend). A run
-  whose record was saved is acknowledged from the record; any other gets a ``stopped``
-  event, ``interrupted``, and the messages it was offered are held until the user
-  resumes or writes again (RS-12). Its delegations still running end ``interrupted``,
-  and each of its children's runs gets its ``stopped`` event, from its record if it
-  saved one (PD-40). Its questions to the user still open close ``interrupted``: no
-  run is left to receive their answers (PD-23), and so does an open question whose run
-  holds no lease, as one whose own close failed as it was cancelled;
-- starts a run for each session that has queued messages and no run (RS-6), within the
-  project's model budget (RS-6a). The run's conversation begins with the session's
-  view, which the harness builds from the archive (RS-10 as amended, CM-29), then the
-  messages queued once it holds the lease;
-- starts a run in the same way for each session that has waiting work requests, the
-  user's comments addressed to its main agent (LD-22), and no queued messages. Its
-  conversation begins with the requests, as the run's hooks offer them. A request has
-  no ``held`` or ``refused`` state: where a message would be held, the service keeps
-  the request from starting a run until the session's next run or the service's
-  restart, and a spent budget makes it wait ``MAX_WAIT`` before it is looked at again;
-- cancels a run the user asked to cancel (RS-11), once, while it runs: the run ends
-  ``cancelled``, its record is saved, and the messages it was offered and did not
-  answer are held.
+Fresh chat and unoffered annotations can start new work within current budgets.
+Original offered input stays attached to unfinished work: neither restart nor a
+retry delay permits fresh paid replay. Explicit Resume reconciles the selected
+work tree and reuses its original grants and effect identities.
 
-Each run is admitted, run, saved and acknowledged as ``run`` does, holding the session's
-run lease from admission until its record is saved. A session whose runs fail waits
-``retry`` seconds, doubling with each failure in a row up to ``MAX_WAIT``; after
-``MAX_FAILURES`` in a row, its queued messages are held with the reason ``failed`` (RS-9),
-and its work requests start no run. A run that stops because the session's current
-decisions do not fit its view (``research_state``, CM-45) holds what it was offered and
-what is queued with that reason, and its work requests: the next run would stop the same
-way. They are queued again when this session's current decisions change (their handles,
-revisions and statuses, as its fold records name them and the ledger holds them), or
-when the user resumes; a service that restarts queues them once more, and the next run
-holds them again if nothing changed. A message the user writes meanwhile starts a
-consolidation run (the coordinator's decision of 2026-10-16): its view shows every
-current decision in one line, and it is told to propose how to consolidate them, for
-the user to approve; the held messages and requests still wait.
+A research_state context stop retains a consolidation hold. Fresh input can ask
+for help consolidating decisions; a confirmed decision change clears that
+prerequisite, while unfinished work still requires explicit Resume. A replacement
+service first observes the current decision set without treating restart as change.
 
-Each look also starts, unless one still runs, the figure checks of the documents and
-ledger entries saved since (``figurechecks``, FG-19), wherever they were saved, with the
-configured figure checker: a check never holds up a run.
+Figure checks run independently and never hold up a research run.
 """
 
 from __future__ import annotations
@@ -474,21 +444,30 @@ class RunService:
         self.waiting_until[key] = self.clock.monotonic() + wait
 
     async def _consolidated(self, project: str, session: str) -> None:
-        """Queue again a session's messages held for its research state once its current
-        decisions changed, or when this service has not seen them held (CM-45). The
-        ledger's mark is read first: the decisions only when it moved."""
+        """Observe the consolidation prerequisite, retaining holds across restart.
+
+        A changed decision set clears that prerequisite, but durable work still
+        requires explicit Resume. Read decisions only when the ledger mark moved.
+        """
         key = project, session
         mark = await threaded(self.ledger.mark, project)
         seen = self.marks.get(key)
         if seen is not None and seen[0] == mark:
             return
         decided = await threaded(self._decided, project, session)
-        if seen is not None and seen[1] == decided:
+        if seen is None:
+            self.marks[key] = (mark, decided)
+            return  # Restart is not evidence that the prerequisite changed.
+        if seen[1] == decided:
             self.marks[key] = (mark, decided)  # another change of the ledger
             return
         self.marks.pop(key, None)
         self.held.pop(key, None)
-        count = await threaded(self.runs.resume, project, session, reason=RESEARCH_STATE)
+        # The changed prerequisite no longer calls for consolidation. Original
+        # durable work still needs explicit Resume and is re-held by reconciliation.
+        count = await threaded(
+            self.runs.resume, project, session, reason=RESEARCH_STATE, clear_reason=True
+        )
         _log.info("session %s: %d messages queued again for its research state", session, count)
 
     def _decided(self, project: str, session: str) -> tuple[Decided, ...]:
@@ -585,10 +564,8 @@ class RunService:
                     mark,
                     await threaded(self._decided, project, session),
                 )
-                offered = await threaded(runs.offered_to, project, session, name)
-                queued = await threaded(runs.messages, project, session, state="queued")
-                held = [*offered, *(m.message_id for m in queued if m.message_id not in offered)]
-                await threaded(runs.hold, project, session, held, RESEARCH_STATE)
+                # UserMessages already held queued input before the stopped event.
+                # Do not capture fresh chat arriving after that acknowledged stop.
                 self._hold(project, session, [*active.request_ids, *unanswered(finished.hooks)])
             if finished.transcript.stopped == "cancelled":
                 # What it was offered and did not answer waits for the user (RS-11).

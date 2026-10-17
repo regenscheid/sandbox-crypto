@@ -802,6 +802,7 @@ class Harness:
                         hooks = (*hooks, ViewMeter(view))
                     if folder is not None and chat is not None:
                         hooks = (*hooks, folder)
+                        chat.context_stop = lambda: folder.stopped
                         folder.events = functools.partial(chat.write, "fold")
                         folder.refit = functools.partial(_refit, toolbox, discovery)
                         folder.specs = lambda: toolbox.specs

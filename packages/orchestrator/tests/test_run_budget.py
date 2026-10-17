@@ -85,14 +85,14 @@ async def test_a_gateway_that_refuses_for_its_budget_ends_the_run_and_the_sessio
         assert len(names(harness)) == 1  # no other run starts for the waiting message
     assert (record.stopped, record.failure, record.final_text) == ("gateway_budget", None, None)
     assert len(harness.gateway.main) == 1
-    assert states(harness) == {"m-1": "queued"}  # no model call saw it: it waits
+    assert states(harness) == {"m-1": "held"}  # original work needs explicit Resume
     stopped = runs(harness).events(PROJECT, SESSION, names(harness)[0])[-1]
     assert stopped.data["stopped"] == "gateway_budget"
 
 
 async def test_what_arrives_after_the_limit_is_reached_waits(harness: Harness) -> None:
-    """An answer stands; the message that would have continued the run waits, and the
-    run it starts is refused for the limit, as at any run's start."""
+    """An answer stands; an input already offered to this budget-stopped work remains
+    held for its explicit Resume, without a fresh root or another paid call."""
     runs(harness).set_cost_limit(PROJECT, 0.01)
 
     async def another() -> None:
@@ -102,13 +102,16 @@ async def test_what_arrives_after_the_limit_is_reached_waits(harness: Harness) -
     replies = (Reply("The answer.", before=another, cost="0.02"), Reply("Never sent."))
     async with serving(harness, *replies):
         (record,) = await ended(harness)
-        await eventually(lambda: states(harness).get("m-2") == "refused", timeout=10)
+        await eventually(lambda: states(harness).get("m-2") == "held", timeout=10)
     assert (record.stopped, record.final_text) == ("budget", "The answer.")
     assert len(harness.gateway.main) == 1
     assert record.delivered["messages"] == ["m-1"]
-    assert states(harness) == {"m-1": "delivered", "m-2": "refused"}
-    (refused,) = [m for m in runs(harness).messages(PROJECT, SESSION) if m.message_id == "m-2"]
-    assert refused.reason == "budget"
+    assert states(harness) == {"m-1": "delivered", "m-2": "held"}
+    (held,) = [m for m in runs(harness).messages(PROJECT, SESSION) if m.message_id == "m-2"]
+    assert held.reason == "interrupted"
+    assert held.offered == names(harness)[0]
+    assert held.run is None
+    assert runs(harness).over_cost_limit(PROJECT, record.ended_at)
     assert len(names(harness)) == 1
 
 
