@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; implementation remains planned.
+
 - Real SNOVA research reached the 8 MiB active-payload bound before token folding because provider responses echoed tool schemas and usage attribution. Preserve originals in the archive, project active native replay fields, and raise the per-agent active backstop to 64 MiB at the owner's request.
 - Local recovery acceptance exposed suspended environments at explicit Resume: prepare the recorded worker before its retention claim, without recreating missing environments or dispatching research before readiness.
 - Local Babbage acceptance may use the owner's authorized arrcodex models, with a $200 total ceiling for SNOVA planning, literature/MCP/PDF, Sage, delegation and long-context trials. Expose the existing context ceiling through the confined launcher for bounded fold/recovery tests; retain the default and provider cap ([continuity](../docs/specs/research-continuity.md)).
