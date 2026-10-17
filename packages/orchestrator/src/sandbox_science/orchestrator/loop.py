@@ -911,6 +911,7 @@ async def run_task(
     log: MessageLog | None = None,
     folds: Folds | None = None,
     memory_store: RunMemory | None = None,
+    on_started: Callable[[Transcript], Awaitable[None]] | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -968,6 +969,8 @@ async def run_task(
                     transcript.usage = memory_store.usage()
                     transcript.memory = memory_store
                     transcript.max_input_chars = min(transcript.max_input_chars, VIEW_BYTES)
+                if on_started is not None:
+                    await on_started(transcript)
                 try:
                     await _run_task(
                         model,
