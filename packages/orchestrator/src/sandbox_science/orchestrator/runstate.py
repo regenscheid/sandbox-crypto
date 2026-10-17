@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
 
@@ -467,6 +468,11 @@ class RunState:
     def cancelled(self, project: str, session: str, run: str) -> bool:
         with self.control.read() as tx:
             return cancel_requested(tx.sql, project, session, run)
+
+    def cancelled_runs(self, project: str, session: str, runs: Sequence[str]) -> set[str]:
+        """Resolve a live sibling set's durable Stop ancestry in one read snapshot."""
+        with self.control.read() as tx:
+            return {run for run in runs if cancel_requested(tx.sql, project, session, run)}
 
     def beat(self, holder: str) -> None:
         """The run service is running (RS-3)."""

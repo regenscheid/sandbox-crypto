@@ -25,6 +25,34 @@ rows and rejection before reading further unknown fields. Focused pyright and
 Ruff passed. Evidence: `research-foundations-review-export.log`, SHA-256
 `a8f8e1b3de4786b0eab9718f5cf71b7fac2951909f9bffd2b1ada3ace74930c0`.
 
-The Stop cleanup fix and its re-review are pending. Recursive Resume, complete
-run-memory bounds, generated skill restrictions and orchestrator confinement
-remain planned work. This review does not establish live research acceptance.
+## Stop cleanup fix
+
+Cleanup resolves durable Stop ancestry for each child in one snapshot, preserving
+branch and sibling distinctions even before the service polls or when a caller is
+cancelled during the Stop write. Unstarted children are cancelled before the
+read; repeated cancellation retains the read and fallback outcome writes. A read
+failure still cleans up and then surfaces the failure. Unresponsive children
+remain interrupted, with their requested Stop reason recorded.
+
+Both race regressions failed on the original code and passed after the fix.
+The delegation reviewer checked the fix, sibling isolation, pre-start behavior,
+read failure and repeated cancellation; no remaining finding was reported.
+The worker reviewer had no finding. All three reviews are complete, with no
+critical, high or medium findings left in the reviewed changes.
+
+Validation: 164 delegation, lifecycle, depth, restart, budget, harness, service
+and failed-run tests passed in 33.57 seconds. Full pyright and Ruff passed.
+Evidence outside Git:
+
+- `research-foundations-review-stop-before.log` (the two expected failures),
+  SHA-256 `67a7c001bbbb934f24ee79065aa0c60fa06fb04194b21153d59ba7470864771e`.
+- `research-foundations-review-stop.log`,
+  SHA-256 `7ac5648e85442fa97fd9ef6b309b8a102d8b01d85653be2019fa8bf17cf6327c`.
+- `research-foundations-review-pyright-final.log`,
+  SHA-256 `6d88a1b220adb7a3d62092b6e38431f0b3fe8babe9864fab90e5849766260332`.
+
+The 6,230-test run preceded the fixes; the 20 export and 164 lifecycle checks
+cover their changed paths afterward. Recursive Resume, complete run-memory
+bounds, generated skill restrictions and orchestrator confinement remain
+planned work. No live service was changed, and this review does not establish
+live research acceptance.

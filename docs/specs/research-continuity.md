@@ -342,6 +342,11 @@ Saved outcomes stay immutable.
 Cleanup after a lost lease, parent failure or service interruption still cancels
 live child tasks and saves their partial records, but labels them `interrupted`.
 Only an explicit root Stop or `cancel_delegation` makes their outcome `cancelled`.
+Live cleanup checks each child's durable Stop ancestry even if interruption occurs
+before the service polls or before a committed child Stop reaches its signal.
+Children that have not begun are cancelled before awaiting that read. Cancellation
+or a read failure cannot bypass child cleanup; an unreadable state is surfaced as
+an error after cleanup with the available signal.
 A child that fails to stop within the cleanup deadline remains `interrupted`, with
 its requested stop reason preserved; a request alone does not prove effects ended.
 This is the reason classification prerequisite for tree Resume, not a Resume path.

@@ -52,7 +52,7 @@ from typing import Any, Final, Literal, Protocol, cast
 from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, new_id
-from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.aio import held, threaded
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.ledger import Ledger
@@ -202,6 +202,8 @@ class _Running:
     limits: dict[str, int]
     """Its turns and tokens, at most."""
     deadline: Deadline
+    entered: asyncio.Event
+    """Set before the runner begins, so cleanup can prevent unstarted work."""
 
 
 class Delegations(TurnHook):
@@ -355,8 +357,10 @@ class Delegations(TurnHook):
             track=planned.track,
             delegate=planned.delegate,
         )
-        stop = asyncio.Event()
-        task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
+        stop, entered = asyncio.Event(), asyncio.Event()
+        task = asyncio.create_task(
+            self._run(child, stop, entered), name=f"delegation {delegation_id}"
+        )
         self.children[delegation_id] = _Running(
             delegation,
             run_id,
@@ -364,6 +368,7 @@ class Delegations(TurnHook):
             stop,
             {"turns": child.max_turns, "tokens": child.tokens},
             child.deadline,
+            entered,
         )
         started_with: dict[str, JsonValue] = {
             "delegation_id": delegation_id,
@@ -476,8 +481,9 @@ class Delegations(TurnHook):
             )
         return None
 
-    async def _run(self, child: Child, stop: asyncio.Event) -> None:
+    async def _run(self, child: Child, stop: asyncio.Event, entered: asyncio.Event) -> None:
         """Run a child to its end, then write its outcome, however it ended."""
+        entered.set()
         ending = Ending("failed", "error")
         created: tuple[str, ...] = ()
         try:
@@ -731,13 +737,34 @@ class Delegations(TurnHook):
             return
         loop = asyncio.get_running_loop()
         until = loop.time() + self._seconds(loop.time())
+        # A state read must not give newly admitted children a chance to start work
+        # after cleanup began. Their outcome is written below, after classification.
+        for child in running:
+            if not child.entered.is_set():
+                child.task.cancel()
+        requested: set[str] = set()
+        cancelled = False
+        failure: Exception | None = None
+        if not explicit:
+            try:
+                requested, cancelled = await held(
+                    asyncio.to_thread(
+                        RunState(self.records.control, clock=self.clock).cancelled_runs,
+                        self.context.project_id,
+                        self.context.session_id,
+                        [child.delegation.run for child in running],
+                    )
+                )
+            except Exception as error:
+                # A failed read is not evidence of absence, and still cannot detach
+                # children. Clean up with the available signal, then surface it.
+                failure = error
         for child in running:
             child.deadline.at = loop.time() + (until - loop.time()) * STOP_SHARE
-            child.deadline.interrupted = not explicit
+            child.deadline.interrupted = not (explicit or child.delegation.run in requested)
             child.stop.set()
             child.task.cancel()
         tasks = [child.task for child in running]
-        cancelled = False
         while not all(task.done() for task in tasks):
             seconds = min(until - loop.time(), self._seconds(loop.time()))
             if seconds <= 0:
@@ -748,14 +775,16 @@ class Delegations(TurnHook):
                 cancelled = True  # its parent's cancel: it waits on, to its deadline
         for child in running:
             delegation_id = child.delegation.delegation_id
+            reason = "interrupted" if child.deadline.interrupted else "cancelled"
             if not child.task.done():
                 _log.error("delegated run %s did not end after its cancel", child.run_id)
-                await self._end(
-                    delegation_id, Ending("interrupted", "cancelled" if explicit else "interrupted")
-                )
+                _, again = await held(self._end(delegation_id, Ending("interrupted", reason)))
+                cancelled |= again
             elif child.task.cancelled():  # cancelled before it started: it wrote nothing
-                reason = "cancelled" if explicit else "interrupted"
-                await self._end(delegation_id, Ending(reason, reason))
+                _, again = await held(self._end(delegation_id, Ending(reason, reason)))
+                cancelled |= again
+        if failure is not None:
+            raise failure
         if cancelled:
             raise asyncio.CancelledError
 

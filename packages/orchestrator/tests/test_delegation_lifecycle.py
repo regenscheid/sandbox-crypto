@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 from pathlib import Path
 from typing import Any, Final
 
@@ -34,6 +35,7 @@ from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import DELEGATIONS
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.service import RunService
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.testing import FakeClock, eventually
 
@@ -365,6 +367,40 @@ async def test_the_users_cancel_cancels_the_live_check(delegating: Harness) -> N
     assert delegation(delegating, delegation_id).ended == "cancelled"
 
 
+async def test_durable_stop_before_polling_survives_service_interruption(
+    delegating: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    free, answer = blocking()
+    delegating.gateway.delegated = [answer]
+    poll = asyncio.Event()
+    tick = RunService.tick
+
+    async def first_tick(service: RunService) -> None:
+        await tick(service)
+        await poll.wait()  # The service cannot poll the subsequently accepted Stop.
+
+    monkeypatch.setattr(RunService, "tick", first_tick)
+    store = ProjectStore(delegating.state)
+    state = RunState(store.control)
+    state.post(PROJECT, SESSION, "m-1", "Check C-1.", author="user")
+    try:
+        async with serving(delegating, Reply(calls=[CHECK]), wait()):
+            await eventually(lambda: delegating.gateway.children)
+            held = state.lease(PROJECT, SESSION)
+            assert held is not None
+            state.cancel(PROJECT, SESSION, held.run)
+        (child,) = kept_children(delegating, held.run)
+        assert child.stopped == "cancelled"
+        (outcome,) = DelegationRecords(store.control).handbacks(PROJECT, SESSION)
+        assert (outcome.ended, outcome.stopped) == ("cancelled", "cancelled")
+        assert state.events(PROJECT, SESSION, outcome.run)[-1].data["stopped"] == "cancelled"
+        assert state.events(PROJECT, SESSION, held.run)[-1].data["stopped"] == "cancelled"
+    finally:
+        free.set()
+        poll.set()
+        store.close()
+
+
 async def test_a_lost_lease_cancels_the_live_check(delegating: Harness) -> None:
     free, answer = blocking()
     delegating.gateway.delegated = [answer]
@@ -567,9 +603,66 @@ def _delegations(
 BRIEF = {"check": {"entry": "C-1", "revision": 1}}
 
 
-@pytest.mark.parametrize("explicit", [False, True])
+async def test_child_stop_commits_before_parent_interruption_keeps_siblings_separate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    committed, ready = asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    cancel = RunState.cancel
+    entered: list[str] = []
+    ids: list[str] = []
+
+    def committed_stop(state: RunState, project: str, session: str, run: str) -> None:
+        cancel(state, project, session, run)
+        loop.call_soon_threadsafe(committed.set)
+        assert release.wait(10)
+
+    async def cooperative(child: Child, stop: asyncio.Event) -> ChildEnd:
+        entered.append(child.delegation_id)
+        if len(entered) == 2:
+            ready.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return ChildEnd("cancelled", False, None)
+        raise AssertionError
+
+    made, records, projects, documents = _delegations(tmp_path, cooperative)
+    monkeypatch.setattr(RunState, "cancel", committed_stop)
+
+    async def parent() -> None:
+        async with made.lease():
+            for _ in range(2):
+                text, _ = await made.call("delegate", BRIEF)
+                ids.append(json.loads(text)["delegation_id"])
+            await ready.wait()
+            await made.call("cancel_delegation", {"delegation_id": ids[0]})
+
+    task = asyncio.create_task(parent())
+    try:
+        await committed.wait()
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        outcomes = [records.get(PROJECT, SESSION, identity) for identity in ids]
+        assert [(item.ended, item.stopped) for item in outcomes] == [
+            ("cancelled", "cancelled"),
+            ("interrupted", "interrupted"),
+        ]
+    finally:
+        release.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        documents.close()
+        projects.close()
+
+
+@pytest.mark.parametrize(("explicit", "durable"), [(False, False), (True, False), (False, True)])
 async def test_a_child_that_outlives_its_cancel_is_interrupted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool, durable: bool
 ) -> None:
     monkeypatch.setattr(hook, "STOP_SECONDS", 0.05)
     never = asyncio.Event()
@@ -588,16 +681,77 @@ async def test_a_child_that_outlives_its_cancel_is_interrupted(
             await asyncio.sleep(0.01)  # it starts
             if explicit:
                 made.stop.set()
+            if durable:
+                RunState(projects.control).cancel(PROJECT, SESSION, made.parent)
         delegation_id = json.loads(text)["delegation_id"]
         found = records.get(PROJECT, SESSION, delegation_id)
         assert (found.ended, found.stopped) == (
             "interrupted",
-            "cancelled" if explicit else "interrupted",
+            "cancelled" if explicit or durable else "interrupted",
         )
     finally:
         never.set()
         for child in made.children.values():
             child.task.cancel()
+        documents.close()
+        projects.close()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+async def test_stop_ancestry_read_keeps_cleanup_owned_on_cancel_or_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: bool
+) -> None:
+    reading, entered, cleaned = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    read = RunState.cancelled_runs
+    ids: list[str] = []
+
+    def blocked_read(state: RunState, project: str, session: str, runs: list[str]) -> set[str]:
+        result = read(state, project, session, runs)
+        loop.call_soon_threadsafe(reading.set)
+        assert release.wait(10)
+        if failure:
+            raise OSError("fixture Stop ancestry read failed")
+        return result
+
+    async def cooperative(child: Child, stop: asyncio.Event) -> ChildEnd:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleaned.set()
+            return ChildEnd("cancelled", False, None)
+        raise AssertionError
+
+    made, records, projects, documents = _delegations(tmp_path, cooperative)
+    monkeypatch.setattr(RunState, "cancelled_runs", blocked_read)
+
+    async def parent() -> None:
+        async with made.lease():
+            text, _ = await made.call("delegate", BRIEF)
+            ids.append(json.loads(text)["delegation_id"])
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(parent())
+    try:
+        await entered.wait()
+        RunState(projects.control).cancel(PROJECT, SESSION, made.parent)
+        task.cancel()
+        await reading.wait()
+        task.cancel()  # A second cancellation must not discard the read or skip cleanup.
+        release.set()
+        with pytest.raises(OSError if failure else asyncio.CancelledError):
+            await task
+        assert cleaned.is_set()
+        found = records.get(PROJECT, SESSION, ids[0])
+        reason = "interrupted" if failure else "cancelled"
+        assert (found.ended, found.stopped) == (reason, reason)
+    finally:
+        release.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, OSError):
+            await task
         documents.close()
         projects.close()
 
@@ -782,7 +936,10 @@ async def test_parent_closing_waits_for_all_children_and_remains_interruptible(
         projects.close()
 
 
-async def test_parent_cleanup_before_a_child_starts_is_interruption(tmp_path: Path) -> None:
+@pytest.mark.parametrize("durable", [False, True])
+async def test_parent_cleanup_before_a_child_starts_keeps_its_reason(
+    tmp_path: Path, durable: bool
+) -> None:
     async def unused(child: Child, stop: asyncio.Event) -> ChildEnd:
         raise AssertionError
 
@@ -790,8 +947,11 @@ async def test_parent_cleanup_before_a_child_starts_is_interruption(tmp_path: Pa
     try:
         async with made.lease():
             text, _ = await made.call("delegate", BRIEF)  # its parent ends at once
+            if durable:
+                RunState(projects.control).cancel(PROJECT, SESSION, made.parent)
         found = records.get(PROJECT, SESSION, json.loads(text)["delegation_id"])
-        assert (found.ended, found.stopped) == ("interrupted", "interrupted")
+        reason = "cancelled" if durable else "interrupted"
+        assert (found.ended, found.stopped) == (reason, reason)
     finally:
         documents.close()
         projects.close()
