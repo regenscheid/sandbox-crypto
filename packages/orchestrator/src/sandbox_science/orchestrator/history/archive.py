@@ -53,7 +53,7 @@ from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
-from .limits import WorkingMemoryLimitError
+from .limits import METADATA_BYTES, WorkingMemoryLimitError
 from .operations import (
     CHUNK_BYTES,
     READ_BYTES,
@@ -438,10 +438,18 @@ class Archive:
         """A message of the project, by its ID."""
         with self.control.read() as tx:
             if max_bytes is not None:
-                fields = ("content", "native", "tool_calls", "adapter_state")
+                fields = (
+                    "content",
+                    "native",
+                    "tool_calls",
+                    "adapter_state",
+                    "refs",
+                    "files",
+                    "prefix",
+                )
                 meta = tx.sql.execute(
                     "SELECT rowid,typeof(content),typeof(native),typeof(tool_calls),"
-                    "typeof(adapter_state) "
+                    "typeof(adapter_state),typeof(refs),typeof(files),typeof(prefix) "
                     "FROM archive_messages WHERE project=? AND message_id=?",
                     (project, message_id),
                 ).fetchone()
@@ -503,7 +511,7 @@ class Archive:
         kinds_sql = f" AND kind IN ({','.join('?' for _ in kinds)})" if kinds else ""
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
+                "SELECT message_id FROM archive_messages "  # noqa: S608 - fixed kind placeholders
                 "WHERE project = ? AND session = ? AND position >= ? "
                 "AND (? IS NULL OR position <= ?) AND " + _CHAIN_SCOPE + " "
                 "AND (? = 0 OR parent IS NULL) " + kinds_sql + " ORDER BY position LIMIT ?",
@@ -522,7 +530,19 @@ class Archive:
                     max(1, min(limit, PAGE)),
                 ),
             ).fetchall()
-        return [_archived(row) for row in rows]
+        found: list[Archived] = []
+        remaining = METADATA_BYTES
+        for (identifier,) in rows:
+            message = self.message(project, identifier, max_bytes=remaining)
+            remaining -= (
+                len(message.entry.native or b"")
+                + len((message.entry.content or "").encode())
+                + 1024
+            )
+            if remaining < 0:
+                raise WorkingMemoryLimitError("archive page exceeds the bounded read limit")
+            found.append(message)
+        return found
 
     def scan(
         self,
@@ -775,6 +795,22 @@ def _hit(
     project, message_id, path, text = db.execute(
         "SELECT project, message_id, path, text FROM archive_docs WHERE doc = ?", (doc,)
     ).fetchone()
+    rowid, *kinds = db.execute(
+        "SELECT rowid,typeof(content),typeof(native),typeof(tool_calls),typeof(adapter_state),"
+        "typeof(refs),typeof(files),typeof(prefix) "
+        "FROM archive_messages WHERE project=? AND message_id=?",
+        (project, message_id),
+    ).fetchone()
+    size = 0
+    fields = ("content", "native", "tool_calls", "adapter_state", "refs", "files", "prefix")
+    for name, kind in zip(fields, kinds, strict=True):
+        if kind != "null":
+            with db.blobopen("archive_messages", name, rowid, readonly=True) as blob:
+                size += len(blob)
+    if size > METADATA_BYTES:
+        raise WorkingMemoryLimitError(
+            "search hit exceeds the working read limit; use stored evidence"
+        )
     row = db.execute(
         f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
         "WHERE project = ? AND message_id = ?",
@@ -783,7 +819,22 @@ def _hit(
     message = _archived(row)
     found = message.entry.text if path is None else text or ""
     rounded = None if score is None else round(score, 3)
-    return Hit(message, path, match, rounded, _snippet(found, needles))
+    snippet = _snippet(found, needles)
+    # Search returns metadata plus a bounded snippet, never each hit's original body.
+    from dataclasses import replace  # payload evidence remains in its immutable archive row
+
+    metadata = replace(
+        message,
+        entry=replace(
+            message.entry,
+            content=None,
+            native=None,
+            native_format=None,
+            tool_calls=(),
+            adapter_state=None,
+        ),
+    )
+    return Hit(metadata, path, match, rounded, snippet)
 
 
 def _snippet(text: str, needles: Sequence[str]) -> str:

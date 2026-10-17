@@ -217,7 +217,7 @@ class HistoryTool:
     def _message(self, message_id: str, path: str | None, offset: int) -> tuple[str, Json]:
         project = self.context.project_id
         try:
-            found = self.archive.message(project, message_id)
+            found = self.archive.message(project, message_id, max_bytes=8 * 1024 * 1024)
         except ControlError as error:
             if error.kind != NOT_FOUND:
                 raise

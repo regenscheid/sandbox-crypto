@@ -113,17 +113,32 @@ class Judge:
         self.entries, self.completed, self.works, self.cites = entries, completed, works, cites
 
     def retired(
-        self, records: Sequence[tuple[str, FoldRecord]], rows: Iterable[Archived] = ()
+        self,
+        records: Sequence[tuple[str, FoldRecord]],
+        rows: Iterable[Archived] = (),
+        *,
+        history: Iterable[FoldRecord] | None = None,
     ) -> dict[str, dict[int, str]]:
         """For each record, by its archive ID, its retired markers by their index, each
         with why: ``records`` are all the session's, oldest first, those an overview
         covers among them; ``rows`` the session's archived messages, where later calls
         are looked for."""
         newest: dict[str, str] = {}
-        for _, record in records:  # first-level records hold each change once, in order
+        subjects = {
+            str(marker.get("subject"))
+            for _, record in records
+            for marker in record.markers
+            if marker.get("kind") == "decision"
+        }
+        original = history if history is not None else (record for _, record in records)
+        for record in original:  # first-level records hold each change once, in order
             if record.level == 1:
                 for marker in record.markers:
-                    if marker.get("kind") == "decision" and marker.get("at"):
+                    if (
+                        marker.get("kind") == "decision"
+                        and marker.get("at")
+                        and str(marker.get("subject")) in subjects
+                    ):
                         newest[str(marker.get("subject"))] = str(marker["at"])
         held: dict[tuple[str, int | None], Held | None] = {}
         reads: dict[tuple[str, str, str | None], str | None] = {}
@@ -282,6 +297,9 @@ def _succeeded(
     if wanted:
         for row in rows:
             if row.entry.role == "assistant":
+                # A later assistant response closes the previous call group. An
+                # unmatched result cannot legitimately arrive after another answer.
+                calls.clear()
                 for call in row.entry.tool_calls:
                     function = cast(Json, call.get("function") or {})
                     args = _same(str(function.get("arguments") or ""))

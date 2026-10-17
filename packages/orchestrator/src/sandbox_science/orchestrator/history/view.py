@@ -43,7 +43,10 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+import pickle
+import sqlite3
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -63,12 +66,16 @@ from sandbox_science.orchestrator.skills.tool import given
 from sandbox_science.orchestrator.tokens import DEFAULT_CHARS, estimate, view_tokens
 from sandbox_science.orchestrator.worker_client import dump
 
-from .archive import KINDS, PAGE, Archive, Archived, Entry
+from .archive import KINDS, Archive, Archived, Entry
 from .bound import SPILL, Bounded, bound
+from .collections import Collection
+from .fold_index import active, historical
 from .geometry import Geometry
+from .limits import METADATA_BYTES, METADATA_ROWS, WorkingMemoryLimitError
 from .log import PATIENCE, patiently
 from .markers import Judge
 from .record import FoldRecord, marker_line, retired_line, stub
+from .snapshot import inline
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.digest import Rendered
@@ -237,24 +244,9 @@ def session_view(
     changes nothing: ``settle`` archives its state block and spill record and adds its
     kernel lines."""
     # Delegated views must never draw on the parent's or a sibling's reasoning.
-    every_row = _rows(archive, context, run=scope_run, kinds=("fold", "spill"))
-    # A spill record already archived that holds the same lines, in whatever order.
-    spills = {
-        _lines(row.entry.content or ""): row.message_id
-        for row in every_row
-        if row.entry.kind == "spill"
-    }
-    rows = [row for row in every_row if row.entry.kind != "spill"]
-    every = [(row, found) for row in rows if (found := FoldRecord.of(row)) is not None]
-    merged = {part for _, found in every for part in found.parts}
-    # By the span each covers: an overview is archived after the records it merged.
-    records = sorted(
-        ((row, found) for row, found in every if row.message_id not in merged),
-        key=lambda pair: pair[1].first[0],
-    )
-    end = max((found.last[0] for _, found in every), default=0)
+    records, end = active(archive, context, scope_run)
     gone = (judge or Judge()).retired(
-        [(row.message_id, found) for row, found in every],
+        [(row.message_id, found) for row, found in records],
         archive.scan(
             context.project_id,
             context.session_id,
@@ -262,9 +254,17 @@ def session_view(
             main_only=scope_run is None,
             kinds=("assistant", "tool_result"),
         ),
+        history=(record for _, record in historical(archive, context, scope_run)),
     )
     retired = {row.message_id: gone[row.message_id] for row, _ in records if row.message_id in gone}
-    folded = _rows(archive, context, run=scope_run, end=end, kinds=("task", "user", "comment"))
+    folded = archive.scan(
+        context.project_id,
+        context.session_id,
+        run=scope_run,
+        end=end,
+        kinds=("task", "user", "comment"),
+        main_only=scope_run is None,
+    )
     raw = [
         row
         for row in _rows(archive, context, run=scope_run, start=end + 1)
@@ -275,8 +275,15 @@ def session_view(
         context.session_id,
         run=scope_run,
         end=end,
+        candidates=runs,
     )
-    stubs = {at for _, found in every for at in found.stubs}
+    raw_ids = {row.message_id for row in raw}
+    stubs = {
+        at
+        for _, found in historical(archive, context, scope_run)
+        for at in found.stubs
+        if at in raw_ids
+    }
     units = [_stubbed(unit, stubs) for unit in _units(raw)]
     budget, cap = int(geometry.region * per_token), int(geometry.region_cap * per_token)
     shaped = bound(
@@ -288,7 +295,18 @@ def session_view(
         consolidating=consolidating,
     )
     region, shown_folds, left, pending = _region(shaped, budget, cap)
-    spilled = spills.get(_lines(shaped.spill)) if shaped.spill is not None else None
+    spilled = None
+    if shaped.spill is not None:
+        wanted_lines = _lines(shaped.spill)
+        for row in archive.scan(
+            context.project_id,
+            context.session_id,
+            run=scope_run,
+            main_only=scope_run is None,
+            kinds=("spill",),
+        ):
+            if _lines(row.entry.content or "") == wanted_lines:
+                spilled = row.message_id
     if pending is not None and spilled is not None:  # archived at an earlier rebuild
         region = Part("fold_region", {"role": "user", "content": _pointed(pending, spilled)})
         pending = None
@@ -567,13 +585,15 @@ class ViewMeter(TurnHook):
     def __init__(self, view: View) -> None:
         self.view = view
         self.estimated: int | None = None
-        self.calls: list[Json] = []
+        self.calls: MutableSequence[Json] = []
 
     def tokens(self, run: RunView) -> int:
         """The view's tokens before the run's next call."""
         return view_tokens(run.size, run.usage[run.since :], self.view.per_token)
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Any]:
+        if isinstance(run.messages, Collection) and not isinstance(self.calls, Collection):
+            self.calls = Collection[Json](run.messages.control, run.messages.scope, "view_calls")
         if point == "turn":
             self.estimated = self.tokens(run)
         return ()
@@ -584,7 +604,11 @@ class ViewMeter(TurnHook):
             self.calls.append({"estimated": self.estimated, "reported": reported})
 
     def summary(self) -> object | None:
-        return {**self.view.summary(), "calls": self.calls}
+        return {
+            **self.view.summary(),
+            "calls": inline(self.calls) or [],
+            "calls_total": len(self.calls),
+        }
 
 
 def spanned(
@@ -611,24 +635,29 @@ def _rows(
     """The session's main runs' archived messages, fold records among them, but their
     state blocks, in order."""
     found: list[Archived] = []
-    while True:
-        page = archive.messages(
-            context.project_id,
-            context.session_id,
-            start=start,
-            end=end,
-            run=run,
-            kinds=kinds or tuple(kind for kind in KINDS if kind != "state_block"),
-            main_only=run is None,
+    used = 0
+    for row in archive.scan(
+        context.project_id,
+        context.session_id,
+        start=start,
+        end=end,
+        run=run,
+        kinds=kinds or tuple(kind for kind in KINDS if kind != "state_block"),
+        main_only=run is None,
+    ):
+        used += (
+            1024
+            + len((row.entry.content or "").encode())
+            + len(row.entry.native or b"")
+            + len(dump(row.entry.tool_calls).encode())
         )
-        found += [
-            row
-            for row in page
-            if (run is not None or row.parent is None) and row.entry.kind != "state_block"
-        ]
-        if len(page) < PAGE:
-            return found
-        start = page[-1].position + 1
+        if used > METADATA_BYTES or len(found) >= METADATA_ROWS:
+            raise WorkingMemoryLimitError(
+                "the semantic history exceeds the working-state ceiling; "
+                "all original messages remain available through stored evidence"
+            )
+        found.append(row)
+    return found
 
 
 def _units(rows: Sequence[Archived]) -> list[list[Part]]:
@@ -681,64 +710,120 @@ class _Words:
 
 
 def _words(
-    rows: Sequence[Archived], share: int, recorded: Sequence[Said] = ()
+    rows: Iterable[Archived], share: int, recorded: Sequence[Said] = ()
 ) -> tuple[str, list[Archived]]:
-    """The user's own words, ``recorded`` first and then those in ``rows``, oldest first,
-    within ``share`` characters: a message longer than a quarter of it as its head and
-    tail; the oldest, past it, as one line each, the newest never; and the oldest of
-    those, past it still, as one line for all (CM-30). Also the user's messages shown
-    whole."""
-    items = [_Words(f"run {run}", label, text) for run, label, text in recorded]
-    for row in rows:
-        content = row.entry.content or ""
-        if row.entry.kind == "user" or (row.entry.kind == "task" and content != REQUESTS_TASK):
-            label = "user message" if row.entry.kind == "user" else "task"
-            items.append(_Words(row.message_id, label, content, row))
-        elif row.entry.kind == "comment":
-            for request in requests(content):
-                label = f"comment on document {request.get('document_id')}"
-                text = str(request.get("request_text") or "")
-                items.append(_Words(row.message_id, label, text, row))
-    if not items:
-        return "", []
-    cap = max(200, share // 4)
-    blocks = [_block(item, cap) for item in items]
-    total, first = sum(len(block) + 1 for block in blocks), 0
-    while total > share and first < len(items) - 1:
-        item = items[first]
-        line = (
-            f"{item.head}: {len(item.text):,} characters, beginning "
-            f"{json.dumps(' '.join(item.text.split())[:80])}; {item.whole} ---"
+    """Render the unchanged oldest-first word reduction using an on-disk work table.
+
+    SQLite's temporary database owns the unbounded intermediate list; its page cache
+    is fixed. Only the rendered bounded tail and quoted whole messages enter Python.
+    Pickle is private process-generated state, never loaded from a supplied file.
+    """
+
+    def items() -> Iterator[_Words]:
+        for run, label, text in recorded:
+            yield _Words(f"run {run}", label, text)
+        for row in rows:
+            content = row.entry.content or ""
+            if row.entry.kind == "user" or (row.entry.kind == "task" and content != REQUESTS_TASK):
+                yield _Words(
+                    row.message_id,
+                    "user message" if row.entry.kind == "user" else "task",
+                    content,
+                    row,
+                )
+            elif row.entry.kind == "comment":
+                for request in requests(content):
+                    yield _Words(
+                        row.message_id,
+                        f"comment on document {request.get('document_id')}",
+                        str(request.get("request_text") or ""),
+                        row,
+                    )
+
+    with closing(sqlite3.connect("")) as db:
+        db.execute("PRAGMA cache_size=-512")
+        db.execute(
+            "CREATE TABLE words (pos INTEGER PRIMARY KEY, item BLOB, block TEXT, "
+            "pointer TEXT, name TEXT, archived INTEGER)"
         )
-        total += len(line) - len(blocks[first])
-        blocks[first] = line
-        first += 1
-    gone = 0
-    if total > share and first > 1:  # even the pointers pass it: the oldest become one line
-        freed = 0
-        for gone in range(1, first + 1):
-            freed += len(blocks[gone - 1]) + 1
-            if gone > 1 and total - freed + len(_range(items[:gone])) + 1 <= share:
-                break
-        total += len(_range(items[:gone])) + 1 - freed
-    kept = list(zip(items, blocks, strict=True))[gone:]
-    quoted = [item.row for item, block in kept if item.row is not None and item.text in block]
-    lines = ([_range(items[:gone])] if gone else []) + [block for _, block in kept]
-    words = "\n".join(lines)
-    return f"\n--- The user's own words ---\n{words}\n--- End of the user's own words ---", quoted
+        total = count = 0
+        for item in items():
+            block = _block(item, max(200, share // 4))
+            # Collapse whitespace without allocating a split of the whole message.
+            prefix = _beginning(item.text)
+            pointer = (
+                f"{item.head}: {len(item.text):,} characters, beginning "
+                f"{json.dumps(prefix)}; {item.whole} ---"
+            )
+            db.execute(
+                "INSERT INTO words VALUES (?,?,?,?,?,?)",
+                (count, pickle.dumps(item), block, pointer, item.name, int(item.row is not None)),
+            )
+            total, count = total + len(block) + 1, count + 1
+        if not count:
+            return "", []
+        first = 0
+        while total > share and first < count - 1:
+            block, pointer = db.execute(
+                "SELECT block,pointer FROM words WHERE pos=?", (first,)
+            ).fetchone()
+            total += len(pointer) - len(block)
+            db.execute("UPDATE words SET block=pointer WHERE pos=?", (first,))
+            first += 1
+        gone = 0
+        range_line = ""
+        if total > share and first > 1:
+            freed = 0
+            initial = db.execute("SELECT name FROM words WHERE pos=0").fetchone()[0]
+            all_archived = True
+            for gone, (block, name, archived) in enumerate(
+                db.execute(
+                    "SELECT block,name,archived FROM words WHERE pos<? ORDER BY pos", (first,)
+                ),
+                1,
+            ):
+                freed += len(block) + 1
+                all_archived = all_archived and bool(archived)
+                where = (
+                    "history_search and history_read find them"
+                    if all_archived
+                    else "history_search and history_read find those in the archive; "
+                    "the others' runs' "
+                    "saved records keep them"
+                )
+                range_line = f"--- {gone:,} earlier messages, {initial} to {name}; {where} ---"
+                if gone > 1 and total - freed + len(range_line) + 1 <= share:
+                    break
+        lines = [range_line] if gone else []
+        quoted: list[Archived] = []
+        for encoded, block in db.execute(
+            "SELECT item,block FROM words WHERE pos>=? ORDER BY pos", (gone,)
+        ):
+            item = cast(_Words, pickle.loads(encoded))  # noqa: S301 - only this call's private work table
+            if item.row is not None and item.text in block:
+                quoted.append(item.row)
+            lines.append(block)
+        words = "\n".join(lines)
+        return (
+            f"\n--- The user's own words ---\n{words}\n--- End of the user's own words ---",
+            quoted,
+        )
 
 
-def _range(items: Sequence[_Words]) -> str:
-    """One line for the oldest of the user's messages, past their share even as pointers."""
-    found = (
-        "history_search and history_read find them"
-        if all(item.row is not None for item in items)
-        else (
-            "history_search and history_read find those in the archive; the others' runs' "
-            "saved records keep them"
-        )
-    )
-    return f"--- {len(items):,} earlier messages, {items[0].name} to {items[-1].name}; {found} ---"
+def _beginning(text: str) -> str:
+    kept: list[str] = []
+    space = False
+    for char in text:
+        if char.isspace():
+            space = bool(kept)
+        else:
+            if space:
+                kept.append(" ")
+                space = False
+            kept.append(char)
+        if len(kept) >= 80:
+            break
+    return "".join(kept)[:80]
 
 
 def _block(item: _Words, cap: int) -> str:
