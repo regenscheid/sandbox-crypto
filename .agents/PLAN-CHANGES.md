@@ -371,3 +371,5 @@ Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
 - **Tier 1 licenses** add PSF-2.0 (typing-extensions) and MIT-0 (cffi); CI checks installed licenses and generated protobuf code.
 - **Conventions adopted:** pyright strict for `packages/*/src`, standard mode for tests.
 - **Plan snapshots tagged:** `plan-03-pre-review` and `plan-04-reviewed`.
+
+- 2026-10-16: Delegated tasks and checks now share the fold engine with attempt-scoped archive reads and pinned briefs; initially skeleton-only to preserve token-budget accounting ([contract](../docs/specs/research-continuity.md#delegated-folding-contract)). Live role-continuity acceptance remains pending.

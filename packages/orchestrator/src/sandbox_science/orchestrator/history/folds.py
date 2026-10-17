@@ -137,6 +137,7 @@ class Folder(TurnHook):
         context: ExecutionContext,
         *,
         run: str,
+        parent: str | None = None,
         view: View,
         start: Geometry,
         ceiling: int,
@@ -172,6 +173,7 @@ class Folder(TurnHook):
         (CM-29b), and ``specs`` gives the tools the run sends; the harness sets them once
         it has made them."""
         self.archive, self.context, self.run = archive, context, run
+        self.parent = parent
         self.view, self.start, self.ceiling, self.chunk = view, start, ceiling, chunk
         self.calls, self.runs, self.earlier, self.kernels = (
             tuple(calls),
@@ -619,7 +621,13 @@ class Folder(TurnHook):
             native_format=FORMAT,
         )
         row = await patiently(
-            self.archive, self.context, self.run, entry, patience=self.patience, clock=self.clock
+            self.archive,
+            self.context,
+            self.run,
+            entry,
+            parent=self.parent,
+            patience=self.patience,
+            clock=self.clock,
         )
         return row, record
 
@@ -672,6 +680,7 @@ class Folder(TurnHook):
             judge=self.judge,
             digest=digest,
             consolidating=self.consolidating,
+            scope_run=self.run if self.parent is not None else None,
         )
 
     def _digested(self, per_token: float) -> Rendered | None:
@@ -780,7 +789,14 @@ class Folder(TurnHook):
             await self._rejected(record, why)
             return
         first, last = record.first[0], record.last[0]
-        rows = await threaded(spanned, self.archive, self.context, first, last)
+        rows = await threaded(
+            spanned,
+            self.archive,
+            self.context,
+            first,
+            last,
+            run=self.run if self.parent is not None else None,
+        )
         running = _Running(record, tuple(rows), parts=tuple(due))
         running.asked = before = self.tokens(transcript)
         running.task = asyncio.create_task(
@@ -816,6 +832,7 @@ class Folder(TurnHook):
             self.archive,
             self.context,
             run=self.run,
+            parent=self.parent,
             kernels=self.kernels,
             patience=self.patience,
             clock=self.clock,

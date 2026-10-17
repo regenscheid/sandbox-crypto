@@ -226,6 +226,7 @@ def session_view(
     judge: Judge | None = None,
     digest: Rendered | None = None,
     consolidating: bool = False,
+    scope_run: str | None = None,
 ) -> View:
     """The session's view under ``geometry``; ``runs`` are the session's main runs with
     saved records, which tells those from before the archive, and ``earlier`` reads the
@@ -235,7 +236,8 @@ def session_view(
     ``consolidating``, a consolidation run's, every current decision in one line (CM-45). It
     changes nothing: ``settle`` archives its state block and spill record and adds its
     kernel lines."""
-    every_row = _rows(archive, context)
+    # Delegated views must never draw on the parent's or a sibling's reasoning.
+    every_row = _rows(archive, context, run=scope_run)
     # A spill record already archived that holds the same lines, in whatever order.
     spills = {
         _lines(row.entry.content or ""): row.message_id
@@ -564,24 +566,38 @@ class ViewMeter(TurnHook):
         return {**self.view.summary(), "calls": self.calls}
 
 
-def spanned(archive: Archive, context: ExecutionContext, first: int, last: int) -> list[Archived]:
+def spanned(
+    archive: Archive, context: ExecutionContext, first: int, last: int, *, run: str | None = None
+) -> list[Archived]:
     """The session's main runs' messages at positions ``first`` to ``last``, as a view
     holds them: neither fold records nor state blocks."""
     return [
         row
-        for row in _rows(archive, context)
+        for row in _rows(archive, context, run=run, start=first, end=last)
         if first <= row.position <= last and row.entry.kind != "fold"
     ]
 
 
-def _rows(archive: Archive, context: ExecutionContext) -> list[Archived]:
+def _rows(
+    archive: Archive,
+    context: ExecutionContext,
+    *,
+    run: str | None = None,
+    start: int = 1,
+    end: int | None = None,
+) -> list[Archived]:
     """The session's main runs' archived messages, fold records among them, but their
     state blocks, in order."""
     found: list[Archived] = []
-    start = 1
     while True:
-        page = archive.messages(context.project_id, context.session_id, start=start)
-        found += [row for row in page if row.parent is None and row.entry.kind != "state_block"]
+        page = archive.messages(
+            context.project_id, context.session_id, start=start, end=end, run=run
+        )
+        found += [
+            row
+            for row in page
+            if (run is not None or row.parent is None) and row.entry.kind != "state_block"
+        ]
         if len(page) < PAGE:
             return found
         start = page[-1].position + 1

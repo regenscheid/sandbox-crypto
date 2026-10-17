@@ -253,6 +253,25 @@ A real OpenShell restart test is required for claims about RC-F5 and RC-F8 at th
 
 ## Implementation sequence
 
+### Delegated folding contract
+
+A delegated task or check uses the existing folding engine, restricted to that
+attempt's archive run identity. The restriction applies to view rebuilds and to
+the spans loaded for overview enrichment. Every derived state block, fold and
+spill retains the parent run identity, so it cannot enter a main run's view.
+The child's original brief is pinned in its state block at every rebuild. Tasks
+also retain their permitted standing constraints; checks receive no parent
+digest, ledger retirement judge, parent folds or sibling conversation. Model
+ceilings are resolved for the child's selected alias, including shared
+input/output windows. Explicit input limits and spending limits still apply.
+
+The initial delegated implementation uses the existing deterministic skeleton
+folds. It makes no enrichment calls outside the child's token allowance.
+Enriched delegated folds require shared accounting before they can be enabled.
+These changes extend an attempt's working context; they do not by themselves
+implement continuation attempts, bound historical RAM, or establish research
+quality preservation. Those remain separate acceptance requirements.
+
 Each step is split into reviewable changes with a production caller; no unused recovery framework is merged.
 
 1. **Durable evidence, state access and bounded memory.** Characterize current consumers and settle the UI/orchestrator storage boundary for RC-29, then add incremental storage, output deduplication and bounded historical reads. Replace the full-record finalization path and verify RC-F9/F10/F14. This is independently useful and does not depend on the automatic-resume decision.

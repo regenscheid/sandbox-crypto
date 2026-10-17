@@ -50,4 +50,4 @@ The owner's research on other products' prompts lives outside this repository. T
 
 1. Bound historical messages, per-call metadata and review caches; design a portable full-evidence export. The current JSON export keeps references for large records.
 2. Durable work/attempt ownership, parent waiting and one tree Resume; then scoped state access and separate orchestrator confinement in the normal launcher.
-3. Role-specific folds, cache measurements and generated skills restrictions; see [research continuity](../docs/specs/research-continuity.md).
+3. Child skeleton folds now use their own archive and model limit (146 tests passed locally); live continuity acceptance remains. Cache measurements and generated skills restrictions follow.

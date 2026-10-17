@@ -40,7 +40,7 @@ All used the real model and crypto-research-mcp.
 1. Bound historical model messages, per-call metadata, review caches and full-evidence exports.
 2. Durable work/attempt ownership, waiting parents and one orchestrator Resume for the tree.
 3. Scoped durable-state access and the normal launcher's separate orchestration sandbox.
-4. Role-specific folding, measured cache layout and generated skills restrictions.
+4. Qualify child skeleton folds; measure cache layout and generate skills restrictions.
 5. Remaining [BACKLOG](BACKLOG.md) and UI work after foundational acceptance.
 
 ## Known issues

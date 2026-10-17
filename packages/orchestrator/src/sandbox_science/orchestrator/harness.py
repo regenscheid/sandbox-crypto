@@ -81,6 +81,7 @@ from .history import (
     session_view,
     settle,
 )
+from .history.delegated import delegated_folder
 from .history.geometry import DEFAULT_SHARES, Shares
 from .hooks import TurnHook
 from .jobs import JobTools
@@ -597,7 +598,7 @@ class Harness:
                 with interruption.protect():
                     memory = await self.memory(admitted)
                     folder = await self._folder(admitted)
-                    view = folder.view if folder is not None else await self._task_view(admitted)
+                    view = folder.view if folder is not None else None
                     if view is not None:
                         # The session's view is the earlier conversation (CM-29).
                         request = dataclasses.replace(admitted.request, history=view.messages)
@@ -706,10 +707,26 @@ class Harness:
         """A main run's folds, with stores (CM-24, CM-29), holding the view of its session
         it starts with: the earlier messages of its session from the archive, folded as
         its records say, after a state block that holds the research-state digest
-        (CM-16, CM-26); ``None`` for any other run."""
+        (CM-16, CM-26). Children use their own attempt-scoped folder; no stores, no folds."""
         stores, request, context = self.stores, admitted.request, admitted.context
-        if stores is None or request.parent is not None:
+        if stores is None:
             return None
+        if request.parent is not None:
+            block = await threaded(
+                self._task_block, stores, context.project_id, context.session_id, request
+            )
+            return await delegated_folder(
+                Archive(stores.projects.control, clock=self.clock),
+                context,
+                run=run_name(admitted.started_at, admitted.run_id),
+                parent=request.parent,
+                brief=request.task,
+                constraints=block,
+                ceiling=await self._ceiling(self.role(request)),
+                chunk=self.settings.chunk,
+                shares=self.settings.shares,
+                clock=self.clock,
+            )
         project, session = context.project_id, context.session_id
         archive = Archive(stores.projects.control, clock=self.clock)
         name = run_name(admitted.started_at, admitted.run_id)
@@ -801,21 +818,22 @@ class Harness:
         made.propose = functools.partial(FoldProposals(ledger).propose, project, session, name)
         return made
 
-    async def _ceiling(self) -> int:
+    async def _ceiling(self, role: Role | None = None) -> int:
         """MAIN's ceiling C (CM-27): the role's, capped by the model's limit: the setting's
         input limit, or the gateway's model information's. For a Claude model that is a
         window input and output share, so the answer's room comes off it. A gateway that
         cannot be asked is asked again at the next run's start."""
         settings = self.settings
+        role = role or self.main
         if settings.input_limit is not None:
             return ceiling(settings.ceiling, input_limit=settings.input_limit)
         if self.gateway is not None and self._limits_seen is None:
             self._limits_seen = await self.gateway.input_limits()
-        found = (self._limits_seen or {}).get(self.main.alias)
+        found = (self._limits_seen or {}).get(role.alias)
         if found is None:
             return settings.ceiling
-        model = self.main.model
-        named = " ".join(name or "" for name in (found.provider, found.model, self.main.alias))
+        model = role.model
+        named = " ".join(name or "" for name in (found.provider, found.model, role.alias))
         if isinstance(model, MessagesModel) or "anthropic" in named or "claude" in named.lower():
             output = model.max_output if isinstance(model, GatewayModel) else None
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
@@ -834,23 +852,6 @@ class Harness:
         if isinstance(self.main.model, GatewayModel):
             return cached_for(self.main.model, project, session)
         return None
-
-    async def _task_view(self, admitted: Admitted) -> View | None:
-        """A delegated task's view, with stores: the user's standing constraints alone; a
-        check's, nothing (CM-37a)."""
-        stores, request, context = self.stores, admitted.request, admitted.context
-        if stores is None or request.parent is None:
-            return None
-        project, session = context.project_id, context.session_id
-        block = await threaded(self._task_block, stores, project, session, request)
-        if block is None:
-            return None
-        archive = Archive(stores.projects.control, clock=self.clock)
-        name = run_name(admitted.started_at, admitted.run_id)
-        return await settle(
-            View(digest=block), archive, context, run=name, kernels=None,
-            parent=request.parent, clock=self.clock,
-        )  # fmt: skip
 
     def _input_chars(self, *, folding: bool) -> int:
         """The longest conversation a run is sent, in characters: the setting's, or by
@@ -906,9 +907,7 @@ class Harness:
             "max_turns": request.max_turns or self.settings.max_turns,
             "max_input_chars": (
                 None
-                if self.settings.max_input_chars is None
-                and self.stores is not None
-                and request.parent is None
+                if self.settings.max_input_chars is None and self.stores is not None
                 else self._input_chars(folding=False)
             ),
         }
