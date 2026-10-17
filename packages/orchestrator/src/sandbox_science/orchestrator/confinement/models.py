@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.model import (
     ModelTurn,
     ToolSpec,
 )
+from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole, requested
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .paid import begin, observe, usage
@@ -52,12 +53,18 @@ class CallbackModel(GatewayModel):
         *,
         scope: Callable[[], str] | None = None,
         kind: ModelKind = "fold",
+        profile: ModelProfile | None = None,
+        role: ModelRole = "fold",
         max_output: int | None = None,
         max_response_bytes: int = MAX_MODEL_RESPONSE_BYTES,
     ) -> None:
         # Deliberately do not initialize GatewayModel's key, session or PriceList.
         self.channel, self.model = channel, alias
         self.scope, self.kind = scope, kind
+        self._model_role = role
+        self._requested_profile = profile or requested(alias=alias)
+        self._owns_session = False
+        self._former_profile = False
         self._max_tokens = max_output
         self._max_response_bytes = max_response_bytes
         self._tool_choice, self._cache_key = "auto", None
@@ -84,10 +91,13 @@ class CallbackModel(GatewayModel):
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         if self.scope is None:
             raise ModelError("confined model capability has no attempt scope")
+        self.validate_profile()
         request = ModelRequest.model_validate(
             {
                 "attempt": self.scope(),
                 "kind": self.kind,
+                "role": self._model_role,
+                "profile": payload(self.requested_profile),
                 "model": self.model,
                 "messages": [payload(WireMessage.of(message)) for message in messages],
                 "tools": TypeAdapter(tuple[ToolSpec, ...]).dump_python(tuple(tools), mode="json"),
@@ -121,11 +131,29 @@ class CallbackModel(GatewayModel):
 class CallbackGateway(ModelGateway):
     """A host catalog handle whose fixed metadata calls also execute in the runtime."""
 
-    def __init__(self, channel: Channel, scope: Callable[[], str] | None = None) -> None:
+    def __init__(
+        self,
+        channel: Channel,
+        scope: Callable[[], str] | None = None,
+        *,
+        apis: dict[str, str] | None = None,
+        reasoning_effort: dict[ModelRole, str] | None = None,
+    ) -> None:
         self.channel, self.scope = channel, scope
+        self.apis, self.reasoning_effort = apis or {}, reasoning_effort or {}
 
-    def model(self, alias: str) -> CallbackModel:
-        return CallbackModel(self.channel, alias, scope=self.scope)
+    def model(self, alias: str, *, role: ModelRole = "delegated") -> CallbackModel:
+        return CallbackModel(
+            self.channel,
+            alias,
+            scope=self.scope,
+            role=role,
+            profile=requested(
+                alias=alias,
+                api=self.apis.get(alias, "chat"),
+                reasoning_effort=self.reasoning_effort.get(role),
+            ),
+        )
 
     async def aliases(self) -> frozenset[str] | None:
         result = await self._info("aliases")
@@ -161,13 +189,23 @@ class RuntimeModels:
         request = typed(ModelRequest, value)
         if request.model not in self.aliases:
             raise TransportError("denied", "model alias is outside this runtime's configuration")
-        model = self.gateway.model(request.model).limited(
-            max_output=request.max_output, max_response_bytes=request.max_response_bytes
+        model = (
+            self.gateway.model(request.model, role=request.role)
+            .for_role(request.role, request.profile)
+            .limited(max_output=request.max_output, max_response_bytes=request.max_response_bytes)
         )
         if request.cache_key is not None:
             model = model.cached_as(request.cache_key)
         model = model.choosing(request.tool_choice)
-        identity = await begin(self.channel, request.attempt, request.model, request.kind)
+        model.validate_profile()
+        identity = await begin(
+            self.channel,
+            request.attempt,
+            request.model,
+            request.kind,
+            model.requested_profile,
+            request.role,
+        )
         try:
             turn = await model.complete(
                 [message.message() for message in request.messages], request.tools

@@ -39,8 +39,9 @@ from sandbox_science.orchestrator.model import (
     ChatModel,
     Message,
     ModelError,
-    OpenAICompatibleModel,
+    gateway_model,
 )
+from sandbox_science.orchestrator.model_profiles import requested
 
 _log = logging.getLogger(__name__)
 
@@ -387,7 +388,14 @@ def _brief(error: BaseException) -> str:
     return type(error).__name__
 
 
-def gateway_service(base_url: str, reviewer: str, api_key: str) -> MathRepairService:
+def gateway_service(
+    base_url: str,
+    reviewer: str,
+    api_key: str,
+    *,
+    api: str = "chat",
+    reasoning_effort: str | None = None,
+) -> MathRepairService:
     """Repairs by the model the alias ``reviewer`` names at the model gateway.
 
     ValueError when ``api_key`` is not one line of visible ASCII, which every request's
@@ -398,13 +406,13 @@ def gateway_service(base_url: str, reviewer: str, api_key: str) -> MathRepairSer
         return MathRepairService(reviewer=reviewer)
     if not _KEY.fullmatch(api_key):
         raise ValueError("the gateway key must be one line of visible ASCII characters")
-    model = OpenAICompatibleModel(
+    model = gateway_model(
         base_url,
         alias,
         api_key,
-        timeout=TIMEOUT,
+        api=api,
+        options={"timeout": TIMEOUT, "retries": 0},
         max_tokens=MAX_OUTPUT_TOKENS,
         max_response_bytes=MAX_ANSWER_BYTES,
-        retries=0,  # Someone is waiting, and can ask again.
-    )
+    ).for_role("reviewer", requested(alias, api, reasoning_effort))
     return MathRepairService(model, reviewer=alias, secrets=(api_key,), close=model.close)

@@ -305,8 +305,10 @@ class RuntimeLoops:
             (RemotePlans if hook.planning else RemoteHook)(self.channel, given.attempt, slot, hook)
             for slot, hook in enumerate(given.hooks)
         )
-        model = self.gateway.model(given.model).limited(
-            max_output=given.max_output, max_response_bytes=MAX_MODEL_RESPONSE_BYTES
+        model = (
+            self.gateway.model(given.model)
+            .for_role("delegated" if given.role == "delegated" else "main", given.profile)
+            .limited(max_output=given.max_output, max_response_bytes=MAX_MODEL_RESPONSE_BYTES)
         )
         if given.cache_key is not None:
             model = model.cached_as(given.cache_key)

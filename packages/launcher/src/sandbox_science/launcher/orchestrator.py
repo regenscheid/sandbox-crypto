@@ -171,6 +171,8 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         "generation_file": str(directory / "generation"),
         "projects": [project.id for project in config.projects],
         "main": model.name,
+        "apis": model.api,
+        "reasoning_effort": model.reasoning_effort,
         "reviewer": model.reviewer,
         "watcher": model.watcher,
         "delegated": model.delegated,
@@ -218,6 +220,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         "model_key_file": REMOTE + "/model.key",
         "models": aliases,
         "apis": model.api,
+        "reasoning_effort": model.reasoning_effort,
         "embedding": config.skills.embedding_model,
         "thinking_replay": model.thinking_replay.model_dump(mode="json")
         if model.thinking_replay

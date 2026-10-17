@@ -27,6 +27,7 @@ from sandbox_science.orchestrator.run_inputs import RunInputs
 
 from .blueprints import Blueprints
 from .child_settlement import ChildSettlement
+from .effort import apply_resume_effort
 from .kernels import KernelJournal
 from .plans import Plans
 from .reconcile import Reconciler
@@ -242,6 +243,49 @@ class Recovery:
         if alias is None:
             raise ControlError(CONFLICT, "recovery configuration lacks the original model alias")
         request = dataclasses.replace(request, alias=alias)
+        if request.model_profiles is None:
+            request = dataclasses.replace(
+                request, model_profiles=self.harness.model_profiles(request, legacy=True)
+            )
+        if original.model_profiles is None:
+            # Legacy work did not store caller settings. Recover adapters from its
+            # own archived responses; never infer effort from a provider default.
+            with control.read() as tx:
+                formats = tx.sql.execute(
+                    "SELECT DISTINCT m.alias,m.native_format FROM archive_messages m "
+                    "JOIN research_attempts a ON a.project=m.project AND a.session=m.session "
+                    "AND a.run=m.run WHERE a.project=? AND a.session=? AND a.work=? "
+                    "AND m.role='assistant' AND m.alias IS NOT NULL "
+                    "AND m.native_format IS NOT NULL",
+                    (self.project, self.session, work.work),
+                ).fetchall()
+            known = {
+                alias: {fmt for named, fmt in formats if named == alias} for alias, _ in formats
+            }
+            pinned = dict(request.model_profiles or {})
+            for role, profile in pinned.items():
+                observed = known.get(profile.alias, set())
+                if len(observed) > 1:
+                    raise ControlError(CONFLICT, "legacy work has ambiguous model adapter history")
+                if observed:
+                    api = next(iter(observed))
+                    api = "chat" if api == "chat_completions" else api
+                    pinned[role] = profile.model_copy(update={"api": api})
+            request = dataclasses.replace(request, model_profiles=pinned)
+        if self.epoch is None:
+            raise ControlError(CONFLICT, "recovery epoch is absent")
+        request = dataclasses.replace(
+            request,
+            model_profiles=await threaded(
+                apply_resume_effort,
+                control,
+                self.request,
+                work,
+                request.model_profiles or {},
+                epoch=self.epoch,
+                lease_run=self.run_name,
+            ),
+        )
         if alias != self.harness.role(request).alias:
             raise ControlError(CONFLICT, "model alias changed since the saved attempt")
         await Reconciler(control, self.harness.client, clock=self.harness.clock).work(work)

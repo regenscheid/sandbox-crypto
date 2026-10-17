@@ -62,6 +62,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.model import Contract
 
 from .control import ControlStore, store_path
+from .model_profiles import ModelProfile, ModelRole
 from .prompts import PromptPins
 from .worker_client import WorkerAPIError, WorkerClient, WorkerProtocolError
 
@@ -198,6 +199,9 @@ delegated run works for its parent."""
 
 
 class RunRecord(Contract):
+    model_profiles: dict[ModelRole, ModelProfile] = Field(
+        default_factory=dict[ModelRole, ModelProfile], max_length=7
+    )
     """One run of the harness: what ``run --transcript`` writes, and what a session keeps."""
 
     run_id: str

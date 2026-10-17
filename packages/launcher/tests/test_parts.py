@@ -470,3 +470,22 @@ def test_math_checks_need_their_build_and_a_recent_node(
     assert f"no math checker build at {build}: in web/workspace, run npm run build:math" in message
     assert "the math checks need Node 22.12 or newer" in message
     assert "v20.11.1" in message
+
+
+def test_role_effort_reaches_both_confined_sides_and_native_cli(make_config: Any) -> None:
+    efforts = {"main": "max", "delegated": "low", "fold": "high", "overview": "medium"}
+    config = load_config(make_config({"model": {"reasoning_effort": efforts}}))
+    layout = parts.prepare(config)
+    directory, upload = orchestrator.prepare(config, layout)
+    assert json.loads((directory / "control.json").read_text())["reasoning_effort"] == efforts
+    assert json.loads((upload / "runtime.json").read_text())["reasoning_effort"] == efforts
+    argv = parts.harness_argv(config, layout)
+    assert [argv[i + 1] for i, arg in enumerate(argv) if arg == "--reasoning-effort"] == [
+        f"{role}={effort}" for role, effort in efforts.items()
+    ]
+
+
+@pytest.mark.parametrize("efforts", [{"embedding": "max"}, {"main": "MAX!"}])
+def test_invalid_role_effort_is_refused(make_config: Any, efforts: dict[str, str]) -> None:
+    with pytest.raises(LauncherError, match="reasoning_effort"):
+        load_config(make_config({"model": {"reasoning_effort": efforts}}))

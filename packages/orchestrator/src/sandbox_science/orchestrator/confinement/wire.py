@@ -25,6 +25,7 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
+from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
 from sandbox_science.orchestrator.pricing import CostSource
 from sandbox_science.orchestrator.projects import FailurePhase, ModelUsage, RunName
 from sandbox_science.orchestrator.prompts import PromptPins, Section
@@ -42,12 +43,12 @@ MAX_MODEL_RESPONSE_BYTES = 6 * 1024 * 1024
 
 
 class Hello(Contract):
-    protocol: Literal[2] = CONTROL_PROTOCOL
+    protocol: Literal[3] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
 
 
 class Ready(Contract):
-    protocol: Literal[2] = CONTROL_PROTOCOL
+    protocol: Literal[3] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter
@@ -196,6 +197,7 @@ class RunGiven(Attempt):
     logged: bool
     folding: bool
     model: ModelAlias
+    profile: ModelProfile | None = None
     cache_key: str | None = Field(default=None, max_length=256)
     max_output: int | None = Field(default=None, ge=1, le=1_000_000)
 
@@ -250,6 +252,8 @@ ModelKind = Literal["main", "delegated", "reviewer", "watcher", "fold", "skills"
 
 
 class ModelIntent(Attempt):
+    role: ModelRole | None = None
+    profile: ModelProfile | None = None
     alias: ModelAlias
     kind: ModelKind
 
@@ -264,6 +268,8 @@ class ModelObserved(Attempt):
 
 
 class ModelRequest(Attempt):
+    role: ModelRole = "fold"
+    profile: ModelProfile | None = None
     kind: ModelKind = "fold"
     model: ModelAlias
     max_output: int | None = Field(default=None, ge=1, le=1_000_000)

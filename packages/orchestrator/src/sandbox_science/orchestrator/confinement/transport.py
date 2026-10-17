@@ -21,7 +21,7 @@ from pydantic import Field, JsonValue, TypeAdapter
 from sandbox_science.contracts.model import Contract, Counter
 from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 
-CONTROL_PROTOCOL: Final = 2
+CONTROL_PROTOCOL: Final = 3
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128

@@ -18,8 +18,10 @@ The workspace writes and reads the run service's records in the control store
   the session and the service is running, the listing also says what the worker's record
   of the session's environment is, since the first run of a project waits for its sandbox
   to be made (``creating``), which takes a minute or more.
-- ``POST …/sessions/{session}/resume`` with ``{}`` queues the session's held messages
-  again, those an interrupted or cancelled run saw (RS-12).
+- ``POST …/sessions/{session}/resume`` with ``{}`` resumes unfinished research work,
+  or queues legacy held messages again (RS-12). Optional ``root`` selects its tree;
+  ``reasoning_effort`` plus an explicit operator ``reason`` audits effort changes
+  for new attempts only, preserving aliases, API kinds and original blueprints.
 - ``POST …/sessions/{session}/runs/{run}/cancel`` with ``{}`` asks the run service to
   cancel the run (RS-11).
 - ``GET …/sessions/{session}/runs/{run}/events?after=N&limit=M`` reads a run's events by
@@ -45,6 +47,7 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract, EnvironmentState, ErrorKind, Identifier
+from sandbox_science.orchestrator.continuity.effort import ResumeRequest
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.questions import MAX_ANSWER, Answer, Question, Questions
@@ -277,12 +280,17 @@ def _run_name(request: web.Request) -> str:
 
 async def resume(request: web.Request) -> web.Response:
     project, session = _scope(request)
-    await _empty(request, "resume")
+    try:
+        body = ResumeRequest.model_validate(await json_body(request, "resume"))
+    except ValidationError as error:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, error.errors()[0]["msg"][:300]) from None
     context = request.app[CONTEXT]
 
     def write() -> str:
         session_record(context.projects, project, session)
-        recovery = WorkRecords(context.writer).request(project, session)
+        recovery = WorkRecords(context.writer).request(
+            project, session, body.root, effort=body.effort(), operator=USER_ID or "user"
+        )
         # Durable tree claims admit only their own inputs atomically. Global legacy
         # requeue here could release another tree's or a stopped branch's messages.
         resumed = RunState(context.writer).resume(project, session) if recovery is None else 0

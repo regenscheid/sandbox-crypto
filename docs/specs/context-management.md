@@ -849,3 +849,21 @@ Notes, not decisions: CM-27 applies requirement 3 as the model's input limit, so
 - Repository: [run service](run-service.md), [plans and delegation](plans-and-delegation.md), [ledger](ledger.md), [project memory](project-memory.md), [skills](skills.md), [consistency review](consistency-review.md), [tools](tools.md), [PDF sources](pdf-sources.md), [orchestrator prompts](../ORCHESTRATOR-PROMPTS.md), [kernel revisions](../KERNEL-REVISIONS.md), [threat model](../THREAT-MODEL.md), [licensing](../LICENSING.md), [decisions](../DECISIONS.md) D56, D61, D64, D72.
 
 **Porting and notices.** Code PRs that port mechanics keep each source's license and copyright notice in the ported files and say what they changed. From an Apache-2.0 source (Codex, OpenScience), they also carry any `NOTICE` text the source holds at the ported commit; OpenScience's carries OpenCode's MIT notice. Each such PR adds its source to [licensing](../LICENSING.md), and checks each file it borrows from OpenScience against D56, since some OpenScience material derives from Claude Science text. Nothing is ported from Claude Science.
+
+### Role-specific requested reasoning effort (2026-10-17)
+
+Deployment may select a reasoning effort independently for main, delegated, reviewer,
+watcher, fold, overview and skills_metadata callers, including callers using the same
+alias. Omission preserves provider defaults; no role inherits MAIN's explicit effort.
+Responses sends the requested value verbatim as reasoning.effort, chat as
+reasoning_effort; explicit settings on Messages are refused. Acceptance by a gateway
+is separate from proof that the provider honored the value. Unsupported values fail
+normally without silent downgrade. Embeddings have no reasoning effort.
+
+Each durable work attempt pins alias, adapter and requested effort for its configured
+callers. Calls retain the requested profile alongside their paid intent before dispatch.
+Resume replays those profiles, including omitted effort on legacy work; deployment
+changes alone do not change a continuation. An explicit authenticated operator decision
+may change requested effort for a new attempt, preserving the original blueprint and
+an audit record. Fold and overview narratives are independently selectable callers;
+finite limits and budgets remain unchanged.

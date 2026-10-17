@@ -87,7 +87,7 @@ async def test_control_checks_auth_protocol_readiness_scope_and_rotation(tmp_pat
                 hello = await ask(3, Capability.HANDSHAKE, {"image_revision": "a" * 40})
                 assert hello.error is None
                 assert isinstance(hello.payload, dict)
-                assert hello.payload["protocol"] == 2
+                assert hello.payload["protocol"] == 3
                 assert seen == ["ready"]
                 with pytest.raises(aiohttp.WSServerHandshakeError) as duplicate:
                     await client.ws_connect("/control", headers=headers)

@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.control.guard import guarded
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import RunName, RunRecord, run_id_of, run_name
 
+from .effort import EffortAudit, ResumeEffort, read_override
 from .reservations import UNRESERVED
 
 State = Literal["running", "waiting", "paused", "blocked", "completed", "stopped"]
@@ -426,8 +427,21 @@ class WorkRecords:
                 (reason[:1000], project, session, work),
             )
 
-    def request(self, project: str, session: str, root: str | None = None) -> str | None:
+    def request(
+        self,
+        project: str,
+        session: str,
+        root: str | None = None,
+        *,
+        effort: ResumeEffort | None = None,
+        operator: str | None = None,
+    ) -> str | None:
         """Queue at most one explicit Resume for a session, including without held chat."""
+        audit = (
+            None
+            if effort is None
+            else EffortAudit.model_validate({**effort.model_dump(), "operator": operator})
+        )
         with self.control.write() as tx:
             db = tx.sql
             existing = db.execute(
@@ -438,6 +452,8 @@ class WorkRecords:
             if existing is not None:
                 if root is not None and existing[1] != root:
                     raise ControlError(BUSY, "another research tree Resume is already pending")
+                if read_override(db, project, session, existing[1], existing[0]) != audit:
+                    raise ControlError(CONFLICT, "pending Resume effort override differs")
                 return str(existing[0])
             if root is None:
                 found = db.execute(
@@ -447,6 +463,10 @@ class WorkRecords:
                     (project, session),
                 ).fetchone()
                 if found is None:
+                    if audit is not None:
+                        raise ControlError(
+                            CONFLICT, "Resume effort requires unfinished research work"
+                        )
                     return None
                 root = str(found[0])
             eligible = db.execute(
@@ -460,6 +480,18 @@ class WorkRecords:
                 "INSERT INTO research_resumes VALUES (?,?,?,?,?,'queued',NULL)",
                 (project, session, request, root, self.clock.now().timestamp()),
             )
+            if audit is not None:
+                db.execute(
+                    "INSERT INTO research_observations VALUES (?,?,?,'resume_effort',?,?,?)",
+                    (
+                        project,
+                        session,
+                        root,
+                        request,
+                        self.clock.now().timestamp(),
+                        audit.model_dump_json(),
+                    ),
+                )
         return request
 
     def queued(self) -> list[tuple[str, str, str, str]]:

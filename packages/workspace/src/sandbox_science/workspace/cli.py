@@ -55,7 +55,12 @@ DEFAULT_LISTEN: Final = "127.0.0.1:8200"
 
 
 def math_repairs(
-    model_url: str | None, reviewer: str | None, api_key_file: Path | None
+    model_url: str | None,
+    reviewer: str | None,
+    api_key_file: Path | None,
+    *,
+    api: str = "chat",
+    reasoning_effort: str | None = None,
 ) -> MathRepairService:
     """The repair service the settings describe; ValueError for incomplete settings."""
     if reviewer_alias(reviewer) is None:
@@ -82,7 +87,9 @@ def math_repairs(
             mode & 0o777,
         )
     try:
-        return gateway_service(model_url, reviewer or "", api_key)
+        return gateway_service(
+            model_url, reviewer or "", api_key, api=api, reasoning_effort=reasoning_effort
+        )
     except ValueError as exc:
         raise ValueError(f"the API key file {api_key_file}: {exc}") from None
 
@@ -259,6 +266,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     repairs.add_argument(
         "--api-key-file", type=Path, help="a file holding the workspace's key for the gateway"
     )
+    repairs.add_argument(
+        "--reviewer-api", choices=("chat", "responses", "messages"), default="chat"
+    )
+    repairs.add_argument("--reviewer-effort")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -268,7 +279,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     try:
-        repair = math_repairs(args.model_url, args.reviewer_model, args.api_key_file)
+        repair = math_repairs(
+            args.model_url,
+            args.reviewer_model,
+            args.api_key_file,
+            api=args.reviewer_api,
+            reasoning_effort=args.reviewer_effort,
+        )
     except ValueError as exc:
         parser.error(str(exc))
     try:

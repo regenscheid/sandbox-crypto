@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import replace
@@ -14,10 +15,12 @@ from sandbox_science.orchestrator.control.errors import CONFLICT
 from sandbox_science.orchestrator.model import (
     ChatModel,
     GatewayBudgetError,
+    GatewayModel,
     Message,
     ModelTurn,
     ToolSpec,
 )
+from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .records import Ownership, check_owner
@@ -28,7 +31,15 @@ class ModelIntents:
     def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
         self.control, self.clock = control, clock
 
-    def begin(self, owner: Ownership, *, kind: str, alias: str) -> str:
+    def begin(
+        self,
+        owner: Ownership,
+        *,
+        kind: str,
+        alias: str,
+        profile: ModelProfile | None = None,
+        role: ModelRole | None = None,
+    ) -> str:
         """Commit before contacting the gateway; callers cannot provide another scope."""
         if kind not in {"main", "delegated", "reviewer", "watcher", "fold", "skills", "embedding"}:
             raise ValueError("unknown model intent kind")
@@ -62,6 +73,33 @@ class ModelIntents:
                     self.clock.now().timestamp(),
                 ),
             )
+            if profile is not None:
+                if profile.alias != alias:
+                    raise ValueError("model intent profile alias differs")
+                (last,) = tx.sql.execute(
+                    "SELECT coalesce(max(seq),0) FROM run_events "
+                    "WHERE project_id=? AND session_id=? AND run=?",
+                    (owner.project, owner.session, owner.run),
+                ).fetchone()
+                tx.sql.execute(
+                    "INSERT INTO run_events VALUES (?,?,?,?,?,'notice',?)",
+                    (
+                        owner.project,
+                        owner.session,
+                        owner.run,
+                        last + 1,
+                        self.clock.now().isoformat(),
+                        json.dumps(
+                            {
+                                "source": "model_profile",
+                                "identity": identity,
+                                "kind": kind,
+                                "role": role,
+                                "profile": profile.model_dump(mode="json"),
+                            }
+                        ),
+                    ),
+                )
         return identity
 
     def observe(self, owner: Ownership, identity: str, usage: ModelUsage) -> None:
@@ -121,9 +159,16 @@ class IntentModel:
         self.kind = kind
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
+        if isinstance(self.model, GatewayModel):
+            self.model.validate_profile()
         try:
             identity = await threaded(
-                self.intents.begin, self.owner, kind=self.kind, alias=self.alias
+                self.intents.begin,
+                self.owner,
+                kind=self.kind,
+                alias=self.alias,
+                profile=getattr(self.model, "requested_profile", None),
+                role=getattr(self.model, "_model_role", None),
             )
         except ControlError as exc:
             if exc.message.startswith("model_budget:"):
