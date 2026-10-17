@@ -218,7 +218,6 @@ class RemoteLog(MessageLog):
     async def append(self, message: Message, appended: Appended) -> Message:
         reply = typed(
             AppendReply,
-            Attempt,
             await self.channel.request(
                 Capability.LOG_APPEND,
                 payload(
