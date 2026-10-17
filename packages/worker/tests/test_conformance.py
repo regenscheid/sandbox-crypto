@@ -128,7 +128,11 @@ class Target:
         await asyncio.wait_for(follow(), timeout)
 
     async def cancel(self, execution_id: str) -> None:
-        status, body = await self.post(f"/v1/executions/{execution_id}/cancel", {})
+        status, execution = await self.get(f"/v1/executions/{execution_id}")
+        assert status == 200, execution
+        status, body = await self.post(
+            f"/v1/executions/{execution_id}/cancel", {"context": execution["context"]}
+        )
         assert status == 200, body
 
     async def read(self, path: str) -> tuple[int, dict[str, Any]]:

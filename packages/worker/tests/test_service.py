@@ -303,7 +303,9 @@ async def test_activity_reports_use_running_calls_and_kernel_cpu(worker: Harness
     running = await manager.activity("env1")
     assert running is not None
     assert running.running == 1
-    status, _ = await worker.post(f"/v1/executions/{busy['execution_id']}/cancel", {})
+    status, _ = await worker.post(
+        f"/v1/executions/{busy['execution_id']}/cancel", {"context": CONTEXT}
+    )
     assert status == 200
     await worker.finish(busy["execution_id"])
 
@@ -345,7 +347,9 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     await worker.wait_running(busy["execution_id"])
     # Running: kept, whatever the time.
     assert not await manager.release_if_idle("env1", time.monotonic() + 60)
-    status, _ = await worker.post(f"/v1/executions/{busy['execution_id']}/cancel", {})
+    status, _ = await worker.post(
+        f"/v1/executions/{busy['execution_id']}/cancel", {"context": CONTEXT}
+    )
     assert status == 200
     await worker.finish(busy["execution_id"])
     assert await manager.release_if_idle("env1", time.monotonic())
@@ -703,7 +707,9 @@ async def test_a_call_cancelled_while_shared_files_sync_never_runs(
     )
     assert status == 201
     await asyncio.wait_for(entered.wait(), 60)
-    status, _ = await synced.post(f"/v1/executions/{execution['execution_id']}/cancel", {})
+    status, _ = await synced.post(
+        f"/v1/executions/{execution['execution_id']}/cancel", {"context": CONTEXT}
+    )
     assert status == 200
     gate.set()
     done = await synced.finish(execution["execution_id"])

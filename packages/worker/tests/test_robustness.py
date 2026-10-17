@@ -581,7 +581,9 @@ async def test_m2_a_shell_call_leaves_no_processes_behind(worker: Harness) -> No
     after = await worker.run("op-x-again", kind="cell", code="x")
     assert after["result"]["outputs"][0]["data"]["text/plain"] == "41"
     assert after["result"]["kernel"]["generation"] == 1
-    status, _ = await worker.post(f"/v1/executions/{other['execution_id']}/cancel", {})
+    status, _ = await worker.post(
+        f"/v1/executions/{other['execution_id']}/cancel", {"context": OTHER_SESSION}
+    )
     assert status == 200
     assert (await worker.finish(other["execution_id"]))["state"] == "cancelled"
 

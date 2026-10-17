@@ -142,6 +142,9 @@ class WorkerApi:
         )
 
     async def cancel(self, execution_id: str) -> Json:
-        status, execution = await self.post(f"/v1/executions/{execution_id}/cancel", {})
+        execution = await self.execution(execution_id)
+        status, execution = await self.post(
+            f"/v1/executions/{execution_id}/cancel", {"context": execution["context"]}
+        )
         _expect(status, (200,), execution)
         return execution

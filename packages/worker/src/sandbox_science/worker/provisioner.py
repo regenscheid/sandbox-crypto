@@ -269,10 +269,6 @@ class Provisioner:
 
     async def submit(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
         """The operation for ``request.operation_id``, created and queued if it is new."""
-        with self.store.recovery_fences.bind(request.context):
-            return await self._submit_owned(request)
-
-    async def _submit_owned(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
         # Refuse copied/constructed unknown actions before encoding or replay;
         # an unrecognized action can never silently take the install path.
         if type(request.action) is not str or request.action not in ("install", "upgrade"):
@@ -281,6 +277,10 @@ class Provisioner:
             not request.conda or request.pip or request.system or request.capability is not None
         ):
             raise WorkerError(ErrorKind.INVALID_REQUEST, "upgrade requires named Conda specs only")
+        with self.store.recovery_fences.bind(request.context):
+            return await self._submit_owned(request)
+
+    async def _submit_owned(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
         environment_id = request.context.environment_id
         if request.capability is not None and self.catalog.get(request.capability) is None:
             names = ", ".join(sorted(self.catalog.capabilities))

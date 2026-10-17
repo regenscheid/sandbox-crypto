@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 import os
@@ -36,6 +35,7 @@ from sandbox_science.testing import eventually
 from sandbox_science.worker import backends, daemon, executor, sandbox_processes
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, daemon_token
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
+from sandbox_science.worker.identity import execution_digest
 from sandbox_science.worker.store import Store
 from sandbox_science.worker.timeouts import ManagerTimeouts
 
@@ -85,7 +85,7 @@ def internal_request(worker: Harness, script: str = "sleep 60") -> ShellRequest:
     worker.store.authorize_provision_step(
         record.provision_id,
         result.operation_id,
-        hashlib.sha256(result.model_dump_json(exclude={"bindings"}).encode()).hexdigest(),
+        execution_digest(result),
     )
     return result
 
