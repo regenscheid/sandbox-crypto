@@ -670,7 +670,8 @@ class RunState:
             return False
         since = now - WINDOW
         spent = self.model_cost(project, since)
-        if spent is not None and spent >= limit:
+        reserved = sum(self.model_reservations(project, since).values())
+        if (spent or 0) + reserved >= limit:
             return True
         if unknown := self.unpriced_calls(project, since):
             _log.warning(
@@ -719,6 +720,21 @@ class RunState:
         call's cost."""
         costs = self.model_costs(project, since)
         return sum(costs.values()) if costs else None
+
+    def model_reservations(
+        self, project: str, since: datetime | None = None
+    ) -> dict[CostRole, float]:
+        """Conservative upper-bound cost by role, separately from observed spend."""
+        from .continuity.reservations import RESERVATIONS
+
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT role,sum(cost) FROM ({RESERVATIONS}) WHERE project=? AND created>=? "  # noqa: S608
+                "GROUP BY role",
+                (project, 0.0 if since is None else since.timestamp()),
+            ).fetchall()
+        totals = {str(role): float(cost) for role, cost in rows}
+        return {role: totals[role] for role in COST_ROLES if role in totals}
 
     def model_costs(self, project: str, since: datetime | None = None) -> dict[CostRole, float]:
         """Known model cost by role in ``COST_ROLES`` order, after ``since`` if given.

@@ -129,7 +129,7 @@ class Plans:
 
     def spent_tokens(self, work: str) -> int:
         with self.control.read() as tx:
-            return int(
+            observed_tokens = int(
                 tx.sql.execute(
                     "WITH usage AS (SELECT u.usage FROM archive_model_usage u "
                     "JOIN research_attempts a ON a.project=u.project "
@@ -152,6 +152,15 @@ class Plans:
                     (self.project, self.session, work) * 2,
                 ).fetchone()[0]
             )
+
+            from .reservations import RESERVATIONS
+
+            reserved_tokens = tx.sql.execute(
+                "SELECT coalesce(sum(input_tokens+output_tokens),0) "  # noqa: S608 - fixed SQL
+                f"FROM ({RESERVATIONS}) WHERE project=? AND session=? AND work=?",
+                (self.project, self.session, work),
+            ).fetchone()[0]
+            return observed_tokens + int(reserved_tokens)
 
     def unfinished(self) -> str | None:
         with self.control.read() as tx:

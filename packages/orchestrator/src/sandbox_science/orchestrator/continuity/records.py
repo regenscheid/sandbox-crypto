@@ -19,6 +19,8 @@ from sandbox_science.orchestrator.control.guard import guarded
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import RunName, RunRecord, run_id_of, run_name
 
+from .reservations import UNRESERVED
+
 State = Literal["running", "waiting", "paused", "blocked", "completed", "stopped"]
 PAGE = 100
 
@@ -330,9 +332,10 @@ class WorkRecords:
             if (
                 state == "completed"
                 and db.execute(
-                    "SELECT 1 FROM research_model_calls m JOIN research_attempts a "
+                    "SELECT 1 FROM research_model_calls m JOIN research_attempts a "  # noqa: S608 - fixed SQL
                     "ON a.project=m.project AND a.session=m.session AND a.run=m.run "
-                    "WHERE a.project=? AND a.session=? AND a.work=? AND m.usage IS NULL LIMIT 1",
+                    "WHERE a.project=? AND a.session=? AND a.work=? AND m.usage IS NULL "
+                    f"AND {UNRESERVED} LIMIT 1",
                     (project, session, work),
                 ).fetchone()
             ):

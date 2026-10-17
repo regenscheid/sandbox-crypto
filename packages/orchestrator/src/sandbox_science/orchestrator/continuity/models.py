@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .records import Ownership, check_owner
+from .reservations import UNRESERVED
 
 
 class ModelIntents:
@@ -74,8 +75,10 @@ class ModelIntents:
             return tuple(
                 row[0]
                 for row in tx.sql.execute(
-                    "SELECT identity FROM research_model_calls WHERE project=? AND session=? "
-                    "AND run=? AND identity>? AND usage IS NULL ORDER BY identity LIMIT 100",
+                    "SELECT m.identity FROM research_model_calls m "  # noqa: S608 - fixed fragment
+                    "WHERE m.project=? AND m.session=? "
+                    "AND m.run=? AND m.identity>? AND m.usage IS NULL "
+                    f"AND {UNRESERVED} ORDER BY m.identity LIMIT 100",
                     (project, session, run, after),
                 )
             )

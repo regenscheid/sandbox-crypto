@@ -95,3 +95,23 @@ Worker fencing tests cover delayed admission after an epoch change and already-r
 operations retaining their identities. Actual OpenShell replacement must additionally
 verify surviving execution reattachment, explicit lost-kernel reporting and durable
 UI history. Deterministic tests alone do not establish that runtime acceptance.
+
+### Conservative reservation for an unknown paid call
+
+An authenticated operator may explicitly resolve a still-unknown model intent with
+`model_reservation`, supplying a positive monetary upper bound and positive input
+and output token upper bounds, with a reason. This is a budget reservation, not an
+observation: the original call's actual usage remains NULL/UNKNOWN and no assistant
+or tool response is synthesized. The archive records that distinction visibly.
+The same inactive-work, original-attempt, current-epoch, exact-identity and
+idempotency checks as other recovery resolutions apply; changing the decision or
+switching between observed usage and reservation conflicts.
+
+The reservation permits reconciliation to continue, but does not issue Resume or
+widen the original grants. Its cost counts against the project's daily admission
+budget using the original dispatch time, separately from observed-spend reporting.
+Its input/output bounds reduce the original child token grant across all attempts;
+a spent grant or project budget still blocks continuation. Unknown calls without
+an explicit reservation still block. Status retains unknown actual usage and
+shows the reservation/operator evidence separately. This does not recover a lost
+response, determine the actual provider charge or authorize replaying the lost call.

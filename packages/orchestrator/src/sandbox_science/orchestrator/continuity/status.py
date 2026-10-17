@@ -13,6 +13,7 @@ from sandbox_science.orchestrator.control.errors import NOT_FOUND
 from sandbox_science.orchestrator.documents import DocumentStore
 
 from .records import Work
+from .reservations import ModelReservation, reservation
 
 
 class ResumeStatus(Contract):
@@ -39,6 +40,7 @@ class ModelPending(Contract):
     kind: str
     alias: str
     created: float
+    reservation: ModelReservation | None = None
 
 
 class OperationPending(Contract):
@@ -152,7 +154,14 @@ class RecoveryStatus:
                 (project, session, work, *model_after, limit),
             ).fetchall()
             models = tuple(
-                ModelPending.model_validate(dict(zip(ModelPending.model_fields, row, strict=True)))
+                ModelPending(
+                    run=row[0],
+                    identity=row[1],
+                    kind=row[2],
+                    alias=row[3],
+                    created=row[4],
+                    reservation=reservation(tx.sql, project, session, work, row[0], row[1]),
+                )
                 for row in rows
             )
             rows = tx.sql.execute(

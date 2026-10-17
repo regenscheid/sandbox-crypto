@@ -477,3 +477,4 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Event store retention, designed before M3: the approvals fold reads every permission request ever recorded
 
 - [x] Implement bounded stop-and-wait OpenShell worker request framing over isolated SSH; retain daemon incarnation/replay and explicit unsupported stdio configuration ([contract](../docs/specs/worker-stream-transport.md)). Deterministic validation is recorded with the change; actual bulk OpenShell qualification remains separate.
+- [x] Explicit operator conservative model reservations retain UNKNOWN actual usage while charging separate cost/token upper bounds to project/child admission; no synthetic response, grant widening or automatic Resume ([contract](../docs/specs/tree-resume.md#conservative-reservation-for-an-unknown-paid-call)).

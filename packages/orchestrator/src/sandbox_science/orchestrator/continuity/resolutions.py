@@ -22,7 +22,7 @@ from sandbox_science.orchestrator.runstate import LEASE_SECONDS
 
 from .models import observed
 
-Kind = Literal["model_usage", "operation", "kernel_recompute"]
+Kind = Literal["model_usage", "model_reservation", "operation", "kernel_recompute"]
 
 
 class Resolution(Contract):
@@ -42,12 +42,21 @@ class Resolution(Contract):
     def _explicit(self) -> Self:
         if not self.reason.strip():
             raise ValueError("operator reason must contain text")
-        if (self.kind == "model_usage") != (self.cost is not None):
-            raise ValueError("model_usage requires an explicit cost; other kinds have no cost")
+        if (self.kind in {"model_usage", "model_reservation"}) != (self.cost is not None):
+            raise ValueError("model decisions require explicit cost; other kinds have no cost")
         if (self.input_tokens is None) != (self.output_tokens is None):
             raise ValueError("input and output tokens must both be supplied or both unknown")
-        if self.kind != "model_usage" and self.input_tokens is not None:
-            raise ValueError("only model_usage accepts token observations")
+        if self.kind not in {"model_usage", "model_reservation"} and self.input_tokens is not None:
+            raise ValueError("only model decisions accept tokens")
+        if self.kind == "model_reservation" and (
+            self.cost is None
+            or self.cost <= 0
+            or self.input_tokens is None
+            or self.output_tokens is None
+            or self.input_tokens <= 0
+            or self.output_tokens <= 0
+        ):
+            raise ValueError("reservation requires positive cost and input/output upper bounds")
         if self.kind == "kernel_recompute" and (
             re.fullmatch(r"[0-9a-f]{64}", self.identity) is None or self.run != self.current
         ):
@@ -73,6 +82,9 @@ class RecoveryControls:
         self, project: str, session: str, request: Resolution, *, operator: str
     ) -> Decision:
         """One atomic decision, exact intent settlement and visible archive message."""
+        # Public callers may pass a model_copy/constructed value; retain the same
+        # bounds as the authenticated JSON endpoint before settling uncertainty.
+        request = Resolution.model_validate(request.model_dump())
         if not operator or len(operator) > 128:
             raise ValueError("operator identity is required")
         now = self.clock.now().timestamp()
@@ -129,6 +141,17 @@ class RecoveryControls:
                 if decision.resolution != request or decision.operator != operator:
                     raise ControlError(CONFLICT, "this identity has another operator decision")
                 return decision
+            if (
+                request.kind in {"model_usage", "model_reservation"}
+                and db.execute(
+                    "SELECT 1 FROM research_observations WHERE project=? AND session=? AND work=? "
+                    "AND kind IN ('resolution:model_usage','resolution:model_reservation') "
+                    "AND json_extract(detail,'$.resolution.run')=? "
+                    "AND json_extract(detail,'$.resolution.identity')=?",
+                    (project, session, request.work, request.run, request.identity),
+                ).fetchone()
+            ):
+                raise ControlError(CONFLICT, "this model identity has another operator decision")
             text = f"Operator uncertainty resolution ({request.kind}): {request.reason}"
             entry = Entry("user", "notice", text, source="operator_recovery")
             tool_record = None
@@ -141,6 +164,24 @@ class RecoveryControls:
                         f"output tokens {request.output_tokens}."
                     )
                 entry = Entry("user", "notice", text, source="operator_recovery")
+            elif request.kind == "model_reservation":
+                if not db.execute(
+                    "SELECT 1 FROM research_model_calls WHERE project=? AND session=? "
+                    "AND run=? AND identity=? AND usage IS NULL",
+                    (project, session, request.run, request.identity),
+                ).fetchone():
+                    raise ControlError(CONFLICT, "model intent is not pending in this attempt")
+                entry = Entry(
+                    "user",
+                    "notice",
+                    text
+                    + f"\nOriginal model intent {request.identity}: actual usage and charge remain "
+                    "UNKNOWN. Conservative budget reservation only: "
+                    f"cost upper bound {request.cost}; "
+                    f"input token upper bound {request.input_tokens}; output token upper bound "
+                    f"{request.output_tokens}. No response was recovered or synthesized.",
+                    source="operator_recovery",
+                )
             elif request.kind == "operation":
                 entry, tool_record = self._operation(tx, project, session, request, text)
             else:
