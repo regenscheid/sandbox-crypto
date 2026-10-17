@@ -47,6 +47,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Seque
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from itertools import islice
 from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import JsonValue
@@ -55,6 +56,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionC
 from sandbox_science.orchestrator.aio import held, threaded
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint
 from sandbox_science.orchestrator.control import ControlError
+from sandbox_science.orchestrator.history.collections import Collection, Members
 from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ToolSpec
@@ -277,7 +279,8 @@ class Delegations(TurnHook):
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
         """Outcomes a wait returned that no model call has seen yet."""
-        self.received: set[str] = set()
+        scope = (self.context.project_id, self.context.session_id, run_id_of(parent) or parent)
+        self.received = Members(records.control, scope, "delegations:received")
         """Outcomes a wait returned that a model call saw."""
 
     async def live(self) -> set[str]:
@@ -323,6 +326,11 @@ class Delegations(TurnHook):
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
                 "limit_reached: this run has no tokens left to give a delegated run",
+            )
+        await self._prune()
+        if len(self.children) >= self.limits.cap:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE, "limit_reached: child cleanup is not durably complete"
             )
         choice = await self._model(brief.model)
         if self.over_budget is not None and await self.over_budget():
@@ -624,6 +632,12 @@ class Delegations(TurnHook):
         it ended."""
         child = self.children.get(delegation_id)
         if child is None:
+            found = await self._read(delegation_id)
+            if found.parent == self.parent and found.ended is not None:
+                left = await self._unreceived([found])
+                shown = {**self._shown(found, 0, left.get(delegation_id, ())), "cancelled": False}
+                return dump(shown), {"cancel": {"delegation_id": delegation_id, "cancelled": False}}
+        if child is None:
             raise WorkerAPIError(
                 ErrorKind.NOT_FOUND, f"this run started no delegation {delegation_id!r}"
             )
@@ -830,8 +844,9 @@ class Delegations(TurnHook):
         return tuple(self.returned)
 
     async def model_returned(self, run: RunView) -> None:
-        self.received |= self.returned
+        await threaded(self.received.update, self.returned)
         self.returned.clear()
+        await self._prune()
         self.turns_left = run.turns_left
         if self.tokens is not None:
             self.tokens_left = self.tokens - sum(call_tokens(usage) for usage in run.usage)
@@ -896,10 +911,24 @@ class Delegations(TurnHook):
                 return "child_outcome_unavailable"
         return None
 
+    @property
+    def started(self) -> Collection[str]:
+        return Collection[str](self.records.control, self.received.scope, "delegations:started")
+
     def summary(self) -> object | None:
-        if not self.children and not self.received:
+        if not self.started and not self.received:
             return None
-        return {"started": list(self.children), "received": sorted(self.received)}
+        result: dict[str, object] = {}
+        for name, members in (("started", self.started), ("received", self.received)):
+            result[name] = list(islice(members, 100))
+            if len(members) > 100:
+                result[f"{name}_history"] = {
+                    "table": "run_collections" if name == "started" else "run_members",
+                    "collection": members.name,
+                    "run": members.scope[2],
+                    "count": len(members),
+                }
+        return result
 
     async def acknowledge(self, record: RunRecord) -> None:
         ids = set(record.delivered.get(self.name, ()))
@@ -908,20 +937,39 @@ class Delegations(TurnHook):
             received = cast(dict[str, object], summary).get("received")
             if isinstance(received, list):
                 ids.update(str(i) for i in cast(list[object], received))
-        if ids:
-            context = self.context
-            # Only the outcomes offered to this run: one it read of another's stays theirs.
-            await threaded(
-                self.records.acknowledge,
-                context.project_id,
-                context.session_id,
-                sorted(ids),
-                self.parent,
-                parent=self.parent if self.depth > 0 else None,
-                work=self.work,
-            )
+
+        def batches() -> Iterable[list[str]]:
+            yield list(ids)
+            values = iter(self.received)
+            while page := list(islice(values, 100)):
+                yield page
+
+        context = self.context
+        for page in batches():
+            if page:
+                # Only the outcomes offered to this run: another parent's stays theirs.
+                await threaded(
+                    self.records.acknowledge,
+                    context.project_id,
+                    context.session_id,
+                    page,
+                    self.parent,
+                    parent=self.parent if self.depth > 0 else None,
+                    work=self.work,
+                )
 
     # --- Helpers --------------------------------------------------------------------
+
+    async def _prune(self) -> None:
+        """Release tasks only after their immutable terminal outcome is readable."""
+        for identity, child in tuple(self.children.items()):
+            if child.task.done() and (await self._read(identity)).ended is not None:
+                # Observe unexpected task failures before dropping the last owner.
+                if not child.task.cancelled() and child.task.exception() is not None:
+                    _log.error(
+                        "delegation task %s failed", identity, exc_info=child.task.exception()
+                    )
+                del self.children[identity]
 
     def _running(self) -> list[_Running]:
         return [child for child in self.children.values() if not child.task.done()]

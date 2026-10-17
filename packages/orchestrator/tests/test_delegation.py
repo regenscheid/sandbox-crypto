@@ -467,10 +467,12 @@ async def test_a_check_stops_at_its_token_limit(
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("The check ran out of budget.")],
-        delegated=[Reply(calls=[call("ledger_read", entry="C-1")])],
+        status=3,
     )
+    assert root.stopped == "unfinished_children"
     (child,) = children(delegating, root)
     assert child.stopped == "run_budget"
+    assert child.tools == []
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
     assert (outcome.ended, outcome.report) == ("limit_reached", None)

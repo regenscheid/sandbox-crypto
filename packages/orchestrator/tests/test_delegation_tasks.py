@@ -293,7 +293,9 @@ async def test_a_task_at_a_limit_reports_what_it_found_to_its_parent(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
         delegated=[*replies, Reply(PARTIAL)],
+        status=3,
     )
+    assert root.stopped == "unfinished_children"
     (child,) = children(delegating, root)
     assert (child.stopped, child.final_text) == (stopped, PARTIAL)
     (delegation_id,) = started(root)
