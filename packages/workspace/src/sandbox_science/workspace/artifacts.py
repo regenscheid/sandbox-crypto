@@ -41,7 +41,7 @@ from sandbox_science.contracts.artifact_inventory import ArtifactLink
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import api
+from . import api, artifact_downloads
 from .context import CONTEXT, identifier, json_answer
 from .preview import CAPABILITY_SECONDS, DATA, HTML, IMAGES, MAX_IMAGE_BYTES, PDF, SVG, Preview
 
@@ -117,6 +117,7 @@ _PINNED: Final = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]{0,127}):([1-9][0-9]{0,8
 
 
 def add_routes(app: web.Application) -> None:
+    artifact_downloads.add_routes(app)
     base = "/api/v0/projects/{project}/artifacts"
     app.router.add_get(base, listing)
     app.router.add_get(base + "/{artifact}/revisions/{revision}/viewer", viewer)

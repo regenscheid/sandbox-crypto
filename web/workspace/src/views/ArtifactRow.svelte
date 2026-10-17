@@ -19,6 +19,9 @@
   const image = $derived(shownAsImage(entry, viewer));
   const framed = $derived(shownInFrame(entry, viewer));
   let shown = $state(false);
+  const download = $derived(
+    `/api/v0/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(entry.artifact_id)}/revisions/${entry.revision}/content?sha256=${encodeURIComponent(entry.sha256)}`,
+  );
 </script>
 
 <tr class:deleted={entry.deleted}>
@@ -31,6 +34,9 @@
       <bdi>{entry.path}</bdi>
     {/if}
     {#if keptText(entry)}<br /><small class="muted">{keptText(entry)}</small>{/if}
+    {#if entry.content_retained && !entry.deleted}
+      <br /><a class="download" href={download} download>Download</a>
+    {/if}
     {#if image || framed}
       <details ontoggle={(event) => (shown = (event.currentTarget as HTMLDetailsElement).open)}>
         <summary>{image ? 'Show the image' : 'Show the figure'}</summary>
@@ -67,5 +73,8 @@
   }
   .deleted td {
     text-decoration: line-through;
+  }
+  .download {
+    font-size: 0.85em;
   }
 </style>
