@@ -146,3 +146,43 @@ def test_paid_model_response_ceiling_cannot_exceed_transport_envelope() -> None:
     assert ModelRequest.model_validate(given).max_response_bytes == 6 * 1024 * 1024
     with pytest.raises(ValidationError, match="max_response_bytes"):
         ModelRequest.model_validate({**given, "max_response_bytes": MAX_MODEL_RESPONSE_BYTES + 1})
+
+
+async def test_near_response_cap_assistant_append_sends_native_once() -> None:
+    from sandbox_science.orchestrator.confinement.runtime_loop import RemoteLog
+    from sandbox_science.orchestrator.confinement.wire import (
+        MAX_MODEL_RESPONSE_BYTES,
+        AppendReply,
+        LogAppend,
+        payload,
+        typed,
+    )
+    from sandbox_science.orchestrator.hooks import Appended
+
+    text = '"\\\n' * ((MAX_MODEL_RESPONSE_BYTES - 1024) // 6)
+    import json
+
+    native = json.dumps({"content": text}).encode()
+    assert len(native) < MAX_MODEL_RESPONSE_BYTES
+    turn = ModelTurn(text, native=native, native_format="chat", content=text)
+
+    async def handler(kind: Capability, value: JsonValue) -> JsonValue:
+        assert kind is Capability.LOG_APPEND
+        request = typed(LogAppend, value)
+        assert not request.message.chat
+        assert request.reply is not None
+        restored = request.reply.turn()
+        assert restored.native == native
+        return payload(AppendReply(message=WireMessage.of(AssistantMessage.of(restored))))
+
+    left = Channel(lambda frame: right.receive(frame), handler)
+    right = Channel(lambda frame: left.receive(frame), handler)
+    try:
+        log = RemoteLog(left, "cap-" + "a" * 48)
+        answer = await log.append(AssistantMessage.of(turn), Appended("assistant", reply=turn))
+        assert isinstance(answer, AssistantMessage)
+        assert answer.native == native
+        assert answer["content"] == text
+    finally:
+        await left.close()
+        await right.close()

@@ -224,7 +224,7 @@ class RemoteLog(MessageLog):
                 payload(
                     LogAppend(
                         attempt=self.attempt,
-                        message=WireMessage.of(message),
+                        message=WireMessage.of({} if appended.reply is not None else message),
                         kind=appended.kind,
                         notice=appended.notice,
                         reply=WireTurn.of(appended.reply) if appended.reply else None,

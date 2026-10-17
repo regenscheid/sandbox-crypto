@@ -32,7 +32,7 @@ from sandbox_science.orchestrator.loop import (
     not_run,
     notice_message,
 )
-from sandbox_science.orchestrator.model import ChatModel, ToolCall
+from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
 from sandbox_science.orchestrator.notices import REPORT
 from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
@@ -296,6 +296,10 @@ class Prepared:
             raise TransportError("conflict", "loop state has not been initialized")
         call, outcome, operation = request.call, request.outcome, request.operation_id
         source = request.message.message()
+        if request.kind == "assistant":
+            if request.reply is None:
+                raise TransportError("invalid_request", "assistant append requires its model turn")
+            source = AssistantMessage.of(request.reply.turn())
         if request.kind == "task":
             if not self.task_pending or self.given.task is None:
                 raise TransportError("conflict", "this attempt has no uncommitted task")
