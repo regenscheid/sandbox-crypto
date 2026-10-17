@@ -86,6 +86,71 @@ class RunInputs:
             raise ControlError(NOT_FOUND, "this run has no saved starting inputs")
         return StartingInputs.model_validate_json(row[0])
 
+    def previous(
+        self, project: str, session: str, run: str, *, active_run: str | None = None
+    ) -> StartingInputs | None:
+        """Nearest saved ancestor in this logical work; unknown ancestry fails closed."""
+        try:
+            return self.get(project, session, run)
+        except ControlError as error:
+            if error.kind != NOT_FOUND:
+                raise
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "WITH RECURSIVE chain(run,predecessor,work,depth) AS ("
+                "SELECT run,predecessor,work,0 FROM research_attempts "
+                "WHERE project=? AND session=? AND run=? UNION ALL "
+                "SELECT a.run,a.predecessor,a.work,c.depth+1 FROM research_attempts a "
+                "JOIN chain c ON a.run=c.predecessor AND a.work=c.work "
+                "WHERE a.project=? AND a.session=? AND c.depth<1000) "
+                "SELECT (SELECT i.snapshot FROM chain c JOIN run_inputs i ON i.run=c.run "
+                "WHERE i.project=? AND i.session=? ORDER BY c.depth LIMIT 1), "
+                "(SELECT max(depth) FROM chain)",
+                (project, session, run, project, session, project, session),
+            ).fetchone()
+        if row is None or row[0] is None:
+            if row is not None and row[1] is not None and row[1] >= 1000:
+                raise ControlError(CONFLICT, "recovery predecessor chain exceeds its lookup bound")
+            with self.control.read() as tx:
+                work = tx.sql.execute(
+                    "SELECT a.work,w.current FROM research_attempts a JOIN research_work w "
+                    "ON w.project=a.project AND w.session=a.session AND w.work=a.work "
+                    "WHERE a.project=? AND a.session=? AND a.run=?",
+                    (project, session, run),
+                ).fetchone()
+                if work is not None:
+                    # The new attempt has already archived its initial task/state and
+                    # started event. Those are not evidence of a prior dispatch.
+                    observed = tx.sql.execute(
+                        "WITH attempts AS (SELECT run FROM research_attempts WHERE "
+                        "project=:project AND session=:session AND work=:work) "
+                        "SELECT 1 FROM research_model_calls WHERE project=:project "
+                        "AND session=:session AND run IN attempts UNION ALL "
+                        "SELECT 1 FROM archive_messages WHERE project=:project "
+                        "AND session=:session AND run IN attempts "
+                        "AND (run<>:current OR role='assistant' OR kind='tool_result') UNION ALL "
+                        "SELECT 1 FROM run_events WHERE project_id=:project "
+                        "AND session_id=:session "
+                        "AND run IN attempts "
+                        "AND (run<>:current OR kind IN ('model','assistant','tool')) "
+                        "UNION ALL SELECT 1 FROM runs WHERE project_id=:project "
+                        "AND session_id=:session AND name IN attempts UNION ALL "
+                        "SELECT 1 FROM run_inputs WHERE project=:project AND session=:session "
+                        "AND run IN attempts LIMIT 1",
+                        {
+                            "project": project,
+                            "session": session,
+                            "work": work[0],
+                            "current": active_run
+                            if work[1] == active_run and active_run != run
+                            else "",
+                        },
+                    ).fetchone()
+                    if observed is None:
+                        return None
+            raise ControlError(CONFLICT, "recovery has no saved ancestor starting inputs")
+        return StartingInputs.model_validate_json(row[0])
+
 
 class RecordInputs(TurnHook):
     """Mandatory start barrier: a persistence failure stops the loop before any call."""
@@ -111,19 +176,15 @@ class RecordInputs(TurnHook):
             if run.prompt_provenance is None:
                 raise ValueError("starting inputs need the assembled prompt pins")
             if self.predecessor is not None:
-                try:
-                    previous = await threaded(
-                        self.store.get,
-                        self.context.project_id,
-                        self.context.session_id,
-                        self.predecessor,
-                    )
-                except ControlError as exc:
-                    if exc.kind != NOT_FOUND:
-                        raise
-                else:
-                    if previous.pins != run.prompt_provenance:
-                        raise ControlError(CONFLICT, "recovery prompt/tool/skill pins changed")
+                previous = await threaded(
+                    self.store.previous,
+                    self.context.project_id,
+                    self.context.session_id,
+                    self.predecessor,
+                    active_run=self.run,
+                )
+                if previous is not None and previous.pins != run.prompt_provenance:
+                    raise ControlError(CONFLICT, "recovery prompt/tool/skill pins changed")
             await threaded(
                 self.store.save,
                 StartingInputs(

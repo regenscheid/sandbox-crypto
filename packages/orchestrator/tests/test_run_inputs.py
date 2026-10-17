@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.history.export import EvidenceExport
@@ -194,3 +194,141 @@ def test_migration_does_not_invent_starting_inputs(projects: ProjectStore, tmp_p
             RunInputs(store).get("p", "s", RUN)
     finally:
         store.close()
+
+
+async def test_failed_preflight_retry_still_compares_nearest_same_work_pins(
+    projects: ProjectStore,
+) -> None:
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+    store = RunInputs(projects.control)
+    WorkRecords(projects.control).admit("p", "s", RUN)
+    request: dict[str, JsonValue] = {"project": "p", "session": "s", "task": "Compute"}
+
+    async def never(_):
+        pytest.fail("unexpected tool dispatch")
+
+    original = await run_task(
+        ScriptedModel([ModelTurn("Original")]),
+        toolbox(never),
+        "Compute",
+        run_id="original",
+        system="Pinned system",
+        hooks=(RecordInputs(store, CONTEXT, RUN, request, {}),),
+    )
+    assert original.stopped == "answered"
+    failed = "20261017T030000000000Z-failed-preflight"
+    retry = "20261017T030001000000Z-retry-preflight"
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)", ("p", "s", failed, RUN, RUN)
+        )
+        tx.sql.execute(
+            "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)",
+            ("p", "s", retry, RUN, failed),
+        )
+
+    class Never(ScriptedModel):
+        async def complete(self, messages, tools):
+            pytest.fail("changed pins reached model dispatch after failed predecessor")
+
+    for name, predecessor in ((failed, RUN), (retry, failed)):
+        result = await run_task(
+            Never([]),
+            toolbox(never),
+            "Compute",
+            run_id=name,
+            system="Changed system",
+            hooks=(RecordInputs(store, CONTEXT, name, request, {}, predecessor=predecessor),),
+        )
+        assert result.failure == "harness"
+        with pytest.raises(ControlError, match="no saved starting inputs"):
+            store.get("p", "s", name)
+    ancestor = store.previous("p", "s", retry)
+    assert ancestor is not None
+    assert ancestor.run == RUN
+    with pytest.raises(ControlError, match="no saved ancestor"):
+        store.previous("other", "s", retry)
+    continued = "20261017T030002000000Z-compatible"
+    result = await run_task(
+        ScriptedModel([ModelTurn("Continued")]),
+        toolbox(never),
+        "Compute",
+        run_id=continued,
+        system="Pinned system",
+        hooks=(RecordInputs(store, CONTEXT, continued, request, {}, predecessor=retry),),
+    )
+    assert result.stopped == "answered"
+    assert store.get("p", "s", continued).pins == store.get("p", "s", RUN).pins
+
+
+@pytest.mark.parametrize("evidence", ["intent", "archive", "event", "record"])
+def test_missing_pin_ancestor_allows_only_provably_never_started_work(
+    projects: ProjectStore,
+    evidence: str,
+) -> None:
+    from sandbox_science.orchestrator.continuity.models import ModelIntents
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+    from sandbox_science.orchestrator.history import Archive, Entry
+    from sandbox_science.orchestrator.runstate import RunState
+
+    from .test_work_ownership import record
+
+    owner = WorkRecords(projects.control).admit("p", "s", RUN)
+    store = RunInputs(projects.control)
+    assert store.previous("p", "s", RUN) is None
+    if evidence == "intent":
+        ModelIntents(projects.control).begin(owner, kind="main", alias="fixture")
+    elif evidence == "archive":
+        Archive(projects.control).append(
+            "p", "s", RUN, Entry(role="user", kind="task", content="Old")
+        )
+    elif evidence == "event":
+        RunState(projects.control).append("p", "s", RUN, "started", {})
+    else:
+        projects.save_run(record(RUN))
+    with pytest.raises(ControlError, match="no saved ancestor"):
+        store.previous("p", "s", RUN)
+
+
+@pytest.mark.parametrize("evidence", ["assistant", "tool", "model", "intent"])
+def test_never_started_proof_does_not_ignore_active_dispatch_evidence(
+    projects: ProjectStore,
+    evidence: str,
+) -> None:
+    from sandbox_science.orchestrator.continuity.models import ModelIntents
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+    from sandbox_science.orchestrator.history import Archive, Entry
+    from sandbox_science.orchestrator.runstate import RunState
+
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    active = "20261017T040000000000Z-new-attempt"
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)", ("p", "s", active, RUN, RUN)
+        )
+        tx.sql.execute(
+            "UPDATE research_work SET current=? WHERE project='p' AND session='s' AND work=?",
+            (active, RUN),
+        )
+    archive = Archive(projects.control)
+    archive.append("p", "s", active, Entry(role="user", kind="task", content="Initial task"))
+    events = RunState(projects.control)
+    events.append("p", "s", active, "started", {})
+    store = RunInputs(projects.control)
+    assert store.previous("p", "s", RUN, active_run=active) is None
+    with pytest.raises(ControlError, match="no saved ancestor"):
+        store.previous("p", "s", RUN, active_run="wrong-attempt")
+    if evidence == "assistant":
+        archive.append(
+            "p", "s", active, Entry(role="assistant", kind="assistant", content="Answer")
+        )
+    elif evidence in ("tool", "model"):
+        events.append("p", "s", active, evidence, {})
+    else:
+        owner = works.owner("p", "s", active)
+        assert owner is not None
+        ModelIntents(projects.control).begin(owner, kind="main", alias="fixture")
+    with pytest.raises(ControlError, match="no saved ancestor"):
+        store.previous("p", "s", RUN, active_run=active)
