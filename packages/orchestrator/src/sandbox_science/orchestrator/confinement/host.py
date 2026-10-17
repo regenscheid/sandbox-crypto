@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -20,10 +21,16 @@ from sandbox_science.orchestrator.continuity.records import (
 )
 from sandbox_science.orchestrator.history.log import RunArchive
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
-from sandbox_science.orchestrator.loop import Folds, Transcript
-from sandbox_science.orchestrator.model import ChatModel
+from sandbox_science.orchestrator.loop import (
+    Folds,
+    Transcript,
+    attach_notices,
+    not_run,
+    notice_message,
+)
+from sandbox_science.orchestrator.model import ChatModel, ToolCall
 from sandbox_science.orchestrator.plan_tools import Plans
-from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
+from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
 from .models import CallbackModel
 from .transport import Capability, Channel, TransportError
@@ -71,6 +78,12 @@ class Prepared:
         self.shadow: Transcript | None = None
         self.tool: ToolOutcome | None = None
         self.tool_call: ToolRequest | None = None
+        self.tool_notices: list[Notice] = []
+        self.notices: list[Notice] = []
+        self.pending_calls: dict[str, ToolCall] = {}
+        self.intent: LogTool | None = None
+        self.observation: dict[str, Any] | None = None
+        self.observed_slots: set[int] = set()
         self._memory_close: Callable[[], None] | None = None
         self._lock = asyncio.Lock()
 
@@ -106,8 +119,8 @@ class Prepared:
         for name, value in state.model_dump(exclude=omitted).items():
             if name not in {"delivered", "offered", "prompt_provenance"}:
                 setattr(run, name, value)
-        run.delivered = {key: set(ids) for key, ids in state.delivered.items()}
-        run.offered = {key: set(ids) for key, ids in state.offered.items()}
+        if state.delivered or state.offered:
+            raise TransportError("invalid_request", "historical receipts do not cross loop state")
         run.prompt_provenance = state.prompt_provenance
         return run
 
@@ -129,10 +142,26 @@ class Prepared:
                 return await self.append(typed(LogAppend, value))
             if kind is Capability.LOG_TOOL:
                 request = typed(LogTool, value)
+                if self.shadow is None or self.pending_calls.get(request.call.id) != request.call:
+                    raise TransportError("conflict", "tool intent has no committed model call")
+                expected = operation_id(f"{self.given.run_id}-t{self.shadow.turns}", request.call)
+                if request.operation != expected or self.intent is not None:
+                    raise TransportError("conflict", "tool intent identity differs or is pending")
                 await self.log.start_tool(request.call, request.operation)
+                self.intent = request
                 return None
             if kind is Capability.TOOL:
                 request = typed(ToolRequest, value)
+                if (
+                    self.tool is not None
+                    or self.intent is None
+                    or (self.intent.call, self.intent.operation)
+                    != (request.call, request.operation)
+                ):
+                    raise TransportError(
+                        "conflict", "tool dispatch has no matching unexecuted intent"
+                    )
+                self.tool_notices = []
                 # Original authority, offered tools and trusted gates come from preparation.
                 outcome = await self.toolbox.call(
                     request.call, request.operation, model=request.model, gates=self.hooks
@@ -182,7 +211,10 @@ class Prepared:
                 refusal = await hook.gate(request.effect)
                 return json_value(TypeAdapter(type(refusal)).dump_python(refusal, mode="json"))
             if kind is Capability.CONSUMPTION:
-                return payload(Consumed(ids=tuple(await hook.consumption())))
+                ids = tuple(await hook.consumption())
+                if self.shadow is not None:
+                    self.shadow.identities(hook.name).update(ids)
+                return payload(Consumed(ids=ids))
             if request.state is None:
                 raise TransportError("invalid_request", "hook requires committed loop state")
             run = self.sync(request.state)
@@ -190,6 +222,10 @@ class Prepared:
                 if request.point is None:
                     raise TransportError("invalid_request", "notices require a safe point")
                 result = await hook.notices(request.point, run)
+                if request.point == "tool":
+                    self.tool_notices.extend(result)
+                else:
+                    self.notices.extend(result)
                 return json_value(
                     TypeAdapter(tuple[Notice, ...]).dump_python(tuple(result), mode="json")
                 )
@@ -200,15 +236,14 @@ class Prepared:
             if kind is Capability.MODEL_RETURNED:
                 await hook.model_returned(run)
             elif kind is Capability.OBSERVE_TOOL:
-                if request.record is None:
-                    raise TransportError("invalid_request", "tool observation requires its record")
-                await hook.observe_tool(run, request.record)
+                if self.observation is None or request.slot in self.observed_slots:
+                    raise TransportError("conflict", "no unobserved committed tool result")
+                await hook.observe_tool(run, self.observation)
+                self.observed_slots.add(request.slot)
             elif kind is Capability.CLOSING:
-                return json_value(
-                    TypeAdapter(Closing).dump_python(
-                        await hook.closing(run, request.answer), mode="json"
-                    )
-                )
+                closing = await hook.closing(run, request.answer)
+                self.notices.extend(closing.notices)
+                return json_value(TypeAdapter(Closing).dump_python(closing, mode="json"))
             elif kind is Capability.ACCEPT:
                 await hook.accept(run)
             elif kind is Capability.FINISHING:
@@ -220,42 +255,90 @@ class Prepared:
             return None
 
     async def append(self, request: LogAppend) -> JsonValue:
+        if self.shadow is None:
+            raise TransportError("conflict", "loop state has not been initialized")
+        call, outcome, operation = request.call, request.outcome, request.operation_id
+        source = request.message.message()
+        if request.kind == "notice":
+            notice = request.notice
+            if notice is None:
+                raise TransportError("invalid_request", "notice body is absent")
+            if notice in self.notices:
+                self.notices.remove(notice)
+            elif notice.source != "report" or notice.ids:
+                raise TransportError("denied", "notice was not returned by trusted capabilities")
+            source = notice_message(notice)
+            self.shadow.identities(notice.source).update(notice.ids)
+        if request.kind == "tool_result":
+            if self.tool_call is None or self.tool is None:
+                # A report round may decline a model's tool call without dispatch.
+                reason = outcome.record.get("not_run") if outcome is not None else None
+                if (
+                    self.pending_calls.get(call.id if call is not None else "") != call
+                    or operation is not None
+                    or call is None
+                    or not isinstance(reason, str)
+                    or len(reason) > 128
+                ):
+                    raise TransportError("conflict", "tool result has no trusted execution")
+                outcome = not_run(reason)
+            else:
+                if call != self.tool_call.call or operation != self.tool_call.operation:
+                    raise TransportError(
+                        "conflict", "tool result differs from its trusted dispatch"
+                    )
+                call, outcome, operation = (
+                    self.tool_call.call,
+                    copy.deepcopy(self.tool),
+                    self.tool_call.operation,
+                )
+                attach_notices(self.shadow, outcome, self.toolbox.output_chars, self.tool_notices)
+            source = {"role": "tool", "tool_call_id": call.id, "content": outcome.text}
+        consumed = (
+            {key: set(ids) for key, ids in request.consumed.items()}
+            if request.consumed is not None
+            else None
+        )
+        if consumed is not None:
+            for key, ids in consumed.items():
+                offered = self.shadow.offered.get(key, set())
+                if any(identity not in offered for identity in ids):
+                    raise TransportError(
+                        "denied", "receipt was not offered by trusted capabilities"
+                    )
         appended = Appended(
             request.kind,
             notice=request.notice,
             reply=request.reply.turn() if request.reply is not None else None,
-            call=request.call,
-            outcome=request.outcome,
-            operation_id=request.operation_id,
-            consumed={key: set(ids) for key, ids in request.consumed.items()}
-            if request.consumed is not None
-            else None,
+            call=call,
+            outcome=outcome,
+            operation_id=operation,
+            consumed=consumed,
             usage=request.usage,
             usage_index=request.usage_index,
         )
-        # The canonical archive commit precedes the reply and the next effect.
-        message = await self.log.append(request.message.message(), appended)
-        if self.shadow is None:
-            raise TransportError("conflict", "loop state has not been initialized")
+        message = await self.log.append(source, appended)
         self.shadow.messages.append(message)
+        if consumed is not None:
+            for key, ids in consumed.items():
+                self.shadow.identities(key, delivered=True).update(ids)
+        if request.kind == "assistant" and request.reply is not None:
+            self.pending_calls = {call.id: call for call in request.reply.tool_calls}
         if request.usage is not None and request.usage_index == len(self.shadow.usage) + 1:
             self.shadow.usage.append(request.usage)
         retained = None
-        if (
-            request.kind == "tool_result"
-            and request.call is not None
-            and request.outcome is not None
-        ):
-            record = {
-                "tool": request.call.name,
-                "arguments": request.call.arguments,
-                **request.outcome.record,
-            }
+        if request.kind == "tool_result" and call is not None and outcome is not None:
+            record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
             retained = self.log.retained_tool(record)
             self.shadow.tool_records.append(retained)
+            self.observation, self.observed_slots = outcome.record, set()
             if self.on_tool is not None:
-                await self.on_tool(request.call.name, request.call.arguments, request.outcome)
-            self.tool = self.tool_call = None
+                await self.on_tool(call.name, call.arguments, outcome)
+            if outcome.image is not None:
+                self.notices.append(outcome.image[0])
+            self.pending_calls.pop(call.id, None)
+            self.tool = self.tool_call = self.intent = None
+            self.tool_notices = []
         return payload(AppendReply(message=WireMessage.of(message), retained=retained))
 
     async def close(self) -> None:

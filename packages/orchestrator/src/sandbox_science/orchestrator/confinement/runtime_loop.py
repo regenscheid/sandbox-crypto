@@ -66,8 +66,8 @@ def state(run: Transcript) -> LoopState:
         last_usage=run.usage[-1] if run.usage else None,
         message_count=len(run.messages),
         tool_count=len(run.tool_records),
-        delivered={key: tuple(ids) for key, ids in run.delivered.items()},
-        offered={key: tuple(ids) for key, ids in run.offered.items()},
+        delivered={},
+        offered={},
         final_text=run.final_text,
         answer=run.answer,
         pending=run.pending,
@@ -202,6 +202,7 @@ class RemoteLog(MessageLog):
         self._retained: dict[str, Any] | None = None
 
     async def started(self, run: Transcript) -> None:
+        self.run = run
         await self.channel.request(
             Capability.LOG_INIT, payload(FoldRequest(attempt=self.attempt, state=state(run)))
         )
@@ -227,7 +228,12 @@ class RemoteLog(MessageLog):
                         outcome=appended.outcome,
                         call=appended.call,
                         operation_id=appended.operation_id,
-                        consumed={key: tuple(ids) for key, ids in appended.consumed.items()}
+                        consumed={
+                            key: tuple(
+                                value for value in ids if value not in self.run.delivered_ids(key)
+                            )
+                            for key, ids in appended.consumed.items()
+                        }
                         if appended.consumed is not None
                         else None,
                         usage=appended.usage,

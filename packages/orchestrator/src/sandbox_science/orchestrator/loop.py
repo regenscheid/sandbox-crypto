@@ -303,7 +303,7 @@ class Transcript:
         """Whether another model call can be made, with these notices added."""
         if self.turns_left <= 0 or not self.room:
             return False
-        added = len(dump([_message(notice) for notice in notices])) if notices else 0
+        added = len(dump([notice_message(notice) for notice in notices])) if notices else 0
         return self.size + added <= self.max_input_chars
 
     def delivered_ids(self, source: str) -> AbstractSet[str]:
@@ -331,7 +331,7 @@ class Folds(Protocol):
         ...
 
 
-def _message(notice: Notice) -> Message:
+def notice_message(notice: Notice) -> Message:
     if notice.user:
         return {"role": "user", "content": notice.framing}
     return {"role": "user", "content": notice.framing + dump(notice.payload)}
@@ -362,7 +362,7 @@ async def _append(transcript: Transcript, message: Message, appended: Appended) 
 async def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
     """Notices as user messages; their IDs count as delivered once a model call sees them."""
     for notice in notices:
-        await _append(transcript, _message(notice), Appended("notice", notice=notice))
+        await _append(transcript, notice_message(notice), Appended("notice", notice=notice))
         transcript.identities(notice.source).update(notice.ids)
 
 
@@ -476,8 +476,17 @@ async def _attach(
             found.extend(await hook.notices("tool", transcript))
         except Exception:
             _log.exception("the %s notices failed; they wait for a later safe point", hook.name)
+    attach_notices(transcript, outcome, limit, found)
+
+
+def attach_notices(
+    transcript: Transcript, outcome: ToolOutcome, limit: int, notices: Sequence[Notice]
+) -> None:
+    """Deterministic bounded tool attachment shared with the trusted capability handler."""
+    if outcome.whole:
+        return
     extra: dict[str, object] = {}
-    for notice in found:
+    for notice in notices:
         taken = {"tool_result", "tool", "arguments", *outcome.record}
         if notice.user:
             _log.error("a %s notice is the user's message; not attached", notice.source)
@@ -638,7 +647,7 @@ class Runaway:
             self.tripped = {"rule": rule, "detail": detail}
 
 
-def _not_run(reason: str) -> ToolOutcome:
+def not_run(reason: str) -> ToolOutcome:
     """The result of a tool call the report round does not run."""
     message = f"not_run: the run reached a limit ({reason}); this call did not run"
     return ToolOutcome(
@@ -695,7 +704,7 @@ async def _report(
         transcript.stopped = "context_limit"
         return
     notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": reason, "detail": detail})
-    if transcript.size + len(dump([_message(notice)])) > transcript.max_input_chars:
+    if transcript.size + len(dump([notice_message(notice)])) > transcript.max_input_chars:
         return  # no room for the call: the run stops as before, without a report
     await _offer(transcript, (notice,))
     transcript.turns += 1
@@ -711,7 +720,7 @@ async def _report(
     await _append(transcript, AssistantMessage.of(reply), Appended("assistant", reply=reply))
     await _model_returned(hooks, transcript)
     for call in reply.tool_calls:
-        outcome = _not_run(reason)
+        outcome = not_run(reason)
         await _append(
             transcript,
             {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
@@ -823,7 +832,7 @@ async def _run_task(
         # whose token each client turns into its API's image (docs/specs/figures.md, FG-37).
         for notice, token in viewed:
             await _append(
-                transcript, {**_message(notice), IMAGE: token}, Appended("notice", notice=notice)
+                transcript, {**notice_message(notice), IMAGE: token}, Appended("notice", notice=notice)
             )
         viewed.clear()
         if toolbox.revision != revision:

@@ -198,8 +198,8 @@ class LoopState(Contract):
     last_usage: ModelUsage | None
     message_count: Counter
     tool_count: Counter
-    delivered: dict[str, tuple[str, ...]]
-    offered: dict[str, tuple[str, ...]]
+    delivered: dict[str, tuple[str, ...]] = Field(max_length=0)
+    offered: dict[str, tuple[str, ...]] = Field(max_length=0)
     final_text: str | None = Field(default=None, max_length=MAX_VIEW_BYTES)
     answer: str | None = Field(default=None, max_length=MAX_VIEW_BYTES)
     pending: str | None = Field(default=None, max_length=MAX_VIEW_BYTES)
