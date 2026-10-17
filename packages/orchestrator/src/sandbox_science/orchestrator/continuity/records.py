@@ -184,6 +184,32 @@ class WorkRecords:
                     (run, project, session, work),
                 )
             else:
+                prepared = (
+                    db.execute(
+                        "SELECT w.work,a.epoch FROM research_work w JOIN research_attempts a "
+                        "ON a.project=w.project AND a.session=w.session AND a.run=w.current "
+                        "JOIN research_sessions s ON s.project=w.project AND s.session=w.session "
+                        "WHERE w.project=? AND w.session=? AND w.current=? AND w.state='waiting' "
+                        "AND a.epoch=s.epoch AND w.root=s.root AND w.parent=(SELECT work "
+                        "FROM research_attempts WHERE project=? AND session=? AND run=?)",
+                        (project, session, run, project, session, parent),
+                    ).fetchone()
+                    if parent is not None
+                    else None
+                )
+                if prepared is not None:
+                    db.execute(
+                        "UPDATE research_work SET state='running' "
+                        "WHERE project=? AND session=? AND work=?",
+                        (project, session, prepared[0]),
+                    )
+                    return Ownership(
+                        project=project,
+                        session=session,
+                        work=prepared[0],
+                        run=run,
+                        epoch=prepared[1],
+                    )
                 work = run
                 inherited = (
                     None
@@ -432,12 +458,14 @@ class WorkRecords:
         with self.control.read() as tx:
             return _pending_children(tx.sql, project, session, work)
 
-    def retained_kernels(self, project: str, session: str) -> set[str]:
-        """Kernel identities held by unfinished responsibilities, including paused children."""
+    def retains_kernel(self, project: str, session: str, kernel: str) -> bool:
+        """Check an observed kernel individually; never load an unbounded tree-wide set."""
         with self.control.read() as tx:
-            rows = tx.sql.execute(
-                "SELECT kernel FROM research_work WHERE project=? AND session=? "
-                "AND kernel IS NOT NULL AND state NOT IN ('completed','stopped')",
-                (project, session),
-            ).fetchall()
-        return {str(row[0]) for row in rows}
+            return (
+                tx.sql.execute(
+                    "SELECT 1 FROM research_work WHERE project=? AND session=? "
+                    "AND kernel=? AND state NOT IN ('completed','stopped') LIMIT 1",
+                    (project, session, kernel),
+                ).fetchone()
+                is not None
+            )

@@ -49,7 +49,10 @@ from .consistency.controller import ReviewController
 from .consistency.findings import Findings
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
+from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.hook import WorkHook
+from .continuity.kernels import KernelJournal
+from .continuity.models import IntentModel, ModelIntents
 from .continuity.records import WorkRecords, authority
 from .control import ControlError
 from .delegation import prompt as delegated_prompt
@@ -92,6 +95,7 @@ from .history.snapshot import inline
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
+from .kernel_check import KernelCheck
 from .ledger import Ledger
 from .ledger.proposals import FoldProposals
 from .ledger.tool import LedgerTool
@@ -129,6 +133,7 @@ from .projects import (
     RunRole,
     ensure_environment,
     operator_ref,
+    run_id_of,
     run_name,
 )
 from .question_tool import QuestionTool
@@ -594,7 +599,25 @@ class Harness:
         """The model a run calls (``role``), calling as its session, so that all of the
         session's calls share one prompt cache (CM-32)."""
         context = admitted.context
-        return cached_for(self.role(admitted.request).model, context.project_id, context.session_id)
+        model = cached_for(
+            self.role(admitted.request).model, context.project_id, context.session_id
+        )
+        if self.stores is None or self.loop_runner is not run_task:
+            return model
+        owner = WorkRecords(self.stores.projects.control).owner(
+            context.project_id, context.session_id, run_name(admitted.started_at, admitted.run_id)
+        )
+        return (
+            model
+            if owner is None
+            else IntentModel(
+                model,
+                ModelIntents(self.stores.projects.control),
+                owner,
+                self.role(admitted.request).alias,
+                kind="delegated" if admitted.request.parent is not None else "main",
+            )
+        )
 
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
@@ -631,6 +654,9 @@ class Harness:
             work=request.work,
             predecessor=request.predecessor,
             epoch=request.epoch,
+        )
+        await threaded(
+            Blueprints(self.stores.projects.control).save, owner, self._blueprint(admitted)
         )
         request = dataclasses.replace(request, work=owner.work, epoch=owner.epoch)
         admitted = dataclasses.replace(admitted, request=request)
@@ -689,6 +715,19 @@ class Harness:
                     )
                     hooks = toolbox.turn_hooks()
                     if work is not None:
+                        owner = work.owner
+                        for hook in hooks:
+                            if isinstance(hook, KernelCheck):
+                                journal = KernelJournal(
+                                    work.records.control, owner, toolbox.kernel_run
+                                )
+                                hook.record = journal.record
+                                hook.retain = lambda kernel: threaded(
+                                    work.records.retains_kernel,
+                                    owner.project,
+                                    owner.session,
+                                    kernel,
+                                )
                         hooks = (*hooks, work)
                     request = admitted.request
                     if view is not None and toolbox.skills is not None:
@@ -819,7 +858,7 @@ class Harness:
                 self._task_block, stores, context.project_id, context.session_id, request
             )
             return await delegated_folder(
-                Archive(stores.projects.control, clock=self.clock),
+                Archive(stores.projects.control, clock=self.clock, chain=True),
                 context,
                 run=run_name(admitted.started_at, admitted.run_id),
                 parent=request.parent,
@@ -1083,6 +1122,7 @@ class Harness:
             context,
             parent=run_name(admitted.started_at, admitted.run_id),
             runner=functools.partial(self.run_child, admitted, version),
+            blueprint=lambda child: self._blueprint(self._child_admitted(admitted, version, child)),
             max_turns=request.max_turns or self.settings.max_turns,
             offer=limits.depth >= 1 + depth,
             wake=chat.arrived if chat is not None and depth == 0 else None,
@@ -1107,15 +1147,21 @@ class Harness:
             clock=clock,
         )
 
-    async def run_child(
-        self, parent: Admitted, memory_version: int | None, child: Child, stop: asyncio.Event
-    ) -> ChildEnd:
-        """Run a delegated run of ``parent`` to its end and save its record (PD-34): in
-        the parent's session and environment, with the memory version its root was
-        given (PM-8). Cleanup saves partial evidence; only an explicit Stop ends it
-        ``cancelled``, while parent failure or lease loss ends it ``interrupted``."""
-        if self.stores is None:
-            raise ValueError("a delegated run needs the state directory's stores")
+    @staticmethod
+    def _blueprint(admitted: Admitted) -> Blueprint:
+        return Blueprint(
+            context=admitted.context,
+            request=cast(
+                dict[str, JsonValue],
+                TypeAdapter(RunRequest).dump_python(
+                    admitted.request, mode="json", exclude={"history", "stop_by"}
+                ),
+            ),
+        )
+
+    def _child_admitted(
+        self, parent: Admitted, memory_version: int | None, child: Child
+    ) -> Admitted:
         request = RunRequest(
             parent.request.project,
             parent.request.session,
@@ -1133,9 +1179,21 @@ class Harness:
             may_delegate=child.delegate,
             stop_by=child.deadline,
         )
-        admitted = dataclasses.replace(
+        return dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
         )
+
+    async def run_child(
+        self, parent: Admitted, memory_version: int | None, child: Child, stop: asyncio.Event
+    ) -> ChildEnd:
+        """Run a delegated run of ``parent`` to its end and save its record (PD-34): in
+        the parent's session and environment, with the memory version its root was
+        given (PM-8). Cleanup saves partial evidence; only an explicit Stop ends it
+        ``cancelled``, while parent failure or lease loss ends it ``interrupted``."""
+        if self.stores is None:
+            raise ValueError("a delegated run needs the state directory's stores")
+        admitted = self._child_admitted(parent, memory_version, child)
+        request = admitted.request
         sink = _ChildSink(child.run_id)
         finished = await self.start(admitted, sink, stop=stop)
         if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
@@ -1148,6 +1206,18 @@ class Harness:
             error=sink.error,
         )
         transcript = finished.transcript
+        work = await threaded(
+            WorkRecords(self.stores.projects.control).for_run,
+            request.project,
+            request.session,
+            run_name(admitted.started_at, admitted.run_id),
+        )
+        if work is not None and work.state in ("completed", "stopped"):
+            try:
+                async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
+                    await self.client.close_session(admitted.context, run=work.kernel)
+            except (WorkerAPIError, TimeoutError) as exc:
+                _log.warning("could not close completed work kernels: %r", exc)
         if saved_status == 1 and transcript.failure is None:
             # Saving or acknowledging failed after the child computed its answer.
             # Preserve its report, but never advertise an unsettled result as returned.
@@ -1396,19 +1466,15 @@ class Harness:
                 granted=track[0],
                 track=track[1],
             )
-        kernel_run = admitted.run_id if admitted.request.parent is not None else None
-        client = self.client
-        if kernel_run is not None:
-
-            async def stop_kernels() -> None:
-                try:
-                    async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
-                        await client.close_session(context, run=kernel_run)
-                except (WorkerAPIError, TimeoutError) as exc:
-                    # The next main run of the session closes them.
-                    _log.warning("could not stop run %s's kernels: %r", kernel_run, exc)
-
-            on_close(stop_kernels)
+        kernel_run = (
+            (
+                run_id_of(admitted.request.work)
+                if admitted.request.work is not None
+                else admitted.run_id
+            )
+            if admitted.request.parent is not None
+            else None
+        )
         return Toolbox(
             self.client,
             context,
@@ -1436,7 +1502,7 @@ class Harness:
             skills=skills,
             # Main and delegated runs read the archive; a delegated run its own run (CM-37).
             history=HistoryTool(
-                Archive(stores.projects.control, clock=self.clock),
+                Archive(stores.projects.control, clock=self.clock, chain=True),
                 context,
                 run=run_name(admitted.started_at, admitted.run_id),
                 delegated=delegated,

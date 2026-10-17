@@ -466,3 +466,19 @@ The parent's responsibility, orchestrator-led recovery at every level and separa
 ## Sources
 
 [Product](../PRODUCT.md), [architecture](../ARCHITECTURE.md), [projects and sessions](../PROJECTS-AND-SESSIONS.md), [plans and delegation](plans-and-delegation.md) PD-15/PD-22/PD-36 to PD-40, [run service](run-service.md) RS-6f/RS-12, [context management](context-management.md), [worker recovery](../WORKER.md#sandbox-daemon-and-recovery), and the owner's requirements of 2026-10-16 (D47, D87).
+
+### Dispatch recovery prerequisites (schema 64)
+
+Each main or delegated paid call records an intent before gateway dispatch. Its
+response observation commits with the assistant archive row and usage; auxiliary
+call observations are recorded before delivery. An unobserved intent means unknown
+usage, never free work or permission to dispatch it again. Local loops journal at
+the model seam; confined loops journal through their scoped host capability.
+
+Child ownership and recovery inputs commit with delegation admission before its
+coroutine is scheduled. Continuations retain the original work identity and kernel
+scope. Their private archive view may include only predecessors of the same work;
+ordinary history readers remain scoped to the requested attempt. Required paused
+kernels are excluded from the harness idle sweep, and their concrete identity and
+generation are observed. This records evidence, not a promise that a kernel survived
+worker or sandbox replacement. Open questions of resumable work remain answerable.

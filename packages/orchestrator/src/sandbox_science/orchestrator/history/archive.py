@@ -327,14 +327,31 @@ class Archived:
         return message
 
 
+_CHAIN_SCOPE = (
+    "(? IS NULL OR run=? OR (?=1 AND EXISTS ("
+    "SELECT 1 FROM research_attempts candidate JOIN research_attempts chosen "
+    "ON chosen.project=candidate.project AND chosen.session=candidate.session "
+    "AND chosen.work=candidate.work WHERE candidate.project=archive_messages.project "
+    "AND candidate.session=archive_messages.session AND candidate.run=archive_messages.run "
+    "AND chosen.run=? AND candidate.epoch<=chosen.epoch)))"
+)
+
+
 class Archive:
     """The sessions' archive in one control store, which its owner closes."""
 
-    def __init__(self, store: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
+    def __init__(
+        self,
+        store: ControlStore | DocumentStore,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        chain: bool = False,
+    ) -> None:
         """``store``: the control store, or a document store, whose control store it
         reads, as the workspace holds one."""
         self.control = store if isinstance(store, ControlStore) else store.control
         self.clock = clock
+        self.chain = chain  # opt-in for delegated views; evidence reads remain exact-attempt
 
     def append(
         self,
@@ -488,7 +505,7 @@ class Archive:
             rows = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
                 "WHERE project = ? AND session = ? AND position >= ? "
-                "AND (? IS NULL OR position <= ?) AND (? IS NULL OR run = ?) "
+                "AND (? IS NULL OR position <= ?) AND " + _CHAIN_SCOPE + " "
                 "AND (? = 0 OR parent IS NULL) " + kinds_sql + " ORDER BY position LIMIT ?",
                 (
                     project,
@@ -497,6 +514,8 @@ class Archive:
                     end,
                     end,
                     run,
+                    run,
+                    self.chain,
                     run,
                     main_only,
                     *kinds,
@@ -541,11 +560,11 @@ class Archive:
         candidates: Sequence[str] | None = None,
     ) -> tuple[tuple[str, ...], int | None]:
         """Run identities and first folded position, without reading message bodies."""
-        args = (project, session, run, run, run)
+        args = (project, session, run, run, self.chain, run, run)
         with self.control.read() as tx:
             names = tx.sql.execute(
-                "SELECT DISTINCT run FROM archive_messages WHERE "
-                "project=? AND session=? AND (? IS NULL OR run=?) "
+                "SELECT DISTINCT run FROM archive_messages WHERE "  # noqa: S608 - fixed scope SQL
+                "project=? AND session=? AND " + _CHAIN_SCOPE + " "
                 "AND (? IS NOT NULL OR parent IS NULL) "
                 "AND kind NOT IN ('state_block','spill') "
                 "AND (? IS NULL OR run IN (SELECT value FROM json_each(?))) ORDER BY run",
@@ -556,8 +575,8 @@ class Archive:
                 ),
             ).fetchall()
             first = tx.sql.execute(
-                "SELECT min(position) FROM archive_messages WHERE "
-                "project=? AND session=? AND (? IS NULL OR run=?) "
+                "SELECT min(position) FROM archive_messages WHERE "  # noqa: S608 - fixed scope SQL
+                "project=? AND session=? AND " + _CHAIN_SCOPE + " "
                 "AND (? IS NOT NULL OR parent IS NULL) "
                 "AND position<=? AND kind NOT IN ('state_block','spill','fold')",
                 (*args, end),

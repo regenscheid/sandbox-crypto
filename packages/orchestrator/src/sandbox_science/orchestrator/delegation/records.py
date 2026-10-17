@@ -31,6 +31,7 @@ from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.continuity.blueprints import Blueprint, reserve_child
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import (
     CONFLICT,
@@ -234,7 +235,13 @@ class DelegationRecords:
             return found
 
     def start(
-        self, project: str, session: str, delegation: Delegation, *, cap: int | None = None
+        self,
+        project: str,
+        session: str,
+        delegation: Delegation,
+        *,
+        cap: int | None = None,
+        blueprint: Blueprint | None = None,
     ) -> None:
         """Write a delegation as its parent starts it. The bounds are checked in the same
         statement that writes it, so that two parents starting at once cannot pass them
@@ -278,6 +285,10 @@ class DelegationRecords:
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the delegation is refused: {error}") from None
             if written == 1:
+                if blueprint is not None:
+                    reserve_child(
+                        db, project, session, delegation.run, delegation.parent, blueprint
+                    )
                 return
             busy = db.execute(_ON_TRACK, (project, session, track)).fetchone()
         if busy is not None:

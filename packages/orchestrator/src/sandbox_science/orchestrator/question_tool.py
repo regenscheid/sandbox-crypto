@@ -188,6 +188,8 @@ class QuestionTool(TurnHook):
     async def _close(self, asking: asyncio.Future[Question], *, cancelled: bool) -> None:
         """Close the question the run asked, once it is written, as the run ended."""
         question = await asking
+        if not cancelled and await threaded(self.questions.resumable, question):
+            return  # explicit Resume receives this question or its eventual answer
         await threaded(
             self.questions.close,
             question.project,

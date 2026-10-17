@@ -98,6 +98,9 @@ class ModelTurn:
     text with its progress notes in place, which the archive indexes and other adapters
     send (``AssistantMessage.of``)."""
 
+    intent_id: str | None = None
+    """Trusted dispatch journal identity; never part of the provider conversation."""
+
 
 COST_HEADER: Final = "x-litellm-response-cost"
 """The header in which LiteLLM's proxy reports a call's cost."""

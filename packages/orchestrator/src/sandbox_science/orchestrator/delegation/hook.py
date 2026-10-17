@@ -53,6 +53,7 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, new_id
 from sandbox_science.orchestrator.aio import held, threaded
+from sandbox_science.orchestrator.continuity.blueprints import Blueprint
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.ledger import Ledger
@@ -219,6 +220,7 @@ class Delegations(TurnHook):
         *,
         parent: str,
         runner: ChildRunner,
+        blueprint: Callable[[Child], Blueprint] | None = None,
         max_turns: int,
         offer: bool,
         wake: Callable[[], Awaitable[None]] | None = None,
@@ -244,6 +246,7 @@ class Delegations(TurnHook):
         together take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner = parent, runner
+        self.blueprint = blueprint
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
         self.waiting = waiting
         self.limits = limits or DelegationSettings()
@@ -339,12 +342,6 @@ class Delegations(TurnHook):
             brief=written,
             started_at=started,
         )
-        try:
-            # The cap is the session's tree's, counted over every level, and checked as
-            # the delegation is written (PD-38); so is its track (PD-9).
-            await threaded(self.records.start, project, session, delegation, cap=self.limits.cap)
-        except ControlError as error:
-            raise WorkerAPIError(ErrorKind(error.kind), error.message) from None
         child = Child(
             delegation_id,
             run_id,
@@ -357,6 +354,19 @@ class Delegations(TurnHook):
             track=planned.track,
             delegate=planned.delegate,
         )
+        try:
+            # The cap is the session's tree's, counted over every level, and checked as
+            # the delegation is written (PD-38); so is its track (PD-9).
+            await threaded(
+                self.records.start,
+                project,
+                session,
+                delegation,
+                cap=self.limits.cap,
+                blueprint=self.blueprint(child) if self.blueprint is not None else None,
+            )
+        except ControlError as error:
+            raise WorkerAPIError(ErrorKind(error.kind), error.message) from None
         stop, entered = asyncio.Event(), asyncio.Event()
         task = asyncio.create_task(
             self._run(child, stop, entered), name=f"delegation {delegation_id}"

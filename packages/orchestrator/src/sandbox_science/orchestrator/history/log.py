@@ -104,6 +104,7 @@ class RunArchive:
                     ordinal=appended.usage_index,
                     observed_at=self.clock.now(),
                     usage=appended.usage,
+                    intent_id=appended.reply.intent_id if appended.reply is not None else None,
                 )
                 if appended.usage is not None and appended.usage_index is not None
                 else None

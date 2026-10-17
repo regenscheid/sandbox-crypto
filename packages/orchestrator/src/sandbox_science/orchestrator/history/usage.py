@@ -22,6 +22,7 @@ class AnsweredUsage(Contract):
     ordinal: Annotated[int, Field(strict=True, ge=1, le=999999999)]
     observed_at: AwareDatetime
     usage: ModelUsage
+    intent_id: str | None = None
 
 
 def save_usage(
@@ -47,3 +48,11 @@ def save_usage(
         ) from None
     if written.rowcount != 1:
         raise ControlError(INVALID_REQUEST, "model usage requires its scoped assistant response")
+    if response.intent_id is not None:
+        from sandbox_science.orchestrator.continuity.models import observed
+
+        session, run = db.execute(
+            "SELECT session,run FROM archive_messages WHERE project=? AND message_id=?",
+            (project, message_id),
+        ).fetchone()
+        observed(db, project, session, run, response.intent_id, response.usage)

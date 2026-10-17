@@ -66,6 +66,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
 from .aio import threaded
 from .chat import SOURCE, session_lease
+from .continuity.records import WorkRecords
 from .control import ControlError
 from .control.errors import BUSY
 from .delegation.records import DelegationRecords
@@ -278,6 +279,14 @@ class RunService:
         run that stopped itself (``hold`` false), left queued for the next run (RS-9).
         Its tree ends with it, and its open questions close, whatever fails before
         (PD-40, PD-23)."""
+        works = WorkRecords(self.stores.projects.control)
+        work = await threaded(works.for_run, project, session, run)
+        cancelled = await threaded(self.runs.cancelled, project, session, run)
+        if work is not None:
+            if cancelled:
+                await threaded(works.stop, project, session, work.work)
+            else:
+                await threaded(works.interrupt, project, session, work.root)
         try:
             await self._root_ended(project, session, run, hold=hold)
         finally:
@@ -287,15 +296,16 @@ class RunService:
                 ):
                     _log.warning("delegation %s of run %s was interrupted", delegation_id, run)
             finally:
-                for question in await threaded(
-                    self.questions.close,
-                    project,
-                    session,
-                    run=run,
-                    state="interrupted",
-                    reason=INTERRUPTED,
-                ):
-                    _log.warning("question %s of run %s was interrupted", question, run)
+                if cancelled or work is None or work.state in ("completed", "stopped"):
+                    for question in await threaded(
+                        self.questions.close,
+                        project,
+                        session,
+                        run=run,
+                        state="interrupted",
+                        reason=INTERRUPTED,
+                    ):
+                        _log.warning("question %s of run %s was interrupted", question, run)
 
     async def _root_ended(self, project: str, session: str, run: str, *, hold: bool) -> None:
         runs = self.runs

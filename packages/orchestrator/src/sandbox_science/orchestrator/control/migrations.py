@@ -3030,6 +3030,13 @@ def _immutable_run_collections(schema: Schema) -> None:
         )
 
 
+def _recovery_dispatch(schema: Schema) -> None:
+    """Version 64: durable child inputs and paid-dispatch uncertainty."""
+    from sandbox_science.orchestrator.continuity.recovery_schema import install
+
+    install(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3093,6 +3100,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _run_collections,
     _research_work,
     _immutable_run_collections,
+    _recovery_dispatch,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
