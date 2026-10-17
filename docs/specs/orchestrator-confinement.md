@@ -32,6 +32,10 @@ holds only replaceable scratch/configuration. No host state directory is mounted
 
 ## Capability operations
 
+The policy compiler accepts an optional `orchestrator.state_service` endpoint and
+applies the same service restrictions and endpoint uniqueness checks as the worker,
+model and MCP endpoints. Adding it alone does not confine the normal launcher.
+
 The transport has a version independent of the worker protocol. Requests and
 responses use strict typed JSON, bounded bodies and explicit error kinds. A
 handshake checks protocol, control schema, image revision and configured scope.

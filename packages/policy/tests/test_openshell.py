@@ -1615,7 +1615,7 @@ def test_the_model_gateway_and_mcp_proxy_are_optional_and_cannot_share_the_worke
         binaries=("/usr/local/bin/python3*",),
     )
     assert list(compile_orchestrator(target).network_policies) == ["sandbox-science-worker-api"]
-    for service in ("model_gateway", "mcp_proxy"):
+    for service in ("model_gateway", "mcp_proxy", "state_service"):
         with pytest.raises(CompileError, match=r"share host\.openshell\.internal:8100"):
             compile_orchestrator(target.model_copy(update={service: target.worker_api}))
 
@@ -1803,4 +1803,32 @@ def test_mcp_urls_must_be_plain(url: str) -> None:
             HEADER
             + "mcp:\n  servers:\n"
             + f"    srv: {{url: '{url}', revision: '1', auth: {{mode: none}}}}\n"
+        )
+
+
+def test_scoped_state_service_has_only_its_declared_endpoint() -> None:
+    target = OrchestratorTarget(
+        worker_api=ServiceEndpoint(host="host.openshell.internal", port=8100),
+        state_service=ServiceEndpoint(host="state.sandbox-science.internal", port=8202),
+        binaries=("/opt/sandbox-science/bin/python*",),
+    )
+    compiled = compile_orchestrator(target)
+    assert list(compiled.network_policies) == [
+        "sandbox-science-worker-api",
+        "sandbox-science-state-service",
+    ]
+    endpoint = compiled.network_policies["sandbox-science-state-service"].endpoints[0]
+    assert (endpoint.host, endpoint.ports, endpoint.protocol, endpoint.access) == (
+        "state.sandbox-science.internal",
+        (8202,),
+        "rest",
+        "full",
+    )
+    with pytest.raises(ValidationError):
+        OrchestratorTarget.model_validate(
+            {
+                "worker_api": {"host": "worker.example.org", "port": 8100},
+                "state_service": {"host": "169.254.169.254", "port": 80},
+                "binaries": ["/opt/sandbox-science/bin/python*"],
+            }
         )

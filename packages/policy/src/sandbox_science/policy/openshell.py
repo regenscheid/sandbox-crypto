@@ -448,6 +448,8 @@ class OrchestratorTarget(StrictModel):
     model_gateway: ServiceEndpoint | None = None
     mcp_proxy: ServiceEndpoint | None = None
     """Where the harness reaches the MCP proxy for the agent's MCP tool calls (D67)."""
+    state_service: ServiceEndpoint | None = None
+    """The scoped control capability service; never a database or filesystem endpoint."""
     binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
     filesystem: SandboxFilesystem = SandboxFilesystem()
     """Paths the harness's image provides outside the workdir, such as its interpreter's prefix."""
@@ -1083,6 +1085,8 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
         services["model-gateway"] = ("Sandbox Science model gateway", target.model_gateway)
     if target.mcp_proxy is not None:
         services["mcp-proxy"] = ("Sandbox Science MCP proxy", target.mcp_proxy)
+    if target.state_service is not None:
+        services["state-service"] = ("Sandbox Science control capabilities", target.state_service)
     seen: dict[tuple[str, int], str] = {}
     network_policies: dict[str, NetworkPolicy] = {}
     for key, (name, service) in services.items():
