@@ -166,7 +166,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [x] Local 100 MiB upload support, migration-preserved originals, larger worker delivery and shared upload copies; independent concurrency review clear; browser retention and local two-environment transfer verified. Real OpenShell qualification remains before integration.
 - [x] Local UI review refinement: half-window research pane, searchable/filterable document library, and named closable document tabs preserving unsaved drafts. Not yet merged or deployed.
-- [ ] Review the Local Codex ledger prototype (list/detail with optional board), then adapt the chosen design to the production ledger.
+- [ ] Adapt the Local Codex ledger prototype to production; the owner accepted its list/detail and optional board direction on 2026-10-17.
+- [ ] Review the connected Skills/MCP/Overview/Memory/session prototype, then integrate the [workspace browsers](../docs/specs/workspace-browsers.md) in small steps. Skills can reuse existing revisioned settings; MCP needs a sanitized read-only inventory and attributed observation contract first.
 
 - [ ] Original system/stock prompt catalog and planning workflow (D86; [design](../docs/ORCHESTRATOR-PROMPTS.md)): independently reviewed design `e3ba766` and source corrections `fd7ecea` merged as PR #100 after all four fresh checks passed. MAIN/watcher/reviewer already have individual prompts; the complete catalog is not wired
   - [x] Correct current MAIN execution-location/control-tool guidance and obsolete background-job worker-restart wording; reviewed signed `fd7ecea`, 30 affected tests, source-only text changes and two actual-model-input cases. Root gates pass 10,034 Python/43 opt-in skips/two existing warnings and required static checks; PR #100 merged after all four fresh checks passed, actual tool grants/calls unchanged

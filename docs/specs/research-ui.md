@@ -34,3 +34,7 @@ OpenScience (`synthetic-sciences/openscience`, Apache-2.0, revision
 its session sidebar, optional inspector, keyboard resizer, and attachment cards.
 The Svelte components are implemented here against this project's contracts;
 no upstream runtime, prompts, skills, icons, or font assets are imported.
+
+The [workspace browsers proposal](workspace-browsers.md) extends the accepted
+ledger direction to Skills, MCP services, Overview, Memory and session panes.
+Its connected prototype is for review; production integration remains pending.

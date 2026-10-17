@@ -5,7 +5,7 @@ Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace; 
 ## Where things stand
 
 - **Research UI:** signed local work adds the sidebar/chat/research layout, 100 MiB attachments, half-window pane, document filters and retained tabs. Schema 67; worker protocol 9. [Validation](docs/agent-reports/research-ui-refinements-2026-10-17.md): 2,194 web tests, focused backend checks and independent review clear; browser retention and local two-environment transfers pass at 100 MiB. Real OpenShell upload qualification remains open. Synthetic preview stays on loopback port 29183 for owner review. No push/merge/deployment.
-- **Ledger:** Local Codex generated a separate list/detail/board prototype with synthetic entries; it awaits owner feedback. Production ledger is unchanged.
+- **Workspace design:** owner accepted the ledger direction; a connected Skills/MCP/Overview/Memory/session prototype is in progress. [Proposal](../docs/specs/workspace-browsers.md) independently checked; production adaptation pending.
 - **Foundations (D47/D87):** preserved on `codex/research-foundations` at `631dc246`; [acceptance evidence](docs/agent-reports/foundation-acceptance-2026-10-17.md). Separate OpenShell orchestrator, explicit recursive Resume, child settlement, bounded memory/history, delegated folds and generated binding restrictions. The lab was torn down; personal services untouched.
 - **Context acceptance remains open:** Lab 44's checklist, Claude folding, the 600,000-token arms, repeated control and cache placement measurements need separate real-model acceptance ([STATUS](STATUS.md#phase-and-focus)).
 - **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; generated binding restrictions are implemented; remaining skill work stays in BACKLOG.
@@ -15,7 +15,7 @@ Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace; 
 
 - **Briefs:** one task per worktree from `origin/main`; stacked PRs name their base. Follow the [working rules](CONVENTIONS.md#working-rules).
 - **Review by risk:** independent read-only review for security, storage, concurrency and new features; diff/latest-check review for tested code moves, docs and test-only fixes. Current session instructions govern whether delegation is available.
-- **Model routing:** this session uses the owner-requested GPT-6.1-Sol subagents for independent reviews. Current session instructions take precedence over historical routing conventions.
+- **Model routing:** this session uses the owner-requested GPT-6.1-Sol subagents for independent reviews. Current instructions take precedence.
 - **Test hygiene:** one pytest suite, at most `-n 4`; unset `SS_LIVE_GATEWAY` and `SS_INTEGRATION` for ordinary checks. Logs use `~/.cache/pt/`. Foundation fixtures use `/var/tmp/sandbox-science-test-cache/` because `/home/andy` is itself a Git checkout and security tests reject fake CLIs below it. Other fixtures use the home cache. Delete scratch by exact absolute path.
 - **Migration numbers:** this branch is at 67, its foundation base at 65. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
 - **Integration:** this session has no push or merge authorization. Preserve the primary checkout; use signed commits in the managed worktree. Recheck migration numbers and lockstep image/protocol compatibility before future integration.
@@ -41,10 +41,10 @@ The owner's research on other products' prompts lives outside this repository. T
 ## The code, briefly
 
 - **Loop and service:** features plug in as turn hooks (`hooks.py`). `Harness` is what `run` and `serve` build; `service.py` starts runs for chat messages and comments. Delegation is `delegation/`; skills are `skills/`, with the built-in pack in `skills/builtin/` at the repository root.
-- **Control store:** `orchestrator/control/`, schema version 66 on this branch; private runtime protocol and worker protocol are separately pinned.
+- **Control store:** `orchestrator/control/`, schema version 67 on this branch; private runtime protocol and worker protocol are separately pinned.
 - **Context:** `history/` holds the session archive, the history tools, the session view, the read register and its descriptors; `responses.py` and `messages.py` are the GPT and Claude clients (`model.gateway_model` picks one per alias), `folds.py`, `overview.py`, `bound.py` and `markers.py` hold the folds, and `digest.py` the state block's digest; `consistency/archived.py` ties reviews to the archive. Figures: `view_image` in the orchestrator, the frame and charts in `web/workspace/src/figures`.
 - **Ledger rule** (the owner): weakening a settled state needs no authority; strengthening needs the user or a passing gate. The main agent reopens an obstructed question by itself, with a reason.
-- **Worker:** a change to an existing request or response raises `PROTOCOL_VERSION` (8); a new route does not ([compatibility](../docs/COMPATIBILITY.md)).
+- **Worker:** a change to an existing request or response raises `PROTOCOL_VERSION` (9); a new route does not ([compatibility](../docs/COMPATIBILITY.md)).
 - **Workspace:** rerun `scripts/generate_api_types.py` when a response model changes. Agent text the user approves goes through `check_agent_text`.
 - **Launcher:** `packages/launcher` is the `sandbox-science` command, which also imports the config's skill packs ([quickstart](../docs/QUICKSTART.md)).
 
@@ -52,4 +52,4 @@ The owner's research on other products' prompts lives outside this repository. T
 
 1. Review/integrate the signed foundation branch and its acceptance report. Upgrade components together; image and control source revisions must match. There is no host-loop fallback.
 2. Real-model scientific continuity, Claude folding and provider cache measurements still need separately budgeted acceptance. Production context order is unchanged after the offline comparison.
-3. Review the UI branch and qualify real OpenShell upload delivery before integrating it; remaining product work stays in BACKLOG. The authenticated recovery API supplies paged unresolved identities and explicit operator decisions; the workspace currently exposes Resume plus blocked reasons, not a full reconciliation editor.
+3. Review the UI branch and qualify real OpenShell upload delivery before integrating it; remaining product work stays in BACKLOG. Recovery APIs expose unresolved identities and operator decisions; the UI shows Resume and blocked reasons, not a reconciliation editor.
