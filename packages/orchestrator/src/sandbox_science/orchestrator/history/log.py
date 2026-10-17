@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from typing import Any, Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
@@ -21,10 +22,11 @@ from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.control.errors import BUSY
 from sandbox_science.orchestrator.hooks import Appended
-from sandbox_science.orchestrator.model import Message
+from sandbox_science.orchestrator.model import Message, ToolCall
 from sandbox_science.orchestrator.notices import DELEGATIONS, REQUESTS
 
 from .archive import Archive, Archived, Entry
+from .operations import ToolJournal, ToolRecord
 from .reads import Read, reads_of
 
 Json = dict[str, Any]
@@ -54,6 +56,20 @@ class RunArchive:
         self.archive, self.context, self.run, self.parent = archive, context, run, parent
         self.message_ids, self.patience, self.clock = tuple(message_ids), patience, clock
 
+    async def start_tool(self, call: ToolCall, operation_id: str) -> None:
+        await _write(
+            partial(
+                ToolJournal(self.archive.control, clock=self.clock).start,
+                self.context,
+                self.run,
+                operation_id,
+                call,
+            ),
+            run=self.run,
+            patience=self.patience,
+            clock=self.clock,
+        )
+
     async def append(self, message: Message, appended: Appended) -> Message:
         entry = entry_of(message, appended, task_refs=self.message_ids)
         call, outcome = appended.call, appended.outcome
@@ -69,6 +85,14 @@ class RunArchive:
             entry,
             parent=self.parent,
             reads=reads,
+            tool_record=(
+                ToolRecord(
+                    {"tool": call.name, "arguments": call.arguments, **outcome.record},
+                    appended.operation_id,
+                )
+                if appended.kind == "tool_result" and call is not None and outcome is not None
+                else None
+            ),
             patience=self.patience,
             clock=self.clock,
         )
@@ -84,23 +108,35 @@ async def patiently(
     *,
     parent: str | None = None,
     reads: Sequence[Read] = (),
+    tool_record: ToolRecord | None = None,
     patience: float = PATIENCE,
     clock: Clock = SYSTEM_CLOCK,
 ) -> Archived:
     """``entry`` appended to ``run``'s archive, with what it read (CM-12), tried again
     while the store is busy."""
+    return await _write(
+        partial(
+            archive.append,
+            context.project_id,
+            context.session_id,
+            run,
+            entry,
+            parent=parent,
+            reads=reads,
+            tool_record=tool_record,
+        ),
+        run=run,
+        patience=patience,
+        clock=clock,
+    )
+
+
+async def _write[T](call: Callable[[], T], *, run: str, patience: float, clock: Clock) -> T:
+    """Retry only BUSY, which failed before BEGIN and therefore wrote nothing."""
     deadline, wait = clock.monotonic() + patience, 0.5
     while True:
         try:
-            return await threaded(
-                archive.append,
-                context.project_id,
-                context.session_id,
-                run,
-                entry,
-                parent=parent,
-                reads=reads,
-            )
+            return await threaded(call)
         except ControlError as error:
             if error.kind != BUSY or clock.monotonic() + wait > deadline:
                 raise

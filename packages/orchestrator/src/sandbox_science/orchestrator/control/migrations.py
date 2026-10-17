@@ -2885,6 +2885,54 @@ def _figure_checks(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _tool_journal(schema: Schema) -> None:
+    """Version 58: tool intents before dispatch and full tool records saved atomically
+    with their archive messages (research-continuity.md, RC-10, RC-14). Older messages
+    have no tool record here; their finished run records remain the original source."""
+    for statement in (
+        """CREATE TABLE tool_intents (
+    seq INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    operation_id TEXT NOT NULL CHECK (length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128),
+    body_bytes INTEGER NOT NULL CHECK (body_bytes =
+        length(CAST(call_id AS BLOB)) + length(CAST(tool AS BLOB)) +
+        length(CAST(arguments AS BLOB)) + length(CAST(context AS BLOB)) +
+        length(CAST(created AS BLOB))),
+    call_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    context TEXT NOT NULL CHECK (json_valid(context) AND json_type(context) = 'object'),
+    created TEXT NOT NULL,
+    UNIQUE (project, session, run, operation_id),
+    FOREIGN KEY (project, session) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        "CREATE INDEX tool_intents_run ON tool_intents (project, session, run, seq)",
+        """CREATE TABLE archive_tool_records (
+    project TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    operation_id TEXT,
+    record_bytes INTEGER NOT NULL CHECK (record_bytes = length(CAST(record AS BLOB))),
+    record TEXT NOT NULL CHECK (json_valid(record) AND json_type(record) = 'object'),
+    PRIMARY KEY (project, message_id),
+    UNIQUE (project, session, run, operation_id),
+    FOREIGN KEY (project, message_id) REFERENCES archive_messages (project, message_id),
+    FOREIGN KEY (project, session, run, operation_id)
+        REFERENCES tool_intents (project, session, run, operation_id)
+) STRICT""",
+    ):
+        schema.execute(statement)
+    for table in ("tool_intents", "archive_tool_records"):
+        for action in ("UPDATE", "DELETE"):
+            schema.execute(
+                f"CREATE TRIGGER {table}_no_{action.lower()} BEFORE {action} ON {table} "
+                "BEGIN SELECT RAISE(ABORT, 'tool evidence is written once'); END"
+            )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2942,6 +2990,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _document_pins,
     _statement_and_chat_pins,
     _figure_checks,
+    _tool_journal,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

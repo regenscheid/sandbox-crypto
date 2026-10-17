@@ -711,17 +711,18 @@ async def _run_task(
             return transcript
         viewed: list[tuple[Notice, str]] = []
         for call in reply.tool_calls:
+            operation = operation_id(f"{run_id}-t{turn}", call)
+            if transcript.log is not None:
+                await transcript.log.start_tool(call, operation)
             transcript.phase = "tool"
-            outcome = await toolbox.call(
-                call, operation_id(f"{run_id}-t{turn}", call), model=reply.model, gates=hooks
-            )
+            outcome = await toolbox.call(call, operation, model=reply.model, gates=hooks)
             transcript.phase = "harness"
             guard.call(call, outcome)  # before any notice rides on its result
             await _attach(hooks, transcript, outcome, toolbox.output_chars)
             await _append(
                 transcript,
                 {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
-                Appended("tool_result", call=call, outcome=outcome),
+                Appended("tool_result", call=call, outcome=outcome, operation_id=operation),
             )
             transcript.tool_records.append(
                 {"tool": call.name, "arguments": call.arguments, **outcome.record}

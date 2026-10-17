@@ -1,0 +1,347 @@
+# SPDX-License-Identifier: MIT
+"""RC-10/RC-14: dispatch and result crash windows through the real tool loop.
+
+Only an in-process arithmetic fixture executes. No model service or worker runs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import sqlite3
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.control import ControlError, ControlStore
+from sandbox_science.orchestrator.history import Archive, Entry, RunArchive
+from sandbox_science.orchestrator.history.operations import PAGE, ToolJournal, ToolRecord
+from sandbox_science.orchestrator.loop import run_task
+from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
+from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.tools import Request, Toolbox, ToolEntry, ToolOutcome
+from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .control_versions import older_store
+
+CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env-p")
+RUN = "20261016T030000000000Z-run-1"
+CALL = ToolCall("call-1", "arithmetic", '{ "value": "\u03b1", "n": 2 }')
+FULL = {
+    "result": {"value": 4, "stdout": "\u03b1\x00\n" * 5000},
+    "saved_output": {"stdout": "full.txt"},
+}
+
+
+@pytest.fixture
+def projects(tmp_path: Path) -> Iterator[ProjectStore]:
+    store = ProjectStore(tmp_path)
+    store.create("p", "minimal", "sha256:" + "a" * 64)
+    store.open_session("p", "s", dedicated=False)
+    yield store
+    store.close()
+
+
+def logger(projects: ProjectStore, *, parent: str | None = None) -> RunArchive:
+    return RunArchive(Archive(projects.control), CONTEXT, run=RUN, parent=parent)
+
+
+def toolbox(handler) -> Toolbox:
+    box = Toolbox(WorkerClient("http://unused.invalid", "fixture"), CONTEXT)
+    box.entries = {
+        "arithmetic": ToolEntry(
+            ToolSpec("arithmetic", "Fixture arithmetic", {"type": "object"}), "read", handler
+        )
+    }
+    return box
+
+
+def model(*calls: ToolCall) -> ScriptedModel:
+    return ScriptedModel([ModelTurn(None, tool_calls=calls), ModelTurn("Done")])
+
+
+@pytest.mark.parametrize("parent", [None, "20261016T020000000000Z-parent"])
+async def test_intent_precedes_dispatch_and_result_precedes_delivery_without_a_final_record(
+    projects: ProjectStore, tmp_path: Path, parent: str | None
+) -> None:
+    observed: list[str] = []
+
+    async def arithmetic(request: Request) -> ToolOutcome:
+        # A different connection sees the committed intent before any effect starts.
+        other = ControlStore(projects.control.path, readonly=True)
+        try:
+            journal = ToolJournal(other)
+            (pending,) = journal.pending("p", "s", RUN)
+            observed.append(request.operation)
+            assert pending.operation_id == request.operation
+            intent = journal.intent("p", "s", RUN, request.operation)
+            assert intent["arguments"] == CALL.arguments
+            assert intent["context"] == CONTEXT.model_dump(mode="json")
+            assert (intent["call_id"], intent["tool"]) == (CALL.id, CALL.name)
+        finally:
+            other.close()
+        return ToolOutcome("4 (sample)", dict(FULL))
+
+    async def delivered(name, arguments, outcome) -> None:
+        journal = ToolJournal(projects.control)
+        assert journal.pending("p", "s", RUN) == []
+        result = Archive(projects.control).messages("p", "s")[-1]
+        assert journal.record("p", result.message_id) == {
+            "tool": name,
+            "arguments": arguments,
+            **outcome.record,
+        }
+        assert projects.runs("p", "s") == []
+
+    transcript = await run_task(
+        model(CALL),
+        toolbox(arithmetic),
+        "Compute",
+        run_id="run-1",
+        hooks=(),
+        log=logger(projects, parent=parent),
+        on_tool=delivered,
+    )
+    assert transcript.final_text == "Done"
+    projects.close()
+    reopened = ProjectStore(tmp_path)
+    try:
+        results = [
+            m for m in Archive(reopened.control).messages("p", "s") if m.entry.kind == "tool_result"
+        ]
+        assert len(results) == len(observed) == 1
+        assert results[0].parent == parent
+        assert results[0].entry.content == "4 (sample)"
+        record = ToolJournal(reopened.control).record("p", results[0].message_id)
+        assert record == transcript.tool_records[0]
+        assert record["result"] == FULL["result"]
+        assert reopened.runs("p", "s") == []  # no final record needed for recovery
+    finally:
+        reopened.close()
+
+
+async def test_interruption_during_dispatch_keeps_an_uncertain_intent(
+    projects: ProjectStore, tmp_path: Path
+) -> None:
+    entered = asyncio.Event()
+
+    async def interrupted(request: Request) -> ToolOutcome:
+        entered.set()
+        await asyncio.Future()
+        raise AssertionError("never returns")
+
+    task = asyncio.create_task(
+        run_task(
+            model(CALL),
+            toolbox(interrupted),
+            "Compute",
+            run_id="run-1",
+            hooks=(),
+            log=logger(projects),
+        )
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    projects.close()
+    reopened = ProjectStore(tmp_path)
+    try:
+        (pending,) = ToolJournal(reopened.control).pending("p", "s", RUN)
+        assert (
+            ToolJournal(reopened.control).intent("p", "s", RUN, pending.operation_id)["arguments"]
+            == CALL.arguments
+        )
+        assert not [
+            m for m in Archive(reopened.control).messages("p", "s") if m.entry.kind == "tool_result"
+        ]
+    finally:
+        reopened.close()
+
+
+async def test_persistence_failure_before_dispatch_prevents_the_effect(
+    projects: ProjectStore,
+) -> None:
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "CREATE TRIGGER refuse_intent BEFORE INSERT ON tool_intents "
+            "BEGIN SELECT RAISE(ABORT, 'fixture storage failure'); END"
+        )
+    called = []
+
+    async def arithmetic(request: Request) -> ToolOutcome:
+        called.append(request)
+        return ToolOutcome("4")
+
+    transcript = await run_task(
+        model(CALL), toolbox(arithmetic), "Compute", run_id="run-1", hooks=(), log=logger(projects)
+    )
+    assert called == []
+    assert transcript.failure == "harness"
+    assert ToolJournal(projects.control).pending("p", "s", RUN) == []
+
+
+async def test_failure_after_dispatch_rolls_back_message_and_record_together(
+    projects: ProjectStore,
+) -> None:
+    called, delivered = [], []
+
+    async def arithmetic(request: Request) -> ToolOutcome:
+        called.append(request)
+        # The index is written after the archive message and the full tool record.
+        with projects.control.write() as tx:
+            tx.sql.execute(
+                "CREATE TRIGGER refuse_index BEFORE INSERT ON archive_docs "
+                "BEGIN SELECT RAISE(ABORT, 'fixture index failure'); END"
+            )
+        return ToolOutcome("4", FULL)
+
+    async def observe(*args) -> None:
+        delivered.append(args)
+
+    transcript = await run_task(
+        model(CALL),
+        toolbox(arithmetic),
+        "Compute",
+        run_id="run-1",
+        hooks=(),
+        log=logger(projects),
+        on_tool=observe,
+    )
+    assert len(called) == 1
+    assert delivered == []
+    assert transcript.failure == "harness"
+    assert transcript.tool_records == []
+    assert len(ToolJournal(projects.control).pending("p", "s", RUN)) == 1
+    assert not [
+        m for m in Archive(projects.control).messages("p", "s") if m.entry.kind == "tool_result"
+    ]
+    with projects.control.read() as tx:
+        assert tx.sql.execute("SELECT count(*) FROM archive_tool_records").fetchone() == (0,)
+
+
+async def test_report_refusals_have_full_records_but_no_dispatch_intent(
+    projects: ProjectStore,
+) -> None:
+    called = []
+
+    async def arithmetic(request: Request) -> ToolOutcome:
+        called.append(request)
+        return ToolOutcome("4", FULL)
+
+    report_call = ToolCall("report-call", "arithmetic", "{}")
+    scripted = ScriptedModel(
+        [ModelTurn(None, tool_calls=(CALL,)), ModelTurn("Report", tool_calls=(report_call,))]
+    )
+    transcript = await run_task(
+        scripted,
+        toolbox(arithmetic),
+        "Compute",
+        run_id="run-1",
+        hooks=(),
+        log=logger(projects),
+        max_turns=1,
+    )
+    assert len(called) == 1
+    assert transcript.stopped == "turn_limit"
+    messages = [
+        m for m in Archive(projects.control).messages("p", "s") if m.entry.kind == "tool_result"
+    ]
+    assert len(messages) == 2
+    assert [ToolJournal(projects.control).record("p", m.message_id) for m in messages] == (
+        transcript.tool_records
+    )
+    with projects.control.read() as tx:
+        assert tx.sql.execute("SELECT count(*) FROM tool_intents").fetchone() == (1,)
+
+
+def test_duplicates_scopes_immutability_and_bounded_pending_pages(projects: ProjectStore) -> None:
+    journal = ToolJournal(projects.control)
+    for n in range(PAGE + 2):
+        journal.start(CONTEXT, RUN, f"op-{n}", CALL)
+    with pytest.raises(ControlError, match="reconcile") as error:
+        journal.start(CONTEXT, RUN, "op-0", CALL)
+    assert error.value.kind == "conflict"
+    page = journal.pending("p", "s", RUN, limit=100000)
+    assert len(page) == PAGE
+    assert [p.operation_id for p in journal.pending("p", "s", RUN, after=page[-1].seq)] == [
+        f"op-{PAGE}",
+        f"op-{PAGE + 1}",
+    ]
+    assert journal.pending("other", "s", RUN) == journal.pending("p", "other", RUN) == []
+    with pytest.raises(ControlError) as error:
+        journal.intent("p", "s", "other", "op-0")
+    assert error.value.kind == "not_found"
+    entry = Entry("tool", "tool_result", "4", source=CALL.name, call_id=CALL.id)
+    with pytest.raises(ControlError):
+        Archive(projects.control).append(
+            "p", "s", "other", entry, tool_record=ToolRecord(FULL, "op-0")
+        )
+    assert Archive(projects.control).messages("p", "s") == []
+    archived = Archive(projects.control).append(
+        "p", "s", RUN, entry, tool_record=ToolRecord(FULL, "op-0")
+    )
+    assert page[0] not in journal.pending("p", "s", RUN)
+    with pytest.raises(ControlError) as error:
+        journal.record("other", archived.message_id)
+    assert error.value.kind == "not_found"
+    for table in ("tool_intents", "archive_tool_records"):
+        for sql in (f"DELETE FROM {table}", f"UPDATE {table} SET project=project"):
+            with (
+                pytest.raises(sqlite3.IntegrityError, match="written once"),
+                projects.control.write() as tx,
+            ):
+                tx.sql.execute(sql)
+
+
+def test_byte_limits_are_checked_before_loading_original_values(projects: ProjectStore) -> None:
+    journal = ToolJournal(projects.control)
+    journal.start(CONTEXT, RUN, "op", CALL)
+    entry = Entry("tool", "tool_result", "sample")
+    archived = Archive(projects.control).append(
+        "p", "s", RUN, entry, tool_record=ToolRecord(FULL, "op")
+    )
+
+    def no_payload_reads(action, table, column, database, trigger):
+        if (
+            action == sqlite3.SQLITE_READ
+            and table in {"tool_intents", "archive_tool_records"}
+            and column in {"record", "arguments", "context", "call_id", "tool", "created"}
+        ):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    with projects.control.read() as tx:
+        tx.sql.set_authorizer(no_payload_reads)
+    try:
+        with pytest.raises(ControlError, match="byte limit") as error:
+            journal.record("p", archived.message_id, max_bytes=1)
+        assert error.value.details["bytes"] == len(json.dumps(FULL, ensure_ascii=False).encode())
+        with pytest.raises(ControlError, match="byte limit"):
+            journal.intent("p", "s", RUN, "op", max_bytes=1)
+        assert journal.pending("p", "s", RUN) == []
+    finally:
+        with projects.control.read() as tx:
+            tx.sql.set_authorizer(None)
+
+
+def test_migration_preserves_old_messages_without_inventing_tool_records(
+    projects: ProjectStore, tmp_path: Path
+) -> None:
+    archived = Archive(projects.control).append("p", "s", RUN, Entry("tool", "tool_result", "4"))
+    target = tmp_path / "old" / "control.sqlite3"
+    target.parent.mkdir()
+    older_store(projects.control.path, target, 57)
+    old = ControlStore(target)
+    try:
+        old.initialize()
+        assert Archive(old).message("p", archived.message_id) == archived
+        with pytest.raises(ControlError) as error:
+            ToolJournal(old).record("p", archived.message_id)
+        assert error.value.kind == "not_found"
+        ToolJournal(old).start(CONTEXT, RUN, "op", CALL)
+        assert len(ToolJournal(old).pending("p", "s", RUN)) == 1
+    finally:
+        old.close()

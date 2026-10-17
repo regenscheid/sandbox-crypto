@@ -27,6 +27,7 @@ _MESSAGE: Final = re.compile(r"msg-[0-9a-f]{16}")
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, message)
+    app.router.add_get(PATH + "/tool-record", tool_record)
 
 
 async def message(request: web.Request) -> web.Response:
@@ -55,3 +56,17 @@ async def message(request: web.Request) -> web.Response:
         }
 
     return await documents.answer(request, read)
+
+
+async def tool_record(request: web.Request) -> web.Response:
+    """The original tool record, at most 1 MiB; a larger record returns a bounded
+    refusal with its byte size. Legacy messages without a journal record return 404."""
+    identifier = request.match_info["message"]
+    if not _MESSAGE.fullmatch(identifier):
+        return documents.api_error(
+            DocumentError("invalid_request", "a message is named by its msg- ID")
+        )
+    project = request.match_info["project"]
+    return await documents.answer(
+        request, lambda store: Archive(store).tool_record(project, identifier)
+    )

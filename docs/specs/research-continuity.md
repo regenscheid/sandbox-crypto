@@ -1,6 +1,6 @@
 # Research continuity
 
-Date: 2026-10-16. **Status: Draft.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed; the lifecycle, storage design and implementation sequence are proposed. Nothing on this page establishes that recovery, bounded run memory or normal-launcher orchestrator confinement is built. Baseline: main `57e29536`.
+Date: 2026-10-16. **Status: Draft.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed; the lifecycle, storage design and implementation sequence are proposed. Nothing on this page establishes that recovery, bounded run memory or normal-launcher orchestrator confinement is built. Baseline: main `57e29536`. The [tool journal increment](#first-implementation-increment-durable-tool-journal) is implemented locally; the remaining design is proposed.
 
 ## Purpose and confirmed requirements
 
@@ -84,6 +84,41 @@ The [OpenShell review](../../.agents/docs/agent-reports/openshell-foundations-re
 - RC-27. **Separate confinement (D47).** The normal launcher runs the agent-facing orchestrator in its own restricted OpenShell sandbox, separate from generated-code workloads. The trusted worker controller and OpenShell gateway, supervisor and credential services remain outside both. Parent and child model loops may share the orchestration service. Research execution continues through the worker API; neither orchestrator failure nor sandbox startup failure enables a host-execution fallback. This is the accepted target architecture, not current launcher behavior.
 - RC-28. **Scoped authority (D47).** Permit only the model gateway, policy-governed MCP proxy, scoped worker API and required scoped state service. Keep the orchestrator's software read-only and writable state explicitly scoped. Give it no engine/cluster/OpenShell administrative credentials, management sockets or broad host mounts. The worker independently validates project ownership, permitted policy revisions, operations and limits; an orchestrator request cannot widen its authority. Reuse the existing image and policy compiler, checking their current dependencies and production callers rather than treating the old lab as current acceptance.
 - RC-29. **Durable state and launcher integration (D47/D87).** Settle the storage and access contract before moving the run service: the current launcher lets the UI and orchestrator share a control store. Task ownership, checkpoints, evidence references and delivery positions must survive orchestrator process and sandbox replacement, remain accessible to the UI through a scoped boundary, and be recoverable by the replacement orchestrator. Use existing service/storage seams where possible; do not expose the host's whole state directory to solve the shared-store dependency. Define sandbox readiness, service access, shutdown and replacement behavior. Orchestrator replacement does not by itself delete workload environments; one Resume reconciles the existing task tree and worker executions.
+
+## First implementation increment: durable tool journal
+
+Control schema 58 adds immutable `tool_intents` and `archive_tool_records`. A stored
+run writes its exact toolbox operation ID, original call ID/name/argument text, run
+identity and execution context before entering the toolbox. This applies to parent
+and delegated loops through `RunArchive`. A failed intent write prevents dispatch;
+an existing intent, even with identical arguments, is refused pending reconciliation.
+An intent without a saved result means **uncertain**, including a crash before actual
+dispatch. It does not establish that the operation ran or authorize replay. The stored
+ID is the toolbox ID: worker, background-job and connector adapters can have different
+sub-operation identities and still need their own reconciliation implementations.
+
+Every tool result, including a report round's refusal without dispatch, saves the full
+structured tool record in the same transaction as its archive message and read
+register. The model's sampled text stays distinct. The record is committed before
+observer hooks, UI events and the next model call; it remains available when no final
+`RunRecord` was saved. A failure in that transaction rolls back both result and message,
+leaving any dispatch intent unresolved. Intent and result writes use the existing
+bounded busy retry and owned-thread cancellation behavior. No result acknowledgement
+or retry is inferred from a missing final record.
+
+`ToolJournal.pending` pages identities without reading argument/output payloads. Full
+intent and result reads check stored, schema-validated byte counts before loading
+values (default 1 MiB), without asking SQLite to read the payload to measure it. The
+existing authenticated workspace API exposes one record at
+`GET /api/v0/projects/{project}/messages/{message}/tool-record`; an oversized record
+returns 422 with byte counts, and an older message with no journal record returns 404.
+The migration preserves older evidence without synthesizing intents or results.
+
+This increment does **not** yet evict historical RAM, deduplicate the legacy final run
+record, implement large-record streaming, persist model-call intent, resume the work
+tree, or move the orchestrator into OpenShell. It supplies durable tool evidence for
+those later steps. Tests use benign in-process arithmetic, storage failures and
+cancellation; they do not establish a live OpenShell boundary or full crash recovery.
 
 ## Acceptance
 

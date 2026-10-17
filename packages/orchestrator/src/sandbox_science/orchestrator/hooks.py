@@ -110,11 +110,17 @@ class Appended:
     reply: ModelTurn | None = None
     call: ToolCall | None = None
     outcome: ToolOutcome | None = None
+    operation_id: str | None = None
+    """The intent saved before entering the toolbox; absent for report-round refusals."""
 
 
 class MessageLog(Protocol):
     """Where a run keeps each message as it adds it to its conversation: the session's
     archive (docs/specs/context-management.md, CM-4)."""
+
+    async def start_tool(self, call: ToolCall, operation_id: str) -> None:
+        """Persist intent before dispatch. A failure prevents the call from running."""
+        ...
 
     async def append(self, message: Message, appended: Appended) -> Message:
         """Keep ``message``, before the next model call; the message as the

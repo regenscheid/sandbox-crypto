@@ -118,6 +118,7 @@ async def test_each_message_is_archived_whole_as_it_is_added(
         f"[{result.message_id} · tool result · shell]\n{{"
     )
     assert (result.entry.source, result.entry.call_id) == ("shell", "call-1")
+    assert archive.tool_record(PROJECT, result.message_id) == record.tools[0]
     assert answer.content == "Looking."  # the model's, as it wrote it
     assert answer.tool_calls
     assert (answer.model, answer.gateway_version) == ("scripted-main", GATEWAY_VERSION)

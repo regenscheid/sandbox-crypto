@@ -301,8 +301,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## Repository
 
-- [ ] Research continuity before the UI redesign (owner, 2026-10-16; D87; [draft](../docs/specs/research-continuity.md), implementation not started):
-  - [ ] Incremental evidence storage, output deduplication and bounded memory, including review, final save and export; RC-F9/F10/F14.
+- [ ] Research continuity before the UI redesign (owner, 2026-10-16; D87; [design](../docs/specs/research-continuity.md), implementation begun on `codex/research-foundations`):
+  - [ ] Incremental evidence storage, output deduplication and bounded memory, including review, final save and export; RC-F9/F10/F14. First local increment: immutable pre-dispatch tool intents and full tool records saved with archive messages (schema 58), plus bounded retrieval. Review/integration, legacy record deduplication and RAM eviction remain pending.
   - [ ] Durable work/attempt relationships, parent waiting without model polling, environment claims across idle periods, and limit/Stop semantics; RC-F1/F2/F6/F7/F17.
   - [ ] One orchestrator Resume for the whole selected tree, operation reconciliation, kernel checks and outcome delivery; RC-F3 to RC-F8 and RC-F12/F16. Automatic crash resume remains an owner decision.
   - [ ] Preserve failed-creation cleanup obligations until the original OpenShell sandbox is confirmed absent; RC-F18 and [runtime review](docs/agent-reports/openshell-foundations-review-2026-10-16.md).

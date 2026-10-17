@@ -1,10 +1,10 @@
 # Handoff
 
-Updated 2026-10-16, main `7eb3b1f1`. For the next coordinator: how work is done and what to watch for. This file is replaced, not appended to, and stays under about 6 KB. Read it with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-16 on `codex/research-foundations`, base `57e29536`. For the next coordinator: how work is done and what to watch for. This file is replaced, not appended to, and stays under about 6 KB. Read it with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Where things stand
 
-- **The first milestone for real use is met** in [lab 40](docs/agent-reports/babbage-openshell-lab-40-2026-10-15.md). Labs [41](docs/agent-reports/babbage-openshell-lab-41-2026-10-15.md) to [44](docs/agent-reports/babbage-openshell-lab-44-2026-10-16.md) checked what merged after it, and their product bugs are fixed. Nothing is running in a lab. The owner's personal instance runs on babbage ([runbook](../docs/PERSONAL-BABBAGE.md)); `lab_down.sh` ignores its `ss-personal-*` units.
+- **Research foundations first (D47/D87).** The owner considers this an early prototype. The local branch starts with a durable tool journal (schema 58); tree Resume, bounded transcript RAM and separate orchestrator OpenShell confinement are still pending. See [research continuity](../docs/specs/research-continuity.md). Personal services were inactive at the foundation review and remain untouched; no live lab was started.
 - **Context management is built (steps a to g); its acceptance is not met.** Lab 44 was round 1 on GPT models ([STATUS](STATUS.md#phase-and-focus)). The owner's checklist in its report is pending. Round 2 needs the Claude arms, 600,000 arms that fold twice, the control repeated and the state block's placement (CM-25) measured first. Lanes: CM-A (archive, history tools, session view, the cite-handle and gateway fixes), CM-B (the ledger's fields and provenance, cache key), CM-D (the adapters, figure charts), G (the GUI), K (skills, images).
 - **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; the deny-list's tool families should be generated from the images, not listed by hand.
 - **Waiting for the owner:** lab 44's checklist, and Q12 to 14 of the skills spec, still the coordinator's reversible acceptance. The state block's placement is a design question for round 2, not for the owner yet.

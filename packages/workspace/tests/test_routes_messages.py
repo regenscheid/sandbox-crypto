@@ -46,3 +46,36 @@ async def test_an_archived_message_reads_whole_and_an_unknown_one_is_not_found(
     await error_of(await client.get(PATH + "message-1"), 400, "invalid_request")
     await error_of(await client.get("/api/v0/projects/p9/messages/" + result.message_id), 404,
                    "not_found")  # fmt: skip
+
+
+async def test_tool_record_survives_run_loss_and_is_scoped_and_bounded(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    from sandbox_science.orchestrator.history.operations import READ_BYTES, ToolRecord
+
+    store = ProjectStore(state_dir)
+    full = {"tool": "arithmetic", "arguments": "{}", "result": {"value": 4, "text": "whole\n"}}
+    try:
+        archive = Archive(store.control)
+        entry = Entry("tool", "tool_result", "sample", source="arithmetic")
+        saved = archive.append("p1", "a", RUN, entry, tool_record=ToolRecord(full))
+        large = archive.append(
+            "p1", "a", RUN, entry, tool_record=ToolRecord({"output": "x" * READ_BYTES})
+        )
+        old = archive.append("p1", "a", RUN, entry)
+        assert all(run.name != RUN for run in store.runs("p1", "a"))
+    finally:
+        store.close()
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    response = await client.get(PATH + saved.message_id + "/tool-record")
+    assert response.status == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert await response.json() == full
+    await error_of(await client.get(PATH + large.message_id + "/tool-record"), 422, "unsupported")
+    await error_of(await client.get(PATH + old.message_id + "/tool-record"), 404, "not_found")
+    await error_of(await client.get(PATH + "invalid/tool-record"), 400, "invalid_request")
+    await error_of(
+        await client.get("/api/v0/projects/p2/messages/" + saved.message_id + "/tool-record"),
+        404,
+        "not_found",
+    )

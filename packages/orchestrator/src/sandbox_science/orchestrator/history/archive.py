@@ -53,6 +53,7 @@ from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
+from .operations import READ_BYTES, ToolJournal, ToolRecord, save_record
 from .reads import Read, encoded
 
 Json = dict[str, Any]
@@ -332,12 +333,15 @@ class Archive:
         *,
         parent: str | None = None,
         reads: Sequence[Read] = (),
+        tool_record: ToolRecord | None = None,
     ) -> Archived:
         """Keep a message ``run`` adds to its conversation, and index it, with the sources
         a tool result read (the read register, CM-12), in one change; the message as
         archived."""
         if entry.kind not in KINDS or (entry.kind == "assistant") != (entry.role == "assistant"):
             raise ControlError(INVALID_REQUEST, f"no {entry.role} message is of kind {entry.kind}")
+        if tool_record is not None and (entry.kind != "tool_result" or entry.role != "tool"):
+            raise ControlError(INVALID_REQUEST, "a tool record must accompany a tool result")
         created = self.clock.now().astimezone(UTC).isoformat()
         with self.control.write() as tx:
             db = tx.sql
@@ -361,6 +365,8 @@ class Archive:
                 )
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
+            if tool_record is not None:
+                save_record(db, project, session, run, message_id, tool_record)
             _document(db, project, message_id, entry.searched)
             for read in reads:
                 _read(db, project, session, message_id, entry.source or "", read)
@@ -402,6 +408,10 @@ class Archive:
         if row is None:
             raise ControlError(NOT_FOUND, f"the project's archive has no message {message_id}")
         return _archived(row)
+
+    def tool_record(self, project: str, message_id: str, *, max_bytes: int = READ_BYTES) -> Json:
+        """Full structured evidence behind one tool message, bounded before loading."""
+        return ToolJournal(self.control).record(project, message_id, max_bytes=max_bytes)
 
     def messages(
         self,
