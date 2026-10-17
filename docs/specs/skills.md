@@ -262,3 +262,21 @@ The coordinator accepted these drafted values on 2026-10-15, as reversible (.age
 ## Sources
 
 [External skills](../EXTERNAL-SKILLS.md), [feature plan](../FEATURE-PLAN.md) (skills and provenance), [source study](../SOURCE-STUDY.md), [product](../PRODUCT.md), [architecture](../ARCHITECTURE.md), decisions D04, D11, D29–D32, D47, D48, D56, the owner's answers of 2026-10-15, and the owner's prompt research of 2026-10-15 (a catalog of how CScience divides its instructions, with proposed designs; not in this repository). Behavior evidence: the [Claude Science](../../.agents/docs/agent-reports/claude-science.md), [Claude Code and Desktop](../../.agents/docs/agent-reports/claude-code-desktop.md) and [OpenScience Desktop](../../.agents/docs/agent-reports/openscience-desktop.md) reports. Public: Claude Code's [skills documentation](https://code.claude.com/docs/en/skills); crypto-analysis-skills at `4089e99` (README, workbench-knowledge, investigate references, routing cases and evaluation contract).
+
+### Generated installed-tool restrictions
+
+Loaded helper packs receive bindings only after the worker reports a current static
+[binding inventory](skill-binding-inventory.md). Generated variable reads and tool
+families supplement every existing unconditional denial; user approval cannot
+override them. Generated command namespaces supplement the existing live command
+collision check. The staging record includes the digest and matching provenance.
+Missing or failed inventory holds bindings while allowing skill text and files to
+remain available. A refreshed inventory revalidates all already-loaded sources.
+
+Shell, job and cell requests carry the observed digest. The executor rechecks current
+packages and generated variable restrictions at launch, holding cooperating package
+changes out until effect admission. A stale staging digest is refused; reload the
+skills to resolve current namespace grants. A kernel retaining skill bindings from a
+previous inventory requires an explicit restart after reload. Its inherited process
+environment is not silently rewritten. Older executors cannot accept binding-bearing
+calls or cells that might retain unverified bindings.

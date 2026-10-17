@@ -320,12 +320,13 @@ class Dispatcher:
                 fields["run"] = request.run
         if not isinstance(request, PdfRequest) and request.bindings:
             fields["bindings"] = dict(request.bindings)  # the skills' (SK-16)
+            fields["binding_inventory"] = request.binding_inventory
         channel = environment.channel
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         if "run" in fields:
             require_run_kernels(channel)
-        if "bindings" in fields:
+        if "bindings" in fields or isinstance(request, CellRequest):
             require_skill_bindings(channel)
         environment.running.add(execution_id)
         shared = self.shared

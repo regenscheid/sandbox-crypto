@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 7
+PROTOCOL_VERSION: Final = 8
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -134,6 +134,7 @@ class ShellRequest(Contract):
     timeout_seconds: Timeout = DEFAULT_TIMEOUT_SECONDS
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
     bindings: Bindings = Field(default_factory=dict[str, str])
+    binding_inventory: Sha256 | None = None
 
     @model_validator(mode="after")
     def _one_command(self) -> Self:
@@ -160,6 +161,7 @@ class JobRequest(Contract):
     """The job's time limit; None, the default, takes the policy's default when submitted."""
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
     bindings: Bindings = Field(default_factory=dict[str, str])
+    binding_inventory: Sha256 | None = None
 
     @model_validator(mode="after")
     def _one_command(self) -> Self:
@@ -189,6 +191,7 @@ class CellRequest(Contract):
     bindings: Bindings = Field(default_factory=dict[str, str])
     """The environment of a kernel this cell starts; a kernel already running keeps its
     own, and the result's notices say so when they differ."""
+    binding_inventory: Sha256 | None = None
 
     @model_validator(mode="after")
     def _checked(self) -> Self:
@@ -648,6 +651,40 @@ class StagedFile(Contract):
     executable: bool = False
 
 
+class BindingRestriction(Contract):
+    """One matching denial's installed-package extraction provenance."""
+
+    name: str = Field(min_length=1, max_length=128)
+    package: str = Field(min_length=1, max_length=512)
+    source: str = Field(min_length=1, max_length=4096)
+    sha256: Sha256
+    rule: str = Field(min_length=1, max_length=128)
+
+
+class BindingInventory(Contract):
+    """Current static restriction projection; missing inventory grants no bindings."""
+
+    state: Literal["ready", "unavailable"] = "unavailable"
+    digest: Sha256 | None = None
+    fingerprint: str = Field(default="", max_length=256)
+    generator: int = Field(default=1, ge=1)
+    epoch: int = Field(default=0, ge=0)
+    reserved: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = Field(
+        default=(), max_length=8192
+    )
+    namespaces: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = Field(
+        default=(), max_length=8192
+    )
+    coverage: str = Field(default="inventory unavailable", max_length=2000)
+    provenance: tuple[BindingRestriction, ...] = Field(default=(), max_length=8192)
+
+    @model_validator(mode="after")
+    def _ready(self) -> Self:
+        if self.state == "ready" and (self.digest is None or not self.fingerprint):
+            raise ValueError("ready inventory requires digest and package fingerprint")
+        return self
+
+
 class StageCheckRequest(Contract):
     """Whether a pack's snapshot is staged in the environment as ``files`` say, file by
     file, with nothing more; with ``seal``, once it is, its files and folders are made
@@ -661,6 +698,10 @@ class StageCheckRequest(Contract):
     commands: tuple[CommandName, ...] = Field(default=(), max_length=256)
     """Names to look for on the environment's ``PATH``: a pack's namespace that is a
     command's name is that command's (SK-31)."""
+    binding_names: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = Field(
+        default=(), max_length=8192
+    )
+    """Candidate variables and namespaces for the current inventory projection."""
 
     @model_validator(mode="after")
     def _bounded(self) -> Self:
@@ -681,6 +722,7 @@ class StageCheck(Contract):
     differing: tuple[str, ...] = Field(default=(), max_length=MAX_STAGED_FILES)
     commands: tuple[str, ...] = Field(default=(), max_length=256)
     """Those of the request's ``commands`` the environment's ``PATH`` has."""
+    inventory: BindingInventory = Field(default_factory=BindingInventory)
 
 
 class StagedContent(Contract):

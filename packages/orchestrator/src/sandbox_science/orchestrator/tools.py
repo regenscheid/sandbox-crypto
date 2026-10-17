@@ -692,7 +692,8 @@ class Toolbox:
         self.skills = skills
         """The run's skills: their system-message section and the ``skills`` tool."""
         if self.jobs is not None:
-            self.jobs.bindings = lambda: self._bindings({})  # a job carries them too
+            self.jobs.bindings = lambda: self._bindings({})
+            self.jobs.binding_inventory = self._binding_inventory  # a job carries them too
         if skills is not None:
             entries += _group(
                 skills.specs,
@@ -1029,6 +1030,10 @@ class Toolbox:
         stager = self.skills.stager if self.skills is not None else None
         return dict(stager.bindings) if stager is not None else {}
 
+    def _binding_inventory(self) -> str | None:
+        stager = self.skills.stager if self.skills is not None else None
+        return stager.inventory_digest if stager is not None else None
+
     async def _shell(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         request = ShellRequest.model_validate(
             {
@@ -1036,6 +1041,7 @@ class Toolbox:
                 "context": self.context,
                 **_known(args, "script", "cwd", "timeout_seconds"),
                 "bindings": self._bindings(args),
+                "binding_inventory": self._binding_inventory(),
             }
         )
         return await self._run(request)
@@ -1165,6 +1171,7 @@ class Toolbox:
                 "run": self.kernel_run,
                 **_known(args, "code", "timeout_seconds"),
                 "bindings": self._bindings(args),
+                "binding_inventory": self._binding_inventory(),
             }
         )
         return await self._run(request)

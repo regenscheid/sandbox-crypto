@@ -692,7 +692,13 @@ class SkillStore:
             return _settings(db, project)
 
     def bindings(
-        self, project: str, derived: tuple[str, str] | None, tools: Collection[str] = ()
+        self,
+        project: str,
+        derived: tuple[str, str] | None,
+        tools: Collection[str] = (),
+        reserved: Collection[str] = (),
+        namespaces: Collection[str] = (),
+        inventory_ready: bool = True,
     ) -> Bound:
         """Each pinned source's bindings the pass of ``derived``, an alias and version,
         found: those the project's runs set, namespaced to the pack or approved, and those
@@ -722,8 +728,15 @@ class SkillStore:
         for source, variables in given.items():
             others = {name for other, names in spaces.items() if other != source for name in names}
             names, refused = allow.granted(source, prefixes.get(source), others, tools)
+            names = [name for name in names if name not in namespaces]
             for variable, path in sorted(variables.items()):
-                why = _held(overrides, source, variable, names, refused)
+                why = (
+                    "current tool binding inventory unavailable"
+                    if not inventory_ready
+                    else "a generated reserved tool variable: never set"
+                    if variable in reserved
+                    else _held(overrides, source, variable, names, refused)
+                )
                 if why is None and len(named[variable]) > 1:
                     also = ", ".join(s for s in named[variable] if s != source)
                     why = f"{also} binds it too: held for each"

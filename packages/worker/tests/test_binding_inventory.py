@@ -69,7 +69,11 @@ def test_package_cache_invalidates_before_failed_or_unstable_replacement(
         "ZEBRA_INPUT"
     ]
     assert cached.projection(["ZEBRA_"], 1)["namespaces"] == ["ZEBRA_"]
+    assert cached.projection(["ZEBRA_CUSTOM_"], 1)["namespaces"] == ["ZEBRA_CUSTOM_"]
     cached.require({"QZPACK_DIR"})
+    identity[0] = "metadata-only-change"
+    metadata_only = cached.current(tmp_path, (), lambda: identity[0], destination)
+    assert metadata_only["digest"] != first["digest"]
     with pytest.raises(inventory.InventoryError, match="reserved tool variables"):
         cached.require({"ZEBRA_INPUT"})
     package(tmp_path, "2", "OTHER_INPUT")
@@ -161,3 +165,18 @@ def test_metadata_symlinks_and_special_files_never_redirect_or_block_scanning(
     os.mkfifo(meta)
     with pytest.raises(inventory.InventoryError, match="bounded regular file"):
         inventory.generate(tmp_path, (), dpkg=tmp_path / "dpkg")
+
+
+def test_legacy_egg_metadata_is_inventoried_with_explicit_ownership_coverage(
+    tmp_path: Path,
+) -> None:
+    site = tmp_path / "site"
+    egg = site / "legacy.egg-info"
+    egg.mkdir(parents=True)
+    (egg / "PKG-INFO").write_bytes(b"Name: legacy\r\nVersion: 1\r\n")
+    first = inventory.generate(tmp_path, (site,), dpkg=tmp_path / "dpkg")
+    assert first["packages"] == ["egg:legacy@1"]
+    assert any("lacks installed ownership" in note for note in first["coverage"])
+    (egg / "PKG-INFO").write_text("Name: legacy\nVersion: 2\n")
+    second = inventory.generate(tmp_path, (site,), dpkg=tmp_path / "dpkg")
+    assert second["digest"] != first["digest"]

@@ -71,10 +71,11 @@ def require_skill_bindings(channel: ExecutorChannel) -> None:
     reattached daemon keeps its old executor, which would run the execution without them,
     saying nothing (docs/specs/skills.md, SK-16)."""
     protocol = channel.hello.get("protocol")
-    if not isinstance(protocol, int) or isinstance(protocol, bool) or protocol < 2:
+    if not isinstance(protocol, int) or isinstance(protocol, bool) or protocol < 3:
         raise WorkerError(
             ErrorKind.UNSUPPORTED,
-            "this environment's executor predates skill bindings; recycle the environment",
+            "this environment's executor predates skill bindings with generated restrictions; "
+            "recycle the environment",
         )
 
 

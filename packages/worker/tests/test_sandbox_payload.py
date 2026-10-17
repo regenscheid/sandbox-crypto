@@ -25,6 +25,7 @@ LAZY: dict[str, frozenset[str]] = {
 LOADS: dict[str, frozenset[str]] = {
     "executor.py": frozenset(
         {
+            "binding_inventory",
             "capture",
             "provisioning",
             "sandbox_files",

@@ -182,6 +182,38 @@ def generate(
                             add(package, site, row[0])
                         else:
                             add(package, prefix, relative)
+        for site in sorted(set(sites)):
+            for info in sorted(site.glob("*.egg-info")):
+                metadata_path = info / "PKG-INFO" if info.is_dir() else info
+                metadata_bytes = scoped_read(metadata_path, site)
+                metadata = metadata_bytes.decode("utf-8", "replace")
+                name = re.search(r"^Name: (.+)$", metadata, re.M)
+                version = re.search(r"^Version: (.+)$", metadata, re.M)
+                if name is None or version is None:
+                    raise InventoryError("egg metadata lacks name/version")
+                package = f"egg:{name[1].strip()}@{version[1].strip()}"
+                if len(package) > 512 or any(ord(c) < 32 for c in package):
+                    raise InventoryError("invalid egg package identity")
+                packages.add(package)
+                origins[package] = {
+                    "source": info.name + "/PKG-INFO",
+                    "sha256": hashlib.sha256(metadata_bytes).hexdigest(),
+                }
+                installed = info / "installed-files.txt"
+                if info.is_dir() and installed.exists():
+                    for relative in scoped_read(installed, site).decode().splitlines():
+                        candidate = Path(os.path.abspath(info / relative))
+                        try:
+                            relative = str(candidate.relative_to(prefix))
+                        except ValueError:
+                            raise InventoryError(
+                                "egg ownership escapes installation prefix"
+                            ) from None
+                        add(package, prefix, relative)
+                else:
+                    notes.add(
+                        f"{package}: egg metadata lacks installed ownership; fallback rules apply"
+                    )
         status_path = dpkg / "status"
         versions: dict[str, str] = {}
         if status_path.exists():
@@ -293,11 +325,14 @@ def generate(
             for prefix in prefixes
         ]
         image = Path("/usr/share/sandbox-science/image.json")
-        sources: list[object] = (
-            cast(list[object], json.loads(scoped_read(image, image.parent)).get("sources", []))
+        source_value: Any = (
+            json.loads(scoped_read(image, image.parent)).get("sources", [])
             if image.exists()
-            else []
+            else list[object]()
         )
+        if not isinstance(source_value, list) or len(cast(list[object], source_value)) > 512:
+            raise InventoryError("invalid source-built package inventory")
+        sources = cast(list[object], source_value)
         body: dict[str, Any] = {
             "format": FORMAT,
             "generator": VERSION,
@@ -367,6 +402,11 @@ class Inventory:
             return self.manifest
         self.manifest, self.variables, self.fingerprint, self.families = None, set(), "", ()
         manifest = generate(prefix, sites)
+        # Even an unsupported metadata layout must invalidate cached namespace grants.
+        # Bind the observed metadata identity, not just extracted names, into the token.
+        manifest.pop("digest")
+        manifest["package_fingerprint"] = before
+        manifest["digest"] = hashlib.sha256(canonical(manifest)).hexdigest()
         if fingerprint() != before:
             raise InventoryError("packages changed during inventory generation")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -409,7 +449,11 @@ class Inventory:
                 )
                 continue
             command = next(
-                (entry for entry in self.manifest["command_sources"] if entry["namespace"] == name),
+                (
+                    entry
+                    for entry in self.manifest["command_sources"]
+                    if entry["namespace"] in {name, name.split("_", 1)[0] + "_"}
+                ),
                 None,
             )
             family = next(
@@ -442,6 +486,7 @@ class Inventory:
                 for n in names
                 if any(v.startswith(n) for v in (*self.variables, *self.families))
                 or n in self.manifest["namespaces"]
+                or n.split("_", 1)[0] + "_" in self.manifest["namespaces"]
             ],
             "coverage": (
                 "static literals and conservative ELF strings; computed/large/unsupported "

@@ -175,6 +175,7 @@ class Files:
                 files=[file.model_dump(mode="json") for file in request.files],
                 seal=request.seal,
                 commands=list(request.commands),
+                binding_names=list(request.binding_names),
             )
         return checked(
             StageCheck,
@@ -183,6 +184,7 @@ class Files:
             sealed=reply.get("sealed", False),
             differing=reply.get("differing", []),
             commands=[c for c in _listed(reply.get("commands")) if c in request.commands],
+            inventory=reply.get("inventory", {}),
         )
 
     async def stage_put(self, request: StagePutRequest) -> StagePutResult:

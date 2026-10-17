@@ -233,6 +233,7 @@ class JobTools:
         """``memory`` reads the project memory the watcher is given, as it is at each
         check (PM-8)."""
         self.bindings: Callable[[], dict[str, str]] | None = None
+        self.binding_inventory: Callable[[], str | None] | None = None
         """The run's skill bindings, as its jobs carry them (SK-16)."""
         if watcher is not None and (not watcher_alias or state is None):
             raise ValueError("a watcher requires its own alias and durable job state")
@@ -324,7 +325,15 @@ class JobTools:
             )
         bindings = self.bindings() if self.bindings is not None else {}
         request = JobRequest.model_validate(
-            {"operation_id": operation, "context": self.context, **args, "bindings": bindings}
+            {
+                "operation_id": operation,
+                "context": self.context,
+                **args,
+                "bindings": bindings,
+                "binding_inventory": self.binding_inventory()
+                if self.binding_inventory is not None
+                else None,
+            }
         )
         if request.wake_session:
             raise WorkerAPIError(
