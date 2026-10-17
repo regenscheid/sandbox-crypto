@@ -34,7 +34,12 @@ def stand_in() -> web.Application:
         if body["context"] != CONTEXT:
             return web.json_response({"error": "wrong context"}, status=400)
         execution_id = f"exe-{body['operation_id']}"
-        execution = {"execution_id": execution_id, "state": "queued", "result": None}
+        execution = {
+            "execution_id": execution_id,
+            "context": body["context"],
+            "state": "queued",
+            "result": None,
+        }
         executions[execution_id] = execution
         return web.json_response(execution, status=201)
 
@@ -66,6 +71,7 @@ def stand_in() -> web.Application:
 
     async def cancel(request: web.Request) -> web.Response:
         authorized(request)
+        assert await request.json() == {"context": CONTEXT}
         return web.json_response({"error": "ended"}, status=409)
 
     app = web.Application()
