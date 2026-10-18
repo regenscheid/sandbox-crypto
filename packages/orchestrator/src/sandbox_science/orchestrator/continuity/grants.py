@@ -56,7 +56,7 @@ class TokenGrantStatus(Contract):
 def _blocked_ancestor(db: sqlite3.Connection, project: str, session: str, work: str) -> str | None:
     from .token_usage import spent_tokens
 
-    increase = TOKEN_INCREMENT
+    target = work
     while True:
         row = db.execute(
             "SELECT p.work,json_extract(b.snapshot,'$.request.tokens') FROM research_work w "
@@ -71,6 +71,7 @@ def _blocked_ancestor(db: sqlite3.Connection, project: str, session: str, work: 
             return None
         parent, original = row
         committed = spent_tokens(db, project, session, parent)
+        increase = 0
         for child, initial, state in db.execute(
             "SELECT w.work,json_extract(b.snapshot,'$.request.tokens'),w.state FROM "
             "research_work w "
@@ -79,16 +80,15 @@ def _blocked_ancestor(db: sqlite3.Connection, project: str, session: str, work: 
             (project, session, parent),
         ).fetchall():
             used = spent_tokens(db, project, session, child, subtree=True)
-            committed += (
-                max(used, grant_total(db, project, session, child, initial or 0))
-                if state not in ("completed", "stopped")
-                else used
-            )
+            grant = grant_total(db, project, session, child, initial or 0)
+            committed += max(used, grant) if state not in ("completed", "stopped") else used
+            if child == target:
+                # Late receipts may already consume some or all of the next grant.
+                increase = max(used, grant + TOKEN_INCREMENT) - max(used, grant)
         if committed + increase > grant_total(db, project, session, parent, original):
             return str(parent)
         # The immediate parent contains this increase inside its existing grant.
         # Its ancestors retain the same commitment; verify, but do not add it twice.
-        increase = 0
         work = parent
 
 

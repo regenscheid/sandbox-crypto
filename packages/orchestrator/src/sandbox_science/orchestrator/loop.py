@@ -84,7 +84,7 @@ POLLS: Final = frozenset(
 runaway guard never counts them as repeated calls, only as failed ones."""
 REPORT_SOURCE: Final = "report"
 """The report round's notice source."""
-MAIN_VERSION: Final = "sandbox-main-11"
+MAIN_VERSION: Final = "sandbox-main-12"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
     "You are a research assistant. Send research code and shell commands through the "

@@ -329,6 +329,34 @@ def test_completed_sibling_descendants_still_consume_parent_tokens(projects):
     assert status.blocked_ancestor_work == CHILD
 
 
+def test_late_receipts_do_not_count_the_same_parent_commitment_twice(projects):
+    works, _, _, _ = setup(projects, tokens=30_000_000)
+    owner = works.admit("p", "s", GRANDCHILD, parent=CHILD)
+    Blueprints(projects.control).save(
+        owner,
+        Blueprint(
+            context=CONTEXT,
+            request={"project": "p", "session": "s", "task": "Lemma", "tokens": 20_000_000},
+        ),
+    )
+    Archive(projects.control).append(
+        "p",
+        "s",
+        GRANDCHILD,
+        Entry("assistant", "assistant", "Late usage receipt"),
+        model_usage=AnsweredUsage(
+            ordinal=1,
+            observed_at=datetime.now(UTC),
+            usage=ModelUsage(input_tokens=25_000_000, output_tokens=0),
+        ),
+    )
+    works.interrupt("p", "s", RUN)
+    RunState(projects.control).set_cost_limit("p", 100)
+    status = TokenGrants(projects.control).status("p", "s", GRANDCHILD)
+    assert status.next_total_tokens == 30_000_000
+    assert status.blocked_ancestor_work is None
+
+
 def test_nested_increment_uses_existing_parent_allocation_only_once(projects):
     works, _, _, _ = setup(projects, tokens=40_000_000)
     great_grandchild = "20261016T030003000000Z-greatgrandchild-1"
