@@ -230,12 +230,17 @@ def test_archive_page_counts_all_retained_payload_fields(
         archive.messages("p", "s", run=RUN, limit=200)
 
 
-def test_native_payloads_count_toward_active_view_ceiling(tmp_path: Path) -> None:
+def test_native_payloads_count_toward_active_view_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_science.orchestrator import loop
     from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
     from sandbox_science.orchestrator.history.memory import RunMemory
     from sandbox_science.orchestrator.loop import Transcript
     from sandbox_science.orchestrator.model import AssistantMessage
 
+    # Exercise the accounting without writing over 64 MiB of synthetic evidence.
+    monkeypatch.setattr(loop, "VIEW_BYTES", 9 * 1024 * 1024)
     memory = RunMemory.scratch(tmp_path / "native.sqlite3", ("p", "s", "r"))
     try:
         messages = memory.messages([{"role": "system", "content": "Research"}])
