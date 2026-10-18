@@ -4,6 +4,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-18
 
+- Resource check-ins now support durable parent turn decisions and exact USER +10,000,000-token approvals, retaining new 20,000,000-token defaults and existing explicit settings. Live context inspection starts at recent activity with separate auxiliary-call provenance. The scientific evaluation is prepared and awaits its separate paid-run approval.
 - The owner requested the remaining live-timeline, adaptive-resource and scientific-quality work. Reuse existing usage/events for bounded live context views; begin resource renewal with durable parent check-ins and turn allowances, retaining explicit USER approval for each additional 10,000,000 tokens. Validate reviewer correction and folded-context recall against a reproducible scientific oracle before claiming research quality.
 
 - Context inspection now follows immutable same-agent continuation identity, with separate parent/child scopes, cursor-based automatic search, bounded per-click work and abortable requests. Sparse searches first bound their session index slice; unsaved attempts are labelled without broken links ([spec](../docs/specs/context-inspector.md)).
