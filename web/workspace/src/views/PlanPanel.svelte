@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
+  import { browserState } from '../lib/browserState';
   import { formatTime } from '../lib/format';
   import {
     readSessionPlan,
@@ -24,6 +25,14 @@
     initialState?: PollState<PlanObservation>;
   } = $props();
   let viewState = $state<PollState<PlanObservation>>(untrack(() => initialState));
+  const scope = untrack(() => `plan-browser:${projectId}:${sessionId}`);
+  const kept = untrack(() => browserState.load(scope).draft ?? {});
+  let search = $state(kept.search ?? '');
+  let statusFilter = $state(kept.status ?? 'all');
+  let selectedStep = $state(kept.step ?? '');
+  $effect(() => {
+    browserState.save(scope, { search, status: statusFilter, step: selectedStep });
+  });
   let mounted = $state(false);
   let refreshTick = $state(0);
   const data = $derived(
@@ -111,6 +120,15 @@
             </li>{/each}
         </ul>
       </details>
+      <label>Search plan steps <input type="search" bind:value={search} /></label>
+      <label
+        >Progress <select bind:value={statusFilter}
+          ><option value="all">All</option
+          >{#each ['pending', 'in_progress', 'completed', 'blocked', 'skipped'] as status}<option
+              value={status}>{status.replaceAll('_', ' ')}</option
+            >{/each}</select
+        ></label
+      >
       {#each plan.version.body.phases as phase (phase.phase_id)}
         <h3>{visible(phase.title)}</h3>
         <ol class="steps">
@@ -118,38 +136,46 @@
             {@const view = plan.steps.find((value) => value.step_id === step.step_id)!}
             {@const status = currentStepStatus(view)}
             <li
+              hidden={!(statusFilter === 'all' || status === statusFilter) ||
+                !`${visible(step.title)} ${visible(step.description)} ${step.step_id}`
+                  .toLocaleLowerCase()
+                  .includes(search.toLocaleLowerCase())}
               class:step-completed={status === 'completed'}
               class:step-blocked={status === 'blocked'}
             >
               <div class="step-heading">
-                <strong>{visible(step.title)}</strong><span class="step-status"
-                  >{status.replaceAll('_', ' ')}</span
-                >
+                <button
+                  aria-expanded={selectedStep === step.step_id}
+                  onclick={() => (selectedStep = selectedStep === step.step_id ? '' : step.step_id)}
+                  >{visible(step.title)}</button
+                ><span class="step-status">{status.replaceAll('_', ' ')}</span>
               </div>
-              <p class="muted">
-                <code>{step.step_id}</code>{#if step.track_id}
-                  · Track {visible(
-                    plan.version.body.tracks.find((track) => track.track_id === step.track_id)
-                      ?.title ?? step.track_id,
-                  )}{/if}
-              </p>
-              <p class="prose">{visible(step.description)}</p>
-              <details>
-                <summary>Evidence standard</summary>
-                <p class="prose">{visible(step.evidence_standard)}</p>
-              </details>
-              {#if view.latest}
-                {#if !view.matches_current_step}<p class="previous-step">
-                    Previous step version was {view.latest.status.replaceAll('_', ' ')}; this
-                    revised step needs a new progress update.
-                  </p>{/if}
+              <div hidden={selectedStep !== step.step_id}>
                 <p class="muted">
-                  {view.matches_current_step ? 'Updated' : 'Previous update'} by {authorLabel(
-                    view.latest.author,
-                  )} · {formatTime(view.latest.recorded_at)} · {view.latest.evidence_count} recorded evidence
-                  references
+                  <code>{step.step_id}</code>{#if step.track_id}
+                    · Track {visible(
+                      plan.version.body.tracks.find((track) => track.track_id === step.track_id)
+                        ?.title ?? step.track_id,
+                    )}{/if}
                 </p>
-              {/if}
+                <p class="prose">{visible(step.description)}</p>
+                <details>
+                  <summary>Evidence standard</summary>
+                  <p class="prose">{visible(step.evidence_standard)}</p>
+                </details>
+                {#if view.latest}
+                  {#if !view.matches_current_step}<p class="previous-step">
+                      Previous step version was {view.latest.status.replaceAll('_', ' ')}; this
+                      revised step needs a new progress update.
+                    </p>{/if}
+                  <p class="muted">
+                    {view.matches_current_step ? 'Updated' : 'Previous update'} by {authorLabel(
+                      view.latest.author,
+                    )} · {formatTime(view.latest.recorded_at)} · {view.latest.evidence_count} recorded
+                    evidence references
+                  </p>
+                {/if}
+              </div>
             </li>
           {/each}
         </ol>

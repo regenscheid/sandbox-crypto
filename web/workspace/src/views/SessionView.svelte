@@ -1,5 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
+  import { browserState } from '../lib/browserState';
+  import AgentActivity from './AgentActivity.svelte';
   import { focusPanel } from '../lib/focusPanel';
   import { untrack } from 'svelte';
   import { api, type SessionDetail } from '../lib/api';
@@ -35,6 +37,13 @@
     untrack(() => (reviewId ? 'activity' : window.innerWidth > 1120 ? 'plan' : null)),
   );
   let visited = $state<Panel[]>(untrack(() => (reviewId ? ['activity'] : ['plan'])));
+  const browserScope = untrack(() => `session-browser:${projectId}:${sessionId}`);
+  const keptBrowser = untrack(() => browserState.load(browserScope).draft ?? {});
+  let activityCategory = $state(keptBrowser.category ?? 'all');
+  let activityRun = $state(keptBrowser.run ?? '');
+  $effect(() => {
+    browserState.save(browserScope, { category: activityCategory, run: activityRun });
+  });
   let width = $state(460);
   let viewportWidth = $state(window.innerWidth);
   const narrow = $derived(viewportWidth <= 1120);
@@ -142,6 +151,30 @@
           {#if visited.includes('activity')}
             <div hidden={panel !== 'activity'}>
               <h2>Session activity</h2>
+              <label
+                >Activity source <select bind:value={activityCategory}
+                  ><option value="all">All sources</option><option value="runs">Run events</option
+                  ><option value="reviews">Reviews and findings</option><option value="jobs"
+                    >Jobs</option
+                  ><option value="kernels">Kernels</option><option value="folds"
+                    >Fold proposals</option
+                  ></select
+                ></label
+              >
+              <label
+                >Selected run <select bind:value={activityRun}
+                  ><option value="">Choose a run</option
+                  >{#each detail.runs as run (run.name)}<option value={run.name}>{run.name}</option
+                    >{/each}</select
+                ></label
+              >
+              {#if activityRun}<div hidden={!['all', 'runs'].includes(activityCategory)}>
+                  {#key activityRun}<AgentActivity
+                      {projectId}
+                      {sessionId}
+                      run={activityRun}
+                    />{/key}
+                </div>{/if}
               <details>
                 <summary>Session details</summary>
                 <dl class="facts">
@@ -154,25 +187,35 @@
                 </dl>
                 <a href={projectHref(projectId)}>Project settings</a>
               </details>
-              <FoldProposals {projectId} {sessionId} />
-              {#if kernelScope}<KernelPanel
-                  {projectId}
-                  {sessionId}
-                  environmentId={kernelScope.environmentId}
-                />{/if}
-              <JobsPanel {projectId} {sessionId} />
-              {#await reviewComponent then component}{@const Reviews = component.default}<Reviews
-                  {projectId}
-                  {sessionId}
-                  {reviewId}
-                />{/await}
-              <h2>Run history</h2>
-              {#each detail.runs as run (run.name)}<RunSection
-                  {projectId}
-                  {sessionId}
-                  {run}
-                  initiallyOpen={false}
-                />{:else}<p class="muted">No completed runs yet.</p>{/each}
+              <div hidden={!['all', 'folds'].includes(activityCategory)}>
+                <FoldProposals {projectId} {sessionId} />
+              </div>
+              <div hidden={!['all', 'kernels'].includes(activityCategory)}>
+                {#if kernelScope}<KernelPanel
+                    {projectId}
+                    {sessionId}
+                    environmentId={kernelScope.environmentId}
+                  />{/if}
+              </div>
+              <div hidden={!['all', 'jobs'].includes(activityCategory)}>
+                <JobsPanel {projectId} {sessionId} />
+              </div>
+              <div hidden={!['all', 'reviews'].includes(activityCategory)}>
+                {#await reviewComponent then component}{@const Reviews = component.default}<Reviews
+                    {projectId}
+                    {sessionId}
+                    {reviewId}
+                  />{/await}
+              </div>
+              <div hidden={!['all', 'runs'].includes(activityCategory)}>
+                <h2>Run history</h2>
+                {#each detail.runs as run (run.name)}<RunSection
+                    {projectId}
+                    {sessionId}
+                    {run}
+                    initiallyOpen={false}
+                  />{:else}<p class="muted">No completed runs yet.</p>{/each}
+              </div>
             </div>
           {/if}
         {/if}
