@@ -32,12 +32,13 @@
   } = $props();
   /** The text being edited, and the revision it was opened at; null when not editing. */
   const scope = untrack(() => `${projectId}:${entry.entry_id}`);
-  const kept = untrack(() => memoryEdits.load(scope).draft);
+  const restored = untrack(() => memoryEdits.load(scope));
+  const kept = restored.draft;
+  let stored = $state(restored.stored);
   let draft = $state<string | null>(kept?.text ?? null);
   let base = $state(kept?.base ?? 0);
   $effect(() => {
-    if (draft === null) memoryEdits.clear(scope);
-    else memoryEdits.save(scope, { text: draft, base });
+    if (draft !== null) stored = memoryEdits.save(scope, { text: draft, base });
   });
   let history = $state(false);
   const problem = $derived(draft === null ? null : textProblem(draft));
@@ -49,7 +50,11 @@
   async function save() {
     if (draft === null || problem !== null) return;
     const change = { action: 'edit' as const, entry: entry.entry_id, expected: base, text: draft };
-    if (await onchange(change)) draft = null;
+    if (await onchange(change)) cancel();
+  }
+  function cancel() {
+    memoryEdits.clear(scope);
+    draft = null;
   }
   function move(direction: 'up' | 'down') {
     void onchange({ action: 'move', entry: entry.entry_id, expected: entry.revision, direction });
@@ -62,6 +67,11 @@
 </script>
 
 <li class="entry" class:left={!given}>
+  {#if restored.damaged}
+    <p role="alert">
+      A saved memory edit could not be restored. Check your text before continuing.
+    </p>
+  {/if}
   <p class="head">
     <code>{entry.entry_id}</code>
     <span class="muted">revision {entry.revision}, {formatTime(entry.changed_at)}</span>
@@ -76,6 +86,11 @@
   {:else}
     <ApprovalText text={draft} before={entry.text} label="Exact proposed edit" />
     <textarea aria-label={`The text of ${entry.entry_id}`} rows="5" bind:value={draft}></textarea>
+    {#if !stored}
+      <p role="alert">
+        This memory edit is kept only in this tab. Copy it before reloading or closing the tab.
+      </p>
+    {/if}
     {#if problem}<p role="alert">{problem}</p>{/if}
     {#if base !== entry.revision}
       <div role="note">
@@ -90,7 +105,7 @@
       </div>
     {/if}
     <button type="button" disabled={busy || problem !== null} onclick={save}>Save</button>
-    <button type="button" onclick={() => (draft = null)}>Cancel</button>
+    <button type="button" onclick={cancel}>Cancel</button>
   {/if}
   <button type="button" onclick={() => (history = !history)}
     >{history ? 'Hide the history' : 'History'}</button

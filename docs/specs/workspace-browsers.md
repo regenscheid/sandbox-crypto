@@ -6,6 +6,8 @@ Overview, Memory and session Plan/Agents/Activity now use searchable, selected
 records with tab-scoped view state. Memory edits and skill-loading drafts retain
 the original revision across navigation and conflicts. MCP metadata and explicit
 availability checks use the controlled host-to-proxy seam described below.
+Memory and skill editors warn when drafts are held only in tab memory because
+browser storage is blocked or full, and report saved data that could not be restored.
 Deployment and real browser acceptance are recorded separately; local checks do
 not establish deployed service health.
 

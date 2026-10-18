@@ -119,3 +119,28 @@ it('reviews and saves a choice at the loaded settings revision', async () => {
   expect(writes).toEqual([{ expected: 2, always: ['builtin/scientific-writing'], excluded: [] }]);
   expect(target.textContent).toContain('No pending changes');
 });
+
+it('warns only for unsaved skill changes when browser storage is full', async () => {
+  vi.stubGlobal('sessionStorage', {
+    getItem: () => null,
+    setItem: () => {
+      throw new DOMException('full', 'QuotaExceededError');
+    },
+    removeItem: () => {},
+  });
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(JSON.stringify(project()))),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(SkillsPage, { target, props: { projectId: 'skills-storage-full' } }));
+  await settle();
+  expect(target.textContent).not.toContain('kept only in this tab');
+  const choice = [...target.querySelectorAll<HTMLLabelElement>('.mode-choice label')].find(
+    (label) => label.textContent?.includes('Always loaded'),
+  )!;
+  choice.querySelector<HTMLInputElement>('input')!.click();
+  flushSync();
+  expect(target.textContent).toContain('These skill loading edits are kept only in this tab');
+});

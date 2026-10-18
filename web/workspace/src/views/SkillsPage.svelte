@@ -24,7 +24,9 @@
   let failure = $state<unknown>(null);
   const saving = $state(idle());
   const scope = untrack(() => `skills:${projectId}`);
-  const kept = untrack(() => browserState.load(scope).draft ?? {});
+  const restored = untrack(() => browserState.load(scope));
+  const kept = restored.draft ?? {};
+  let stored = $state(restored.stored);
   const restoredDraft = kept.dirty === 'yes';
   let baseRevision = $state(Number(kept.base) || 0);
   let always = $state(kept.always ?? '');
@@ -52,7 +54,7 @@
         draftExcluded.join('\n') !== shown.settings.excluded.join('\n')),
   );
   $effect(() => {
-    browserState.save(scope, {
+    stored = browserState.save(scope, {
       always,
       excluded,
       base: String(baseRevision),
@@ -192,6 +194,17 @@
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
 </nav>
 <h1>Skills</h1>
+{#if restored.damaged}
+  <p role="alert">
+    Saved skill browser data could not be restored. Check your loading choices before continuing.
+  </p>
+{/if}
+{#if (dirty || (shown === null && restoredDraft)) && !stored}
+  <p role="alert">
+    These skill loading edits are kept only in this tab. Copy them before reloading or closing the
+    tab.
+  </p>
+{/if}
 <p class="muted">
   Browse the skills future runs can use, inspect pinned sources, and review loading choices before
   saving them.

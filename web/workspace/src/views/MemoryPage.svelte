@@ -30,7 +30,9 @@
   let failure = $state<unknown>(null);
   const saving = $state(idle());
   const scope = untrack(() => `memory:${projectId}`);
-  const kept = untrack(() => browserState.load(scope).draft ?? {});
+  const restored = untrack(() => browserState.load(scope));
+  const kept = restored.draft ?? {};
+  let stored = $state(restored.stored);
   let adding = $state(kept.adding ?? '');
   let search = $state(kept.search ?? '');
   let selected = $state(kept.selected ?? '');
@@ -41,7 +43,7 @@
     Math.min(Number(kept.width) || 460, Math.max(320, Math.floor(window.innerWidth / 2))),
   );
   $effect(() => {
-    browserState.save(scope, { adding, search, selected, section, width: String(width) });
+    stored = browserState.save(scope, { adding, search, selected, section, width: String(width) });
   });
   const problem = $derived(adding.trim() === '' ? null : textProblem(adding));
   const overflow = $derived(shown === null ? null : overflowText(shown.memory, shown.bound));
@@ -84,6 +86,11 @@
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
 </nav>
 <h1>Project memory</h1>
+{#if restored.damaged}
+  <p role="alert">
+    Saved memory browser data could not be restored. Check any new entry before continuing.
+  </p>
+{/if}
 <p>
   Notes on how to work in this project, which every agent of the project receives when it starts:
   conventions and notation, settled facts about the environment and the tools, your preferences, and
@@ -183,6 +190,11 @@
 
   <h3>Add an entry</h3>
   <textarea aria-label="A new entry" rows="4" bind:value={adding}></textarea>
+  {#if adding !== '' && !stored}
+    <p role="alert">
+      This new memory entry is kept only in this tab. Copy it before reloading or closing the tab.
+    </p>
+  {/if}
   {#if problem}<p role="alert">{problem}</p>{/if}
   <button
     type="button"

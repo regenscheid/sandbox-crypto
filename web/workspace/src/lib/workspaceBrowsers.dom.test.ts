@@ -23,6 +23,113 @@ const entry = {
   text: 'Original finite-field notation.',
   changed_at: '2026-10-18T12:00:00Z',
 };
+
+it.each(['SecurityError', 'QuotaExceededError'])(
+  'warns about memory-only edits and new entries when storage raises %s',
+  async (kind) => {
+    vi.stubGlobal('sessionStorage', {
+      getItem: () => {
+        if (kind === 'SecurityError') throw new DOMException('blocked', kind);
+        return null;
+      },
+      setItem: () => {
+        throw new DOMException('unavailable', kind);
+      },
+      removeItem: () => {},
+    });
+    const projectId = `storage-${kind}`;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (url: string) =>
+          new Response(
+            JSON.stringify(
+              url.includes('/proposals')
+                ? { proposals: [] }
+                : {
+                    memory: {
+                      project: projectId,
+                      version: 1,
+                      entries: [],
+                      characters: 0,
+                      given: 0,
+                      waiting: 0,
+                    },
+                    bound: 16000,
+                  },
+            ),
+          ),
+      ),
+    );
+    const page = document.createElement('div');
+    const target = document.createElement('div');
+    document.body.append(page, target);
+    mounted.push(mount(MemoryPage, { target: page, props: { projectId } }));
+    await settle();
+    expect(page.textContent).not.toContain('kept only in this tab');
+    const adding = page.querySelector<HTMLTextAreaElement>('[aria-label="A new entry"]')!;
+    adding.value = 'An unsaved new memory entry.';
+    adding.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(page.textContent).toContain('This new memory entry is kept only in this tab');
+
+    const props = {
+      projectId,
+      entry,
+      first: true,
+      last: true,
+      given: true,
+      busy: false,
+      onchange: vi.fn(async () => false),
+    };
+    let component = mount(MemoryEntryItem, { target, props });
+    [...target.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Edit')!
+      .click();
+    flushSync();
+    const draft = target.querySelector('textarea')!;
+    draft.value = 'An unsaved correction.';
+    draft.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    expect(target.textContent).toContain('This memory edit is kept only in this tab');
+    await unmount(component);
+    target.innerHTML = '';
+    component = mount(MemoryEntryItem, { target, props });
+    mounted.push(component);
+    await settle();
+    expect(target.querySelector('textarea')?.value).toBe('An unsaved correction.');
+    expect(target.textContent).toContain('This memory edit is kept only in this tab');
+    memoryEdits.clear(`${projectId}:mem-1`);
+    browserState.clear(`memory:${projectId}`);
+  },
+);
+
+it('reports damaged saved memory edits without clearing them on mount', async () => {
+  const scope = 'damaged-memory:mem-1';
+  memoryEdits.clear(scope);
+  const key = `draft:memory-entry:${scope}`;
+  sessionStorage.setItem(key, '{broken');
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(
+    mount(MemoryEntryItem, {
+      target,
+      props: {
+        projectId: 'damaged-memory',
+        entry,
+        first: true,
+        last: true,
+        given: true,
+        busy: false,
+        onchange: vi.fn(async () => false),
+      },
+    }),
+  );
+  await settle();
+  expect(target.textContent).toContain('A saved memory edit could not be restored');
+  expect(sessionStorage.getItem(key)).toBe('{broken');
+  memoryEdits.clear(scope);
+});
 it('retains memory edit text and original revision across navigation and conflict', async () => {
   const scope = 'edit-browser:mem-1';
   memoryEdits.clear(scope);
