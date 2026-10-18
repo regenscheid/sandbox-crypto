@@ -5,9 +5,33 @@ import json
 from typing import Any
 
 from sandbox_science.contracts.mcp_metadata import McpServiceMetadata
-from sandbox_science.mcp_proxy.metadata import Metadata
+from sandbox_science.mcp_proxy.metadata import Metadata, structure
 
 from .test_proxy import PLACEHOLDER
+
+
+def test_schema_projection_preserves_large_integers_without_float_conversion() -> None:
+    huge = 10**400
+    assert structure(
+        {
+            "minimum": -huge,
+            "maximum": huge,
+            "minLength": False,
+            "maxLength": float("inf"),
+            "minItems": float("nan"),
+            "maxItems": 1.5,
+        }
+    ) == {"minimum": -huge, "maximum": huge, "maxItems": 1.5}
+    cache = Metadata()
+    cache.listing(
+        "p",
+        "s",
+        None,
+        "a" * 64,
+        {"tools": [{"name": "large_integer", "inputSchema": {"maximum": huge}}]},
+        first=True,
+    )
+    assert json.loads(cache.tools[("p", "s")][2][0].parameters_json) == {"maximum": huge}
 
 
 async def test_metadata_is_authenticated_scoped_passive_and_current(harness: Any) -> None:

@@ -35,7 +35,7 @@ def structure(value: object, depth: int = 0) -> dict[str, object]:
         result["type"] = kind
     for key in ("minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems"):
         bound = source.get(key)
-        if type(bound) in (int, float) and math.isfinite(cast(float, bound)):
+        if type(bound) is int or (type(bound) is float and math.isfinite(bound)):
             result[key] = bound
     properties = source.get("properties")
     if isinstance(properties, dict):

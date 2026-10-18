@@ -45,7 +45,10 @@ class MetadataClient:
             ):
                 if response.status != 200:
                     return None
-                raw = await response.content.read(1024 * 1024 + 1)
+                try:
+                    raw = await response.content.readexactly(1024 * 1024 + 1)
+                except asyncio.IncompleteReadError as error:
+                    raw = error.partial
                 if len(raw) > 1024 * 1024:
                     return None
                 found = McpServiceMetadata.model_validate_json(raw)
