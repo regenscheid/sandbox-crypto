@@ -276,12 +276,25 @@ digest, ledger retirement judge, parent folds or sibling conversation. Model
 ceilings are resolved for the child's selected alias, including shared
 input/output windows. Explicit input limits and spending limits still apply.
 
-The initial delegated implementation uses the existing deterministic skeleton
-folds. It makes no enrichment calls outside the child's token allowance.
-Enriched delegated folds require shared accounting before they can be enabled.
-These changes extend an attempt's working context; they do not by themselves
-implement continuation attempts, bound historical RAM, or establish research
-quality preservation. Those remain separate acceptance requirements.
+Delegated narratives and overviews reuse the existing fold engine. New work pins
+the child's selected model alias and the independently requested fold/overview
+efforts; Resume preserves those profiles. Each enrichment attempt, including its
+single allowed retry, is admitted against the child's original cumulative token
+grant, leaving estimated room for a subsequent/reporting turn. Observed auxiliary
+usage, cancelled estimates and explicit reservations count toward that grant;
+exact canonical receipts suppress their legacy stored copies. Temporary in-flight
+token holds are released after settlement and are not invented dollar charges.
+Nested delegation refreshes auxiliary usage after awaited planning before
+assigning a grandchild's allowance.
+
+Disabled enrichment, insufficient estimated allowance or two rejected responses
+retain the deterministic skeleton. Final summaries are captured after background
+calls settle. Confined calls use their durable canonical intent/usage records;
+non-journaled interrupted calls retain at most one estimate while actually in
+flight. Each applied fold retains bounded structured retry diagnostics, never the
+raw rejected response. These changes extend the child's working context without
+resetting its grant on Resume. Scientific retention quality over extended
+real-model research remains a separate acceptance requirement.
 
 ### Stored-evidence download contract
 
@@ -355,6 +368,12 @@ sibling subtree is unaffected. Starting a child checks the parent's Stop in the
 same transaction that admits the child, closing the Stop/admission race. Recovery
 of a dead attempt retains this distinction even when no final record was saved.
 Saved outcomes stay immutable.
+
+Service cleanup marks only still-running or waiting work as interrupted. A saved
+paused or blocked diagnosis is preserved, including model failure, budget refusal
+and persistence failure, so recovery policy can inspect the actual cause. An
+explicit Stop still supersedes any unfinished paused or blocked work within its
+scope; existing epoch and current-attempt fences apply to both paths.
 
 Cleanup after a lost lease, parent failure or service interruption still cancels
 live child tasks and saves their partial records, but labels them `interrupted`.

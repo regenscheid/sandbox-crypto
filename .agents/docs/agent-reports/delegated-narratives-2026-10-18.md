@@ -49,17 +49,29 @@ The production fixture uses the synthetic gateway and real harness/tool-loop
 assembly, reaches a narrative fold on the child alias and excludes the root's
 private reasoning. Python type checking passes. Source-frozen `d6d37c70` passed
 14,380 Python tests with 50 prerequisite/opt-in skips and two existing warnings from
-the deliberately malformed artifact-size fixture. The final 164 focused lifecycle tests, full Ruff checks and Pyright pass at
-`84bb0a4e`. The second source-frozen broad suite also passed: 14,390 tests, 50
+the deliberately malformed artifact-size fixture. The final 164 focused lifecycle
+tests, full Ruff checks and Pyright pass at `84bb0a4e`. The second source-frozen
+broad suite also passed: 14,390 tests, 50
 prerequisite/opt-in skips, with the same two malformed-fixture warnings. This
 rerun covered the move of final summary capture across the shared loop lifecycle
 boundary. Tier assignment, repository hygiene, installed licenses and generated
 protocol checks pass. No web source or public API shapes changed.
 
-A separate synthetic OpenShell lab is qualifying the unmodified `d20e5fe3`
-recovery baseline and genuine sustained Sage computation. The lab exposed a saved
+A separate synthetic OpenShell lab first qualified the unmodified `d20e5fe3`
+recovery baseline. The lab exposed a saved
 model failure being overwritten as interrupted by service cleanup. The narrow fix
 preserves paused/blocked diagnoses while explicit Stop still supersedes unfinished
 work; an actual synthetic streamed EOF now triggers one automatic tree recovery
-without a new user message. That lab has not yet qualified the new narrative code
-and cannot establish scientific summary quality with a real LLM.
+without a new user message. Both host and confined runtime at `84bb0a4e` repeated
+that automatic recovery successfully.
+
+The final runtime also accepted one synthetic child narrative fold, freeing
+58,324 estimated context tokens. It used the child's selected alias and `high`
+fold effort, excluded the parent-private marker and counted its 122,794 synthetic
+fold tokens once despite the canonical receipt's legacy stored copy. The child's
+total remained 989,567 tokens within its original 2,000,000-token grant. This
+qualifies the confined path and single-attempt accounting; cumulative Resume,
+grant exhaustion and overview dispatch remain covered by deterministic tests,
+not this live probe. A synthetic peer cannot establish scientific summary quality
+with a real LLM. Full runtime receipts and boundaries are recorded in the
+[OpenShell recovery report](openshell-recovery-acceptance-2026-10-18.md).
