@@ -430,12 +430,22 @@ async def test_a_response_is_read_as_a_turn_and_kept_as_the_gateway_sent_it(
     turn = await gpt.complete([{"role": "user", "content": TASK}], [])
     assert turn.text == "First part.\n\nSecond part.\n\nNot that."
     assert (turn.input_tokens, turn.output_tokens) == (1200, 34)
+    assert (turn.cache_read_input_tokens, turn.cache_creation_input_tokens) == (1000, None)
     assert (turn.cost, turn.model, turn.finish_reason) == (0.0125, "gpt-test-2026-10", "stop")
     assert (turn.native, turn.native_format) == (
         json.dumps(json.loads(text), ensure_ascii=False, separators=(",", ":")).encode(),
         RESPONSES,
     )
     assert turn.gateway_version == "1.102.1"
+
+
+async def test_response_without_cache_detail_keeps_cache_usage_unknown(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    fake.then(response(said("Done."), usage={"input_tokens": 10, "output_tokens": 2}))
+    turn = await gpt.complete([{"role": "user", "content": TASK}], [])
+    assert turn.input_tokens == 10
+    assert (turn.cache_read_input_tokens, turn.cache_creation_input_tokens) == (None, None)
     # What it came from: the alias, and the digest of what the model was given.
     assert turn.alias == "gpt"
     assert turn.prefix == prefix_of(fake.bodies[-1], "instructions", "tools", "input")

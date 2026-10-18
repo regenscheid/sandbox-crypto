@@ -56,6 +56,8 @@ def usage(turn: ModelTurn) -> ModelUsage:
         model=turn.model,
         input_tokens=turn.input_tokens,
         output_tokens=turn.output_tokens,
+        cache_read_input_tokens=turn.cache_read_input_tokens,
+        cache_creation_input_tokens=turn.cache_creation_input_tokens,
         cost=turn.cost,
         cost_source=turn.cost_source,
         gateway_version=turn.gateway_version,

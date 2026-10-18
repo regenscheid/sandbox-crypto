@@ -275,6 +275,12 @@ def parse_response(text: str, priced: str | None = None) -> ModelTurn:
         finish = "tool_calls" if calls else "stop"
     usage = data.get("usage")
     usage = cast(dict[str, Any], usage) if isinstance(usage, dict) else {}
+    details = usage.get("input_tokens_details")
+    read = (
+        _tokens(cast(dict[str, Any], details).get("cached_tokens"))
+        if isinstance(details, dict)
+        else None
+    )
     resolved = data.get("model")
     return ModelTurn(
         text=_text(items),
@@ -283,6 +289,8 @@ def parse_response(text: str, priced: str | None = None) -> ModelTurn:
         model=resolved if isinstance(resolved, str) else None,
         input_tokens=_tokens(usage.get("input_tokens")),
         output_tokens=_tokens(usage.get("output_tokens")),
+        cache_read_input_tokens=read,
+        cache_creation_input_tokens=_tokens(usage.get("cache_creation_input_tokens")),
         cost=reported_cost(priced if priced is not None else usage.get("cost")),
     )
 

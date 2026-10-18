@@ -101,6 +101,9 @@ class ModelTurn:
 
     intent_id: str | None = None
     """Trusted dispatch journal identity; never part of the provider conversation."""
+    cache_read_input_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None
+    """Provider-reported cache counters; absent counters are unknown, not zero."""
 
 
 COST_HEADER: Final = "x-litellm-response-cost"
@@ -1094,13 +1097,22 @@ def _parse_completion(text: str, priced: str | None = None) -> ModelTurn:
         raise ModelError(f"unexpected completion: {gateway_said(text)}") from exc
     content, finish = message.get("content"), choice.get("finish_reason")
     resolved = cast(dict[str, Any], data).get("model")
+    usage = _usage_object(data)
+    details = usage.get("prompt_tokens_details")
+    read = (
+        _usage_count(cast(dict[str, Any], details), "cached_tokens")
+        if isinstance(details, dict)
+        else None
+    )
     return ModelTurn(
         text=content if isinstance(content, str) else None,
         tool_calls=tuple(calls),
         finish_reason=finish if isinstance(finish, str) else None,
         model=resolved if isinstance(resolved, str) else None,
-        input_tokens=total_input(_usage_object(data), "chat_completions"),
+        input_tokens=total_input(usage, "chat_completions"),
         output_tokens=_usage(data, "completion_tokens"),
+        cache_read_input_tokens=read,
+        cache_creation_input_tokens=_usage_count(usage, "cache_creation_input_tokens"),
         cost=reported_cost(priced if priced is not None else _usage_value(data, "cost")),
     )
 
@@ -1158,6 +1170,12 @@ def _usage_object(data: object) -> dict[str, object]:
 
 def _usage(data: object, key: str) -> int | None:
     value = _usage_value(data, key)
+    return value if type(value) is int and value >= 0 else None
+
+
+def _usage_count(usage: Mapping[str, object], key: str) -> int | None:
+    """Keep a missing provider counter distinct from a reported zero."""
+    value = usage.get(key)
     return value if type(value) is int and value >= 0 else None
 
 

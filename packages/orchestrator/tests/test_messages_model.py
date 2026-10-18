@@ -849,6 +849,7 @@ async def test_a_message_is_read_as_a_turn_and_kept_as_the_gateway_sent_it(fake:
     finally:
         await model.close()
     assert (turn.input_tokens, turn.output_tokens) == (412_000, 345)
+    assert (turn.cache_read_input_tokens, turn.cache_creation_input_tokens) == (400_000, 10_000)
     assert (turn.text, turn.finish_reason, turn.model) == ("Partial.", "length", "claude-opus-5-5")
     assert (turn.cost, turn.gateway_version) == (0.125, VERSION)
     assert (turn.native, turn.native_format) == (text.encode(), MESSAGES)

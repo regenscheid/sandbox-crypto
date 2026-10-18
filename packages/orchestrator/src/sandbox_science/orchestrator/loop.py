@@ -541,6 +541,8 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             model=reply.model,
             input_tokens=reply.input_tokens,
             output_tokens=reply.output_tokens,
+            cache_read_input_tokens=reply.cache_read_input_tokens,
+            cache_creation_input_tokens=reply.cache_creation_input_tokens,
             characters=size + answered,
             cost=reply.cost,
             cost_source=reply.cost_source,

@@ -111,9 +111,13 @@ def test_native_model_metadata_roundtrips_without_python_deserialization() -> No
         alias="main",
         model="actual",
         adapter_state={"tools": []},
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=15,
     )
     wire = WireTurn.model_validate_json(WireTurn.of(turn).model_dump_json())
     assert wire.turn() == turn
+    assert (wire.cache_read_input_tokens, wire.cache_creation_input_tokens) == (0, 15)
+    assert WireTurn.of(ModelTurn("no usage")).turn().cache_read_input_tokens is None
     message = AssistantMessage.of(turn)
     restored = WireMessage.model_validate_json(WireMessage.of(message).model_dump_json()).message()
     assert restored == message

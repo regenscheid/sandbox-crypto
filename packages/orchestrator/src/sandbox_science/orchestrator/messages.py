@@ -401,6 +401,8 @@ class _Reading:
             model=resolved if isinstance(resolved, str) else None,
             input_tokens=_input(usage),
             output_tokens=_tokens(usage.get("output_tokens")),
+            cache_read_input_tokens=_tokens(usage.get("cache_read_input_tokens")),
+            cache_creation_input_tokens=_tokens(usage.get("cache_creation_input_tokens")),
             cost=reported_cost(priced if priced is not None else usage.get("cost")),
         )
 

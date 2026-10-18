@@ -395,6 +395,8 @@ async def test_the_chat_and_messages_adapters_are_priced_the_same_way(fake: Fake
         await gateway.close()
     assert (priced.cost, priced.cost_source) == (pytest.approx(RESPONSES_COST), "model_info")
     assert (claimed.cost, claimed.cost_source) == (pytest.approx(RESPONSES_COST), "model_info")
+    assert (priced.cache_read_input_tokens, priced.cache_creation_input_tokens) == (1000, None)
+    assert (claimed.cache_read_input_tokens, claimed.cache_creation_input_tokens) == (1000, 0)
     # The gateway's models share its prices: the chat model's read priced the other's.
     assert fake.info_calls == 2  # once for the prices, once for Claude's model
 

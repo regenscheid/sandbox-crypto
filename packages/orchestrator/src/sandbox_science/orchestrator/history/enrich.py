@@ -321,6 +321,8 @@ def _usage(turn: ModelTurn) -> ModelUsage:
         cost_source=turn.cost_source,
         input_tokens=turn.input_tokens,
         output_tokens=turn.output_tokens,
+        cache_read_input_tokens=turn.cache_read_input_tokens,
+        cache_creation_input_tokens=turn.cache_creation_input_tokens,
         cost=turn.cost,
         gateway_version=turn.gateway_version,
         retried=list(turn.retried[:16]),
