@@ -1,5 +1,73 @@
 # babbage labs
 
+## Disposable recovery acceptance (2026-10-18)
+
+Use `recovery_acceptance.py` for new recovery qualification. It creates a random,
+marked `/var/tmp/ss-recovery-*` root, dynamically selected loopback ports, unique
+transient units, its own gateway/TLS/provider state, and a synthetic streamed model
+peer. It does not read the owner's credential directory or use a paid endpoint.
+Do not run the historical shared `lab_up.sh`/`lab_down.sh` alongside an existing lab.
+
+Prerequisites are OpenShell 0.1.3 at the path below, working KVM and Docker image
+access, `uv sync --locked`, and a built workspace UI. Build the `minimal`,
+`crypto-base` and `orchestrator` images from the intended committed image inputs;
+`prepare` verifies their recipe revision labels and refuses dirty inputs. Images
+are loaded locally and never pushed. The synthetic peer uses the declared
+`aiohttp` dependency. The actual compute workload runs Sage inside `crypto-base`
+with one CPU affinity and one BLAS thread.
+
+From the checkout that will remain fixed throughout the lab:
+
+```bash
+.venv/bin/python -I .agents/labs/recovery_acceptance.py prepare --duration 3600
+# Set LAB to the exact newly printed path; it is an owned disposable fixture.
+.venv/bin/python -I .agents/labs/recovery_acceptance.py up "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py start "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py tree "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py literal "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py automatic "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py history "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py narrative "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py upload "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py worker_cycle "$LAB"
+# After the original Sage job reaches its terminal receipt:
+.venv/bin/python -I .agents/labs/recovery_acceptance.py finish "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py cleanup "$LAB"
+```
+
+`tree` deletes the agent VM during one child shell operation, then explicitly
+resumes the same two-work tree. `literal` also kills the exact saved kernel PID,
+then verifies one literal cell reconstruction and exact stdout. Replacement may
+refuse after the configured bounded control-connection drain while the old tool
+still runs. The fixture retries that known pre-creation refusal only after the
+control health endpoint reports disconnected; it never repeats an unknown effect.
+`automatic` separately tests durable automatic continuation after a saved model
+stream EOF. `history` proves a delegated parent reads the original leaf archive in
+a three-level tree. `narrative` uses paced synthetic text to force model-written
+child folds, then checks alias/effort, canonical usage and the original grant.
+`upload` sends an exact 100 MiB deterministic binary through the authenticated
+workspace API, streams its retained original back, attaches it to one synthetic
+chat message, and compares the delivered worker copy's size and digest. Its client
+uses bounded chunks; the current server deliberately materializes bounded upload
+and delivery bodies, so this is not a zero-copy or constant-space claim.
+
+`worker_cycle` stops launcher supervision with `--keep-sandboxes`, kills an exact
+owned standalone worker PID, and explicitly starts it again against its original
+state. This tests worker restart recovery, not automatic worker supervision. The
+background Sage job must retain its original execution, attempt and operation.
+
+If any probe fails, preserve the exception and inspect owned state; do not blindly
+rerun a message-producing command. `abort "$LAB"` explicitly tears down an
+incomplete synthetic lab without requiring a successful Sage receipt or idle run
+leases. Both teardown paths require recorded sandbox ownership, check all owned
+units/PIDs/ports and the emptied gateway, export only sanitized allowlisted JSON
+receipts with a SHA-256 manifest, and remove private lab state. Unrecorded VMs or
+an unavailable gateway require ownership inspection before teardown can claim
+success. No raw logs, tokens, gateway databases or TLS material are exported.
+
+See the [qualification report](../docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md)
+for baseline failures, the narrow host fix and the exact revisions qualified.
+
 Lab32's `provisioning_revision_packages.py` reads exact recorded package/license
 inventories. Root-owned acceptance on signed `6d4c448`/helper `c85126d4` passed
 worker/workspace/native paging and separately qualified stopped-VM reads. The old
