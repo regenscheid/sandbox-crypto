@@ -4,6 +4,8 @@
      agents receive it, and the user's
      changes, each naming the revision shown. Its history is one click away. -->
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { memoryEdits } from '../lib/browserState';
   import type { MemoryEntry } from '../lib/api-types';
   import { formatTime } from '../lib/format';
   import { type MemoryAction, textProblem } from '../lib/memory';
@@ -29,8 +31,14 @@
     onchange: (change: MemoryAction) => Promise<boolean>;
   } = $props();
   /** The text being edited, and the revision it was opened at; null when not editing. */
-  let draft = $state<string | null>(null);
-  let base = $state(0);
+  const scope = untrack(() => `${projectId}:${entry.entry_id}`);
+  const kept = untrack(() => memoryEdits.load(scope).draft);
+  let draft = $state<string | null>(kept?.text ?? null);
+  let base = $state(kept?.base ?? 0);
+  $effect(() => {
+    if (draft === null) memoryEdits.clear(scope);
+    else memoryEdits.save(scope, { text: draft, base });
+  });
   let history = $state(false);
   const problem = $derived(draft === null ? null : textProblem(draft));
 
@@ -66,6 +74,7 @@
     <button type="button" disabled={busy || last} onclick={() => move('down')}>Move down</button>
     <button type="button" disabled={busy} onclick={remove}>Remove</button>
   {:else}
+    <ApprovalText text={draft} before={entry.text} label="Exact proposed edit" />
     <textarea aria-label={`The text of ${entry.entry_id}`} rows="5" bind:value={draft}></textarea>
     {#if problem}<p role="alert">{problem}</p>{/if}
     {#if base !== entry.revision}

@@ -6,6 +6,8 @@
      after a conflict, the page reads the skills again; after a conflict it keeps the lists
      typed. Pack text is untrusted and shown as text, hidden characters as code points. -->
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { browserState } from '../lib/browserState';
   import { api } from '../lib/api';
   import type { ProjectSkills } from '../lib/api-types';
   import { projectHref } from '../lib/router';
@@ -21,16 +23,24 @@
   let shown = $state<ProjectSkills | null>(null);
   let failure = $state<unknown>(null);
   const saving = $state(idle());
-  let always = $state('');
-  let excluded = $state('');
-  let view = $state<'catalog' | 'sources' | 'loading'>('catalog');
-  let query = $state('');
-  let source = $state('all');
-  let topic = $state('all');
-  let loading = $state('all');
-  let selectedSkill = $state<string | null>(null);
-  let selectedSource = $state<string | null>(null);
-  let detailWidth = $state(460);
+  const scope = untrack(() => `skills:${projectId}`);
+  const kept = untrack(() => browserState.load(scope).draft ?? {});
+  const restoredDraft = kept.dirty === 'yes';
+  let baseRevision = $state(Number(kept.base) || 0);
+  let always = $state(kept.always ?? '');
+  let excluded = $state(kept.excluded ?? '');
+  let view = $state<'catalog' | 'sources' | 'loading'>(
+    kept.view === 'sources' || kept.view === 'loading' ? kept.view : 'catalog',
+  );
+  let query = $state(kept.query ?? '');
+  let source = $state(kept.source ?? 'all');
+  let topic = $state(kept.topic ?? 'all');
+  let loading = $state(kept.loading ?? 'all');
+  let selectedSkill = $state<string | null>(kept.selectedSkill || null);
+  let selectedSource = $state<string | null>(kept.selectedSource || null);
+  let detailWidth = $state(
+    Math.min(Number(kept.width) || 460, Math.max(320, Math.floor(window.innerWidth / 2))),
+  );
   let viewportWidth = $state(window.innerWidth);
   const maxWidth = $derived(Math.max(320, Math.floor(viewportWidth / 2)));
   const overrides = $derived(shown === null ? null : overridesView(shown.settings.overrides));
@@ -41,6 +51,22 @@
       (draftAlways.join('\n') !== shown.settings.always.join('\n') ||
         draftExcluded.join('\n') !== shown.settings.excluded.join('\n')),
   );
+  $effect(() => {
+    browserState.save(scope, {
+      always,
+      excluded,
+      base: String(baseRevision),
+      dirty: shown === null ? (restoredDraft ? 'yes' : 'no') : dirty ? 'yes' : 'no',
+      query,
+      source,
+      topic,
+      loading,
+      view,
+      selectedSkill: selectedSkill ?? '',
+      selectedSource: selectedSource ?? '',
+      width: String(detailWidth),
+    });
+  });
   const sources = $derived(
     shown === null ? [] : [...new Set(shown.effective.map((item) => item.source))].sort(),
   );
@@ -114,6 +140,7 @@
     if (shown === null) return;
     always = shown.settings.always.join('\n');
     excluded = shown.settings.excluded.join('\n');
+    baseRevision = shown.settings.revision;
     saving.error = null;
   }
 
@@ -125,6 +152,7 @@
       if (!keep) {
         always = found.settings.always.join('\n');
         excluded = found.settings.excluded.join('\n');
+        baseRevision = found.settings.revision;
       }
       if (selectedSkill === null) selectedSkill = found.effective[0]?.id ?? null;
       if (selectedSource === null) selectedSource = found.pins[0]?.source ?? null;
@@ -133,11 +161,11 @@
       failure = caught;
     }
   }
-  void load();
+  void load(restoredDraft);
 
   async function save() {
     if (shown === null || !dirty) return;
-    const expected = shown.settings.revision;
+    const expected = baseRevision;
     await submit(
       saving,
       async () => {
@@ -431,9 +459,18 @@
             </ul>{:else}<p class="muted">
               The ID lists changed order; saving will normalize them.
             </p>{/if}
+          {#if baseRevision !== shown.settings.revision}<p role="status">
+              This draft began at revision {baseRevision}; current revision is {shown.settings
+                .revision}. Compare the pending choices with the current rules before applying them.
+            </p>
+            <button onclick={() => (baseRevision = shown!.settings.revision)}
+              >Use current revision for this reviewed draft</button
+            >{/if}
           <div class="bulk-actions">
-            <button type="button" disabled={saving.busy} onclick={() => void save()}
-              >Save at revision {shown.settings.revision}</button
+            <button
+              type="button"
+              disabled={saving.busy || baseRevision !== shown.settings.revision}
+              onclick={() => void save()}>Save at revision {shown.settings.revision}</button
             ><button type="button" disabled={saving.busy} onclick={discard}>Discard draft</button>
           </div>
         </section>{:else}<p class="muted">No pending changes.</p>{/if}
