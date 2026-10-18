@@ -140,6 +140,29 @@ async def test_write_file_is_recorded_too(recording: Recording) -> None:
     assert (head.publication.execution_id, head.publication.tool_call) == (None, "call1")
 
 
+async def test_write_file_can_create_and_replace_shared_text_with_preconditions(
+    recording: Recording,
+) -> None:
+    path = "shared/research.md"
+    without = await recording.call("write_file", path=path, content="first")
+    assert json.loads(without.text)["error"]["kind"] == "invalid_request"
+
+    created = await recording.call("write_file", path=path, content="first", create_only=True)
+    first_hash = created.record["write"]["sha256"]
+    assert first_hash == recording.heads()[path].reference.sha256
+
+    replaced = await recording.call(
+        "write_file", path=path, content="second", expected_sha256=first_hash
+    )
+    assert replaced.record["write"]["sha256"] == recording.heads()[path].reference.sha256
+    assert recording.heads()[path].reference.revision == 2
+    stale = await recording.call(
+        "write_file", path=path, content="third", expected_sha256=first_hash
+    )
+    assert json.loads(stale.text)["error"]["kind"] == "conflict"
+    assert recording.heads()[path].reference.revision == 2
+
+
 async def test_a_call_records_at_most_100_files(recording: Recording) -> None:
     outcome = await recording.shell(
         "mkdir -p many && for i in $(seq 1 105); do echo $i > many/$i; done"

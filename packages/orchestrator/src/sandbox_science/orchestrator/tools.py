@@ -308,10 +308,17 @@ SPECS: Final = (
     ),
     ToolSpec(
         "write_file",
-        "Write a text file in the workspace, replacing it if it exists.",
+        "Write a text file in the workspace. For shared/ paths, set create_only=true "
+        "to create a new file, or expected_sha256 to the current hash from read_file "
+        "when replacing it. Other paths can omit a precondition.",
         {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "create_only": {"type": "boolean"},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
             "required": ["path", "content"],
             "additionalProperties": False,
         },
@@ -1315,7 +1322,7 @@ class Toolbox:
         request = WriteFileRequest.model_validate(
             {
                 "context": self.context,
-                "path": args.get("path"),
+                **_known(args, "path", "create_only", "expected_sha256"),
                 "content_b64": base64.b64encode(encoded).decode(),
             }
         )
