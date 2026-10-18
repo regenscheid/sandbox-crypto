@@ -1303,6 +1303,44 @@ export interface ResolvedFile {
   rule: string | null;
 }
 
+export interface ResourceDecision {
+  request: ResourceDecisionRequest;
+  parent_run: string;
+  operation: string;
+  total: number;
+  observed: number;
+}
+
+export interface ResourceDecisionRequest {
+  request_id: string;
+  action: "continue" | "redirect" | "report" | "pause" | "extend_turns";
+  reason: string;
+}
+
+export interface ResourceRequest {
+  request_id: string;
+  work: string;
+  current: string;
+  epoch: number;
+  parent: string | null;
+  resource: "tokens" | "turns";
+  grant_revision: number;
+  used: number;
+  total: number;
+  checkpoint_message_id: string | null;
+  created_at: number;
+  task: string;
+  work_state: "running" | "waiting" | "paused" | "blocked" | "completed" | "stopped";
+  superseded: boolean;
+  user_grant_revision: number | null;
+  decision: ResourceDecision | null;
+}
+
+export interface ResourceRequestPage {
+  requests: ResourceRequest[];
+  next_after: string | null;
+}
+
 export interface ResumeStatus {
   request: string;
   root: string;
@@ -1543,6 +1581,36 @@ export interface TimelineFold {
   span_end: number | null;
   freed_estimate: number | null;
   tokens_estimate: number | null;
+}
+
+export interface TokenGrantDecision {
+  request: TokenGrantRequest;
+  revision: number;
+  previous_total: number;
+  operator: string;
+  message_id: string;
+  observed: number;
+}
+
+export interface TokenGrantRequest {
+  work: string;
+  current: string;
+  epoch: number;
+  expected_revision: number;
+  total_tokens: number;
+  reason: string;
+}
+
+export interface TokenGrantStatus {
+  work: string;
+  current: string;
+  epoch: number;
+  revision: number;
+  total_tokens: number;
+  used_tokens: number;
+  next_total_tokens: number | null;
+  blocked_reason: string | null;
+  blocked_ancestor_work: string | null;
 }
 
 /** One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing. */

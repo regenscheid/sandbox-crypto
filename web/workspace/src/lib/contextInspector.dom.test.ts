@@ -714,9 +714,11 @@ it('plots response observation time, fold event time and refreshed auxiliary set
   expect(target.textContent).toContain('skeleton_only');
   expect(target.textContent).toContain('usage unavailable or unresolved');
   expect(target.querySelectorAll('svg circle')).toHaveLength(1);
+  expect(String(fetcher.mock.calls[0]?.[0])).toContain('tail=1');
   clickNamed(target, 'Refresh observations');
   await settle();
   expect(String(fetcher.mock.calls[1]?.[0])).toContain('answers_after=1');
+  expect(String(fetcher.mock.calls[1]?.[0])).toContain('tail=0');
   expect(target.textContent).toContain('observed 42 input tokens');
   expect(target.textContent).toContain('input tokens unavailable');
   expect(target.querySelectorAll('svg circle')).toHaveLength(1);

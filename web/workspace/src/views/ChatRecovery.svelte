@@ -4,6 +4,7 @@
   import { get } from '../lib/http';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import PollStatus from './PollStatus.svelte';
+  import ChatResources from './ChatResources.svelte';
 
   let {
     projectId,
@@ -38,6 +39,7 @@
 </script>
 
 <PollStatus phase={state.phase} hasData={recovery !== null} what="Research recovery" />
+{#key `${projectId}/${sessionId}`}<ChatResources {projectId} {sessionId} />{/key}
 {#if recovery && recovery.unfinished > 0}
   <p role="status">
     {recovery.unfinished} unfinished research {recovery.unfinished === 1 ? 'branch' : 'branches'}.

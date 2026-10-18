@@ -15,6 +15,7 @@ from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.projects import ProjectError, RunName
 
 from .context import CONTEXT, USER_ID, identifier, json_answer, json_body, session_record
+from .resource_requests import add_routes as add_resource_routes
 
 PATH = "/api/v0/projects/{project}/sessions/{session}/recovery"
 _RUN = TypeAdapter[str](RunName)
@@ -22,6 +23,7 @@ _ID = TypeAdapter[str](Identifier)
 
 
 def add_routes(app: web.Application) -> None:
+    add_resource_routes(app, PATH)
     app.router.add_get(PATH, status)
     app.router.add_get(PATH + "/works/{work}", pending)
     app.router.add_post(PATH + "/resolve", resolve)

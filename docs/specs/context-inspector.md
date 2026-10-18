@@ -1,7 +1,7 @@
 # Agent context inspector
 
 Status: requested by the owner, 2026-10-17. A read-only inspector for saved and live
-main and delegated attempts is implemented in the current working branch: measured per-answer
+main and delegated attempts is implemented on local `dev`: measured per-answer
 input/cache chart by call number, timestamped live answer/fold observations,
 the latest auxiliary-intent snapshot, saved fold summaries, explicit unavailable
 working-view fields, and server-side original-message search. Recorded continuation
@@ -94,8 +94,9 @@ Verified against the working branch on 2026-10-17:
   response usage with observation time and run identity. `ModelUsage` now records
   provider-reported cache-read and cache-write input counters for new main and
   delegated answers, preserving null when a counter was omitted or a call predates
-  this change. The context-screen projection and reviewer/fold cache accounting
-  still need integration.
+  this change. The context timeline projects these observations and a separate
+  bounded snapshot of auxiliary reviewer/fold intents. Exact working-view capture
+  remains separate.
 - The workspace already exposes run records, message-by-ID reads, paged saved
   history collections and chunked tool records. These are building blocks, not
   a complete context-inspector API. The first read-only route pages retained

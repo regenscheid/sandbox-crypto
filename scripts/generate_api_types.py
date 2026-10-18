@@ -34,6 +34,8 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.orchestrator.continuity.grants import TokenGrantDecision, TokenGrantStatus
+from sandbox_science.orchestrator.continuity.resources import ResourceRequestPage
 from sandbox_science.orchestrator.continuity.status import StatusPage
 from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.orchestrator.runtree import RunTree
@@ -83,6 +85,9 @@ OUT = ROOT / "web" / "workspace" / "src" / "lib" / "api-types.ts"
 MODELS: tuple[type[BaseModel], ...] = (
     UploadPage,
     StatusPage,
+    ResourceRequestPage,
+    TokenGrantStatus,
+    TokenGrantDecision,
     HistoryChunk,
     HistoryPage,
     ContextHistoryPage,

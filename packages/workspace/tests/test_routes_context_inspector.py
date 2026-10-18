@@ -335,7 +335,8 @@ async def test_live_timeline_pages_one_attempt_and_advances_through_sparse_fold_
     assert [answer["ordinal"] for answer in tail["answers"]] == list(range(6, 56))
     assert tail["folds"] == later["folds"]
     assert tail["events_after"] == 56
-    assert not tail["more_answers"] and not tail["more_events"]
+    assert not tail["more_answers"]
+    assert not tail["more_events"]
     for invalid in ("limit=51", "answers_after=-1", "events_after=1&events_after=2", "x=1"):
         await error_of(await client.get(path + "?" + invalid), 400, "invalid_request")
     await error_of(

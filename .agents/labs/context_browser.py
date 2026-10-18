@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from aiohttp import web
+from resource_browser import seed_resources
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.continuity.models import ModelIntents
@@ -157,6 +158,7 @@ def seed(path: Path) -> dict[str, str]:
             {"state": "saved", "fold": fold.message_id, "span": [1, 3], "freed": 1200},
         )
         pending = ModelIntents(projects.control).begin(owner, kind="fold", alias="fixture")
+        resource_session = seed_resources(projects, PROJECT)
     with closing(DocumentStore(store_path(path))) as documents:
         document = documents.create(
             PROJECT,
@@ -185,6 +187,7 @@ def seed(path: Path) -> dict[str, str]:
         skills.add("demo", pack, USER)
         skills.pin(PROJECT, "demo", USER)
     return {
+        "resource_session": resource_session,
         "document": document.document_id,
         "large_message": large.message_id,
         "live_run": LIVE,
