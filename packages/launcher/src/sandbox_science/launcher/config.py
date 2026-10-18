@@ -518,6 +518,8 @@ class OrchestratorConfig(_Strict):
     revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     control_listen: Listen = "127.0.0.1:8202"
     python: str = "/opt/sandbox-science/bin/python"
+    recover_infrastructure: bool = False
+    """Restart owned services/agent VM and admit interrupted tree recovery."""
 
 
 class LauncherConfig(_Strict):

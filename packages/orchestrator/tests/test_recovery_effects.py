@@ -651,7 +651,16 @@ def test_operator_observed_tokens_do_not_reset_or_duplicate_the_grant(projects: 
     assert Plans(projects.control, "p", "s", "unused").spent_tokens(RUN) == 23
 
 
-@pytest.mark.parametrize("tool", ["wait_delegations", "delegation_status", "cancel_delegation"])
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "wait_delegations",
+        "delegation_status",
+        "wait_agent_message",
+        "wait_jobs",
+        "cancel_delegation",
+    ],
+)
 async def test_interrupted_child_observation_does_not_invent_results_or_dispatch(
     projects: ProjectStore, tool: str
 ):

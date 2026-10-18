@@ -160,7 +160,25 @@ an advertised control capability prevent signalling an incompatible launcher. Th
 launcher confirms deletion of the original immutable sandbox ID, waits for the old
 control connection to drain, rotates the runtime token/generation and admits a fresh
 image handshake. Failure retains ownership and degraded status. Replacement creates
-no research Resume request; the user must explicitly Resume unfinished work.
+no research Resume request under the default manual policy.
+
+`orchestrator.recover_infrastructure = true` enables autonomous recovery for an
+unattended local deployment. The launcher restarts its owned worker, control and
+workspace processes with bounded increasing delays and readiness checks. It
+replaces a failed agent VM through the same immutable-identity reconciliation
+used by explicit replacement, leaving research VMs running. Replacement attempts
+are recorded before dispatch in a bounded private journal and stop after ten
+consecutive failures; sixty healthy seconds reset the streak. A replacement left
+pending by launcher loss is reported as unknown and is not automatically replayed.
+
+The corresponding control policy admits interrupted work to the existing bounded
+automatic tree Resume queue. It honors explicit Stop, fresh user messages, token
+grants and cost admission. Worker computations are looked up by their original
+operation IDs; mailbox/job/child observation waits produce an explicit interrupted
+observation receipt. Unsupported uncertain effects remain blocked. Recovery does
+not promise arbitrary interpreter-memory reconstruction or automatically repeat
+an MCP mutation. Retry decisions survive service restarts and stop after three
+attempts without recorded progress.
 The drain wait uses the configured launcher `stop_timeout` (30 seconds by
 default). A known refusal because the old connection has not settled may be
 retried after that connection actually disconnects; admitted tool effects retain

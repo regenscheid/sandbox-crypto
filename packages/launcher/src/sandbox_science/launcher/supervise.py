@@ -38,6 +38,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock
+from sandbox_science.contracts.clock import wait_or_sleep
+
 from .config import LauncherError
 from .state import Layout, write_private
 
@@ -137,6 +140,7 @@ class Running:
     pump: asyncio.Task[None] | None = None
     since: float = field(default_factory=time.monotonic)
     reported: bool = False
+    start_timeout: float = 300
     restarts: int = 0
     """Times in a row it was started again, for a part that is."""
 
@@ -177,8 +181,18 @@ class Supervisor:
         stop_timeout: float,
         changed: Callable[[], None] = lambda: None,
         env: Mapping[str, str] | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+        restart_delays: tuple[float, ...] = RESTART_DELAYS,
+        restarts: int = RESTARTS,
+        steady: float = STEADY,
     ) -> None:
         self.layout = layout
+        self.clock, self.restart_delays, self.restarts, self.steady = (
+            clock,
+            restart_delays,
+            restarts,
+            steady,
+        )
         self.env = dict(environment() if env is None else env)
         """What every part's environment starts from (``environment``)."""
         self.stop_requested = stop
@@ -201,9 +215,15 @@ class Supervisor:
                 "stop it, or give the part another address"
             )
         running = await self._spawn(part)
+        running.start_timeout = timeout
         self.running.append(running)
         self._stack.append(running)
         self.changed()
+        await self._wait_ready(running, timeout)
+        return running
+
+    async def _wait_ready(self, running: Running, timeout: float) -> None:
+        part = running.part
         ready = asyncio.ensure_future(self._ready(running))
         exited = asyncio.ensure_future(running.process.wait())
         stopped = asyncio.ensure_future(self.stop_requested.wait())
@@ -216,7 +236,7 @@ class Supervisor:
                 waiting.cancel()
         alive = exited not in done and running.process.returncode is None
         if alive and ready in done and not ready.cancelled() and ready.exception() is None:
-            return running
+            return
         if stopped in done:
             raise StopRequested
         if exited in done or running.process.returncode is not None:
@@ -317,23 +337,21 @@ class Supervisor:
                     f"{running.process.returncode}; the end of its log, {running.log}:\n"
                     + tail(running.log)
                 )
-            steady = time.monotonic() - running.since >= STEADY
+            steady = self.clock.monotonic() - running.since >= self.steady
             restarts = 1 if steady else running.restarts + 1
-            if restarts > RESTARTS:
+            if restarts > self.restarts:
                 return (
                     f"the {running.part.title} kept stopping: it was started again "
-                    f"{RESTARTS} times in a row; the end of its log, {running.log}:\n"
+                    f"{self.restarts} times in a row; the end of its log, {running.log}:\n"
                     + tail(running.log)
                 )
-            delay = RESTART_DELAYS[min(restarts, len(RESTART_DELAYS)) - 1]
+            delay = self.restart_delays[min(restarts, len(self.restart_delays)) - 1]
             print(
                 f"the {running.part.title} stopped, with status {running.process.returncode}; "
                 f"starting it again in {delay:g} s",
                 flush=True,
             )
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self.stop_requested.wait(), delay)
-            if self.stop_requested.is_set():
+            if await wait_or_sleep(self.clock, self.stop_requested, delay):
                 return None
             await asyncio.to_thread(end_session, running.process.pid)
             address = running.part.address
@@ -344,9 +362,17 @@ class Supervisor:
                 )
             again = await self._spawn(running.part)
             again.restarts = restarts
+            again.start_timeout = running.start_timeout
             self.running[self.running.index(running)] = again
             self._stack[self._stack.index(running)] = again
             self.changed()
+            try:
+                await self._wait_ready(again, again.start_timeout)
+            except StopRequested:
+                return None
+            except LauncherError as exc:
+                print(str(exc), flush=True)
+                await self._stop(again, lambda: False)
 
     async def stop_part(self, name: str) -> bool:
         """Stop one owned part for explicit replacement; preserve all other services."""
@@ -380,8 +406,8 @@ class Supervisor:
         if process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 process.send_signal(signal.SIGTERM)
-            deadline = time.monotonic() + self.stop_timeout
-            while process.returncode is None and time.monotonic() < deadline and not now():
+            deadline = self.clock.monotonic() + self.stop_timeout
+            while process.returncode is None and self.clock.monotonic() < deadline and not now():
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(asyncio.shield(process.wait()), POLL)
             if process.returncode is None:
@@ -401,7 +427,7 @@ class Supervisor:
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, start_new_session=True,
         )  # fmt: skip
-        running = Running(part, process, log)
+        running = Running(part, process, log, since=self.clock.monotonic())
         running.pump = asyncio.ensure_future(self._pump(running))
         return running
 
@@ -436,7 +462,7 @@ class Supervisor:
             await running.ready.wait()
         if part.address is not None:
             while not await reachable(part.address) or running.process.returncode is not None:
-                await asyncio.sleep(POLL)
+                await self.clock.sleep(POLL)
 
 
 def end_session(session: int) -> None:

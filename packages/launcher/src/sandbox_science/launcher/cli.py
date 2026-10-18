@@ -243,6 +243,7 @@ def _worker(config: LauncherConfig, layout: Layout) -> Part:
         layout.worker,
         address=config.worker.listen,
         env=passed(config.worker.pass_env),
+        restart=bool(config.orchestrator and config.orchestrator.recover_infrastructure),
     )
 
 
@@ -300,6 +301,7 @@ async def _start(
         address=config.workspace.listen,
         private=(LOGIN, layout.login),
         env=passed(config.workspace.pass_env),
+        restart=bool(config.orchestrator and config.orchestrator.recover_infrastructure),
     )
     await supervisor.start(workspace, timeout)
 

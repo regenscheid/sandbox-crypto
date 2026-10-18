@@ -264,6 +264,8 @@ class Settings:
     """The tokens one consistency review may use, over all its calls."""
     review_calls_per_hour: int = ReviewConfig().calls_per_hour
     """The reviewer calls a project may make in an hour."""
+    recover_interrupted: bool = False
+    """Operator policy allowing bounded automatic Resume after infrastructure loss."""
     cost_limits: bool = False
     """With stores, whether each main run keeps its project's daily cost limit, if the
     project has one, at its safe points, as the run service's runs do (RS-6c)."""

@@ -172,6 +172,38 @@ def test_uncertain_effects_are_not_auto_resumed(projects: ProjectStore):
     assert recovery.queue("p", "s", RUN) is None
 
 
+@pytest.mark.parametrize(
+    ("tool", "allowed"),
+    [("sage", True), ("wait_agent_message", True), ("mcp__write_remote", False)],
+)
+def test_infrastructure_policy_admits_only_reconcilable_original_effects(
+    projects: ProjectStore,
+    tool: str,
+    allowed: bool,
+):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    ToolJournal(projects.control).start(
+        CONTEXT, RUN, "original-effect", ToolCall("call-original", tool, "{}")
+    )
+    works.interrupt("p", "s", RUN)
+    assert AutoRecovery(projects.control).candidates() == ()
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
+    recovery = AutoRecovery(projects.control, interrupted=True)
+    assert recovery.candidates() == (("p", "s", RUN),)
+    assert (recovery.queue("p", "s", RUN) is not None) is allowed
+    assert len(ToolJournal(projects.control).pending("p", "s", RUN)) == 1
+
+
+def test_infrastructure_policy_cannot_override_user_stop(projects: ProjectStore):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    works.interrupt_run("p", "s", RUN, stopped=True)
+    recovery = AutoRecovery(projects.control, interrupted=True)
+    assert recovery.candidates() == ()
+    assert recovery.queue("p", "s", RUN) is None
+
+
 def test_grant_exhaustion_and_cancellation_are_not_auto_resumed(projects: ProjectStore):
     failed_model(projects)
     recovery = AutoRecovery(projects.control)

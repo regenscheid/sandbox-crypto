@@ -60,7 +60,12 @@ themselves; the upstream LiteLLM budget controls spending.
 
 If the agent VM exits, the launcher keeps the worker, control service and workspace
 available. Run `sandbox-science replace-orchestrator --config CONFIG` to replace
-that VM, then explicitly Resume research. Replacement alone queues no research.
+that VM, then explicitly Resume research. Replacement alone queues no research
+under the default manual policy. For unattended runs set
+`recover_infrastructure = true` in `[orchestrator]`: owned host services restart,
+the agent VM is replaced with bounded retries, and interrupted work enters the
+existing tree Resume path. Original operation reconciliation, Stop and resource
+approvals still apply; unsupported unknown effects remain visible for a decision.
 
 ```bash
 uv run sandbox-science up --config examples/sandbox-science.toml
@@ -93,7 +98,7 @@ worker available and `status` reports degraded. Replace only that VM with
 `sandbox-science replace-orchestrator --config ...`. The launcher confirms original
 sandbox deletion and rotates its scoped token before the replacement handshake.
 Then explicitly Resume unfinished work in the GUI; replacement does not restart
-research automatically.
+research automatically unless the autonomous policy above is enabled.
 
 If replacement reports `old runtime control connection did not settle`, it has
 refused the replacement while admitted work finishes cleanup. Keep the worker and

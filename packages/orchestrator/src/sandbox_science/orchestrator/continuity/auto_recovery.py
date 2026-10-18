@@ -18,6 +18,7 @@ from sandbox_science.orchestrator.control import ControlStore
 from .grants import grant_total
 from .plans import spent_tokens
 from .records import Ownership, tree_cancelled
+from .recovery_tools import RECONCILABLE_TOOLS
 from .resources import turn_grant, turn_usage
 
 MAX_NO_PROGRESS: Final = 3
@@ -27,8 +28,11 @@ RETRY_SECONDS: Final = 30
 class AutoRecovery:
     """Queue a saved model-phase failure once per bounded, durable retry decision."""
 
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
+    def __init__(
+        self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK, interrupted: bool = False
+    ) -> None:
         self.control, self.clock = control, clock
+        self.interrupted = interrupted
 
     def candidates(
         self, *, after: tuple[str, str, str] = ("", "", "")
@@ -41,7 +45,8 @@ class AutoRecovery:
                 "JOIN research_sessions rs USING(project,session) "
                 "JOIN sessions s ON s.project_id=w.project AND s.session_id=w.session "
                 "WHERE w.parent IS NULL AND w.state IN ('paused','blocked') "
-                "AND w.reason IN ('error','unfinished_children') AND s.closed_at IS NULL "
+                "AND (w.reason IN ('error','unfinished_children') "
+                "OR (? AND w.reason='interrupted')) AND s.closed_at IS NULL "
                 "AND w.root=rs.root "
                 "AND NOT EXISTS (SELECT 1 FROM research_resumes q WHERE q.project=w.project "
                 "AND q.session=w.session AND q.status IN ('queued','running')) "
@@ -54,7 +59,7 @@ class AutoRecovery:
                 "AND o.observed>?) "
                 "AND (w.project,w.session,w.work)>(?,?,?) "
                 "ORDER BY w.project,w.session,w.work LIMIT 100",
-                (recently_checked, *after),
+                (self.interrupted, recently_checked, *after),
             ).fetchall()
         return tuple((str(p), str(s), str(r)) for p, s, r in rows)
 
@@ -104,7 +109,12 @@ class AutoRecovery:
             if (
                 work is None
                 or work[0] not in ("paused", "blocked")
-                or work[1] not in ("error", "unfinished_children")
+                or work[1]
+                not in (
+                    "error",
+                    "unfinished_children",
+                    *(("interrupted",) if self.interrupted else ()),
+                )
             ):
                 return None
             unfinished = db.execute(
@@ -117,7 +127,9 @@ class AutoRecovery:
             ).fetchall()
             eligible: list[bool] = []
             for current, reason, phase, work_id in unfinished:
-                allowed = reason == "error" and phase == "model"
+                allowed = (reason == "error" and phase == "model") or (
+                    self.interrupted and reason == "interrupted"
+                )
                 if reason == "turn_limit":
                     original = db.execute(
                         "SELECT json_extract(snapshot,'$.request.max_turns') "
@@ -139,18 +151,19 @@ class AutoRecovery:
                 return None
             if tree_cancelled(db, project, session, root):
                 return None
-            # A tool operation without its original result may have changed the
-            # outside world. Only an explicit reconciliation can release it.
-            if db.execute(
-                "SELECT 1 FROM tool_intents i JOIN research_attempts a "
+            # Autonomous recovery may reconcile supported operations by original
+            # identity. It never replays their call or admits an unknown adapter.
+            pending = db.execute(
+                "SELECT DISTINCT i.tool FROM tool_intents i JOIN research_attempts a "
                 "ON a.project=i.project AND a.session=i.session AND a.run=i.run "
                 "JOIN research_work w ON w.project=a.project AND w.session=a.session "
                 "AND w.work=a.work WHERE w.project=? AND w.session=? AND w.root=? "
                 "AND NOT EXISTS (SELECT 1 FROM archive_tool_records t WHERE "
                 "t.project=i.project AND t.session=i.session AND t.run=i.run "
-                "AND t.operation_id=i.operation_id) LIMIT 1",
+                "AND t.operation_id=i.operation_id)",
                 (project, session, root),
-            ).fetchone():
+            ).fetchall()
+            if any(not self.interrupted or name not in RECONCILABLE_TOOLS for (name,) in pending):
                 return None
             # A grant is cumulative across attempts. Only a USER grant decision
             # can increase it; do not queue a recovery that would immediately

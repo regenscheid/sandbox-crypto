@@ -290,7 +290,10 @@ def site(
                     "pass_env": [*fakes, *extra.get("worker", [])],
                 },
                 "run_service": {"pass_env": [*fakes, *extra.get("run_service", [])]},
-                "orchestrator": {"control_listen": f"127.0.0.1:{control}"},
+                "orchestrator": {
+                    "control_listen": f"127.0.0.1:{control}",
+                    **changes.pop("orchestrator", {}),
+                },
                 "workspace": {
                     "listen": f"127.0.0.1:{workspace}",
                     "pass_env": [*fakes, *extra.get("workspace", [])],

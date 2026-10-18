@@ -145,7 +145,11 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
     write_private(directory / "policy.yaml", compile_orchestrator(target).to_yaml())
     write_private(directory / "generation", generation + "\n")
     model, service = config.model, config.run_service
-    settings: dict[str, Any] = {"cost_limits": True, "image_aliases": list(model.images)}
+    settings: dict[str, Any] = {
+        "cost_limits": True,
+        "image_aliases": list(model.images),
+        "recover_interrupted": configured(config).recover_infrastructure,
+    }
     if service.context_ceiling is not None:
         settings["ceiling"] = service.context_ceiling
     if service.max_turns:
@@ -247,6 +251,7 @@ async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) 
             ],
             directory,
             ready_line="control capability service ready",
+            restart=configured(config).recover_infrastructure,
             env=passed(config.run_service.pass_env),
         ),
         config.start_timeout,

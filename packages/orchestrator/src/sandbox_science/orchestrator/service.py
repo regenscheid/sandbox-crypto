@@ -134,7 +134,11 @@ class RunService:
         self._auto_checked = -AUTO_RECOVERY_SECONDS
         self._auto_after = ("", "", "")
         self._continue_after = ("", "", "")
-        self.auto_recovery = AutoRecovery(harness.stores.projects.control, clock=clock)
+        self.auto_recovery = AutoRecovery(
+            harness.stores.projects.control,
+            clock=clock,
+            interrupted=harness.settings.recover_interrupted,
+        )
         self.auto_continuation = AutoContinuation(
             harness.stores.projects.control, harness.stores.documents, self.runs
         )

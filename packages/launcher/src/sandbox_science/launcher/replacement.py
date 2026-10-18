@@ -18,6 +18,7 @@ from sandbox_science.contracts.model import Contract, Counter
 
 from . import instance, orchestrator
 from .config import LauncherConfig, LauncherError
+from .infrastructure import InfrastructureRecovery
 from .state import Layout, check_private, write_private
 from .supervise import Supervisor, start_time
 
@@ -99,18 +100,46 @@ def request(config: LauncherConfig) -> int:
 async def watch(
     config: LauncherConfig, layout: Layout, supervisor: Supervisor, requested: asyncio.Event
 ) -> str | None:
-    """Keep required services alive while explicit requests replace only the agent VM."""
-    while True:
-        watching = asyncio.create_task(supervisor.watch())
+    """Supervise host processes while serializing explicit and automatic replacement."""
+    recovery = InfrastructureRecovery(config, layout, supervisor)
+    watching = asyncio.create_task(supervisor.watch())
+    managing = asyncio.create_task(_manage(config, layout, supervisor, requested, recovery))
+    try:
+        done, _ = await asyncio.wait((watching, managing), return_when=asyncio.FIRST_COMPLETED)
+        if managing in done:
+            await managing
+        return await watching
+    finally:
+        for task in (watching, managing):
+            task.cancel()
+        await asyncio.gather(watching, managing, return_exceptions=True)
+
+
+async def _manage(
+    config: LauncherConfig,
+    layout: Layout,
+    supervisor: Supervisor,
+    requested: asyncio.Event,
+    recovery: InfrastructureRecovery,
+) -> None:
+    while not supervisor.stop_requested.is_set():
         replacing = asyncio.create_task(requested.wait())
+        automatic = asyncio.create_task(recovery.wait())
         try:
-            done, _ = await asyncio.wait((watching, replacing), return_when=asyncio.FIRST_COMPLETED)
-            if watching in done:
-                return await watching
+            done, _ = await asyncio.wait(
+                (replacing, automatic), return_when=asyncio.FIRST_COMPLETED
+            )
+            if automatic in done:
+                await automatic
         finally:
-            for task in (watching, replacing):
+            for task in (replacing, automatic):
                 task.cancel()
-            await asyncio.gather(watching, replacing, return_exceptions=True)
+            await asyncio.gather(replacing, automatic, return_exceptions=True)
+        if supervisor.stop_requested.is_set():
+            return
+        if replacing not in done:
+            await recovery.replace()
+            continue
         requested.clear()
         selected: Request | None = None
         error: str | None = None

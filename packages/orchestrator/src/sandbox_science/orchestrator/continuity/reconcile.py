@@ -15,10 +15,10 @@ from sandbox_science.orchestrator.history.operations import ToolJournal, ToolRec
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.question_tool import result
 from sandbox_science.orchestrator.questions import Questions
-from sandbox_science.orchestrator.tools import PDF_SPECS
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .records import Work, WorkRecords
+from .recovery_tools import OBSERVATION_TOOLS, WORKER_TOOLS
 
 
 class Reconciler:
@@ -67,17 +67,17 @@ class Reconciler:
         elif tool == "delegate":
             record = await threaded(self.delegation, work, operation)
             text = json.dumps(record)
-        elif tool in {"wait_delegations", "delegation_status"}:
+        elif tool in OBSERVATION_TOOLS:
             # These observe children; losing their response creates no uncertain
             # effect. Do not invent the old observation or redispatch any child.
             record = {
                 "reconciled": True,
                 "interrupted_observation": True,
-                "note": "The previous child observation was interrupted. Inspect the "
-                "durable child outcomes with delegation_status or wait_delegations.",
+                "note": "The previous observation was interrupted. Inspect the current "
+                "durable child, mailbox or job state; this is not its original result.",
             }
             text = json.dumps(record)
-        elif tool in {"shell", "python", "sage", "start_job", *(spec.name for spec in PDF_SPECS)}:
+        elif tool in WORKER_TOOLS:
             found = await self.client.lookup(context, operation)
             execution = found.execution
             if execution is None:

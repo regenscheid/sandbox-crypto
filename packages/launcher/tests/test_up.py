@@ -442,3 +442,40 @@ def test_replacement_request_for_another_launcher_cannot_stop_the_runtime(
         assert alive(part, prior)
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
+
+
+def test_autonomous_policy_recovers_owned_worker_and_agent_without_stopping_ui(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"](orchestrator={"recover_infrastructure": True})
+    launcher.expect("Stop:")
+    layout = Layout(load_config(launcher.config).state_dir)
+    prior = read(layout)
+    assert prior is not None
+    identities = {part.name: part.pid for part in prior.parts}
+    original = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+
+    def changed(name: str) -> bool:
+        current = read(layout)
+        return current is not None and any(
+            part.name == name and part.pid != identities[name] and alive(part, current)
+            for part in current.parts
+        )
+
+    os.kill(identities["worker"], signal.SIGKILL)
+    wait_for(lambda: changed("worker"), "worker did not restart", 30)
+    os.kill(identities["agent-runtime"], signal.SIGKILL)
+    wait_for(lambda: changed("agent-runtime"), "agent did not replace", 30)
+    wait_for(lambda: launcher.command("status").returncode == 0, "recovery not ready", 30)
+    current = read(layout)
+    assert current is not None
+    now = {part.name: part.pid for part in current.parts}
+    for name in ("workspace", "control-service"):
+        assert now[name] == identities[name]
+    replacement = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+    assert replacement["id"] != original["id"]
+    assert site["journal"].read_text().count(f"openshell sandbox delete {original['name']}") == 1
+    settings = json.loads((layout.root / "orchestrator/control.json").read_text())
+    assert settings["settings"]["recover_interrupted"] is True
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
