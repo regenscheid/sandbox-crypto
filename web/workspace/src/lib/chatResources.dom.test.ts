@@ -287,7 +287,7 @@ it('shows retained-artifact scope and locks one USER soft extension to its revie
       reason: 'Continue from the saved research checkpoint.',
     },
   ]);
-  expect(target.textContent).toContain('approval did not start a run');
+  expect(target.textContent).toContain('eligible for automatic Resume');
 });
 
 it('never offers to extend hard retention capacity', async () => {

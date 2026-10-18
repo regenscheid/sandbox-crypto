@@ -55,7 +55,8 @@
   {#if error}<ErrorMessage {error} />{/if}
   {#if result}
     <p role="status">
-      Extension recorded. Resume research to continue; this approval did not start a run.
+      Allowance approved. The paused tree is eligible for automatic Resume when its other checks
+      pass.
     </p>
   {:else if attempted}
     <p role="status">
@@ -64,7 +65,8 @@
   {:else}
     <p>
       Up to {extension.label}, bounded by project policy. The entire research tree must be idle.
-      Tokens, worker capacity and execution deadlines stay unchanged.
+      Approval allows automatic Resume when its other checks pass. Tokens, worker capacity and
+      execution deadlines stay unchanged.
     </p>
     <label
       >Reason for continuing<textarea bind:value={reason} maxlength="2000" rows="2"
