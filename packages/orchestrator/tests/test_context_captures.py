@@ -199,3 +199,34 @@ def test_too_small_unicode_chunk_is_refused_instead_of_stalling_cursor(projects)
     )
     with pytest.raises(DocumentError, match="too small"):
         CapturedContexts(projects.control).text("p", "s", RUN, identity, 0, limit=1)
+
+
+def test_large_capture_pages_do_not_materialize_the_full_sqlite_value(projects, monkeypatch):
+    from sandbox_science.orchestrator.history.capture import CapturedPart, CapturedRequest
+
+    original = "x" * (2 * 1024 * 1024) + "tail-witness"
+    owner = WorkRecords(projects.control).admit("p", "s", RUN)
+    identity = ModelIntents(projects.control).begin(
+        owner,
+        kind="main",
+        alias="fixture",
+        captured=CapturedRequest(parts=(CapturedPart(role="user", kind="message", text=original),)),
+    )
+    projects.control.close()
+    connect = sqlite3.connect
+
+    def bounded_values(*args, **kwargs):
+        db = connect(*args, **kwargs)
+        db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 256 * 1024)
+        return db
+
+    monkeypatch.setattr(sqlite3, "connect", bounded_values)
+    contexts = CapturedContexts(projects.control)
+    first = contexts.text("p", "s", RUN, identity, 0)
+    assert first.text == "x" * 16384
+    assert first.next_offset == 16384
+    tail = contexts.text("p", "s", RUN, identity, 0, offset=2 * 1024 * 1024)
+    assert tail.text == "tail-witness"
+    assert tail.next_offset is None
+    assert tail.total == len(original)
+    assert tail.sha256 == first.sha256

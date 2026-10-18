@@ -150,14 +150,20 @@ class CapturedContexts:
             raise ValueError("invalid captured text cursor")
         with self.control.isolated_read() as tx:
             row = tx.sql.execute(
-                "SELECT substr(CAST(b.text AS BLOB),?,?),b.bytes,b.sha256 FROM context_parts p "
+                "SELECT b.rowid,b.bytes,b.sha256 FROM context_parts p "
                 "JOIN context_bodies b ON b.project=p.project AND b.sha256=p.sha256 "
                 "WHERE p.project=? AND p.session=? AND p.run=? AND p.identity=? AND p.ordinal=?",
-                (offset + 1, limit, project, session, run, identity, ordinal),
+                (project, session, run, identity, ordinal),
             ).fetchone()
-        if row is None:
-            raise DocumentError("not_found", "no captured part in this attempt")
-        raw = bytes(row[0] or b"")
+            if row is None:
+                raise DocumentError("not_found", "no captured part in this attempt")
+            # SQLite substr(CAST(text AS BLOB)) fetches the full stored body first.
+            # Keep both database I/O and Python allocation bounded to this chunk.
+            with tx.sql.blobopen("context_bodies", "text", row[0], readonly=True) as blob:
+                raw = b""
+                if offset <= len(blob):
+                    blob.seek(offset)
+                    raw = blob.read(limit)
         try:
             decoded = raw.decode("utf-8")
         except UnicodeDecodeError as error:

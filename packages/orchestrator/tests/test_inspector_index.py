@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Full visible archive indexing preserves exact search and reports incomplete coverage."""
 
+import sqlite3
+
 import pytest
 
 from sandbox_science.orchestrator.history import Archive, Entry
@@ -109,3 +111,42 @@ def test_upgrade_leaves_legacy_evidence_intact_and_backfill_completes_it(project
     )
     assert Archive(upgraded).message("p", saved.message_id).entry.content == saved.entry.content
     upgraded.close()
+
+
+@pytest.mark.parametrize("field", ["content", "tool_calls"])
+def test_large_original_backfill_never_materializes_the_full_sqlite_value(
+    projects, monkeypatch, field
+):
+    witness = "bounded-original-witness"
+    original = "x" * (CHUNK - 5) + witness + "y" * (2 * 1024 * 1024)
+    entry = (
+        Entry("user", "task", original)
+        if field == "content"
+        else Entry(
+            "assistant",
+            "assistant",
+            None,
+            tool_calls=({"id": "call-1", "arguments": original},),
+        )
+    )
+    saved = Archive(projects.control).append("p", "s", RUN, entry)
+    projects.control.close()
+    connect = sqlite3.connect
+
+    def bounded_values(*args, **kwargs):
+        db = connect(*args, **kwargs)
+        # This constrains SQLite's intermediate values, not just returned rows.
+        # A full-body CAST/substr fails even when its final result is one chunk.
+        db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 256 * 1024)
+        return db
+
+    monkeypatch.setattr(sqlite3, "connect", bounded_values)
+    index = InspectorIndex(projects.control)
+    for _ in range(4):
+        progress = index.backfill("p", "s", RUN, chunks=1)
+        assert progress.chunks == 1
+        assert progress.pending
+    matches = index.page("p", "s", RUN, contains=witness)
+    assert [row.message for row in matches.messages] == [saved.message_id]
+    assert witness in matches.messages[0].snippet
+    assert matches.index_pending

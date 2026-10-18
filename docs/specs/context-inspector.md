@@ -234,6 +234,13 @@ can cross a boundary. NUL-normalized text supplies index candidates only; exact
 original text verification prevents false matches. The dedicated index never
 changes the agent-facing search exclusions or retrieval authorization.
 
+Source and captured-body chunks use incremental SQLite blob reads; a small page
+does not materialize the complete original first. Payload reading and indexing
+are bounded per maintenance batch. Pending-coverage checks and finding the first
+incomplete original still scan scoped row metadata, so their work grows with the
+scoped archive; there is no persisted coverage cursor. Within a batch, indexing
+continues from the last selected position rather than rescanning that prefix.
+
 Diagnostic capture is capped at 8 MiB **after JSON serialization**, below the
 confined transport's frame bound. A larger valid model request still dispatches:
 its intent receives an immutable omission receipt explaining the size limit,

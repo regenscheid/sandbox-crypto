@@ -113,22 +113,24 @@ class InspectorIndex:
             raise ValueError("invalid index batch")
         scope, args = attempt_scope(project, session, run, continuations)
         done = 0
+        position = 0
         with self.control.write() as tx:
             for _ in range(chunks):
                 row = tx.sql.execute(
-                    "SELECT message_id FROM archive_messages a WHERE project=? AND session=? AND "  # noqa: S608 - fixed scope
-                    f"{scope} AND (NOT EXISTS(SELECT 1 FROM inspector_indexed i "
+                    "SELECT rowid,message_id,position,typeof(content),typeof(tool_calls) "  # noqa: S608 - fixed scope
+                    "FROM archive_messages a WHERE project=? AND session=? AND "
+                    f"{scope} AND position>=? AND (NOT EXISTS(SELECT 1 FROM inspector_indexed i "
                     "WHERE i.project=a.project "
                     "AND i.message=a.message_id AND i.field='content' AND i.complete=1) OR "
                     "NOT EXISTS(SELECT 1 FROM inspector_indexed i WHERE i.project=a.project "
                     "AND i.message=a.message_id AND i.field='tool_calls' AND i.complete=1)) "
                     "ORDER BY position LIMIT 1",
-                    (project, session, *args),
+                    (project, session, *args, position),
                 ).fetchone()
                 if row is None:
                     break
-                message = str(row[0])
-                for field in FIELDS:
+                message, position = str(row[1]), int(row[2])
+                for field, value_type in zip(FIELDS, row[3:], strict=True):
                     state = tx.sql.execute(
                         "SELECT offset,complete FROM inspector_indexed "
                         "WHERE project=? AND message=? AND field=?",
@@ -137,13 +139,17 @@ class InspectorIndex:
                     if state and state[1]:
                         continue
                     start = state[0] if state else 0
-                    (text,) = tx.sql.execute(
-                        f"SELECT substr(CAST(coalesce({field},'') AS BLOB),?,?) "  # noqa: S608 - fixed field
-                        "FROM archive_messages "
-                        "WHERE project=? AND message_id=?",
-                        (start + 1, CHUNK + 1, project, message),
-                    ).fetchone()
-                    decoded, step, complete = piece(text or b"")
+                    # substr(CAST(...)) first materializes the complete original in
+                    # SQLite. Incremental reads keep payload work bounded even for
+                    # old multi-megabyte messages, while this write owns the index.
+                    raw = b""
+                    if value_type != "null":
+                        with tx.sql.blobopen(
+                            "archive_messages", field, row[0], readonly=True
+                        ) as blob:
+                            blob.seek(start)
+                            raw = blob.read(CHUNK + 1)
+                    decoded, step, complete = piece(raw)
                     _chunk(tx.sql, project, message, field, start, decoded, complete, start + step)
                     done += 1
                     break
