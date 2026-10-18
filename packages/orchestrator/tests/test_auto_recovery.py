@@ -308,6 +308,46 @@ async def test_service_queues_only_when_cost_gate_allows(harness: Harness):
         assert len(WorkRecords(service.stores.projects.control).queued()) == 1
 
 
+@pytest.mark.parametrize("child", [False, True])
+async def test_service_end_preserves_saved_model_failure_for_automatic_recovery(
+    harness: Harness, child: bool
+):
+    """The service cleanup path runs after save, not just after process loss."""
+    async with serving(harness, serve=False) as service:
+        failed_model(service.stores.projects, child=child)
+        works = WorkRecords(service.stores.projects.control)
+        before = works.page("p", "s", RUN)
+        await service._ended("p", "s", RUN, hold=False)
+        assert works.page("p", "s", RUN) == before
+        await service.auto_recovery_tick()
+        queued = works.queued()
+        assert len(queued) == 1
+        assert queued[0][:2] == ("p", "s")
+        assert queued[0][3] == RUN
+
+
+def test_process_loss_preserves_paused_diagnoses_but_user_stop_overrides_them(
+    projects: ProjectStore,
+):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    works.admit("p", "s", CHILD, parent=RUN)
+    works.finish(record(CHILD, stopped="budget"))
+    works.interrupt_run("p", "s", RUN)
+    root, child = works.get("p", "s", RUN), works.get("p", "s", CHILD)
+    assert (root.state, root.reason) == ("paused", "interrupted")
+    assert (child.state, child.reason) == ("paused", "budget")
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
+    works.block("p", "s", CHILD, "unresolved_tool_effect")
+    works.interrupt_run("p", "s", RUN)
+    assert works.get("p", "s", CHILD).reason == "unresolved_tool_effect"
+    works.interrupt_run("p", "s", RUN, stopped=True)
+    assert all(
+        (item.state, item.reason) == ("stopped", "user_stop") for item in works.page("p", "s", RUN)
+    )
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
+
+
 async def test_late_user_correction_does_not_trigger_failure_backoff(harness: Harness):
     async with serving(harness, serve=False) as service:
         failed_model(service.stores.projects)

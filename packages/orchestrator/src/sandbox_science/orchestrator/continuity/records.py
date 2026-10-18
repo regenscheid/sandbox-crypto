@@ -398,7 +398,11 @@ class WorkRecords:
             )
 
     def interrupt_run(self, project: str, session: str, run: str, *, stopped: bool = False) -> None:
-        """Late cleanup of a superseded attempt cannot interrupt its successor."""
+        """Fence unfinished execution without replacing a saved failure's diagnosis.
+
+        Only an explicit stop supersedes paused or blocked work. Late cleanup of
+        a superseded attempt cannot interrupt its successor.
+        """
         with self.control.write() as tx:
             row = tx.sql.execute(
                 "SELECT w.root FROM research_attempts a JOIN research_work w "
@@ -418,8 +422,9 @@ class WorkRecords:
             state, reason = ("stopped", "user_stop") if stopped else ("paused", "interrupted")
             tx.sql.execute(
                 "UPDATE research_work SET state=?,reason=? WHERE project=? "
-                "AND session=? AND root=? AND state IN ('running','waiting','paused','blocked')",
-                (state, reason, project, session, row[0]),
+                "AND session=? AND root=? AND (state IN ('running','waiting') "
+                "OR (? AND state IN ('paused','blocked')))",
+                (state, reason, project, session, row[0], stopped),
             )
             tx.sql.execute(
                 "UPDATE research_resumes SET status='blocked',reason=? WHERE project=? "
