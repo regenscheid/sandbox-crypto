@@ -21,8 +21,8 @@ IDs are the version strings in the code.
 | --- | --- | --- | --- |
 | MAIN base system | `sandbox-main-11` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-2` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
-| Delegated check system | `sandbox-delegated-check-7` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note; later parent messages cannot predetermine its verdict | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
-| Delegated task system | `sandbox-delegated-task-7` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs; later parent messages can steer it | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
+| Delegated check system | `sandbox-delegated-check-8` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note; later parent messages cannot predetermine its verdict | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
+| Delegated task system | `sandbox-delegated-task-8` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs; later parent messages can steer it | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
 
 | Project memory framings | `sandbox-memory-run-1`, `sandbox-memory-reviewer-1`, `sandbox-memory-watcher-1` | [memory_prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/memory_prompt.py) `RUN_FRAMING`, `REVIEWER_FRAMING`, `WATCHER_FRAMING`, each followed by the accepted entries | With the project's stores, when the project memory has entries: every main and delegated run, every reviewer call (the reviewed run's memory) and every watcher check (the memory at the check) ([project memory](MEMORY.md)) |
 | Skills index framing | `sandbox-skills-index-4` | [skills/index.py](../packages/orchestrator/src/sandbox_science/orchestrator/skills/index.py) `FRAMING_VERSION` | With the project's pinned skills, less those it excludes, and the skills it loads at a run's start, in the system message of every main and delegated run whose project pins skills ([skills](SKILLS.md#a-runs-skills)) |
@@ -48,7 +48,8 @@ What each input does:
   values are copied from a search, a read, a saved file or a ledger entry, and that a
   history search with no hit shows nothing absent ([context
   management](specs/context-management.md), CM-4a, CM-48). The delegated prompts say
-  the same of their own run's archive (CM-48a, CM-48b).
+  the same of their own run's archive; task parents can also retrieve descendants'
+  complete archived history, while checks remain own-run only (CM-48a, CM-48b).
 - **Tool descriptions.** These are model-facing product guidance and need the same
   review as system text. `start_job` says that recovery after a worker or bridge
   restart needs the original executor daemon and sandbox, and that confirmed daemon
@@ -238,8 +239,8 @@ authority or proof of provider behavior:
   adds guidance for explicitly extended exploratory research. `sandbox-main-11`
   adds explicit routing for new user messages: the root's work, plan creation or revision,
   direct-child steering, and feedback on pinned research records (D87, PD-44). The
-  delegated prompts add parent messaging in `sandbox-delegated-task-7` and
-  `sandbox-delegated-check-7`; the latter still requires an independent verdict. Task and tool messages are not pinned; the
+  delegated prompts add parent messaging in `sandbox-delegated-task-8` and
+  `sandbox-delegated-check-8`; the latter still requires an independent verdict. Task and tool messages are not pinned; the
   notice framings are.
 - **Research framing** ([research framing](STOCK-RESEARCH-PROMPTS.md)). A selected
   template is the section between the base and the planning guidance, pinned

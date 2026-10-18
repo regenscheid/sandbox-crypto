@@ -15,7 +15,7 @@ from typing import Final
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 
-CHECK_VERSION: Final = "sandbox-delegated-check-7"
+CHECK_VERSION: Final = "sandbox-delegated-check-8"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -46,7 +46,8 @@ CHECK_PROMPT: Final = (
     "blocked and the refusal as the obstacle. "
     "Each message the platform adds begins with a header naming its archive ID "
     "(msg-…), by which you can cite it; history_search and history_read read your own "
-    "run's messages whole. Copy exact values from your reads, never from memory, and "
+    "run's messages, in pages when long. Copy exact values from your reads, never "
+    "from memory, and "
     "a search with no hit shows nothing absent. "
     "Report only what the tools actually "
     "returned. Your final answer is your result, which your parent receives as you "
@@ -68,7 +69,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-7"
+TASK_VERSION: Final = "sandbox-delegated-task-8"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -99,7 +100,9 @@ TASK_PROMPT: Final = (
     "handle, such as D-3, A-1, C-4 or I-3. "
     "Each message the platform adds begins with a header naming its archive ID "
     "(msg-…), by which you can cite it; history_search and history_read read your own "
-    "run's messages whole. Copy exact values from your reads, never from memory, and "
+    "run's messages and your children's full history. Long messages come in pages; "
+    "follow the returned offset or byte_offset. Copy exact values from your reads, "
+    "never from memory, and "
     "a search with no hit shows nothing absent. "
     "Report only what the tools actually "
     "returned. Your final answer is your result, which your parent receives as you "

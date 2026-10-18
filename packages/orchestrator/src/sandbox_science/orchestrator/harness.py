@@ -1703,7 +1703,7 @@ class Harness:
             check=admitted.request.target is not None,
             tracks=tracks,
             skills=skills,
-            # Main and delegated runs read the archive; a delegated run its own run (CM-37).
+            # Main reads its session; delegated runs read their own subtree (CM-37).
             history=HistoryTool(
                 Archive(stores.projects.control, clock=self.clock, chain=True),
                 context,

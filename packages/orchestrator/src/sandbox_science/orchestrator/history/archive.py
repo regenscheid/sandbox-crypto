@@ -495,6 +495,107 @@ class Archive:
             raise ControlError(NOT_FOUND, f"the project's archive has no message {message_id}")
         return _archived(row)
 
+    def message_info(self, project: str, message_id: str) -> dict[str, object]:
+        """A message's place and labels without loading any of its body fields."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT session,position,run,parent,created,role,kind,source,call_id,model "
+                "FROM archive_messages WHERE project=? AND message_id=?",
+                (project, message_id),
+            ).fetchone()
+        if row is None:
+            raise ControlError(NOT_FOUND, f"the project's archive has no message {message_id}")
+        keys = (
+            "session",
+            "position",
+            "run",
+            "parent",
+            "created",
+            "role",
+            "kind",
+            "source",
+            "call_id",
+            "model",
+        )
+        return {"message_id": message_id, **dict(zip(keys, row, strict=True))}
+
+    def range_message(
+        self, project: str, info: Mapping[str, object], *, max_bytes: int = 64 * 1024
+    ) -> Archived:
+        """Only a range item's visible text fields, without native/model payloads."""
+        message_id = str(info["message_id"])
+        content = self.message_field_chunk(project, message_id, "content", limit=CHUNK_BYTES)
+        calls = self.message_field_chunk(project, message_id, "tool_calls", limit=CHUNK_BYTES)
+        if content.total + calls.total > max_bytes:
+            raise WorkingMemoryLimitError("range item needs a separate message read")
+
+        def whole(field: Literal["content", "tool_calls"], first: RecordChunk) -> str:
+            size = first.total
+            if not size:
+                return ""
+            pieces = [
+                first.data,
+                *(
+                    self.message_field_chunk(
+                        project, message_id, field, offset=offset, limit=CHUNK_BYTES
+                    ).data
+                    for offset in range(CHUNK_BYTES, size, CHUNK_BYTES)
+                ),
+            ]
+            return b"".join(pieces).decode("utf-8")
+
+        body = whole("content", content)
+        raw_calls = whole("tool_calls", calls)
+        return Archived(
+            project,
+            message_id,
+            str(info["session"]),
+            cast(int, info["position"]),
+            str(info["run"]),
+            cast(str | None, info["parent"]),
+            str(info["created"]),
+            Entry(
+                cast(Role, info["role"]),
+                str(info["kind"]),
+                body,
+                source=cast(str | None, info["source"]),
+                call_id=cast(str | None, info["call_id"]),
+                tool_calls=tuple(json.loads(raw_calls or "[]")),
+                model=cast(str | None, info["model"]),
+            ),
+        )
+
+    def message_field_chunk(
+        self,
+        project: str,
+        message_id: str,
+        field: Literal["content", "tool_calls"],
+        *,
+        offset: int = 0,
+        limit: int = CHUNK_BYTES,
+    ) -> RecordChunk:
+        """Exact bytes of a large original text field, scoped before opening its blob."""
+        if field not in ("content", "tool_calls") or offset < 0 or not 1 <= limit <= CHUNK_BYTES:
+            raise ControlError(INVALID_REQUEST, "invalid message byte page")
+        with self.control.isolated_read() as tx:
+            row = tx.sql.execute(
+                f"SELECT rowid,typeof({field}) FROM archive_messages "  # noqa: S608
+                "WHERE project=? AND message_id=?",
+                (project, message_id),
+            ).fetchone()
+            if row is None:
+                raise ControlError(NOT_FOUND, "no archived message in this project")
+            if row[1] == "null":
+                if offset:
+                    raise ControlError(INVALID_REQUEST, "message offset exceeds field size")
+                return RecordChunk(0, 0, b"")
+            with tx.sql.blobopen("archive_messages", field, row[0], readonly=True) as blob:
+                total = len(blob)
+                if offset > total:
+                    raise ControlError(INVALID_REQUEST, "message offset exceeds field size")
+                blob.seek(offset)
+                return RecordChunk(offset, total, blob.read(min(limit, total - offset)))
+
     def payload_bytes(self, project: str, message_id: str) -> int:
         """Stored variable byte size, without loading payloads or retaining Blob handles."""
         reader = self.control.read if _OCTET_LENGTH else self.control.isolated_read
@@ -528,6 +629,7 @@ class Archive:
         start: int = 1,
         end: int | None = None,
         run: str | None = None,
+        runs: Sequence[str] | None = None,
         limit: int = PAGE,
         kinds: Sequence[str] = (),
         main_only: bool = False,
@@ -536,13 +638,19 @@ class Archive:
         """The session's messages from position ``start`` to ``end``, in order, at most
         ``limit`` of them; with ``run``, that run's alone. Kind/parent filters apply
         before loading payloads, including native provider messages."""
+        if run is not None and runs is not None:
+            raise ValueError("choose one run scope")
         kinds_sql = f" AND kind IN ({','.join('?' for _ in kinds)})" if kinds else ""
+        runs_sql = " AND run IN (SELECT value FROM json_each(?))" if runs is not None else ""
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT message_id FROM archive_messages "  # noqa: S608 - fixed kind placeholders
                 "WHERE project = ? AND session = ? AND position >= ? "
                 "AND (? IS NULL OR position <= ?) AND " + _CHAIN_SCOPE + " "
-                "AND (? = 0 OR parent IS NULL) " + kinds_sql + " ORDER BY position LIMIT ?",
+                "AND (? = 0 OR parent IS NULL) "
+                + runs_sql
+                + kinds_sql
+                + " ORDER BY position LIMIT ?",
                 (
                     project,
                     session,
@@ -554,6 +662,7 @@ class Archive:
                     self.chain,
                     run,
                     main_only,
+                    *((json.dumps(runs),) if runs is not None else ()),
                     *kinds,
                     max(1, min(limit, PAGE)),
                 ),
@@ -567,6 +676,60 @@ class Archive:
                 raise WorkingMemoryLimitError("archive page exceeds the bounded read limit")
             found.append(message)
         return found
+
+    def message_infos(
+        self,
+        project: str,
+        session: str,
+        *,
+        start: int,
+        end: int,
+        runs: Sequence[str] | None = None,
+        limit: int = PAGE,
+    ) -> list[dict[str, object]]:
+        """Bounded range of message labels, including messages too large to load whole."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT message_id,session,position,run,parent,created,role,kind,source,"
+                "call_id,model "
+                "FROM archive_messages WHERE project=? AND session=? AND position>=? "
+                "AND position<=? AND (? IS NULL OR run IN (SELECT value FROM json_each(?))) "
+                "ORDER BY position LIMIT ?",
+                (
+                    project,
+                    session,
+                    start,
+                    end,
+                    json.dumps(runs) if runs is not None else None,
+                    json.dumps(runs) if runs is not None else None,
+                    max(1, min(limit, PAGE)),
+                ),
+            ).fetchall()
+        keys = (
+            "message_id",
+            "session",
+            "position",
+            "run",
+            "parent",
+            "created",
+            "role",
+            "kind",
+            "source",
+            "call_id",
+            "model",
+        )
+        return [dict(zip(keys, row, strict=True)) for row in rows]
+
+    def descendant_runs(self, project: str, session: str, parent: str) -> tuple[str, ...]:
+        """The caller's run and its descendants, from durable delegation edges."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "WITH RECURSIVE tree(run) AS (VALUES (?) UNION "
+                "SELECT d.run FROM delegations d JOIN tree t ON d.parent=t.run "
+                "WHERE d.project_id=? AND d.session_id=?) SELECT run FROM tree",
+                (parent, project, session),
+            ).fetchall()
+        return tuple(name for (name,) in rows)
 
     def scan(
         self,
@@ -629,16 +792,43 @@ class Archive:
             ).fetchone()[0]
         return tuple(name for (name,) in names), first
 
-    def files(self, project: str, message_id: str) -> list[SavedFile]:
-        """The files saved behind a tool result's sample."""
+    def files(
+        self,
+        project: str,
+        message_id: str,
+        *,
+        offset: int = 0,
+        limit: int = PAGE,
+        include_text: bool = True,
+    ) -> list[SavedFile]:
+        """A bounded page of files saved behind a tool result's sample."""
+        if offset < 0 or not 1 <= limit <= PAGE:
+            raise ControlError(INVALID_REQUEST, "invalid saved-file page")
+        query = (
+            "SELECT path,size,text,left_out,artifact_id,revision FROM archive_docs "
+            "WHERE project=? AND message_id=? AND path IS NOT NULL "
+            "ORDER BY doc LIMIT ? OFFSET ?"
+            if include_text
+            else "SELECT path,size,NULL,left_out,artifact_id,revision FROM archive_docs "
+            "WHERE project=? AND message_id=? AND path IS NOT NULL "
+            "ORDER BY doc LIMIT ? OFFSET ?"
+        )
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT path, size, text, left_out, artifact_id, revision FROM archive_docs "
-                "WHERE project = ? "
-                "AND message_id = ? AND path IS NOT NULL ORDER BY doc",
-                (project, message_id),
+                query,
+                (project, message_id, limit, offset),
             ).fetchall()
         return [SavedFile(*row) for row in rows]
+
+    def file(self, project: str, message_id: str, path: str) -> SavedFile | None:
+        """One saved file, without loading any sibling file's text."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT path,size,text,left_out,artifact_id,revision FROM archive_docs "
+                "WHERE project=? AND message_id=? AND path=? LIMIT 1",
+                (project, message_id, path),
+            ).fetchone()
+        return SavedFile(*row) if row is not None else None
 
     def search(
         self,
@@ -647,6 +837,7 @@ class Archive:
         *,
         session: str | None = None,
         run: str | None = None,
+        runs: Sequence[str] | None = None,
         start: int | None = None,
         end: int | None = None,
         kind: str | None = None,
@@ -663,7 +854,7 @@ class Archive:
             raise ControlError(
                 INVALID_REQUEST, "give a word, a quoted phrase or at least 3 characters"
             )
-        where, args = _scope(project, session, run, start, end, kind)
+        where, args = _scope(project, session, run, start, end, kind, runs)
         ranked: list[tuple[int, str, float | None]] = []
         matched: dict[str, int] = {}
         reader = self.control.read if _OCTET_LENGTH else self.control.isolated_read
@@ -709,11 +900,18 @@ class Archive:
             hits = [_hit(db, doc, how, score, needles) for doc, how, score in ranked[:limit]]
         return Found(hits, matched)
 
-    def coverage(self, project: str, *, session: str | None = None, run: str | None = None) -> Json:
+    def coverage(
+        self,
+        project: str,
+        *,
+        session: str | None = None,
+        run: str | None = None,
+        runs: Sequence[str] | None = None,
+    ) -> Json:
         """What the indexes cover in a scope (CM-7): its messages and their positions, the
         saved files indexed and those left out with why, and the runs whose messages the
         archive lacks, having run before it existed."""
-        where, args = _scope(project, session, run, None, None, None)
+        where, args = _scope(project, session, run, None, None, None, runs)
         docs = (
             "FROM archive_docs d JOIN archive_messages m ON m.project = d.project "
             f"AND m.message_id = d.message_id WHERE {where} AND d.path IS NOT NULL"
@@ -736,7 +934,7 @@ class Archive:
                 args,
             ).fetchall()
             earlier = 0
-            if run is None:
+            if run is None and runs is None:
                 (earlier,) = db.execute(
                     "SELECT count(*) FROM runs r WHERE r.project_id = ? AND (? IS NULL OR "
                     "r.session_id = ?) AND NOT EXISTS (SELECT 1 FROM archive_messages a "
@@ -765,7 +963,10 @@ def _scope(
     start: int | None,
     end: int | None,
     kind: str | None,
+    runs: Sequence[str] | None = None,
 ) -> tuple[str, list[object]]:
+    if run is not None and runs is not None:
+        raise ValueError("choose one run scope")
     clauses, args = ["m.project = ?"], [cast(object, project)]
     for clause, value in (
         ("m.session = ?", session),
@@ -777,6 +978,9 @@ def _scope(
         if value is not None:
             clauses.append(clause)
             args.append(value)
+    if runs is not None:
+        clauses.append("m.run IN (SELECT value FROM json_each(?))")
+        args.append(json.dumps(runs))
     return " AND ".join(clauses), args
 
 
@@ -826,9 +1030,30 @@ def _hit(
     if size is None:
         raise ControlError(NOT_FOUND, "search hit's immutable message disappeared")
     if size > METADATA_BYTES:
-        raise WorkingMemoryLimitError(
-            "search hit exceeds the working read limit; use stored evidence"
+        row = db.execute(
+            "SELECT session,position,run,parent,created,role,kind,source,call_id,model "
+            "FROM archive_messages WHERE project=? AND message_id=?",
+            (project, message_id),
+        ).fetchone()
+        if row is None:
+            raise ControlError(NOT_FOUND, "search hit's immutable message disappeared")
+        session, position, run, parent, created, role, kind, source, call_id, model = row
+        metadata = Archived(
+            project,
+            message_id,
+            session,
+            position,
+            run,
+            parent,
+            created,
+            Entry(role, kind, None, source=source, call_id=call_id, model=model),
         )
+        snippet = (
+            _snippet(text, needles)
+            if path is not None and text is not None
+            else "Large indexed message; read by ID with history_read byte pages."
+        )
+        return Hit(metadata, path, match, None if score is None else round(score, 3), snippet)
     row = db.execute(
         f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
         "WHERE project = ? AND message_id = ?",
