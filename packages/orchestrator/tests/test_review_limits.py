@@ -419,12 +419,16 @@ def test_oversized_prior_item_does_not_defeat_retry_shrink(store) -> None:
     assert items[1]["kind"] == "transcript"
 
 
-def test_oversized_delegated_observation_is_an_incomplete_marker(store, monkeypatch) -> None:
+@pytest.mark.parametrize("near_limit_outcome", [False, True])
+def test_oversized_delegated_observation_is_an_incomplete_marker(
+    store, monkeypatch, near_limit_outcome: bool
+) -> None:
     from sandbox_science.orchestrator.consistency import delegated
     from sandbox_science.orchestrator.consistency.delegated import Delegated
     from sandbox_science.orchestrator.consistency.store import MAX_ITEM_BYTES
 
     reviews, _, _ = store
+    outcome = {"detail": "y" * (MAX_ITEM_BYTES - 20)} if near_limit_outcome else {"status": "done"}
     monkeypatch.setattr(
         delegated, "ended_delegations", lambda *_: [("dlg", "saved-run", "child-run")]
     )
@@ -432,7 +436,7 @@ def test_oversized_delegated_observation_is_an_incomplete_marker(store, monkeypa
         delegated,
         "delegated_work",
         lambda *_: [
-            Delegated("delegated:dlg", "delegation", {"delegation": "dlg"}, {"status": "done"}),
+            Delegated("delegated:dlg", "delegation", {"delegation": "dlg"}, outcome),
             Delegated(
                 "delegated:dlg:execution:large",
                 "execution",

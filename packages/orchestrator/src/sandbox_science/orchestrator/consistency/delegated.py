@@ -472,6 +472,18 @@ def observe_delegated(store: ReviewStore, project: str, session: str, run_id: st
                 payload={**bounded[0].payload, "review_observations_omitted": omitted},
                 complete=False,
             )
+            if len(dump(bounded[0].payload).encode()) > MAX_ITEM_BYTES:
+                bounded[0] = Delegated(
+                    bounded[0].key,
+                    "delegation",
+                    {"delegation": delegation, "for_run": run_id},
+                    {
+                        "omitted": "delegated outcome exceeds review bound",
+                        "review_observations_omitted": omitted,
+                        "sha256": digest(dump(found[0].payload)),
+                    },
+                    complete=False,
+                )
         store.scope(project, session)
         with store.documents.control.write() as tx:
             for item in bounded:
