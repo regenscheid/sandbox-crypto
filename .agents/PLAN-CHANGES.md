@@ -417,3 +417,4 @@ Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
 - 2026-10-17: Add a narrowly scoped USER recovery token override for paused direct children, preserving their work identity, lifetime usage and project spending cap; parent-authorized resource requests and decisions remain the target ([adaptive resources](../docs/specs/adaptive-research-resources.md)).
 
 - 2026-10-18: D89 proposes bounded automatic Resume for saved model-phase failures using the existing fenced tree path. Clean answers with an active plan still need a distinct durable new-root continuation ([tree Resume](../docs/specs/tree-resume.md)).
+- 2026-10-18: D90 proposes one new-root input per active-plan state after a settled answer; the write rechecks current plan/root and yields to user messages, cancellations and budget gates ([tree Resume](../docs/specs/tree-resume.md)).

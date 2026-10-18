@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -339,6 +340,25 @@ def test_each_roles_unpriced_calls_count_and_model_info_costs_are_told_apart(
             with state.control.write() as tx:
                 tx.sql.execute(f"DELETE FROM {table} WHERE cost IS NULL")
             assert not state.over_cost_limit("p", now)
+    finally:
+        projects.close()
+
+
+def test_repeated_unknown_cost_warning_is_coalesced(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    projects, state = store(tmp_path)
+    now = datetime.now(UTC)
+    try:
+        state.set_cost_limit("p", 100)
+        with state.control.write() as tx:
+            tx.sql.execute(UNPRICED_CALL["review_calls"], (now.timestamp(),))
+        with caplog.at_level(logging.WARNING):
+            for _ in range(120):
+                assert state.cost_gate("p", now) == (100, False)
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2
+        assert "after 100 cost-gate checks" in warnings[1]
     finally:
         projects.close()
 

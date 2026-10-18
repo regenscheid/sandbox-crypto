@@ -24,7 +24,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
 
@@ -288,6 +289,8 @@ class RunState:
     ) -> None:
         self.control = store if isinstance(store, ControlStore) else store.control
         self.clock, self.lease_seconds = clock, lease_seconds
+        self._unpriced_warning_lock = threading.Lock()
+        self._unpriced_warning: dict[str, tuple[int, int]] = {}
 
     def _now(self) -> datetime:
         return self.clock.now().astimezone(UTC)
@@ -312,6 +315,38 @@ class RunState:
             if by_message(db, message_id):
                 raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
             return _queue(db, project, session, message_id, text, author, now)
+
+    def post_if(
+        self,
+        project: str,
+        session: str,
+        message_id: str,
+        text: str,
+        *,
+        author: str,
+        eligible: Callable[[sqlite3.Connection], bool],
+        on_queue: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> bool:
+        """Queue trusted service input only while its saved preconditions still hold.
+
+        The predicate and insert share one write transaction. An already recorded
+        message, including a delivered or refused one, is never queued again.
+        """
+        _check_text(text)
+        now = self._now().isoformat()
+        with self.control.write() as tx:
+            db = tx.sql
+            if _found(db, project, session, message_id, text) is not None:
+                return False
+            _session(db, project, session)
+            if not eligible(db):
+                return False
+            if by_message(db, message_id):
+                raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
+            _queue(db, project, session, message_id, text, author, now)
+            if on_queue is not None:
+                on_queue(db)
+            return True
 
     def replay_message(
         self, project: str, session: str, message_id: str, text: str
@@ -730,9 +765,25 @@ class RunState:
                 "WHERE project=? AND created>=?",
                 (project, since.timestamp()),
             ).fetchone()[0]
-        if float(spent) + float(reserved) >= limit:
-            return limit, True
-        if unknown:
+        self._note_unpriced(project, int(unknown))
+        return limit, float(spent) + float(reserved) >= limit
+
+    def _note_unpriced(self, project: str, unknown: int) -> None:
+        """Keep a changing warning visible without repeating it on every admission."""
+        with self._unpriced_warning_lock:
+            previous = self._unpriced_warning.get(project)
+            if unknown == 0:
+                self._unpriced_warning.pop(project, None)
+                action = "cleared" if previous is not None else "silent"
+                occurrences = previous[1] if previous is not None else 0
+            elif previous is None or previous[0] != unknown:
+                self._unpriced_warning[project] = (unknown, 1)
+                action, occurrences = "changed", 1
+            else:
+                occurrences = previous[1] + 1
+                self._unpriced_warning[project] = (unknown, occurrences)
+                action = "repeat" if occurrences % 100 == 0 else "silent"
+        if action == "changed":
             _log.warning(
                 "project %s keeps a daily cost limit, and %s of its model calls in the "
                 "last 24 hours have no known cost: local admission uses known costs "
@@ -740,7 +791,20 @@ class RunState:
                 project,
                 unknown,
             )
-        return limit, False
+        elif action == "repeat":
+            _log.warning(
+                "project %s still has %s unpriced calls after %s cost-gate checks",
+                project,
+                unknown,
+                occurrences,
+            )
+        elif action == "cleared":
+            _log.info(
+                "project %s has no unpriced calls in the current daily window "
+                "after %s earlier cost-gate checks",
+                project,
+                occurrences,
+            )
 
     def unpriced_calls(self, project: str, since: datetime) -> int:
         """How many of the project's model calls since ``since`` used tokens and have no

@@ -1168,6 +1168,28 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
     assert "still changing" in changing["environment_changed"]
 
 
+async def test_failed_shell_with_redirected_output_has_actionable_diagnostic() -> None:
+    from datetime import UTC, datetime
+
+    from sandbox_science.contracts import ExecutionState
+    from sandbox_science.orchestrator.tools import _describe
+
+    execution = Execution(
+        execution_id="exe-empty-error",
+        attempt_id="att-empty-error",
+        operation_id="op-empty-error",
+        kind="shell",
+        context=CONTEXT,
+        state=ExecutionState.FAILED,
+        submitted_at=datetime.now(UTC),
+        location=Location(pool_id="p", backend="local", hostname="h", environment_revision="1"),
+        result=Result(exit_code=1),
+    )
+    summary = _describe(execution, 1000, replayed=False)
+    assert summary["exit_code"] == 1
+    assert "without captured stdout or stderr" in summary["diagnostic"]
+
+
 async def test_background_job_tools_cross_real_worker_boundary(
     client: WorkerClient, tmp_path: Path
 ) -> None:

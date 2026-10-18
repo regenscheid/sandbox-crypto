@@ -63,12 +63,25 @@ continuation. Its positive classification is intentionally narrow: a saved `erro
 attempt must name failure phase `model`. The scheduler does not infer that every
 model error is transient; bounded retries contain persistent configuration errors.
 
-An `answered` root with an active scientific plan is still a checkpoint that
-requires a separate continuation feature. That feature can share the control
-service's durable admission and session lease, but must create a new root input
-from the current plan and evidence rather than falsely reopening completed work.
+An `answered` root whose children are all completed can be a checkpoint rather
+than the end of an active scientific plan. The control service checks such idle
+roots in bounded pages, then queues a new root input through the ordinary chat
+admission path. It never reopens completed work. The synthetic message directs
+the next root to reread the current plan, child outcomes, documents and artifacts;
+it does not copy an old transcript or claim a new result. A separate durable
+observation binds the plan version, status revision, progress cursor and event
+cursor to a random message ID, so a restart cannot queue it twice and user
+message IDs cannot predictably collide with it. Another continuation requires a
+change to that plan state. The plan and root are rechecked with message and
+observation insertion in one transaction. Under the next run's lease, queued
+input is selected and marked offered in one write. A changed plan, user message
+or cancellation committed before that claim withdraws the synthetic input. Input
+arriving after the claim is handled by the live run or its next turn. Fresh user
+input, unfinished or stopped child work,
+closed sessions, queued Resume and existing cost gates take precedence. A cost
+refusal retains the observation rather than causing a repeated synthetic input.
 Automatic recovery after process loss, lost kernels, worker failures, and explicit
-budget/grant decisions also remains open.
+budget/grant decisions remains open.
 
 Recovery traverses the durable tree in bounded pages. It first reads explicit Stop,
 then current policy, project/environment identity, model and pinned dependencies,

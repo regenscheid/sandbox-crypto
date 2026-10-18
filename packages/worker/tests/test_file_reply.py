@@ -30,6 +30,8 @@ def test_range_reply_accepts_empty_eof_after_file_end() -> None:
     ],
 )
 def test_range_reply_rejects_false_eof_or_data_past_end(reply: dict[str, object]) -> None:
+    offset = reply["offset"]
+    assert isinstance(offset, int)
     with pytest.raises(WorkerError) as error:
-        _range_reply(reply, int(reply["offset"]), 10000, hashed=False)
+        _range_reply(reply, offset, 10000, hashed=False)
     assert error.value.kind == ErrorKind.INTERNAL

@@ -268,7 +268,11 @@ SPECS: Final = (
         "shell",
         "Run a bash script in the session's workspace inside the project sandbox. Each call "
         "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output." + LONG_OUTPUT + STOP_AT_FAILURE + SHARED_IN_CODE,
+        "Returns the exit code and the output. If a command might fail, keep its diagnostics "
+        "visible or inspect its redirected log in the same call."
+        + LONG_OUTPUT
+        + STOP_AT_FAILURE
+        + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -1473,6 +1477,16 @@ def _describe(
             summary["exit_code"] = result.exit_code
             if result.signal is not None:
                 summary["signal"] = result.signal
+            if (
+                result.exit_code not in (None, 0)
+                and not (result.stdout and result.stdout.total_bytes)
+                and not (result.stderr and result.stderr.total_bytes)
+            ):
+                summary["diagnostic"] = (
+                    "The command exited without captured stdout or stderr. If it redirected "
+                    "output, inspect that log; otherwise rerun the failing step with diagnostics "
+                    "visible."
+                )
         for stream in (result.stdout, result.stderr):
             if stream is not None and stream.total_bytes:
                 summary[stream.name] = bound(stream.text, limit)
