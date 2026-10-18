@@ -96,6 +96,20 @@ def _work(row: tuple[object, ...] | None) -> Work:
     return Work.model_validate(dict(zip(Work.model_fields, row, strict=True)))
 
 
+def tree_cancelled(db: sqlite3.Connection, project: str, session: str, root: str) -> bool:
+    """Whether any attempt in this tree has an explicit USER cancellation."""
+    return (
+        db.execute(
+            "SELECT 1 FROM run_cancels c JOIN research_attempts a "
+            "ON a.project=c.project_id AND a.session=c.session_id AND a.run=c.run "
+            "JOIN research_work w ON w.project=a.project AND w.session=a.session "
+            "AND w.work=a.work WHERE w.project=? AND w.session=? AND w.root=? LIMIT 1",
+            (project, session, root),
+        ).fetchone()
+        is not None
+    )
+
+
 def _auto_claim_refusal(
     db: sqlite3.Connection, project: str, session: str, root: str, request: str
 ) -> str | None:
@@ -125,13 +139,7 @@ def _auto_claim_refusal(
         (project, session),
     ).fetchone():
         return "automatic Resume invalidated by a new user message"
-    if db.execute(
-        "SELECT 1 FROM run_cancels c JOIN research_attempts a "
-        "ON a.project=c.project_id AND a.session=c.session_id AND a.run=c.run "
-        "JOIN research_work w ON w.project=a.project AND w.session=a.session "
-        "AND w.work=a.work WHERE w.project=? AND w.session=? AND w.root=? LIMIT 1",
-        (project, session, root),
-    ).fetchone():
+    if tree_cancelled(db, project, session, root):
         return "automatic Resume invalidated by cancellation"
     return None
 
