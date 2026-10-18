@@ -48,6 +48,7 @@ from sandbox_science.workspace.chat import (
     QuestionListing,
     Requested,
 )
+from sandbox_science.workspace.context_inspector import ContextHistoryPage
 from sandbox_science.workspace.frontier import (
     FrontierAnswer,
     FrontierCategories,
@@ -80,6 +81,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     StatusPage,
     HistoryChunk,
     HistoryPage,
+    ContextHistoryPage,
     ToolRecordChunk,
     ToolRecordListing,
     FigureLink,

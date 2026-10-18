@@ -61,4 +61,40 @@ describe('an archived message', () => {
     expect(target.textContent).toContain('41 in its session');
     expect(target.textContent).toContain('tool_result, sage (call c1)');
   });
+
+  it('shows large original text in bounded display pages', async () => {
+    const total = 20 * 65536;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes('/chunks'))
+        return new Response(
+          JSON.stringify({ error: { kind: 'unsupported', message: 'too large' } }),
+          { status: 422 },
+        );
+      const offset = Number(new URL(url, 'http://localhost').searchParams.get('offset') ?? 0);
+      const data = (offset < 16 * 65536 ? 'A' : 'B').repeat(65536);
+      return new Response(
+        JSON.stringify({
+          message: ID,
+          field: 'content',
+          offset,
+          total,
+          next_offset: offset + 65536 < total ? offset + 65536 : null,
+          data_base64: btoa(data),
+        }),
+      );
+    });
+    vi.stubGlobal('fetch', fetcher);
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(mount(MessageView, { target, props: { projectId: 'p1', messageId: ID } }));
+    await settle();
+    expect(target.querySelector('pre.message')!.textContent).toHaveLength(16 * 65536);
+    expect(target.querySelector('pre.message')!.textContent).toContain('A');
+    target.querySelector<HTMLButtonElement>('button')!.click();
+    await settle();
+    expect(target.querySelector('pre.message')!.textContent).toHaveLength(4 * 65536);
+    expect(target.querySelector('pre.message')!.textContent).not.toContain('A');
+    expect(target.querySelector('pre.message')!.textContent).toContain('B');
+  });
 });

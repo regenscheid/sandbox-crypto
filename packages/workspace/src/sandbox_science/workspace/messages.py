@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import base64
 import re
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 from aiohttp import web
 from pydantic import Field, StringConstraints, TypeAdapter, ValidationError
@@ -50,6 +50,10 @@ class ToolRecordChunk(Contract):
     data_base64: Annotated[str, StringConstraints(max_length=4 * ((CHUNK_BYTES + 2) // 3))]
 
 
+class MessageFieldChunk(ToolRecordChunk):
+    field: Literal["content", "tool_calls"]
+
+
 class RecordQuery(Contract):
     after: Counter = 0
     limit: Annotated[int, Field(strict=True, ge=1, le=RECORD_PAGE)] = RECORD_PAGE
@@ -74,6 +78,7 @@ def add_routes(app: web.Application) -> None:
     evidence.add_routes(app)
     history.add_routes(app)
     app.router.add_get(PATH, message)
+    app.router.add_get(PATH + "/chunks", message_chunks)
     app.router.add_get(PATH + "/tool-record", tool_record)
     app.router.add_get(PATH + "/tool-record/chunks", tool_record_chunks)
     app.router.add_get(
@@ -105,6 +110,35 @@ async def message(request: web.Request) -> web.Response:
             "call_id": entry.call_id,
             "text": entry.text,
         }
+
+    return await documents.answer(request, read)
+
+
+async def message_chunks(request: web.Request) -> web.Response:
+    """A bounded exact byte page of a large message's text or stored tool calls."""
+    message_id = request.match_info["message"]
+    if not _MESSAGE.fullmatch(message_id):
+        raise DocumentError("invalid_request", "a message is named by its msg- ID")
+    query = dict(request.query)
+    field = query.pop("field", "content")
+    if field not in ("content", "tool_calls") or len(dict(request.query)) != len(request.query):
+        raise DocumentError("invalid_request", "invalid message field query")
+    # Reuse the checked numeric paging contract without admitting any other fields.
+    selected = _query_numbers(query, request, ChunkQuery)
+    project = request.match_info["project"]
+
+    def read(store: DocumentStore) -> dict[str, object]:
+        found = Archive(store).message_field_chunk(
+            project, message_id, field, offset=selected.offset, limit=selected.limit
+        )
+        return MessageFieldChunk(
+            message=message_id,
+            field=field,
+            offset=found.offset,
+            total=found.total,
+            next_offset=found.next_offset,
+            data_base64=base64.b64encode(found.data).decode("ascii"),
+        ).model_dump(mode="json")
 
     return await documents.answer(request, read)
 
@@ -181,9 +215,14 @@ async def tool_records(request: web.Request) -> web.Response:
 
 def _query[Q: Contract](request: web.Request, model: type[Q]) -> Q:
     query = dict(request.query)
+    if len(query) != len(request.query):
+        raise DocumentError("invalid_request", "invalid tool record paging query")
+    return _query_numbers(query, request, model)
+
+
+def _query_numbers[Q: Contract](query: dict[str, str], request: web.Request, model: type[Q]) -> Q:
     if (
         set(query) - model.model_fields.keys()
-        or len(query) != len(request.query)
         or request.can_read_body
         or any(not _INTEGER.fullmatch(value) for value in query.values())
     ):

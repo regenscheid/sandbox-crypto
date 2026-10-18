@@ -1,6 +1,6 @@
 # Handoff
 
-Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace; under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-18 on local `dev` at `1f9eb6f0`, with a new context inspector and descendant-history retrieval in progress. Replace; under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md). The trial details below are historical 2026-10-17 evidence, not a statement of the later live SNOVA continuation's current state.
 
 ## Where things stand
 
@@ -10,7 +10,7 @@ Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace; 
 - **Acceptance boundaries:** max was verified on parent and children. Parent narrative/skeleton folds and two child skeleton folds continued to reports. Measured fold retry repair `46ccc5a9` passed 51 tests/review and bounded live exercise; explicit retry-reason telemetry remains pending. Live 100 MiB upload and 512 MiB retained artifact download after worker deletion passed ([report](docs/agent-reports/large-artifacts-2026-10-17.md)). Root Resume recovered an append without duplication; volatile kernel recovery needed explicit recomputation. Observed shared spend $66.2841164; one unknown paid call retains a separate $4/token-upper-bound reservation, within the $200 ceiling.
 - **Research depth:** MAIN10/planning2 (`f96d8d15`) and skills framing4 (`36147403`) add extended-research and required-reference guidance for new work. The old tree kept its pins, subsequently read the references and corrected its initial shallow baseline. Toy invariants do not establish novel attacks.
 - **Adaptive allowances:** [spec](../docs/specs/adaptive-research-resources.md) records renewable time/token/turn/storage grants with parent escalation, hard outer ceilings and durable safe-point recovery. Planned, not implemented.
-- **UI:** signed local sidebar/chat/research workspace, 100 MiB uploads, half-window drag pane, document filters/tabs. Synthetic preview remains for owner review. Context inspector prototype is reviewed; integration pending. Earlier foundation [acceptance](docs/agent-reports/foundation-acceptance-2026-10-17.md) and [STATUS](STATUS.md) retain historical scope.
+- **UI:** local `dev` has the sidebar/chat/research workspace, 100 MiB uploads, half-window drag pane, document filters/tabs, Skills and MCP browsers, and the saved-attempt context inspector. The inspector shows measured usage/cache, fold links and server-side original history; large message text uses byte pages. It has passed focused tests, type checks and a production build, but authenticated live browser acceptance remains. The independent history-tool reviewer found no remaining high/medium issue after fixes. A delegated parent can search and read its descendants; checks remain own-run only. Earlier foundation [acceptance](docs/agent-reports/foundation-acceptance-2026-10-17.md) is historical scope.
 
 ## How work is done
 
@@ -47,5 +47,5 @@ The owner's ledger rule: weakening a settled state needs no authority; strengthe
 ## What is next
 
 1. Keep signed local work unpushed/unmerged for review. Research artifacts and exact evidence are preserved; disposable-lab teardown is verified. No more calls or experiments are pending for this episode.
-2. Implement adaptive allowances, delegated narrative enrichment with shared accounting, explicit fold-retry metadata and context-inspector integration. Actual child folds are skeleton-only; cache hits are measured, but no layout comparison or broad scientific continuity is proved.
+2. Qualify the context inspector and descendant-history retrieval in an authenticated live workspace and a scoped OpenShell run when available. Then implement adaptive allowances, delegated narrative enrichment with shared accounting and explicit fold-retry metadata. Actual child folds are skeleton-only; no broad scientific continuity is proved by the focused tests.
 3. Future acceptance still needs hour-long meaningful Sage computations, broader scientific continuity and the deferred model/context arms. Any resumed SNOVA investigation starts from the retained plan, sources, code and results; the export does not automatically restore the runtime.

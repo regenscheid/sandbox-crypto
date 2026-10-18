@@ -9,9 +9,11 @@
   import { entries, usageLine } from '../lib/transcript';
   import RunFolds from './RunFolds.svelte';
   import RunSkills from './RunSkills.svelte';
+  import ContextInspector from './ContextInspector.svelte';
   import ToolCall from './ToolCall.svelte';
 
-  let { run }: { run: RunRecord } = $props();
+  let { run, runName }: { run: RunRecord; runName: string } = $props();
+  let contextOpen = $state(false);
   const steps = $derived(entries(run));
   const calls = $derived(run.stored_history?.collections?.tools ?? run.tools.length);
   const paged = $derived(
@@ -59,6 +61,9 @@
     {/if}
   </dd>
 </dl>
+
+<button type="button" onclick={() => (contextOpen = true)}>Context management…</button>
+{#if contextOpen}<ContextInspector {run} {runName} close={() => (contextOpen = false)} />{/if}
 
 {#if paged}
   <p class="notice">

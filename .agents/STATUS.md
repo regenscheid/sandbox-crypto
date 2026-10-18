@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-10-17 on `codex/research-ui`, based on foundation `631dc246` (main `57e29536`). Signed commits are local, unpushed and unmerged. Replaced, not appended; under 10 KB.
+Updated 2026-10-18 on local `dev` at `1f9eb6f0`, with context-inspector and history-tool changes in progress. Signed commits are local and unpushed. The SNOVA acceptance facts below describe the 2026-10-17 frozen trial, not the later continuation or the current live service; verify live state before taking research action. Replaced, not appended; under 10 KB.
 
 ## Phase and focus
 
@@ -20,10 +20,10 @@ Updated 2026-10-17 on `codex/research-ui`, based on foundation `631dc246` (main 
 
 ## Workspace and remaining product work
 
-- Local UI has project/session navigation, chat and immutable 100 MiB file uploads, a drag-resizable half-window Documents/Plan/Agents/Activity pane, document filters and tabs, shared Markdown/LaTeX and revisioned editors. Validation: 2,194 web tests plus focused backend gates; [UI report](docs/agent-reports/research-ui-refinements-2026-10-17.md). The context inspector design is browser-checked but integration remains pending ([report](docs/agent-reports/context-inspector-2026-10-17.md)).
+- Local UI has project/session navigation, chat and immutable 100 MiB file uploads, a drag-resizable half-window Documents/Plan/Agents/Activity pane, document filters and tabs, shared Markdown/LaTeX and revisioned editors. The saved-attempt context inspector and chunked original-history reader are now integrated locally on `dev`, with focused API, DOM, type and build checks; authenticated live browser acceptance is pending ([spec](../docs/specs/context-inspector.md)). A delegated parent can retrieve its descendants' archived history through the history tools; checks remain own-run only.
 - Figures are built through F5 and F9–F11; Mermaid, figure checks/exports and browser acceptance remain. Skills K7a/K7b and generated binding restrictions are built; remaining items stay in BACKLOG.
 - Advanced unknown-outcome reconciliation uses authenticated API routes. The UI exposes Resume and blocked reasons; a full graphical reconciliation editor remains open.
-- Next: adaptive allowances, delegated narrative enrichment, fold-repair telemetry and context-inspector integration. Meaningful scientific jobs in this trial were under a minute; hour-long Sage acceptance remains open. No novel attack was established. Do not restart paid research, merge or push implicitly.
+- Next: authenticated browser and OpenShell acceptance of the local inspector and descendant-history changes, then adaptive allowances, delegated narrative enrichment and fold-repair telemetry. The earlier frozen trial established no novel attack; later SNOVA results live in its preserved acceptance archive and need current verification before resuming. Do not restart paid research or push implicitly.
 
 ## Known issues
 

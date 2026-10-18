@@ -1,8 +1,10 @@
 # Agent context inspector
 
-Status: requested by the owner, 2026-10-17; interaction design and local prototype
-only. Per-answer cache counters are now durable for new main and delegated calls;
-the production timeline, remaining telemetry and workspace API integration are pending.
+Status: requested by the owner, 2026-10-17. A first read-only inspector for saved
+main and delegated attempts is integrated locally on `dev`: measured per-answer
+input/cache chart by call number, saved fold summaries, explicit unavailable
+working-view fields, and server-side original-message search. Live telemetry,
+remaining provenance and attempt navigation are pending.
 
 ## Entry and scope
 
@@ -93,15 +95,38 @@ Verified against the working branch on 2026-10-17:
   still need integration.
 - The workspace already exposes run records, message-by-ID reads, paged saved
   history collections and chunked tool records. These are building blocks, not
-  a complete context-inspector API. Full archive search, scoped timelines, context
-  snapshots and run-attempt navigation need authenticated read-only projections.
+  a complete context-inspector API. The first read-only route pages retained
+  original messages for one selected run attempt and searches their content and
+  tool-call arguments in SQLite, including retrieval echoes the agent's FTS
+  deliberately omits. Search is exact and case-sensitive, submitted explicitly;
+  each request sizes at most 65 candidates without loading bodies, then scans
+  at most 64 rows or 8 MiB of text, apart from one content field of up to
+  64 MiB. Tool-call JSON above 8 MiB is omitted from search and counted in the
+  response; its original bytes remain accessible by message chunk reads. A
+  continuation cursor advances a search
+  even when that slice has no matches; the UI distinguishes partial from complete
+  results. Each response returns short snippets and links to the original message.
+  The message viewer falls back to exact 64 KiB byte pages for a body over the
+  whole-message 1 MiB read limit, loading and displaying no more than 1 MiB per
+  click. Derived
+  fold/state records are excluded by default. Native provider payloads and
+  separately stored tool-record bytes are not searched. A legacy run with no
+  archive produces an empty page. Current context snapshots, live usage and
+  cross-attempt search/navigation still need authenticated projections.
 - Input occupancy, configured limits and fold estimates need explicit provenance
   and capture points before the graph can claim to represent actual live behavior.
 - `ViewMeter` retains only its first 100 call estimates. Long-session charts need
   a durable bounded-page time series, not a graph drawn as though that sample were
-  complete. Existing archive search skips indexing history-retrieval echoes; the
-  inspector's full-history search must cover retained original text independently
-  of that agent-retrieval optimization, with explicit coverage during migration.
+  complete. The current chart pages the saved attempt's complete usage collection
+  when the run record's 128 KiB inline preview is absent, and labels a partially
+  loaded prefix. The Folds tab likewise pages archived summaries and reports an
+  oversized summaries through exact byte chunks (up to a 2 MiB display limit),
+  and reports larger or unavailable records instead of saying no folds were saved.
+  The chart uses only answered calls in the saved run record or archive,
+  with gaps for absent input counts and a call-number axis. It cannot place folds
+  on that axis or show reviewer/fold model usage and provider timing. Its cache
+  share is input-token weighted over calls with reported cache-read counts;
+  unavailable counters remain unknown, and writes are reported separately.
 
 Production implementation must preserve project/session/run authorization and
 bounded reads. It must not expose credentials or raw configuration through debug

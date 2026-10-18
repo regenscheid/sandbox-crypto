@@ -8,7 +8,10 @@
  */
 import type {
   ChartLink,
+  ContextHistoryPage,
   FigureLink,
+  HistoryPage,
+  HistoryChunk,
   ArtifactListing,
   Category,
   FoldProposalList,
@@ -144,6 +147,7 @@ export interface RunRecord {
     collections?: Record<string, number>;
   } | null;
   run_id: string;
+  role?: 'main' | 'delegated';
   context: {
     project_id: string;
     session_id: string;
@@ -191,6 +195,8 @@ export interface ModelUsage {
   model: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
   /** What the call cost: as the gateway reported it, or priced from its model info
    * (`cost_source`); null or absent when neither gives it. */
   cost?: number | null;
@@ -499,6 +505,15 @@ export interface ArchivedMessage {
   text: string;
 }
 
+export interface MessageFieldChunk {
+  message: string;
+  field: 'content' | 'tool_calls';
+  offset: number;
+  total: number;
+  next_offset: number | null;
+  data_base64: string;
+}
+
 export const api = {
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
@@ -517,8 +532,53 @@ export const api = {
     get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`, { signal }),
   message: (project: string, message: string) =>
     get<ArchivedMessage>(`/projects/${part(project)}/messages/${part(message)}`),
+  messageChunk: (project: string, message: string, field: 'content' | 'tool_calls', offset = 0) =>
+    get<MessageFieldChunk>(
+      `/projects/${part(project)}/messages/${part(message)}/chunks?` +
+        new URLSearchParams({ field, offset: String(offset) }),
+    ),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
+  contextHistory: (
+    project: string,
+    session: string,
+    run: string,
+    options: {
+      after?: number;
+      contains?: string;
+      role?: 'user' | 'assistant' | 'tool';
+      kind?: string;
+      includeDerived?: boolean;
+    } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (options.after) query.set('after', String(options.after));
+    if (options.contains) query.set('contains', options.contains);
+    if (options.role) query.set('role', options.role);
+    if (options.kind) query.set('kind', options.kind);
+    if (options.includeDerived) query.set('include_derived', '1');
+    return get<ContextHistoryPage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/history` +
+        (query.size ? `?${query}` : ''),
+    );
+  },
+  runHistory: (project: string, session: string, run: string, collection: string, offset = 0) =>
+    get<HistoryPage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/history?` +
+        new URLSearchParams({ collection, offset: String(offset), limit: '100' }),
+    ),
+  runHistoryChunk: (
+    project: string,
+    session: string,
+    run: string,
+    collection: string,
+    position: number,
+    offset = 0,
+  ) =>
+    get<HistoryChunk>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/history/chunks?` +
+        new URLSearchParams({ collection, position: String(position), offset: String(offset) }),
+    ),
   documents: (project: string, signal?: AbortSignal) =>
     get<{ documents: DocumentInfo[] }>(`/projects/${part(project)}/documents`, { signal }).then(
       (found) => found.documents,

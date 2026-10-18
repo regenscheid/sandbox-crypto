@@ -54,6 +54,37 @@ async def test_an_archived_message_reads_whole_and_an_unknown_one_is_not_found(
                    "not_found")  # fmt: skip
 
 
+async def test_large_archived_message_content_has_exact_scoped_byte_pages(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    text = "\u00e9\U0001f680" * 180000
+    store = ProjectStore(state_dir)
+    try:
+        saved = Archive(store.control).append("p1", "a", RUN, Entry("user", "task", text))
+    finally:
+        store.close()
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    await error_of(await client.get(PATH + saved.message_id), 422, "unsupported")
+    url = PATH + saved.message_id + "/chunks"
+    raw = text.encode()
+    offset = 0
+    collected = bytearray()
+    while True:
+        page = await (await client.get(url, params={"offset": offset})).json()
+        assert page["field"] == "content"
+        assert page["total"] == len(raw)
+        collected.extend(base64.b64decode(page["data_base64"], validate=True))
+        if page["next_offset"] is None:
+            break
+        offset = page["next_offset"]
+    assert collected == raw
+    empty = await (await client.get(url, params={"field": "tool_calls"})).json()
+    assert empty["total"] == 0
+    await error_of(await client.get(url.replace("/p1/", "/p2/")), 404, "not_found")
+    await error_of(await client.get(url, params={"field": "native"}), 400, "invalid_request")
+    await error_of(await client.get(url, params={"offset": len(raw) + 1}), 400, "invalid_request")
+
+
 async def test_tool_record_survives_run_loss_and_is_scoped_and_bounded(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:

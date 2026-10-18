@@ -216,6 +216,25 @@ export interface CondaPackage {
   license: string | null;
 }
 
+export interface ContextHistoryMessage {
+  message: string;
+  position: number;
+  run: string;
+  parent: string | null;
+  created: string;
+  role: "user" | "assistant" | "tool";
+  kind: string;
+  source: string | null;
+  snippet: string;
+}
+
+export interface ContextHistoryPage {
+  messages: ContextHistoryMessage[];
+  next_after: number | null;
+  unsearched_oversized_tool_calls: number;
+  coverage: string;
+}
+
 /** A project whose record cannot be read, listed with the store's error. */
 export interface DamagedProject {
   project_id: string;
@@ -774,7 +793,7 @@ export interface McpInventory {
   observation_scope: string;
 }
 
-/** One run's last recorded listing of this service, not its present state. */
+/** The newest listing found in the bounded sample, not its present state. */
 export interface McpObservation {
   session: string;
   run: string;

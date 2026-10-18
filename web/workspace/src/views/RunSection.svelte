@@ -45,7 +45,7 @@
             : 'see recorded checks'} · renderer {found.math_summary.renderer ?? 'unavailable'}. {#if found.math_summary.counts}Unresolved:
             {JSON.stringify(found.math_summary.counts)}.{/if}
         </p>{/if}
-      <RunView run={found} />
+      <RunView run={found} runName={run.name} />
     {:catch error}
       <ErrorMessage {error} />
     {/await}
