@@ -4,6 +4,8 @@ Updated 2026-10-18. Current development is local `dev` in `/home/andy/.cache/pt/
 
 ## Phase and focus
 
+- In progress after `ae8ef6b2`: timestamped live context inspection, durable parent resource check-ins with renewable turn allowances and explicit USER token increments, and an oracle-backed scientific/reviewer evaluation. Three isolated worktrees own those slices; final integration and independent review return to local `dev`.
+
 - Saved main/delegated attempts have an embedded context inspector with provider input/cache accounting, paged fold summaries and original-history search. Same-agent continuation attempts can be listed and searched using immutable work identity; children/siblings remain separate. Both saved transcript sections and individual run pages expose the dialog. Exact live context snapshots, time-aligned fold events and auxiliary usage are still open.
 - Original-history tools reuse `history_read`/`history_search`, including bounded UTF-8 pages for oversized messages. Delegated parents can inspect descendant archives; independent checks remain own-run only. Full native provider payloads are preserved separately and are not presented as visible conversation text.
 - Automatic inspector search is cancellable and pauses at 100 bounded pages or 200 new matches per click. Cursor continuation avoids restarting a scan, the browser retains at most 200 snippets, and sparse searches bound their SQLite index walk before filtering. Unsaved attempts are identified without broken links.
