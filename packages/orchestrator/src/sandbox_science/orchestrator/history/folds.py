@@ -88,7 +88,7 @@ from .view import Earlier, Unit, View, session_view, settle, spanned
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.digest import Rendered
     from sandbox_science.orchestrator.loop import Transcript
-    from sandbox_science.orchestrator.model import ChatModel, ToolSpec
+    from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
     from sandbox_science.orchestrator.projects import ModelUsage
 
 Json = dict[str, Any]
@@ -157,6 +157,8 @@ class Folder(TurnHook):
         switched: tuple[str, int] | None = None,
         former: ChatModel | None = None,
         carried: tuple[str, str] | None = None,
+        admit: Callable[[Sequence[Message], Sequence[ToolSpec]], Awaitable[bool]] | None = None,
+        release: Callable[[], None] | None = None,
         wait: float = WAIT,
         clock: Clock = SYSTEM_CLOCK,
         patience: float = PATIENCE,
@@ -174,7 +176,8 @@ class Folder(TurnHook):
         this run applies at its start (CM-24a): the run lists it among its folds. ``events``
         writes a ``fold`` event, ``refit`` tells the skills what a rebuilt view holds
         (CM-29b), and ``specs`` gives the tools the run sends; the harness sets them once
-        it has made them."""
+        it has made them. ``admit`` reserves allowance before each narrative call,
+        and ``release`` clears its in-flight hold after the call settles."""
         self.archive, self.context, self.run = archive, context, run
         self.parent = parent
         self.view, self.start, self.ceiling, self.chunk = view, start, ceiling, chunk
@@ -185,6 +188,7 @@ class Folder(TurnHook):
             kernels,
         )
         self.model, self.exists, self.wait, self.digest = model, exists, wait, digest
+        self.admit, self.release = admit, release
         self.judge = judge
         self.consolidating = consolidating
         """A consolidation run's: every current decision in one line, never a stop for
@@ -549,9 +553,19 @@ class Folder(TurnHook):
                 spent=spent,
                 framing=framing,
                 shown=shown,
+                admit=self.admit,
+                release=self.release,
             )
             if parts and (why := verify(running.done.record, [r for _, r in parts])) is not None:
-                running.done = Enriched(running.record, running.done.calls, why)
+                attempts = running.done.attempts
+                if attempts and attempts[-1]["outcome"] == "accepted":
+                    attempts = (
+                        *attempts[:-1],
+                        {**attempts[-1], "outcome": "overview_validation_failed"},
+                    )
+                running.done = replace(
+                    running.done, record=running.record, failed=why, attempts=attempts
+                )
         except Exception as error:  # the fold stands, skeleton-only
             _log.warning("the enrichment of run %s failed: %r", self.run, error)
             failed = f"it failed ({type(error).__name__})"
@@ -675,6 +689,8 @@ class Folder(TurnHook):
             made["reason"] = (
                 f"{'built by code' if record.parts else 'skeleton-only'}: {done.failed}"
             )
+        if done is not None and done.attempts:
+            made["attempts"] = list(done.attempts)
         if done is not None and done.proposed is not None:
             made["proposals"] = done.proposed
         self.folds.append(made)

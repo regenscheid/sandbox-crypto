@@ -41,7 +41,7 @@ from sandbox_science.orchestrator.history.geometry import input_limit
 from sandbox_science.orchestrator.history.reads import Read, Register
 from sandbox_science.orchestrator.history.skeleton import _fit
 from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import Limits, session_cache_key
+from sandbox_science.orchestrator.model import Limits, Message, ToolSpec, session_cache_key
 from sandbox_science.orchestrator.notices import FOLD_ENRICH, FOLD_REGION, STATE_BLOCK
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
@@ -1502,6 +1502,15 @@ async def test_size_rejected_enrichment_gets_measured_bounded_repair(
         assert f"{measured - 4000:,} over its full-record share" in feedback
     assert [call.cost for call in made.calls] == [1, 2]
     assert spent == list(made.calls)
+    assert [item["outcome"] for item in made.attempts] == [
+        "narrative_limit" if failure == "narrative" else "record_share",
+        "accepted",
+    ]
+    measured = made.attempts[0]["size"]
+    assert measured["narrative_chars"] == len(rejected)
+    assert measured["narrative_limit"] == 1000
+    assert measured["record_limit"] == 4000
+    assert rejected not in json.dumps(made.attempts)
 
 
 async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
@@ -1527,6 +1536,103 @@ async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
     )
     assert len(model.requests) == 2
     assert [call.cost for call in made.calls] == [1, 2]
+    assert [item["outcome"] for item in made.attempts] == ["narrative_limit", "narrative_limit"]
+
+
+async def test_fold_admission_denial_keeps_the_skeleton_without_a_paid_call(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "An unresolved proof obligation remains.")
+    model = ScriptedModel([ModelTurn(answer_with("Never dispatched."), cost=1)])
+    admitted: list[int] = []
+    released: list[int] = []
+
+    async def deny(messages: Sequence[Message], specs: Sequence[ToolSpec]) -> bool:
+        admitted.append(len(messages))
+        assert not specs
+        return False
+
+    made = await enrich(
+        model, (), (), record, rows, share=4000, admit=deny, release=lambda: released.append(1)
+    )
+    assert made.record == record
+    assert made.failed == "child token allowance reserved for reporting"
+    assert made.attempts == ({"attempt": 1, "outcome": "admission_denied"},)
+    assert made.calls == ()
+    assert len(admitted) == 1
+    assert released == []
+    assert model.requests == []
+
+
+async def test_fold_retry_checks_admission_again_and_releases_its_first_hold(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "An unresolved proof obligation remains.")
+    model = ScriptedModel([ModelTurn(answer_with("x" * 1200), cost=1)])
+    decisions = iter((True, False))
+    admitted: list[int] = []
+    released: list[int] = []
+
+    async def admit(messages: Sequence[Message], specs: Sequence[ToolSpec]) -> bool:
+        admitted.append(len(messages))
+        assert not specs
+        return next(decisions)
+
+    made = await enrich(
+        model,
+        (),
+        (),
+        record,
+        rows,
+        share=4000,
+        admit=admit,
+        release=lambda: released.append(1),
+    )
+    assert made.record == record
+    assert made.failed == "child token allowance reserved for reporting"
+    assert [item["outcome"] for item in made.attempts] == ["narrative_limit", "admission_denied"]
+    assert len(made.calls) == 1
+    assert admitted == [1, 2]
+    assert released == [1]
+    assert len(model.requests) == 1
+
+
+async def test_fold_admission_hold_releases_when_model_call_is_cancelled(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn
+
+    rows, record = spanned(archive, "An unresolved proof obligation remains.")
+    released: list[int] = []
+
+    class CancelledModel:
+        async def complete(
+            self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        ) -> ModelTurn:
+            raise asyncio.CancelledError
+
+    async def admit(messages: Sequence[Message], specs: Sequence[ToolSpec]) -> bool:
+        return True
+
+    with pytest.raises(asyncio.CancelledError):
+        await enrich(
+            CancelledModel(),
+            (),
+            (),
+            record,
+            rows,
+            share=4000,
+            admit=admit,
+            release=lambda: released.append(1),
+        )
+    assert released == [1]
 
 
 async def test_fold_size_repair_runs_through_gateway_and_keeps_cached_prefix(
@@ -1542,6 +1648,14 @@ async def test_fold_size_repair_runs_through_gateway_and_keeps_cached_prefix(
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
     (made,) = folds(record)["folds"]
     assert made["state"] == "applied"
+    assert [item["outcome"] for item in made["attempts"]] == ["narrative_limit", "accepted"]
+    store = ProjectStore(harness.state)
+    try:
+        events = RunState(store.control).events(PROJECT, SESSION, name(record))
+    finally:
+        store.close()
+    applied = [event.data for event in events if event.kind == "fold" and event.data.get("fold")]
+    assert applied[-1]["attempts"] == made["attempts"]
     region = next(
         str(message["content"])
         for message in harness.gateway.main[-1]

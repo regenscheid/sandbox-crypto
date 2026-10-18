@@ -880,3 +880,12 @@ It never echoes the oversized answer or adds calls beyond the existing two attem
 Every repaired answer passes the same source/value/framing and full-record validators;
 no truncation or cap increase occurs. A second rejection retains the original honest
 skeleton-only fallback and both calls' accounting.
+Each applied fold or overview also retains at most two structured attempt diagnostics,
+including a rejected first attempt when its retry succeeds. Diagnostics use fixed outcome
+codes and, for size failures, numeric narrative and rendered-record measurements. They
+contain no model answer, prompt or exception text. An optional delegated admission check
+may reserve token allowance before *each* narrative call; denial keeps the deterministic
+skeleton and records `child token allowance reserved for reporting` without dispatch.
+An admitted call releases its temporary in-flight token hold after its observed usage is
+recorded, including on model error or cancellation. This is not a durable cost
+reservation; the project's cost gate and the work's cumulative token grant still apply.

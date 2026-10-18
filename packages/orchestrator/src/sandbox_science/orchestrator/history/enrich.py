@@ -32,7 +32,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, cast
 
@@ -80,6 +80,8 @@ class Enriched:
     """The research-state updates the answer proposed, unchecked (CM-15)."""
     proposed: Json | None = None
     """What the fold's proposals came to once checked: kept, dropped and refused."""
+    attempts: tuple[Json, ...] = ()
+    """At most two bounded outcomes; never the model's answer, prompt or error text."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,29 @@ def _repair(size: _Size, framing: Framing) -> Message:
     }
 
 
+def _size_diagnostic(size: _Size) -> Json:
+    """Fixed-size measurement from a rejected answer, with no answer text."""
+    return {
+        "narrative_chars": size.narrative,
+        "narrative_limit": size.limit,
+        "record_chars": size.rendered,
+        "record_limit": size.share,
+        "fixed_chars": size.fixed,
+        "repair_target": size.target,
+    }
+
+
+def _outcome(why: str) -> str:
+    """Stable diagnostic codes for the validator's locally generated reasons."""
+    if why.startswith("its narrative passed "):
+        return "narrative_limit"
+    return {
+        "it did not answer with the JSON object asked for": "invalid_answer",
+        "its narrative was empty": "empty_narrative",
+        "the record passed its share": "record_share",
+    }.get(why, "validation_failed")
+
+
 async def enrich(
     model: ChatModel,
     view: Sequence[Message],
@@ -149,6 +174,8 @@ async def enrich(
     spent: Callable[[ModelUsage], None] | None = None,
     framing: Framing = FOLD_ENRICH,
     shown: str | None = None,
+    admit: Callable[[Sequence[Message], Sequence[ToolSpec]], Awaitable[bool]] | None = None,
+    release: Callable[[], None] | None = None,
 ) -> Enriched:
     """``record``, the span ``rows``'s as code built it, enriched by ``model`` after the
     run's ``view``, within ``share`` characters without its markers (CM-19, CM-20);
@@ -163,22 +190,38 @@ async def enrich(
     asked = {"role": "user", "content": content}
     calls: list[ModelUsage] = []
     failed: list[str] = []
+    attempts: list[Json] = []
     caller = model
     repair: Message | None = None
     for attempt in range(ATTEMPTS):
+        messages = [*view, asked, *([repair] if repair else [])]
+        if admit is not None and not await admit(messages, specs):
+            attempts.append({"attempt": attempt + 1, "outcome": "admission_denied"})
+            return Enriched(
+                record,
+                tuple(calls),
+                "child token allowance reserved for reporting",
+                attempts=tuple(attempts),
+            )
         try:
-            turn = await caller.complete([*view, asked, *([repair] if repair else [])], specs)
-        except ModelError as error:
-            calls.append(ModelUsage(cost=error.cost, intent_id=error.intent_id))
+            try:
+                turn = await caller.complete(messages, specs)
+            except ModelError as error:
+                calls.append(ModelUsage(cost=error.cost, intent_id=error.intent_id))
+                if spent is not None:
+                    spent(calls[-1])
+                failed.append(f"the call failed ({type(error).__name__})")
+                attempts.append({"attempt": attempt + 1, "outcome": "model_error"})
+                continue
+            calls.append(_usage(turn))
             if spent is not None:
                 spent(calls[-1])
-            failed.append(f"the call failed ({type(error).__name__})")
-            continue
-        calls.append(_usage(turn))
-        if spent is not None:
-            spent(calls[-1])
+        finally:
+            if admit is not None and release is not None:
+                release()
         if turn.tool_calls:
             failed.append("it called a tool")
+            attempts.append({"attempt": attempt + 1, "outcome": "tool_call"})
             if isinstance(model, GatewayModel):
                 caller = model.choosing("none")
             continue
@@ -188,13 +231,18 @@ async def enrich(
             check, turn.text or "", record, rows, share=share, exists=exists, size=sizes.append
         )
         if found is not None:
+            attempts.append({"attempt": attempt + 1, "outcome": "accepted"})
             offered = (_object(turn.text or "") or {}).get("proposals")
             proposals = tuple(cast(list[object], offered)) if isinstance(offered, list) else ()
-            return Enriched(found, tuple(calls), proposals=proposals)
+            return Enriched(found, tuple(calls), proposals=proposals, attempts=tuple(attempts))
         failed.append(why)
+        diagnostic: Json = {"attempt": attempt + 1, "outcome": _outcome(why)}
+        if sizes:
+            diagnostic["size"] = _size_diagnostic(sizes[-1])
+        attempts.append(diagnostic)
         if sizes and attempt + 1 < ATTEMPTS:
             repair = _repair(sizes[-1], framing)
-    return Enriched(record, tuple(calls), "; ".join(failed))
+    return Enriched(record, tuple(calls), "; ".join(failed), attempts=tuple(attempts))
 
 
 def check(
