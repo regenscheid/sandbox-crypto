@@ -613,15 +613,19 @@ class Lab(recovery.Lab):
         super().cleanup(incomplete=True)
 
     def abort(self):
-        if store_path(self.path / "instance/control").exists():
-            try:
-                self.snapshot()
-            except Exception as error:
-                self.evidence(
-                    "quality-abort-export-error",
-                    {"error_type": type(error).__name__, "scientific_quality_qualified": False},
-                )
-        super().cleanup(incomplete=True)
+        try:
+            if store_path(self.path / "instance/control").exists():
+                try:
+                    self.snapshot()
+                except Exception as error:
+                    self.evidence(
+                        "quality-abort-export-error",
+                        {"error_type": type(error).__name__, "scientific_quality_qualified": False},
+                    )
+        finally:
+            # Optional evidence export must never prevent owned service shutdown,
+            # including when reporting an export failure also encounters disk I/O.
+            super().cleanup(incomplete=True)
 
 
 def main():
