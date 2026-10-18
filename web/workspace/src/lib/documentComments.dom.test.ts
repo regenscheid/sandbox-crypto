@@ -56,7 +56,9 @@ it('keeps a selected comment on its original revision through a newer display an
         return new Response(JSON.stringify(old));
       if (url.includes('/comments'))
         return new Response(JSON.stringify({ threads: [], next_after: null }));
-      return new Response(JSON.stringify({ sessions: [{ session_id: 's1', closed_at: null }] }));
+      return new Response(
+        JSON.stringify({ project: { sessions: [{ session_id: 's1', closed_at: null }] } }),
+      );
     }),
   );
   const root = document.createElement('div');
@@ -75,8 +77,21 @@ it('keeps a selected comment on its original revision through a newer display an
   const body = root.querySelector<HTMLTextAreaElement>('[aria-label="Comment Markdown"]')!;
   body.value = 'Please check this claim.';
   body.dispatchEvent(new Event('input', { bubbles: true }));
+  const session = root.querySelector<HTMLSelectElement>(
+    'select[aria-label="Send work request to"]',
+  )!;
+  expect([...session.options].map((option) => option.value)).toContain('s1');
+  // happy-dom does not resolve option :checked as a native browser does.
+  const query = session.querySelector.bind(session);
+  vi.spyOn(session, 'querySelector').mockImplementation(((selector: string) =>
+    selector === ':checked' ? (session.options[1] ?? null) : query(selector)) as typeof query);
+  session.value = 's1';
+  session.dispatchEvent(new Event('change', { bubbles: true }));
   await settle();
+  expect(session.value).toBe('s1');
+  expect(root.textContent).toContain('Post and send request');
   expect(commentDrafts.load(scope).draft?.base).toBe(4);
+  expect(commentDrafts.load(scope).draft?.session).toBe('s1');
   expect(consumed).toBe(1);
 
   await unmount(component);

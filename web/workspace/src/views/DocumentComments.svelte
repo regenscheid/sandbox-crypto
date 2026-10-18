@@ -51,7 +51,16 @@
       : api.document(projectId, id, draft.base),
   );
   $effect(() => {
-    if (draft.body) persisted = commentDrafts.save(draftScope, $state.snapshot(draft));
+    const current = {
+      base: draft.base,
+      block: draft.block,
+      body: draft.body,
+      kind: draft.kind,
+      math: draft.math,
+      quote: draft.quote,
+      session: draft.session,
+    };
+    if (current.body) persisted = commentDrafts.save(draftScope, current);
     else commentDrafts.clear(draftScope);
   });
   $effect(() => {
@@ -142,7 +151,7 @@
         >
         <HiddenBanner text={draft.body} />
         <label
-          >Send work request to <select bind:value={draft.session}
+          >Send work request to <select aria-label="Send work request to" bind:value={draft.session}
             ><option value="">No work request</option
             >{#each sessions as item (item.session_id)}<option value={item.session_id}
                 >{item.session_id}{item.closed_at
