@@ -5,6 +5,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 ## 2026-10-18
 
 - The owner reaffirmed that unknown model charges must not stop local run admission. The optional daily gate compares observed costs plus explicit reservations with its unchanged cap; unknown calls remain visible and the upstream LiteLLM budget is the primary spending control (D88, RS-6a).
+- **D35 reviewer effectiveness follow-up** (SNOVA audit; [consistency review](../docs/specs/consistency-review.md), CR-2 and CR-34): bounded, contiguous evidence spans replace repeated oversized windows; capped retries shrink, partial delegated spans retain provenance, and terminal holds catch up within a configured bound. Clean global certification and idle backlog draining remain separate work.
 
 ## 2026-10-17
 
