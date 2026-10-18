@@ -34,7 +34,7 @@ async def resources(request: web.Request) -> web.Response:
     def read() -> str:
         session_record(context.projects, project, session)
         return (
-            ResourceRequests(context.documents.control)
+            ResourceRequests(context.documents)
             .page(project, session, after=after)
             .model_dump_json()
         )
