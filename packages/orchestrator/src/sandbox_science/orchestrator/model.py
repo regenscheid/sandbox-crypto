@@ -326,7 +326,7 @@ class GatewayModel(ABC):
         timeout: float = 600,
         max_tokens: int | None = None,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
-        retries: int = 3,
+        retries: int = 9,
         backoff: float = 2.0,
         clock: Clock = SYSTEM_CLOCK,
         prices: PriceList | None = None,

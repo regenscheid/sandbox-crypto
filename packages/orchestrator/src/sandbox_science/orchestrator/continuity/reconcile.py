@@ -18,7 +18,6 @@ from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.tools import PDF_SPECS
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .models import ModelIntents
 from .records import Work, WorkRecords
 
 
@@ -36,12 +35,6 @@ class Reconciler:
             records.attempts, work.project, work.session, work.work, after=after
         ):
             for run in attempts:
-                if await threaded(
-                    ModelIntents(self.control).pending, work.project, work.session, run
-                ):
-                    raise ControlError(
-                        CONFLICT, "unknown_model_usage: reconcile paid call before Resume"
-                    )
                 cursor = 0
                 while pending := await threaded(
                     journal.pending, work.project, work.session, run, after=cursor

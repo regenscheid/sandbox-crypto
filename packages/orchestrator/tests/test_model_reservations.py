@@ -100,6 +100,29 @@ def test_reservation_is_exact_once_visible_and_separate_from_observed_spend(proj
         assert tx.sql.execute("SELECT count(*) FROM archive_model_usage").fetchone() == (0,)
 
 
+@pytest.mark.parametrize("kind", ["model_usage", "model_reservation"])
+def test_completed_work_can_reconcile_retained_unknown_model_charge(projects, kind):
+    works, _owner, identity, request = unknown(projects)
+    works.finish(record(RUN))
+    assert works.get("p", "s", RUN).state == "completed"
+    decision = RecoveryControls(projects.control).resolve(
+        "p", "s", request.model_copy(update={"kind": kind}), operator="user"
+    )
+    assert decision.resolution.identity == identity
+    assert works.get("p", "s", RUN).state == "completed"
+    pending = RecoveryStatus(projects.control).pending("p", "s", RUN)
+    if kind == "model_usage":
+        assert pending.models == ()
+        assert RunState(projects.control).model_cost("p") == 2.0
+    else:
+        assert pending.models[0].reservation is not None
+        assert RunState(projects.control).model_cost("p") is None
+    with pytest.raises(ControlError, match="only inactive unfinished research work"):
+        RecoveryControls(projects.control).resolve(
+            "p", "s", body("operation", "unrelated-tool"), operator="user"
+        )
+
+
 def test_cancelled_fold_copy_is_settled_by_its_durable_intent_reservation(projects):
     now = datetime(2026, 10, 16, 4, tzinfo=UTC)
     clock = FakeClock(now - timedelta(minutes=30))

@@ -20,7 +20,6 @@ from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import RunName, RunRecord, run_id_of, run_name
 
 from .effort import EffortAudit, ResumeEffort, read_override
-from .reservations import UNRESERVED
 
 State = Literal["running", "waiting", "paused", "blocked", "completed", "stopped"]
 PAGE = 100
@@ -330,17 +329,6 @@ class WorkRecords:
                 "AND outcome IS NULL",
                 (record.stopped, project, session, run),
             )
-            if (
-                state == "completed"
-                and db.execute(
-                    "SELECT 1 FROM research_model_calls m JOIN research_attempts a "  # noqa: S608 - fixed SQL
-                    "ON a.project=m.project AND a.session=m.session AND a.run=m.run "
-                    "WHERE a.project=? AND a.session=? AND a.work=? AND m.usage IS NULL "
-                    f"AND {UNRESERVED} LIMIT 1",
-                    (project, session, work),
-                ).fetchone()
-            ):
-                state, reason = "blocked", "unknown_model_usage"
             db.execute(
                 "UPDATE research_work SET state=?,reason=? WHERE project=? AND session=? "
                 "AND work=? AND current=? AND state!='stopped'",

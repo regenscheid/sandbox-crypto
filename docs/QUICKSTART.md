@@ -51,10 +51,12 @@ Before you start, set the `profiles` to the tags `images/build.sh` printed. Set 
 After an interrupted research session, use **Resume research** in its chat panel.
 It resumes the selected unfinished tree, including children, within its original
 policy, prompt pins and remaining budget. Completed or explicitly stopped branches
-stay ended. A blocked reason identifies an unknown paid call, uncertain effect,
+stay ended. A blocked reason identifies an uncertain tool effect,
 lost kernel or changed prerequisite. Advanced reconciliation is available through
 the authenticated `/api/v0/projects/{project}/sessions/{session}/recovery` API and
 its `/resolve` route; it records an operator decision without replaying the effect.
+Unknown model charges remain visible in recovery status without blocking Resume by
+themselves; the upstream LiteLLM budget controls spending.
 
 If the agent VM exits, the launcher keeps the worker, control service and workspace
 available. Run `sandbox-science replace-orchestrator --config CONFIG` to replace

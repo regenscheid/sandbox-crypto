@@ -187,14 +187,17 @@ async def test_a_gateway_timeout_with_a_web_page_is_tried_again_and_recorded(
 async def test_a_gateway_timeout_that_goes_on_ends_with_its_status_not_its_page(
     fake: Gateway,
 ) -> None:
-    fake.answers = [(524, CLOUDFLARE_524, {"Content-Type": "text/html"})] * 4
+    fake.answers = [(524, CLOUDFLARE_524, {"Content-Type": "text/html"})] * 10
     waits = Waits()
     with pytest.raises(ModelError) as failed:
         await complete(fake, waits)
     assert failed.value.status == 524
     assert "a text/html page of" in str(failed.value)
     assert "Gateway Time-out" not in str(failed.value)
-    assert (waits.slept, fake.calls) == ([2.0, 4.0, 8.0], 4)  # retries, then the error
+    assert (waits.slept, fake.calls) == (
+        [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0],
+        10,
+    )
 
 
 async def test_a_call_without_retries_names_none(fake: Gateway) -> None:
@@ -244,6 +247,16 @@ async def test_retries_end_and_backoff_is_capped(fake: Gateway) -> None:
     assert not isinstance(failed.value, ContextLimitError)
     assert waits.slept == [10, 20, 40, *[MAX_RETRY_WAIT] * 4]
     assert fake.calls == 8
+
+
+async def test_default_retries_make_ten_total_attempts(fake: Gateway) -> None:
+    fake.answers = [(524, "gateway timeout", {})] * 10
+    waits = Waits()
+    with pytest.raises(ModelError) as failed:
+        await complete(fake, waits)
+    assert failed.value.status == 524
+    assert fake.calls == 10
+    assert waits.slept == [2, 4, 8, 16, 32, 60, 60, 60, 60]
 
 
 async def test_a_gateway_asking_for_a_longer_wait_than_the_cap_is_not_waited_for(

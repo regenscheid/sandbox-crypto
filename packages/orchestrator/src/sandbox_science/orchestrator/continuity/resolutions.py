@@ -148,9 +148,14 @@ class RecoveryControls:
                 parent = original_parent[0]
             if current != request.current or epoch != request.epoch:
                 raise ControlError(CONFLICT, "research attempt or epoch changed")
-            if state not in {"paused", "blocked", "waiting"}:
+            accounting_only = request.kind in {"model_usage", "model_reservation"}
+            if state not in {"paused", "blocked", "waiting"} and not (
+                state == "completed" and accounting_only
+            ):
                 raise ControlError(
-                    CONFLICT, "only inactive unfinished research work can be resolved"
+                    CONFLICT,
+                    "only inactive unfinished research work can be resolved, "
+                    "except completed model accounting",
                 )
             if db.execute(
                 "SELECT 1 FROM run_leases WHERE project_id=? AND session_id=? AND renewed_at>? "

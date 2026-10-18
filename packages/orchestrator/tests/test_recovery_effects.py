@@ -15,6 +15,7 @@ from sandbox_science.orchestrator.continuity.plans import Plans
 from sandbox_science.orchestrator.continuity.reconcile import Reconciler
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.continuity.resolutions import RecoveryControls, Resolution
+from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.history.operations import ToolJournal
@@ -39,6 +40,19 @@ class PassiveWorker:
     async def lookup(self, context, operation):
         self.lookups.append((context, operation))
         return OperationLookup(execution=self.execution)
+
+
+async def test_unknown_model_charge_is_visible_but_does_not_block_reconciliation(
+    projects: ProjectStore,
+):
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    identity = ModelIntents(projects.control).begin(owner, kind="main", alias="fixture")
+    works.interrupt("p", "s", RUN)
+    worker = PassiveWorker(None)
+    await Reconciler(projects.control, cast(WorkerClient, worker)).work(works.get("p", "s", RUN))
+    assert worker.lookups == []
+    assert RecoveryStatus(projects.control).pending("p", "s", RUN).models[0].identity == identity
 
 
 @pytest.mark.parametrize(

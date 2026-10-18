@@ -85,8 +85,14 @@ an interruption does not discard an unanswered question or re-ask an answered on
 
 Model intent is recorded before a paid dispatch. An intent without an observed response
 is shown as an unknown outcome/charge; it is never represented as a zero-cost call.
-Gateway enforcement remains authoritative. A new model call requires current budget
-admission and explicit Resume, not an assumption that the lost request was free.
+Gateway enforcement remains authoritative. Explicit Resume may continue past this
+unknown charge under the gateway's spending control. It does not replay the lost
+model response or erase the unknown charge. Original tool effects still require
+reconciliation before their branch can continue.
+If an earlier attempt has no saved starting-input snapshot, recovery logs the
+provenance gap and records the continuation's current prompt/tool/skill pins;
+missing historical pins alone do not block. A known mismatch with saved pins
+still blocks under the current pinning policy.
 
 ## Acceptance
 
@@ -108,17 +114,19 @@ An authenticated operator may explicitly resolve a still-unknown model intent wi
 and output token upper bounds, with a reason. This is a budget reservation, not an
 observation: the original call's actual usage remains NULL/UNKNOWN and no assistant
 or tool response is synthesized. The archive records that distinction visibly.
-The same inactive-work, original-attempt, current-epoch, exact-identity and
-idempotency checks as other recovery resolutions apply; changing the decision or
+The same original-attempt, current-epoch, exact-identity and idempotency checks
+as other recovery resolutions apply; accounting-only model decisions may also
+be attached after work completes, while effect resolutions still require
+unfinished inactive work. Changing the decision or
 switching between observed usage and reservation conflicts.
 
 A cancelled fold can leave an estimated usage copy in its run collection. When the same run has a sole durable fold intent with observed usage or an exact reservation, this copy is diagnostic rather than a second unpriced charge. An unsettled or ambiguous copy retains its unpriced status.
 
-The reservation permits reconciliation to continue, but does not issue Resume or
-widen the original grants. Its cost counts against the project's daily admission
+The optional reservation gives local cost/token estimates a conservative bound, but
+does not issue Resume or widen the original grants. Its cost counts against the project's daily admission
 budget using the original dispatch time, separately from observed-spend reporting.
 Its input/output bounds reduce the original child token grant across all attempts;
-a spent grant or project budget still blocks continuation. Unknown calls without
-an explicit reservation still block. Status retains unknown actual usage and
+a spent grant or project budget still blocks continuation. Unknown model calls without
+an explicit reservation remain visible and do not alone block Resume. Status retains unknown actual usage and
 shows the reservation/operator evidence separately. This does not recover a lost
 response, determine the actual provider charge or authorize replaying the lost call.

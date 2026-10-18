@@ -163,7 +163,9 @@ This keeps native base64 plus decoded message fields within the 24 MiB transport
 frame ceiling. A larger response is explicitly refused; its pre-dispatch intent
 remains unknown and blocks claiming the work complete or silently charging zero.
 The 8 MiB active-view ceiling independently accounts for decoded and native data.
-The launcher never widens these limits or retries an unknown paid call automatically.
+The launcher never widens these limits. The model client can retry a transient
+gateway response within one bounded logical call; the launcher does not replay
+an interrupted call when reconnecting.
 
 Runtime disconnection closes the trusted service's admitted tasks through the same
 owned cleanup as local service shutdown. It finishes receipt reconciliation and

@@ -234,14 +234,14 @@ def test_late_cleanup_and_guard_cannot_mutate_new_resume(tmp_path: Path):
         state.projects.close()
 
 
-async def test_unknown_paid_child_blocks_aggregate_resume(tmp_path: Path):
+async def test_unknown_paid_child_without_old_pins_resumes_with_new_pins(tmp_path: Path):
     state, documents, works = prepare_tree(tmp_path)
     owner = works.owner("p", "s", GRANDCHILD)
     assert owner is not None
     # Simulate a paid dispatch whose provider response disappeared.
     with state.projects.control.write() as tx:
         tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (GRANDCHILD,))
-    ModelIntents(state.projects.control).begin(owner, kind="delegated", alias="scripted")
+    identity = ModelIntents(state.projects.control).begin(owner, kind="delegated", alias="scripted")
     works.interrupt("p", "s", RUN)
     worker = RecoveryWorker()
     harness = Harness(
@@ -256,15 +256,16 @@ async def test_unknown_paid_child_blocks_aggregate_resume(tmp_path: Path):
     request = works.request("p", "s")
     assert request is not None
     try:
-        assert await drive(Recovery(harness, "p", "s", request), Sink(), asyncio.Event())
-        assert works.get("p", "s", GRANDCHILD).state == "blocked"
-        assert len(works.attempts("p", "s", GRANDCHILD)) == 1
+        assert not await drive(Recovery(harness, "p", "s", request), Sink(), asyncio.Event())
+        assert works.get("p", "s", GRANDCHILD).state == "completed"
+        assert len(works.attempts("p", "s", GRANDCHILD)) == 2
+        assert ModelIntents(state.projects.control).pending("p", "s", GRANDCHILD) == (identity,)
         with state.projects.control.read() as tx:
             assert (
                 tx.sql.execute(
                     "SELECT status FROM research_resumes WHERE request=?", (request,)
                 ).fetchone()[0]
-                == "blocked"
+                == "finished"
             )
     finally:
         documents.close()

@@ -507,8 +507,11 @@ recovery before any branch or model dispatch. It does not create a replacement
 for a missing environment. The request reserves immutable continuation names for every unfinished branch, and
 offers at most four ready branches to the configured runtime. Descendants settle
 before their parent is offered. Completed and explicitly stopped work is skipped;
-unknown paid calls, uncertain effects, missing kernel generations, changed policy
-or prompt pins, and exhausted budgets produce visible blocked reasons. Resume
+uncertain tool effects, missing kernel generations, changed policy or known changed
+prompt pins, and exhausted configured budgets produce visible blocked reasons.
+Missing historical starting-input pins are logged as a provenance gap; the new
+attempt saves its own trusted pins and may continue. Unknown model charges remain
+visible estimates but do not alone block Resume. Resume
 does not automatically replay an unknown effect or grant a new token allowance.
 
 Worker operation lookup and existing question/delegation identities recover exact

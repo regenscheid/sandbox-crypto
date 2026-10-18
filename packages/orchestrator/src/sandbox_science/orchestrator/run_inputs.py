@@ -7,6 +7,7 @@ do not describe a surviving kernel. Historical conversations remain in the archi
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Sequence
 from typing import Final, Literal, Self
@@ -21,6 +22,8 @@ from .control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .hooks import Notice, Point, RunView, TurnHook
 from .projects import RunName
 from .prompts import PromptPins
+
+_log = logging.getLogger(__name__)
 
 INPUT_BYTES: Final = 1024 * 1024
 
@@ -89,7 +92,7 @@ class RunInputs:
     def previous(
         self, project: str, session: str, run: str, *, active_run: str | None = None
     ) -> StartingInputs | None:
-        """Nearest saved ancestor in this logical work; unknown ancestry fails closed."""
+        """Nearest saved ancestor in this work; warn on missing historical pins."""
         try:
             return self.get(project, session, run)
         except ControlError as error:
@@ -119,6 +122,8 @@ class RunInputs:
                     (project, session, run),
                 ).fetchone()
                 if work is not None:
+                    if active_run is not None and work[1] != active_run:
+                        raise ControlError(CONFLICT, "recovery attempt is not the current work")
                     # The new attempt has already archived its initial task/state and
                     # started event. Those are not evidence of a prior dispatch.
                     observed = tx.sql.execute(
@@ -148,6 +153,11 @@ class RunInputs:
                     ).fetchone()
                     if observed is None:
                         return None
+                    _log.warning(
+                        "prior research activity has no saved starting inputs; "
+                        "continuing with newly recorded prompt pins"
+                    )
+                    return None
             raise ControlError(CONFLICT, "recovery has no saved ancestor starting inputs")
         return StartingInputs.model_validate_json(row[0])
 
