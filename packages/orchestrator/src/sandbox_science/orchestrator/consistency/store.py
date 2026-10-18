@@ -1692,8 +1692,10 @@ class ReviewStore:
     ) -> None:
         """End a review. Failed, dropped and capped windows retain their watermark.
 
-        Three failures defer further attempts; they never silently certify or skip the
-        failed evidence.
+        The next attempt shrinks its evidence allowance based on the failure count.
+        The remainder stays after the watermark, so a successful smaller review
+        advances coverage without treating the capped span as checked. Three failures
+        defer further attempts; they never silently certify or skip failed evidence.
         """
         if outcome == "running":
             raise DocumentError(INVALID_REQUEST, "a review must end with an outcome")
@@ -1738,7 +1740,7 @@ class ReviewStore:
                             "confirmation_key": found["confirmation_key"],
                         },
                     )
-            elif outcome in ("failed", "dropped") or retry:
+            elif outcome in ("failed", "dropped", "capped") or retry:
                 window = db.execute(
                     "SELECT failures FROM review_windows WHERE project=? AND session=?",
                     (project, session),

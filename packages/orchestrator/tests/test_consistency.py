@@ -644,6 +644,7 @@ def test_finding_and_reported_caps_remain_capped_at_finish(store) -> None:
     another = dispatch(reviews)
     reviews.finish("p", "s", another, "owner", "passed", "Bound reached.", cap_reached=True)
     assert reviews.run("p", "s", another)["state"] == "capped"
+    assert reviews.progress("p", "s")["watermark"] == 0
 
 
 def test_failed_and_dropped_windows_retry_without_skipping_new_work(store) -> None:
