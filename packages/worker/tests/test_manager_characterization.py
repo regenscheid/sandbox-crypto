@@ -213,6 +213,16 @@ async def test_files_are_written_read_and_listed_in_the_session(worker: Harness)
     status, read = await worker.post("/v1/files/read", {"context": CONTEXT, "path": "notes/a.txt"})
     assert status == 200, read
     assert (read["content_b64"], read["size"]) == (content, 6)
+    status, past_end = await worker.post(
+        "/v1/files/read",
+        {"context": CONTEXT, "path": "notes/a.txt", "offset": 13500, "length": 10000},
+    )
+    assert status == 200, past_end
+    assert past_end["content_b64"] == ""
+    assert past_end["offset"] == 13500
+    assert past_end["size"] == 6
+    assert past_end["sha256"] == read["sha256"]
+    assert past_end["eof"] is True
     status, listing = await worker.post("/v1/files/list", {"context": CONTEXT, "path": "notes"})
     assert status == 200, listing
     assert [(entry["name"], entry["type"]) for entry in listing["entries"]] == [("a.txt", "file")]
