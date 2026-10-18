@@ -135,3 +135,52 @@ async def test_increment_requires_origin_exact_amount_and_fresh_revision(
     )
     page = await (await client.get(ROOT + "/resources")).json()
     assert page["requests"][0]["user_grant_revision"] == 1
+
+
+async def test_user_soft_extension_is_scoped_origin_checked_and_never_resumes(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    seed_resources(state_dir)
+    store = ProjectStore(state_dir)
+    try:
+        # A warning is emitted during the run; then the tree pauses at its allowance.
+        works = WorkRecords(store.control)
+        with store.control.write() as tx:
+            tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (CHILD,))
+        owner = works.owner("p1", "a", CHILD)
+        warning = ResourceRequests(store.control).observe(
+            owner, "turns", used=300, total=300, revision=0
+        )
+        works.interrupt("p1", "a", RUN)
+        assert warning is not None
+    finally:
+        store.close()
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    body = {
+        "request_id": warning.request_id,
+        "current": CHILD,
+        "epoch": 1,
+        "total": 300,
+        "action": "extend_turns",
+        "reason": "Continue the verified experiment",
+    }
+    assert (await client.post(ROOT + "/resources/decide", json=body)).status == 403
+    granted = await client.post(ROOT + "/resources/decide", json=body, headers=origin(client))
+    assert granted.status == 200, await granted.text()
+    decision = await granted.json()
+    assert decision["total"] == 600
+    assert decision["operator"] == "user"
+    await error_of(
+        await client.post(
+            ROOT.replace("/projects/p1/", "/projects/p2/") + "/resources/decide",
+            json=body,
+            headers=origin(client),
+        ),
+        404,
+        "not_found",
+    )
+    store = ProjectStore(state_dir)
+    try:
+        assert WorkRecords(store.control).queued() == []
+    finally:
+        store.close()

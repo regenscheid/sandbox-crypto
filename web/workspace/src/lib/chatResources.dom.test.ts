@@ -49,6 +49,8 @@ const notice: ResourceRequest = {
   superseded: false,
   user_grant_revision: null,
   decision: null,
+  scope: 'work',
+  renewable: true,
 };
 const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
@@ -247,4 +249,61 @@ it('allows separately reviewed ancestor and child increments when the ancestor h
   button(target, 'Approve 10,000,000').click();
   await settle();
   expect(writes).toEqual([parent, work]);
+});
+
+it('shows retained-artifact scope and locks one USER soft extension to its reviewed attempt', async () => {
+  const writes: unknown[] = [];
+  const soft = { ...notice, resource: 'retained_bytes', total: 1000, used: 800 };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method === 'POST') {
+        writes.push(JSON.parse(String(init.body)));
+        return reply({ total: 2000, operator: 'user' });
+      }
+      return reply({ requests: [soft], next_after: null });
+    }),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(ChatResources, { target, props: { projectId: 'p', sessionId: 's' } }));
+  await settle();
+  expect(target.textContent?.replace(/\s+/g, ' ')).toContain(
+    'research VM disk usage are not measured',
+  );
+  button(target, 'Review resource allowance').click();
+  await settle();
+  const approve = button(target, 'Approve 1 GiB');
+  approve.click();
+  approve.click();
+  await settle();
+  expect(writes).toEqual([
+    {
+      request_id: notice.request_id,
+      current: work,
+      epoch: 2,
+      total: 1000,
+      action: 'extend_storage',
+      reason: 'Continue from the saved research checkpoint.',
+    },
+  ]);
+  expect(target.textContent).toContain('approval did not start a run');
+});
+
+it('never offers to extend hard retention capacity', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      reply({
+        requests: [{ ...notice, resource: 'retention_bytes', renewable: false, scope: 'project' }],
+        next_after: null,
+      }),
+    ),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(ChatResources, { target, props: { projectId: 'p', sessionId: 's' } }));
+  await settle();
+  expect(target.textContent).toContain('Hard retention capacity');
+  expect(target.textContent).not.toContain('Review resource allowance');
 });

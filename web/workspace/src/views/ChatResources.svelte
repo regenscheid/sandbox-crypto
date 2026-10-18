@@ -6,6 +6,7 @@
   import { messageHref } from '../lib/router';
   import PollStatus from './PollStatus.svelte';
   import TokenAllowance from './TokenAllowance.svelte';
+  import ResourceAllowance from './ResourceAllowance.svelte';
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
   let pollState = $state<PollState<ResourceRequestPage>>(initialPoll());
@@ -17,6 +18,18 @@
   const page = $derived(pollState.data);
   const current = (item: ResourceRequest) =>
     !item.superseded && !['completed', 'stopped'].includes(item.work_state);
+
+  const label = (item: ResourceRequest) =>
+    ({
+      tokens: 'tokens',
+      turns: 'turns',
+      elapsed_seconds: 'observed active seconds',
+      retained_bytes: 'retained artifact bytes',
+      retention_bytes: 'retention capacity bytes',
+      retention_revisions: 'retained revisions',
+      retention_operations: 'retention operations',
+      retention_metadata_bytes: 'retention metadata bytes',
+    })[item.resource];
 
   $effect(() => {
     const cursor = after;
@@ -54,14 +67,30 @@
           <strong>{item.task || 'Research branch'}</strong>
           <p>
             {item.used.toLocaleString()} of {item.total.toLocaleString()}
-            {item.resource} at check-in.
+            {label(item)} at check-in{item.scope !== 'work' ? ` (${item.scope})` : ''}.
           </p>
+          {#if ['retained_bytes', 'retention_bytes'].includes(item.resource)}
+            <p class="muted">
+              Retained artifact content only. Unpublished job output and research VM disk usage are
+              not measured here.
+            </p>
+          {/if}
+          {#if !item.renewable}
+            <p>
+              Hard retention capacity: agents cannot extend it. Review storage capacity or retention
+              with the operator.
+            </p>
+          {/if}
           {#if item.user_grant_revision !== null}
             <p>Token extension recorded by the user.</p>
           {:else if item.decision}
             <p>
-              Parent decision: {item.decision.request.action.replaceAll('_', ' ')}. {item.decision
-                .request.reason}
+              {item.decision.operator
+                ? 'User decision'
+                : item.parent
+                  ? 'Parent decision'
+                  : 'Root policy decision'}: {item.decision.request.action.replaceAll('_', ' ')}. {item
+                .decision.request.reason}
             </p>
           {:else if !current(item)}
             <p class="muted">
@@ -83,6 +112,16 @@
             >
             {#if selected === item.request_id}
               <TokenAllowance {path} work={item.work} warningTotal={item.total} />
+            {/if}
+          {/if}
+          {#if current(item) && !item.decision && item.renewable && ['turns', 'elapsed_seconds', 'retained_bytes'].includes(item.resource) && ['paused', 'blocked'].includes(item.work_state)}
+            <button
+              class="subtle"
+              onclick={() => (selected = selected === item.request_id ? null : item.request_id)}
+              >Review resource allowance</button
+            >
+            {#if selected === item.request_id}
+              <ResourceAllowance {path} {item} />
             {/if}
           {/if}
         </li>

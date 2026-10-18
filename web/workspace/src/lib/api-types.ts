@@ -1353,11 +1353,13 @@ export interface ResourceDecision {
   operation: string;
   total: number;
   observed: number;
+  operator: string | null;
+  progress: number;
 }
 
 export interface ResourceDecisionRequest {
   request_id: string;
-  action: "continue" | "redirect" | "report" | "pause" | "extend_turns";
+  action: "continue" | "redirect" | "report" | "pause" | "extend_turns" | "extend_time" | "extend_storage";
   reason: string;
 }
 
@@ -1367,7 +1369,7 @@ export interface ResourceRequest {
   current: string;
   epoch: number;
   parent: string | null;
-  resource: "tokens" | "turns";
+  resource: "tokens" | "turns" | "elapsed_seconds" | "retained_bytes" | "retention_bytes" | "retention_revisions" | "retention_operations" | "retention_metadata_bytes";
   grant_revision: number;
   used: number;
   total: number;
@@ -1378,6 +1380,8 @@ export interface ResourceRequest {
   superseded: boolean;
   user_grant_revision: number | null;
   decision: ResourceDecision | null;
+  scope: "work" | "project" | "global";
+  renewable: boolean;
 }
 
 export interface ResourceRequestPage {
