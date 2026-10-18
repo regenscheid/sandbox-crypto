@@ -14,6 +14,7 @@ from sandbox_science.orchestrator.history.delegated import delegated_folder
 from sandbox_science.orchestrator.history.geometry import DEFAULT_SHARES
 from sandbox_science.orchestrator.history.view import spanned
 from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .loop_harness import PROJECT, SESSION, Harness, Reply
@@ -26,9 +27,10 @@ from .test_delegation_tasks import DONE, TASK
 from .test_history_folds import CONTEXT
 
 
+@pytest.mark.parametrize("narrative", [False, True])
 @pytest.mark.parametrize("constraints", [None, "Use exact rational arithmetic."])
 async def test_scoped_folds_survive_reopen_without_other_agents_context(
-    tmp_path: Path, constraints: str | None
+    tmp_path: Path, constraints: str | None, narrative: bool
 ) -> None:
     projects = ProjectStore(tmp_path)
     projects.create(PROJECT, "minimal", "sha256:" + "c" * 64)
@@ -36,6 +38,21 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
     archive = Archive(projects.control)
     brief = "Tabulate squares of the integers 1 through 10. Preserve exact values."
     forbidden = ("PARENT REASONING", "SIBLING CONCLUSION")
+
+    class Narrator:
+        calls = 0
+
+        async def complete(self, messages, tools):
+            sent = json.dumps(messages)
+            assert all(text not in sent for text in forbidden)
+            self.calls += 1
+            return ModelTurn(
+                json.dumps({"narrative": "Exact values remain in the archive.", "keys": []}),
+                input_tokens=100,
+                output_tokens=10,
+            )
+
+    narrator = Narrator()
     made = await delegated_folder(
         archive,
         CONTEXT,
@@ -46,6 +63,7 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
         ceiling=160_000,
         chunk=32_000,
         shares=DEFAULT_SHARES,
+        model=narrator if narrative else None,
     )
     transcript = Transcript([{"role": "system", "content": "s" * 400}, *made.view.messages])
     first = None
@@ -73,6 +91,9 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
         if constraints:
             assert constraints in sent
     assert len(made.folds) > 2
+    if narrative:
+        assert narrator.calls > 0
+        assert any(fold["state"] == "applied" for fold in made.folds)
     own = archive.messages(PROJECT, SESSION, run="child")
     span = spanned(archive, CONTEXT, own[0].position, own[-1].position, run="child")
     assert span
@@ -130,3 +151,38 @@ async def test_production_harness_folds_each_delegated_role_using_its_model_limi
     assert summary["calls"] == []
     assert child.limits is not None
     assert child.limits["max_input_chars"] is None
+
+
+async def test_production_child_narrates_on_its_own_alias_and_grant(delegating: Harness) -> None:
+    from .test_delegation import configure
+    from .test_history_folds import ENRICHED, folds
+
+    configure(delegating, depth=1, task_tokens=2_000_000)
+    delegating.gateway.per_token = 4.0
+    delegating.gateway.enrich = [
+        Reply(json.dumps({"narrative": "Exact child evidence remains available.", "keys": []}))
+    ] * 8
+    notes = Reply("Child-only evidence. " + "observation " * 9000, calls=[("plan_read", {})])
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[TASK]), wait(), Reply("Done.")],
+        delegated=[notes] * 6 + [Reply(json.dumps(DONE))],
+        task="PARENT PRIVATE REASONING",
+        options=[
+            *ENRICHED,
+            "--delegated-model",
+            "delegated",
+            "--reasoning-effort",
+            "fold=high",
+            "--reasoning-effort",
+            "overview=low",
+        ],
+    )
+    (child,) = children(delegating, root)
+    summary = folds(child)
+    assert summary["calls_total"] > 0
+    assert any(fold["state"] == "applied" for fold in summary["folds"])
+    assert child.model_profiles["fold"].alias == "delegated"
+    for sent in delegating.gateway.requests["enrich"]:
+        assert "PARENT PRIVATE REASONING" not in json.dumps(sent)
+        assert "Child-only evidence" in json.dumps(sent)

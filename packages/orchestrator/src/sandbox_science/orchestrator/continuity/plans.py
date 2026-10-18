@@ -17,6 +17,7 @@ from sandbox_science.orchestrator.control.guard import guarded
 from sandbox_science.orchestrator.projects import RunName, run_name
 
 from .records import Work, WorkRecords
+from .token_usage import spent_tokens as spent_tokens
 
 
 class Plan(Contract):
@@ -24,41 +25,6 @@ class Plan(Contract):
     run: RunName
     predecessor: RunName
     started: AwareDatetime
-
-
-def spent_tokens(db: sqlite3.Connection, project: str, session: str, work: str) -> int:
-    """Observed plus explicitly reserved lifetime tokens for one work identity."""
-    observed_tokens = int(
-        db.execute(
-            "WITH usage AS (SELECT u.usage FROM archive_model_usage u "
-            "JOIN research_attempts a ON a.project=u.project "
-            "AND a.session=u.session AND a.run=u.run WHERE a.project=? AND a.session=? "
-            "AND a.work=? UNION ALL SELECT c.usage FROM research_model_calls c "
-            "JOIN research_attempts a USING(project,session,run) "
-            "WHERE a.project=? AND a.session=? AND a.work=? AND EXISTS "
-            "(SELECT 1 FROM research_observations o WHERE o.project=c.project "
-            "AND o.session=c.session AND o.work=a.work "
-            "AND o.kind='resolution:model_usage' "
-            "AND json_extract(o.detail,'$.resolution.run')=c.run "
-            "AND json_extract(o.detail,'$.resolution.identity')=c.identity)) "
-            "SELECT coalesce(sum(CASE WHEN "
-            "json_extract(u.usage,'$.input_tokens') IS NOT NULL "
-            "AND json_extract(u.usage,'$.output_tokens') IS NOT NULL THEN "
-            "json_extract(u.usage,'$.input_tokens')+"
-            "json_extract(u.usage,'$.output_tokens') "
-            "ELSE coalesce(json_extract(u.usage,'$.characters'),0)/4 END),0) "
-            "FROM usage u",
-            (project, session, work) * 2,
-        ).fetchone()[0]
-    )
-    from .reservations import RESERVATIONS
-
-    reserved_tokens = db.execute(
-        "SELECT coalesce(sum(input_tokens+output_tokens),0) "  # noqa: S608 - fixed SQL
-        f"FROM ({RESERVATIONS}) WHERE project=? AND session=? AND work=?",
-        (project, session, work),
-    ).fetchone()[0]
-    return observed_tokens + int(reserved_tokens)
 
 
 class Plans:

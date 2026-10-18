@@ -4,6 +4,8 @@ Updated 2026-10-18. Development is local branch `dev` in `/home/andy/.cache/pt/d
 
 ## Current work and evidence
 
+- Current continuation: `d1e88f59` adds bounded fold-repair diagnostics. Child narrative folding/shared grant accounting is under focused verification and independent review; fresh synthetic recovery/Sage qualification uses its own `recovery-acceptance` worktree at `d20e5fe3`. Do not treat earlier full-suite totals as covering this in-progress code.
+
 - Relevant UI, writing-skill, agent messaging, history and autonomous-recovery work has been consolidated on `dev`. User wants one development branch and signed local commits, not repeated permission requests for routine implementation. No implicit push/deployment or paid-research continuation.
 - `dbc40a4e` adds delegated-parent descendant-history retrieval; `198dd6cc` adds saved-attempt context inspection. Current follow-up adds same-work continuation navigation/search, bounded cancellable automatic scanning and an inspector entry on individual run pages. Each result identifies its attempt; children/siblings are not silently merged.
 - `2f972a2c` adds four true process-death recovery cases. All four pass. Local browser/HTTP/DOM coverage and precise limits are in [context and continuity acceptance](docs/agent-reports/context-continuations-2026-10-18.md). The final source-frozen suite passed 14,355 Python tests (63 prerequisite/opt-in skips); all 2,218 web tests passed. The earlier mixed-source run was not green and is documented separately.

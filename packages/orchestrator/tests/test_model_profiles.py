@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from pydantic import ValidationError
 
@@ -208,6 +210,73 @@ async def test_confined_embeddings_do_not_require_a_reasoning_profile(
                                 alias="fixture",
                                 kind="reviewer",
                                 profile=pinned["main"],
+                            )
+                        ),
+                    )
+    finally:
+        await channel.close()
+
+
+async def test_confined_child_summary_requires_its_exact_admitted_profile(projects):
+    from types import SimpleNamespace
+
+    from sandbox_science.orchestrator.confinement.host import HostLoops
+    from sandbox_science.orchestrator.confinement.transport import (
+        Capability,
+        Channel,
+        TransportError,
+    )
+    from sandbox_science.orchestrator.confinement.wire import ModelIntent, payload
+    from sandbox_science.orchestrator.continuity.records import authority
+
+    owner = WorkRecords(projects.control).admit("p", "s", RUN)
+
+    async def send(frame):
+        pass
+
+    async def handle(kind, value):
+        return None
+
+    channel = Channel(send, handle)
+    host = HostLoops(
+        channel,
+        frozenset({"p"}),
+        control=projects.control,
+        model_roles={"fold": frozenset({"main"})},
+    )
+    pin = ModelProfile(alias="selected-child", api="responses", reasoning_effort="high")
+    try:
+        with authority(owner), profiles({"fold": pin, "overview": pin}):
+            async with host.model_scope():
+                attempt = host.model_capability()
+                host.attempts[attempt] = cast(
+                    Any, SimpleNamespace(given=SimpleNamespace(model="selected-child"))
+                )
+                for role in ("fold", "overview"):
+                    ticket = await host.capability(
+                        Capability.MODEL_INTENT,
+                        payload(
+                            ModelIntent(
+                                attempt=attempt,
+                                alias=pin.alias,
+                                kind="fold",
+                                role=role,
+                                profile=pin,
+                            )
+                        ),
+                    )
+                    assert ticket is not None
+                host.attempts[attempt].given.model = "different-child"
+                with pytest.raises(TransportError, match="outside configuration"):
+                    await host.capability(
+                        Capability.MODEL_INTENT,
+                        payload(
+                            ModelIntent(
+                                attempt=attempt,
+                                alias=pin.alias,
+                                kind="fold",
+                                role="fold",
+                                profile=pin,
                             )
                         ),
                     )

@@ -235,6 +235,7 @@ class Delegations(TurnHook):
         track_grant: Callable[[str], Awaitable[PlanRef]] | None = None,
         depth: int = 0,
         tokens: int | None = None,
+        auxiliary_tokens: Callable[[], Awaitable[int]] | None = None,
         stop_by: Deadline | None = None,
         stop: asyncio.Event | None = None,
         max_chars: int = 5000,
@@ -269,6 +270,8 @@ class Delegations(TurnHook):
         """The run's own token limit, for a delegated run: its children's tokens are
         carved from what it has left (PD-15)."""
         self.tokens_left = tokens
+        self.foreground_tokens = 0
+        self.auxiliary_tokens = auxiliary_tokens
         self.stop_by = stop_by
         self.stop = stop
         """When the run's end must have stopped its children, once its parent cancels
@@ -324,11 +327,6 @@ class Delegations(TurnHook):
                 ErrorKind.UNAVAILABLE,
                 "limit_reached: this run has no turn left to wait for a delegated run",
             )
-        if self.tokens_left is not None and self.tokens_left <= 0:
-            raise WorkerAPIError(
-                ErrorKind.UNAVAILABLE,
-                "limit_reached: this run has no tokens left to give a delegated run",
-            )
         # The parent can run for hours. Apply current project grants at each child
         # admission so an operator's increased runaway bounds reach later children.
         if self.refresh_settings is not None:
@@ -352,6 +350,14 @@ class Delegations(TurnHook):
             )
         project, session = self.context.project_id, self.context.session_id
         planned = await (self._check(brief) if isinstance(brief, CheckBrief) else self._task(brief))
+        # Background summary calls may settle or retry during earlier tools or
+        # the awaited admission reads above. Never grant from that old snapshot.
+        await self._remaining_tokens()
+        if self.tokens_left is not None and self.tokens_left <= 0:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                "limit_reached: this run has no tokens left to give a delegated run",
+            )
         tokens = planned.tokens
         if self.tokens_left is not None:
             tokens = min(tokens, self.tokens_left)  # carved from what the run has left
@@ -864,8 +870,13 @@ class Delegations(TurnHook):
         self.returned.clear()
         await self._prune()
         self.turns_left = run.turns_left
+        self.foreground_tokens = sum(call_tokens(usage) for usage in run.usage)
+        await self._remaining_tokens()
+
+    async def _remaining_tokens(self) -> None:
         if self.tokens is not None:
-            self.tokens_left = self.tokens - sum(call_tokens(usage) for usage in run.usage)
+            extra = await self.auxiliary_tokens() if self.auxiliary_tokens else 0
+            self.tokens_left = self.tokens - self.foreground_tokens - extra
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         running = self._running()

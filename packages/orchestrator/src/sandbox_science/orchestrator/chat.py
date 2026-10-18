@@ -190,11 +190,13 @@ class ModelBudget(TurnHook):
         *,
         tokens: int | None = None,
         require_cost_limit: bool = False,
+        auxiliary_tokens: Callable[[], Awaitable[int]] | None = None,
     ):
         """``share`` is the part of the project's daily cost limit one run may use, above
         0 and at most 1, if any; ``tokens`` is a delegated run's limit."""
         self.chat, self.share, self.tokens = chat, share, tokens
         self.require_cost_limit = require_cost_limit
+        self.auxiliary_tokens = auxiliary_tokens
 
     async def halt(self, run: RunView) -> str | None:
         state, project = self.chat.state, self.chat.context.project_id
@@ -214,6 +216,8 @@ class ModelBudget(TurnHook):
                 return "run_budget"
         # A delegated run stops before a call that would take it past its limit.
         used = sum(call_tokens(usage) for usage in run.usage)
+        if self.auxiliary_tokens is not None:
+            used += await self.auxiliary_tokens()
         if self.tokens is not None and used + estimate(run) >= self.tokens:
             return "run_budget"
         return None
@@ -225,6 +229,8 @@ class ModelBudget(TurnHook):
         if self.tokens is None:
             return None
         used = sum(call_tokens(usage) for usage in run.usage)
+        if self.auxiliary_tokens is not None:
+            used += await self.auxiliary_tokens()
         # The next call sends at least what the last one sent and answered.
         last = call_tokens(run.usage[-1]) if run.usage else 0
         return "run_budget" if used + 2 * max(estimate(run), last) >= self.tokens else None

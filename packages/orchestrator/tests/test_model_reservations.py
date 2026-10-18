@@ -170,6 +170,7 @@ def test_cancelled_fold_copy_is_settled_by_its_durable_intent_reservation(projec
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 0
     assert state.model_cost("p") is None
     assert state.model_reservations("p") == {"main": 2}
+    assert Plans(projects.control, "p", "s", "unused").spent_tokens(RUN) == 210_000
     assert not state.over_cost_limit("p", now)
 
 

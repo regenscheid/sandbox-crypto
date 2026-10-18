@@ -359,6 +359,39 @@ async def test_delegations_started_at_once_keep_the_cap(tmp_path: Path) -> None:
             free.set()
 
 
+async def test_nested_grant_refreshes_fold_usage_after_awaited_admission(tmp_path: Path) -> None:
+    extra = 5000
+    dispatched: list[int] = []
+
+    async def auxiliary() -> int:
+        return extra
+
+    async def held(child: Child, stop: asyncio.Event) -> ChildEnd:
+        dispatched.append(child.tokens)
+        return ChildEnd("answered", False, json.dumps(DONE))
+
+    async def gate() -> bool:
+        nonlocal extra
+        # A fold response plus its retry hold arrive during an earlier tool or
+        # model-choice/admission await, without another foreground model return.
+        extra += 40000
+        return False
+
+    with tree(tmp_path) as found:
+        lead = found.hook(held, parent=CHILD, depth=1, tokens=100000)
+        lead.auxiliary_tokens = auxiliary
+        lead.over_budget = gate
+        async with lead.lease():
+            await lead.model_returned(
+                Transcript(messages=[], usage=[ModelUsage(input_tokens=20000, output_tokens=0)])
+            )
+            text, _ = await lead.call("delegate", {"task": "Do a part."})
+            assert json.loads(text)["limits"]["tokens"] == 35000
+            with pytest.raises(WorkerAPIError, match="no tokens left"):
+                await lead.call("delegate", {"task": "Another part."})
+            await eventually(lambda: dispatched == [35000])
+
+
 def test_a_track_is_busy_while_any_delegation_of_the_session_runs_on_it(tmp_path: Path) -> None:
     with tree(tmp_path) as found:
         records = found.records

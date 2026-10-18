@@ -229,7 +229,13 @@ def create_app(settings: ControlSettings) -> web.Application:
                 channel = Channel(socket.send_str, handle)
                 roles: dict[str, frozenset[str]] = {
                     "fold": frozenset(
-                        alias for alias in (settings.main, settings.delegated) if alias
+                        alias
+                        for alias in (
+                            settings.main,
+                            settings.delegated,
+                            settings.settings.fold_alias,
+                        )
+                        if alias
                     ),
                     "reviewer": frozenset((settings.reviewer,))
                     if settings.reviewer

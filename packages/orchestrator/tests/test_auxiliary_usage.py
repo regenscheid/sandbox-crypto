@@ -12,6 +12,7 @@ from pydantic import JsonValue
 
 from sandbox_science.orchestrator.continuity.materializations import Table, link
 from sandbox_science.orchestrator.continuity.models import ModelIntents
+from sandbox_science.orchestrator.continuity.plans import spent_tokens
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
 from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
@@ -159,6 +160,8 @@ def test_fold_copy_identity_survives_every_legacy_form(
     state = RunState(projects.control)
     assert state.model_costs("p") == {"main": 0.25}
     assert state.model_info_cost("p") == 0.25
+    with projects.control.read() as tx:
+        assert spent_tokens(tx.sql, "p", "s", RUN) == 12
 
 
 @pytest.mark.parametrize("storage", ["collection", "record", "event"])
@@ -180,6 +183,8 @@ def test_unlinked_fold_copy_is_not_lost_beside_an_unrelated_intent(
     state = RunState(projects.control)
     assert state.model_costs("p") == ({} if cost is None else {"main": cost})
     assert state.unpriced_calls("p", START - timedelta(seconds=1)) == (cost is None)
+    with projects.control.read() as tx:
+        assert spent_tokens(tx.sql, "p", "s", RUN) == 12
 
 
 async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(

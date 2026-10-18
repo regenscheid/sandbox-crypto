@@ -92,7 +92,7 @@ from .history import (
     session_view,
     settle,
 )
-from .history.delegated import delegated_folder
+from .history.delegated import FoldAllowance, delegated_folder
 from .history.geometry import DEFAULT_SHARES, Shares
 from .history.limits import WorkingMemoryLimitError
 from .history.receipts import Receipts
@@ -670,6 +670,16 @@ class Harness:
                     else None,
                 }
             )
+        if request.parent is not None and self.gateway is not None:
+            # A newly admitted child's summaries follow its own selected model.
+            # Explicit saved profiles returned above remain immutable on Resume.
+            alias = self.settings.fold_alias or request.alias or self.delegated.alias
+            for role in ("fold", "overview"):
+                key = cast(ModelRole, role)
+                previous = result.get(key)
+                result[key] = self.gateway.profile(alias, role=key).model_copy(
+                    update={"reasoning_effort": previous.reasoning_effort if previous else None}
+                )
         if legacy:
             result = {
                 key: value.model_copy(update={"reasoning_effort": None})
@@ -814,7 +824,8 @@ class Harness:
                     if self.prepare_attempt is not None:
                         await stack.enter_async_context(self.prepare_attempt(admitted))
                     memory = await self.memory(admitted)
-                    folder = await self._folder(admitted)
+                    allowance = self._fold_allowance(admitted)
+                    folder = await self._folder(admitted, allowance=allowance)
                     view = folder.view if folder is not None else None
                     if view is not None:
                         # The session's view is the earlier conversation (CM-29).
@@ -823,7 +834,9 @@ class Harness:
                     chat = self.chat(admitted)
                     if chat is not None and view is not None:
                         chat.shown = view.shown
-                    delegations = await self._delegations(admitted, chat, memory, stop)
+                    delegations = await self._delegations(
+                        admitted, chat, memory, stop, allowance=allowance
+                    )
                     toolbox = await self._toolbox(
                         admitted,
                         chat,
@@ -871,7 +884,10 @@ class Harness:
                                 )
                         hooks = (*hooks, discovery)
                     if chat is not None:
-                        hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
+                        hooks = (
+                            *hooks,
+                            *await self._chat_hooks(admitted, chat, discovery, allowance=allowance),
+                        )
                     if view is not None:
                         hooks = (*hooks, ViewMeter(view))
                     if folder is not None and chat is not None:
@@ -970,7 +986,22 @@ class Harness:
             limits=self._limits(admitted.request),
         )
 
-    async def _folder(self, admitted: Admitted) -> Folder | None:
+    def _fold_allowance(self, admitted: Admitted) -> FoldAllowance | None:
+        request = admitted.request
+        if self.stores is None or request.parent is None or request.tokens is None:
+            return None
+        run = run_name(admitted.started_at, admitted.run_id)
+        return FoldAllowance(
+            self.stores.projects.control,
+            admitted.context,
+            work=request.work or run,
+            run=run,
+            tokens=request.tokens,
+        )
+
+    async def _folder(
+        self, admitted: Admitted, *, allowance: FoldAllowance | None = None
+    ) -> Folder | None:
         """A main run's folds, with stores (CM-24, CM-29), holding the view of its session
         it starts with: the earlier messages of its session from the archive, folded as
         its records say, after a state block that holds the research-state digest
@@ -993,6 +1024,8 @@ class Harness:
                 chunk=self.settings.chunk,
                 shares=self.settings.shares,
                 clock=self.clock,
+                model=self._child_narrator(request, context),
+                allowance=allowance or self._fold_allowance(admitted),
             )
         project, session = context.project_id, context.session_id
         archive = Archive(stores.projects.control, clock=self.clock)
@@ -1107,6 +1140,22 @@ class Harness:
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
         return ceiling(settings.ceiling, input_limit=found.input)
 
+    def _child_narrator(self, request: RunRequest, context: ExecutionContext) -> ChatModel | None:
+        if self.settings.skeleton_only:
+            return None
+        profile = (request.model_profiles or PROFILES.get() or {}).get("fold")
+        alias = profile.alias if profile else self.settings.fold_alias
+        if alias is not None and self.gateway is not None:
+            model = self.gateway.model(alias, role="fold")
+        else:
+            own = self.role(request).model
+            if not isinstance(own, GatewayModel):
+                return None
+            return cast(
+                GatewayModel, cached_for(own, context.project_id, context.session_id)
+            ).for_role("fold")
+        return cached_for(model, context.project_id, context.session_id)
+
     def _narrator(self, project: str, session: str) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
         the gateway, or MAIN's own; none for skeleton-only folds, or for a model that is
@@ -1120,7 +1169,9 @@ class Harness:
                 self.gateway.model(self.settings.fold_alias, role="fold"), project, session
             )
         if isinstance(self.main.model, GatewayModel):
-            return cached_for(self.main.model.for_role("fold"), project, session)
+            return cast(GatewayModel, cached_for(self.main.model, project, session)).for_role(
+                "fold"
+            )
         return None
 
     def _input_chars(self, *, folding: bool) -> int:
@@ -1188,7 +1239,12 @@ class Harness:
         return found
 
     async def _chat_hooks(
-        self, admitted: Admitted, chat: RunChat, discovery: SkillDiscovery | None = None
+        self,
+        admitted: Admitted,
+        chat: RunChat,
+        discovery: SkillDiscovery | None = None,
+        *,
+        allowance: FoldAllowance | None = None,
     ) -> tuple[TurnHook, ...]:
         """A run's budget, the user's messages, which reach the model last, and its
         events, which come last. A delegated run keeps its token limit, and its calls that
@@ -1204,7 +1260,14 @@ class Harness:
                     request.session,
                     request.work,
                 )
-                limit = (ModelBudget(chat, tokens=request.tokens, require_cost_limit=renewed),)
+                limit = (
+                    ModelBudget(
+                        chat,
+                        tokens=request.tokens,
+                        require_cost_limit=renewed,
+                        auxiliary_tokens=allowance.additional if allowance else None,
+                    ),
+                )
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
@@ -1227,6 +1290,8 @@ class Harness:
         chat: RunChat | None,
         memory: Snapshot | None,
         stop: asyncio.Event | None,
+        *,
+        allowance: FoldAllowance | None = None,
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
         its project lets its runs delegate (PD-33, PD-35); and a delegated task's own, when
@@ -1278,6 +1343,7 @@ class Harness:
             ),
             depth=depth,
             tokens=request.tokens if depth > 0 else None,
+            auxiliary_tokens=allowance.additional if allowance else None,
             stop_by=request.stop_by,
             stop=stop,
             clock=clock,

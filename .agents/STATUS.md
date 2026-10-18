@@ -21,6 +21,8 @@ Updated 2026-10-18. Current development is local `dev` in `/home/andy/.cache/pt/
 
 ## Verification and deployment boundaries
 
+- Current continuation: child-scoped narrative/overview folding and shared token accounting are under focused test and independent review. A fresh synthetic OpenShell lab is qualifying process loss and sustained Sage computation against baseline `d20e5fe3`; it does not touch the personal or preserved SNOVA services. The previous full-suite totals below predate this in-progress change.
+
 - The source-frozen full Python suite passed: 14,355 tests, 63 prerequisite/opt-in skips and two expected serializer warnings from a deliberately malformed artifact fixture. The initial mixed-source pass and focused repair checks are documented in the acceptance report.
 - The current web suite passes 2,218 tests. Strict Python/Svelte checks, formatting, generated API/protocol checks, repository hygiene, licenses and both web/math builds pass. All 14,418 collected Python tests belong to exactly one tier. The post-build math checker passes all 38 tests, including the nine renderer cases skipped in the broad pre-build pass.
 - No current changes were pushed or deployed into the personal or preserved research services. No paid model call or research continuation was started. The owner stopped the periodic SNOVA monitor; do not recreate it implicitly.
@@ -30,7 +32,7 @@ Updated 2026-10-18. Current development is local `dev` in `/home/andy/.cache/pt/
 
 1. Finish context inspection: live attempts, timestamped usage/fold events, reviewer/fold usage and captured working-view composition; retain precise provenance and missing-data labels.
 2. Qualify autonomous recovery and descendant-history tools in a fresh scoped OpenShell lab, including sustained Sage computation and process loss. Preserve personal services and original research archives.
-3. Implement remaining adaptive resource handling, delegated narrative enrichment and fold-repair diagnostics.
+3. Implement remaining adaptive resource handling. Delegated narrative enrichment is being validated on `dev`; bounded fold-repair diagnostics are committed (`d1e88f59`).
 4. Expand MCP tool schemas/service policy/current observations, then Overview/Memory/session usability. Detailed [backlog](BACKLOG.md) entries distinguish design, code and runtime acceptance.
 
 Earlier lab findings (MCP query matching, PDF extraction quality, scientific reviewer checks, package/image compatibility and long-run job capacity) are historical leads, not a verified current defect inventory. Reproduce against current `dev` before changing behavior. Lockstep component upgrades and the worker boundary still apply.

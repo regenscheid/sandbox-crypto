@@ -581,7 +581,15 @@ class HostLoops:
                             raise TransportError(
                                 "denied", "model dispatch is outside the admitted role"
                             )
-                    elif request.alias not in self.model_roles.get(request.kind, frozenset()):
+                    elif request.alias not in self.model_roles.get(
+                        request.kind, frozenset()
+                    ) and not (
+                        request.kind == "fold"
+                        and prepared is not None
+                        and request.alias == prepared.given.model
+                        and request.role in ("fold", "overview")
+                        and request.profile == pinned.get(request.role)
+                    ):
                         raise TransportError(
                             "denied", "auxiliary model role is outside configuration"
                         )

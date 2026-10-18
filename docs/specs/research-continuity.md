@@ -70,6 +70,7 @@ These describe the baseline used to design the increments below, not the current
 ### Delegated context
 
 - RC-18. Delegated tasks and checks can rebuild a bounded model view from their own archived work. Use the existing archive and fold mechanisms with role-specific views rather than a second summarization implementation. Independent checks retain their context restrictions; folds do not import a parent's verdict or reasoning that the check was not permitted to see.
+  Narrative folds and overviews use the child's admitted fold/overview model profiles and cache scope. Successful, rejected and cancelled summary calls count against the same cumulative child grant as ordinary turns, once per call. Before each summary dispatch (including its retry), leave an estimated report round available; while it is in flight, hold its estimated tokens against the child's next-turn budget. If that room is unavailable, keep the deterministic skeleton without another model call. Unknown prices remain diagnostic and do not alone block admission.
 - RC-19. A folded or resumed view preserves the brief, current constraints, exact-value references, outstanding operations, child relationships and unresolved questions. The model can retrieve original evidence. A context limit produces a resumable pause or a bounded report, not a claim of completion. Continuation remains within the existing scope and resources.
 
 ### Follow-ups included in the review
