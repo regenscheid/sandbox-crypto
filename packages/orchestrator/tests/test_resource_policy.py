@@ -30,9 +30,11 @@ from .test_work_ownership import CHILD, record
 
 def artifact(projects, run=RUN, data=b"new proof", operation="proof"):
     documents = DocumentStore(projects.control.path)
+    run_id = run_id_of(run)
+    assert run_id is not None
     source = ArtifactPublicationSource(
         context=CONTEXT,
-        run_id=run_id_of(run),
+        run_id=run_id,
         tool_call=operation,
         alias="fixture",
         model="fixture",
@@ -256,7 +258,9 @@ async def test_root_turn_renewal_reaches_loop_without_extra_closing_call(project
     )
     assert result.stopped == "answered"
     assert result.turns == 7
-    assert store.page("p", "s").requests[0].decision.total == 305
+    decision = store.page("p", "s").requests[0].decision
+    assert decision is not None
+    assert decision.total == 305
 
 
 def test_old_session_evidence_does_not_enable_a_new_root_renewal(projects):

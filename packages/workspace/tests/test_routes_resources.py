@@ -148,6 +148,7 @@ async def test_user_soft_extension_is_scoped_origin_checked_and_never_resumes(
         with store.control.write() as tx:
             tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (CHILD,))
         owner = works.owner("p1", "a", CHILD)
+        assert owner is not None
         warning = ResourceRequests(store.control).observe(
             owner, "turns", used=300, total=300, revision=0
         )
