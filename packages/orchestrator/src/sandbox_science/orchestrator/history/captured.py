@@ -22,6 +22,7 @@ class CapturedCall(Contract):
     kind: str
     alias: str
     captured: bool
+    omitted: str | None = None
 
 
 class CapturedCalls(Contract):
@@ -82,7 +83,9 @@ class CapturedContexts:
             rows = tx.sql.execute(
                 "SELECT rowid,identity,run,created,kind,alias,EXISTS(SELECT 1 FROM context_parts p "  # noqa: S608 - fixed scope
                 "WHERE p.project=m.project AND p.session=m.session "
-                "AND p.run=m.run AND p.identity=m.identity) "
+                "AND p.run=m.run AND p.identity=m.identity), "
+                "(SELECT omitted FROM context_captures d WHERE d.project=m.project "
+                "AND d.session=m.session AND d.run=m.run AND d.identity=m.identity) "
                 "FROM research_model_calls m WHERE project=? AND session=? AND "
                 f"{scope} AND (?=0 OR rowid<?) ORDER BY rowid DESC LIMIT ?",
                 (project, session, *args, before, before, limit + 1),
@@ -96,6 +99,7 @@ class CapturedContexts:
                 kind=r[4],
                 alias=r[5],
                 captured=bool(r[6]),
+                omitted=r[7],
             )
             for r in rows[:limit]
         )
@@ -163,6 +167,8 @@ class CapturedContexts:
                 ) from None
             raw = raw[: error.start]
             decoded = raw.decode("utf-8")
+        if not raw and offset < row[1]:
+            raise DocumentError("invalid_request", "text chunk is too small for the next character")
         end = offset + len(raw)
         return ContextText(
             text=decoded,

@@ -6,6 +6,12 @@ from sandbox_science.orchestrator.control.migrations import Schema
 
 def create(schema: Schema) -> None:
     for statement in (
+        """CREATE TABLE context_captures (
+            project TEXT NOT NULL, session TEXT NOT NULL, run TEXT NOT NULL,
+            identity TEXT NOT NULL, omitted TEXT,
+            PRIMARY KEY(project,session,run,identity),
+            FOREIGN KEY(project,session,run,identity)
+                REFERENCES research_model_calls(project,session,run,identity)) STRICT""",
         """CREATE TABLE context_bodies (
             project TEXT NOT NULL, sha256 TEXT NOT NULL, text TEXT NOT NULL, bytes INTEGER NOT NULL,
             PRIMARY KEY(project,sha256)) STRICT""",
@@ -33,7 +39,7 @@ def create(schema: Schema) -> None:
             FOREIGN KEY(project,message) REFERENCES archive_messages(project,message_id)) STRICT""",
     ):
         schema.execute(statement)
-    for table in ("context_parts", "context_bodies"):
+    for table in ("context_captures", "context_parts", "context_bodies"):
         for action in ("UPDATE", "DELETE"):
             schema.execute(
                 f"CREATE TRIGGER {table}_no_{action.lower()} BEFORE {action} ON {table} "

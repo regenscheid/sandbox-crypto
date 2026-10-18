@@ -233,3 +233,9 @@ of 64 KiB, with 127-character overlap so every allowed 128-character substring
 can cross a boundary. NUL-normalized text supplies index candidates only; exact
 original text verification prevents false matches. The dedicated index never
 changes the agent-facing search exclusions or retrieval authorization.
+
+Diagnostic capture is capped at 8 MiB **after JSON serialization**, below the
+confined transport's frame bound. A larger valid model request still dispatches:
+its intent receives an immutable omission receipt explaining the size limit,
+with no partial capture presented as complete. This diagnostic limit does not
+change model admission, the working-context budget or archival evidence.

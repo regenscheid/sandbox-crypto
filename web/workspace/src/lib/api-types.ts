@@ -98,6 +98,7 @@ export interface CapturedCall {
   kind: string;
   alias: string;
   captured: boolean;
+  omitted: string | null;
 }
 
 export interface CapturedCalls {

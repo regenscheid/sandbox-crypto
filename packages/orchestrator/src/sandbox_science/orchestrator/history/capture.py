@@ -21,6 +21,8 @@ from sandbox_science.contracts import Contract
 from sandbox_science.orchestrator.model import AssistantMessage, Message, ToolSpec
 from sandbox_science.orchestrator.prompts import PromptPins, schema_json
 
+MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+
 _PINS: ContextVar[PromptPins | None] = ContextVar("capture_prompt_pins", default=None)
 
 
@@ -59,12 +61,15 @@ class CapturedPart(Contract):
 
 
 class CapturedRequest(Contract):
-    parts: tuple[CapturedPart, ...] = Field(max_length=65536)
+    parts: tuple[CapturedPart, ...] = Field(default=(), max_length=65536)
+    omitted: str | None = Field(default=None, max_length=256)
 
     @model_validator(mode="after")
     def bounded(self) -> CapturedRequest:
-        if sum(len(part.text.encode("utf-8")) for part in self.parts) > 16 * 1024 * 1024:
-            raise ValueError("captured visible request exceeds 16 MiB")
+        if self.omitted is not None and self.parts:
+            raise ValueError("an omitted capture cannot contain partial request text")
+        if len(self.model_dump_json().encode()) > MAX_CAPTURE_BYTES:
+            raise ValueError("serialized capture exceeds 8 MiB")
         return self
 
 
@@ -118,6 +123,16 @@ def request(messages: Sequence[Message], tools: Sequence[ToolSpec]) -> CapturedR
             )
         )
     parts.append(CapturedPart(kind="tool_schemas", role="tools", text=schema_json(tools).decode()))
+    # The diagnostic must not prevent a valid model dispatch, nor exceed the
+    # confined channel's 24-MiB frame once JSON strings are escaped again.
+    size = 32
+    for part in parts:
+        size += len(part.model_dump_json().encode()) + 1
+        if size > MAX_CAPTURE_BYTES - 1024 or len(parts) > 65536:
+            return CapturedRequest(
+                omitted="Visible request exceeds the 8 MiB serialized diagnostic capture limit; "
+                "model dispatch proceeds without a text capture."
+            )
     return CapturedRequest(parts=tuple(parts))
 
 
@@ -126,6 +141,10 @@ def save(
 ) -> None:
     """Join the admitted intent's transaction: no capture can outlive a refused intent."""
     project, session, run = scope
+    db.execute(
+        "INSERT INTO context_captures VALUES(?,?,?,?,?)",
+        (project, session, run, identity, value.omitted),
+    )
     for ordinal, part in enumerate(value.parts):
         data = part.text.encode("utf-8")
         digest = hashlib.sha256(data).hexdigest()

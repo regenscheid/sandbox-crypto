@@ -166,3 +166,36 @@ def test_captured_text_chunks_preserve_unicode_and_nul_and_refuse_middle_byte(pr
     assert second.total == len(original.encode())
     with pytest.raises(DocumentError):
         reader.text("p", "s", RUN, identity, 0, offset=1)
+
+
+@pytest.mark.parametrize("text", ["x" * (9 * 1024 * 1024), "\x00" * (2 * 1024 * 1024)])
+async def test_oversized_diagnostic_does_not_stop_a_valid_dispatch(projects, text):
+    owner = WorkRecords(projects.control).admit("p", "s", RUN)
+    messages = [{"role": "user", "content": text}]
+    model = ScriptedModel([ModelTurn("Still dispatched")])
+    reply = await IntentModel(model, ModelIntents(projects.control), owner, "fixture").complete(
+        messages, []
+    )
+    assert reply.text == "Still dispatched"
+    contexts = CapturedContexts(projects.control)
+    call = contexts.calls("p", "s", RUN).calls[0]
+    assert not call.captured
+    assert "8 MiB" in call.omitted
+    assert contexts.parts("p", "s", RUN, call.identity).parts == ()
+    projects.control.close()
+    assert contexts.calls("p", "s", RUN).calls[0].omitted == call.omitted
+
+
+def test_too_small_unicode_chunk_is_refused_instead_of_stalling_cursor(projects):
+    from sandbox_science.orchestrator.documents import DocumentError
+    from sandbox_science.orchestrator.history.capture import CapturedPart, CapturedRequest
+
+    owner = WorkRecords(projects.control).admit("p", "s", RUN)
+    value = CapturedRequest(
+        parts=(CapturedPart(role="system", kind="system_section", text="\u03b1"),)
+    )
+    identity = ModelIntents(projects.control).begin(
+        owner, kind="main", alias="fixture", captured=value
+    )
+    with pytest.raises(DocumentError, match="too small"):
+        CapturedContexts(projects.control).text("p", "s", RUN, identity, 0, limit=1)
