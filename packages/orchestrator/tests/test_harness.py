@@ -52,6 +52,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.harness import describe_isolation, save, tier_in_effect
 from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.jobs import JobTools
@@ -287,8 +288,8 @@ async def test_an_unreachable_worker_runs_nothing(tmp_path: Path) -> None:
         toolbox = Toolbox(unreachable, CONTEXT)
         script = [{"tool_calls": [{"name": "shell", "arguments": {"script": f"touch {sentinel}"}}]}]
         (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls
-        outcome = json.loads((await toolbox.call(call, "op-x")).text)
-    assert outcome["error"]["kind"] == "unavailable"
+        with pytest.raises(UnknownEffectError, match="worker_unknown_effect"):
+            await toolbox.call(call, "op-x")
     assert not sentinel.exists()
 
 
