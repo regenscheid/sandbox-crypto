@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 
-from sandbox_science.contracts import ErrorKind, ReadFileRequest, WriteFileRequest
+from sandbox_science.contracts import ErrorKind, PublishRequest, ReadFileRequest, WriteFileRequest
 from sandbox_science.contracts.artifact_inventory import ArtifactRevision
 from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import recording as recording_module
@@ -334,7 +334,7 @@ async def test_files_recorded_before_a_failure_stay(
     async def broken(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("the store went away")
 
-    monkeypatch.setattr(recording.toolbox.artifacts, "record_deletion", broken)
+    monkeypatch.setattr(recording.toolbox.artifacts, "finish_execution_deletion", broken)
     outcome = await recording.shell("echo b > new.txt && rm old.txt")
     report = outcome.record["recorded_files"]
     assert report["recorded"] == 1
@@ -436,8 +436,8 @@ async def test_later_run_cannot_recapture_unfinished_execution(recording: Record
             same_execution, "rec-unfinished", "job-output.txt"
         )
         assert receipt is not None
-        assert receipt.state == "held"
-        assert "will not be recaptured" in receipt.message
+        assert receipt.receipt.state == "held"
+        assert "will not be recaptured" in receipt.receipt.message
     finally:
         await later.aclose()
 
@@ -489,6 +489,274 @@ async def test_later_observer_recovers_capture_that_won_the_reservation_race(
     assert report["recorded"] == 1
     assert again.files[0]["reproduced"] is True
     assert recording.heads()["sessions/s1/job-race.txt"].reference.revision == 1
+
+
+async def test_later_run_reuses_metadata_before_reading_changed_file(recording: Recording) -> None:
+    recording.inventory.limits = ArtifactLimits(artifact_bytes=4)
+    client = recording.toolbox.client
+    jobs = JobTools(client, CONTEXT, run_id="run1")
+    jobs.recorder = recording.recorder
+    await jobs.start(
+        {
+            "script": "echo original > oversized.txt",
+            "purpose": "write file",
+            "expected_progress": "none",
+        },
+        "op-metadata",
+    )
+    (job,) = (await client.jobs(CONTEXT, limit=10)).jobs
+
+    async def ended() -> bool:
+        return (await client.get(job.execution_id, project_id="p1")).state in TERMINAL_STATES
+
+    await eventually(ended, timeout=30)
+    (notice,) = await jobs.notices()
+    assert cast(dict[str, Any], notice["recorded_files"])["without_content"] == 1
+    original = recording.heads()["sessions/s1/oversized.txt"].reference
+    recording.inventory.limits = ArtifactLimits(artifact_bytes=1024)
+    await recording.shell("echo changed > oversized.txt")
+    changed = recording.heads()["sessions/s1/oversized.txt"].reference
+    assert changed != original
+
+    publisher = ArtifactPublisher(recording.inventory, client, CONTEXT, run_id="run2")
+    later = FileRecorder(publisher, recording.files, role="main")
+    try:
+        execution = await client.get(job.execution_id, project_id="p1")
+        replay = await later.record(
+            Written.of(execution), tool_call=execution.operation_id, model=None
+        )
+    finally:
+        await publisher.aclose()
+    assert replay.files[0]["revision"] == original.revision
+    assert replay.files[0]["reproduced"] is True
+    assert replay.files[0]["content_retained"] is False
+    assert recording.heads()["sessions/s1/oversized.txt"].reference == changed
+
+
+async def test_later_run_reuses_deletion_before_tombstoning_recreated_file(
+    recording: Recording,
+) -> None:
+    await recording.shell("echo original > recreated.txt")
+    client = recording.toolbox.client
+    jobs = JobTools(client, CONTEXT, run_id="run1")
+    jobs.recorder = recording.recorder
+    await jobs.start(
+        {"script": "rm recreated.txt", "purpose": "delete file", "expected_progress": "none"},
+        "op-deletion",
+    )
+    (job,) = (await client.jobs(CONTEXT, limit=10)).jobs
+
+    async def ended() -> bool:
+        return (await client.get(job.execution_id, project_id="p1")).state in TERMINAL_STATES
+
+    await eventually(ended, timeout=30)
+    (notice,) = await jobs.notices()
+    assert cast(dict[str, Any], notice["recorded_files"])["deleted"] == 1
+    tombstone = recording.heads()["sessions/s1/recreated.txt"].reference
+    await recording.shell("echo new > recreated.txt")
+    recreated = recording.heads()["sessions/s1/recreated.txt"].reference
+    assert recreated != tombstone
+
+    publisher = ArtifactPublisher(recording.inventory, client, CONTEXT, run_id="run2")
+    later = FileRecorder(publisher, recording.files, role="main")
+    try:
+        execution = await client.get(job.execution_id, project_id="p1")
+        replay = await later.record(
+            Written.of(execution), tool_call=execution.operation_id, model=None
+        )
+    finally:
+        await publisher.aclose()
+    assert replay.files[0]["revision"] == tombstone.revision
+    assert replay.files[0]["deleted"] is True
+    assert recording.heads()["sessions/s1/recreated.txt"].reference == recreated
+
+
+async def test_metadata_race_reuses_first_observers_receipt(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await recording.shell("echo original > raced-metadata.txt")
+    path = "raced-metadata.txt"
+    client = recording.toolbox.client
+    first = recording.recorder
+    publisher = ArtifactPublisher(recording.inventory, client, CONTEXT, run_id="run2")
+    second = FileRecorder(publisher, recording.files, role="main")
+    attribution = {
+        "kind": "execution_record",
+        "execution_id": "exec-race",
+        "attempt_state": "succeeded",
+    }
+    original = first.publisher.source("call-race", **attribution)
+    later = publisher.source("call-race", **attribution)
+    begin = publisher.begin_execution_record
+
+    async def after_first_observer(*args: Any, **kwargs: Any) -> Any:
+        await first._metadata(original, "exec-race", path, "quota")
+        return await begin(*args, **kwargs)
+
+    monkeypatch.setattr(publisher, "begin_execution_record", after_first_observer)
+    try:
+        entry = await second._metadata(later, "exec-race", path, "quota")
+    finally:
+        await publisher.aclose()
+    assert entry is not None
+    assert entry["reproduced"] is True
+    assert entry["content_retained"] is False
+    assert recording.heads()["sessions/s1/raced-metadata.txt"].reference.revision == 1
+
+
+async def test_deletion_race_reuses_first_observers_tombstone(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await recording.shell("echo original > raced-delete.txt")
+    path = "raced-delete.txt"
+    client = recording.toolbox.client
+    first = recording.recorder
+    publisher = ArtifactPublisher(recording.inventory, client, CONTEXT, run_id="run2")
+    second = FileRecorder(publisher, recording.files, role="main")
+    attribution = {
+        "kind": "execution_record",
+        "execution_id": "exec-delete",
+        "attempt_state": "succeeded",
+    }
+    original = first.publisher.source("call-delete", **attribution)
+    later = publisher.source("call-delete", **attribution)
+    begin = publisher.begin_execution_record
+
+    async def after_first_observer(*args: Any, **kwargs: Any) -> Any:
+        await first._deletion(original, "exec-delete", path)
+        return await begin(*args, **kwargs)
+
+    monkeypatch.setattr(publisher, "begin_execution_record", after_first_observer)
+    try:
+        entry = await second._deletion(later, "exec-delete", path)
+    finally:
+        await publisher.aclose()
+    assert entry is not None
+    assert entry["reproduced"] is True
+    assert entry["deleted"] is True
+    assert recording.heads()["sessions/s1/raced-delete.txt"].reference.revision == 2
+
+
+async def test_metadata_reproduction_stays_hash_only_when_head_retains_bytes(
+    recording: Recording,
+) -> None:
+    await recording.shell("echo original > hash-only.txt")
+    first = recording.recorder
+    source = first.publisher.source(
+        "call-hash", kind="execution_record", execution_id="exec-hash", attempt_state="succeeded"
+    )
+    entry = await first._metadata(source, "exec-hash", "hash-only.txt", "quota")
+    assert entry is not None
+    assert entry["content_retained"] is False
+    publisher = ArtifactPublisher(
+        recording.inventory, recording.toolbox.client, CONTEXT, run_id="run2"
+    )
+    try:
+        later = publisher.source(
+            "call-hash",
+            kind="execution_record",
+            execution_id="exec-hash",
+            attempt_state="succeeded",
+        )
+        replay = await publisher.prior_execution(
+            first._content_operation("exec-hash", "hash-only.txt"), "hash-only.txt", later
+        )
+    finally:
+        await publisher.aclose()
+    assert replay is not None
+    assert replay.content_retained is False
+    assert replay.receipt.reproduced is True
+
+
+async def test_execution_record_needs_operation_room(recording: Recording) -> None:
+    await recording.shell("echo original > operation-room.txt")
+    recording.inventory.limits = ArtifactLimits(project_operations=1)
+    assert recording.inventory.room("p1", 1, requires_operation=True) == "full"
+
+
+async def test_pinned_transfer_finishes_at_operation_cap(recording: Recording) -> None:
+    client = recording.toolbox.client
+    jobs = JobTools(client, CONTEXT, run_id="run1")
+    await jobs.start(
+        {
+            "script": "echo pinned > pinned.txt",
+            "purpose": "write file",
+            "expected_progress": "none",
+        },
+        "op-pinned",
+    )
+    (job,) = (await client.jobs(CONTEXT, limit=10)).jobs
+
+    async def ended() -> bool:
+        return (await client.get(job.execution_id, project_id="p1")).state in TERMINAL_STATES
+
+    await eventually(ended, timeout=30)
+    execution = await client.get(job.execution_id, project_id="p1")
+    source = recording.recorder.publisher.source(
+        execution.operation_id,
+        kind="execution_record",
+        role="delegated",
+        parent_run="20261014T120000000000Z-root",
+        delegation="dlg-1",
+        execution_id=execution.execution_id,
+        attempt_state="succeeded",
+    )
+    operation = recording.recorder._content_operation(execution.execution_id, "pinned.txt")
+    recording.inventory.begin(source, operation, "pinned.txt", None)
+    worker = await client.publish_snapshot(PublishRequest(context=CONTEXT, path="pinned.txt"))
+    recording.inventory.pin(source, operation, "pinned.txt", None, worker)
+    recording.inventory.limits = ArtifactLimits(project_operations=1)
+    recorded = await recording.recorder.record(
+        Written.of(execution), tool_call=execution.operation_id, model=None
+    )
+    report = recorded.summary()
+    assert report is not None
+    assert report["recorded"] == 1
+    assert recording.heads()["sessions/s1/pinned.txt"].reference.sha256 == worker.sha256
+
+
+async def test_replayed_bytes_reduce_remaining_capture_budget(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(recording_module, "MAX_BYTES", 10)
+    client = recording.toolbox.client
+    jobs = JobTools(client, CONTEXT, run_id="run1")
+    await jobs.start(
+        {
+            "script": "printf 123456 > a-budget.txt; printf 123456 > b-budget.txt",
+            "purpose": "write two files",
+            "expected_progress": "none",
+        },
+        "op-two-files",
+    )
+    (job,) = (await client.jobs(CONTEXT, limit=10)).jobs
+
+    async def ended() -> bool:
+        return (await client.get(job.execution_id, project_id="p1")).state in TERMINAL_STATES
+
+    await eventually(ended, timeout=30)
+    execution = await client.get(job.execution_id, project_id="p1")
+    real_sizes = recording.recorder._sizes
+
+    async def first_listing(paths: Sequence[str]) -> tuple[dict[str, int], dict[str, str]]:
+        sizes, gaps = await real_sizes(paths)
+        sizes.pop("b-budget.txt", None)
+        gaps["b-budget.txt"] = "listing unavailable"
+        return sizes, gaps
+
+    monkeypatch.setattr(recording.recorder, "_sizes", first_listing)
+    first = await recording.recorder.record(
+        Written.of(execution), tool_call=execution.operation_id, model=None
+    )
+    assert len(first.files) == 1
+    monkeypatch.setattr(recording.recorder, "_sizes", real_sizes)
+    second = await recording.recorder.record(
+        Written.of(execution), tool_call=execution.operation_id, model=None
+    )
+    assert [(entry["path"], entry["content_retained"]) for entry in second.files] == [
+        ("a-budget.txt", True),
+        ("b-budget.txt", False),
+    ]
 
 
 async def test_code_reaches_the_shared_area_the_file_tools_name(recording: Recording) -> None:
