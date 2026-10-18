@@ -45,3 +45,27 @@ record prevents launcher restarts from resetting a failure loop. Automatic root
 Resume admits interrupted work only under that policy, honors Stop and token/cost
 gates, and reconciles supported original operations before dispatch. Unsupported
 unknown effects remain visible rather than replayed.
+
+## Intermediate verification
+
+Signed product increments now include policy-bounded time/storage/root renewal,
+actual dispatch capture and indexed original history, MCP structural schemas and
+explicit availability checks, and Memory/Overview/session refinements. Independent
+review found and corrected: huge JSON schema integer handling, partial HTTP-body
+parsing, missing local-draft durability warnings, oversized diagnostic capture
+blocking model dispatch, and a nonadvancing UTF-8 chunk edge. Bounded blob reads
+are receiving a further fix after review found whole-field materialization.
+
+Approved root/child time and storage pauses now qualify for automatic original-tree
+Resume (four public-API regressions; combined 39 tests pass). Original committed
+resource-decision receipts reconcile by exact identity and request without replay.
+Its author suite has 86 passing focused tests; integration and peer recheck remain.
+
+The frozen infrastructure runtime at `9de21637`, image `9b957d6f`, has passed
+automatic worker restart, agent-VM replacement and host-process-loss root Resume
+while one genuine 3600-second Sage job continues under its original operation.
+The host probe exposed a fixture race: systemd had not unloaded the killed
+transient unit when the new start was requested. That start was explicitly refused,
+then admitted once after verified `LoadState=not-found`; no research request was
+reposted. Helper `5da1a6c6` waits for collection. Final Sage verification, evidence
+manifest and complete owned teardown remain required. No paid calls yet.
