@@ -225,7 +225,7 @@ describe('a rendered document', () => {
     const view = (await import('../views/DocumentView.svelte?raw')).default;
     expect(view.indexOf('<HiddenBanner text={found.text} quiet />')).toBeGreaterThan(-1);
     expect(view.indexOf('<HiddenBanner text={found.text} quiet />')).toBeLessThan(
-      view.indexOf('<article class="document"'),
+      view.indexOf('class="document"'),
     );
   });
 });

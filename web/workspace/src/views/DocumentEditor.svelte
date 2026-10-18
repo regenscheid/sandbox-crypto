@@ -22,11 +22,13 @@
     found,
     refreshed,
     compact = false,
+    requestedEdit = null,
   }: {
     projectId: string;
     found: DocumentRevision;
     refreshed: () => void;
     compact?: boolean;
+    requestedEdit?: { block: string } | null;
   } = $props();
   const id = $derived(found.document.document_id);
   const scope = $derived(`${projectId}:${id}`);
@@ -41,12 +43,22 @@
   let block = $state<string | null>(restored?.block ?? null);
   let retained = $state(restored?.retained ?? '');
   let selected = $state(initial.blocks[0]?.id ?? '');
+  let moreActions = $state(false);
+  const blockLabel = (item: DocumentRevision['blocks'][number]) => {
+    const excerpt = (item.source ?? '').replace(/\s+/g, ' ').trim().slice(0, 42);
+    return `${item.id} · ${item.kind}${excerpt ? ` · ${excerpt}` : ''}`;
+  };
+  $effect(() => {
+    if (requestedEdit && found.blocks.some((item) => item.id === requestedEdit.block)) {
+      selected = requestedEdit.block;
+      moreActions = true;
+    }
+  });
   let busy = $state(false);
   let error = $state<unknown>(null);
   let result = $state<DocumentChange | null>(null);
   let current = $state<DocumentRevision | null>(null);
   let persisted = $state(true);
-  let moreActions = $state(false);
   let projectName = $state(initial.document.name);
   /** The move or restore the user is asked to confirm, with the text it adopts shown. */
   let confirming = $state<{ action: 'promote' | 'revert'; before: string | null } | null>(null);
@@ -159,7 +171,7 @@
         <label
           >Block <select bind:value={selected}
             >{#each found.blocks as item (item.id)}<option value={item.id}
-                >{item.id} · {item.kind}</option
+                >{blockLabel(item)}</option
               >{/each}</select
           ></label
         >
@@ -250,10 +262,7 @@
 
 <style>
   .editor {
-    margin: 1.5rem 0;
-    padding: 1rem;
-    border: 1px solid var(--border, #9996);
-    border-radius: 0.4rem;
+    margin: 0;
   }
   label {
     display: block;
@@ -264,6 +273,14 @@
     width: 100%;
     font-family: monospace;
     box-sizing: border-box;
+  }
+  select,
+  input {
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  select {
+    width: 100%;
   }
   pre {
     white-space: pre-wrap;
