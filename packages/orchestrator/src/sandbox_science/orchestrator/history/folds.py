@@ -59,7 +59,7 @@ import contextlib
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, MutableSequence, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from itertools import accumulate, chain
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -73,7 +73,7 @@ from sandbox_science.orchestrator.worker_client import dump
 
 from .archive import Archive, Archived, Entry, escape
 from .collections import Collection
-from .enrich import Enriched, enrich
+from .enrich import Enriched, EnrichmentProgress, enrich
 from .geometry import Geometry, geometry
 from .log import PATIENCE, patiently
 from .markers import Judge
@@ -123,8 +123,8 @@ class _Running:
     done: Enriched | None = None
     saving: asyncio.Task[None] | None = None
     kept: tuple[Archived, FoldRecord] | None = None
-    asked: int = 0
-    """The tokens each enrichment call is sent, estimated: what a cancelled call counts."""
+    progress: EnrichmentProgress = field(default_factory=EnrichmentProgress)
+    """Only an actual in-flight enrichment call can need a cancellation estimate."""
     parts: tuple[tuple[str, FoldRecord], ...] = ()
     """A merge's parts, oldest first; its ``record`` is the overview as code built it."""
 
@@ -277,6 +277,7 @@ class Folder(TurnHook):
                 running.task.cancel()
                 with contextlib.suppress(BaseException):
                     await running.task
+                self._count_cancelled(running)
                 if running.saving is not None:  # a ready fold is kept (CM-24a)
                     with contextlib.suppress(BaseException):
                         await running.saving
@@ -439,7 +440,8 @@ class Folder(TurnHook):
         record, rows = found
         per_token = self.per_token(transcript)
         running = _Running(record, tuple(rows))
-        running.asked = before = self.tokens(transcript)
+        before = self.tokens(transcript)
+        running.progress.baseline_input_tokens = before
         running.task = asyncio.create_task(
             self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
         )
@@ -555,6 +557,7 @@ class Folder(TurnHook):
                 shown=shown,
                 admit=self.admit,
                 release=self.release,
+                progress=running.progress,
             )
             if parts and (why := verify(running.done.record, [r for _, r in parts])) is not None:
                 attempts = running.done.attempts
@@ -617,11 +620,11 @@ class Folder(TurnHook):
             if task is not None:
                 with contextlib.suppress(BaseException):
                     await task
+        self._count_cancelled(running)
         if running.kept is not None:
             await self._applied(transcript, before, running.kept, running.rows, running.done)
             return
         if running.done is None:
-            self.spent.append(_cancelled(running))
             done = Enriched(running.record, (), "it was not ready")
         else:
             done = replace(
@@ -826,7 +829,8 @@ class Folder(TurnHook):
             run=self.run if self.parent is not None else None,
         )
         running = _Running(record, tuple(rows), parts=tuple(due))
-        running.asked = before = self.tokens(transcript)
+        before = self.tokens(transcript)
+        running.progress.baseline_input_tokens = before
         running.task = asyncio.create_task(
             self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
         )
@@ -899,8 +903,8 @@ class Folder(TurnHook):
         running = self.running
         if running is not None and running.task is not None and running.kept is None:
             running.task.cancel()  # the run ended: so does its fold (CM-24a)
-            if running.done is None:  # a call was in flight; those returned are counted
-                self.spent.append(_cancelled(running))
+            if running.task.done():
+                self._count_cancelled(running)
         if self.geometry is None:
             return None
         found: Json = {
@@ -924,12 +928,19 @@ class Folder(TurnHook):
             found |= {"stopped": self.stopped, "detail": self.detail}
         return found
 
+    def _count_cancelled(self, running: _Running) -> None:
+        """Count a stopped dispatch once; admission and answer validation do not count."""
+        progress = running.progress
+        if progress.inflight_input_tokens is not None and not progress.counted:
+            self.spent.append(_cancelled(progress.inflight_input_tokens))
+            progress.counted = True
 
-def _cancelled(running: _Running) -> Json:
+
+def _cancelled(input_tokens: int) -> Json:
     """The usage of an enrichment call cancelled before it returned, which the gateway
     never reported: its input estimated, as the view it was sent, and so marked (RS-6a);
     its cost unknown."""
-    return {"cancelled": True, "estimated": True, "input_tokens": running.asked, "cost": None}
+    return {"cancelled": True, "estimated": True, "input_tokens": input_tokens, "cost": None}
 
 
 def span(units: Sequence[Unit], shape: Geometry, per_token: float) -> int:

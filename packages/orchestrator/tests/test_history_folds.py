@@ -9,6 +9,7 @@ the archive's own API."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
@@ -1368,9 +1369,11 @@ async def wall_run(archive: Archive, model: object) -> tuple[Folder, Transcript,
 async def test_an_enrichment_that_fails_unexpectedly_folds_skeleton_only(archive: Archive) -> None:
     """#461's review, M2: an error no check expects in the enrichment leaves the fold
     skeleton-only, never lost."""
-    _, _, events = await wall_run(archive, Failing())
+    made, _, events = await wall_run(archive, Failing())
     assert events[-1]["state"] == "skeleton_only"
     assert events[-1]["reason"] == "skeleton-only: it failed (RuntimeError)"
+    assert len(made.spent) == 1
+    assert made.spent[0]["estimated"] is True
 
 
 async def test_each_enrichment_call_counts_as_it_returns(archive: Archive) -> None:
@@ -1381,6 +1384,86 @@ async def test_each_enrichment_call_counts_as_it_returns(archive: Archive) -> No
     first, cancelled = made.spent
     assert (first["input_tokens"], first["cost"]) == (50_000, 0.01)
     assert (cancelled["cancelled"], cancelled["estimated"]) == (True, True)
+
+
+@pytest.mark.parametrize("stage", ["admission", "dispatch"])
+async def test_run_end_counts_only_a_dispatched_fold_once(archive: Archive, stage: str) -> None:
+    """Ending during admission has no paid call; ending during complete has one
+    estimated receipt, even when the summary is read repeatedly."""
+    for n in range(36):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    entered = asyncio.Event()
+
+    class Waiting:
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            if stage == "dispatch":
+                entered.set()
+            await asyncio.sleep(3600)
+
+    async def admit(messages: Sequence[Message], tools: Sequence[ToolSpec]) -> bool:
+        if stage == "admission":
+            entered.set()
+            await asyncio.sleep(3600)
+        return True
+
+    made = Folder(
+        archive,
+        CONTEXT,
+        run="r",
+        view=view,
+        start=start,
+        ceiling=48_000,
+        chunk=10_000,
+        model=cast(Any, Waiting()),
+        admit=admit,
+    )
+    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    async with made.lease():
+        assert await made.before_call(transcript)
+        await asyncio.wait_for(entered.wait(), 1)
+        made.summary()
+        made.summary()
+    summary = cast(Json, made.summary())
+    made.summary()
+    if stage == "admission":
+        assert summary["calls"] == []
+    else:
+        assert len(summary["calls"]) == 1
+        assert summary["calls"][0]["cancelled"] is True
+        assert summary["calls"][0]["estimated"] is True
+        assert summary["calls"][0]["input_tokens"] > 30_000
+    assert len(made.spent) == len(summary["calls"])
+
+
+async def test_fold_response_cancelled_during_validation_has_no_input_estimate(
+    archive: Archive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The returned call's usage owns it, including if validation is interrupted."""
+    from sandbox_science.orchestrator.history.enrich import EnrichmentProgress, enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "A supported result remains open.")
+    entered = asyncio.Event()
+
+    async def waiting_check(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr("sandbox_science.orchestrator.history.enrich.threaded", waiting_check)
+    model = ScriptedModel([ModelTurn(answer_with("A supported result remains open."))])
+    progress = EnrichmentProgress()
+    spent: list[ModelUsage] = []
+    task = asyncio.create_task(
+        enrich(model, (), (), record, rows, share=4000, spent=spent.append, progress=progress)
+    )
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert progress.inflight_input_tokens is None
+    assert len(spent) == 1
 
 
 # The re-check of #461.

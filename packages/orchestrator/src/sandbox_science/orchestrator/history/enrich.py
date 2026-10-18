@@ -48,6 +48,8 @@ from sandbox_science.orchestrator.model import (
 )
 from sandbox_science.orchestrator.notices import FOLD_ENRICH, Framing
 from sandbox_science.orchestrator.projects import ModelUsage
+from sandbox_science.orchestrator.prompts import schema_json
+from sandbox_science.orchestrator.worker_client import dump
 
 from .archive import Archived, escape
 from .record import FoldRecord, flat, guarded
@@ -82,6 +84,20 @@ class Enriched:
     """What the fold's proposals came to once checked: kept, dropped and refused."""
     attempts: tuple[Json, ...] = ()
     """At most two bounded outcomes; never the model's answer, prompt or error text."""
+
+
+@dataclass
+class EnrichmentProgress:
+    """Only the current complete call can need an estimated cancellation receipt.
+
+    ``inflight_input_tokens`` is a local request-size estimate, never provider usage.
+    The owner records it at most once after the task has actually stopped.
+    """
+
+    baseline_input_tokens: int | None = None
+    """The owner's already measured view size, avoiding another large serialization."""
+    inflight_input_tokens: int | None = None
+    counted: bool = False
 
 
 @dataclass(frozen=True)
@@ -176,6 +192,7 @@ async def enrich(
     shown: str | None = None,
     admit: Callable[[Sequence[Message], Sequence[ToolSpec]], Awaitable[bool]] | None = None,
     release: Callable[[], None] | None = None,
+    progress: EnrichmentProgress | None = None,
 ) -> Enriched:
     """``record``, the span ``rows``'s as code built it, enriched by ``model`` after the
     run's ``view``, within ``share`` characters without its markers (CM-19, CM-20);
@@ -204,15 +221,27 @@ async def enrich(
                 attempts=tuple(attempts),
             )
         try:
+            if progress is not None:
+                # Set only after admission, immediately before the dispatch. Do not
+                # retain it while validating a returned answer or awaiting admission.
+                if progress.baseline_input_tokens is not None:
+                    progress.inflight_input_tokens = progress.baseline_input_tokens
+                else:
+                    request_chars = len(dump(messages)) + len(schema_json(specs).decode("utf-8"))
+                    progress.inflight_input_tokens = max(1, request_chars // 4)
             try:
                 turn = await caller.complete(messages, specs)
             except ModelError as error:
+                if progress is not None:
+                    progress.inflight_input_tokens = None  # the existing receipt owns this call
                 calls.append(ModelUsage(cost=error.cost, intent_id=error.intent_id))
                 if spent is not None:
                     spent(calls[-1])
                 failed.append(f"the call failed ({type(error).__name__})")
                 attempts.append({"attempt": attempt + 1, "outcome": "model_error"})
                 continue
+            if progress is not None:
+                progress.inflight_input_tokens = None  # a response, even if validation fails
             calls.append(_usage(turn))
             if spent is not None:
                 spent(calls[-1])
