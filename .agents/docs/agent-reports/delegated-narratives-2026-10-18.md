@@ -50,8 +50,11 @@ assembly, reaches a narrative fold on the child alias and excludes the root's
 private reasoning. Python type checking passes. Source-frozen `d6d37c70` passed
 14,380 Python tests with 50 prerequisite/opt-in skips and two existing warnings from
 the deliberately malformed artifact-size fixture. The final 164 focused lifecycle tests, full Ruff checks and Pyright pass at
-`84bb0a4e`. A second source-frozen broad suite is running because final summary
-capture moved across the shared loop lifecycle boundary.
+`84bb0a4e`. The second source-frozen broad suite also passed: 14,390 tests, 50
+prerequisite/opt-in skips, with the same two malformed-fixture warnings. This
+rerun covered the move of final summary capture across the shared loop lifecycle
+boundary. Tier assignment, repository hygiene, installed licenses and generated
+protocol checks pass. No web source or public API shapes changed.
 
 A separate synthetic OpenShell lab is qualifying the unmodified `d20e5fe3`
 recovery baseline and genuine sustained Sage computation. The lab exposed a saved

@@ -144,3 +144,19 @@ bounded reads. It must not expose credentials or raw configuration through debug
 metadata. Acceptance covers parent/child and continuation scoping, unknown usage,
 cache accounting, fold-to-original navigation, archive paging/search coverage,
 large outputs, dialog focus/close behavior and preservation of background drafts.
+
+### Next bounded timeline slice
+
+Read-only source review on 2026-10-18 identified an incremental path that needs no
+new telemetry storage: `archive_model_usage` has the response ordinal, observation
+timestamp and message ID under a unique project/session/run/ordinal index;
+`run_events` has timestamped fold events under its run/sequence index.
+`RunState.events(after, limit)` already pages the latter. A bounded authenticated
+usage projection can reuse the inspector's existing scope checks and response
+helpers. This projection and its time-axis UI are not implemented yet.
+
+Label answer timestamps as response observations, never dispatch times. Fold event
+times do not establish exact working-context occupancy; reductions remain
+estimates. Keep legacy calls with missing timestamps on a call-number axis, and
+retain explicit partial-page coverage. Do not combine auxiliary model calls with
+the selected agent's main-input series or infer historical context ceilings.
