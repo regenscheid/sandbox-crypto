@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 
 import pytest
+from pydantic import JsonValue
 
 from sandbox_science.orchestrator.confinement.paid import PaidModel
-from sandbox_science.orchestrator.confinement.transport import Capability
+from sandbox_science.orchestrator.confinement.transport import Capability, Channel
 from sandbox_science.orchestrator.confinement.wire import ModelIntent, WireMessage
 from sandbox_science.orchestrator.continuity.models import IntentModel, ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
@@ -21,7 +23,13 @@ from sandbox_science.orchestrator.history.capture import (
     request,
 )
 from sandbox_science.orchestrator.history.captured import CapturedContexts
-from sandbox_science.orchestrator.model import AssistantMessage, ModelTurn, ScriptedModel, ToolSpec
+from sandbox_science.orchestrator.model import (
+    AssistantMessage,
+    Message,
+    ModelTurn,
+    ScriptedModel,
+    ToolSpec,
+)
 from sandbox_science.orchestrator.prompts import Section, assemble
 
 from .test_tool_journal import RUN
@@ -34,7 +42,9 @@ async def test_capture_precedes_dispatch_and_survives_model_failure_and_reopen(p
     messages = [{"role": "user", "content": "Original \u03b1 reference 937"}]
 
     class Fails:
-        async def complete(self, sent, tools):
+        async def complete(
+            self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        ) -> ModelTurn:
             calls = contexts.calls("p", "s", RUN).calls
             assert len(calls) == 1
             assert calls[0].captured
@@ -63,7 +73,9 @@ async def test_exact_system_sections_view_origins_and_tools_are_ordered_and_reus
         {"role": "tool", "content": "stub"}, Origin(kind="stub", message="msg-123", position=3)
     )
     wire = WireMessage.of(stubbed)
-    assert wire.message().origin == stubbed.origin
+    decoded = wire.message()
+    assert isinstance(decoded, ContextMessage)
+    assert decoded.origin == stubbed.origin
     native = AssistantMessage("Visible", native=b"opaque-provider-payload")
     messages = [{"role": "system", "content": system}, folded, stubbed, native]
     owner = WorkRecords(projects.control).admit("p", "s", RUN)
@@ -76,6 +88,8 @@ async def test_exact_system_sections_view_origins_and_tools_are_ordered_and_reus
     with prompt_pins(pins):
         one = await model.complete(messages, tools)
         two = await model.complete(messages, tools)
+    assert one.intent_id is not None
+    assert two.intent_id is not None
     contexts = CapturedContexts(projects.control)
     parts = contexts.parts("p", "s", RUN, one.intent_id).parts
     assert [part.section or part.kind for part in parts] == [
@@ -102,25 +116,36 @@ async def test_exact_system_sections_view_origins_and_tools_are_ordered_and_reus
 
 
 async def test_confined_paid_model_submits_capture_before_contacting_model():
-    seen = []
+    seen: list[ModelIntent] = []
 
-    class Channel:
-        async def request(self, kind, value):
-            assert kind == Capability.MODEL_INTENT
-            item = ModelIntent.model_validate(value)
-            assert item.captured is not None
-            seen.append(item)
-            return {"identity": "model-fixture"}
+    async def host_handle(kind: Capability, value: JsonValue) -> JsonValue:
+        assert kind == Capability.MODEL_INTENT
+        item = ModelIntent.model_validate(value)
+        assert item.captured is not None
+        seen.append(item)
+        return {"identity": "model-fixture"}
+
+    async def runtime_handle(kind: Capability, value: JsonValue) -> JsonValue:
+        raise AssertionError("no reverse capability expected")
 
     class Model:
-        async def complete(self, messages, tools):
+        async def complete(
+            self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        ) -> ModelTurn:
             assert len(seen) == 1
+            assert seen[0].captured is not None
             assert json.loads(seen[0].captured.parts[0].text) == messages[0]
             return ModelTurn("Done")
 
-    result = await PaidModel(
-        Channel(), Model(), "cap-" + "a" * 48, "fixture", "delegated"
-    ).complete([{"role": "user", "content": "child request"}], [])
+    host = Channel(lambda frame: runtime.receive(frame), host_handle)
+    runtime = Channel(lambda frame: host.receive(frame), runtime_handle)
+    try:
+        result = await PaidModel(
+            runtime, Model(), "cap-" + "a" * 48, "fixture", "delegated"
+        ).complete([{"role": "user", "content": "child request"}], [])
+    finally:
+        await host.close()
+        await runtime.close()
     assert result.intent_id == "model-fixture"
     assert seen[0].role == "delegated"
 
@@ -135,6 +160,7 @@ def test_capture_is_immutable_and_refused_owner_leaves_no_capture(projects):
         tx.sql.execute("UPDATE context_bodies SET text='changed'")
     contexts = CapturedContexts(projects.control)
     first = contexts.text("p", "s", RUN, identity, 0)
+    assert first.next_offset is not None
     second = contexts.text("p", "s", RUN, identity, 0, offset=first.next_offset)
     assert len(first.text) == len(second.text) == 16384
     assert first.sha256 == second.sha256
@@ -159,6 +185,7 @@ def test_captured_text_chunks_preserve_unicode_and_nul_and_refuse_middle_byte(pr
     )
     reader = CapturedContexts(projects.control)
     first = reader.text("p", "s", RUN, identity, 0, limit=16383)
+    assert first.next_offset is not None
     second = reader.text("p", "s", RUN, identity, 0, offset=first.next_offset)
     assert first.text + second.text == original
     assert first.next_offset == 16382
@@ -180,6 +207,7 @@ async def test_oversized_diagnostic_does_not_stop_a_valid_dispatch(projects, tex
     contexts = CapturedContexts(projects.control)
     call = contexts.calls("p", "s", RUN).calls[0]
     assert not call.captured
+    assert call.omitted is not None
     assert "8 MiB" in call.omitted
     assert contexts.parts("p", "s", RUN, call.identity).parts == ()
     projects.control.close()

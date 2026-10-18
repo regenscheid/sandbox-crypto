@@ -65,6 +65,7 @@ def test_index_filters_and_pagination_do_not_mix_agents_or_sessions(projects):
     index = InspectorIndex(projects.control)
     first = index.page("p", "s", RUN, contains="needle", limit=2)
     assert [m.message for m in first.messages] == [r.message_id for r in records[:2]]
+    assert first.next_after is not None
     last = index.page("p", "s", RUN, contains="needle", after=first.next_after)
     assert [m.message for m in last.messages] == [records[2].message_id]
     assert last.next_after is None
