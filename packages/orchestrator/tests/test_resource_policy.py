@@ -174,9 +174,13 @@ async def test_root_turn_renewal_reaches_loop_without_extra_closing_call(project
     _, parent, _, store = setup(projects)
     DelegationRecords(projects.control).configure("p", root_resource_renewal=True)
 
+    published = False
+
     class RootAware(ScriptedModel):
         async def complete(self, messages, tools):
-            if not store.pending(parent):
+            nonlocal published
+            if not published:
+                published = True
                 artifact(projects, operation="root-proof")
                 Archive(projects.control).append(
                     "p", "s", RUN, Entry("assistant", "assistant", "Verified a new lemma")
