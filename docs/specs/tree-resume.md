@@ -1,8 +1,9 @@
-# Explicit research-tree Resume
+# Research-tree Resume
 
 Implementation contract for RC-1 through RC-13 and RC-F16. Automatic crash restart
-remains disabled. This document describes the implementation target, not completed
-runtime acceptance.
+remains disabled. A bounded control-service scheduler can queue the same durable
+Resume request after a saved model-phase failure. This document describes the
+implementation target, not completed runtime acceptance.
 
 ## Identity and ownership
 
@@ -40,6 +41,28 @@ chat message is required. Ordinary message requeueing retains its existing behav
 The service gives Resume requests priority over ordinary admission in that session.
 A durable response reports counts and paged branch states/reasons, including blocked
 branches; it never calls an incomplete tree successfully resumed.
+
+The control service also checks saved paused roots for model-phase failures. It may
+queue one Resume for a root whose unfinished branches are only model failures or
+parents waiting on them. The request and a small retry observation commit together;
+another service sees the same request after restart. Without a new completed work
+item or recorded model answer, at most three automatic requests are made, separated
+by 30 and 60 seconds; later recovery needs an explicit owner action. The scheduler
+defers to a newly queued user message so a correction can be handled first. It
+does not create new work, reset grants, re-dispatch a tool, or override the normal
+cost, policy, environment and kernel checks. It leaves stopped/cancelled work,
+spent token grants, uncertain tool effects and other failures for explicit handling.
+Unknown model charges remain visible but do not by themselves prevent this bounded
+continuation. Its positive classification is intentionally narrow: a saved `error`
+attempt must name failure phase `model`. The scheduler does not infer that every
+model error is transient; bounded retries contain persistent configuration errors.
+
+An `answered` root with an active scientific plan is still a checkpoint that
+requires a separate continuation feature. That feature can share the control
+service's durable admission and session lease, but must create a new root input
+from the current plan and evidence rather than falsely reopening completed work.
+Automatic recovery after process loss, lost kernels, worker failures, and explicit
+budget/grant decisions also remains open.
 
 Recovery traverses the durable tree in bounded pages. It first reads explicit Stop,
 then current policy, project/environment identity, model and pinned dependencies,
