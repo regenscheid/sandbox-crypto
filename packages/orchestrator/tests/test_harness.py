@@ -700,6 +700,34 @@ async def test_m5_inputs_that_crashed_the_harness_are_tool_errors() -> None:
         assert read_back["error"]["kind"] == "internal"
 
 
+async def test_read_file_explains_an_empty_range_past_eof() -> None:
+    async def read(request: web.Request) -> web.Response:
+        body = await request.json()
+        return web.json_response(
+            {
+                "path": body["path"],
+                "sha256": "0" * 64,
+                "size": 6,
+                "offset": body["offset"],
+                "eof": True,
+                "content_b64": "",
+            }
+        )
+
+    app = fake_worker_app()
+    app.router.add_post("/v1/files/read", read)
+    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+        toolbox = Toolbox(client, CONTEXT)
+        result = await toolbox.call(
+            _call("read_file", {"path": "short.txt", "offset": 13500, "length": 10000}),
+            "op-past-eof",
+        )
+        shown = json.loads(result.text)
+        assert shown["content"] == ""
+        assert shown["eof"] == "offset 13500 is at or past the end of this 6-byte file"
+        assert result.record["read"]["complete"] is False
+
+
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 @pytest.mark.parametrize(
     "body",

@@ -1269,6 +1269,10 @@ class Toolbox:
             "size": content.size,
             "sha256": content.sha256,
         }
+        if content.offset >= content.size and not data:
+            summary["eof"] = (
+                f"offset {content.offset} is at or past the end of this {content.size}-byte file"
+            )
         part = self.output_chars // 2  # the most one call shows whole, in bytes or characters
         whole = False
         if text is None:
