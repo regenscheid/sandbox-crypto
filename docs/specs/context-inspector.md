@@ -161,6 +161,12 @@ page every five seconds, resumes both cursors and checks for new observations;
 manual refresh is also available. Hiding the page, closing the dialog, signing
 out or switching tabs aborts pending reads.
 
+The initial UI read uses `tail=1` to start at the latest 50 answers and 50 event
+rows, then advances forward. It does not replay hours of tool events before showing
+current activity. Fold coverage is those loaded event rows, which can span less time
+than the answer window. The original-history tab retains access to earlier text;
+API callers can still page from cursor zero without `tail=1`.
+
 `research_model_calls` supplies an independently displayed latest-50 auxiliary
 intent snapshot. A partial index on project/session/run/created/identity,
 excluding foreground calls, bounds this read. It is refreshed from the latest

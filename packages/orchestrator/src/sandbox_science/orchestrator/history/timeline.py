@@ -76,10 +76,32 @@ class AttemptTimeline:
         answers_after: int = 0,
         events_after: int = 0,
         limit: int = 20,
+        tail: bool = False,
     ) -> TimelinePage:
         if not 1 <= limit <= 50 or answers_after < 0 or events_after < 0:
             raise ValueError("invalid timeline page")
         with self.control.isolated_read() as tx:
+            if tail:
+                # Start beside current activity instead of replaying hours of
+                # sparse tool events before the live graph can catch up.
+                answers_after = max(
+                    0,
+                    tx.sql.execute(
+                        "SELECT coalesce(max(ordinal),0) FROM archive_model_usage "
+                        "WHERE project=? AND session=? AND run=?",
+                        (project, session, run),
+                    ).fetchone()[0]
+                    - limit,
+                )
+                events_after = max(
+                    0,
+                    tx.sql.execute(
+                        "SELECT coalesce(max(seq),0) FROM run_events "
+                        "WHERE project_id=? AND session_id=? AND run=?",
+                        (project, session, run),
+                    ).fetchone()[0]
+                    - limit,
+                )
             answers = tx.sql.execute(
                 "SELECT ordinal,message_id,observed,role,usage FROM archive_model_usage "
                 "WHERE project=? AND session=? AND run=? AND ordinal>? "

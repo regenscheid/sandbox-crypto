@@ -553,6 +553,7 @@ export const api = {
     answersAfter = 0,
     eventsAfter = 0,
     signal?: AbortSignal,
+    tail = false,
   ) =>
     get<ContextTimelinePage>(
       `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/timeline?` +
@@ -560,6 +561,7 @@ export const api = {
           answers_after: String(answersAfter),
           events_after: String(eventsAfter),
           limit: '50',
+          tail: tail ? '1' : '0',
         }),
       { signal, maxBytes: 2 * 1024 * 1024 },
     ),

@@ -64,6 +64,7 @@
     loaded = false;
     poll = initialPoll();
     let lastPage: ContextTimelinePage | null = null;
+    let tail = true;
     const current = new Poller(
       (signal) =>
         api.contextTimeline(
@@ -73,6 +74,7 @@
           answersAfter,
           eventsAfter,
           signal,
+          tail,
         ),
       (state) => {
         poll = state;
@@ -85,6 +87,7 @@
         if (state.phase !== 'observed' || !state.data || state.data === lastPage) return;
         const page = state.data;
         lastPage = page;
+        tail = false;
         // Only the visible window is retained; cursors still advance through
         // the entire attempt. Each read is one bounded server page.
         answers = [...answers, ...page.answers].slice(-500);
@@ -118,8 +121,10 @@
 <section aria-label="Live attempt context timeline">
   <h3>Attempt timeline</h3>
   <p class="muted">
-    Answer points use the time their response was saved, not request start. Fold marks use event
-    emission time. Input counts are provider-reported; fold reductions and view sizes are estimates.
+    Starts with the latest 50 answers and event rows, then follows new observations. Earlier
+    conversation text remains in Full history. Answer points use the time their response was saved,
+    not request start. Fold marks use event emission time. Input counts are provider-reported; fold
+    reductions and view sizes are estimates.
   </p>
   {#if coverage}<p class="muted">{coverage}</p>{/if}
   {#if poll.phase === 'unavailable' || poll.phase === 'unsupported'}

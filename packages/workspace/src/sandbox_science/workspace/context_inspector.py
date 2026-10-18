@@ -66,6 +66,7 @@ class TimelineQuery(Contract):
     answers_after: Annotated[int, Field(ge=0, le=999999999)] = 0
     events_after: Annotated[int, Field(ge=0, le=999999999)] = 0
     limit: Annotated[int, Field(ge=1, le=50)] = 50
+    tail: Literal["0", "1"] = "0"
 
 
 class TimelineAnswer(Contract):
@@ -210,6 +211,7 @@ async def timeline(request: web.Request) -> web.Response:
             answers_after=query.answers_after,
             events_after=query.events_after,
             limit=query.limit,
+            tail=query.tail == "1",
         )
         return ContextTimelinePage(
             answers=tuple(TimelineAnswer.model_validate(item.__dict__) for item in page.answers),
