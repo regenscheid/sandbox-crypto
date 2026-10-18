@@ -44,7 +44,7 @@ describe('a new comment', () => {
     revision: { number: 5 },
     document: { session_id: 's1' },
   } as unknown as DocumentRevision;
-  it("starts on the shown revision's first block, addressed to the document's session", () => {
+  it("starts on the shown revision's first block without sending a work request", () => {
     expect(startComment(shown, null)).toEqual({
       base: 5,
       block: 'b1',
@@ -52,7 +52,7 @@ describe('a new comment', () => {
       kind: 'block',
       math: '',
       quote: '',
-      session: 's1',
+      session: '',
     });
     const stored = { ...startComment(shown, null), body: 'kept', base: 3 };
     expect(startComment(shown, stored)).toBe(stored);
@@ -69,7 +69,7 @@ describe('a new comment', () => {
     });
   });
   it('sends the anchor in its own revision, and the session only when addressed', () => {
-    const draft = { ...startComment(shown, null), base: 3, body: 'Why?' };
+    const draft = { ...startComment(shown, null), base: 3, body: 'Why?', session: 's1' };
     expect(JSON.stringify(newComment(found, draft))).toBe(
       '{"action":"create","anchor":{"revision":3,"block":"b1"},"body":"Why?","addressed_to":"s1"}',
     );

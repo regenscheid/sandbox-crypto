@@ -138,7 +138,7 @@ it('keeps document drafts across switching, closing and reopening tabs even with
   });
   root.querySelector<HTMLButtonElement>('.document-card')!.click();
   await settle();
-  const firstId = root.querySelector('[role="tab"][aria-selected="true"]')!.id;
+  const firstId = root.querySelector('.document-tabs [role="tab"][aria-selected="true"]')!.id;
   [...root.querySelectorAll<HTMLButtonElement>('button')]
     .find((el) => el.textContent === 'Edit Markdown source')!
     .click();
@@ -151,7 +151,7 @@ it('keeps document drafts across switching, closing and reopening tabs even with
   await settle();
   root.querySelectorAll<HTMLButtonElement>('.document-card')[1]!.click();
   await settle();
-  expect(root.querySelectorAll('[role="tab"]')).toHaveLength(3);
+  expect(root.querySelectorAll('.document-tabs [role="tab"]')).toHaveLength(3);
   root.querySelector<HTMLButtonElement>(`#${firstId}`)!.click();
   await settle();
   expect(draft.closest<HTMLElement>('[role="tabpanel"]')!.hidden).toBe(false);

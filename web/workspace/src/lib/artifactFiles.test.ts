@@ -106,7 +106,8 @@ describe('an artifact row', () => {
     expect(
       row({ ...pdf, content_retained: false, content_note: 'too_large', size: 2 * 1024 ** 3 }),
     ).not.toContain('<a');
-    expect(row(pdf, false)).not.toContain('<a');
+    // Turning off the preview removes its viewer link, while retained bytes can still be downloaded.
+    expect(row(pdf, false)).not.toContain(`href="${href}"`);
   });
 
   it('shows a tombstone as deleted, without a size', () => {
