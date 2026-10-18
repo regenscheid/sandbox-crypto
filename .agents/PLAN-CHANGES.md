@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-18, completion campaign
+
+- Owner requests completion of all six remaining items, including real OpenShell crash recovery, narrative/diagnostic qualification, time/storage and root resource policy, captured context/indexed history, and workspace browser refinements. The new **$150 aggregate testing authorization** supersedes the earlier pending $75 proposal; preserve personal and SNOVA instances. [Acceptance checklist](docs/agent-reports/completion-campaign-2026-10-18.md).
+
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
 
 ## 2026-10-18

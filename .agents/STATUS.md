@@ -4,7 +4,7 @@ Updated 2026-10-18. Current development is local `dev` in `/home/andy/.cache/pt/
 
 ## Phase and focus
 
-- Live context timelines and adaptive token/turn check-ins are integrated on `dev` through `a8ef3c5d`, including workspace controls. Independent GPT-6.1-Sol review and final combined validation are clear; see the [integration report](docs/agent-reports/context-resources-2026-10-18.md). The separate real-model scientific evaluation is prepared at `d15ba9e5`, awaiting the requested $75 authorization; no paid inference has started.
+- Completion campaign is active: the owner authorized **$150 total for new testing** and requested all six remaining recovery, context, resource, diagnostics and UI acceptance items. This supersedes the unanswered $75 proposal. No new paid inference has started yet. The [campaign checklist](docs/agent-reports/completion-campaign-2026-10-18.md) distinguishes implementation from live acceptance. Earlier validated baseline is `8ef121bd`.
 
 - Main/delegated attempts, including unsaved live attempts, have an embedded context inspector. It plots timestamped response usage and fold events, reports cache counters and separately lists auxiliary model calls. It opens on recent activity, follows new observations while visible, and bounds retained data. Same-work continuation history remains searchable; children/siblings stay separate. Exact working-context composition is still unavailable and labeled as such.
 - Original-history tools reuse `history_read`/`history_search`, including bounded UTF-8 pages for oversized messages. Delegated parents can inspect descendant archives; independent checks remain own-run only. Full native provider payloads are preserved separately and are not presented as visible conversation text.
@@ -35,7 +35,7 @@ Updated 2026-10-18. Current development is local `dev` in `/home/andy/.cache/pt/
 
 1. Complete exact working-context capture, indexed history search and broader real-run context acceptance; retain precise provenance and missing-data labels.
 2. Extend recovery acceptance beyond the completed synthetic OpenShell cases: automatic infrastructure replacement, MCP failures and real-provider/scientific continuity. Preserve personal services and original research archives.
-3. Qualify prolonged adaptive operation with real models; time/storage resource policy remains separate. Run the prepared [scientific evaluation](labs/scientific-quality-runbook.md) only after the separate budget is approved, with a reviewed image and complete owned-lab teardown.
+3. Qualify prolonged adaptive operation with real models under the newly authorized $150 aggregate test allowance; implement time/storage resource policy and bounded root renewal, with reviewed images and complete owned-lab teardown.
 4. Expand MCP tool schemas/service policy/current observations, then Overview/Memory/session usability. Detailed [backlog](BACKLOG.md) entries distinguish design, code and runtime acceptance.
 
 Earlier lab findings (MCP query matching, PDF extraction quality, scientific reviewer checks, package/image compatibility and long-run job capacity) are historical leads, not a verified current defect inventory. Reproduce against current `dev` before changing behavior. Lockstep component upgrades and the worker boundary still apply.
