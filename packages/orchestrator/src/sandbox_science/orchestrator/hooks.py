@@ -82,12 +82,13 @@ class Closing:
     - ``respond``: the notices are findings to answer; the run takes a response round,
       one for every hook that asks in this closing.
     - ``retry``: the answer cannot stand; another turn, or the run stops as ``stopped``.
-    - ``stop``: the run ends without an answer, as ``stopped``.
+    - ``stop``: the run ends as ``stopped``, optionally retaining its checkpoint answer.
     """
 
     action: Literal["accept", "continue", "respond", "retry", "stop"] = "accept"
     notices: tuple[Notice, ...] = ()
     stopped: str = "user_message"
+    retain_answer: bool = False
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,10 @@ class TurnHook:
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         return ()
+
+    async def turn_limit(self, run: RunView) -> int | None:
+        """An authoritative allowance's current attempt ceiling, or no override."""
+        return None
 
     async def halt(self, run: RunView) -> str | None:
         """Before every model call, including the first, and before its notices: the reason the

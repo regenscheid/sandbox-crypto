@@ -23,6 +23,11 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.continuity.resources import (
+    Action,
+    ResourceDecisionRequest,
+    ResourceRequests,
+)
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation import hook
 from sandbox_science.orchestrator.delegation.hook import (
@@ -636,10 +641,75 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
         "returned",
         None,
     )
-    (waited,) = answer(root, 1)["delegations"]
-    assert waited["ended"] == "limit_reached"
-    (left,) = waited["unreceived"]
-    assert (left["delegation_id"], left["ended"]) == (part, "returned")
+    # The resource check-in wakes the parent before the lead has settled; its
+    # eventual outcome remains durable with the unconsumed descendant result.
+    waited = answer(root, 1)
+    assert waited["reason"] == "resource_request"
+    (lead,) = started(root)
+    saved = delegation(delegating, lead)
+    assert saved.ended == "limit_reached"
+    with contextlib.closing(ProjectStore(delegating.state)) as projects:
+        (left,) = DelegationRecords(projects.control).handbacks(
+            PROJECT, SESSION, parent=name(child)
+        )
+        assert (left.delegation_id, left.ended) == (part, "returned")
+
+
+@pytest.mark.parametrize("action", ["pause", "report"])
+async def test_parent_resource_decision_waits_for_the_authorized_grandchild(
+    delegating: Harness, action: Action
+) -> None:
+    configure(delegating, depth=2, task_turns=300)
+    working, free, part_answer = _working()
+
+    async def decide_after_child_started() -> None:
+        await working.wait()
+        with contextlib.closing(ProjectStore(delegating.state)) as projects:
+            records, _ = DelegationRecords(projects.control).listed(PROJECT, SESSION)
+            lead = next(d for d in records if d.brief.get("task") == "Lead the work.")
+            works = WorkRecords(projects.control)
+            owner = works.owner(PROJECT, SESSION, lead.run)
+            parent = works.owner(PROJECT, SESSION, lead.parent)
+            assert owner is not None
+            assert parent is not None
+            requests = ResourceRequests(projects.control)
+            request = requests.observe(owner, "turns", used=1, total=300, revision=0, force=True)
+            assert request is not None
+            requests.decide(
+                parent,
+                ResourceDecisionRequest(
+                    request_id=request.request_id, action=action, reason="Save"
+                ),
+                operation="fixture-resource-decision",
+            )
+
+    task = asyncio.create_task(
+        delegating.run(
+            "root",
+            [Reply(calls=[LEAD]), wait(), Reply("Saved for continuation.")],
+            status=3,
+            routed={
+                "Lead the work.": [
+                    Reply(calls=[PART]),
+                    Reply("Checkpoint.", before=decide_after_child_started),
+                ],
+                "Do a part.": [part_answer],
+            },
+        )
+    )
+    try:
+        await awaiting_children(delegating, delegated=True)
+        assert not task.done()
+    finally:
+        free.set()
+    root = await task
+    (child,) = children(delegating, root)
+    (grandchild,) = children(delegating, child)
+    assert (child.stopped, grandchild.stopped) == (f"resource_{action}", "answered")
+    assert child.final_text == "Checkpoint."
+    assert grandchild.ended_at <= child.ended_at
+    (lead,) = started(root)
+    assert delegation(delegating, lead).ended == "limit_reached"
 
 
 async def test_the_users_cancel_of_the_root_stops_its_grandchild_mid_call_first(

@@ -58,7 +58,8 @@ from .continuity.grants import TokenGrants
 from .continuity.hook import WorkHook
 from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
-from .continuity.records import Work, WorkRecords, authority
+from .continuity.records import Ownership, Work, WorkRecords, authority
+from .continuity.resources import ResourceRequests
 from .control import ControlError
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
@@ -146,6 +147,7 @@ from .projects import (
 from .question_tool import QuestionTool
 from .questions import Questions
 from .recording import FileRecorder, RecordedFiles
+from .resource_hooks import Resources
 from .run_inputs import RecordInputs, RunInputs
 from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
@@ -846,7 +848,11 @@ class Harness:
                         stop,
                     )
                     if delegations is not None and toolbox.mailbox is not None:
-                        delegations.wake = toolbox.mailbox.wake
+                        delegations.wake = (
+                            functools.partial(toolbox.resources.wake, toolbox.mailbox.wake)
+                            if toolbox.resources is not None
+                            else toolbox.mailbox.wake
+                        )
                     hooks = toolbox.turn_hooks()
                     if work is not None:
                         owner = work.owner
@@ -1762,6 +1768,24 @@ class Harness:
                     else None
                 ),
                 clock=self.clock,
+            ),
+            resources=(
+                Resources(
+                    ResourceRequests(stores.projects.control, clock=self.clock),
+                    Ownership(
+                        project=context.project_id,
+                        session=context.session_id,
+                        work=context.authority.work,
+                        run=context.authority.run,
+                        epoch=context.authority.epoch,
+                    ),
+                    turns=admitted.request.max_turns or self.settings.max_turns,
+                    tokens=admitted.request.tokens,
+                    delegated=delegated,
+                    clock=self.clock,
+                )
+                if context.authority is not None
+                else None
             ),
             questions=questions,
             delegated=delegated,

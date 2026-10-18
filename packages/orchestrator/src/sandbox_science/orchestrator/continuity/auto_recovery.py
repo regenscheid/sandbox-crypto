@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""Durable, bounded admission of a saved model failure's original work tree.
+"""Durable, bounded admission of model failures and approved turn continuations.
 
-This only queues an existing Resume. Recovery still reconciles original operation
+This only queues an existing Resume after a saved model failure or a parent
+approved a turn extension for paused child work. Recovery still reconciles original operation
 identities, checks the project's budget and the work's token grant before dispatch.
 Other failures remain for an explicit owner decision.
 """
@@ -16,7 +17,8 @@ from sandbox_science.orchestrator.control import ControlStore
 
 from .grants import grant_total
 from .plans import spent_tokens
-from .records import tree_cancelled
+from .records import Ownership, tree_cancelled
+from .resources import turn_grant, turn_usage
 
 MAX_NO_PROGRESS: Final = 3
 RETRY_SECONDS: Final = 30
@@ -106,19 +108,34 @@ class AutoRecovery:
             ):
                 return None
             unfinished = db.execute(
-                "SELECT w.current,w.reason,json_extract(r.record,'$.failure') "
+                "SELECT w.current,w.reason,json_extract(r.record,'$.failure'),w.work "
                 "FROM research_work w LEFT JOIN runs r ON r.project_id=w.project "
                 "AND r.session_id=w.session AND r.name=w.current "
                 "WHERE w.project=? AND w.session=? AND w.root=? "
                 "AND w.state NOT IN ('completed','stopped')",
                 (project, session, root),
             ).fetchall()
-            if not any(reason == "error" and phase == "model" for _, reason, phase in unfinished):
-                return None
-            if any(
-                reason != "unfinished_children" and not (reason == "error" and phase == "model")
-                for _, reason, phase in unfinished
-            ):
+            eligible: list[bool] = []
+            for current, reason, phase, work_id in unfinished:
+                allowed = reason == "error" and phase == "model"
+                if reason == "turn_limit":
+                    original = db.execute(
+                        "SELECT json_extract(snapshot,'$.request.max_turns') "
+                        "FROM research_blueprints "
+                        "WHERE project=? AND session=? AND work=?",
+                        (project, session, work_id),
+                    ).fetchone()
+                    owner = Ownership(
+                        project=project, session=session, work=work_id, run=current, epoch=1
+                    )
+                    total, revision = turn_grant(
+                        db, owner, original[0] if original and original[0] else 300
+                    )
+                    allowed = revision > 0 and total > turn_usage(db, owner)
+                if reason != "unfinished_children" and not allowed:
+                    return None
+                eligible.append(allowed)
+            if not any(eligible):
                 return None
             if tree_cancelled(db, project, session, root):
                 return None

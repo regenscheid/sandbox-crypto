@@ -78,6 +78,8 @@ from .question_tool import EFFECTS as QUESTION_EFFECTS
 from .question_tool import SPECS as QUESTION_SPECS
 from .question_tool import QuestionTool
 from .recording import FileRecorder, RecordedFiles, Written, with_recorded
+from .resource_hooks import SPEC as RESOURCE_SPEC
+from .resource_hooks import Resources
 from .skills.tool import SPEC as SKILL_SPEC
 from .skills.tool import SkillTool
 from .view_image import SPEC as VIEW_IMAGE
@@ -510,6 +512,7 @@ def _harness_tool_names() -> frozenset[str]:
         LEDGER_PROPOSALS,
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
+        RESOURCE_SPEC,
         CHILD_SPEC,
         PARENT_SPEC,
         STATUS_SPEC,
@@ -554,6 +557,7 @@ class Toolbox:
         kernel_run: str | None = None,
         delegations: Delegations | None = None,
         mailbox: AgentMailbox | None = None,
+        resources: Resources | None = None,
         questions: QuestionTool | None = None,
         delegated: bool = False,
         check: bool = False,
@@ -591,6 +595,7 @@ class Toolbox:
         session's, which main runs share."""
         self.delegations = delegations
         self.mailbox = mailbox
+        self.resources = resources
         self.questions = questions
         self.delegated = delegated
         if delegated and connectors is not None:
@@ -722,6 +727,12 @@ class Toolbox:
                 delegations.specs,
                 lambda name, call: delegations.call(name, call.args, operation=call.operation),
                 delegation_specs.EFFECTS,
+            )
+        if resources is not None:
+            entries += _group(
+                resources.specs,
+                lambda name, call: resources.call(name, call.args, call.operation),
+                {spec.name: "read" for spec in resources.specs},
             )
         if mailbox is not None:
             entries += _group(
@@ -1003,6 +1014,8 @@ class Toolbox:
             hooks.append(self.delegations)
         if self.mailbox is not None:
             hooks.append(self.mailbox)
+        if self.resources is not None:
+            hooks.append(self.resources)
         if self.questions is not None:
             hooks.append(self.questions)
         if self.plans is not None:

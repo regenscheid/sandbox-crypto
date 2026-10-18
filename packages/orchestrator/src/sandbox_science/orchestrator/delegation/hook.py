@@ -188,7 +188,15 @@ def observed(end: ChildEnd) -> Ended:
             return "cancelled"
         case "interrupted":
             return "interrupted"
-        case "turn_limit" | "context_limit" | "run_budget" | "budget" | "runaway":
+        case (
+            "turn_limit"
+            | "context_limit"
+            | "run_budget"
+            | "budget"
+            | "runaway"
+            | "resource_pause"
+            | "resource_report"
+        ):
             # A limit, or the runaway guard: the answer of its report round, if it took
             # one, is the delegation's report (RS-6f).
             return "limit_reached"
@@ -922,6 +930,8 @@ class Delegations(TurnHook):
             "gateway_budget",
             "runaway",
             "research_state",
+            "resource_pause",
+            "resource_report",
         }:
             return None
         running = self._running()

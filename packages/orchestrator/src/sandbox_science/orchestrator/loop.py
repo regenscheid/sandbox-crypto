@@ -99,6 +99,10 @@ SYSTEM_PROMPT: Final = (
     "to handle it yourself, create or revise the session plan, or send a targeted update "
     "to a direct child with message_child. A child has not seen the user's message: "
     "include the instruction it needs and the user's archive message ID when forwarding. "
+    "Resource check-ins are not scientific completion. Read the child checkpoint, "
+    "assess progress and use resource_decide to renew turns within policy, redirect, "
+    "request a report or pause. Token extensions need explicit USER approval of "
+    "exactly 10,000,000 more cumulative tokens. Never infer it from a child request. "
     "Check the child's status and current track before changing its assignment; a plan "
     "revision can invalidate a running child's track grant. Read the relevant pinned "
     "document, artifact or ledger entry before acting on feedback about it. Messages "
@@ -472,6 +476,9 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
     match closing.action:
         case "stop":
             transcript.stopped = closing.stopped
+            if closing.retain_answer:
+                _stands(transcript, answer)
+                transcript.final_text = answer
             decision: Decision = "stop"
         case "retry" if not transcript.has_room(closing.notices):
             transcript.stopped = closing.stopped
@@ -588,6 +595,12 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     return reply
 
 
+async def _turn_limit(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
+    for hook in hooks:
+        if (ceiling := await hook.turn_limit(transcript)) is not None:
+            transcript.max_turns = ceiling
+
+
 async def _halted(hooks: Sequence[TurnHook], transcript: Transcript) -> bool:
     """Whether a hook stops the run before its next model call, as a spent model budget
     does (run-service spec RS-6a)."""
@@ -700,7 +713,12 @@ async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple
     a conversation within ``REPORT_ROOM`` of its ``max_input_chars``."""
     for hook in hooks:
         if (reason := await hook.last_call(transcript)) is not None:
-            return reason, "the run's tokens leave room for this call and no other"
+            detail = (
+                "the parent requested a checkpoint report"
+                if reason == "resource_report"
+                else "the run's tokens leave room for this call and no other"
+            )
+            return reason, detail
     limit = transcript.max_input_chars
     if transcript.folds is None and transcript.size > limit - limit // REPORT_ROOM:
         return "context_limit", f"the conversation is near its {limit:,}-character limit"
@@ -789,7 +807,11 @@ async def _run_task(
     await _notices(hooks, "start", transcript)
     revision = toolbox.revision
     guard = Runaway()
-    for turn in range(transcript.max_turns):
+    while True:
+        await _turn_limit(hooks, transcript)
+        if transcript.turns >= transcript.max_turns:
+            break
+        turn = transcript.turns
         if await _halted(hooks, transcript):
             return transcript
         if turn and (last := await _last_call(hooks, transcript)) is not None:
@@ -818,6 +840,7 @@ async def _run_task(
         answer = AssistantMessage.of(reply)
         await _append(transcript, answer, Appended("assistant", reply=reply))
         await _model_returned(hooks, transcript)
+        await _turn_limit(hooks, transcript)
         if not reply.tool_calls:
             held = transcript.held
             if await _closing(hooks, transcript, reply.text):
