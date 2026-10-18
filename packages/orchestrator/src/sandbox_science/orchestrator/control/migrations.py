@@ -3084,6 +3084,14 @@ def _artifact_blobs(schema: Schema) -> None:
     )
 
 
+def _kernel_cell_lookup(schema: Schema) -> None:
+    """Version 69: find cell provenance by operation across long research sessions."""
+    schema.execute(
+        "CREATE INDEX research_kernel_cell_identity ON research_observations "
+        "(project,session,kind,identity) WHERE kind='kernel_cell'"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3152,6 +3160,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _user_uploads,
     _larger_user_uploads,
     _artifact_blobs,
+    _kernel_cell_lookup,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

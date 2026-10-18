@@ -301,6 +301,20 @@ class WorkRecords:
                 if parent is not None and (inherited is None or inherited[1] != inherited[3]):
                     raise ControlError(CONFLICT, "the parent no longer owns this research tree")
                 if inherited is None:
+                    pending_restore = db.execute(
+                        "SELECT work,identity FROM research_observations WHERE project=? "
+                        "AND session=? AND kind='kernel_restore' "
+                        "AND json_extract(detail,'$.state')='intent' "
+                        "AND json_extract(detail,'$.run') IS NULL "
+                        "ORDER BY observed LIMIT 1",
+                        (project, session),
+                    ).fetchone()
+                    if pending_restore is not None:
+                        raise ControlError(
+                            CONFLICT,
+                            "lost_kernel: unresolved reconstruction blocks new main work",
+                            {"work": pending_restore[0], "identity": pending_restore[1]},
+                        )
                     db.execute(
                         "INSERT INTO research_sessions VALUES (?,?,?,1) "
                         "ON CONFLICT(project,session) DO UPDATE SET root=excluded.root,"

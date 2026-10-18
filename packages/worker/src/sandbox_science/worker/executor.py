@@ -2120,6 +2120,10 @@ class Executor:
                     raise ToolError(
                         "unavailable", "package admission is closed; kernel restart refused"
                     )
+                if request.get("only_if_absent") is True and await kernel.alive():
+                    raise ToolError(
+                        "conflict", "kernel became live before conditional recovery restart"
+                    )
                 # The running cell does not hold up a restart: it ends, cancelled.
                 for running in self.running.values():
                     if running.kernel is kernel and running.started:

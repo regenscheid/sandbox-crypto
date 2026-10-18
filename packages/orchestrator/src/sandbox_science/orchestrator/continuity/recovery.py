@@ -309,15 +309,13 @@ class Recovery:
         if alias != self.harness.role(request).alias:
             raise ControlError(CONFLICT, "model alias changed since the saved attempt")
         await Reconciler(control, self.harness.client, clock=self.harness.clock).work(work)
+        plan = await threaded(self.plans.get, work.work)
         owner = Ownership(
             project=self.project,
             session=self.session,
             work=work.work,
             run=work.current,
             epoch=work.epoch,
-        )
-        await KernelJournal(control, owner, work.kernel).reconcile(
-            self.harness.client, blueprint.context
         )
         capabilities = await self.harness.client.capabilities(blueprint.context.environment_id)
         tier, minimum = (
@@ -326,7 +324,16 @@ class Recovery:
         )
         if minimum is not None and (tier is None or tier < minimum):
             raise ControlError(CONFLICT, "worker no longer meets the required isolation tier")
-        plan = await threaded(self.plans.get, work.work)
+        authorized_context = blueprint.context.model_copy(
+            update={
+                "authority": ExecutionAuthority(
+                    work=work.work, run=plan.run, epoch=self.epoch
+                )
+            }
+        )
+        await KernelJournal(control, owner, work.kernel).reconcile(
+            self.harness.client, authorized_context
+        )
         parent = None if work.parent is None else (await threaded(self.plans.get, work.parent)).run
         delegation = None
         if parent is not None:

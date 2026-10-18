@@ -429,6 +429,18 @@ async def test_restart_loses_state_and_says_so(worker: Target) -> None:
     assert after["result"]["state_lost"] is True
 
 
+async def test_conditional_recovery_restart_preserves_newly_live_kernel(worker: Target) -> None:
+    await worker.run(kind="cell", code="x = 41")
+    status, refusal = await worker.post(
+        "/v1/kernels/restart",
+        {"context": worker.context, "language": "python", "only_if_absent": True},
+    )
+    assert status == 409, refusal
+    preserved = await worker.run(kind="cell", code="x")
+    assert preserved["result"]["outputs"][0]["data"]["text/plain"] == "41"
+    assert preserved["result"]["kernel"]["generation"] == 1
+
+
 async def test_a_run_has_kernels_of_its_own(worker: Target) -> None:
     """PD-37: a cell naming a run runs in that run's kernel, which shares no state with
     the session's or another run's; the session's kernel status lists them all."""

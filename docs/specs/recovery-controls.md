@@ -50,6 +50,22 @@ guard. They are never model tools and never contact a model, worker or executor.
   `run` must equal the supplied current attempt. A changed snapshot is refused.
   Archive a visible notice retaining the acknowledged IDs, clear that observation and
   retain the decision; no kernel/code/model execution happens automatically.
+- On Resume, a lost Python kernel may be reconstructed without a model call only
+  when its entire bounded cell history is journaled and each cell was explicitly
+  marked replayable, contains only fixed literal assignments, made no observed
+  file changes, and used no skill bindings. An unjournaled cell intent, missing
+  result count, changed package revision, live replacement kernel, or prior
+  unfinished reconstruction intent refuses automatic replay. The worker's
+  conditional restart will not replace a kernel that appeared after observation.
+  The reconstruction intent is durable before the first worker effect; uncertain
+  or partial effects require explicit operator review rather than a silent retry.
+  A successful reconstruction journals the replacement lineage for later losses.
+  Recovery status exposes a pending reconstruction identity and detail across
+  the session. New main work is refused while a session-kernel reconstruction is
+  unresolved. After an operator acknowledges lost state, Resume refuses a live
+  partial kernel; once that kernel has been closed, it atomically records the
+  abandoned intent and an empty snapshot. The next cell starts a clean kernel.
+  The conditional restart field raises the lockstep worker protocol to 10.
 - Decisions live in `research_observations`, scoped by project/session/work/kind and
   original identity, with detail bounded to 16 KiB. Decision, pending-intent settlement
   and visible archive record commit atomically. Oversized original tool arguments

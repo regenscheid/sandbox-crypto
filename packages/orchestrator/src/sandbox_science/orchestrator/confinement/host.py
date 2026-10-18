@@ -27,6 +27,7 @@ from sandbox_science.orchestrator.history.log import RunArchive
 from sandbox_science.orchestrator.history.retention import fits
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
 from sandbox_science.orchestrator.images import IMAGE
+from sandbox_science.orchestrator.kernel_check import KernelCheck
 from sandbox_science.orchestrator.loop import (
     Folds,
     Transcript,
@@ -290,9 +291,18 @@ class Prepared:
             if kind is Capability.MODEL_RETURNED:
                 await hook.model_returned(run)
             elif kind is Capability.OBSERVE_TOOL:
-                if self.observation is None or request.slot in self.observed_slots:
+                if (
+                    self.observation is None
+                    or self.observed_tool is None
+                    or request.slot in self.observed_slots
+                ):
                     raise TransportError("conflict", "no unobserved committed tool result")
-                await hook.observe_tool(run, self.observation)
+                tool_record = (
+                    self.observation
+                    if isinstance(hook, KernelCheck)
+                    else self.observed_tool[1].record
+                )
+                await hook.observe_tool(run, tool_record)
                 self.observed_slots.add(request.slot)
             elif kind is Capability.CLOSING:
                 closing = await hook.closing(run, request.answer)
@@ -418,7 +428,7 @@ class Prepared:
             record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
             retained = self.log.retained_tool(record)
             self.shadow.tool_records.append(retained)
-            self.observation, self.observed_slots = outcome.record, set()
+            self.observation, self.observed_slots = record, set()
             self.observed_tool = call, outcome
             if outcome.image is not None:
                 self.notices.append(outcome.image[0])

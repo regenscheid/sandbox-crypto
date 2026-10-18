@@ -677,10 +677,17 @@ class WorkerClient:
         return result
 
     async def restart_kernel(
-        self, context: ExecutionContext, language: Language = "python", run: str | None = None
+        self,
+        context: ExecutionContext,
+        language: Language = "python",
+        run: str | None = None,
+        *,
+        only_if_absent: bool = False,
     ) -> KernelInfo:
         """Restart the session's kernel of ``language``, or ``run``'s own."""
-        request = KernelRestartRequest(context=context, language=language, run=run)
+        request = KernelRestartRequest(
+            context=context, language=language, run=run, only_if_absent=only_if_absent
+        )
         return await self._call("POST", "/v1/kernels/restart", KernelInfo, request)
 
     async def close_session(

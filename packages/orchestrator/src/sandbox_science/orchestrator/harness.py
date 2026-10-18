@@ -840,6 +840,7 @@ class Harness:
                                     work.records.control, owner, toolbox.kernel_run
                                 )
                                 hook.record = journal.record
+                                hook.record_tool = journal.record_tool
                                 hook.retain = lambda kernel: threaded(
                                     work.records.retains_kernel,
                                     owner.project,

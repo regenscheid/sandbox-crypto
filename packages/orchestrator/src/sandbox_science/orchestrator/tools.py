@@ -291,7 +291,16 @@ SPECS: Final = (
         "the value of the last expression and any exception." + LONG_OUTPUT + SHARED_IN_CODE,
         {
             "type": "object",
-            "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
+            "properties": {
+                "code": {"type": "string"},
+                "timeout_seconds": _TIMEOUT,
+                "replayable": {
+                    "type": "boolean",
+                    "description": "Permit automatic restoration after kernel loss only for "
+                    "assignments of fixed integer, string, boolean or None literals. "
+                    "All other code needs explicit recovery.",
+                },
+            },
             "required": ["code"],
             "additionalProperties": False,
         },
@@ -1200,7 +1209,11 @@ class Toolbox:
                 "binding_inventory": self._binding_inventory(),
             }
         )
-        return await self._run(request)
+        outcome = await self._run(request)
+        outcome.record["kernel_replay_binding_free"] = (
+            not request.bindings and request.binding_inventory is None
+        )
+        return outcome
 
     async def _restart(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         language = args.get("language", self.languages[0] if self.languages else "python")
