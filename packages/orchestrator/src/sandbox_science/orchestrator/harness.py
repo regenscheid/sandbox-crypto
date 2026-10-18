@@ -54,6 +54,7 @@ from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
+from .continuity.grants import TokenGrants
 from .continuity.hook import WorkHook
 from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
@@ -842,6 +843,7 @@ class Harness:
                                     work.records.control, owner, toolbox.kernel_run
                                 )
                                 hook.record = journal.record
+                                hook.record_tool = journal.record_tool
                                 hook.retain = lambda kernel: threaded(
                                     work.records.retains_kernel,
                                     owner.project,
@@ -1196,7 +1198,13 @@ class Harness:
         if request.parent is not None and self.stores is not None:
             limit = ()
             if request.tokens is not None:
-                limit = (ModelBudget(chat, tokens=request.tokens),)
+                renewed = request.work is not None and await threaded(
+                    TokenGrants(self.stores.projects.control).extended,
+                    request.project,
+                    request.session,
+                    request.work,
+                )
+                limit = (ModelBudget(chat, tokens=request.tokens, require_cost_limit=renewed),)
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
@@ -1256,6 +1264,7 @@ class Harness:
             waiting=waiting,
             over_budget=over_budget,
             limits=limits,
+            refresh_settings=lambda: threaded(records.settings, context.project_id),
             models=ModelChoice(
                 self.delegated.alias,
                 limits,
@@ -1407,6 +1416,11 @@ class Harness:
         fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
         found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
         failed = transcript.failure is not None
+        errors = tuple(found.errors) if found is not None else ()
+        if transcript.failure is not None:
+            # The exception may contain gateway data or credentials. Hand the parent
+            # the trusted failure phase, not an exception string or a false result.
+            errors = (*errors, f"the child's {transcript.failure} phase failed")
         # A result stands only for a run that ended with that answer.
         result = result_of(found, transcript.stopped, failed) if found is not None else None
         return ChildEnd(
@@ -1415,7 +1429,7 @@ class Harness:
             transcript.final_text,
             fence.refused if fence is not None else None,
             result.model_dump(mode="json") if result is not None else None,
-            tuple(found.errors) if found is not None else (),
+            errors,
             finished.alias or self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
@@ -1924,6 +1938,7 @@ async def _save(
     error: Callable[[str], None],
     transcript: Path | None,
 ) -> int:
+    persisted = True
     try:
         # A large record takes long to check and to write: off the event loop, which
         # the session's other runs share.
@@ -1938,6 +1953,7 @@ async def _save(
         except (OSError, ValueError, RecursionError) as exc:
             error(f"the transcript could not be written: {exc}")
             status = 1
+            persisted = False
     if projects is None:
         return status
     try:
@@ -1972,5 +1988,6 @@ async def _save(
         except Exception as exc:
             error(f"the run's {hook.name} could not be acknowledged: {exc}")
             status = 1
-    await threaded(WorkRecords(projects.control).finish, record, persisted=status != 1)
+            persisted = False
+    await threaded(WorkRecords(projects.control).finish, record, persisted=persisted)
     return status

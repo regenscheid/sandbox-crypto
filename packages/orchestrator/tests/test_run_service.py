@@ -168,7 +168,14 @@ async def test_a_first_message_starts_a_run(harness: Harness) -> None:
     (first,) = harness.gateway.main
     assert user_text(first[-1]) == "What is $2+2$?"
     events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
-    assert [e.kind for e in events] == ["started", "user", "model", "assistant", "stopped"]
+    assert [e.kind for e in events] == [
+        "started",
+        "user",
+        "model",
+        "notice",  # the pinned model profile is recorded before the response
+        "assistant",
+        "stopped",
+    ]
     assert events[0].data["message_ids"] == ["m-1"]
     assert events[1].data == {"message_id": "m-1", "text": "What is $2+2$?"}
 
@@ -555,7 +562,7 @@ async def test_a_cancel_during_a_foreground_tool_call(harness: Harness) -> None:
     assert states(harness) == {"m-1": "delivered"}  # the first call saw it
 
 
-async def test_a_failing_session_holds_original_input_and_blocks_unknown_paid_replay(
+async def test_a_failing_session_holds_original_input_for_explicit_resume(
     harness: Harness,
 ) -> None:
     post(harness, "m-1", "Hello?")
@@ -567,8 +574,7 @@ async def test_a_failing_session_holds_original_input_and_blocks_unknown_paid_re
         original = names(harness)[0]
         assert works.get(PROJECT, SESSION, original).state == "paused"
         assert works.request(PROJECT, SESSION, original) is not None
-        await eventually(lambda: works.get(PROJECT, SESSION, original).state == "blocked")
-        assert "unknown_model_usage" in (works.get(PROJECT, SESSION, original).reason or "")
+        assert works.get(PROJECT, SESSION, original).state == "paused"
         assert len(names(harness)) == 1
         assert len(harness.gateway.main) == 1
     (message,) = runs(harness).messages(PROJECT, SESSION)

@@ -606,9 +606,9 @@ class ReviewController:
                 return self._review_summary({**summary, "pending": True, "user_message": message})
             self.task = None
         # A confirmation consumes finding groups before new feed items, so a full
-        # feed cannot starve claimed fixes. At most three windows run at this hold;
+        # feed cannot starve claimed fixes. Catch up bounded evidence windows here;
         # any remaining work is explicitly pending, never labelled as passed.
-        for _ in range(3):
+        for _ in range(config.max_terminal_windows):
             targets = await asyncio.to_thread(self.store.confirmation_targets, *self.scope)
             kind: Literal["confirmation", "terminal"] = "confirmation" if targets else "terminal"
             review = await self._dispatch(kind, label)
@@ -629,7 +629,11 @@ class ReviewController:
             self.task = None
             ended = await asyncio.to_thread(self.store.run, *self.scope, review)
             if ended["state"] in ("failed", "dropped"):
-                continue
+                # Another immediate dispatch would repeat the same failing call.
+                # Keep its window pending for a later, paced attempt.
+                summary["outcome"] = ended["state"]
+                summary["pending"] = True
+                break
             if (
                 ended["state"] == "capped"
                 and (await asyncio.to_thread(self.store.progress, *self.scope))["retry_end"]
@@ -652,9 +656,16 @@ class ReviewController:
         else:
             progress = await asyncio.to_thread(self.store.progress, *self.scope)
             if progress["retry_end"] is None and not progress["remaining"]:
-                summary["outcome"] = "unreviewed"
+                # The final terminal window may have finished on the last
+                # allowed iteration. Keep that result instead of replacing it.
+                if "outcome" not in summary:
+                    summary["outcome"] = "unreviewed"
             else:
                 summary["pending"] = True
+        progress = await asyncio.to_thread(self.store.progress, *self.scope)
+        if summary.get("outcome") == "passed" and progress["historical_holes"]:
+            summary["outcome"] = "inconclusive"
+            summary["coverage_gap"] = True
         summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
         return self._review_summary(summary)
 

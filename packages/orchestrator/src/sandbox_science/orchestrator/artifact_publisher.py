@@ -22,7 +22,7 @@ from sandbox_science.contracts.artifact_inventory import (
 
 from .aio import OwnedExecutor, owned
 from .artifact_blobs import Blob, BlobWriter
-from .artifacts import ArtifactInventory, Room, scoped_path
+from .artifacts import ArtifactInventory, ArtifactOperation, ExecutionReplay, Room, scoped_path
 from .documents.errors import DocumentError
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -78,9 +78,54 @@ class ArtifactPublisher:
             }
         )
 
-    async def room(self, size: int) -> Room:
+    async def room(self, size: int, *, requires_operation: bool = False) -> Room:
         """What the project's budget leaves for a revision of ``size`` bytes."""
-        return await self._sql(lambda: self.inventory.room(self.context.project_id, size))
+        return await self._sql(
+            lambda: self.inventory.room(
+                self.context.project_id, size, requires_operation=requires_operation
+            )
+        )
+
+    async def prior_execution(
+        self, operation: str, path: str, source: ArtifactPublicationSource
+    ) -> ExecutionReplay | None:
+        """Read a prior capture of the same worker execution without republishing it."""
+        return await self._sql(lambda: self.inventory.prior_execution(source, operation, path))
+
+    async def begin_execution_record(
+        self, source: ArtifactPublicationSource, operation: str, path: str, media_type: str | None
+    ) -> ArtifactOperation:
+        return await self._sql(lambda: self.inventory.begin(source, operation, path, media_type))
+
+    async def finish_execution_metadata(
+        self,
+        source: ArtifactPublicationSource,
+        operation: str,
+        path: str,
+        *,
+        sha256: str,
+        size: int,
+        media_type: str,
+        note: Literal["too_large", "quota"],
+    ) -> ArtifactReceipt:
+        return await self._sql(
+            lambda: self.inventory.finish_execution_metadata(
+                source,
+                operation,
+                path,
+                sha256=sha256,
+                size=size,
+                media_type=media_type,
+                note=note,
+            )
+        )
+
+    async def finish_execution_deletion(
+        self, source: ArtifactPublicationSource, operation: str, path: str
+    ) -> ArtifactReceipt:
+        return await self._sql(
+            lambda: self.inventory.finish_execution_deletion(source, operation, path)
+        )
 
     async def find(
         self,

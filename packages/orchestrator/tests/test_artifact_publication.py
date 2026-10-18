@@ -324,6 +324,9 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
         def __init__(self, url, alias, key, **kwargs):
             self.alias = alias
 
+        def for_role(self, role, identity):
+            return self
+
         async def close(self):
             closed.append(self.alias)
 

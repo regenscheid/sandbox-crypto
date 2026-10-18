@@ -32,6 +32,8 @@ class StatusPage(Contract):
     resumes: tuple[ResumeStatus, ...] = Field(max_length=100)
     next_work: str | None
     next_resume: str | None
+    pending_kernel_restore_work: str | None = None
+    pending_kernel_restore_identity: str | None = None
 
 
 class ModelPending(Contract):
@@ -55,6 +57,9 @@ class PendingPage(Contract):
     saved_kernel: bool
     kernel_identity: str | None = None
     kernel_observation: str | None = None
+    pending_kernel_restore: str | None = None
+    """Original reconstruction identity requiring review or operator recompute."""
+    kernel_restore_detail: str | None = None
     next_models: tuple[str, str] | None
     next_operation: int | None
 
@@ -94,6 +99,13 @@ class RecoveryStatus:
             ).fetchone()
             selected = pending or candidate or current
             root = selected[0] if selected else None
+            restore = tx.sql.execute(
+                "SELECT work,identity FROM research_observations WHERE project=? "
+                "AND session=? AND kind='kernel_restore' "
+                "AND json_extract(detail,'$.state')='intent' "
+                "ORDER BY observed LIMIT 1",
+                (project, session),
+            ).fetchone()
             unfinished = tx.sql.execute(
                 "SELECT count(*) FROM research_work WHERE project=? AND session=? AND root=? "
                 "AND state NOT IN ('completed','stopped')",
@@ -126,6 +138,8 @@ class RecoveryStatus:
             resumes=resumes,
             next_work=works[-1].work if len(works) == limit else None,
             next_resume=resumes[-1].request if len(resumes) == limit else None,
+            pending_kernel_restore_work=restore[0] if restore else None,
+            pending_kernel_restore_identity=restore[1] if restore else None,
         )
 
     def pending(
@@ -184,12 +198,21 @@ class RecoveryStatus:
                 "AND kind='kernels' AND identity='latest'",
                 (project, session, work),
             ).fetchone()
+            restore = tx.sql.execute(
+                "SELECT identity,detail FROM research_observations WHERE project=? "
+                "AND session=? AND work=? AND kind='kernel_restore' "
+                "AND json_extract(detail,'$.state')='intent' "
+                "ORDER BY observed DESC LIMIT 1",
+                (project, session, work),
+            ).fetchone()
         return PendingPage(
             models=models,
             operations=operations,
             saved_kernel=kernel is not None,
             kernel_identity=hashlib.sha256(kernel[0].encode()).hexdigest() if kernel else None,
             kernel_observation=kernel[0] if kernel else None,
+            pending_kernel_restore=restore[0] if restore else None,
+            kernel_restore_detail=restore[1] if restore else None,
             next_models=(models[-1].run, models[-1].identity) if len(models) == limit else None,
             next_operation=operations[-1].seq if len(operations) == limit else None,
         )

@@ -162,9 +162,15 @@ class Fake:
         self.paths.append(request.path)
         self.bodies.append(cast(Json, await request.json()))
         if request.path.endswith("/responses"):
+            assert self.bodies[-1]["stream"] is True
             item = {"type": "message", "role": "assistant",
                     "content": [{"type": "output_text", "text": "ok"}]}  # fmt: skip
-            return web.json_response({"status": "completed", "output": [item], "usage": {}})
+            answer = {"status": "completed", "output": [item], "usage": {}}
+            event = json.dumps({"type": "response.completed", "response": answer})
+            return web.Response(
+                text=f"event: response.completed\ndata: {event}\n\ndata: [DONE]\n\n",
+                content_type="text/event-stream",
+            )
         return web.json_response({"choices": [{"message": {"content": "ok"}}]})
 
     async def handle(self, request: web.Request) -> web.Response:
@@ -843,6 +849,7 @@ async def test_a_message_is_read_as_a_turn_and_kept_as_the_gateway_sent_it(fake:
     finally:
         await model.close()
     assert (turn.input_tokens, turn.output_tokens) == (412_000, 345)
+    assert (turn.cache_read_input_tokens, turn.cache_creation_input_tokens) == (400_000, 10_000)
     assert (turn.text, turn.finish_reason, turn.model) == ("Partial.", "length", "claude-opus-5-5")
     assert (turn.cost, turn.gateway_version) == (0.125, VERSION)
     assert (turn.native, turn.native_format) == (text.encode(), MESSAGES)

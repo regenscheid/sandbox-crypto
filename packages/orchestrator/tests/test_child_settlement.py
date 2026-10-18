@@ -15,6 +15,7 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.hook import ChildEnd
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import USER
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.runstate import RunState
 
@@ -140,6 +141,57 @@ async def test_unconfirmed_save_never_advertises_checkpoint_as_returned(
         state.projects.close()
 
 
+async def test_saved_model_failure_settles_as_model_error_not_persistence_error(tmp_path):
+    state, documents = stores(tmp_path)
+    state.projects.open_session("p", "s", dedicated=False)
+    works = WorkRecords(state.projects.control)
+    works.admit("p", "s", RUN)
+    state.projects.save_run(record(RUN))
+    works.admit("p", "s", CHILD, parent=RUN)
+    delegation = Delegation(
+        delegation_id=new_id("dlg"),
+        parent=RUN,
+        run=CHILD,
+        kind="task",
+        brief={"task": "Inspect evidence"},
+        started_at=datetime.now(UTC),
+    )
+    records = DelegationRecords(state.projects.control)
+    records.start("p", "s", delegation)
+    settlement = ChildSettlement(state.projects.control, Ledger(documents))
+    settlement.keep("p", "s", CHILD, delegation.delegation_id, ChildEnd("error", True, None))
+    failed = record(CHILD, stopped="error").model_copy(
+        update={
+            "role": "delegated",
+            "parent": RUN,
+            "delegation": delegation.delegation_id,
+            "failure": "model",
+            "final_text": None,
+            "answer": None,
+        }
+    )
+    errors: list[str] = []
+    try:
+        assert (
+            await save(
+                failed.model_dump(mode="json"),
+                1,
+                (),
+                projects=state.projects,
+                error=errors.append,
+            )
+            == 1
+        )
+        assert errors == []
+        assert works.get("p", "s", CHILD).reason == "error"
+        end = await settlement.settle("p", "s", CHILD)
+        assert end.stopped == "error"
+        assert records.get("p", "s", delegation.delegation_id).stopped == "error"
+    finally:
+        documents.close()
+        state.projects.close()
+
+
 async def test_checkpoint_without_saved_run_is_not_eligible_and_cannot_return(tmp_path):
     state, documents, _, records, settlement, child, outcome = tree(
         tmp_path, saved=False, finished=False
@@ -222,7 +274,9 @@ def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypat
 
     current = migrations.MIGRATIONS
     with monkeypatch.context() as previous:
-        previous.setattr(migrations, "MIGRATIONS", current[:-1])
+        previous.setattr(
+            migrations, "MIGRATIONS", current[: current.index(migrations._child_settlements)]
+        )
         previous.setattr(migrations, "VERSION", 64)
         state, documents = stores(tmp_path)
         state.projects.open_session("p", "s", dedicated=False)
@@ -238,7 +292,7 @@ def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypat
             "Existing immutable evidence"
         )
         with state.projects.control.read() as tx:
-            assert tx.sql.execute("PRAGMA user_version").fetchone() == (65,)
+            assert tx.sql.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
             assert tx.sql.execute("SELECT count(*) FROM research_child_settlements").fetchone() == (
                 0,
             )

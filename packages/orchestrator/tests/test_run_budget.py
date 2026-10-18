@@ -51,19 +51,19 @@ async def test_a_run_that_reaches_the_limit_stops_before_its_next_call(
     assert stopped.data["stopped"] == "budget"
 
 
-async def test_a_call_without_a_known_cost_counts_the_limit_as_reached(harness: Harness) -> None:
-    """Lab 43, B2: a call the gateway neither reported a cost for nor priced in its model
-    information counts nothing toward the limit, so it cannot keep the limit: once one
-    is in the window, the limit counts as reached, and the run stops before its next
-    call. Without a limit, the same calls run on."""
+async def test_a_call_without_a_known_cost_remains_visible_but_does_not_stop_the_run(
+    harness: Harness,
+) -> None:
+    """An unknown charge does not prove the local limit was reached; LiteLLM's
+    upstream budget remains the primary paid-call control."""
     runs(harness).set_cost_limit(PROJECT, 1000)
     post(harness, "m-1", "Read the plan, then answer.")
-    async with serving(harness, Reply(calls=[call("plan_read")]), Reply("Never sent.")):
+    async with serving(harness, Reply(calls=[call("plan_read")]), Reply("Done.", cost="0.5")):
         (record,) = await ended(harness)
-    assert record.stopped == "budget"
-    assert len(harness.gateway.main) == 1
+    assert (record.stopped, record.final_text) == ("answered", "Done.")
+    assert len(harness.gateway.main) == 2
     assert runs(harness).unpriced_calls(PROJECT, record.started_at - WINDOW) == 1
-    assert runs(harness).over_cost_limit(PROJECT, record.ended_at)
+    assert not runs(harness).over_cost_limit(PROJECT, record.ended_at)
     runs(harness).set_cost_limit(PROJECT, None)
     assert not runs(harness).over_cost_limit(PROJECT, record.ended_at)
 

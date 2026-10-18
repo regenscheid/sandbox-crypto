@@ -243,8 +243,7 @@ async def test_a_failing_session_stops_starting_runs_for_its_requests(harness: H
         original = names(harness)[0]
         assert works.get(PROJECT, SESSION, original).state == "paused"
         assert works.request(PROJECT, SESSION, original) is not None
-        await eventually(lambda: works.get(PROJECT, SESSION, original).state == "blocked")
-        assert "unknown_model_usage" in (works.get(PROJECT, SESSION, original).reason or "")
+        assert works.get(PROJECT, SESSION, original).state == "paused"
         assert len(names(harness)) == 1
     assert harness.request_states() == {request: "queued"}
 

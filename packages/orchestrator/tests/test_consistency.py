@@ -64,7 +64,9 @@ def dispatch(store: ReviewStore, kind: ReviewType = "terminal") -> str:
 def anchor(store: ReviewStore, review: str, kind: str = "transcript") -> dict[str, Any]:
     return {
         "evidence": next(
-            i["evidence"] for i in store.manifest("p", "s", review)["evidence"] if i["kind"] == kind
+            i["evidence"]
+            for i in reversed(store.manifest("p", "s", review)["evidence"])
+            if i["kind"] == kind
         )
     }
 
@@ -642,6 +644,7 @@ def test_finding_and_reported_caps_remain_capped_at_finish(store) -> None:
     another = dispatch(reviews)
     reviews.finish("p", "s", another, "owner", "passed", "Bound reached.", cap_reached=True)
     assert reviews.run("p", "s", another)["state"] == "capped"
+    assert reviews.progress("p", "s")["watermark"] == 0
 
 
 def test_failed_and_dropped_windows_retry_without_skipping_new_work(store) -> None:
@@ -658,9 +661,13 @@ def test_failed_and_dropped_windows_retry_without_skipping_new_work(store) -> No
     third = dispatch(reviews)
     reviews.finish("p", "s", third, "owner", "failed", "Third failure.")
     listed = reviews.listing("p", "s")
-    assert len(listed["unreviewed"]) == 1
+    assert listed["unreviewed"] == []
+    assert reviews.progress("p", "s")["watermark"] == 0
+    assert reviews.progress("p", "s")["retry_end"] == first
+    assert not reviews.due("p", "s")
+    now[0] += 300
     next_review = dispatch(reviews)
-    assert reviews.run("p", "s", next_review)["start_seq"] == first + 1
+    assert reviews.run("p", "s", next_review)["start_seq"] == 1
     assert reviews.manifest("p", "s", next_review)["evidence"][0]["locator"]["run"] == "author-1"
 
 
@@ -687,7 +694,7 @@ def test_checkpoint_interval_and_one_running_review_merge_window(store) -> None:
     assert reviews.due("p", "s")
     second = dispatch(reviews, "checkpoint")
     assert reviews.run("p", "s", second)["start_seq"] == reviews.run("p", "s", first)["end_seq"] + 1
-    assert len(reviews.manifest("p", "s", second)["evidence"]) == 2
+    assert len(reviews.manifest("p", "s", second)["evidence"]) == 3
 
 
 def test_snapshot_byte_prefix_keeps_overflow_for_next_window(store, monkeypatch) -> None:
@@ -695,13 +702,13 @@ def test_snapshot_byte_prefix_keeps_overflow_for_next_window(store, monkeypatch)
     monkeypatch.setattr(storage, "MAX_SNAPSHOT_BYTES", 2000)
     for i in range(6):
         claim(reviews, "x" * 900, f"m{i}")
-    seen = []
+    covered = []
     for _ in range(6):
         review = dispatch(reviews)
-        manifest = reviews.manifest("p", "s", review)
-        seen.extend(i["sha256"] for i in manifest["evidence"])
+        run = reviews.run("p", "s", review)
+        covered.append((run["start_seq"], run["end_seq"]))
         reviews.finish("p", "s", review, "owner", "inconclusive", "Bounded prefix checked.")
-    assert len(seen) == 6
+    assert covered == [(n, n) for n in range(1, 7)]
 
 
 @pytest.mark.parametrize("bad", [{}, [], True, 1.5, "x" * 100000])
@@ -810,7 +817,13 @@ def test_confirmation_retains_original_and_response_evidence_with_exact_ids(stor
         effects=True,
     )
     response_review = dispatch(reviews)
-    changed = anchor(reviews, response_review, "execution")
+    changed = {
+        "evidence": next(
+            item["evidence"]
+            for item in reviews.manifest("p", "s", response_review)["evidence"]
+            if item["kind"] == "execution" and item["locator"].get("execution") == "exe-fix"
+        )
+    }
     reviews.finish("p", "s", response_review, "owner", "passed", "Pinned response output.")
     Findings(reviews).respond(
         "p",
@@ -1124,8 +1137,8 @@ async def test_terminal_drains_prior_document_events_and_classifies_neutral_answ
     summary = await controller.terminal([], "Here is the report.")
     assert summary["classifier"]["effects"]
     assert summary["classifier"]["document_ingestion"]["complete"]
-    assert summary["outcome"] == "unreviewed"
-    assert not summary.get("pending")
+    assert summary["outcome"] == "failed"
+    assert summary["pending"]
 
 
 @pytest.mark.asyncio

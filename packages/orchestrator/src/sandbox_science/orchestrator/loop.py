@@ -31,6 +31,7 @@ from .history.log import RunArchive
 from .history.memory import VIEW_BYTES, RunMemory
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
 from .images import IMAGE
+from .kernel_check import KernelCheck
 from .memory_prompt import MemoryGiven
 from .model import (
     GATEWAY_BUDGET,
@@ -574,6 +575,8 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             model=reply.model,
             input_tokens=reply.input_tokens,
             output_tokens=reply.output_tokens,
+            cache_read_input_tokens=reply.cache_read_input_tokens,
+            cache_creation_input_tokens=reply.cache_creation_input_tokens,
             characters=size + answered,
             cost=reply.cost,
             cost_source=reply.cost_source,
@@ -850,7 +853,9 @@ async def _run_task(
                 transcript.tool_records.expose_current(index, record)
             try:
                 for hook in hooks:
-                    await hook.observe_tool(transcript, outcome.record)
+                    await hook.observe_tool(
+                        transcript, record if isinstance(hook, KernelCheck) else outcome.record
+                    )
                 if on_tool is not None:
                     await on_tool(call.name, call.arguments, outcome)
                 if outcome.image is not None:

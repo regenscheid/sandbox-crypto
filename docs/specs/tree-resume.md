@@ -1,8 +1,9 @@
-# Explicit research-tree Resume
+# Research-tree Resume
 
 Implementation contract for RC-1 through RC-13 and RC-F16. Automatic crash restart
-remains disabled. This document describes the implementation target, not completed
-runtime acceptance.
+remains disabled. A bounded control-service scheduler can queue the same durable
+Resume request after a saved model-phase failure. This document describes the
+implementation target, not completed runtime acceptance.
 
 ## Identity and ownership
 
@@ -41,6 +42,47 @@ The service gives Resume requests priority over ordinary admission in that sessi
 A durable response reports counts and paged branch states/reasons, including blocked
 branches; it never calls an incomplete tree successfully resumed.
 
+The control service also checks the current tree's saved paused root for model-phase
+failures. It may queue one Resume only when at least one unfinished branch has a
+saved model-phase failure and every other unfinished branch is either another such
+failure or a parent waiting on children. The request and a small retry observation
+commit together; another service sees the same request after restart. Without a new
+completed work item or recorded model answer, at most three automatic requests are made, separated
+by 30 and 60 seconds; later recovery needs an explicit owner action. The scheduler
+defers to a newly queued user message so a correction can be handled first. It
+does not create new work, reset grants, re-dispatch a tool, or override the normal
+cost, policy, environment and kernel checks. It leaves stopped/cancelled work,
+spent token grants, uncertain tool effects and other failures for explicit handling.
+The automatic request rechecks Stop, cancellation, a newer root and fresh user
+messages atomically when claiming the session epoch; an invalidated request becomes
+blocked without dispatch. Cancellation on any prior attempt in the tree also prevents
+queuing it again. Each control-service pass reads at most 100 candidate
+roots and rotates its cursor for later passes.
+Unknown model charges remain visible but do not by themselves prevent this bounded
+continuation. Its positive classification is intentionally narrow: a saved `error`
+attempt must name failure phase `model`. The scheduler does not infer that every
+model error is transient; bounded retries contain persistent configuration errors.
+
+An `answered` root whose children are all completed can be a checkpoint rather
+than the end of an active scientific plan. The control service checks such idle
+roots in bounded pages, then queues a new root input through the ordinary chat
+admission path. It never reopens completed work. The synthetic message directs
+the next root to reread the current plan, child outcomes, documents and artifacts;
+it does not copy an old transcript or claim a new result. A separate durable
+observation binds the plan version, status revision, progress cursor and event
+cursor to a random message ID, so a restart cannot queue it twice and user
+message IDs cannot predictably collide with it. Another continuation requires a
+change to that plan state. The plan and root are rechecked with message and
+observation insertion in one transaction. Under the next run's lease, queued
+input is selected and marked offered in one write. A changed plan, user message
+or cancellation committed before that claim withdraws the synthetic input. Input
+arriving after the claim is handled by the live run or its next turn. Fresh user
+input, unfinished or stopped child work,
+closed sessions, queued Resume and existing cost gates take precedence. A cost
+refusal retains the observation rather than causing a repeated synthetic input.
+Automatic recovery after process loss, lost kernels, worker failures, and explicit
+budget/grant decisions remains open.
+
 Recovery traverses the durable tree in bounded pages. It first reads explicit Stop,
 then current policy, project/environment identity, model and pinned dependencies,
 spending and pending operations. Only after reconciliation does it schedule eligible
@@ -64,6 +106,11 @@ unknown outcome blocks the branch. An unsupported external/MCP effect remains un
 its old arguments are never automatically executed again. Explicit reconciliation
 must name authoritative evidence or acknowledge the uncertain effect; elapsed time
 is not proof that nothing ran.
+The live tool path uses the same distinction: a definite application refusal becomes
+an error the agent can correct; a lost worker or MCP reply leaves the original
+intent pending and ends the attempt. A child failure reaches its parent as a bounded
+outcome notice with the trusted failure phase, while the unresolved operation remains
+blocked for orchestrator Resume. Neither parent nor child invents a successful result.
 
 Observe sandbox and kernel identity/generation without waking them. Reuse the stable
 child kernel scope only when its saved observation matches. A lost kernel is a visible
@@ -80,8 +127,14 @@ an interruption does not discard an unanswered question or re-ask an answered on
 
 Model intent is recorded before a paid dispatch. An intent without an observed response
 is shown as an unknown outcome/charge; it is never represented as a zero-cost call.
-Gateway enforcement remains authoritative. A new model call requires current budget
-admission and explicit Resume, not an assumption that the lost request was free.
+Gateway enforcement remains authoritative. Explicit Resume may continue past this
+unknown charge under the gateway's spending control. It does not replay the lost
+model response or erase the unknown charge. Original tool effects still require
+reconciliation before their branch can continue.
+If an earlier attempt has no saved starting-input snapshot, recovery logs the
+provenance gap and records the continuation's current prompt/tool/skill pins;
+missing historical pins alone do not block. A known mismatch with saved pins
+still blocks under the current pinning policy.
 
 ## Acceptance
 
@@ -103,15 +156,19 @@ An authenticated operator may explicitly resolve a still-unknown model intent wi
 and output token upper bounds, with a reason. This is a budget reservation, not an
 observation: the original call's actual usage remains NULL/UNKNOWN and no assistant
 or tool response is synthesized. The archive records that distinction visibly.
-The same inactive-work, original-attempt, current-epoch, exact-identity and
-idempotency checks as other recovery resolutions apply; changing the decision or
+The same original-attempt, current-epoch, exact-identity and idempotency checks
+as other recovery resolutions apply; accounting-only model decisions may also
+be attached after work completes, while effect resolutions still require
+unfinished inactive work. Changing the decision or
 switching between observed usage and reservation conflicts.
 
-The reservation permits reconciliation to continue, but does not issue Resume or
-widen the original grants. Its cost counts against the project's daily admission
+A cancelled fold can leave an estimated usage copy in its run collection. When the same run has a sole durable fold intent with observed usage or an exact reservation, this copy is diagnostic rather than a second unpriced charge. An unsettled or ambiguous copy retains its unpriced status.
+
+The optional reservation gives local cost/token estimates a conservative bound, but
+does not issue Resume or widen the original grants. Its cost counts against the project's daily admission
 budget using the original dispatch time, separately from observed-spend reporting.
 Its input/output bounds reduce the original child token grant across all attempts;
-a spent grant or project budget still blocks continuation. Unknown calls without
-an explicit reservation still block. Status retains unknown actual usage and
+a spent grant or project budget still blocks continuation. Unknown model calls without
+an explicit reservation remain visible and do not alone block Resume. Status retains unknown actual usage and
 shows the reservation/operator evidence separately. This does not recover a lost
 response, determine the actual provider charge or authorize replaying the lost call.

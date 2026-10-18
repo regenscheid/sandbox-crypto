@@ -164,6 +164,10 @@ class ModelUsage(Contract):
     """The model that answered, as the gateway names it."""
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    cache_read_input_tokens: int | None = Field(default=None, ge=0)
+    cache_creation_input_tokens: int | None = Field(default=None, ge=0)
+    """Reported cache hits and writes. Null means unavailable, including for legacy calls;
+    writes are never counted as hits. Both are included in normalized input_tokens."""
     characters: int | None = Field(default=None, ge=0)
     """What the call sent and received, in characters: the spend of a call without
     token counts is a quarter of it."""

@@ -67,15 +67,20 @@ out of the view, the run predates the archive, or it was never reviewed: a false
 never a false pass. The reviewer uses
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The alias may be MAIN's: the reviewer still has
-its own calls, limits, budget and records. The adapter limits each answer to 2,048 tokens
-and 64 KiB before the reviewer applies stricter response bounds. With no reviewer alias,
+its own calls, limits, budget and records. The alias is independently selectable in
+`[model].reviewer`; for example, a deployment whose LiteLLM gateway serves
+`arrcodex-gpt-6-luna` may choose that alias for routine reviews while MAIN uses a
+different model. Compare the alias against known inconsistency fixtures and actual
+review samples before switching consequential reviews to it. The adapter limits each
+answer to 4,096 tokens and 256 KiB before the reviewer applies stricter response bounds.
+With no reviewer alias,
 reviews are off (CR-35 as amended for lab 43's B6): none is dispatched or recorded as
 failed, a terminal summary says `off`, and the session's review list says so, from a
 `review.off` event recorded once until a review is dispatched again. An alias whose model
-is unavailable makes zero reviewer model calls; its required windows end failed, retry
-twice, then become visibly unreviewed. Neither becomes a pass.
+is unavailable makes zero reviewer model calls; its required window remains pending
+under a paced retry after repeated failures. Neither becomes a pass.
 
-**Limits (lab 38).** A review of a normal session's window by a large model reads twenty to fifty items in eight to twenty calls, each sending the whole conversation again, so its limits are set for that: at most 24 calls, 300 seconds, 300,000 characters of context per call, and a budget of 400,000 tokens over all its calls; and a project's reviewer makes at most 240 calls an hour. The budget counts what each call used, as the provider reports it, and an estimate only for a call not yet answered or one the provider does not report. The run service takes the budget and the hourly cap as `--review-token-budget` and `--review-calls-per-hour`, the settings of a project that has none of its own, and the launcher passes `[model]`'s `review_token_budget` and `review_calls_per_hour`. A manifest page lists up to 50 items; a larger `limit` is read as 50. Of one turn's tool calls, the first 16 run and the rest are answered `not_run`, asking the reviewer to make them again; only text or tool arguments over their bounds fail a review. A review a limit ends is `capped`, and its summary names the limit and what it used: the token budget, with the tokens counted and the calls made; the project's hourly cap, with its calls in the last hour; the call limit; the time; or the context. The GUI's review view shows each review's calls, tokens and counted budget against its limits. A review a limit ends keeps its window, as a failed one does: the next review covers it again, and the third time it is left unreviewed; a terminal hold does not retry it at once, since the same limit would end it again. When the project's reviewer has no calls left this hour, no review starts: the session's work waits as one pending review, covering all of it since the last, which the next safe point or run boundary starts once calls are left. The first deferral records `review.deferred`, and the GUI's review list says the session's review is waiting, and why, until a review starts.
+**Limits (SNOVA follow-up).** A new author-work review takes a contiguous feed prefix of at most 16 new evidence items and approximately 256 KiB by default, with the existing 256-item/8-MiB snapshot ceiling still bounding finding groups and derived context. It also carries up to eight recent evidence items from before the watermark, within 128 KiB; prior ledger claims are carried as non-promotable context and oversized prior evidence is represented by a locator marker, so a claim and observation on opposite sides of a window boundary can be compared. One oversized first new item is admitted so the cursor cannot stall. A clean prefix can pass its own span, but its `coverage_complete` remains false while later feed rows are pending, so ledger promotion cannot use it. A partial delegated batch remains incomplete. Earlier inconclusive or incomplete finding spans, or historically unreviewed spans, prevent a later terminal pass from certifying the whole session. On a capped or failed attempt the next attempt takes at most one quarter as many new items/bytes; after three failures its watermark stays put and further attempts are admitted at least five minutes after the last failure. A later safe point or terminal boundary must trigger that retry; idle timer dispatch is still planned. This prevents an unavailable reviewer from repeatedly buying calls and silently skipping evidence. Each review still has at most 24 calls, 300 seconds, 300,000 characters of context per call, and 400,000 tokens over all calls; the project reviewer has at most 240 calls per hour. The budget counts provider usage when reported and otherwise a conservative estimate. The run service accepts `--review-token-budget` and `--review-calls-per-hour`, forwarded from `[model]`. A manifest page lists up to 50 items. Of one turn's tool calls, the first 16 run and the rest are answered `not_run`. The GUI shows calls, tokens, cap reason, incomplete coverage and unreviewed spans. When hourly calls are exhausted, work remains pending until the cap permits another dispatch. Contradictions farther apart than the carried evidence still need a later indexed aggregate review.
 
 Checkpoints start at live safe points after the configured minimum interval and document,
 artifact, kernel-cell or manual-request thresholds. The terminal rule classifier records
@@ -83,7 +88,7 @@ its version, completion-claim match, durable run effects, open/claimed-fixed fin
 states and document/ledger/artifact ingestion coverage. Ordinary conversation without those triggers
 skips terminal review; failed/interrupted author loops do not run a terminal reviewer.
 
-Terminal holds process at most three bounded windows. Each window pins a contiguous
+Terminal holds process at most 24 bounded windows by default. Each window pins a contiguous
 feed prefix; unseen overflow retains its cursor. Terminal ingestion drains through a
 pinned document-event head, and a ledger-event head, in pages of 200, at most 10,000 events per boundary, and marks
 remaining backlog incomplete. A page's observations and its cursor commit in one change,
@@ -91,8 +96,7 @@ as the artifact pages' do, and the session is checked once per call, not per ite
 page that fails (an observation the store refuses) stops that ingestion as a whole: no
 later page is read, and the next boundary starts again at the same cursor. Completed
 windows advance the author-work watermark;
-failed/dropped windows, and those a limit ended, retain their exact retry end. The third failure records an
-unreviewed window before advancing. Confirmation attempts track each exact finding
+failed/dropped windows, and those a limit ended, retain their exact retry end. Three failed attempts defer further dispatches for at least five minutes without advancing the watermark. Confirmation attempts track each exact finding
 revision separately and cannot clear, advance or replace an author-work retry window.
 Exhausted or completed confirmation targets do not starve later author-work reviews.
 

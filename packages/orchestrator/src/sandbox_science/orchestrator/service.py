@@ -35,6 +35,8 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
 from .aio import owned, threaded
 from .chat import SOURCE, session_lease
+from .continuity.auto_continuation import AutoContinuation
+from .continuity.auto_recovery import AutoRecovery
 from .continuity.records import WorkRecords
 from .continuity.recovery import Recovery
 from .control import ControlError
@@ -62,6 +64,7 @@ MAX_ACTIVE_ROOTS: Final = 4
 POLL_SECONDS: Final = 1.0
 """The percent of the project's daily MAIN budget one run may use, by default (RS-6a)."""
 BEAT_SECONDS: Final = 10.0
+AUTO_RECOVERY_SECONDS: Final = 10.0
 RETRY_SECONDS: Final = 30.0
 MAX_WAIT: Final = 900.0
 """The longest wait between a session's failing runs."""
@@ -128,6 +131,13 @@ class RunService:
         the session's next run is offered them with the others."""
         self.holder = secrets.token_hex(16)
         self._beaten = -BEAT_SECONDS
+        self._auto_checked = -AUTO_RECOVERY_SECONDS
+        self._auto_after = ("", "", "")
+        self._continue_after = ("", "", "")
+        self.auto_recovery = AutoRecovery(harness.stores.projects.control, clock=clock)
+        self.auto_continuation = AutoContinuation(
+            harness.stores.projects.control, harness.stores.documents, self.runs
+        )
         self.ledger = Ledger(harness.stores.documents)
         self.figures = FigureChecks(harness.stores.documents, figures)
         self.local_branches: set[asyncio.Task[bool]] = set()
@@ -216,6 +226,44 @@ class RunService:
         for key in await threaded(self.runs.held_for, RESEARCH_STATE):
             if key not in self.active:
                 await self._consolidated(*key)
+        if now - self._auto_checked >= AUTO_RECOVERY_SECONDS:
+            self._auto_checked = now
+            await self.auto_recovery_tick()
+            await self.auto_continuation_tick()
+
+    async def auto_recovery_tick(self) -> None:
+        """Offer bounded model-failure recovery; dispatch retains its normal gates."""
+        page = await threaded(self.auto_recovery.candidates, after=self._auto_after)
+        self._auto_after = page[-1] if len(page) == 100 else ("", "", "")
+        for project, session, root in page:
+            if (project, session) in self.active:
+                continue
+            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
+                continue
+            request = await threaded(self.auto_recovery.queue, project, session, root)
+            if request is not None:
+                _log.info(
+                    "session %s queued automatic Resume %s for saved model failure",
+                    session,
+                    request,
+                )
+
+    async def auto_continuation_tick(self) -> None:
+        """Queue one next root for an answered checkpoint with an active plan."""
+        page = await threaded(self.auto_continuation.candidates, after=self._continue_after)
+        self._continue_after = page[-1] if len(page) == 100 else ("", "", "")
+        for project, session, root in page:
+            if (project, session) in self.active:
+                continue
+            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
+                continue
+            try:
+                message = await threaded(self.auto_continuation.queue, project, session, root)
+            except ControlError as error:
+                _log.warning("plan continuation for session %s was not queued: %s", session, error)
+                continue
+            if message is not None:
+                _log.info("session %s queued plan continuation %s", session, message)
 
     async def waiting_work(self) -> tuple[tuple[str, str], ...]:
         """Enumerate eligible work without admitting or starting an agent loop."""
@@ -511,8 +559,16 @@ class RunService:
         )
         active.run = name = run_name(admitted.started_at, admitted.run_id)
         async with session_lease(runs, admitted.context, name, clock=self.clock):
-            # Read once the session is held: another run may have answered them.
-            queued = await threaded(runs.messages, project, session, state="queued")
+            # Select under the lease in one write: a late correction cannot be
+            # combined with an already claimed synthetic plan continuation.
+            selected = set(
+                await threaded(self.auto_continuation.claim_queued, project, session, name)
+            )
+            queued = [
+                message
+                for message in await threaded(runs.messages, project, session, state="queued")
+                if message.message_id in selected
+            ]
             # A consolidation run is for the new messages alone: the requests wait.
             requests = [] if active.consolidate else await self._requests(project, session)
             if not queued and not requests:

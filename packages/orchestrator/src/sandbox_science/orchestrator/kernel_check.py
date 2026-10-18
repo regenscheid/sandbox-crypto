@@ -59,6 +59,9 @@ class KernelCheck(TurnHook):
         delegation starts them."""
         self.retain: Callable[[str], Awaitable[bool]] | None = None
         self.record: Callable[[KernelObservation], Awaitable[None]] | None = None
+        self.record_tool: Callable[[dict[str, Any], KernelObservation], Awaitable[None]] | None = (
+            None
+        )
         self.told: set[str] = set()
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
@@ -95,8 +98,19 @@ class KernelCheck(TurnHook):
         return (Notice(self.name, ids, KERNELS.text, new),)
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
-        if self.record is not None and record.get("tool") in ("python", "sage", "restart_kernel"):
-            await self.record(await self.client.observe_kernels(self.context))
+        # The loop passes the complete current record because compact retained
+        # records in the confined runtime may omit arguments and execution data.
+        if record.get("tool") not in ("python", "sage", "restart_kernel"):
+            return
+        try:
+            observed = await self.client.observe_kernels(self.context)
+        except Exception:  # passive observation is retried at the next turn
+            _log.warning("the post-tool kernel observation failed", exc_info=True)
+            return
+        if self.record_tool is not None:
+            await self.record_tool(record, observed)
+        elif self.record is not None:
+            await self.record(observed)
 
     async def _sweep(self, observed: KernelObservation) -> None:
         runs = {kernel.run for kernel in observed.kernels if kernel.run is not None}

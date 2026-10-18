@@ -26,7 +26,11 @@ def test_schema_66_upgrade_preserves_originals_ids_constraints_and_triggers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with monkeypatch.context() as old:
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:-1])
+        old.setattr(
+            migrations,
+            "MIGRATIONS",
+            migrations.MIGRATIONS[: migrations.MIGRATIONS.index(migrations._larger_user_uploads)],
+        )
         old.setattr(migrations, "VERSION", 66)
         documents = prepared(tmp_path)
         uploads = UserUploads(documents)

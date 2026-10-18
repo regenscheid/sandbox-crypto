@@ -43,10 +43,12 @@ def history(reviews: ReviewStore, documents: DocumentStore, now: list[float]) ->
 
 def answers(reviews: ReviewStore, documents: DocumentStore) -> dict[str, Any]:
     events = [event.model_dump(mode="json") for event in documents.events("p")]
+    listing = reviews.listing("p", "s")
     return {
         "events": events,
         "paged": [e.seq for e in documents.events("p", after=events[0]["seq"], limit=1)],
-        "unreviewed": reviews.listing("p", "s")["unreviewed"],
+        "unreviewed": listing["unreviewed"],
+        "waiting": listing["waiting"],
         "ingested": reviews.ingest_documents("p", "s", drain=True),
     }
 
@@ -60,7 +62,9 @@ def test_the_documents_events_are_theirs_alone(store):
         "document.revision_created",
     ] * 2
     assert found["paged"] == [found["events"][1]["seq"]]
-    assert [u["failures"] for u in found["unreviewed"]] == [3]
+    assert found["unreviewed"] == []
+    assert found["waiting"]["reason"] == "Third failure."
+    assert found["waiting"]["retry_after_seconds"] == 300
     assert found["ingested"]["complete"]
 
 

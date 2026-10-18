@@ -285,8 +285,9 @@ class Pool:
                     if len(output) + len(chunk) > maximum:
                         raise CaptureError("internal", "capture helper reply is too large")
                     output.extend(chunk)
-                if await process.wait() != 0:
-                    raise CaptureError("internal", "capture helper failed")
+                status = await process.wait()
+                if status != 0:
+                    raise CaptureError("internal", f"capture helper exited with status {status}")
                 try:
                     raw: object = json.loads(output)
                 except (ValueError, RecursionError) as exc:

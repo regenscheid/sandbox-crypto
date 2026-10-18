@@ -110,6 +110,8 @@ async def test_usage_is_durable_before_observers_and_effects_without_events_or_f
                     native_format="fixture",
                     input_tokens=10,
                     output_tokens=2,
+                    cache_read_input_tokens=4,
+                    cache_creation_input_tokens=0,
                     cost=0.25,
                     cost_source="model_info",
                 )
@@ -136,6 +138,8 @@ async def test_usage_is_durable_before_observers_and_effects_without_events_or_f
         (kept,) = [row for table, row in rows if table == "archive_model_usage"]
         assert (kept["ordinal"], kept["role"]) == (1, role)
         assert json.loads(kept["usage"])["cost"] == 0.25
+        assert json.loads(kept["usage"])["cache_read_input_tokens"] == 4
+        assert json.loads(kept["usage"])["cache_creation_input_tokens"] == 0
         answer = Archive(reopened.control).message("p", kept["message_id"])
         assert answer.entry.native == b"exact response"
         assert answer.parent == parent
@@ -264,7 +268,7 @@ def test_mixed_journal_and_fallback_ordinals_count_once_through_final_save(
         assert state.model_info_cost("p") == (None if unknown else 0.25)
         assert state.unpriced_calls("p", START - timedelta(seconds=1)) == int(unknown)
         state.set_cost_limit("p", 100)
-        assert state.over_cost_limit("p", START + timedelta(hours=1)) == unknown
+        assert not state.over_cost_limit("p", START + timedelta(hours=1))
 
 
 def test_budget_deduplication_is_scoped_by_project_and_session(projects: ProjectStore) -> None:

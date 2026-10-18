@@ -14,15 +14,17 @@ from pathlib import Path
 
 import pytest
 
-from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator.control import ControlError, ControlStore
+from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.history import Archive, Entry, RunArchive
 from sandbox_science.orchestrator.history.operations import PAGE, ToolJournal, ToolRecord
+from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Request, Toolbox, ToolEntry, ToolOutcome
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .control_versions import older_store
 
@@ -48,11 +50,11 @@ def logger(projects: ProjectStore, *, parent: str | None = None) -> RunArchive:
     return RunArchive(Archive(projects.control), CONTEXT, run=RUN, parent=parent)
 
 
-def toolbox(handler) -> Toolbox:
+def toolbox(handler, *, effect: Effect = "read") -> Toolbox:
     box = Toolbox(WorkerClient("http://unused.invalid", "fixture"), CONTEXT)
     box.entries = {
         "arithmetic": ToolEntry(
-            ToolSpec("arithmetic", "Fixture arithmetic", {"type": "object"}), "read", handler
+            ToolSpec("arithmetic", "Fixture arithmetic", {"type": "object"}), effect, handler
         )
     }
     return box
@@ -159,6 +161,52 @@ async def test_interruption_during_dispatch_keeps_an_uncertain_intent(
         ]
     finally:
         reopened.close()
+
+
+@pytest.mark.parametrize("source", ["worker", "connector"])
+async def test_unknown_tool_effect_halts_without_settling_its_intent(
+    projects: ProjectStore, source: str
+) -> None:
+    async def uncertain(request: Request) -> ToolOutcome:
+        if source == "worker":
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE, "fixture accepted then disconnected", uncertain=True
+            )
+        raise UnknownEffectError("no_usable_answer", "fixture reply was lost")
+
+    transcript = await run_task(
+        model(CALL),
+        toolbox(uncertain, effect="effect"),
+        "Compute",
+        run_id="run-1",
+        hooks=(),
+        log=logger(projects),
+    )
+    assert (transcript.stopped, transcript.failure) == ("error", "tool")
+    assert len(ToolJournal(projects.control).pending("p", "s", RUN)) == 1
+    assert not [
+        message
+        for message in Archive(projects.control).messages("p", "s")
+        if message.entry.kind == "tool_result"
+    ]
+
+
+async def test_definitive_worker_refusal_is_delivered_for_agent_recovery(
+    projects: ProjectStore,
+) -> None:
+    async def refused(request: Request) -> ToolOutcome:
+        raise WorkerAPIError(ErrorKind.UNAVAILABLE, "fixture worker refused", status=503)
+
+    transcript = await run_task(
+        model(CALL),
+        toolbox(refused, effect="effect"),
+        "Compute",
+        run_id="run-1",
+        hooks=(),
+        log=logger(projects),
+    )
+    assert transcript.final_text == "Done"
+    assert ToolJournal(projects.control).pending("p", "s", RUN) == []
 
 
 async def test_persistence_failure_before_dispatch_prevents_the_effect(

@@ -112,11 +112,19 @@ _Model = TypeVar("_Model", bound=BaseModel)
 class WorkerAPIError(Exception):
     """The worker answered with an error, or could not be reached (``unavailable``)."""
 
-    def __init__(self, kind: ErrorKind, message: str, status: int | None = None) -> None:
+    def __init__(
+        self,
+        kind: ErrorKind,
+        message: str,
+        status: int | None = None,
+        *,
+        uncertain: bool = False,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.status = status
+        self.uncertain = uncertain
 
 
 class WorkerProtocolError(WorkerAPIError):
@@ -276,13 +284,26 @@ class WorkerClient:
                     payload = await _bounded_body(response.content, max_bytes)
                 if response.status >= 400 or (not allow_redirects and 300 <= response.status < 400):
                     raise _error(payload, response.status)
+        except WorkerAPIError as exc:
+            # A proxy failure or malformed successful reply cannot establish whether
+            # a submitted effect ran. A definite application refusal can be shown to
+            # the model as an ordinary error.
+            if method != "GET" and (exc.status is None or exc.status >= 500):
+                exc.uncertain = True
+            raise
         except (aiohttp.ClientError, TimeoutError) as exc:
-            raise WorkerAPIError(ErrorKind.UNAVAILABLE, f"cannot reach the worker: {exc}") from exc
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                f"cannot reach the worker: {exc}",
+                uncertain=method != "GET",
+            ) from exc
         try:
             return model.model_validate_json(payload), response.status
         except ValidationError as exc:
             raise WorkerAPIError(
-                ErrorKind.INTERNAL, f"unexpected worker response: {str(exc)[:500]}"
+                ErrorKind.INTERNAL,
+                f"unexpected worker response: {str(exc)[:500]}",
+                uncertain=method != "GET",
             ) from exc
 
     # Environments (D73): the worker creates sandboxes under stored policy revisions.
@@ -524,7 +545,9 @@ class WorkerClient:
                 failures += 1
                 if failures > RECONNECT_ATTEMPTS:
                     raise WorkerAPIError(
-                        ErrorKind.UNAVAILABLE, f"lost the worker's event stream: {exc}"
+                        ErrorKind.UNAVAILABLE,
+                        f"lost the worker's event stream: {exc}",
+                        uncertain=True,
                     ) from exc
                 _log.info("event stream dropped (%s); resuming after %d", exc, after)
                 await self.clock.sleep(self.reconnect_delay * failures)
@@ -532,7 +555,11 @@ class WorkerClient:
             # The stream ended without a result: ask again from where it stopped.
             failures += 1
             if failures > RECONNECT_ATTEMPTS:
-                raise WorkerAPIError(ErrorKind.UNAVAILABLE, "the event stream kept ending early")
+                raise WorkerAPIError(
+                    ErrorKind.UNAVAILABLE,
+                    "the event stream kept ending early",
+                    uncertain=True,
+                )
 
     async def run(
         self,
@@ -574,8 +601,16 @@ class WorkerClient:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
                 f"no result from the worker {self.result_grace:g} s after the execution's limit",
+                uncertain=True,
             ) from exc
-        return await self.get(execution.execution_id, project_id=project_id)
+        except WorkerAPIError as exc:
+            exc.uncertain = True
+            raise
+        try:
+            return await self.get(execution.execution_id, project_id=project_id)
+        except WorkerAPIError as exc:
+            exc.uncertain = True
+            raise
 
     async def jobs(
         self, context: ExecutionContext, *, limit: int = 100, after: str | None = None
@@ -642,10 +677,17 @@ class WorkerClient:
         return result
 
     async def restart_kernel(
-        self, context: ExecutionContext, language: Language = "python", run: str | None = None
+        self,
+        context: ExecutionContext,
+        language: Language = "python",
+        run: str | None = None,
+        *,
+        only_if_absent: bool = False,
     ) -> KernelInfo:
         """Restart the session's kernel of ``language``, or ``run``'s own."""
-        request = KernelRestartRequest(context=context, language=language, run=run)
+        request = KernelRestartRequest(
+            context=context, language=language, run=run, only_if_absent=only_if_absent
+        )
         return await self._call("POST", "/v1/kernels/restart", KernelInfo, request)
 
     async def close_session(

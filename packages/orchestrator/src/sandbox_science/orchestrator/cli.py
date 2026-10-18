@@ -327,8 +327,8 @@ def _harness(
                 args,
                 args.reviewer_model,
                 role="reviewer",
-                max_tokens=2048,
-                max_response_bytes=65536,
+                max_tokens=4096,
+                max_response_bytes=262144,
             ),
         )
         closing(stack, interruption, lambda: _close(reviewer.model))

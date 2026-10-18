@@ -24,7 +24,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
 
@@ -97,6 +98,7 @@ def _response_usage(project: str, since: datetime | None) -> tuple[str, tuple[ob
 def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
     """Canonical observations, exactly linked legacy copies, then unlinked history."""
     from .continuity.materializations import Table, fallback
+    from .continuity.reservations import UNRESERVED
 
     query, values = _response_usage(project, since)
     after = 0.0 if since is None else since.timestamp()
@@ -130,34 +132,62 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
         values += (project, after)
 
     # Fold usage is copied into collection, saved-summary and event forms. Preserve
-    # their old precedence, then suppress only an explicit observed intent identity.
-    def fold_copy(value: str, project_col: str, session: str, run: str) -> str:
+    # their old precedence. A linked intent suppresses its copy only after observation
+    # or reservation. An older copy without an intent ID needs an exact USER link.
+    def fold_copy(
+        value: str,
+        project_col: str,
+        session: str,
+        run: str,
+        source: str,
+        position: str,
+        event_seq: str = "0",
+    ) -> str:
         return (
-            "NOT EXISTS (SELECT 1 FROM research_model_calls paid "  # noqa: S608 - fixed columns
-            f"WHERE paid.project={project_col} AND paid.session={session} AND paid.run={run} "
-            f"AND paid.identity=json_extract({value},'$.intent_id') "
-            "AND paid.kind='fold' AND paid.usage IS NOT NULL)"
+            "NOT EXISTS (SELECT 1 FROM research_model_calls m "  # noqa: S608 - fixed columns
+            f"WHERE m.project={project_col} AND m.session={session} AND m.run={run} "
+            f"AND m.identity=json_extract({value},'$.intent_id') AND m.kind='fold' "
+            f"AND (m.usage IS NOT NULL OR (json_extract({value},'$.cost') IS NULL "
+            f"AND NOT ({UNRESERVED})))) "
+            "AND NOT EXISTS (SELECT 1 FROM research_observations link "
+            "JOIN research_model_calls m ON m.project=link.project "
+            "AND m.session=link.session "
+            "AND m.run=json_extract(link.detail,'$.resolution.run') "
+            "AND m.identity=json_extract(link.detail,'$.resolution.identity') "
+            "JOIN research_attempts a ON a.project=m.project AND a.session=m.session "
+            "AND a.work=link.work AND a.run=m.run "
+            f"WHERE link.project={project_col} AND link.session={session} "
+            "AND link.kind='resolution:fold_estimate_link' "
+            f"AND m.run={run} AND m.kind='fold' AND m.usage IS NULL "
+            f"AND json_extract(link.detail,'$.resolution.source')='{source}' "
+            f"AND json_extract(link.detail,'$.resolution.position')={position} "
+            f"AND coalesce(json_extract(link.detail,'$.resolution.event_seq'),0)={event_seq} "
+            f"AND json_extract(link.detail,'$.resolution.estimate_json')={value} "
+            f"AND NOT ({UNRESERVED}))"
         )
 
+    event_fold = fold_copy(
+        "u.value", "e.project_id", "e.session_id", "e.run", "event", "u.key", "e.seq"
+    )
     query += (
         " UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM archive_messages m "  # noqa: S608
         "WHERE m.project=c.project AND m.session=c.session AND m.run=c.run "
         "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item "
         "FROM run_collections c WHERE c.project=? AND c.run>=? AND c.collection='fold_calls' "
-        f"AND {fold_copy('c.item', 'c.project', 'c.session', 'c.run')} "
+        f"AND {fold_copy('c.item', 'c.project', 'c.session', 'c.run', 'collection', 'c.position')} "
         "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'),u.value "
         "FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
         "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS (SELECT 1 FROM run_collections h "
         "WHERE h.project=r.project_id AND h.session=r.session_id AND h.run=r.name "
         "AND h.collection='fold_calls') "
-        f"AND {fold_copy('u.value', 'r.project_id', 'r.session_id', 'r.name')} "
+        f"AND {fold_copy('u.value', 'r.project_id', 'r.session_id', 'r.name', 'summary', 'u.key')} "
         "UNION ALL SELECT 'main',u.value FROM run_events e,json_each(e.data,'$.calls') u "
         "WHERE e.project_id=? AND e.run>=? AND e.kind='fold' "
         "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
         "AND r.session_id=e.session_id AND r.name=e.run) "
         "AND NOT EXISTS (SELECT 1 FROM run_collections h WHERE h.project=e.project_id "
         "AND h.session=e.session_id AND h.run=e.run AND h.collection='fold_calls') "
-        f"AND {fold_copy('u.value', 'e.project_id', 'e.session_id', 'e.run')}"
+        f"AND {event_fold}"
     )
     return query, (*values, project, first, project, first, project, first)
 
@@ -259,6 +289,8 @@ class RunState:
     ) -> None:
         self.control = store if isinstance(store, ControlStore) else store.control
         self.clock, self.lease_seconds = clock, lease_seconds
+        self._unpriced_warning_lock = threading.Lock()
+        self._unpriced_warning: dict[str, tuple[int, int]] = {}
 
     def _now(self) -> datetime:
         return self.clock.now().astimezone(UTC)
@@ -283,6 +315,38 @@ class RunState:
             if by_message(db, message_id):
                 raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
             return _queue(db, project, session, message_id, text, author, now)
+
+    def post_if(
+        self,
+        project: str,
+        session: str,
+        message_id: str,
+        text: str,
+        *,
+        author: str,
+        eligible: Callable[[sqlite3.Connection], bool],
+        on_queue: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> bool:
+        """Queue trusted service input only while its saved preconditions still hold.
+
+        The predicate and insert share one write transaction. An already recorded
+        message, including a delivered or refused one, is never queued again.
+        """
+        _check_text(text)
+        now = self._now().isoformat()
+        with self.control.write() as tx:
+            db = tx.sql
+            if _found(db, project, session, message_id, text) is not None:
+                return False
+            _session(db, project, session)
+            if not eligible(db):
+                return False
+            if by_message(db, message_id):
+                raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
+            _queue(db, project, session, message_id, text, author, now)
+            if on_queue is not None:
+                on_queue(db)
+            return True
 
     def replay_message(
         self, project: str, session: str, message_id: str, text: str
@@ -660,28 +724,87 @@ class RunState:
             )
 
     def over_cost_limit(self, project: str, now: datetime) -> bool:
-        """Whether the project has a daily cost limit and its calls in the window to
-        ``now`` reached it, at their costs; or whether, with a limit, a call in the
-        window used tokens and has no known cost (``unpriced_calls``), so that what was
-        spent cannot be known (lab 43, B2): the limit counts as reached until that call
-        leaves the window."""
-        limit = self.cost_limit(project)
-        if limit is None:
-            return False
+        """Whether known costs and explicit reservations reach the daily limit.
+
+        Unpriced calls remain visible through ``unpriced_calls`` but do not block
+        admission; the upstream gateway enforces the primary spending budget.
+        """
+        return self.cost_gate(project, now)[1]
+
+    def cost_gate(
+        self, project: str, now: datetime, *, require_limit: bool = False
+    ) -> tuple[float | None, bool]:
+        """Read cap presence and its observed/reserved spend in one snapshot.
+
+        An explicitly renewed child requires a cap even if an operator removed the
+        project's general limit after issuing the grant. Unknown charges are not
+        assigned zero cost, but cannot alone prove this local limit was reached.
+        """
+        from .continuity.reservations import RESERVATIONS
+
         since = now - WINDOW
-        spent = self.model_cost(project, since)
-        reserved = sum(self.model_reservations(project, since).values())
-        if (spent or 0) + reserved >= limit:
-            return True
-        if unknown := self.unpriced_calls(project, since):
+        runs, values = _run_usage(project, since)
+        with self.control.read() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT daily_cost FROM project_cost_limits WHERE project_id=?", (project,)
+            ).fetchone()
+            if row is None:
+                return None, require_limit
+            limit = float(row[0])
+            spent, unknown = db.execute(
+                "SELECT coalesce(sum(json_extract(u,'$.cost')),0), "  # noqa: S608 - fixed SQL
+                "count(*) FILTER (WHERE json_extract(u,'$.cost') IS NULL "
+                "AND coalesce(json_extract(u,'$.input_tokens'),0)+"
+                "coalesce(json_extract(u,'$.output_tokens'),0)>0) "
+                f"FROM ({runs})",
+                values,
+            ).fetchone()
+            reserved = db.execute(
+                f"SELECT coalesce(sum(cost),0) FROM ({RESERVATIONS}) "  # noqa: S608 - fixed SQL
+                "WHERE project=? AND created>=?",
+                (project, since.timestamp()),
+            ).fetchone()[0]
+        self._note_unpriced(project, int(unknown))
+        return limit, float(spent) + float(reserved) >= limit
+
+    def _note_unpriced(self, project: str, unknown: int) -> None:
+        """Keep a changing warning visible without repeating it on every admission."""
+        with self._unpriced_warning_lock:
+            previous = self._unpriced_warning.get(project)
+            if unknown == 0:
+                self._unpriced_warning.pop(project, None)
+                action = "cleared" if previous is not None else "silent"
+                occurrences = previous[1] if previous is not None else 0
+            elif previous is None or previous[0] != unknown:
+                self._unpriced_warning[project] = (unknown, 1)
+                action, occurrences = "changed", 1
+            else:
+                occurrences = previous[1] + 1
+                self._unpriced_warning[project] = (unknown, occurrences)
+                action = "repeat" if occurrences % 100 == 0 else "silent"
+        if action == "changed":
             _log.warning(
                 "project %s keeps a daily cost limit, and %s of its model calls in the "
-                "last 24 hours have no known cost: it counts as at its limit",
+                "last 24 hours have no known cost: local admission uses known costs "
+                "and explicit reservations; actual spending remains uncertain",
                 project,
                 unknown,
             )
-            return True
-        return False
+        elif action == "repeat":
+            _log.warning(
+                "project %s still has %s unpriced calls after %s cost-gate checks",
+                project,
+                unknown,
+                occurrences,
+            )
+        elif action == "cleared":
+            _log.info(
+                "project %s has no unpriced calls in the current daily window "
+                "after %s earlier cost-gate checks",
+                project,
+                occurrences,
+            )
 
     def unpriced_calls(self, project: str, since: datetime) -> int:
         """How many of the project's model calls since ``since`` used tokens and have no

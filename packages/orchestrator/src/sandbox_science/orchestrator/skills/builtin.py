@@ -41,7 +41,8 @@ ROLES: Final[dict[str, tuple[str, ...]]] = {
     "literature-search": ("main",),
     "pdf-reading": ("main",),
     "recording-results": ("main",),
-    "writing-documents": ("main",),
+    "scientific-writing": ("main", "delegated"),
+    "writing-documents": ("main", "delegated"),
 }
 """Each built-in skill, and the roles whose runs get it: those whose tools it names
 (test_builtin_skills.py checks them). A skill not listed is a main run's."""

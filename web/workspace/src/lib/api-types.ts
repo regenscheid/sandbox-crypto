@@ -1431,6 +1431,8 @@ export interface StatusPage {
   resumes: ResumeStatus[];
   next_work: string | null;
   next_resume: string | null;
+  pending_kernel_restore_work: string | null;
+  pending_kernel_restore_identity: string | null;
 }
 
 /** One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing. */

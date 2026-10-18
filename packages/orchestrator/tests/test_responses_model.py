@@ -130,12 +130,38 @@ class Fake:
     paths: list[str] = field(default_factory=list[str])
     headers: list[list[tuple[str, str]]] = field(default_factory=list[list[tuple[str, str]]])
 
-    async def handle(self, request: web.Request) -> web.Response:
+    async def handle(self, request: web.Request) -> web.StreamResponse:
         assert request.headers["Authorization"] == f"Bearer {KEY}"
         self.paths.append(request.path)
         self.headers.append(list(request.headers.items()))
-        self.bodies.append(cast(Json, await request.json()))
+        body = cast(Json, await request.json())
+        self.bodies.append(body)
         answer = self.answers.pop(0)
+        if answer.headers.get("Content-Type") == "text/event-stream":
+            stream = web.StreamResponse(status=answer.status, headers=answer.headers)
+            await stream.prepare(request)
+            payload = answer.body.encode()
+            for start in range(0, len(payload), 7):
+                await stream.write(payload[start : start + 7])
+            await stream.write_eof()
+            return stream
+        if answer.headers.get("Content-Type") == "application/json":
+            return web.Response(status=answer.status, text=answer.body, headers=answer.headers)
+        if request.path == "/v1/responses" and body.get("stream") is True and answer.status == 200:
+            decoded = json.loads(answer.body)
+            kind = f"response.{decoded.get('status', 'completed')}"
+            wire = (
+                ": keepalive\r\n\r\n"
+                'event: response.created\r\ndata: {"type":"response.created"}\r\n\r\n'
+                f"event: {kind}\r\ndata: "
+                + json.dumps({"type": kind, "response": decoded}, ensure_ascii=False)
+                + "\r\n\r\ndata: [DONE]\r\n\r\n"
+            )
+            return web.Response(
+                status=answer.status,
+                text=wire,
+                headers={**answer.headers, "Content-Type": "text/event-stream"},
+            )
         headers = {"Content-Type": "application/json", **answer.headers}
         return web.Response(status=answer.status, text=answer.body, headers=headers)
 
@@ -169,6 +195,7 @@ def wire(body: Json) -> None:
     """CM-F11: what every request says, whatever it sends."""
     assert body["store"] is False
     assert body["include"] == ["reasoning.encrypted_content"]
+    assert body["stream"] is True
     assert "truncation" not in body
     assert "previous_response_id" not in body
 
@@ -403,9 +430,22 @@ async def test_a_response_is_read_as_a_turn_and_kept_as_the_gateway_sent_it(
     turn = await gpt.complete([{"role": "user", "content": TASK}], [])
     assert turn.text == "First part.\n\nSecond part.\n\nNot that."
     assert (turn.input_tokens, turn.output_tokens) == (1200, 34)
+    assert (turn.cache_read_input_tokens, turn.cache_creation_input_tokens) == (1000, None)
     assert (turn.cost, turn.model, turn.finish_reason) == (0.0125, "gpt-test-2026-10", "stop")
-    assert (turn.native, turn.native_format) == (text.encode(), RESPONSES)
+    assert (turn.native, turn.native_format) == (
+        json.dumps(json.loads(text), ensure_ascii=False, separators=(",", ":")).encode(),
+        RESPONSES,
+    )
     assert turn.gateway_version == "1.102.1"
+
+
+async def test_response_without_cache_detail_keeps_cache_usage_unknown(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    fake.then(response(said("Done."), usage={"input_tokens": 10, "output_tokens": 2}))
+    turn = await gpt.complete([{"role": "user", "content": TASK}], [])
+    assert turn.input_tokens == 10
+    assert (turn.cache_read_input_tokens, turn.cache_creation_input_tokens) == (None, None)
     # What it came from: the alias, and the digest of what the model was given.
     assert turn.alias == "gpt"
     assert turn.prefix == prefix_of(fake.bodies[-1], "instructions", "tools", "input")
@@ -447,6 +487,102 @@ async def test_errors_are_told_apart_as_for_chat_completions(
         await gpt.complete([{"role": "user", "content": TASK}], [])
     assert type(error.value) is raised
     assert error.value.cost == (0.25 if status == 200 else None)
+
+
+async def test_split_stream_keeps_only_the_completed_response(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    final = json.loads(response(reasoning("stream"), called("stream", script="sage -v")))
+    events = (
+        ": keepalive\r\n\r\n"
+        'event: response.output_text.delta\r\ndata: {"type":"response.output_text.delta",'
+        '"delta":"partial"}\r\n\r\n'
+        "event: response.completed\r\ndata: "
+        + json.dumps({"type": "response.completed", "response": final})
+        + "\r\n\r\ndata: [DONE]\r\n\r\n"
+    )
+    fake.then(events, headers={"Content-Type": "text/event-stream"})
+    turn = await gpt.complete([{"role": "user", "content": TASK}], TOOLS)
+    assert turn.text is None
+    assert [(call.id, call.name, call.arguments) for call in turn.tool_calls] == [
+        ("stream", "shell", '{"script": "sage -v"}')
+    ]
+    assert (turn.input_tokens, turn.output_tokens) == (1200, 34)
+    assert json.loads(turn.native or b"") == final
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta",'
+        '"delta":"partial"}\n\n',
+        'event: error\ndata: {"type":"error","message":"upstream failed"}\n\n',
+        "event: response.completed\ndata: not-json\n\n",
+        'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+    ],
+)
+async def test_stream_without_a_valid_final_response_is_never_a_turn(
+    fake: Fake, gpt: ResponsesModel, events: str
+) -> None:
+    fake.then(
+        events,
+        headers={"Content-Type": "text/event-stream", "x-litellm-response-cost": "0.25"},
+    )
+    with pytest.raises(ModelError) as failed:
+        await gpt.complete([{"role": "user", "content": TASK}], [])
+    assert failed.value.cost == 0.25
+
+
+async def test_a_nonstreaming_success_is_not_mistaken_for_sse(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    fake.then(response(said("done")), headers={"Content-Type": "application/json"})
+    with pytest.raises(ModelError, match="did not stream"):
+        await gpt.complete([{"role": "user", "content": TASK}], [])
+
+
+async def test_a_failed_terminal_cannot_become_a_successful_tool_call(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    finished = json.loads(response(called("unsafe", script="echo unsafe")))
+    fake.then(
+        "event: response.failed\ndata: "
+        + json.dumps({"type": "response.failed", "response": finished})
+        + "\n\n",
+        headers={"Content-Type": "text/event-stream"},
+    )
+    with pytest.raises(ModelError, match="does not match"):
+        await gpt.complete([{"role": "user", "content": TASK}], TOOLS)
+
+
+async def test_incomplete_stream_does_not_dispatch_an_unfinished_call(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    unfinished = {**called("partial", script="echo maybe"), "status": "in_progress"}
+    fake.then(
+        response(
+            unfinished,
+            status="incomplete",
+            incomplete_details={"reason": "max_output_tokens"},
+        )
+    )
+    turn = await gpt.complete([{"role": "user", "content": TASK}], TOOLS)
+    assert turn.finish_reason == "length"
+    assert turn.tool_calls == ()
+    assert turn.native is not None
+    assert unfinished in json.loads(turn.native)["output"]
+
+    fake.then(response(said("continued")))
+    await gpt.complete(
+        [
+            {"role": "user", "content": TASK},
+            AssistantMessage.of(turn),
+            {"role": "user", "content": "Continue."},
+        ],
+        TOOLS,
+    )
+    sent = fake.bodies[-1]["input"]
+    assert all(item.get("call_id") != "partial" for item in sent)
 
 
 async def test_a_rate_limit_is_tried_again_and_the_key_is_never_quoted(fake: Fake) -> None:
@@ -587,7 +723,8 @@ async def test_a_view_rebuilt_from_the_archive_sends_the_request_the_run_sent(
         projects.close()
     answers = [a for a in kept if a.entry.kind == "assistant"]
     assert [(a.entry.native_format, a.entry.native) for a in answers] == [
-        (RESPONSES, text.encode()) for text in found.responded
+        (RESPONSES, json.dumps(json.loads(text), separators=(",", ":")).encode())
+        for text in found.responded
     ]
     assert {(a.entry.alias, a.entry.model) for a in answers} == {("main", "scripted-main")}
     assert {a.entry.gateway_version for a in answers} == {GATEWAY_VERSION}

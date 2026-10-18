@@ -199,7 +199,7 @@ def test_a_harness_without_its_pack_says_so(
 
 
 @pytest.mark.slow
-def test_the_installed_wheel_reads_the_seven_built_in_skills(tmp_path: Path) -> None:
+def test_the_installed_wheel_reads_the_built_in_skills(tmp_path: Path) -> None:
     """B1 of the review of #426: the wheel the orchestrator image installs carries the
     pack as package data, and the installed harness reads it there, without this
     directory's checkout and without the tests' fixture."""
@@ -231,6 +231,7 @@ def test_the_installed_wheel_reads_the_seven_built_in_skills(tmp_path: Path) -> 
     shown = json.loads(ran.stdout)
     assert shown["root"] == str(site / "sandbox_science/orchestrator/skills/builtin_pack")
     assert shown["names"] == sorted(builtin.ROLES)
+    assert "scientific-writing" in shown["names"]
 
 
 def test_the_built_in_source_name_is_reserved(

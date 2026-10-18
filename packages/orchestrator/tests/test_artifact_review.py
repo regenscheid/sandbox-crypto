@@ -347,8 +347,10 @@ def test_unknown_and_known_worker_pins_observed_once_then_recorded(state) -> Non
     inventory.finish(source, "known", "held.txt", "text/plain", worker, b"held")
     ingest_artifacts(reviews, "p", "s")
     fresh = dispatch(reviews)
-    assert reviews.run("p", "s", fresh)["coverage_complete"]
-    assert len(items(reviews, fresh)) == 1
+    # The earlier inconclusive span remains open even though this new revision is known.
+    assert not reviews.run("p", "s", fresh)["coverage_complete"]
+    # The new revision is reviewed alongside both unresolved earlier observations.
+    assert len(items(reviews, fresh)) == 3
 
 
 @pytest.mark.parametrize("changed", [b"fixed = 15\n", b""])
@@ -969,7 +971,7 @@ def test_an_entry_brings_the_artifacts_its_evidence_pins_into_its_review(state) 
     assert [tuple(row) for row in counted] == [(0, 0)]  # no review due, not the run's effect
     reviews.finish("p", "s", review, "owner", "passed", "Checked.")
     assert reviews.run("p", "s", review)["state"] == "passed"
-    # The next window, where the entry is revised again, holds the artifact again.
+    # The next window includes the prior checked pin as context and the revised entry.
     Ledger(reviews.documents).change(
         "p",
         {"operation_id": "t", "reason": "r",
@@ -978,7 +980,7 @@ def test_an_entry_brings_the_artifacts_its_evidence_pins_into_its_review(state) 
     )  # fmt: skip
     assert ingest_ledger(reviews, "p", "s")["complete"]
     again = dispatch(reviews)
-    assert [i["locator"]["pinned_by"]["revision"] for i in pinned(reviews, again)] == [2]
+    assert [i["locator"]["pinned_by"]["revision"] for i in pinned(reviews, again)] == [1, 2]
 
 
 def test_a_confirmation_holds_the_artifacts_the_fixed_entry_pins(state) -> None:

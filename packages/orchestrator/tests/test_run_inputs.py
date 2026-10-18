@@ -263,9 +263,10 @@ async def test_failed_preflight_retry_still_compares_nearest_same_work_pins(
 
 
 @pytest.mark.parametrize("evidence", ["intent", "archive", "event", "record"])
-def test_missing_pin_ancestor_allows_only_provably_never_started_work(
+def test_missing_pin_ancestor_records_gap_and_allows_resume(
     projects: ProjectStore,
     evidence: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from sandbox_science.orchestrator.continuity.models import ModelIntents
     from sandbox_science.orchestrator.continuity.records import WorkRecords
@@ -287,8 +288,8 @@ def test_missing_pin_ancestor_allows_only_provably_never_started_work(
         RunState(projects.control).append("p", "s", RUN, "started", {})
     else:
         projects.save_run(record(RUN))
-    with pytest.raises(ControlError, match="no saved ancestor"):
-        store.previous("p", "s", RUN)
+    assert store.previous("p", "s", RUN) is None
+    assert "prior research activity has no saved starting inputs" in caplog.text
 
 
 @pytest.mark.parametrize("evidence", ["assistant", "tool", "model", "intent"])
@@ -318,7 +319,7 @@ def test_never_started_proof_does_not_ignore_active_dispatch_evidence(
     events.append("p", "s", active, "started", {})
     store = RunInputs(projects.control)
     assert store.previous("p", "s", RUN, active_run=active) is None
-    with pytest.raises(ControlError, match="no saved ancestor"):
+    with pytest.raises(ControlError, match="not the current work"):
         store.previous("p", "s", RUN, active_run="wrong-attempt")
     if evidence == "assistant":
         archive.append(
@@ -330,5 +331,4 @@ def test_never_started_proof_does_not_ignore_active_dispatch_evidence(
         owner = works.owner("p", "s", active)
         assert owner is not None
         ModelIntents(projects.control).begin(owner, kind="main", alias="fixture")
-    with pytest.raises(ControlError, match="no saved ancestor"):
-        store.previous("p", "s", RUN, active_run=active)
+    assert store.previous("p", "s", RUN, active_run=active) is None

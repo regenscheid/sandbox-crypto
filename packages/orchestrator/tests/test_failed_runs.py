@@ -172,6 +172,9 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
         def __init__(self, *args, **kwargs):
             super().__init__([ModelTurn("Observed answer before cleanup")])
 
+        def for_role(self, *args, **kwargs):
+            return self
+
         async def complete(self, messages, tools):
             if cancel_phase == "model":
                 raise asyncio.CancelledError("model cancelled")

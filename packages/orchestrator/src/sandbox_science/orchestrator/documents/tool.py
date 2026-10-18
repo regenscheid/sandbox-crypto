@@ -54,6 +54,7 @@ Json = dict[str, Any]
 DOCUMENT_EFFECTS: Final[dict[str, Effect]] = {
     "document_list": "read",
     "document_read": "read",
+    "show_outline": "read",
     "document_comments": "read",
     "document_comment_read": "read",
 }
@@ -124,6 +125,25 @@ SPECS: Final = (
                 "from_block": {
                     "type": "string",
                     "description": "Start at this block, to read the rest of a long document",
+                },
+            },
+            "required": ["document"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "show_outline",
+        "Show the heading outline of a living document at a pinned revision: each "
+        "heading's title, level, stable block ID and parent heading. Use from_heading "
+        "to continue a long outline. Read the document for section contents.",
+        {
+            "type": "object",
+            "properties": {
+                "document": _DOCUMENT,
+                "revision": {"type": "integer", "minimum": 1},
+                "from_heading": {
+                    "type": "string",
+                    "description": "Start at this heading's block ID",
                 },
             },
             "required": ["document"],
@@ -347,6 +367,7 @@ class DocumentTool:
         handlers: dict[str, Callable[[], tuple[str, Json]]] = {
             "document_list": lambda: self._list(args),
             "document_read": lambda: self._read(args),
+            "show_outline": lambda: self._outline(args),
             "document_create": lambda: self._create(args, operation, call_id, model),
             "document_patch": lambda: self._patch(args, operation, call_id, model),
             "document_delete": lambda: self._delete(args, operation, call_id, model),
@@ -470,6 +491,65 @@ class DocumentTool:
             "blocks": [block["id"] for block in blocks[:shown]],
         }
         return text, {"read": read}
+
+    def _outline(self, args: dict[str, Any]) -> tuple[str, Json]:
+        reference = _text(args, "document")
+        number = args.get("revision")
+        if number is not None and (not isinstance(number, int) or number < 1):
+            raise DocumentError(INVALID_REQUEST, "revision is a revision number, from 1")
+        info = self.store.document(self.context.project_id, reference, self.context.session_id)
+        revision = self.store.revision(self.context.project_id, info.document_id, number)
+        mapped = self.store.mapped(self.context.project_id, info.document_id, revision.info.number)
+        headings: list[Json] = []
+        parents: list[tuple[int, str]] = []
+        for block in mapped.parsed.blocks:
+            if block.kind != "heading":
+                continue
+            level = cast(int, block.attrs["level"])
+            while parents and parents[-1][0] >= level:
+                parents.pop()
+            block_id = mapped.block_ids[block.index]
+            title = block.inlines[0].content if block.inlines else block.text
+            heading: Json = {"id": block_id, "level": level, "title": title}
+            if parents:
+                heading["parent"] = parents[-1][1]
+            headings.append(heading)
+            parents.append((level, block_id))
+        start = 0
+        from_heading = args.get("from_heading")
+        if from_heading is not None:
+            start = next(
+                (index for index, heading in enumerate(headings) if heading["id"] == from_heading),
+                -1,
+            )
+            if start < 0:
+                raise DocumentError(INVALID_REQUEST, f"this revision has no heading {from_heading}")
+        remaining = headings[start:]
+        shown = min(100, len(remaining))
+        head: Json = {
+            "document": _listing(info),
+            "revision": revision.info.number,
+            "current_revision": info.head,
+        }
+        while True:
+            body: Json = {**head, "headings": remaining[:shown]}
+            if shown < len(remaining):
+                body["more"] = {
+                    "from_heading": remaining[shown]["id"],
+                    "headings_left": len(remaining) - shown,
+                }
+            text = _dump(body)
+            if len(text) <= self.output_chars or shown <= 1:
+                break
+            shown = max(1, shown * 3 // 4)
+        self._saw(info, revision.info.number)
+        return text, {
+            "read": {
+                "document": info.document_id,
+                "revision": revision.info.number,
+                "blocks": [heading["id"] for heading in remaining[:shown]],
+            }
+        }
 
     def _create(
         self, args: dict[str, Any], operation: str, call_id: str | None, model: str | None

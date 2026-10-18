@@ -183,19 +183,32 @@ class ModelBudget(TurnHook):
 
     name = "budget"
 
-    def __init__(self, chat: RunChat, share: float | None = None, *, tokens: int | None = None):
+    def __init__(
+        self,
+        chat: RunChat,
+        share: float | None = None,
+        *,
+        tokens: int | None = None,
+        require_cost_limit: bool = False,
+    ):
         """``share`` is the part of the project's daily cost limit one run may use, above
         0 and at most 1, if any; ``tokens`` is a delegated run's limit."""
         self.chat, self.share, self.tokens = chat, share, tokens
+        self.require_cost_limit = require_cost_limit
 
     async def halt(self, run: RunView) -> str | None:
         state, project = self.chat.state, self.chat.context.project_id
-        limit = await threaded(state.cost_limit, project)
+        limit, blocked = await threaded(
+            state.cost_gate,
+            project,
+            self.chat.clock.now(),
+            require_limit=self.require_cost_limit,
+        )
+        if blocked:
+            return "budget"
         if limit is not None:
             # Its own calls are among the project's: their events are written as they
-            # return. A call without a known cost counts the limit as reached (lab 43, B2).
-            if await threaded(state.over_cost_limit, project, self.chat.clock.now()):
-                return "budget"
+            # return. Unknown costs remain visible but do not fill the local cap.
             own = sum(usage.cost or 0 for usage in run.usage)
             if self.share is not None and own > 0 and own >= self.share * limit:
                 return "run_budget"

@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.run_inputs import RunInputs
 from .blueprints import Blueprints
 from .child_settlement import ChildSettlement
 from .effort import apply_resume_effort
+from .grants import GRANT_EXHAUSTED, TokenGrants
 from .kernels import KernelJournal
 from .plans import Plans
 from .reconcile import Reconciler
@@ -53,6 +54,7 @@ class Recovery:
         self.run_name = run_name(self.started_at, new_id("run"))
         self.started = False
         self.active: dict[str, asyncio.Task[object]] = {}
+        self._delegation_lock = asyncio.Lock()
         self.wake = asyncio.Event()
         self.stop: asyncio.Event | None = None
         self.sink: RunSink | None = None
@@ -82,9 +84,17 @@ class Recovery:
             session_lease(self.stores.runs, blueprint.context, name, clock=self.harness.clock),
             AsyncExitStack() as resources,
         ):
-            self.root, self.epoch = await threaded(
-                self.records.claim, self.project, self.session, self.request, lease_run=name
-            )
+            try:
+                self.root, self.epoch = await threaded(
+                    self.records.claim, self.project, self.session, self.request, lease_run=name
+                )
+            except ControlError as exc:
+                if exc.message.startswith("automatic Resume invalidated"):
+                    # A new USER action won the claim race. The durable request is
+                    # blocked already; this is not a failed research run and must
+                    # not delay that user's queued correction.
+                    return False
+                raise
             try:
                 await self.harness.client.fence(
                     RecoveryFence(
@@ -195,14 +205,66 @@ class Recovery:
             await threaded(self.records.block, self.project, self.session, work_id, "interrupted")
             raise
         except Exception as exc:
+            reason = (
+                "run_budget"
+                if isinstance(exc, ControlError) and exc.message == GRANT_EXHAUSTED
+                else f"{type(exc).__name__}: {exc}"
+            )
             await threaded(
                 self.records.block,
                 self.project,
                 self.session,
                 work_id,
-                f"{type(exc).__name__}: {exc}",
+                reason,
             )
             return False
+
+    def _delegation_for(self, work: Work) -> str | None:
+        """Reserve a continuation's parent chain before a leaf can send messages.
+
+        Ready branches run leaves first. A grandchild's parent therefore needs its
+        delegation identity even while that parent's continuation is still waiting.
+        The caller serializes this method across sibling branches, and the saved run
+        identity lets an interrupted preparation reuse the same record.
+        """
+        if work.parent is None:
+            return None
+        control = self.stores.projects.control
+        parent_work = self.records.get(self.project, self.session, work.parent)
+        if parent_work.parent is not None:
+            self._delegation_for(parent_work)
+        parent_run = self.plans.get(work.parent).run
+        plan = self.plans.get(work.work)
+        with control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT delegation_id,parent,ended FROM delegations WHERE project_id=? "
+                "AND session_id=? AND run=?",
+                (self.project, self.session, plan.run),
+            ).fetchone()
+        if row is not None:
+            if row[1] != parent_run or row[2] is not None:
+                raise ControlError(CONFLICT, "continuation delegation changed or ended")
+            return str(row[0])
+        blueprint = Blueprints(control).get(self.project, self.session, work.work)
+        request = TypeAdapter(RunRequest).validate_python(blueprint.request)
+        if request.delegation is None:
+            raise ControlError(CONFLICT, "delegated recovery inputs lack original delegation")
+        records = DelegationRecords(control)
+        original = records.get(self.project, self.session, request.delegation)
+        delegation = new_id("dlg")
+        records.start(
+            self.project,
+            self.session,
+            Delegation(
+                delegation_id=delegation,
+                parent=parent_run,
+                run=plan.run,
+                kind=original.kind,
+                brief=original.brief,
+                started_at=plan.started,
+            ),
+        )
+        return delegation
 
     async def prepare(self, work: Work) -> Admitted:
         """Validate original inputs, policy, budget, operations and kernels before dispatch."""
@@ -231,14 +293,20 @@ class Recovery:
             )
         if await threaded(self.stores.runs.over_cost_limit, self.project, self.harness.clock.now()):
             raise ControlError(CONFLICT, "model_budget: project budget is exhausted")
-        # The original grant is immutable; a predecessor's saved remaining allowance
-        # must never be reduced a second time on the next Resume.
+        # The original blueprint is immutable. An explicit USER token grant extends
+        # the same work's cumulative ceiling; lifetime usage is deducted only once.
         original = TypeAdapter(RunRequest).validate_python(blueprint.request)
         tokens = original.tokens
         if tokens is not None:
+            grants = TokenGrants(control)
+            if await threaded(grants.extended, self.project, self.session, work.work):
+                cap = await threaded(self.stores.runs.cost_limit, self.project)
+                if cap is None or cap <= 0:
+                    raise ControlError(CONFLICT, "model_budget: renewed work requires a cost cap")
+            tokens = await threaded(grants.total, self.project, self.session, work.work, tokens)
             tokens -= await threaded(self.plans.spent_tokens, work.work)
             if tokens <= 0:
-                raise ControlError(CONFLICT, "model_budget: this work's token grant is exhausted")
+                raise ControlError(CONFLICT, GRANT_EXHAUSTED)
         alias = request.alias or original.alias
         if alias is None:
             raise ControlError(CONFLICT, "recovery configuration lacks the original model alias")
@@ -289,15 +357,13 @@ class Recovery:
         if alias != self.harness.role(request).alias:
             raise ControlError(CONFLICT, "model alias changed since the saved attempt")
         await Reconciler(control, self.harness.client, clock=self.harness.clock).work(work)
+        plan = await threaded(self.plans.get, work.work)
         owner = Ownership(
             project=self.project,
             session=self.session,
             work=work.work,
             run=work.current,
             epoch=work.epoch,
-        )
-        await KernelJournal(control, owner, work.kernel).reconcile(
-            self.harness.client, blueprint.context
         )
         capabilities = await self.harness.client.capabilities(blueprint.context.environment_id)
         tier, minimum = (
@@ -306,28 +372,15 @@ class Recovery:
         )
         if minimum is not None and (tier is None or tier < minimum):
             raise ControlError(CONFLICT, "worker no longer meets the required isolation tier")
-        plan = await threaded(self.plans.get, work.work)
+        authorized_context = blueprint.context.model_copy(
+            update={"authority": ExecutionAuthority(work=work.work, run=plan.run, epoch=self.epoch)}
+        )
+        await KernelJournal(control, owner, work.kernel).reconcile(
+            self.harness.client, authorized_context
+        )
         parent = None if work.parent is None else (await threaded(self.plans.get, work.parent)).run
-        delegation = None
-        if parent is not None:
-            if request.delegation is None:
-                raise ControlError(CONFLICT, "delegated recovery inputs lack original delegation")
-            records = DelegationRecords(control)
-            original = await threaded(records.get, self.project, self.session, request.delegation)
-            delegation = new_id("dlg")
-            await threaded(
-                records.start,
-                self.project,
-                self.session,
-                Delegation(
-                    delegation_id=delegation,
-                    parent=parent,
-                    run=plan.run,
-                    kind=original.kind,
-                    brief=original.brief,
-                    started_at=plan.started,
-                ),
-            )
+        async with self._delegation_lock:
+            delegation = await threaded(self._delegation_for, work)
         run_id = run_id_of(plan.run)
         if run_id is None:
             raise ControlError(CONFLICT, "invalid continuation run identity")

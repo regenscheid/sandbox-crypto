@@ -10,8 +10,10 @@ from datetime import UTC, datetime
 import pytest
 
 from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
 from sandbox_science.orchestrator.control import ControlError
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_id_of
@@ -182,6 +184,26 @@ def test_failed_final_save_never_completes_work(projects: ProjectStore):
     works.finish(record(RUN), persisted=False)
     assert works.get("p", "s", RUN).state == "paused"
     assert works.get("p", "s", RUN).reason == "persistence_error"
+
+
+async def test_saved_model_failure_is_not_a_persistence_failure(projects: ProjectStore):
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    identity = ModelIntents(projects.control).begin(owner, kind="main", alias="fixture")
+    failed = record(RUN, stopped="error").model_copy(
+        update={"failure": "model", "final_text": None, "answer": None}
+    )
+    errors: list[str] = []
+
+    assert (
+        await save(failed.model_dump(mode="json"), 1, (), projects=projects, error=errors.append)
+        == 1
+    )
+    assert errors == []
+    assert projects.run("p", "s", RUN).failure == "model"
+    assert works.get("p", "s", RUN).state == "paused"
+    assert works.get("p", "s", RUN).reason == "error"
+    assert ModelIntents(projects.control).pending("p", "s", RUN) == (identity,)
 
 
 async def test_first_model_call_checks_ownership_after_start_notices(projects: ProjectStore):

@@ -543,6 +543,11 @@ def _settings(db: sqlite3.Connection, project: str) -> DelegationSettings:
     return DelegationSettings.model_validate({**stored, "depth": depth})
 
 
+def settings_in(db: sqlite3.Connection, project: str) -> DelegationSettings:
+    """Read the current project limits inside a caller's control transaction."""
+    return _settings(db, project)
+
+
 def _stored(db: sqlite3.Connection, project: str) -> tuple[int, dict[str, object]]:
     """The project's depth and the limits it set, without a former default that a
     setting written before 2026-10-16 holds (``FORMER_DEFAULTS``)."""

@@ -1,7 +1,8 @@
 # Agent context inspector
 
 Status: requested by the owner, 2026-10-17; interaction design and local prototype
-only. Production telemetry and workspace API integration remain pending.
+only. Per-answer cache counters are now durable for new main and delegated calls;
+the production timeline, remaining telemetry and workspace API integration are pending.
 
 ## Entry and scope
 
@@ -85,10 +86,11 @@ Verified against the working branch on 2026-10-17:
   `history/record.py` keeps fold spans, source IDs, skeletons, narratives, states,
   stubs and overview parts; `history/view.py` represents the working view.
 - `history/folds.py` emits transformation events. `history/usage.py` journals
-  response usage with observation time and run identity. `ModelUsage` currently
-  retains normalized input/output, cost and model information, but no explicit
-  cache-read/write breakdown. Cache statistics need new durable normalized fields
-  and provider-adapter plumbing; legacy data must remain unavailable.
+  response usage with observation time and run identity. `ModelUsage` now records
+  provider-reported cache-read and cache-write input counters for new main and
+  delegated answers, preserving null when a counter was omitted or a call predates
+  this change. The context-screen projection and reviewer/fold cache accounting
+  still need integration.
 - The workspace already exposes run records, message-by-ID reads, paged saved
   history collections and chunked tool records. These are building blocks, not
   a complete context-inspector API. Full archive search, scoped timelines, context

@@ -88,7 +88,7 @@ def test_canonical_auxiliary_usage_precedes_and_suppresses_exact_legacy_copy(
         cost if cost is not None and kind != "embedding" else None
     )
     state.set_cost_limit("p", 10)
-    assert state.over_cost_limit("p", START + timedelta(minutes=1)) == (cost is None)
+    assert not state.over_cost_limit("p", START + timedelta(minutes=1))
     # The canonical dispatch time wins even if a legacy consumer writes much later.
     with projects.control.write() as tx:
         table, _ = SOURCES[kind]
@@ -161,6 +161,27 @@ def test_fold_copy_identity_survives_every_legacy_form(
     assert state.model_info_cost("p") == 0.25
 
 
+@pytest.mark.parametrize("storage", ["collection", "record", "event"])
+@pytest.mark.parametrize("cost", [0.4, None])
+def test_unlinked_fold_copy_is_not_lost_beside_an_unrelated_intent(
+    projects: ProjectStore, storage: str, cost: float | None
+) -> None:
+    owner = WorkRecords(projects.control).admit("p", "s", RUN)
+    ModelIntents(projects.control).begin(owner, kind="fold", alias="fixture")
+    copy = ModelUsage(cost=cost, input_tokens=10, output_tokens=2).model_dump(mode="json")
+    if storage == "collection":
+        Collection(projects.control, ("p", "s", RUN), "fold_calls").append(copy)
+    elif storage == "record":
+        projects.save_run(
+            record(RUN).model_copy(update={"summaries": {"folds": {"calls": [copy]}}})
+        )
+    else:
+        RunState(projects.control).append("p", "s", RUN, "fold", {"calls": [copy]})
+    state = RunState(projects.control)
+    assert state.model_costs("p") == ({} if cost is None else {"main": cost})
+    assert state.unpriced_calls("p", START - timedelta(seconds=1)) == (cost is None)
+
+
 async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
     projects: ProjectStore,
 ) -> None:
@@ -168,12 +189,18 @@ async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
     from sandbox_science.orchestrator.confinement.transport import Capability, Channel
     from sandbox_science.orchestrator.confinement.wire import ModelIntent, ModelObserved
     from sandbox_science.orchestrator.model import ModelGateway, ModelTurn
+    from sandbox_science.orchestrator.model_profiles import ModelProfile
 
     owner = WorkRecords(projects.control).admit("p", "s", RUN)
     intents = ModelIntents(projects.control)
 
     class Gateway:
-        def model(self, alias):
+        requested_profile = ModelProfile(alias="fixture")
+
+        def model(self, alias, *, role=None):
+            return self
+
+        def for_role(self, role, profile):
             return self
 
         def limited(self, **kwargs):
@@ -181,6 +208,9 @@ async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
 
         def choosing(self, choice):
             return self
+
+        def validate_profile(self):
+            return None
 
         async def complete(self, messages, tools):
             return ModelTurn("Metadata", cost=0.25, input_tokens=10, output_tokens=2)

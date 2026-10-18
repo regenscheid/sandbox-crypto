@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 from sandbox_science.contracts import KernelObservation, new_id
+from sandbox_science.orchestrator.agent_messages import AgentMessageStore
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.plans import Plans
@@ -177,6 +178,51 @@ async def test_one_resume_recovers_three_levels_and_preserves_stopped_branch(tmp
         state.projects.close()
 
 
+def test_leaf_first_resume_reserves_parent_mailbox_before_parent_runs(tmp_path: Path) -> None:
+    state, documents, works = prepare_tree(tmp_path)
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        main("Recovered root"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    recovery = Recovery(harness, "p", "s", request)
+    try:
+        RunState(state.projects.control).acquire("p", "s", recovery.run_name, "fixture")
+        _, epoch = works.claim("p", "s", request, lease_run=recovery.run_name)
+        with recovery.plans.authority(epoch, recovery.run_name):
+            recovery.plans.prepare(RUN, run=recovery.run_name, started=recovery.started_at)
+            grandchild = works.get("p", "s", GRANDCHILD)
+            grandchild_delegation = recovery._delegation_for(grandchild)
+            assert grandchild_delegation is not None
+            assert recovery._delegation_for(grandchild) == grandchild_delegation
+            parent_run = recovery.plans.get(CHILD).run
+            with state.projects.control.read() as tx:
+                (parent_delegation,) = tx.sql.execute(
+                    "SELECT delegation_id FROM delegations WHERE project_id='p' "
+                    "AND session_id='s' AND run=?",
+                    (parent_run,),
+                ).fetchone()
+            mailbox = AgentMessageStore(state.projects.control)
+            message = mailbox.send_parent(
+                "p",
+                "s",
+                recovery.plans.get(GRANDCHILD).run,
+                grandchild_delegation,
+                "Found a blocker",
+                "resume-message",
+            )
+            assert message.recipient_delegation == parent_delegation
+            assert [item.message_id for item in mailbox.pending("p", "s", parent_delegation)] == [
+                message.message_id
+            ]
+    finally:
+        documents.close()
+        state.projects.close()
+
+
 async def test_failed_environment_preparation_prevents_claim_and_model_dispatch(tmp_path: Path):
     from sandbox_science.contracts import ErrorKind
     from sandbox_science.orchestrator.worker_client import WorkerAPIError
@@ -234,14 +280,14 @@ def test_late_cleanup_and_guard_cannot_mutate_new_resume(tmp_path: Path):
         state.projects.close()
 
 
-async def test_unknown_paid_child_blocks_aggregate_resume(tmp_path: Path):
+async def test_unknown_paid_child_without_old_pins_resumes_with_new_pins(tmp_path: Path):
     state, documents, works = prepare_tree(tmp_path)
     owner = works.owner("p", "s", GRANDCHILD)
     assert owner is not None
     # Simulate a paid dispatch whose provider response disappeared.
     with state.projects.control.write() as tx:
         tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (GRANDCHILD,))
-    ModelIntents(state.projects.control).begin(owner, kind="delegated", alias="scripted")
+    identity = ModelIntents(state.projects.control).begin(owner, kind="delegated", alias="scripted")
     works.interrupt("p", "s", RUN)
     worker = RecoveryWorker()
     harness = Harness(
@@ -256,15 +302,16 @@ async def test_unknown_paid_child_blocks_aggregate_resume(tmp_path: Path):
     request = works.request("p", "s")
     assert request is not None
     try:
-        assert await drive(Recovery(harness, "p", "s", request), Sink(), asyncio.Event())
-        assert works.get("p", "s", GRANDCHILD).state == "blocked"
-        assert len(works.attempts("p", "s", GRANDCHILD)) == 1
+        assert not await drive(Recovery(harness, "p", "s", request), Sink(), asyncio.Event())
+        assert works.get("p", "s", GRANDCHILD).state == "completed"
+        assert len(works.attempts("p", "s", GRANDCHILD)) == 2
+        assert ModelIntents(state.projects.control).pending("p", "s", GRANDCHILD) == (identity,)
         with state.projects.control.read() as tx:
             assert (
                 tx.sql.execute(
                     "SELECT status FROM research_resumes WHERE request=?", (request,)
                 ).fetchone()[0]
-                == "blocked"
+                == "finished"
             )
     finally:
         documents.close()

@@ -103,6 +103,14 @@ class ArtifactOperation:
     fresh: bool = False
 
 
+@dataclass(frozen=True)
+class ExecutionReplay:
+    receipt: ArtifactReceipt
+    content_retained: bool = False
+    deleted: bool = False
+    resume_original_transfer: bool = False
+
+
 def _json(value: Contract, limit: int = _MAX_RECORD) -> str:
     text = value.model_dump_json()
     if len(text.encode()) > limit:
@@ -197,7 +205,7 @@ class ArtifactInventory:
         ):
             raise DocumentError(INVALID_REQUEST, "artifact metadata retention quota is full")
 
-    def room(self, project: str, size: int) -> Room:
+    def room(self, project: str, size: int, *, requires_operation: bool = False) -> Room:
         """Whether a new revision of ``size`` bytes can keep them (``content``), only its
         hash and size (``metadata``), or cannot be recorded (``full``) (RA-31, RA-32)."""
         self._scope(project)
@@ -221,6 +229,8 @@ class ArtifactInventory:
             ):
                 count, held, operations, _ = self._usage(db, scope)
                 if count >= revision_limit or not spare:
+                    return "full"
+                if requires_operation and operations >= operation_limit:
                     return "full"
                 if (
                     held + size + self._reserved(db, scope)[1] > byte_limit
@@ -262,10 +272,9 @@ class ArtifactInventory:
             )
         worker = ArtifactRef.model_validate_json(row[2]) if row[2] is not None else None
         receipt = ArtifactReceipt.model_validate_json(row[3]) if row[3] is not None else None
-        if row[1] == "done" and (worker is None or receipt is None or receipt.state != "recorded"):
+        if row[1] == "done" and receipt is None:
             raise DocumentError(INTERNAL, "incomplete stored artifact acknowledgement")
         if row[1] == "done":
-            assert worker is not None  # noqa: S101 - validated above
             assert receipt is not None  # noqa: S101 - validated above
             request = json.loads(row[4])
             path = request["path"]
@@ -280,20 +289,38 @@ class ArtifactInventory:
                 if receipt.revision is not None
                 else None
             )
-            if (
-                receipt.operation_id != operation
-                or receipt.revision is None
-                or receipt.revision.project_id != source.context.project_id
-                or receipt.worker_snapshot is None
-                or receipt.worker_snapshot.model_dump() != worker.model_dump()
-                or revision is None
-                or revision.reference != receipt.revision
-                or revision.path != logical_path
-                or receipt.revision.sha256 != worker.sha256
-                or receipt.revision.size != worker.size
-                or worker.project_id != source.context.project_id
-                or worker.source_path != path
-            ):
+            valid_record = (
+                receipt.state == "recorded"
+                and receipt.revision is not None
+                and receipt.revision.project_id == source.context.project_id
+                and revision is not None
+                and revision.reference == receipt.revision
+                and revision.path == logical_path
+                and (
+                    (
+                        worker is not None
+                        and receipt.worker_snapshot is not None
+                        and receipt.worker_snapshot.model_dump() == worker.model_dump()
+                        and receipt.revision.sha256 == worker.sha256
+                        and receipt.revision.size == worker.size
+                        and worker.project_id == source.context.project_id
+                        and worker.source_path == path
+                    )
+                    or (
+                        worker is None
+                        and receipt.worker_snapshot is None
+                        and (not revision.content_retained or receipt.reproduced)
+                    )
+                )
+            )
+            valid_noop = (
+                worker is None
+                and receipt.state == "failed"
+                and receipt.revision is None
+                and receipt.worker_snapshot is None
+                and receipt.message == "no live artifact to delete"
+            )
+            if receipt.operation_id != operation or not (valid_record or valid_noop):
                 raise DocumentError(INTERNAL, "stored artifact acknowledgement identity differs")
         elif receipt is not None and (
             receipt.state != "held"
@@ -304,6 +331,81 @@ class ArtifactInventory:
         if row[1] == "transfer" and worker is None:
             raise DocumentError(INTERNAL, "missing pinned worker snapshot")
         return ArtifactOperation(row[1], worker, receipt)
+
+    def prior_execution(
+        self, source: ArtifactPublicationSource, operation: str, path: str
+    ) -> ExecutionReplay | None:
+        """Reuse a finished execution's capture when a later run observes its job.
+
+        The operation is bound to the first observer's publisher. A second observer
+        may read its verified receipt, but must never republish a mutable worker path
+        under a new binding or turn an unfinished intent into a fresh capture.
+        """
+        if source.kind != "execution_record" or source.execution_id is None:
+            return None
+        artifact_path(path)
+        _IDENTIFIER.validate_python(operation)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT request FROM artifact_operations "
+                "WHERE project=? AND actor=? AND operation=?",
+                (source.context.project_id, source.context.session_id, operation),
+            ).fetchone()
+            if row is None:
+                return None
+            request = json.loads(row[0])
+            original = ArtifactPublicationSource.model_validate(request["source"])
+            if (
+                request["path"] != path
+                or original.kind != "execution_record"
+                or original.context != source.context
+                or original.execution_id != source.execution_id
+                or original.tool_call != source.tool_call
+                or original.worker_endpoint_sha256 != source.worker_endpoint_sha256
+                or original.attempt_state != source.attempt_state
+            ):
+                raise DocumentError(CONFLICT, "artifact execution capture identity differs")
+            _, digest = self.publication_request(original, request["path"], request["media_type"])
+            found = self.find_operation(db, original, operation, digest)
+            if found is None:
+                raise DocumentError(INTERNAL, "stored execution capture is missing")
+            if found.state == "done":
+                assert found.receipt is not None  # noqa: S101 - validated by find_operation
+                revision = found.receipt.revision
+                if revision is None:
+                    return ExecutionReplay(found.receipt)
+                saved = self._revision(
+                    db, source.context.project_id, revision.artifact_id, revision.revision
+                )
+                return ExecutionReplay(
+                    found.receipt.model_copy(update={"reproduced": True}),
+                    # A hash-only observation can reproduce a head whose bytes were
+                    # retained by an earlier execution. Its own report stays hash-only.
+                    content_retained=saved.content_retained
+                    and found.receipt.worker_snapshot is not None,
+                    deleted=saved.deleted,
+                )
+            if original == source:
+                # Only an already-pinned transfer can safely resume without a new
+                # operation reservation. An unknown intent must remain held.
+                if found.state == "transfer":
+                    return ExecutionReplay(
+                        ArtifactReceipt(
+                            state="held",
+                            operation_id=operation,
+                            message="original pinned transfer can resume",
+                        ),
+                        resume_original_transfer=True,
+                    )
+                return None
+            return ExecutionReplay(
+                ArtifactReceipt(
+                    state="held",
+                    operation_id=operation,
+                    message="original execution capture is unfinished; path will not be recaptured",
+                )
+            )
 
     def hold(
         self,
@@ -598,6 +700,90 @@ class ArtifactInventory:
             assert appended is not None  # noqa: S101 - only a deletion appends nothing
             self._budget(tx.sql, source.context.project_id)
             return appended
+
+    def finish_execution_metadata(
+        self,
+        source: ArtifactPublicationSource,
+        operation: str,
+        path: str,
+        *,
+        sha256: str,
+        size: int,
+        media_type: str,
+        note: Literal["too_large", "quota"],
+    ) -> ArtifactReceipt:
+        """Commit a hash-only observation and its operation receipt together."""
+        if source.kind != "execution_record" or source.execution_id is None:
+            raise DocumentError(INVALID_REQUEST, "execution metadata requires an execution source")
+        _, digest = self.publication_request(source, path, media_type)
+        logical_path = self._recording(source, path)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.find_operation(db, source, operation, digest)
+            if found is None or found.state != "intent" or found.worker is not None:
+                raise DocumentError(CONFLICT, "execution metadata no longer owns its intent")
+            self._budget(db, source.context.project_id)
+            appended = self._append(
+                db,
+                source,
+                logical_path,
+                sha256=sha256,
+                size=size,
+                media_type=media_type,
+                note=note,
+            )
+            assert appended is not None  # noqa: S101 - only deletion can append nothing
+            reference, reproduced = appended
+            receipt = ArtifactReceipt(
+                state="recorded",
+                operation_id=operation,
+                revision=reference,
+                reproduced=reproduced,
+            )
+            db.execute(
+                "UPDATE artifact_operations SET state='done',receipt=? "
+                "WHERE project=? AND actor=? AND operation=?",
+                (_json(receipt), source.context.project_id, source.context.session_id, operation),
+            )
+            self._budget(db, source.context.project_id)
+            return receipt
+
+    def finish_execution_deletion(
+        self, source: ArtifactPublicationSource, operation: str, path: str
+    ) -> ArtifactReceipt:
+        """Commit a tombstone or durable no-op for this execution's deletion."""
+        if source.kind != "execution_record" or source.execution_id is None:
+            raise DocumentError(INVALID_REQUEST, "execution deletion requires an execution source")
+        _, digest = self.publication_request(source, path, None)
+        logical_path = self._recording(source, path)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.find_operation(db, source, operation, digest)
+            if found is None or found.state != "intent" or found.worker is not None:
+                raise DocumentError(CONFLICT, "execution deletion no longer owns its intent")
+            self._budget(db, source.context.project_id)
+            appended = self._append(
+                db,
+                source,
+                logical_path,
+                sha256=_EMPTY,
+                size=0,
+                media_type="application/octet-stream",
+                deleted=True,
+            )
+            receipt = ArtifactReceipt(
+                state="recorded" if appended is not None else "failed",
+                operation_id=operation,
+                revision=appended[0] if appended is not None else None,
+                message="" if appended is not None else "no live artifact to delete",
+            )
+            db.execute(
+                "UPDATE artifact_operations SET state='done',receipt=? "
+                "WHERE project=? AND actor=? AND operation=?",
+                (_json(receipt), source.context.project_id, source.context.session_id, operation),
+            )
+            self._budget(db, source.context.project_id)
+            return receipt
 
     def record_deletion(
         self, source: ArtifactPublicationSource, path: str

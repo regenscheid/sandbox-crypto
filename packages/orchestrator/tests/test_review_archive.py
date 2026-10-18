@@ -89,12 +89,16 @@ async def test_a_review_names_archive_places_and_earlier_runs_actions(harness: H
     try:
         reviews = ReviewStore(documents)
         archive = Archive(documents.control)
-        rows = {r.message_id: r for r in archive.messages(PROJECT, SESSION, run=name(second))}
+        rows = {r.message_id: r for r in archive.messages(PROJECT, SESSION)}
         (review, items), *_ = reviews_of(reviews, "run-2")
         placed = [cast(Json, i["locator"]["archive"]) for i in items if i["kind"] == "transcript"]
         assert placed
         assert all(rows[found["id"]].position == found["position"] for found in placed)
-        answer = next(row for row in rows.values() if row.entry.kind == "assistant")
+        answer = next(
+            row
+            for row in archive.messages(PROJECT, SESSION, run=name(second))
+            if row.entry.kind == "assistant"
+        )
         assert {"id": answer.message_id, "position": answer.position} in placed
         with documents.control.read() as tx:
             (dispatched, *_) = reviews.review_log.recent(

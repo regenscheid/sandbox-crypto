@@ -2,11 +2,23 @@
 
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
 
+## 2026-10-18
+
+- Lost-kernel recovery now has a narrow local replay path: journal complete opt-in literal Python cells, fence unresolved reconstruction across main work, and require an explicit decision for other state. After accepted loss, clear the lineage without starting an empty kernel; live worker qualification remains open (D87).
+- The owner reaffirmed that unknown model charges must not stop local run admission. The optional daily gate compares observed costs plus explicit reservations with its unchanged cap; unknown calls remain visible and the upstream LiteLLM budget is the primary spending control (D88, RS-6a).
+- **D35 reviewer effectiveness follow-up** (SNOVA audit; [consistency review](../docs/specs/consistency-review.md), CR-2 and CR-34): bounded, contiguous evidence spans replace repeated oversized windows; capped retries shrink, partial delegated spans retain provenance, and terminal holds catch up within a configured bound. Clean global certification and idle backlog draining remain separate work.
+- The reviewer audit found missed boundary contradictions and failed-span retry storms. Adjacent windows now carry bounded exact prior evidence; clean prefixes can pass their own spans, but inconclusive historical spans prevent a session-wide pass. Repeated failures defer without advancing the watermark (CR-2, CR-34 amended).
+
 ## 2026-10-17
 
 - **Research-tree steering** (the owner, D87; [PD-44](../docs/specs/plans-and-delegation.md)): the root routes user messages among its own work, a new or revised plan, child assignments, and feedback on research records. Direct parent-child messages are durable and delivered at saved-run safe points; an ended recipient causes a delivery-failure notice to the root.
 - The owner requires configurable model reasoning effort by role and normally uses `max` for research; the live trial had inherited `medium`. Requested profiles are now pinned across Resume, with explicit operator effort overrides audited without rewriting original inputs (`43889b45`); live provider verification remains pending.
 - Extended cryptanalysis must iterate beyond initial pilots/checklists. MAIN/planning/stock guidance now distinguishes bounded tasks from extended exploration; requested skill workflows also require reading applicable supporting references and applying their procedures, not just declaring Discover mode.
+- The owner clarified that the shared $400 research figure may be tracked locally as an estimate while LiteLLM enforces spending. Unknown model charges remain visible, but no longer block explicit tree Resume by themselves; ten bounded HTTP attempts no longer depend on per-attempt local admission (D88, RS-6d/e).
+
+- The owner requested streaming model requests and ten increasingly delayed attempts after SNOVA's 524 timeouts. The GPT Responses adapter now requests SSE and commits only a matching terminal response; a short live gateway probe and isolated `141ba43e` image deployment passed. At that point ten-attempt handling awaited per-attempt accounting; the clarification above supersedes that dependency. Long pre-response behavior still needs acceptance (D88, RS-6e).
+
+- The owner clarified that an unknown provider price should not indefinitely block SNOVA research when the operator has made an explicit conservative reservation. A legacy fold estimate without an intent ID now requires an exact audited USER link to that reserved intent; unrelated unknowns and known charges remain counted ([run service](../docs/specs/run-service.md), [recovery controls](../docs/specs/recovery-controls.md)).
 
 - The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; implementation remains planned.
 
@@ -49,7 +61,7 @@ Decisions of the owner, later the same day (after #467):
 
 Decisions of the coordinator, each reversible by the owner:
 
-- **Calls with no gateway cost are priced from `/model/info`** and marked `model_info`; with a daily limit set, any unpriced run call in the last 24 hours counts the limit as reached ([run service](../docs/specs/run-service.md), RS-6a as amended; #476). The same holds for the reviewer's, watcher's and import pass's calls, whose cost source is recorded (#477, migration 53); a call past a size tier is priced at that tier (#491, #494).
+- **Calls with no gateway cost are priced from `/model/info`** and marked `model_info`; a call past a size tier is priced at that tier (#491, #494). The same holds for the reviewer's, watcher's and import pass's calls, whose cost source is recorded (#477, migration 53). The earlier rule that an unpriced call alone exhausts the daily limit is superseded by the owner's 2026-10-18 decision above ([run service](../docs/specs/run-service.md), RS-6a).
 - **No reviewer configured means reviews are off,** and the run says so once ([consistency review](../docs/specs/consistency-review.md), CR-35 as amended; #475).
 - **The meaning cutoff is set by model family** (`text-embedding-3-*`: 0.34; #474; [skills](../docs/SKILLS.md)). Per-pack thresholds (SK-34) are still not built.
 - **A fold proposal the user accepts keeps its own basis,** shown as "accepted by the user"; the basis `user` is only for wording the user wrote or edited (#479, review).
@@ -406,3 +418,9 @@ Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
 - 2026-10-16: Measured 24 offline requests through both production adapters for three context layouts. Moving changed state after history preserves a later-run byte prefix, but folds break it; no observed provider hits, so layout stays unchanged ([report](docs/agent-reports/cache-layout-2026-10-16.md)).
 
 - 2026-10-17: The live parent-limit increment can retain the existing session/environment leases while children finish, before durable continuation identities land. Children receive their configured role turn allowance; finalization waits without model calls and Stop/interruption cleanup remains unchanged ([continuity](../docs/specs/research-continuity.md#parent-waiting-increment)).
+
+- 2026-10-17: Add a narrowly scoped USER recovery token override for paused direct children, preserving their work identity, lifetime usage and project spending cap; parent-authorized resource requests and decisions remain the target ([adaptive resources](../docs/specs/adaptive-research-resources.md)).
+
+- 2026-10-18: D89 proposes bounded automatic Resume for saved model-phase failures using the existing fenced tree path. Clean answers with an active plan still need a distinct durable new-root continuation ([tree Resume](../docs/specs/tree-resume.md)).
+- 2026-10-18: D90 proposes one new-root input per active-plan state after a settled answer; the write rechecks current plan/root and yields to user messages, cancellations and budget gates ([tree Resume](../docs/specs/tree-resume.md)).
+- 2026-10-18: Built-in scientific writing guidance now starts substantial living documents with an annotated outline, drafts by section, checks citations and claim scope, and keeps the current document self-standing; `show_outline` reads its heading hierarchy without loading the full text ([living documents](../docs/LIVING-DOCUMENTS.md)).

@@ -284,6 +284,8 @@ class KernelRegistry:
             if request.run is not None:
                 require_run_kernels(channel)
                 fields["run"] = request.run
+            if request.only_if_absent:
+                fields["only_if_absent"] = True
             reply = await channel.request("restart", **fields, reply_timeout=180)
             kernel, _ = self.kernel(
                 context.environment_id,

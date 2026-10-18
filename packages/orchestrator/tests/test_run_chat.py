@@ -101,8 +101,17 @@ async def test_a_run_writes_its_events_as_it_goes(harness: Harness) -> None:
         ["started", "user", "model", "notice", "assistant", "tool", "model", "notice"],
     ]
     assert [e.kind for e in events] == [
-        "started", "user", "model", "notice", "assistant", "tool", "model", "notice", "assistant", "stopped",
-    ]  # fmt: skip
+        "started",
+        "user",
+        "model",
+        "notice",
+        "assistant",
+        "tool",
+        "model",
+        "notice",
+        "assistant",
+        "stopped",
+    ]
     started, user, _, _, asked, tool, _, _, answered, stopped = (e.data for e in events)
     assert started["run_id"] == "run-1"
     # The root of its session's tree of runs (PD-32): no parent, no delegation.

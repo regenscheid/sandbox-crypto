@@ -133,6 +133,7 @@ READS = {
     "list_files",
     "document_list",
     "document_read",
+    "show_outline",
     "document_comments",
     "document_comment_read",
     "review_findings",

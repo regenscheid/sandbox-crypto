@@ -56,8 +56,8 @@ from .test_model_limits import TOO_LONG
 
 Json = dict[str, Any]
 CONTEXT = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
-ENRICHED = ["--context-ceiling", "100000", "--fold-chunk", "10000"]
-"""C = 100,000 and K = 10,000: trigger 75,000, wall 90,000, floor 7,000, a record 1,000."""
+ENRICHED = ["--context-ceiling", "110000", "--fold-chunk", "10000"]
+"""C = 110,000 and K = 10,000: trigger 82,500, wall 99,000."""
 SMALL = [*ENRICHED, "--skeleton-only-folds"]
 """The same, its folds skeleton-only and applied at once."""
 
@@ -145,7 +145,6 @@ def test_the_geometry_scales_its_budgets_on_small_ceilings_and_refuses_too_littl
 
 async def test_the_gateways_input_limit_caps_the_ceiling(harness: Harness) -> None:
     # Keep this positive capping fixture above the system/tool geometry floor.
-
     harness.gateway.limits = {"main": {"max_input_tokens": 100_000, "max_output_tokens": 8_000}}
     record = await harness.run("run-1", [Reply("Hi.")])
     assert folds(record)["geometry"]["ceiling"] == 100_000  # the output is not in it

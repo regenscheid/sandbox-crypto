@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 9
+PROTOCOL_VERSION: Final = 10
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -562,6 +562,8 @@ class KernelRestartRequest(Contract):
     language: Language = "python"
     run: Identifier | None = None
     """The delegated run whose own kernel restarts (PD-37); ``None`` is the session's."""
+    only_if_absent: bool = False
+    """For recovery, refuse to replace a kernel that became live after observation."""
 
 
 class SessionCloseRequest(Contract):

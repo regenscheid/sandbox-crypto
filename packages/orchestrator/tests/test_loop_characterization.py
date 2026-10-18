@@ -292,7 +292,8 @@ async def test_closing_sources_take_turns_in_todays_order(harness: Harness) -> N
     # Closing 4: nothing new; both delivered findings are bounded.
     assert shape(record.messages) == [*calls_seen[4], ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "Answer 4.")
-    assert reviewer.windows == 2
+    # An inconclusive review leaves its evidence queued for a later window.
+    assert reviewer.windows == 3
     assert all_delivered(record) == {
         **NOTHING,
         "requests": [request],

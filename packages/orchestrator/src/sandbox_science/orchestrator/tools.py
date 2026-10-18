@@ -4,8 +4,8 @@
 Each tool call becomes a worker operation whose ID is derived from the call,
 so a repeated call is idempotent. Results go back to the model as compact
 JSON, bounded in size as a whole; the full execution records stay in the
-transcript. A tool call that fails, however it fails, becomes an error the
-model reads: it never ends the task.
+transcript. Definite failures become errors the model can correct. An unknown
+external effect stops the attempt with its durable tool intent still pending.
 """
 
 from __future__ import annotations
@@ -44,7 +44,12 @@ from sandbox_science.contracts.worker import Language
 from .agent_messages import CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC, AgentMailbox
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
-from .connectors import MAX_LOAD, MAX_LOADED_CHARS, MAX_QUERY, Connectors
+from .connectors import (
+    MAX_LOAD,
+    MAX_LOADED_CHARS,
+    MAX_QUERY,
+    Connectors,
+)
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .delegation import specs as delegation_specs
 from .delegation.tracks import EFFECTS as TRACK_EFFECTS
@@ -53,6 +58,7 @@ from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .documents.tool import SPECS as DOCUMENT_SPECS
+from .effects import UnknownEffectError
 from .history import SPECS as HISTORY_SPECS
 from .history import HistoryTool
 from .hooks import Effect, Notice, TurnHook
@@ -83,6 +89,7 @@ if TYPE_CHECKING:
     from .delegation.tracks import TrackTools
 
 _log = logging.getLogger(__name__)
+
 
 SAVED_OUTPUT: Final = "call-output"
 """The session workspace's directory for output too long for its result, saved whole and
@@ -262,7 +269,11 @@ SPECS: Final = (
         "shell",
         "Run a bash script in the session's workspace inside the project sandbox. Each call "
         "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output." + LONG_OUTPUT + STOP_AT_FAILURE + SHARED_IN_CODE,
+        "Returns the exit code and the output. If a command might fail, keep its diagnostics "
+        "visible or inspect its redirected log in the same call."
+        + LONG_OUTPUT
+        + STOP_AT_FAILURE
+        + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -281,7 +292,16 @@ SPECS: Final = (
         "the value of the last expression and any exception." + LONG_OUTPUT + SHARED_IN_CODE,
         {
             "type": "object",
-            "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
+            "properties": {
+                "code": {"type": "string"},
+                "timeout_seconds": _TIMEOUT,
+                "replayable": {
+                    "type": "boolean",
+                    "description": "Permit automatic restoration after kernel loss only for "
+                    "assignments of fixed integer, string, boolean or None literals. "
+                    "All other code needs explicit recovery.",
+                },
+            },
             "required": ["code"],
             "additionalProperties": False,
         },
@@ -302,10 +322,17 @@ SPECS: Final = (
     ),
     ToolSpec(
         "write_file",
-        "Write a text file in the workspace, replacing it if it exists.",
+        "Write a text file in the workspace. For shared/ paths, set create_only=true "
+        "to create a new file, or expected_sha256 to the current hash from read_file "
+        "when replacing it. Other paths can omit a precondition.",
         {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "create_only": {"type": "boolean"},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
             "required": ["path", "content"],
             "additionalProperties": False,
         },
@@ -894,7 +921,7 @@ class Toolbox:
         model: str | None = None,
         gates: Sequence[TurnHook] = (),
     ) -> ToolOutcome:
-        """Run one tool call; whatever goes wrong comes back as an error for the model.
+        """Run one tool call; definite failures become errors for the model.
 
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
@@ -924,6 +951,8 @@ class Toolbox:
             gates = (*gates, Plans(self.plans))
         try:
             outcome = await self._call(entry, call, operation, model, gates)
+        except UnknownEffectError:
+            raise
         except Exception as exc:  # one bad call must not end the task
             _log.exception("the %s tool failed", call.name)
             outcome = _failure(
@@ -1028,6 +1057,12 @@ class Toolbox:
             where = ".".join(str(part) for part in first.get("loc", ()))
             return _failure(ErrorKind.INVALID_REQUEST, f"{where}: {first.get('msg')}")
         except WorkerAPIError as exc:
+            if exc.uncertain:
+                raise UnknownEffectError(
+                    "worker_unknown_effect",
+                    f"the {call.name} operation has an unknown outcome; "
+                    "reconcile its original operation before continuing",
+                ) from exc
             return _failure(exc.kind, exc.message)
         if entry.bound:
             outcome.text = self._cut(outcome.text, outcome.record)
@@ -1189,7 +1224,11 @@ class Toolbox:
                 "binding_inventory": self._binding_inventory(),
             }
         )
-        return await self._run(request)
+        outcome = await self._run(request)
+        outcome.record["kernel_replay_binding_free"] = (
+            not request.bindings and request.binding_inventory is None
+        )
+        return outcome
 
     async def _restart(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         language = args.get("language", self.languages[0] if self.languages else "python")
@@ -1269,6 +1308,10 @@ class Toolbox:
             "size": content.size,
             "sha256": content.sha256,
         }
+        if content.offset >= content.size and not data:
+            summary["eof"] = (
+                f"offset {content.offset} is at or past the end of this {content.size}-byte file"
+            )
         part = self.output_chars // 2  # the most one call shows whole, in bytes or characters
         whole = False
         if text is None:
@@ -1311,7 +1354,7 @@ class Toolbox:
         request = WriteFileRequest.model_validate(
             {
                 "context": self.context,
-                "path": args.get("path"),
+                **_known(args, "path", "create_only", "expected_sha256"),
                 "content_b64": base64.b64encode(encoded).decode(),
             }
         )
@@ -1462,6 +1505,16 @@ def _describe(
             summary["exit_code"] = result.exit_code
             if result.signal is not None:
                 summary["signal"] = result.signal
+            if (
+                result.exit_code not in (None, 0)
+                and not (result.stdout and result.stdout.total_bytes)
+                and not (result.stderr and result.stderr.total_bytes)
+            ):
+                summary["diagnostic"] = (
+                    "The command exited without captured stdout or stderr. If it redirected "
+                    "output, inspect that log; otherwise rerun the failing step with diagnostics "
+                    "visible."
+                )
         for stream in (result.stdout, result.stderr):
             if stream is not None and stream.total_bytes:
                 summary[stream.name] = bound(stream.text, limit)

@@ -131,6 +131,8 @@ class WireTurn(Contract):
     model: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_input_tokens: int | None = Field(default=None, ge=0)
+    cache_creation_input_tokens: int | None = Field(default=None, ge=0)
     cost: float | None = None
     cost_source: CostSource | None = None
     retried: tuple[str, ...] = ()

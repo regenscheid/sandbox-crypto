@@ -3120,6 +3120,14 @@ BEGIN SELECT RAISE(ABORT, 'agent messages are kept'); END""",
         schema.execute(statement)
 
 
+def _kernel_cell_lookup(schema: Schema) -> None:
+    """Version 70: find cell provenance by operation across long research sessions."""
+    schema.execute(
+        "CREATE INDEX research_kernel_cell_identity ON research_observations "
+        "(project,session,kind,identity) WHERE kind='kernel_cell'"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3189,6 +3197,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _larger_user_uploads,
     _artifact_blobs,
     _agent_messages,
+    _kernel_cell_lookup,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
