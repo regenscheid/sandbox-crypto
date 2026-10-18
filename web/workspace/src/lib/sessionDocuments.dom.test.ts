@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import SessionDocuments from '../views/SessionDocuments.svelte';
 import type { DocumentInfo, DocumentRevision } from './api';
+import { documentDrafts } from './drafts';
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(async () => {
   for (const component of mounted.splice(0)) await unmount(component);
@@ -170,4 +171,40 @@ it('keeps document drafts across switching, closing and reopening tabs even with
   await settle();
   expect(document.activeElement?.id).toBe('document-tab-library');
   expect(root.querySelector('#document-tab-library')!.getAttribute('aria-selected')).toBe('true');
+});
+
+it('gives source editing the full document view and restores reading without losing the draft', async () => {
+  documentDrafts.clear('p1:doc-a');
+  const root = await render();
+  root.querySelector<HTMLButtonElement>('.document-card')!.click();
+  await settle();
+  expect(root.querySelector('.document-reading')?.textContent).toContain('Notebook text');
+
+  const edit = [
+    ...root.querySelectorAll<HTMLButtonElement>('.document-heading-actions button'),
+  ].find((button) => button.textContent === 'Edit')!;
+  edit.click();
+  await settle();
+  expect(root.querySelector('.document-reading')).toBeNull();
+  expect(root.querySelector('.document-workspace')?.classList.contains('editing')).toBe(true);
+
+  [...root.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent === 'Edit Markdown source')!
+    .click();
+  await settle();
+  const draft = root.querySelector<HTMLTextAreaElement>('[aria-label="Markdown draft"]')!;
+  draft.value = 'Unsaved source';
+  draft.dispatchEvent(new Event('input', { bubbles: true }));
+  await settle();
+
+  const comments = [
+    ...root.querySelectorAll<HTMLButtonElement>('.document-heading-actions button'),
+  ].find((button) => button.textContent === 'Comments')!;
+  comments.click();
+  await settle();
+  expect(root.querySelector('.document-reading')?.textContent).toContain('Notebook text');
+  edit.click();
+  await settle();
+  expect(root.querySelector('[aria-label="Markdown draft"]')).toBe(draft);
+  expect(draft.value).toBe('Unsaved source');
 });
