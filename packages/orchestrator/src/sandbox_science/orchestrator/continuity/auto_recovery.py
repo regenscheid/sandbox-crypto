@@ -18,7 +18,7 @@ from sandbox_science.orchestrator.control import ControlStore
 from .grants import grant_total
 from .plans import spent_tokens
 from .records import Ownership, tree_cancelled
-from .recovery_tools import RECONCILABLE_TOOLS
+from .recovery_tools import tool_reconcilable
 from .resource_policy import continuation_allowed
 from .resources import turn_grant, turn_usage
 
@@ -167,7 +167,8 @@ class AutoRecovery:
             # Autonomous recovery may reconcile supported operations by original
             # identity. It never replays their call or admits an unknown adapter.
             pending = db.execute(
-                "SELECT DISTINCT i.tool FROM tool_intents i JOIN research_attempts a "
+                "SELECT i.tool,i.run,i.operation_id,CASE i.tool WHEN 'resource_decide' "
+                "THEN i.arguments ELSE '' END FROM tool_intents i JOIN research_attempts a "
                 "ON a.project=i.project AND a.session=i.session AND a.run=i.run "
                 "JOIN research_work w ON w.project=a.project AND w.session=a.session "
                 "AND w.work=a.work WHERE w.project=? AND w.session=? AND w.root=? "
@@ -175,8 +176,12 @@ class AutoRecovery:
                 "t.project=i.project AND t.session=i.session AND t.run=i.run "
                 "AND t.operation_id=i.operation_id)",
                 (project, session, root),
-            ).fetchall()
-            if any(not self.interrupted or name not in RECONCILABLE_TOOLS for (name,) in pending):
+            )
+            if any(
+                not self.interrupted
+                or not tool_reconcilable(db, project, session, run, operation, name, arguments)
+                for name, run, operation, arguments in pending
+            ):
                 return None
             # A grant is cumulative across attempts. Only a USER grant decision
             # can increase it; do not queue a recovery that would immediately

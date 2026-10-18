@@ -18,7 +18,8 @@ from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .records import Work, WorkRecords
-from .recovery_tools import OBSERVATION_TOOLS, WORKER_TOOLS
+from .recovery_tools import OBSERVATION_TOOLS, WORKER_TOOLS, resource_decision_receipt
+from .resources import ResourceDecision
 
 
 class Reconciler:
@@ -67,6 +68,12 @@ class Reconciler:
         elif tool == "delegate":
             record = await threaded(self.delegation, work, operation)
             text = json.dumps(record)
+        elif tool == "resource_decide":
+            decision = await threaded(
+                self.resource_decision, work, run, operation, intent["arguments"]
+            )
+            text = decision.model_dump_json()
+            record = {"resource_decision": decision.model_dump(mode="json"), "reconciled": True}
         elif tool in OBSERVATION_TOOLS:
             # These observe children; losing their response creates no uncertain
             # effect. Do not invent the old observation or redispatch any child.
@@ -131,6 +138,19 @@ class Reconciler:
             parent=parent,
             tool_record=ToolRecord(record, operation),
         )
+
+    def resource_decision(
+        self, work: Work, run: str, operation: str, arguments: str
+    ) -> ResourceDecision:
+        with self.control.read() as tx:
+            decision = resource_decision_receipt(
+                tx.sql, work.project, work.session, run, operation, arguments
+            )
+        if decision is None:
+            raise ControlError(
+                CONFLICT, "unknown_resource_decision: no matching original decision receipt"
+            )
+        return decision
 
     def delegation(self, work: Work, operation: str) -> dict[str, object]:
         with self.control.read() as tx:

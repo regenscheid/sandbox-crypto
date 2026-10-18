@@ -67,6 +67,13 @@ renew its own soft allowance under the evidence requirements below. Decisions
 are shown to the child at a safe point; `pause` and `report` do not cancel or replay an
 in-flight worker operation. Explicit Stop remains authoritative.
 
+If a decision commits but its tool response is lost, Resume reads the original
+decision receipt by project, session, parent attempt, operation and exact arguments.
+It restores that response without applying the decision again. Automatic recovery
+admits this pending tool only when the same receipt is present; a missing or
+mismatched receipt remains unresolved. A USER approval receipt cannot substitute
+for an agent's tool decision.
+
 A live child observes an approved turn increase before its next turn-limit check.
 If it already paused at a turn limit, its parent can approve the request while still
 running. Once the root pauses for unfinished children, the automatic recovery service
