@@ -7,6 +7,7 @@ import pytest
 
 from sandbox_science.contracts.artifact_inventory import ArtifactPublicationSource
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
+from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
 from sandbox_science.orchestrator.continuity.resource_policy import continuation_allowed
 from sandbox_science.orchestrator.continuity.resources import ResourceApprovalRequest
 from sandbox_science.orchestrator.control import ControlError
@@ -148,6 +149,50 @@ def test_user_soft_approval_requires_idle_exact_attempt_never_tokens_or_stop(pro
     assert decision.total == 305
     assert store.approve("p", "s", request, operator="user") == decision
     assert works.queued() == []
+
+
+@pytest.mark.parametrize("root", [False, True])
+@pytest.mark.parametrize("resource", ["elapsed_seconds", "retained_bytes"])
+def test_approved_soft_limit_automatically_resumes_original_tree(projects, root, resource):
+    works, parent, child, store = setup(projects)
+    owner = parent if root else child
+    timed = resource == "elapsed_seconds"
+    reason = "resource_time" if timed else "resource_storage"
+    action = "extend_time" if timed else "extend_storage"
+    settings = (
+        {"research_seconds": 10, "time_ceiling_seconds": 30}
+        if timed
+        else {"storage_bytes": 10, "storage_ceiling_bytes": 30}
+    )
+    DelegationRecords(projects.control).configure("p", **settings)
+    if not timed:
+        artifact(projects, owner.run, b"0123456789")
+    assert store.sample(owner, seconds=10)[0][1:3] == (10, 10)
+    warning = store.observe(owner, resource, used=10, total=10, revision=0)
+    assert warning is not None
+    works.finish(record(CHILD, stopped="answered" if root else reason))
+    works.finish(record(RUN, stopped=reason if root else "answered"))
+    recovery = AutoRecovery(projects.control)
+    assert recovery.candidates() == (("p", "s", RUN),)
+    assert recovery.queue("p", "s", RUN) is None
+    decision = store.approve(
+        "p",
+        "s",
+        ResourceApprovalRequest(
+            request_id=warning.request_id,
+            action=action,
+            reason="Continue from the preserved checkpoint",
+            current=owner.run,
+            epoch=owner.epoch,
+            total=10,
+        ),
+        operator="user",
+    )
+    assert decision.total == 30
+    queued = recovery.queue("p", "s", RUN)
+    assert queued is not None
+    assert works.queued() == [("p", "s", queued, RUN)]
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
 
 
 async def test_hard_retention_pressure_is_visible_not_renewable(projects):

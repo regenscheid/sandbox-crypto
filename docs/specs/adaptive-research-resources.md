@@ -141,9 +141,9 @@ Root renewal never extends tokens. Explicit Stop or a lost ownership fence rejec
 
 An authenticated USER can explicitly extend a paused root or child soft allowance in
 the recovery UI. The decision is audited as an operator decision and requires the
-same current work, attempt, epoch and allowance. It does not dispatch work. Root
-Resume remains the continuation entry point. Parent-approved paused child time/turn/
-storage extensions use the existing bounded automatic tree recovery path when all
+same current work, attempt, epoch and allowance. The decision itself does not dispatch
+work. An approved paused root or child turn/time/storage extension is eligible for
+the existing bounded automatic root Resume path when all
 other unfinished effects and budgets permit it. Hard capacity refusals are never
 turned into automatic retries.
 

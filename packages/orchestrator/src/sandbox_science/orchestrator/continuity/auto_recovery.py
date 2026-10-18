@@ -19,6 +19,7 @@ from .grants import grant_total
 from .plans import spent_tokens
 from .records import Ownership, tree_cancelled
 from .recovery_tools import RECONCILABLE_TOOLS
+from .resource_policy import continuation_allowed
 from .resources import turn_grant, turn_usage
 
 MAX_NO_PROGRESS: Final = 3
@@ -45,7 +46,8 @@ class AutoRecovery:
                 "JOIN research_sessions rs USING(project,session) "
                 "JOIN sessions s ON s.project_id=w.project AND s.session_id=w.session "
                 "WHERE w.parent IS NULL AND w.state IN ('paused','blocked') "
-                "AND (w.reason IN ('error','unfinished_children') "
+                "AND (w.reason IN ('error','unfinished_children','turn_limit',"
+                "'resource_time','resource_storage') "
                 "OR (? AND w.reason='interrupted')) AND s.closed_at IS NULL "
                 "AND w.root=rs.root "
                 "AND NOT EXISTS (SELECT 1 FROM research_resumes q WHERE q.project=w.project "
@@ -113,6 +115,9 @@ class AutoRecovery:
                 not in (
                     "error",
                     "unfinished_children",
+                    "turn_limit",
+                    "resource_time",
+                    "resource_storage",
                     *(("interrupted",) if self.interrupted else ()),
                 )
             ):
@@ -144,6 +149,14 @@ class AutoRecovery:
                         db, owner, original[0] if original and original[0] else 300
                     )
                     allowed = revision > 0 and total > turn_usage(db, owner)
+                if reason in ("resource_time", "resource_storage"):
+                    allowed = continuation_allowed(
+                        db,
+                        Ownership(
+                            project=project, session=session, work=work_id, run=current, epoch=1
+                        ),
+                        reason,
+                    )
                 if reason != "unfinished_children" and not allowed:
                     return None
                 eligible.append(allowed)
