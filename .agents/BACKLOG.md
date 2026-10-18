@@ -4,8 +4,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## Research continuity after the SNOVA acceptance run
 
-- [ ] Integrate and qualify the bounded automatic Resume of a saved model-phase failure from `codex/snova-autonomous-recovery`; local deterministic tests pass, but no live OpenShell interruption lab or merged deployment has run.
-- [ ] Continue a clean `answered` root when its scientific plan remains active. A plan-state-keyed, transaction-checked synthetic input is implemented locally with deterministic tests; live OpenShell interruption/continuation acceptance and merge remain.
+- [ ] Qualify the integrated bounded automatic Resume of a saved model-phase failure against a live OpenShell interruption; combined local recovery and continuation tests pass, but live acceptance and deployment remain.
+- [ ] Qualify clean `answered`-root continuation against live OpenShell interruption. Its plan-state-keyed, transaction-checked synthetic input is integrated locally and passes combined deterministic tests; live acceptance and deployment remain.
 - [ ] Qualify lost-kernel recovery against a real worker and broaden verifiable provenance beyond bounded, opt-in literal Python assignments. A local implementation journals cell identity and safe code, conditionally reconstructs a complete lineage, and retains an explicit decision for other state; live OpenShell acceptance and deployment remain.
 - [ ] Classify transient worker/model failures at the source and exercise process-loss windows, so automatic recovery covers more than saved model-phase errors without replaying unknown effects.
 
