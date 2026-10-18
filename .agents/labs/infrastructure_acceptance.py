@@ -102,6 +102,16 @@ class Lab(recovery.Lab):
                     != 0
                 )
             )
+            # A collected transient unit can be inactive before systemd has
+            # unloaded it. Wait for that known state before reusing its name.
+            recovery.wait(
+                lambda: (
+                    recovery.run(
+                        ["systemctl", "--user", "show", "-p", "LoadState", "--value", unit]
+                    ).stdout.strip()
+                    == "not-found"
+                )
+            )
             self.unit(
                 "launcher",
                 [recovery.REPO / ".venv/bin/sandbox-science", "up", "--config", self.config],
