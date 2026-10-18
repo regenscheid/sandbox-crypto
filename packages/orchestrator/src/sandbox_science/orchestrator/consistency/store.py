@@ -821,7 +821,7 @@ class ReviewStore:
             # on the same oversized window three times. The remaining feed stays queued.
             shrink = 4**window.failures
             room = (
-                min(room[0], max(16 * 1024, effective.max_feed_bytes // shrink)),
+                min(room[0], max(1, effective.max_feed_bytes // shrink)),
                 min(room[1], max(1, effective.max_feed_items // shrink)),
             )
             with self.documents.control.read() as tx:
