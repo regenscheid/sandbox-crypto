@@ -92,6 +92,8 @@ approval requirement for any later 10-million-token increment.
 > pages establish from what you have not yet read. Retrieve further pages when
 > needed. Use the investigation skill in discover mode if the installed pack
 > supplies it, and the built-in document-writing guidance for your report.
+> Primary starting sources are https://users.ics.aalto.fi/knyberg/publications/diffuni.pdf
+> and https://csrc.nist.gov/pubs/fips/197/final (follow its official PDF link).
 >
 > Delegate one sustained task to compute and explain the complete truth table,
 > DDT, differential uniformity, witness solutions and component nonlinearity.
@@ -104,7 +106,13 @@ approval requirement for any later 10-million-token increment.
 > section with standalone research findings, citations, Markdown prose and LaTeX
 > math. Update the research plan and evidence ledger as results arrive. Serialize
 > the DDT as row-major unsigned 16-bit little-endian counts, including row zero,
-> and record its SHA-256. Keep a machine-readable results.json beside the script.
+> and record its SHA-256. Keep quality/reference.sage and
+> quality/results-gf16.json. The JSON fields are degree, modulus_hex, inverse_table,
+> differential_uniformity, max_differential_probability as a fraction string,
+> witness (input_difference, output_difference, solutions), nonlinearity, and
+> ddt_u16le_sha256. Save the binary table as quality/gf16.ddt.u16le. Keep the
+> downloaded primary PDFs at quality/sources/nyberg1993.pdf and
+> quality/sources/fips197.pdf, and record their retrieved URLs, hashes and read pages.
 > The maximum excludes input difference zero. A toy S-box property is not a
 > complete cipher attack. Do not claim novelty, manufacture citations, or write
 > an account of agent rounds into the final document.
@@ -118,6 +126,9 @@ approval requirement for any later 10-million-token increment.
 
 ### Child continuity instruction, delivered through the parent mailbox
 
+> Forward these instructions to your existing computational child. Have it read
+> quality/parameters.json once and record the exact receipt_marker with its
+> initial computation checkpoint so it can later recover the original evidence.
 > Preserve the original computation and its archived output. You will receive a
 > controlled batch of reference-table appendices for comparison before the final
 > questions. Their bulk is intentional context pressure for this evaluation, not
@@ -136,6 +147,8 @@ approval requirement for any later 10-million-token increment.
 > Do not reconstruct the marker or claim a partial source was read in full.
 > Complete the missing source read before citing its technical result. Explain
 > whether the two fields disagree or satisfy different theorem conditions.
+> Save the comparison as quality/results-gf32.json with the same field names and
+> quality/gf32.ddt.u16le; retain the original GF(16) files and scope.
 
 ### After the controlled interruption and one root Resume
 
@@ -252,7 +265,13 @@ GPT case does not fulfill the full CM-P1–P9 two-family/600,000-token campaign.
   environment-file path and the normal launcher importer; it is optional and
   separately scored, not silently replaced by host-side retrieval.
 
-Remaining before paid execution: owner-authorized budget and coordinator-verified source revision;
-build the orchestration/score adapter and synthetic driver selftest; pin real
-max-effort/API profiles; verify targeted PDF access in the fresh worker; independent
-review of lab boundaries. No product edits or competing pytest suites are planned.
+The staged driver, independent grading and synthetic reviewer selftest are prepared
+in `scientific_quality.py` and `scientific_quality_checks.py`; see
+[the runbook](scientific-quality-runbook.md). Offline validation confirms arithmetic,
+mutated-answer rejection, correct/incorrect reviewer evidence wiring and record
+export. It does not qualify a real model's scientific judgment.
+
+Remaining before paid execution: owner-authorized budget, coordinator-verified
+final source/image revision and independent review of lab boundaries. Actual
+max-effort/API behavior and targeted PDF access remain live evaluation gates.
+No product edits or competing pytest suites are planned.
