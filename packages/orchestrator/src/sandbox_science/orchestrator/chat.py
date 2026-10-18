@@ -208,7 +208,7 @@ class ModelBudget(TurnHook):
             return "budget"
         if limit is not None:
             # Its own calls are among the project's: their events are written as they
-            # return. A call without a known cost counts the limit as reached (lab 43, B2).
+            # return. Unknown costs remain visible but do not fill the local cap.
             own = sum(usage.cost or 0 for usage in run.usage)
             if self.share is not None and own > 0 and own >= self.share * limit:
                 return "run_budget"

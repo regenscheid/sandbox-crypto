@@ -2,6 +2,10 @@
 
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
 
+## 2026-10-18
+
+- The owner reaffirmed that unknown model charges must not stop local run admission. The optional daily gate compares observed costs plus explicit reservations with its unchanged cap; unknown calls remain visible and the upstream LiteLLM budget is the primary spending control (D88, RS-6a).
+
 ## 2026-10-17
 
 - The owner clarified that the shared $400 research figure may be tracked locally as an estimate while LiteLLM enforces spending. Unknown model charges remain visible, but no longer block explicit tree Resume by themselves; ten bounded HTTP attempts no longer depend on per-attempt local admission (D88, RS-6d/e).
@@ -50,7 +54,7 @@ Decisions of the owner, later the same day (after #467):
 
 Decisions of the coordinator, each reversible by the owner:
 
-- **Calls with no gateway cost are priced from `/model/info`** and marked `model_info`; with a daily limit set, any unpriced run call in the last 24 hours counts the limit as reached ([run service](../docs/specs/run-service.md), RS-6a as amended; #476). The same holds for the reviewer's, watcher's and import pass's calls, whose cost source is recorded (#477, migration 53); a call past a size tier is priced at that tier (#491, #494).
+- **Calls with no gateway cost are priced from `/model/info`** and marked `model_info`; a call past a size tier is priced at that tier (#491, #494). The same holds for the reviewer's, watcher's and import pass's calls, whose cost source is recorded (#477, migration 53). The earlier rule that an unpriced call alone exhausts the daily limit is superseded by the owner's 2026-10-18 decision above ([run service](../docs/specs/run-service.md), RS-6a).
 - **No reviewer configured means reviews are off,** and the run says so once ([consistency review](../docs/specs/consistency-review.md), CR-35 as amended; #475).
 - **The meaning cutoff is set by model family** (`text-embedding-3-*`: 0.34; #474; [skills](../docs/SKILLS.md)). Per-pack thresholds (SK-34) are still not built.
 - **A fold proposal the user accepts keeps its own basis,** shown as "accepted by the user"; the basis `user` is only for wording the user wrote or edited (#479, review).

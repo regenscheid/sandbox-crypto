@@ -138,7 +138,7 @@ def test_cancelled_fold_copy_is_settled_by_its_durable_intent_reservation(projec
     state.set_cost_limit("p", 10)
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
     assert ModelIntents(projects.control).pending("p", "s", RUN) == (identity,)
-    assert state.over_cost_limit("p", now)
+    assert not state.over_cost_limit("p", now)
     link = body(
         "fold_estimate_link",
         identity,
@@ -181,6 +181,38 @@ def test_legacy_cancelled_fold_without_durable_intent_stays_unpriced(projects):
     state = RunState(projects.control)
     state.set_cost_limit("p", 10)
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    assert not state.over_cost_limit("p", now)
+
+
+def test_cancelled_fold_estimate_does_not_exhaust_cap_below_known_plus_reserved(projects):
+    """A diagnostic estimate stays unknown without pretending the local cap was hit."""
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    clock = FakeClock(now - timedelta(minutes=30))
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    identity = ModelIntents(projects.control, clock=clock).begin(
+        owner, kind="fold", alias="fixture"
+    )
+    collection = Collection(projects.control, ("p", "s", RUN), "fold_calls")
+    for cost in (158.6784632, 0, 0, 0, 0, 0, 0):
+        collection.append({"input_tokens": 100, "cost": cost})
+    collection.append(
+        {"cancelled": True, "estimated": True, "input_tokens": 143_017, "cost": None}
+    )  # position 7 in the interrupted SNOVA run
+    works.interrupt("p", "s", RUN)
+    RecoveryControls(projects.control, clock=clock).resolve(
+        "p",
+        "s",
+        body("model_reservation", identity, cost=4.0, input_tokens=200_000, output_tokens=10_000),
+        operator="user",
+    )
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 325)
+    assert state.model_cost("p") == pytest.approx(158.6784632)
+    assert state.model_reservations("p") == {"main": 4.0}
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    assert not state.over_cost_limit("p", now)
+    state.set_cost_limit("p", 162.6784632)
     assert state.over_cost_limit("p", now)
 
 
@@ -243,7 +275,7 @@ def test_fold_link_requires_reservation_covering_stored_token_estimate(projects)
     state = RunState(projects.control)
     state.set_cost_limit("p", 10)
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
-    assert state.over_cost_limit("p", now)
+    assert not state.over_cost_limit("p", now)
 
 
 def test_reserved_cancelled_fold_after_observed_folds_does_not_block(projects):
@@ -334,7 +366,7 @@ def test_multiple_unlinked_fold_copies_remain_unpriced_with_one_reservation(proj
         operator="user",
     )
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
-    assert state.over_cost_limit("p", now)
+    assert not state.over_cost_limit("p", now)
 
 
 @pytest.mark.parametrize("source", ["summary", "event"])

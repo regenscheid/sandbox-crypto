@@ -689,11 +689,11 @@ class RunState:
             )
 
     def over_cost_limit(self, project: str, now: datetime) -> bool:
-        """Whether the project has a daily cost limit and its calls in the window to
-        ``now`` reached it, at their costs; or whether, with a limit, a call in the
-        window used tokens and has no known cost (``unpriced_calls``), so that what was
-        spent cannot be known (lab 43, B2): the limit counts as reached until that call
-        leaves the window."""
+        """Whether known costs and explicit reservations reach the daily limit.
+
+        Unpriced calls remain visible through ``unpriced_calls`` but do not block
+        admission; the upstream gateway enforces the primary spending budget.
+        """
         return self.cost_gate(project, now)[1]
 
     def cost_gate(
@@ -702,7 +702,8 @@ class RunState:
         """Read cap presence and its observed/reserved spend in one snapshot.
 
         An explicitly renewed child requires a cap even if an operator removed the
-        project's general limit after issuing the grant.
+        project's general limit after issuing the grant. Unknown charges are not
+        assigned zero cost, but cannot alone prove this local limit was reached.
         """
         from .continuity.reservations import RESERVATIONS
 
@@ -734,11 +735,11 @@ class RunState:
         if unknown:
             _log.warning(
                 "project %s keeps a daily cost limit, and %s of its model calls in the "
-                "last 24 hours have no known cost: it counts as at its limit",
+                "last 24 hours have no known cost: local admission uses known costs "
+                "and explicit reservations; actual spending remains uncertain",
                 project,
                 unknown,
             )
-            return limit, True
         return limit, False
 
     def unpriced_calls(self, project: str, since: datetime) -> int:

@@ -264,7 +264,7 @@ def test_mixed_journal_and_fallback_ordinals_count_once_through_final_save(
         assert state.model_info_cost("p") == (None if unknown else 0.25)
         assert state.unpriced_calls("p", START - timedelta(seconds=1)) == int(unknown)
         state.set_cost_limit("p", 100)
-        assert state.over_cost_limit("p", START + timedelta(hours=1)) == unknown
+        assert not state.over_cost_limit("p", START + timedelta(hours=1))
 
 
 def test_budget_deduplication_is_scoped_by_project_and_session(projects: ProjectStore) -> None:

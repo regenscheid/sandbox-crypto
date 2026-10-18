@@ -88,7 +88,7 @@ def test_canonical_auxiliary_usage_precedes_and_suppresses_exact_legacy_copy(
         cost if cost is not None and kind != "embedding" else None
     )
     state.set_cost_limit("p", 10)
-    assert state.over_cost_limit("p", START + timedelta(minutes=1)) == (cost is None)
+    assert not state.over_cost_limit("p", START + timedelta(minutes=1))
     # The canonical dispatch time wins even if a legacy consumer writes much later.
     with projects.control.write() as tx:
         table, _ = SOURCES[kind]
