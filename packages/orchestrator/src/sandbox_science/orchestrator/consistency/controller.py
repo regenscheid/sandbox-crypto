@@ -606,9 +606,9 @@ class ReviewController:
                 return self._review_summary({**summary, "pending": True, "user_message": message})
             self.task = None
         # A confirmation consumes finding groups before new feed items, so a full
-        # feed cannot starve claimed fixes. At most three windows run at this hold;
+        # feed cannot starve claimed fixes. Catch up bounded evidence windows here;
         # any remaining work is explicitly pending, never labelled as passed.
-        for _ in range(3):
+        for _ in range(config.max_terminal_windows):
             targets = await asyncio.to_thread(self.store.confirmation_targets, *self.scope)
             kind: Literal["confirmation", "terminal"] = "confirmation" if targets else "terminal"
             review = await self._dispatch(kind, label)

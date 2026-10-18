@@ -147,6 +147,7 @@ class _Window:
     watermark: int
     retry: int | None
     end: int
+    failures: int
 
 
 @dataclass
@@ -717,7 +718,9 @@ class ReviewStore:
         targets = self.confirmation_targets(project, session)
         if kind == "confirmation" and not targets:
             return None
-        plan = self._plan(project, session, kind, targets, coverage_complete, author_run, viewed)
+        plan = self._plan(
+            project, session, kind, targets, coverage_complete, author_run, viewed, config
+        )
         if plan.kind == "confirmation" and not plan.targets:
             # Serve author work instead, with the configuration and targets as they are
             # now: the review may have been disabled or reconfigured meanwhile.
@@ -726,7 +729,9 @@ class ReviewStore:
             if not config.enabled:
                 return None
             targets = self.confirmation_targets(project, session)
-            plan = self._plan(project, session, "terminal", targets, False, author_run, viewed)
+            plan = self._plan(
+                project, session, "terminal", targets, False, author_run, viewed, config
+            )
         review = new_id("rev")
         with self.documents.control.write() as tx:
             committed = self._commit_snapshot(
@@ -753,6 +758,7 @@ class ReviewStore:
         coverage_complete: bool,
         author_run: str,
         viewed: Sequence[tuple[str, str]] = (),
+        config: ReviewConfig | None = None,
     ) -> _Plan:
         """The items, grants and pins a review of ``kind`` would take now, for the run
         ``author_run``, whose view held the earlier runs' calls ``viewed``.
@@ -763,6 +769,8 @@ class ReviewStore:
         them out (the review of #449). The feed's next rows take what is left, and a
         finding that did not fit that share takes what they leave."""
         from .actions import Earlier, plan_item
+
+        effective = config or self.config(project)[0]
 
         plans = self._session_plans()
         with self.documents.control.read() as tx:
@@ -809,6 +817,13 @@ class ReviewStore:
             selected_end, pinned = window.watermark, []
         else:
             room = (MAX_SNAPSHOT_BYTES - reserved.size, MAX_SNAPSHOT_ITEMS - reserved.items)
+            # A cap retries less evidence, rather than spending the same token budget
+            # on the same oversized window three times. The remaining feed stays queued.
+            shrink = 4**window.failures
+            room = (
+                min(room[0], max(16 * 1024, effective.max_feed_bytes // shrink)),
+                min(room[1], max(1, effective.max_feed_items // shrink)),
+            )
             with self.documents.control.read() as tx:
                 selected_end, pinned = self._feed_items(
                     tx.sql, project, session, window, earlier, room
@@ -907,10 +922,10 @@ class ReviewStore:
         """The session's watermark, its failed window's retry end, and the end a review
         covers: that retry end, or the feed's last item."""
         found = db.execute(
-            "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
+            "SELECT watermark,retry_end,failures FROM review_windows WHERE project=? AND session=?",
             (project, session),
         ).fetchone()
-        watermark, retry = found if found else (0, None)
+        watermark, retry, failures = found if found else (0, None, 0)
         end = (
             retry
             if retry is not None
@@ -919,7 +934,7 @@ class ReviewStore:
                 (watermark, project, session),
             ).fetchone()[0]
         )
-        return _Window(watermark, retry, end)
+        return _Window(watermark, retry, end, failures)
 
     @staticmethod
     def _earlier(
@@ -1003,10 +1018,8 @@ class ReviewStore:
         whole (CR-4). The actions item lists the window's actions, as many as
         ``MAX_ACTIONS``, and ``earlier``'s as context; the rows it folds take no item.
 
-        A delegation's batch, its outcome and the rows that follow it under its key, comes
-        whole or waits whole for the next window (the review of #449), so that a review
-        that holds an execution of a delegated run holds its outcome; a batch the window
-        begins with comes whole, bounded as ``delegated.py`` bounds it."""
+        A long delegation can cross windows. Each later piece brings the pinned outcome
+        back as context, so an execution is never presented without its claim."""
         from .actions import MAX_ACTIONS, actions_item
 
         max_bytes, max_items = room or (MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_ITEMS)
@@ -1014,8 +1027,24 @@ class ReviewStore:
         actions: list[tuple[Json, Json]] = []
         revised: list[Json] = []
         size, end = 0, window.watermark
-        batch: tuple[str, int, int, int, int, int] | None = None
-        """The batch being read: its keys' prefix, and the window as it stood before it."""
+        first = db.execute(
+            "SELECT source_key FROM review_feed WHERE project=? AND session=? AND "
+            "seq>? AND seq<=? ORDER BY seq LIMIT 1",
+            (project, session, window.watermark, window.end),
+        ).fetchone()
+        if first is not None:
+            parts = str(first[0]).split(":", 2)
+            if len(parts) == 3 and parts[0] == "delegated":
+                prior = db.execute(
+                    "SELECT kind,locator,payload,sha256,complete FROM review_feed WHERE "
+                    "project=? AND session=? AND source_key=? AND seq<=?",
+                    (project, session, ":".join(parts[:2]), window.watermark),
+                ).fetchone()
+                if prior is not None:
+                    kind, locator, payload, sha, complete = prior
+                    context = EvidenceItem(kind, locator, payload, sha, complete)
+                    items.append(context)
+                    size += context.size
         # A raw source's row is passed over without reading its payload, which may be
         # 256 KiB: it takes no item and only moves the window's end.
         for seq, key, kind, locator, payload, sha, complete in db.execute(
@@ -1025,32 +1054,23 @@ class ReviewStore:
             (project, session, window.watermark, window.end),
         ):
             key = str(key)
-            if batch is not None and not key.startswith(batch[0]):
-                batch = None
             raw = kind == "source" and not key.startswith("quoted:")
             folded = raw or kind == "action"
             item = None if folded else EvidenceItem(kind, locator, payload, sha, complete)
-            # Room is kept for the actions item, at most half an item; the plan item
-            # counts within the findings' share, outside ``room``.
+            # Always take one new row, even when its pinned payload alone exceeds the
+            # target. Otherwise a large first item would strand the feed forever.
             full = (
-                len(actions) >= MAX_ACTIONS
+                len(actions) >= min(MAX_ACTIONS, max_items)
                 if kind == "action"
                 else item is not None
-                and bool(items)
+                and end > window.watermark
                 and (
-                    size + item.size > max_bytes - MAX_ITEM_BYTES // 2
-                    or len(items) >= max_items - 1
+                    size + item.size > max_bytes - min(16 * 1024, max_bytes // 8)
+                    or len(items) >= max_items
                 )
             )
-            if full and batch is None:
+            if full:
                 break
-            if full and batch is not None and (batch[1] or batch[2]):
-                # Leave the batch whole for the next window.
-                _, kept, listed, changed, size, end = batch
-                del items[kept:], actions[listed:], revised[changed:]
-                break
-            if kind == "delegation" and key.startswith("delegated:") and key.count(":") == 1:
-                batch = (f"{key}:", len(items), len(actions), len(revised), size, end)
             end = seq
             if raw:
                 continue
@@ -1070,6 +1090,32 @@ class ReviewStore:
             located, listed = actions_item(actions, revised, window.watermark + 1, end, earlier)
             encoded = dump(listed)
             items.append(EvidenceItem("actions", dump(located), encoded, digest(encoded), 1))
+        # A delegated outcome is a claim about its whole batch. The partial pieces
+        # remain reviewable for concrete contradictions, but cannot pass as complete.
+        if first is not None:
+            initial = str(first[0]).split(":", 2)
+            last = db.execute(
+                "SELECT source_key FROM review_feed WHERE project=? AND session=? AND "
+                "seq<=? AND seq>? ORDER BY seq DESC LIMIT 1",
+                (project, session, end, window.watermark),
+            ).fetchone()
+            following = db.execute(
+                "SELECT source_key FROM review_feed WHERE project=? AND session=? AND "
+                "seq>? AND seq<=? ORDER BY seq LIMIT 1",
+                (project, session, end, window.end),
+            ).fetchone()
+            tail = str(last[0]).split(":", 2) if last is not None else []
+            unfinished = (
+                len(tail) >= 2
+                and tail[0] == "delegated"
+                and following is not None
+                and str(following[0]).startswith(":".join(tail[:2]) + ":")
+            )
+            if (len(initial) == 3 and initial[0] == "delegated") or unfinished:
+                items = [
+                    replace(item, complete=0) if item.kind == "delegation" else item
+                    for item in items
+                ]
         return end, items
 
     @staticmethod
@@ -1274,10 +1320,10 @@ class ReviewStore:
         self._window(db, project, session)
         window = plan.window
         actual = db.execute(
-            "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
+            "SELECT watermark,retry_end,failures FROM review_windows WHERE project=? AND session=?",
             (project, session),
         ).fetchone()
-        if tuple(actual) != (window.watermark, window.retry):
+        if tuple(actual) != (window.watermark, window.retry, window.failures):
             return False
         for finding, pinned in plan.response_pins.items():
             current = response_pin(db, finding, pinned["response_revision"])

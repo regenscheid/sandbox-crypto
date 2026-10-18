@@ -34,9 +34,9 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "1338d8a98cf3223de3ab5b559587b9f679f87b7060775360bba33a8186ff5746",
-    "confirmation": "a5321d6f3bed2f01df82c9dc9bd78ebb609e038995455098f287b70378ba4840",
-    "fallback": "e403c0f45996a7d29dd0bc006314207556d1a4b0b193363b88b5ade75e6ce006",
+    "author": "8eeb925be258128f4166b36af4d0fdce333a2cc256816542e32b262a6d93dec1",
+    "confirmation": "051c8004029a30a6283bf09b7e182dec2049aa2dcc76d64906cebae716192d0e",
+    "fallback": "9496f06ca425c6e8f02c39507b46713fc6e5730cef2eb099641e986939c58360",
 }
 
 

@@ -15,6 +15,7 @@ import pytest
 
 from sandbox_science.orchestrator.consistency.actions import action_of
 from sandbox_science.orchestrator.consistency.controller import ReviewController
+from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.tools import Toolbox
@@ -673,6 +674,7 @@ async def test_a_busy_delegated_runs_review_holds_its_decisive_executions(store:
     ones were left out. Those whose output holds a number the outcome states, or nearly,
     come first, then the latest, and the outcome says how many were left out."""
     reviews, documents, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=256, max_feed_bytes=8 * 1024 * 1024)
     stated = "301234567890123"
     tools = [cell(n, f"attempt {n}: residue {n:05d}\n") for n in range(150)]
     tools[20] = cell(20, f"attempt 20: the order is {stated[:-1]}1\n")
@@ -700,6 +702,7 @@ async def test_an_input_every_call_echoes_does_not_decide_the_choice(store: Any)
     the brief states are left out, and each stated number holds the latest execution that
     prints it; a factor grouped in LaTeX is read as one number."""
     reviews, documents, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=256, max_feed_bytes=8 * 1024 * 1024)
     modulus, factor = "1234567890123456789012345678901234567891", "98765432109876543211"
     tools = [cell(n, f"N = {modulus}\nresidue {n:05d}\n") for n in range(150)]
     tools[20] = cell(20, f"N = {modulus}\nfactor {factor}\n")
@@ -741,6 +744,7 @@ async def test_choosing_executions_makes_a_bounded_number_of_comparisons(
     monkeypatch.setattr("sandbox_science.orchestrator.consistency.delegated.distance", counting)
     draw = random.Random(7)  # noqa: S311 - test data, not secrets
     reviews, documents, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=256, max_feed_bytes=8 * 1024 * 1024)
     stated = [str(draw.randrange(10**19, 10**20)) for _ in range(300)]
     tools = [
         cell(n, "\n".join(str(draw.randrange(10**19, 10**20)) for _ in range(200)))
@@ -762,11 +766,9 @@ async def test_choosing_executions_makes_a_bounded_number_of_comparisons(
 
 
 @pytest.mark.asyncio
-async def test_a_delegations_batch_is_never_split_across_review_windows(store: Any) -> None:
-    """The review of #449: 200 calls' actions counted against a window's 256 rows, and the
-    outcome came last, so a review held executions and the run's relayed value but not the
-    outcome they bear on. A delegation's batch begins with its outcome and comes whole: a
-    window it would overflow ends before it, and the next takes it whole."""
+async def test_a_split_delegation_keeps_its_outcome_in_every_evidence_window(store: Any) -> None:
+    """A long delegation is split for review, with its outcome repeated as incomplete
+    context. Each execution can be checked, but no partial review claims a full pass."""
     from .test_consistency import claim
 
     reviews, documents, now = store
@@ -795,14 +797,16 @@ async def test_a_delegations_batch_is_never_split_across_review_windows(store: A
         for review, items in seen
         if any("delegation" in i["locator"] for i in items)
     ]
-    ((review, items),) = holding  # the batch is in one review, whole
-    executions = [i["locator"]["execution"] for i in items if i["kind"] == "execution"]
-    assert (len(executions), executions[-1]) == (100, "exe-199")
-    (outcome,) = [i for i in items if i["kind"] == "delegation"]
-    assert read(reviews, review, outcome)["executions"]["left_out"] == 100
-    # The window before it ended before the batch rather than split it.
-    assert any(i["kind"] == "transcript" for _, before in seen[:1] for i in before)
-    assert holding[0][0] != seen[0][0]
+    assert len(holding) > 1
+    executions = {
+        i["locator"]["execution"] for _, items in holding for i in items if i["kind"] == "execution"
+    }
+    assert len(executions) == 100
+    assert "exe-199" in executions
+    for review, items in holding:
+        (outcome,) = [i for i in items if i["kind"] == "delegation"]
+        assert read(reviews, review, outcome)["executions"]["left_out"] == 100
+        assert not reviews.run("p", "s", review)["coverage_complete"]
 
 
 @pytest.mark.asyncio
@@ -875,4 +879,7 @@ def test_open_findings_keep_their_slots_before_feed_rows(
     assert sorted(held) == sorted(finding["finding_id"] for finding in raised)
     transcripts = [i for i in items if i["kind"] == "transcript"]
     assert 0 < len(transcripts) < 20
+    # The selected prefix is pinned, but global coverage stays incomplete until
+    # all linked feed evidence has been reviewed (the ledger gate requires this).
     assert not reviews.run("p", "s", review)["coverage_complete"]
+    assert reviews.progress("p", "s")["remaining"]
