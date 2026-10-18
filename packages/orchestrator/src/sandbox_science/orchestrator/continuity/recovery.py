@@ -83,9 +83,17 @@ class Recovery:
             session_lease(self.stores.runs, blueprint.context, name, clock=self.harness.clock),
             AsyncExitStack() as resources,
         ):
-            self.root, self.epoch = await threaded(
-                self.records.claim, self.project, self.session, self.request, lease_run=name
-            )
+            try:
+                self.root, self.epoch = await threaded(
+                    self.records.claim, self.project, self.session, self.request, lease_run=name
+                )
+            except ControlError as exc:
+                if exc.message.startswith("automatic Resume invalidated"):
+                    # A new USER action won the claim race. The durable request is
+                    # blocked already; this is not a failed research run and must
+                    # not delay that user's queued correction.
+                    return False
+                raise
             try:
                 await self.harness.client.fence(
                     RecoveryFence(

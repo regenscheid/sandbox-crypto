@@ -131,6 +131,7 @@ class RunService:
         self.holder = secrets.token_hex(16)
         self._beaten = -BEAT_SECONDS
         self._auto_checked = -AUTO_RECOVERY_SECONDS
+        self._auto_after = ("", "", "")
         self.auto_recovery = AutoRecovery(harness.stores.projects.control, clock=clock)
         self.ledger = Ledger(harness.stores.documents)
         self.figures = FigureChecks(harness.stores.documents, figures)
@@ -226,21 +227,20 @@ class RunService:
 
     async def auto_recovery_tick(self) -> None:
         """Offer bounded model-failure recovery; dispatch retains its normal gates."""
-        after = ("", "", "")
-        while page := await threaded(self.auto_recovery.candidates, after=after):
-            for project, session, root in page:
-                if (project, session) in self.active:
-                    continue
-                if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
-                    continue
-                request = await threaded(self.auto_recovery.queue, project, session, root)
-                if request is not None:
-                    _log.info(
-                        "session %s queued automatic Resume %s for saved model failure",
-                        session,
-                        request,
-                    )
-            after = page[-1]
+        page = await threaded(self.auto_recovery.candidates, after=self._auto_after)
+        self._auto_after = page[-1] if len(page) == 100 else ("", "", "")
+        for project, session, root in page:
+            if (project, session) in self.active:
+                continue
+            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
+                continue
+            request = await threaded(self.auto_recovery.queue, project, session, root)
+            if request is not None:
+                _log.info(
+                    "session %s queued automatic Resume %s for saved model failure",
+                    session,
+                    request,
+                )
 
     async def waiting_work(self) -> tuple[tuple[str, str], ...]:
         """Enumerate eligible work without admitting or starting an agent loop."""

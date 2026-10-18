@@ -54,6 +54,14 @@ def _latest(
     return TokenGrantDecision.model_validate_json(row[0]) if row else None
 
 
+def grant_total(
+    db: sqlite3.Connection, project: str, session: str, work: str, original: int
+) -> int:
+    """Original or USER-renewed cumulative ceiling within the caller's transaction."""
+    last = _latest(db, project, session, work)
+    return original if last is None else last.request.total_tokens
+
+
 class TokenGrants:
     def __init__(
         self, control: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK
@@ -64,8 +72,7 @@ class TokenGrants:
     def total(self, project: str, session: str, work: str, original: int) -> int:
         """The cumulative ceiling follows the work through all later attempts."""
         with self.control.read() as tx:
-            last = _latest(tx.sql, project, session, work)
-        return original if last is None else last.request.total_tokens
+            return grant_total(tx.sql, project, session, work, original)
 
     def extended(self, project: str, session: str, work: str) -> bool:
         """Whether this work must retain its spending cap on every paid safe point."""

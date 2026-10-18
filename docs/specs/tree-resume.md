@@ -42,16 +42,21 @@ The service gives Resume requests priority over ordinary admission in that sessi
 A durable response reports counts and paged branch states/reasons, including blocked
 branches; it never calls an incomplete tree successfully resumed.
 
-The control service also checks saved paused roots for model-phase failures. It may
-queue one Resume for a root whose unfinished branches are only model failures or
-parents waiting on them. The request and a small retry observation commit together;
-another service sees the same request after restart. Without a new completed work
-item or recorded model answer, at most three automatic requests are made, separated
+The control service also checks the current tree's saved paused root for model-phase
+failures. It may queue one Resume only when at least one unfinished branch has a
+saved model-phase failure and every other unfinished branch is either another such
+failure or a parent waiting on children. The request and a small retry observation
+commit together; another service sees the same request after restart. Without a new
+completed work item or recorded model answer, at most three automatic requests are made, separated
 by 30 and 60 seconds; later recovery needs an explicit owner action. The scheduler
 defers to a newly queued user message so a correction can be handled first. It
 does not create new work, reset grants, re-dispatch a tool, or override the normal
 cost, policy, environment and kernel checks. It leaves stopped/cancelled work,
 spent token grants, uncertain tool effects and other failures for explicit handling.
+The automatic request rechecks Stop, cancellation, a newer root and fresh user
+messages atomically when claiming the session epoch; an invalidated request becomes
+blocked without dispatch. Each control-service pass reads at most 100 candidate
+roots and rotates its cursor for later passes.
 Unknown model charges remain visible but do not by themselves prevent this bounded
 continuation. Its positive classification is intentionally narrow: a saved `error`
 attempt must name failure phase `model`. The scheduler does not infer that every
