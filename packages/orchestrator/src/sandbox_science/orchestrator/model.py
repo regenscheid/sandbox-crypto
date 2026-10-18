@@ -319,6 +319,11 @@ class GatewayModel(ABC):
     """The request's fields that hold what the model is given, which ``prefix_digest``
     covers: its instructions, tools and conversation."""
 
+    @property
+    def durable_intents(self) -> bool:
+        """Whether another authority journals each call before paid dispatch."""
+        return False
+
     def __init__(
         self,
         base_url: str,

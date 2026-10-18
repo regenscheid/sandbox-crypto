@@ -41,12 +41,19 @@ from sandbox_science.orchestrator.history.folds import build, span
 from sandbox_science.orchestrator.history.geometry import input_limit
 from sandbox_science.orchestrator.history.reads import Read, Register
 from sandbox_science.orchestrator.history.skeleton import _fit
-from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import Limits, Message, ToolSpec, session_cache_key
+from sandbox_science.orchestrator.loop import Transcript, run_task
+from sandbox_science.orchestrator.model import (
+    GatewayModel,
+    Limits,
+    Message,
+    ToolSpec,
+    session_cache_key,
+)
 from sandbox_science.orchestrator.notices import FOLD_ENRICH, FOLD_REGION, STATE_BLOCK
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
-from sandbox_science.orchestrator.worker_client import dump
+from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.worker_client import WorkerClient, dump
 
 from .control_versions import older_store
 from .loop_harness import PROJECT, SESSION, Harness, Reply
@@ -1124,6 +1131,37 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
     assert "quoted:\n> Earlier work, as its outline shows." in region
 
 
+async def test_saved_answer_includes_fold_cancelled_during_run_cleanup(harness: Harness) -> None:
+    """The persisted run summary is captured after its fold lease settles."""
+    harness.gateway.per_token = 4.0
+    seed(harness, 13)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_enrichment() -> None:
+        entered.set()
+        await release.wait()
+
+    async def wait_for_enrichment() -> None:
+        await asyncio.wait_for(entered.wait(), 5)
+
+    harness.gateway.enrich = [Reply(None, before=blocked_enrichment)]
+    try:
+        result = await harness.run(
+            "run-cleanup",
+            [
+                Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})]),
+                Reply("Done.", before=wait_for_enrichment),
+            ],
+            options=ENRICHED,
+        )
+    finally:
+        release.set()
+    assert result.answer == "Done."
+    calls = folds(result)["calls"]
+    assert len(calls) == 1
+    assert (calls[0]["cancelled"], calls[0]["estimated"]) == (True, True)
+
+
 class Silent:
     """A model that never answers."""
 
@@ -1435,6 +1473,95 @@ async def test_run_end_counts_only_a_dispatched_fold_once(archive: Archive, stag
         assert summary["calls"][0]["estimated"] is True
         assert summary["calls"][0]["input_tokens"] > 30_000
     assert len(made.spent) == len(summary["calls"])
+
+
+async def test_cancelled_run_snapshots_fold_receipt_after_lease(archive: Archive) -> None:
+    """A user's cancellation also returns a final summary with settled fold usage."""
+    for n in range(36):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    folding, main = asyncio.Event(), asyncio.Event()
+
+    class WaitingFold:
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            folding.set()
+            await asyncio.sleep(3600)
+
+    class WaitingMain:
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            main.set()
+            await asyncio.sleep(3600)
+
+    folder = Folder(
+        archive,
+        CONTEXT,
+        run="r",
+        view=view,
+        start=start,
+        ceiling=48_000,
+        chunk=10_000,
+        model=cast(Any, WaitingFold()),
+    )
+    stop = asyncio.Event()
+    toolbox = Toolbox(WorkerClient("http://unused.invalid", "test-secret-unused"), CONTEXT)
+    run = asyncio.create_task(
+        run_task(
+            WaitingMain(),
+            toolbox,
+            "Continue",
+            run_id="r",
+            history=view.messages,
+            stop=stop,
+            hooks=(folder,),
+            folds=folder,
+            system="System.",
+        )
+    )
+    await asyncio.wait_for(asyncio.gather(folding.wait(), main.wait()), 5)
+    stop.set()
+    run.cancel()
+    transcript = await run
+    assert transcript.stopped == "cancelled"
+    calls = cast(Json, transcript.summaries["folds"])["calls"]
+    assert len(calls) == 1
+    assert calls[0]["cancelled"] is True
+
+
+@pytest.mark.parametrize("phase", ["pre_intent", "observed"])
+async def test_journaled_fold_never_adds_identityless_cancel_estimate(
+    archive: Archive, phase: str
+) -> None:
+    """The exact paid-intent journal owns both an unbegun and observed confined call."""
+    for n in range(36):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    entered = asyncio.Event()
+    journal: list[tuple[str, str]] = []
+
+    class Journaled(GatewayModel):
+        @property
+        def durable_intents(self) -> bool:
+            return True
+
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            if phase == "observed":
+                journal.append(("model-1", "observed"))
+            entered.set()
+            await asyncio.sleep(3600)
+
+    model = Journaled("http://unused.invalid", "scripted", "unused")
+    made = Folder(
+        archive, CONTEXT, run="r", view=view, start=start, ceiling=48_000,
+        chunk=10_000, model=model,
+    )  # fmt: skip
+    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    async with made.lease():
+        assert await made.before_call(transcript)
+        await asyncio.wait_for(entered.wait(), 1)
+    assert cast(Json, made.summary())["calls"] == []
+    assert journal == ([] if phase == "pre_intent" else [("model-1", "observed")])
 
 
 async def test_fold_response_cancelled_during_validation_has_no_input_estimate(

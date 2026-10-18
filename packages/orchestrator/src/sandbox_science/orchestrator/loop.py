@@ -983,10 +983,12 @@ async def run_task(
         raise ValueError("max_input_chars must be at least 1")
     transcript: Transcript | None = None
     interruption = Interruption()
+    active_hooks: tuple[TurnHook, ...] = ()
     try:
         async with AsyncExitStack() as stack:
             with interruption.protect():
                 hooks = toolbox.turn_hooks() if hooks is None else tuple(hooks)
+                active_hooks = tuple(hooks)
                 for hook in hooks:
                     await stack.enter_async_context(interruption.context(hook.lease()))
                 offered_plans = {spec.name for spec in toolbox.specs} & PLAN_NAMES
@@ -1053,28 +1055,35 @@ async def run_task(
                         raise
                     transcript.stopped, transcript.final_text = "cancelled", None
                     transcript.answer = None
-                for hook in hooks:
-                    if (summary := hook.summary()) is not None:
-                        transcript.summaries[hook.name] = summary
-                if toolbox.connectors is not None:
-                    transcript.summaries["connectors"] = toolbox.connectors.summary()
-                if toolbox.image_offer is not None:
-                    transcript.summaries["view_image"] = toolbox.image_offer
-                if toolbox.skills is not None:
-                    first = transcript.usage[0].model if transcript.usage else None
-                    if (started := toolbox.skills.summary(first)) is not None:
-                        # Beside the discoveries the hook of that name keeps there.
-                        found = cast(dict[str, Any], transcript.summaries.get("skills") or {})
-                        transcript.summaries["skills"] = {**found, **started}
     except BaseException as error:
         if transcript is not None and user_cancelled(error, stop):
-            return transcript  # it came as the run closed: the run's own outcome stands
-        if interruption.error is not None:
+            pass  # it came as the run closed: the run's own outcome stands
+        elif interruption.error is not None:
             raise interruption.error from None
-        if not isinstance(error, Exception):
+        elif not isinstance(error, Exception):
             raise
-        if transcript is None:
+        elif transcript is None:
             raise  # Setup did not start a run; there is no observed transcript.
-        _log.exception("run %s failed during cleanup", run_id)
+        else:
+            _log.exception("run %s failed during cleanup", run_id)
+            transcript.fail("cleanup")
+    try:
+        # Lease cleanup settles background work before its final accounting is
+        # copied into the saved run, including cancelled and failed runs.
+        for hook in active_hooks:
+            if (summary := hook.summary()) is not None:
+                transcript.summaries[hook.name] = summary
+        if toolbox.connectors is not None:
+            transcript.summaries["connectors"] = toolbox.connectors.summary()
+        if toolbox.image_offer is not None:
+            transcript.summaries["view_image"] = toolbox.image_offer
+        if toolbox.skills is not None:
+            first = transcript.usage[0].model if transcript.usage else None
+            if (started := toolbox.skills.summary(first)) is not None:
+                # Beside the discoveries the hook of that name keeps there.
+                found = cast(dict[str, Any], transcript.summaries.get("skills") or {})
+                transcript.summaries["skills"] = {**found, **started}
+    except Exception:
+        _log.exception("run %s failed during summary", run_id)
         transcript.fail("cleanup")
     return transcript

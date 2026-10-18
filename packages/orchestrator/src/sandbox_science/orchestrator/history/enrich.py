@@ -96,6 +96,8 @@ class EnrichmentProgress:
 
     baseline_input_tokens: int | None = None
     """The owner's already measured view size, avoiding another large serialization."""
+    canonical_intent: bool = False
+    """A durable paid-call journal owns observed or unknown usage for this dispatch."""
     inflight_input_tokens: int | None = None
     counted: bool = False
 

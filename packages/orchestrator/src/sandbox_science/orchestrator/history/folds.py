@@ -273,14 +273,20 @@ class Folder(TurnHook):
         try:
             yield
         finally:
-            if (running := self.running) is not None and running.task is not None:
-                running.task.cancel()
-                with contextlib.suppress(BaseException):
-                    await running.task
-                self._count_cancelled(running)
-                if running.saving is not None:  # a ready fold is kept (CM-24a)
-                    with contextlib.suppress(BaseException):
-                        await running.saving
+            await self._settle_running()
+
+    async def _settle_running(self) -> None:
+        running = self.running
+        if running is None or running.task is None:
+            return
+        if not running.task.done():
+            running.task.cancel()
+        with contextlib.suppress(BaseException):
+            await running.task
+        self._count_cancelled(running)
+        if running.saving is not None:  # a ready fold is kept (CM-24a)
+            with contextlib.suppress(BaseException):
+                await running.saving
 
     async def before_call(self, transcript: Transcript) -> bool:
         if self.geometry is None:
@@ -540,6 +546,9 @@ class Folder(TurnHook):
 
         if isinstance(model, GatewayModel):
             model = model.for_role("overview" if parts else "fold")
+        running.progress.canonical_intent = (
+            isinstance(model, GatewayModel) and model.durable_intents
+        )
         framing, shown = (
             (FOLD_OVERVIEW, asked(running.record, parts)) if parts else (FOLD_ENRICH, None)
         )
@@ -931,7 +940,11 @@ class Folder(TurnHook):
     def _count_cancelled(self, running: _Running) -> None:
         """Count a stopped dispatch once; admission and answer validation do not count."""
         progress = running.progress
-        if progress.inflight_input_tokens is not None and not progress.counted:
+        if (
+            progress.inflight_input_tokens is not None
+            and not progress.canonical_intent
+            and not progress.counted
+        ):
             self.spent.append(_cancelled(progress.inflight_input_tokens))
             progress.counted = True
 

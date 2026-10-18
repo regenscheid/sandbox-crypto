@@ -46,6 +46,11 @@ class CallbackModel(GatewayModel):
     session. An unavailable runtime fails the call, including reviewer and fold calls.
     """
 
+    @property
+    def durable_intents(self) -> bool:
+        """The host records a scoped model intent and observation for each call."""
+        return True
+
     def __init__(
         self,
         channel: Channel,
