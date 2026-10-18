@@ -47,6 +47,8 @@ async def test_replacement_budget_survives_restart_and_stop_prevents_dispatch(
         assert state.retry_after > clock.now().timestamp()
     await InfrastructureRecovery(config, layout, supervisor, clock=clock).replace()
     assert calls == 10
+    recovery = InfrastructureRecovery(config, layout, supervisor, clock=clock)
+    state = RecoveryState.model_validate_json(recovery.path.read_bytes())
     assert state.blocked
     write_private(recovery.path, RecoveryState().model_dump_json())
     stop.set()
