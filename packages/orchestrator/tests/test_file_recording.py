@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -24,7 +24,7 @@ from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.model import ToolCall
-from sandbox_science.orchestrator.recording import FileRecorder, RecordedFiles
+from sandbox_science.orchestrator.recording import FileRecorder, RecordedFiles, Written
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import eventually
@@ -364,6 +364,131 @@ async def test_a_jobs_files_are_recorded_when_the_run_sees_it_end(recording: Rec
         "op-job", job.execution_id,
     )  # fmt: skip
     assert recording.inventory.content("p1", head.reference) == b"42\n"
+
+
+async def test_later_run_reuses_finished_job_capture(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = recording.toolbox.client
+    jobs = JobTools(client, CONTEXT, run_id="run1")
+    jobs.recorder = recording.recorder
+    await jobs.start(
+        {
+            "script": "echo 42 > job-output.txt",
+            "purpose": "write output",
+            "expected_progress": "none",
+        },
+        "op-job-reused",
+    )
+    (job,) = (await client.jobs(CONTEXT, limit=10)).jobs
+
+    async def ended() -> bool:
+        return (await client.get(job.execution_id, project_id="p1")).state in TERMINAL_STATES
+
+    await eventually(ended, timeout=30)
+    (notice,) = await jobs.notices()
+    assert cast(dict[str, Any], notice["recorded_files"])["recorded"] == 1
+    original = recording.heads()["sessions/s1/job-output.txt"]
+
+    publisher = ArtifactPublisher(recording.inventory, client, CONTEXT, run_id="run2")
+    second = FileRecorder(publisher, recording.files, role="main")
+
+    async def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a later run must not recapture a mutable worker path")
+
+    async def no_current_paths(paths: Sequence[str]) -> tuple[dict[str, int], dict[str, str]]:
+        assert not paths
+        return {}, {}
+
+    monkeypatch.setattr(publisher, "publish", forbidden)
+    monkeypatch.setattr(publisher, "room", forbidden)
+    monkeypatch.setattr(second, "_sizes", no_current_paths)
+    try:
+        execution = await client.get(job.execution_id, project_id="p1")
+        again = await second.record(
+            Written.of(execution), tool_call=execution.operation_id, model=None
+        )
+    finally:
+        await publisher.aclose()
+
+    report = again.summary()
+    assert report is not None
+    assert report["recorded"] == 1
+    assert again.files[0]["reproduced"] is True
+    assert recording.heads()["sessions/s1/job-output.txt"].reference == original.reference
+
+
+async def test_later_run_cannot_recapture_unfinished_execution(recording: Recording) -> None:
+    first = recording.toolbox.artifacts
+    assert first is not None
+    original = first.source(
+        "op-job", None, kind="execution_record", execution_id="job1", attempt_state="succeeded"
+    )
+    recording.inventory.begin(original, "rec-unfinished", "job-output.txt", None)
+    assert recording.inventory.prior_execution(original, "rec-unfinished", "job-output.txt") is None
+
+    later = ArtifactPublisher(recording.inventory, recording.toolbox.client, CONTEXT, run_id="run2")
+    try:
+        same_execution = later.source(
+            "op-job", None, kind="execution_record", execution_id="job1", attempt_state="succeeded"
+        )
+        receipt = recording.inventory.prior_execution(
+            same_execution, "rec-unfinished", "job-output.txt"
+        )
+        assert receipt is not None
+        assert receipt.state == "held"
+        assert "will not be recaptured" in receipt.message
+    finally:
+        await later.aclose()
+
+
+async def test_later_observer_recovers_capture_that_won_the_reservation_race(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = recording.toolbox.client
+    jobs = JobTools(client, CONTEXT, run_id="run1")
+    await jobs.start(
+        {
+            "script": "echo race > job-race.txt",
+            "purpose": "write output",
+            "expected_progress": "none",
+        },
+        "op-job-race",
+    )
+    (job,) = (await client.jobs(CONTEXT, limit=10)).jobs
+
+    async def ended() -> bool:
+        return (await client.get(job.execution_id, project_id="p1")).state in TERMINAL_STATES
+
+    await eventually(ended, timeout=30)
+    execution = await client.get(job.execution_id, project_id="p1")
+    written = Written.of(execution)
+    publisher = ArtifactPublisher(recording.inventory, client, CONTEXT, run_id="run2")
+    second = FileRecorder(publisher, recording.files, role="main")
+    publish = publisher.publish
+    first_recorded = False
+
+    async def after_first_observer(*args: Any, **kwargs: Any) -> Any:
+        nonlocal first_recorded
+        if not first_recorded:
+            first_recorded = True
+            first = await recording.recorder.record(
+                written, tool_call=execution.operation_id, model=None
+            )
+            assert first.summary() is not None
+        return await publish(*args, **kwargs)
+
+    monkeypatch.setattr(publisher, "publish", after_first_observer)
+    try:
+        again = await second.record(written, tool_call=execution.operation_id, model=None)
+    finally:
+        await publisher.aclose()
+
+    report = again.summary()
+    assert report is not None
+    assert report["recorded"] == 1
+    assert again.files[0]["reproduced"] is True
+    assert recording.heads()["sessions/s1/job-race.txt"].reference.revision == 1
 
 
 async def test_code_reaches_the_shared_area_the_file_tools_name(recording: Recording) -> None:

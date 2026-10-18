@@ -305,6 +305,56 @@ class ArtifactInventory:
             raise DocumentError(INTERNAL, "missing pinned worker snapshot")
         return ArtifactOperation(row[1], worker, receipt)
 
+    def prior_execution(
+        self, source: ArtifactPublicationSource, operation: str, path: str
+    ) -> ArtifactReceipt | None:
+        """Reuse a finished execution's capture when a later run observes its job.
+
+        The operation is bound to the first observer's publisher. A second observer
+        may read its verified receipt, but must never republish a mutable worker path
+        under a new binding or turn an unfinished intent into a fresh capture.
+        """
+        if source.kind != "execution_record" or source.execution_id is None:
+            return None
+        artifact_path(path)
+        _IDENTIFIER.validate_python(operation)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT request FROM artifact_operations "
+                "WHERE project=? AND actor=? AND operation=?",
+                (source.context.project_id, source.context.session_id, operation),
+            ).fetchone()
+            if row is None:
+                return None
+            request = json.loads(row[0])
+            original = ArtifactPublicationSource.model_validate(request["source"])
+            if (
+                request["path"] != path
+                or original.kind != "execution_record"
+                or original.context != source.context
+                or original.execution_id != source.execution_id
+                or original.tool_call != source.tool_call
+                or original.worker_endpoint_sha256 != source.worker_endpoint_sha256
+                or original.attempt_state != source.attempt_state
+            ):
+                raise DocumentError(CONFLICT, "artifact execution capture identity differs")
+            _, digest = self.publication_request(original, request["path"], request["media_type"])
+            found = self.find_operation(db, original, operation, digest)
+            if found is None:
+                raise DocumentError(INTERNAL, "stored execution capture is missing")
+            if found.state == "done":
+                assert found.receipt is not None  # noqa: S101 - validated by find_operation
+                return found.receipt.model_copy(update={"reproduced": True})
+            if original == source:
+                # The original publisher can still finish a pinned transfer.
+                return None
+            return ArtifactReceipt(
+                state="held",
+                operation_id=operation,
+                message="original execution capture is unfinished; path will not be recaptured",
+            )
+
     def hold(
         self,
         source: ArtifactPublicationSource,

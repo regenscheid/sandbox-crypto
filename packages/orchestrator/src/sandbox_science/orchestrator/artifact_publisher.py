@@ -82,6 +82,12 @@ class ArtifactPublisher:
         """What the project's budget leaves for a revision of ``size`` bytes."""
         return await self._sql(lambda: self.inventory.room(self.context.project_id, size))
 
+    async def prior_execution(
+        self, operation: str, path: str, source: ArtifactPublicationSource
+    ) -> ArtifactReceipt | None:
+        """Read a prior capture of the same worker execution without republishing it."""
+        return await self._sql(lambda: self.inventory.prior_execution(source, operation, path))
+
     async def find(
         self,
         *,

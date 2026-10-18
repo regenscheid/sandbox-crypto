@@ -33,6 +33,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.artifact_inventory import (
     ArtifactPublicationSource,
+    ArtifactReceipt,
     ArtifactRevisionRef,
     artifact_path,
 )
@@ -200,7 +201,22 @@ class FileRecorder:
             attribution["attempt_state"] = _TERMINAL.get(execution.state)
         source = self.publisher.source(tool_call, model, **attribution)
         key = execution.execution_id if execution is not None else operation or tool_call
-        sizes, unlisted = await self._sizes(paths)
+        prior: dict[str, ArtifactReceipt] = {}
+        if execution is not None:
+            for path in paths[:MAX_FILES]:
+                operation_id = self._content_operation(key, path)
+                try:
+                    receipt = await self.publisher.prior_execution(operation_id, path, source)
+                except (DocumentError, ValueError) as error:
+                    _log.warning("recording %s could not reuse its capture: %s", path, error)
+                    receipt = ArtifactReceipt(
+                        state="held",
+                        operation_id=operation_id,
+                        message="existing execution capture has a different identity",
+                    )
+                if receipt is not None:
+                    prior[path] = receipt
+        sizes, unlisted = await self._sizes([path for path in paths if path not in prior])
         budget = MAX_BYTES
         limit = self.publisher.inventory.limits.artifact_bytes
         attempts = 0
@@ -209,6 +225,15 @@ class FileRecorder:
                 recorded.left_out["over the 100-file limit of a call"] += len(paths) - index
                 break
             attempts += 1  # every file tried counts, recorded or not
+            prior_receipt = prior.get(path)
+            if prior_receipt is not None:
+                if prior_receipt.state == "recorded" and prior_receipt.revision is not None:
+                    recorded.files.append(
+                        _entry(path, prior_receipt.revision, reproduced=prior_receipt.reproduced)
+                    )
+                else:
+                    recorded.left_out[prior_receipt.message or "execution capture unavailable"] += 1
+                continue
             size = sizes.get(path)
             if size is None:
                 recorded.left_out[unlisted.get(path, "gone, or not a regular file")] += 1
@@ -288,20 +313,27 @@ class FileRecorder:
         budget: int,
     ) -> dict[str, Any] | None:
         artifact_path(path)
-        operation = "rec-" + hashlib.sha256(f"{key}\0{path}".encode()).hexdigest()[:40]
+        operation = self._content_operation(key, path)
         outcome = await self.publisher.publish(
             PublishRequest(context=self.context, path=path),
             operation,
             tool_call=tool_call,
             model=model,
             attribution=attribution,
-            max_bytes=budget,  # a file grown since its listing cannot pass the call's limit
+            max_bytes=budget,  # a grown file cannot pass the call's limit
         )
         receipt = outcome.receipt
+        if receipt.state != "recorded" and "publisher binding" in receipt.message:
+            source = self.publisher.source(tool_call, model, **attribution)
+            receipt = await self.publisher.prior_execution(operation, path, source) or receipt
         if receipt.state != "recorded" or receipt.revision is None:
             _log.warning("recording %s was held: %s", path, receipt.message)
             return None
         return _entry(path, receipt.revision, reproduced=receipt.reproduced)
+
+    @staticmethod
+    def _content_operation(key: str, path: str) -> str:
+        return "rec-" + hashlib.sha256(f"{key}\0{path}".encode()).hexdigest()[:40]
 
     async def _metadata(
         self,
