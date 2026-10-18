@@ -1412,6 +1412,11 @@ class Harness:
         fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
         found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
         failed = transcript.failure is not None
+        errors = tuple(found.errors) if found is not None else ()
+        if transcript.failure is not None:
+            # The exception may contain gateway data or credentials. Hand the parent
+            # the trusted failure phase, not an exception string or a false result.
+            errors = (*errors, f"the child's {transcript.failure} phase failed")
         # A result stands only for a run that ended with that answer.
         result = result_of(found, transcript.stopped, failed) if found is not None else None
         return ChildEnd(
@@ -1420,7 +1425,7 @@ class Harness:
             transcript.final_text,
             fence.refused if fence is not None else None,
             result.model_dump(mode="json") if result is not None else None,
-            tuple(found.errors) if found is not None else (),
+            errors,
             finished.alias or self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,

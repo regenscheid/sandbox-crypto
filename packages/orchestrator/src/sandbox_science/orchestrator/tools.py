@@ -4,8 +4,8 @@
 Each tool call becomes a worker operation whose ID is derived from the call,
 so a repeated call is idempotent. Results go back to the model as compact
 JSON, bounded in size as a whole; the full execution records stay in the
-transcript. A tool call that fails, however it fails, becomes an error the
-model reads: it never ends the task.
+transcript. Definite failures become errors the model can correct. An unknown
+external effect stops the attempt with its durable tool intent still pending.
 """
 
 from __future__ import annotations
@@ -43,7 +43,12 @@ from sandbox_science.contracts.worker import Language
 
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
-from .connectors import MAX_LOAD, MAX_LOADED_CHARS, MAX_QUERY, Connectors
+from .connectors import (
+    MAX_LOAD,
+    MAX_LOADED_CHARS,
+    MAX_QUERY,
+    Connectors,
+)
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .delegation import specs as delegation_specs
 from .delegation.tracks import EFFECTS as TRACK_EFFECTS
@@ -52,6 +57,7 @@ from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .documents.tool import SPECS as DOCUMENT_SPECS
+from .effects import UnknownEffectError
 from .history import SPECS as HISTORY_SPECS
 from .history import HistoryTool
 from .hooks import Effect, Notice, TurnHook
@@ -82,6 +88,7 @@ if TYPE_CHECKING:
     from .delegation.tracks import TrackTools
 
 _log = logging.getLogger(__name__)
+
 
 SAVED_OUTPUT: Final = "call-output"
 """The session workspace's directory for output too long for its result, saved whole and
@@ -881,7 +888,7 @@ class Toolbox:
         model: str | None = None,
         gates: Sequence[TurnHook] = (),
     ) -> ToolOutcome:
-        """Run one tool call; whatever goes wrong comes back as an error for the model.
+        """Run one tool call; definite failures become errors for the model.
 
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
@@ -911,6 +918,8 @@ class Toolbox:
             gates = (*gates, Plans(self.plans))
         try:
             outcome = await self._call(entry, call, operation, model, gates)
+        except UnknownEffectError:
+            raise
         except Exception as exc:  # one bad call must not end the task
             _log.exception("the %s tool failed", call.name)
             outcome = _failure(
@@ -1013,6 +1022,12 @@ class Toolbox:
             where = ".".join(str(part) for part in first.get("loc", ()))
             return _failure(ErrorKind.INVALID_REQUEST, f"{where}: {first.get('msg')}")
         except WorkerAPIError as exc:
+            if exc.uncertain:
+                raise UnknownEffectError(
+                    "worker_unknown_effect",
+                    f"the {call.name} operation has an unknown outcome; "
+                    "reconcile its original operation before continuing",
+                ) from exc
             return _failure(exc.kind, exc.message)
         if entry.bound:
             outcome.text = self._cut(outcome.text, outcome.record)

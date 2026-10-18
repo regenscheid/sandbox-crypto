@@ -30,6 +30,7 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.contracts.worker import TERMINAL_STATES
 
 from .aio import lease, threaded
+from .effects import UnknownEffectError
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
 from .memory_prompt import MemoryGiven
@@ -341,11 +342,19 @@ class JobTools:
                 "waking a detached session needs the future harness scheduler",
             )
         execution = await self.client.submit(request)
-        if self.state is not None:
-            await asyncio.to_thread(
-                self.state.origin, self.context, execution.execution_id, self.run_id
-            )
-        value = summary(await self.owned(execution.execution_id), self.clock.now())
+        try:
+            if self.state is not None:
+                await asyncio.to_thread(
+                    self.state.origin, self.context, execution.execution_id, self.run_id
+                )
+            value = summary(await self.owned(execution.execution_id), self.clock.now())
+        except Exception as exc:
+            # Submission has already returned an execution. A failed status read or
+            # origin write cannot be presented as a safely retryable start failure.
+            raise UnknownEffectError(
+                "job_post_submit",
+                "start_job was accepted but its status or origin could not be confirmed",
+            ) from exc
         return dump(value), {"job": value, "execution": execution.model_dump(mode="json")}
 
     async def list(self, args: dict[str, Any], operation: str) -> tuple[str, dict[str, Any]]:

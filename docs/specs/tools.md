@@ -108,13 +108,13 @@ A background job is a shell command that runs without holding a tool call open: 
 
 ## Errors
 
-Every failure has one of these kinds and a message for the agent, which never contains secrets:
+Every definitive failure has one of these kinds and a message for the agent, which never contains secrets. A worker transport or proxy failure after a submission may leave its effect unknown. In that case the harness stops the attempt with the durable tool intent pending; it does not give the agent an ordinary error that would let it submit a new operation.
 
 | Kind | Meaning |
 | --- | --- |
 | `invalid_request` | Malformed arguments, or a path outside the allowed areas |
 | `unsupported` | The environment lacks the capability, such as a kernel language |
-| `unavailable` | No worker or sandbox can be reached; nothing ran |
+| `unavailable` | A definite refusal before execution, or an unavailable read; the harness separately holds a submitted operation whose effect is unknown |
 | `policy_denied` | The project policy forbids the operation |
 | `not_found` | Unknown execution, kernel or file |
 | `conflict` | An idempotency key was reused with a different request, or a shared file changed |

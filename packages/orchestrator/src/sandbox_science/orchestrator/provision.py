@@ -31,6 +31,7 @@ from sandbox_science.contracts import (
     ProvisionState,
 )
 
+from .effects import UnknownEffectError
 from .model import ToolSpec
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -177,7 +178,17 @@ class ProvisionTools:
             where = ".".join(str(part) for part in first.get("loc", ()))
             return _failure(ErrorKind.INVALID_REQUEST, f"{where}: {first.get('msg')}")
         submitted, created = await self.client.provision(request)
-        followed = await self._follow(submitted, _seconds(args.get("wait_seconds"), DEFAULT_WAIT))
+        try:
+            followed = await self._follow(
+                submitted, _seconds(args.get("wait_seconds"), DEFAULT_WAIT)
+            )
+        except Exception as exc:
+            # The worker already accepted the operation. An unreadable later status
+            # cannot turn that acceptance into a safely repeatable tool failure.
+            raise UnknownEffectError(
+                "provision_post_submit",
+                "provision was accepted but its later status could not be confirmed",
+            ) from exc
         return self._result(followed, replayed=not created)
 
     async def status(self, args: dict[str, Any], operation: str) -> ToolOutcome:

@@ -1101,4 +1101,5 @@ def summarized(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[
         return {**found, "verdict": result.get("verdict"), "status": result.get("status")}
     answer = delegation.report or ""
     head = answer if len(answer) <= SUMMARY_CHARS else answer[:SUMMARY_CHARS] + "…"
-    return {**found, "result": None, "answer_head": head, "answer_chars": len(answer)}
+    failed = {"errors": list(delegation.errors[:2])} if delegation.ended == "failed" else {}
+    return {**found, "result": None, "answer_head": head, "answer_chars": len(answer), **failed}

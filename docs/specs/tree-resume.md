@@ -64,6 +64,11 @@ unknown outcome blocks the branch. An unsupported external/MCP effect remains un
 its old arguments are never automatically executed again. Explicit reconciliation
 must name authoritative evidence or acknowledge the uncertain effect; elapsed time
 is not proof that nothing ran.
+The live tool path uses the same distinction: a definite application refusal becomes
+an error the agent can correct; a lost worker or MCP reply leaves the original
+intent pending and ends the attempt. A child failure reaches its parent as a bounded
+outcome notice with the trusted failure phase, while the unresolved operation remains
+blocked for orchestrator Resume. Neither parent nor child invents a successful result.
 
 Observe sandbox and kernel identity/generation without waking them. Reuse the stable
 child kernel scope only when its saved observation matches. A lost kernel is a visible

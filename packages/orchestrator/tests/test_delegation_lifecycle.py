@@ -95,6 +95,26 @@ async def test_child_persistence_failure_never_advertises_a_successful_result(
     assert len(children(delegating, root)) == (0 if failure == "save" else 1)
 
 
+async def test_child_model_failure_reaches_parent_as_actionable_notice(
+    delegating: Harness,
+) -> None:
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK]), wait(), Reply("The check needs recovery.")],
+        delegated=[Reply(status=400)],
+        status=3,
+    )
+    (delegation_id,) = started(root)
+    failed = delegation(delegating, delegation_id)
+    assert (failed.ended, failed.stopped) == ("failed", "error")
+    assert "the child's model phase failed" in failed.errors
+    assert any(
+        "the child's model phase failed" in str(message.get("content", ""))
+        for messages in delegating.gateway.main
+        for message in messages
+    )
+
+
 FENCED = {
     "entry": "C-1",
     "revision": 1,

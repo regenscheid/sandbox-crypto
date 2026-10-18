@@ -38,7 +38,7 @@ connectors are offered only to runs of that project.
   ``approve``), and the agent calls again later, with the same arguments, which the
   harness sends in one order;
 - a call sent whose answer cannot be read is ``no_usable_answer``: the server may have
-  done the work, so the agent should check before calling again;
+  done the work, so the harness leaves its intent pending for reconciliation;
 - text results only: the proxy withholds binary content, and the toolbox bounds the
   text as it bounds any tool result.
 """
@@ -59,6 +59,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from .documents.agent_text import hidden_characters
+from .effects import UnknownEffectError
 from .model import ToolSpec
 from .worker_client import dump
 
@@ -339,7 +340,9 @@ def _result(status: int, body: object) -> dict[str, Any]:
         )
     result = message.get("result")
     if status != 200 or not isinstance(result, dict):
-        raise ConnectorError("unavailable", f"the MCP proxy answered {status} without a result")
+        raise ConnectorError(
+            "no_usable_answer", f"the MCP proxy answered {status} without a usable result"
+        )
     return cast(dict[str, Any], result)
 
 
@@ -712,6 +715,8 @@ class Connectors:
                 session=self.session,
             )
         except ConnectorError as error:
+            if error.kind == "no_usable_answer":
+                raise UnknownEffectError(error.kind, error.message) from error
             record["error"] = error.kind
             if error.kind == "approval_required" and "request" in error.data:
                 record["permission_request"] = error.data["request"]

@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import (
+    ErrorKind,
     Execution,
     ExecutionContext,
     ExecutionState,
@@ -26,6 +27,7 @@ from sandbox_science.contracts import (
     StreamOutput,
 )
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT, JobTools, WatcherAnswer, clipped
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
@@ -431,6 +433,31 @@ async def test_start_refuses_context_override_and_unsupported_wake(
             {"script": "echo hello", "purpose": "test", "expected_progress": "soon", **args}, "op"
         )
     assert worker.requested == []
+
+
+@pytest.mark.parametrize("failed_step", ["origin", "status"])
+async def test_accepted_job_with_failed_follow_up_keeps_unknown_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_step: str
+) -> None:
+    worker = FakeWorker()
+    jobs = tools(worker, tmp_path)
+
+    def cannot_record(*args: object) -> None:
+        raise OSError("fixture storage failure")
+
+    async def cannot_read(*args: object, **kwargs: object) -> JobStatus:
+        raise WorkerAPIError(ErrorKind.UNAVAILABLE, "fixture status read failed")
+
+    if failed_step == "origin":
+        assert jobs.state is not None
+        monkeypatch.setattr(jobs.state, "origin", cannot_record)
+    else:
+        monkeypatch.setattr(worker, "job_status", cannot_read)
+    with pytest.raises(UnknownEffectError, match="job_post_submit"):
+        await jobs.start(
+            {"script": "echo hello", "purpose": "test", "expected_progress": "soon"}, "op"
+        )
+    assert len(worker.requested) == 1
 
 
 @pytest.mark.asyncio
