@@ -69,6 +69,7 @@ from sandbox_science.orchestrator.worker_client import dump
 
 from .archive import KINDS, Archive, Archived, Entry
 from .bound import SPILL, Bounded, bound
+from .capture import ContextMessage, Origin
 from .collections import Collection
 from .fold_index import active, historical
 from .geometry import Geometry
@@ -173,7 +174,19 @@ class View:
 
     @property
     def messages(self) -> tuple[Json, ...]:
-        return tuple(part.message for part in self.parts)
+        return tuple(
+            part.message
+            if part.message.get("role") == "assistant"
+            else ContextMessage(
+                part.message,
+                Origin(
+                    kind=part.kind,
+                    message=part.row.message_id if part.row else None,
+                    position=part.row.position if part.row else None,
+                ),
+            )
+            for part in self.parts
+        )
 
     @property
     def tokens(self) -> int:

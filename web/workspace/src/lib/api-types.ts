@@ -90,6 +90,21 @@ export interface BodyChange {
   reason: string;
 }
 
+export interface CapturedCall {
+  cursor: number;
+  identity: string;
+  run: string;
+  at: string;
+  kind: string;
+  alias: string;
+  captured: boolean;
+}
+
+export interface CapturedCalls {
+  calls: CapturedCall[];
+  next_before: number | null;
+}
+
 /** The capability catalog an operation used (CP-3): its version and the file's SHA-256. */
 export interface CatalogRef {
   version: number;
@@ -251,7 +266,36 @@ export interface ContextHistoryPage {
   messages: ContextHistoryMessage[];
   next_after: number | null;
   unsearched_oversized_tool_calls: number;
+  indexed: boolean;
+  index_pending: boolean;
   coverage: string;
+}
+
+export interface ContextPart {
+  ordinal: number;
+  sha256: string;
+  bytes: number;
+  kind: string;
+  role: string;
+  format: string;
+  origin: Origin | null;
+  section: string | null;
+  version: string | null;
+  native_omitted: boolean;
+}
+
+export interface ContextParts {
+  parts: ContextPart[];
+  next_after: number | null;
+  coverage: string;
+}
+
+export interface ContextText {
+  text: string;
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  sha256: string;
 }
 
 export interface ContextTimelinePage {
@@ -690,6 +734,11 @@ export interface HistoryPage {
   items: HistoryItem[];
 }
 
+export interface IndexStatus {
+  chunks: number;
+  pending: boolean;
+}
+
 export type JsonValue = unknown;
 
 /** A session's kernel; ``generation`` grows by one on every restart. */
@@ -993,6 +1042,12 @@ export interface ModelUsage {
   gateway_version: string | null;
   thinking_replay: string | null;
   retried: string[];
+}
+
+export interface Origin {
+  kind: string;
+  message: string | null;
+  position: number | null;
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */

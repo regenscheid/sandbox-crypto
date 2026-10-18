@@ -25,6 +25,7 @@ from contextlib import (
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
+from .history.capture import prompt_pins
 from .history.collections import Collection, Members
 from .history.limits import WorkingMemoryLimitError
 from .history.log import RunArchive
@@ -569,7 +570,8 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     transcript.phase = "model"
     transcript.overflowed = False
     try:
-        reply = await model.complete(transcript.sent, toolbox.specs)
+        with prompt_pins(transcript.prompt_provenance):
+            reply = await model.complete(transcript.sent, toolbox.specs)
     except ContextLimitError as error:
         _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
         reply, transcript.overflowed = None, True

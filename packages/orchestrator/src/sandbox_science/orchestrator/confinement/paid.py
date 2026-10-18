@@ -4,6 +4,7 @@
 from collections.abc import Sequence
 from dataclasses import replace
 
+from sandbox_science.orchestrator.history import capture
 from sandbox_science.orchestrator.model import (
     ChatModel,
     GatewayBudgetError,
@@ -26,6 +27,7 @@ async def begin(
     kind: ModelKind,
     profile: ModelProfile | None = None,
     role: ModelRole | None = None,
+    captured: capture.CapturedRequest | None = None,
 ) -> str:
     try:
         ticket = typed(
@@ -33,7 +35,14 @@ async def begin(
             await channel.request(
                 Capability.MODEL_INTENT,
                 payload(
-                    ModelIntent(attempt=attempt, alias=alias, kind=kind, profile=profile, role=role)
+                    ModelIntent(
+                        attempt=attempt,
+                        alias=alias,
+                        kind=kind,
+                        profile=profile,
+                        role=role,
+                        captured=captured,
+                    )
                 ),
             ),
         )
@@ -86,6 +95,7 @@ class PaidModel:
             self.kind,
             getattr(self.model, "requested_profile", None),
             "delegated" if self.kind == "delegated" else "main",
+            capture.request(messages, tools),
         )
         turn = await self.model.complete(messages, tools)
         return replace(turn, intent_id=identity)

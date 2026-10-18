@@ -12,6 +12,7 @@ from sandbox_science.contracts import Contract
 from sandbox_science.contracts.model import Counter
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.history.inspector import OriginalHistory
+from sandbox_science.orchestrator.history.inspector_index import InspectorIndex
 from sandbox_science.orchestrator.history.timeline import AttemptTimeline
 from sandbox_science.orchestrator.projects import ModelUsage, RunName
 
@@ -30,6 +31,7 @@ class Query(Contract):
     kind: Annotated[str, Field(pattern=r"^[a-z_]{1,32}$")] | None = None
     include_derived: Literal["0", "1"] = "0"
     scope: Literal["attempt", "agent"] = "attempt"
+    indexed: Literal["0", "1"] = "0"
 
 
 class ContextHistoryMessage(Contract):
@@ -116,6 +118,8 @@ class ContextHistoryPage(Contract):
     messages: tuple[ContextHistoryMessage, ...]
     next_after: Counter | None
     unsearched_oversized_tool_calls: Counter = 0
+    indexed: bool = False
+    index_pending: bool = False
     coverage: str = (
         "Retained original text and tool-call arguments in the selected scope; native provider "
         "payloads, tool-call fields over 8 MiB and separately stored tool-record bytes are "
@@ -125,6 +129,9 @@ class ContextHistoryPage(Contract):
 
 
 def add_routes(app: web.Application) -> None:
+    from . import context_captures
+
+    context_captures.add_routes(app)
     app.router.add_get(PATH, history)
     app.router.add_get(PATH.removesuffix("history") + "attempts", attempts)
     app.router.add_get(PATH.removesuffix("history") + "timeline", timeline)
@@ -143,7 +150,12 @@ async def history(request: web.Request) -> web.Response:
 
     def read(store: DocumentStore) -> dict[str, object]:
         session_record(context.projects, project, session)
-        page = OriginalHistory(store).page(
+        search = (
+            InspectorIndex(store.control)
+            if query.indexed == "1" and len(query.contains) >= 3 and "\x00" not in query.contains
+            else OriginalHistory(store)
+        )
+        page = search.page(
             project,
             session,
             run,
@@ -162,6 +174,19 @@ async def history(request: web.Request) -> web.Response:
             ),
             next_after=page.next_after,
             unsearched_oversized_tool_calls=page.unsearched_oversized_tool_calls,
+            indexed=page.indexed,
+            index_pending=page.index_pending,
+            **(
+                {
+                    "coverage": "Exact case-sensitive substring search over indexed original "
+                    "content and tool-call arguments, including retrieval echoes. Native payloads "
+                    "and "
+                    "separate tool-record bytes are not indexed. Pending legacy/large rows require "
+                    "bounded indexing before a negative result is complete."
+                }
+                if page.indexed
+                else {}
+            ),
         ).model_dump(mode="json")
 
     return await documents.answer(request, read)

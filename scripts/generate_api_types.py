@@ -37,6 +37,7 @@ from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.orchestrator.continuity.grants import TokenGrantDecision, TokenGrantStatus
 from sandbox_science.orchestrator.continuity.resources import ResourceRequestPage
 from sandbox_science.orchestrator.continuity.status import StatusPage
+from sandbox_science.orchestrator.history.captured import CapturedCalls, ContextParts, ContextText
 from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.orchestrator.runtree import RunTree
 from sandbox_science.orchestrator.uploads import UploadPage
@@ -50,6 +51,7 @@ from sandbox_science.workspace.chat import (
     QuestionListing,
     Requested,
 )
+from sandbox_science.workspace.context_captures import IndexStatus
 from sandbox_science.workspace.context_inspector import (
     ContextAttemptsPage,
     ContextHistoryPage,
@@ -90,6 +92,10 @@ MODELS: tuple[type[BaseModel], ...] = (
     TokenGrantDecision,
     HistoryChunk,
     HistoryPage,
+    CapturedCalls,
+    ContextParts,
+    ContextText,
+    IndexStatus,
     ContextHistoryPage,
     ContextAttemptsPage,
     ContextTimelinePage,

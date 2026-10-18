@@ -36,6 +36,8 @@ class OriginalPage:
     messages: tuple[OriginalMessage, ...]
     next_after: int | None
     unsearched_oversized_tool_calls: int = 0
+    indexed: bool = False
+    index_pending: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,7 +55,7 @@ class AttemptPage:
     next_after: str | None
 
 
-def _scope(
+def attempt_scope(
     project: str, session: str, run: str, continuations: bool
 ) -> tuple[str, tuple[object, ...]]:
     # Stable work identity, never the session tree: siblings and descendants have
@@ -128,7 +130,7 @@ class OriginalHistory:
         """
         if not 1 <= limit <= 50 or after < 0 or len(contains) > 128:
             raise ValueError("invalid original-history query")
-        scope, scope_args = _scope(project, session, run, continuations)
+        scope, scope_args = attempt_scope(project, session, run, continuations)
         # Size the next slice from SQLite's byte metadata, without materializing
         # text.  On older SQLite, blobopen supplies the same lengths on an isolated
         # connection.  An unbounded tool_calls field is excluded from text search

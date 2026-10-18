@@ -383,3 +383,78 @@ async def test_auxiliary_timeline_snapshot_rechecks_equal_time_intents_and_late_
     assert bounded["more_auxiliary"]
     assert first not in {item["identity"] for item in bounded["auxiliary"]}
     projects.close()
+
+
+async def test_captured_context_live_parts_chunks_and_scope_are_authenticated(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    from sandbox_science.orchestrator.history.capture import request
+
+    projects = ProjectStore(state_dir)
+    run = "20261018T120000000000Z-run-captured"
+    owner = WorkRecords(projects.control).admit("p1", "a", run)
+    identity = ModelIntents(projects.control).begin(
+        owner,
+        kind="main",
+        alias="fixture",
+        captured=request(
+            [
+                {"role": "system", "content": "Pinned source"},
+                {"role": "user", "content": "x" * 40000},
+            ],
+            [],
+        ),
+    )
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    base = f"/api/v0/projects/p1/sessions/a/runs/{run}/context/captures"
+    listing = await (await client.get(base)).json()
+    assert [item["identity"] for item in listing["calls"]] == [identity]
+    assert listing["calls"][0]["captured"]
+    parts = await (await client.get(f"{base}/{identity}/parts")).json()
+    assert [part["role"] for part in parts["parts"]] == ["system", "user", "tools"]
+    first = await (await client.get(f"{base}/{identity}/parts/1")).json()
+    assert len(first["text"]) == 16384
+    assert first["next_offset"] == 16384
+    second = await (await client.get(f"{base}/{identity}/parts/1?offset=16384")).json()
+    assert second["sha256"] == first["sha256"]
+    other = await (await client.get(base.replace(run, "20261018T120001000000Z-other"))).json()
+    assert other["calls"] == []
+    await error_of(await client.get(f"{base}/{identity}/parts/1?offset=-1"), 400, "invalid_request")
+    await error_of(await client.get(f"{base}/{identity}/parts/nope"), 400, "invalid_request")
+    await error_of(
+        await client.get(base.replace("sessions/a", "sessions/missing")), 404, "not_found"
+    )
+    await client.post("/api/v0/logout", headers={"Origin": str(client.make_url("/")).rstrip("/")})
+    assert (await client.get(base)).status == 401
+    projects.close()
+
+
+async def test_indexed_history_reports_pending_and_explicit_backfill_preserves_original(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    projects = ProjectStore(state_dir)
+    run = next(projects.iter_runs("p1", "a")).name
+    source = "x" * 300000 + "literal-evidence-after-long-body"
+    saved = Archive(projects.control).append(
+        "p1", "a", run, Entry("tool", "tool_result", source, source="history_read")
+    )
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    base = f"/api/v0/projects/p1/sessions/a/runs/{run}/context/history"
+    params = {"contains": "literal-evidence", "indexed": "1"}
+    first = await (await client.get(base, params=params)).json()
+    assert first["index_pending"]
+    assert first["indexed"]
+    assert first["messages"] == []
+    assert (await client.post(base + "/index")).status == 403
+    origin = {"Origin": str(client.make_url("/")).rstrip("/")}
+    progress = await (await client.post(base + "/index", headers=origin)).json()
+    assert progress["chunks"] <= 16
+    assert not progress["pending"]
+    found = await (await client.get(base, params=params)).json()
+    assert [m["message"] for m in found["messages"]] == [saved.message_id]
+    assert not found["index_pending"]
+    assert Archive(projects.control).message("p1", saved.message_id).entry.content == source
+    await error_of(
+        await client.post(base + "/index?scope=tree", headers=origin), 400, "invalid_request"
+    )
+    projects.close()

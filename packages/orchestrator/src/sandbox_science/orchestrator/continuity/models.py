@@ -12,6 +12,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, new_id
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
+from sandbox_science.orchestrator.history import capture
 from sandbox_science.orchestrator.model import (
     ChatModel,
     GatewayBudgetError,
@@ -39,6 +40,7 @@ class ModelIntents:
         alias: str,
         profile: ModelProfile | None = None,
         role: ModelRole | None = None,
+        captured: capture.CapturedRequest | None = None,
     ) -> str:
         """Commit before contacting the gateway; callers cannot provide another scope."""
         if kind not in {"main", "delegated", "reviewer", "watcher", "fold", "skills", "embedding"}:
@@ -73,6 +75,8 @@ class ModelIntents:
                     self.clock.now().timestamp(),
                 ),
             )
+            if captured is not None:
+                capture.save(tx.sql, (owner.project, owner.session, owner.run), identity, captured)
             if profile is not None:
                 if profile.alias != alias:
                     raise ValueError("model intent profile alias differs")
@@ -169,6 +173,7 @@ class IntentModel:
                 alias=self.alias,
                 profile=getattr(self.model, "requested_profile", None),
                 role=getattr(self.model, "_model_role", None),
+                captured=capture.request(messages, tools),
             )
         except ControlError as exc:
             if exc.message.startswith("model_budget:"):

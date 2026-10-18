@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal, cast
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter
 
 from sandbox_science.contracts.model import Contract, Counter, Identifier
+from sandbox_science.orchestrator.history.capture import CapturedRequest, ContextMessage, Origin
 from sandbox_science.orchestrator.hooks import Effect, Notice, Point
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import (
@@ -81,6 +82,7 @@ class Attempt(Contract):
 
 
 class WireMessage(Contract):
+    origin: Origin | None = None
     chat: dict[str, JsonValue]
     native_b64: str | None = Field(default=None, max_length=24 * 1024 * 1024)
     native_format: str | None = Field(default=None, max_length=128)
@@ -93,7 +95,9 @@ class WireMessage(Contract):
     @classmethod
     def of(cls, message: Message) -> WireMessage:
         if not isinstance(message, AssistantMessage):
-            return cls(chat=message)
+            return cls(
+                chat=message, origin=message.origin if isinstance(message, ContextMessage) else None
+            )
         return cls(
             chat=message,
             native_b64=base64.b64encode(message.native).decode() if message.native else None,
@@ -107,7 +111,7 @@ class WireMessage(Contract):
 
     def message(self) -> Message:
         if self.chat.get("role") != "assistant":
-            return dict(self.chat)
+            return ContextMessage(dict(self.chat), self.origin) if self.origin else dict(self.chat)
         result = AssistantMessage(
             cast(str | None, self.chat.get("content")),
             native=base64.b64decode(self.native_b64, validate=True) if self.native_b64 else None,
@@ -254,6 +258,7 @@ ModelKind = Literal["main", "delegated", "reviewer", "watcher", "fold", "skills"
 
 
 class ModelIntent(Attempt):
+    captured: CapturedRequest | None = None
     role: ModelRole | None = None
     profile: ModelProfile | None = None
     alias: ModelAlias

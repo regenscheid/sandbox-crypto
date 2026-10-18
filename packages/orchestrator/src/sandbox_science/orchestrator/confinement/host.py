@@ -601,6 +601,7 @@ class HostLoops:
                             alias=request.alias,
                             profile=request.profile,
                             role=request.role,
+                            captured=request.captured,
                         )
                     except ControlError as exc:
                         if exc.message.startswith("model_budget:"):

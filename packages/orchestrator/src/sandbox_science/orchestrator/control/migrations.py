@@ -3137,6 +3137,13 @@ def _context_auxiliary_window(schema: Schema) -> None:
     )
 
 
+def _context_captures(schema: Schema) -> None:
+    """Version 72: actual dispatch captures and independent inspector search."""
+    from sandbox_science.orchestrator.history.capture_schema import create
+
+    create(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3208,6 +3215,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _agent_messages,
     _kernel_cell_lookup,
     _context_auxiliary_window,
+    _context_captures,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

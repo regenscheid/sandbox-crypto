@@ -441,6 +441,15 @@ class Archive:
                 save_usage(db, project, message_id, model_usage)
                 if consumed is not None:
                     save_receipts(db, (project, session, run), message_id, consumed)
+            from .inspector_index import append as index_original
+
+            index_original(
+                db,
+                project,
+                message_id,
+                entry.content,
+                json.dumps(entry.tool_calls) if entry.tool_calls else None,
+            )
             _document(db, project, message_id, entry.searched)
             for read in reads:
                 _read(db, project, session, message_id, entry.source or "", read)

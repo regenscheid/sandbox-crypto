@@ -3,11 +3,12 @@
 Status: requested by the owner, 2026-10-17. A read-only inspector for saved and live
 main and delegated attempts is implemented on local `dev`: measured per-answer
 input/cache chart by call number, timestamped live answer/fold observations,
-the latest auxiliary-intent snapshot, saved fold summaries, explicit unavailable
-working-view fields, and server-side original-message search. Recorded continuation
+the latest auxiliary-intent snapshot, saved fold summaries, actual visible dispatch
+captures, and indexed original-message search. Recorded continuation
 attempts can be listed and their history searched through the stable work identity;
-children and siblings remain separate. Exact captured working-view provenance is
-still pending.
+children and siblings remain separate. New main and child dispatches retain exact
+visible request parts with available harness provenance; provider-native context
+remains explicitly unavailable.
 
 ## Entry and scope
 
@@ -20,8 +21,9 @@ An agent selector includes the orchestrator and children; a separate attempt
 selector distinguishes interrupted work from its continuation. Never silently
 combine different agents' context windows or stitch gaps across attempts.
 
-The inspector is read-only. Its controls change only the view, not the agent's
-context, history, execution, folding policy or cache. A recorded timestamp and
+The inspector does not change the agent's context, original history, execution,
+folding policy or cache. GETs are read-only; an explicit indexing control maintains
+a derived search index in bounded batches. A recorded timestamp and
 observation status distinguish the latest captured state from a live model call.
 
 ## Usage timeline
@@ -118,7 +120,8 @@ Verified against the working branch on 2026-10-17:
   click. Derived
   fold/state records are excluded by default. Native provider payloads and
   separately stored tool-record bytes are not searched. A legacy run with no
-  archive produces an empty page. Current context snapshots still need capture.
+  archive produces an empty page. New captures and the separate indexed search
+  described below supplement this bounded scan.
   The attempts endpoint pages immutable same-work
   ancestry and marks records that were never saved; those have no broken navigation
   link. Automatic search advances through up to 100 pages or 200 new matches per
@@ -184,9 +187,49 @@ estimates. Keep legacy calls with missing timestamps on a call-number axis, and
 retain explicit partial-page coverage. Do not combine auxiliary model calls with
 the selected agent's main-input series or infer historical context ceilings.
 
-Exact ordered working-context composition still requires a durable capture at
-model-dispatch time: source references for prompt sections and folded/stubbed
-regions, plus separately labelled estimated section sizes, keyed to the model
-intent. The present journal/events cannot reconstruct that view. This capture
-seam remains a separate harness change; until then the Current context tab
-states that an exact snapshot was not saved.
+The journal/events alone cannot reconstruct an exact working context. The
+dispatch capture below provides separate evidence; missing captures remain
+unavailable rather than reconstructed from journal summaries.
+
+## Dispatch capture and original-history index
+
+New main and delegated dispatches commit the visible, provider-neutral request with
+the immutable model intent, before contacting the gateway. This works for live
+attempts and persists when a call fails or the process dies. Each ordered part
+references project-local content-addressed text; repeated system sections, skills,
+memory, summaries, messages and tool schemas share bodies across calls. Captures
+are immutable. The inspector lists calls and parts in bounded pages and reads part
+text in UTF-8 byte chunks of at most 16 KiB, preserving NULs and multibyte
+characters, with the full body's SHA-256 and byte size.
+
+System sections are attributed only when every recorded prompt pin matches the
+actual system message's byte range and digest. Their separator is two newlines.
+Rebuilt view parts carry harness provenance (kind, original message and position
+when available) outside the message sent to the model. Other messages are shown
+as captured JSON without guessing their source. Native provider replay and hidden
+reasoning are not part of this capture, nor are provider-side transformations;
+per-part token counts remain unavailable. Older and auxiliary dispatches without
+a capture say unavailable rather than reconstructing a hypothetical request.
+
+A separate trigram index searches all retained visible original content and
+tool-call arguments, including retrieval echoes intentionally omitted from
+agent-facing search. Exact case-sensitive substring verification is authoritative.
+An explicit authenticated same-origin backfill action advances a bounded amount
+of derived indexing; GETs never write. Coverage includes incomplete legacy rows,
+so partial indexing cannot masquerade as a complete negative result. One- and
+two-character searches use bounded original scanning instead of the trigram index.
+Existing agent-history tools and their authorization remain unchanged.
+
+The capture list defaults to the latest 20 dispatches with explicit refresh and
+older-page controls. Captures can be selected across the same stable work's
+continuations; each still names its exact attempt. Part pages have at most 50
+rows, and only one text chunk is displayed at once. Captured byte sizes are
+measured visible storage, not provider token accounting.
+
+New ordinary messages are indexed in the same archive transaction, bounded to
+256 Ki characters of input per append. Larger and legacy rows report incomplete
+coverage until backfill runs. Each maintenance call processes at most 16 chunks
+of 64 KiB, with 127-character overlap so every allowed 128-character substring
+can cross a boundary. NUL-normalized text supplies index candidates only; exact
+original text verification prevents false matches. The dedicated index never
+changes the agent-facing search exclusions or retrieval authorization.
