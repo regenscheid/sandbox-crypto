@@ -3,10 +3,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
+from sandbox_science.orchestrator.continuity.models import ModelIntents
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.history.usage import AnsweredUsage
+from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.testing import FakeClock
 
 from .route_support import ClientFactory, error_of, workspace
 
@@ -251,4 +257,123 @@ async def test_sparse_agent_search_advances_across_bounded_session_slices(
     ).json()
     assert [item["message"] for item in second["messages"]] == [saved.message_id]
     assert second["next_after"] is None
+    projects.close()
+
+
+async def test_live_timeline_pages_one_attempt_and_advances_through_sparse_fold_events(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    projects = ProjectStore(state_dir)
+    selected, sibling = (run.name for run in list(projects.iter_runs("p1", "a"))[:2])
+    clock = FakeClock(datetime(2026, 10, 18, 12, tzinfo=UTC))
+    archive = Archive(projects.control, clock=clock)
+    state = RunState(projects.control, clock=clock)
+    for ordinal in range(1, 56):
+        archive.append(
+            "p1",
+            "a",
+            selected,
+            Entry("assistant", "assistant", f"Answer {ordinal}"),
+            model_usage=AnsweredUsage(
+                ordinal=ordinal,
+                observed_at=clock.now(),
+                usage=ModelUsage(
+                    input_tokens=100 + ordinal,
+                    output_tokens=2,
+                    cache_read_input_tokens=10 if ordinal % 2 else None,
+                ),
+            ),
+        )
+        state.append("p1", "a", selected, "notice", {"source": "fixture"})
+    fold = archive.append("p1", "a", selected, Entry("user", "fold", "saved fold"))
+    state.append(
+        "p1",
+        "a",
+        selected,
+        "fold",
+        {"state": "skeleton_only", "fold": fold.message_id, "span": [1, 4], "freed": 12},
+    )
+    archive.append(
+        "p1",
+        "a",
+        sibling,
+        Entry("assistant", "assistant", "Other answer"),
+        model_usage=AnsweredUsage(
+            ordinal=1, observed_at=clock.now(), usage=ModelUsage(input_tokens=999)
+        ),
+    )
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    path = f"/api/v0/projects/p1/sessions/a/runs/{selected}/context/timeline"
+    first = await (await client.get(path)).json()
+    assert len(first["answers"]) == 50
+    assert first["answers"][0]["ordinal"] == 1
+    assert first["answers"][0]["observed_at"].endswith("+00:00")
+    assert first["answers"][0]["usage"]["input_tokens"] == 101
+    assert first["answers"][1]["usage"]["cache_read_input_tokens"] is None
+    assert first["folds"] == []
+    assert first["answers_after"] == 50
+    assert first["events_after"] == 50
+    assert first["more_answers"]
+    assert first["more_events"]
+    later = await (await client.get(path, params={"answers_after": 50, "events_after": 50})).json()
+    assert [answer["ordinal"] for answer in later["answers"]] == [51, 52, 53, 54, 55]
+    assert later["folds"] == [
+        {
+            "seq": 56,
+            "at": clock.now().isoformat(),
+            "state": "skeleton_only",
+            "fold": fold.message_id,
+            "span_start": 1,
+            "span_end": 4,
+            "freed_estimate": 12,
+            "tokens_estimate": None,
+        }
+    ]
+    assert not later["more_answers"]
+    assert not later["more_events"]
+    for invalid in ("limit=51", "answers_after=-1", "events_after=1&events_after=2", "x=1"):
+        await error_of(await client.get(path + "?" + invalid), 400, "invalid_request")
+    await error_of(
+        await client.get(path.replace("sessions/a", "sessions/missing")), 404, "not_found"
+    )
+    await client.post("/api/v0/logout", headers={"Origin": str(client.make_url("/")).rstrip("/")})
+    assert (await client.get(path)).status == 401
+    projects.close()
+
+
+async def test_auxiliary_timeline_snapshot_rechecks_equal_time_intents_and_late_settlement(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    projects = ProjectStore(state_dir)
+    selected = "20261018T120000000000Z-run-live"
+    clock = FakeClock(datetime(2026, 10, 18, 12, tzinfo=UTC))
+    owner = WorkRecords(projects.control).admit("p1", "a", selected)
+    intents = ModelIntents(projects.control, clock=clock)
+    first = intents.begin(owner, kind="fold", alias="fixture")
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    path = f"/api/v0/projects/p1/sessions/a/runs/{selected}/context/timeline"
+    pending = await (await client.get(path)).json()
+    assert [(item["identity"], item["usage"]) for item in pending["auxiliary"]] == [(first, None)]
+    # Neither equal creation timestamps nor settlement of a previously returned
+    # identity may be missed by a live append-only random-ID cursor.
+    second = intents.begin(owner, kind="reviewer", alias="fixture")
+    intents.observe(owner, first, ModelUsage(input_tokens=42, output_tokens=3))
+    updated = await (await client.get(path)).json()
+    assert {item["identity"] for item in updated["auxiliary"]} == {first, second}
+    assert (
+        next(item for item in updated["auxiliary"] if item["identity"] == first)["usage"][
+            "input_tokens"
+        ]
+        == 42
+    )
+    assert (
+        next(item for item in updated["auxiliary"] if item["identity"] == second)["usage"] is None
+    )
+    clock.advance(1)
+    for _ in range(51):
+        intents.begin(owner, kind="fold", alias="fixture")
+    bounded = await (await client.get(path)).json()
+    assert len(bounded["auxiliary"]) == 50
+    assert bounded["more_auxiliary"]
+    assert first not in {item["identity"] for item in bounded["auxiliary"]}
     projects.close()

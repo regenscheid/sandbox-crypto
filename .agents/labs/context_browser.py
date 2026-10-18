@@ -20,9 +20,11 @@ from pathlib import Path
 from aiohttp import web
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
 from sandbox_science.orchestrator.history import Archive, Entry
+from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_id_of
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.skills import SkillStore, snapshot
@@ -35,6 +37,7 @@ PROJECT, SESSION = "context-demo", "research"
 ROOT = "20261018T120000000000Z-root"
 CHILD = "20261018T120001000000Z-child"
 RESUMED = "20261018T130000000000Z-resumed"
+LIVE = "20261018T140000000000Z-live"
 
 
 def seed(path: Path) -> dict[str, str]:
@@ -122,6 +125,38 @@ def seed(path: Path) -> dict[str, str]:
             state.append(PROJECT, SESSION, name, "assistant", {"text": "Synthetic saved answer."})
             state.append(PROJECT, SESSION, name, "stopped", {"stopped": "answered"})
         state.release(PROJECT, SESSION, "fixture")
+        # A deliberately unsaved attempt shows the live context inspector path.
+        # This remains a synthetic journal entry, never a model dispatch.
+        owner = works.admit(PROJECT, SESSION, LIVE, parent=RESUMED)
+        state.append(PROJECT, SESSION, LIVE, "started", {"role": "delegated"})
+        archive.append(
+            PROJECT,
+            SESSION,
+            LIVE,
+            Entry("assistant", "assistant", "Synthetic live answer, no model called."),
+            model_usage=AnsweredUsage(
+                ordinal=1,
+                observed_at=datetime.now(UTC),
+                usage=ModelUsage(
+                    model="fixture",
+                    input_tokens=12000,
+                    output_tokens=100,
+                    cache_read_input_tokens=6000,
+                    cache_creation_input_tokens=1000,
+                ),
+            ),
+        )
+        fold = archive.append(
+            PROJECT, SESSION, LIVE, Entry("user", "fold", "Synthetic folded context.")
+        )
+        state.append(
+            PROJECT,
+            SESSION,
+            LIVE,
+            "fold",
+            {"state": "saved", "fold": fold.message_id, "span": [1, 3], "freed": 1200},
+        )
+        pending = ModelIntents(projects.control).begin(owner, kind="fold", alias="fixture")
     with closing(DocumentStore(store_path(path))) as documents:
         document = documents.create(
             PROJECT,
@@ -149,7 +184,48 @@ def seed(path: Path) -> dict[str, str]:
         skills = SkillStore.of(documents)
         skills.add("demo", pack, USER)
         skills.pin(PROJECT, "demo", USER)
-    return {"document": document.document_id, "large_message": large.message_id}
+    return {
+        "document": document.document_id,
+        "large_message": large.message_id,
+        "live_run": LIVE,
+        "pending_auxiliary": pending,
+    }
+
+
+def append_later(path: Path, pending: str) -> None:
+    """Emit one later observation for a visible-page polling browser check."""
+    with closing(ProjectStore(path)) as projects:
+        owner = WorkRecords(projects.control).owner(PROJECT, SESSION, LIVE)
+        if owner is None:
+            raise RuntimeError("Synthetic live attempt disappeared")
+        Archive(projects.control).append(
+            PROJECT,
+            SESSION,
+            LIVE,
+            Entry("assistant", "assistant", "Synthetic later answer, no model called."),
+            model_usage=AnsweredUsage(
+                ordinal=2,
+                observed_at=datetime.now(UTC),
+                usage=ModelUsage(
+                    model="fixture",
+                    input_tokens=9000,
+                    output_tokens=80,
+                    cache_read_input_tokens=4500,
+                ),
+            ),
+        )
+        ModelIntents(projects.control).observe(
+            owner,
+            pending,
+            ModelUsage(
+                model="fixture",
+                input_tokens=250,
+                output_tokens=20,
+                cache_read_input_tokens=125,
+                cost=0.0125,
+                cost_source="gateway",
+            ),
+        )
 
 
 async def main() -> None:
@@ -178,6 +254,7 @@ async def main() -> None:
                     "project": PROJECT,
                     "session": SESSION,
                     "run": RESUMED,
+                    "live_update_after_seconds": 20,
                     **info,
                 }
             ),
@@ -188,8 +265,17 @@ async def main() -> None:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, stop.set)
         try:
+            # Delay is long enough to open the inspector and see the first page;
+            # the same visible page then receives a second journal observation.
+            async def later() -> None:
+                await asyncio.sleep(20)
+                await asyncio.to_thread(append_later, path, info["pending_auxiliary"])
+
+            update = asyncio.create_task(later())
             await stop.wait()
         finally:
+            update.cancel()
+            await asyncio.gather(update, return_exceptions=True)
             await runner.cleanup()
             store.close()
 

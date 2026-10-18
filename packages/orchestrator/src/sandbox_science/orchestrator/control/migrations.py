@@ -3128,6 +3128,15 @@ def _kernel_cell_lookup(schema: Schema) -> None:
     )
 
 
+def _context_auxiliary_window(schema: Schema) -> None:
+    """Version 71: bound the inspector's latest auxiliary-intent snapshot."""
+    schema.execute(
+        "CREATE INDEX research_model_context_window ON research_model_calls "
+        "(project,session,run,created DESC,identity DESC) "
+        "WHERE kind NOT IN ('main','delegated')"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3198,6 +3207,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _artifact_blobs,
     _agent_messages,
     _kernel_cell_lookup,
+    _context_auxiliary_window,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

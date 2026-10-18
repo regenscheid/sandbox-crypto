@@ -12,7 +12,8 @@ from sandbox_science.contracts import Contract
 from sandbox_science.contracts.model import Counter
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.history.inspector import OriginalHistory
-from sandbox_science.orchestrator.projects import RunName
+from sandbox_science.orchestrator.history.timeline import AttemptTimeline
+from sandbox_science.orchestrator.projects import ModelUsage, RunName
 
 from . import documents
 from .context import CONTEXT, identifier, session_record
@@ -61,6 +62,54 @@ class AttemptsQuery(Contract):
     limit: Annotated[int, Field(ge=1, le=50)] = 20
 
 
+class TimelineQuery(Contract):
+    answers_after: Annotated[int, Field(ge=0, le=999999999)] = 0
+    events_after: Annotated[int, Field(ge=0, le=999999999)] = 0
+    limit: Annotated[int, Field(ge=1, le=50)] = 50
+
+
+class TimelineAnswer(Contract):
+    ordinal: Counter
+    message: str
+    observed_at: str
+    role: Literal["main", "delegated"]
+    usage: ModelUsage
+
+
+class TimelineFold(Contract):
+    seq: Counter
+    at: str
+    state: str | None
+    fold: str | None
+    span_start: int | None
+    span_end: int | None
+    freed_estimate: int | None
+    tokens_estimate: int | None
+
+
+class TimelineAuxiliary(Contract):
+    identity: str
+    kind: Literal["reviewer", "watcher", "fold", "skills", "embedding"]
+    intent_at: str
+    usage: ModelUsage | None
+
+
+class ContextTimelinePage(Contract):
+    answers: tuple[TimelineAnswer, ...]
+    folds: tuple[TimelineFold, ...]
+    auxiliary: tuple[TimelineAuxiliary, ...]
+    answers_after: Counter
+    events_after: Counter
+    more_answers: bool
+    more_events: bool
+    more_auxiliary: bool
+    coverage: str = (
+        "One selected attempt only. Answers are journaled response observations; fold times are "
+        "event emission times. Auxiliary rows are a latest-intent snapshot, capped by limit; "
+        "their creation time is not a response time. Older runs may lack journaled answers."
+    )
+
+
 class ContextHistoryPage(Contract):
     scope: Literal["attempt", "agent"] = "attempt"
     messages: tuple[ContextHistoryMessage, ...]
@@ -77,6 +126,7 @@ class ContextHistoryPage(Contract):
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, history)
     app.router.add_get(PATH.removesuffix("history") + "attempts", attempts)
+    app.router.add_get(PATH.removesuffix("history") + "timeline", timeline)
 
 
 async def history(request: web.Request) -> web.Response:
@@ -135,6 +185,43 @@ async def attempts(request: web.Request) -> web.Response:
         return ContextAttemptsPage(
             attempts=tuple(ContextAttempt.model_validate(item.__dict__) for item in page.attempts),
             next_after=page.next_after,
+        ).model_dump(mode="json")
+
+    return await documents.answer(request, read)
+
+
+async def timeline(request: web.Request) -> web.Response:
+    if request.can_read_body or len(request.query) != len(dict(request.query)):
+        raise DocumentError("invalid_request", "invalid context-timeline query")
+    try:
+        query = TimelineQuery.model_validate(dict(request.query))
+        run = _RUN.validate_python(request.match_info["run"], strict=True)
+    except ValidationError:
+        raise DocumentError("invalid_request", "invalid context-timeline query") from None
+    project, session = identifier(request, "project"), identifier(request, "session")
+    context = request.app[CONTEXT]
+
+    def read(store: DocumentStore) -> dict[str, object]:
+        session_record(context.projects, project, session)
+        page = AttemptTimeline(store).page(
+            project,
+            session,
+            run,
+            answers_after=query.answers_after,
+            events_after=query.events_after,
+            limit=query.limit,
+        )
+        return ContextTimelinePage(
+            answers=tuple(TimelineAnswer.model_validate(item.__dict__) for item in page.answers),
+            folds=tuple(TimelineFold.model_validate(item.__dict__) for item in page.folds),
+            auxiliary=tuple(
+                TimelineAuxiliary.model_validate(item.__dict__) for item in page.auxiliary
+            ),
+            answers_after=page.answers_after,
+            events_after=page.events_after,
+            more_answers=page.more_answers,
+            more_events=page.more_events,
+            more_auxiliary=page.more_auxiliary,
         ).model_dump(mode="json")
 
     return await documents.answer(request, read)

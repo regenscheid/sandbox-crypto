@@ -10,6 +10,7 @@ import type {
   ChartLink,
   ContextHistoryPage,
   ContextAttemptsPage,
+  ContextTimelinePage,
   FigureLink,
   HistoryPage,
   HistoryChunk,
@@ -544,6 +545,23 @@ export const api = {
     get<ContextAttemptsPage>(
       `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/attempts?` +
         new URLSearchParams({ after }),
+    ),
+  contextTimeline: (
+    project: string,
+    session: string,
+    run: string,
+    answersAfter = 0,
+    eventsAfter = 0,
+    signal?: AbortSignal,
+  ) =>
+    get<ContextTimelinePage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/timeline?` +
+        new URLSearchParams({
+          answers_after: String(answersAfter),
+          events_after: String(eventsAfter),
+          limit: '50',
+        }),
+      { signal, maxBytes: 2 * 1024 * 1024 },
     ),
   contextHistory: (
     project: string,

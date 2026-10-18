@@ -1,12 +1,13 @@
 # Agent context inspector
 
-Status: requested by the owner, 2026-10-17. A first read-only inspector for saved
-main and delegated attempts is integrated locally on `dev`: measured per-answer
-input/cache chart by call number, saved fold summaries, explicit unavailable
+Status: requested by the owner, 2026-10-17. A read-only inspector for saved and live
+main and delegated attempts is implemented in the current working branch: measured per-answer
+input/cache chart by call number, timestamped live answer/fold observations,
+the latest auxiliary-intent snapshot, saved fold summaries, explicit unavailable
 working-view fields, and server-side original-message search. Recorded continuation
 attempts can be listed and their history searched through the stable work identity;
-children and siblings remain separate. Live telemetry and captured working-view
-provenance are still pending.
+children and siblings remain separate. Exact captured working-view provenance is
+still pending.
 
 ## Entry and scope
 
@@ -116,8 +117,8 @@ Verified against the working branch on 2026-10-17:
   click. Derived
   fold/state records are excluded by default. Native provider payloads and
   separately stored tool-record bytes are not searched. A legacy run with no
-  archive produces an empty page. Current context snapshots and live usage still
-  need authenticated projections. The attempts endpoint pages immutable same-work
+  archive produces an empty page. Current context snapshots still need capture.
+  The attempts endpoint pages immutable same-work
   ancestry and marks records that were never saved; those have no broken navigation
   link. Automatic search advances through up to 100 pages or 200 new matches per
   click, then offers cursor continuation. Stop, closing the dialog and changing
@@ -145,18 +146,40 @@ metadata. Acceptance covers parent/child and continuation scoping, unknown usage
 cache accounting, fold-to-original navigation, archive paging/search coverage,
 large outputs, dialog focus/close behavior and preservation of background drafts.
 
-### Next bounded timeline slice
+### Bounded live timeline slice
 
-Read-only source review on 2026-10-18 identified an incremental path that needs no
-new telemetry storage: `archive_model_usage` has the response ordinal, observation
-timestamp and message ID under a unique project/session/run/ordinal index;
-`run_events` has timestamped fold events under its run/sequence index.
-`RunState.events(after, limit)` already pages the latter. A bounded authenticated
-usage projection can reuse the inspector's existing scope checks and response
-helpers. This projection and its time-axis UI are not implemented yet.
+`GET …/runs/{run}/context/timeline` reads one authenticated attempt, including
+an attempt whose final run record has not been saved. It pages the immutable
+`archive_model_usage` answer journal by response ordinal and `run_events` by
+event sequence. Each request reads at most 51 answer rows and 51 event rows
+(one lookahead row per cursor);
+the event slice is bounded before fold filtering, so sparse folds advance an
+empty-page cursor without scanning an entire run. The UI plots up to the latest
+500 loaded answer observations and fold events on a time axis, with an accessible
+list and explicit partial-page coverage. The visible inspector polls one bounded
+page every five seconds, resumes both cursors and checks for new observations;
+manual refresh is also available. Hiding the page, closing the dialog, signing
+out or switching tabs aborts pending reads.
+
+`research_model_calls` supplies an independently displayed latest-50 auxiliary
+intent snapshot. A partial index on project/session/run/created/identity,
+excluding foreground calls, bounds this read. It is refreshed from the latest
+rows rather than advanced by a random identity cursor: equal-time insertions
+and delayed settlement of an already listed intent can change the snapshot.
+The view explicitly says older auxiliary intents are outside the snapshot.
+Its `created` timestamp is intent creation, not response observation. An
+unsettled intent's usage is unavailable, never zero. Fold, reviewer, watcher,
+skills and embedding usage are not added to the agent-input curve.
 
 Label answer timestamps as response observations, never dispatch times. Fold event
 times do not establish exact working-context occupancy; reductions remain
 estimates. Keep legacy calls with missing timestamps on a call-number axis, and
 retain explicit partial-page coverage. Do not combine auxiliary model calls with
 the selected agent's main-input series or infer historical context ceilings.
+
+Exact ordered working-context composition still requires a durable capture at
+model-dispatch time: source references for prompt sections and folded/stubbed
+regions, plus separately labelled estimated section sizes, keyed to the model
+intent. The present journal/events cannot reconstruct that view. This capture
+seam remains a separate harness change; until then the Current context tab
+states that an exact snapshot was not saved.

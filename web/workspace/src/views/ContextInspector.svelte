@@ -13,8 +13,23 @@
   import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
   import ContextAttempts from './ContextAttempts.svelte';
+  import ContextTimeline from './ContextTimeline.svelte';
 
-  let { run, runName, close }: { run: RunRecord; runName: string; close: () => void } = $props();
+  let {
+    run,
+    runName,
+    close,
+    project,
+    session,
+  }: {
+    run: RunRecord | null;
+    runName: string;
+    close: () => void;
+    project?: string;
+    session?: string;
+  } = $props();
+  const projectId = $derived(run?.context.project_id ?? project ?? '');
+  const sessionId = $derived(run?.context.session_id ?? session ?? '');
   let tab = $state<'timeline' | 'folds' | 'context' | 'history'>('timeline');
   let query = $state('');
   let role = $state('');
@@ -35,20 +50,18 @@
   let loading = $state(false);
   let error = $state<unknown>(null);
   let serial = 0;
-  const totalCalls = $derived(run.stored_history?.collections?.usage ?? run.usage?.length ?? 0);
-  let usageRows = $state<ModelUsage[]>(untrack(() => run.usage ?? []));
+  const totalCalls = $derived(run?.stored_history?.collections?.usage ?? run?.usage?.length ?? 0);
+  let usageRows = $state<ModelUsage[]>(untrack(() => run?.usage ?? []));
   let usageLoading = $state(false);
   let usageError = $state<unknown>(null);
   const usage = $derived(contextUsage(usageRows));
-  const summariesCount = $derived(run.stored_history?.collections?.summaries ?? 0);
-  let foldsValue = $state<Json | undefined>(untrack(() => run.summaries?.folds));
+  const summariesCount = $derived(run?.stored_history?.collections?.summaries ?? 0);
+  let foldsValue = $state<Json | undefined>(untrack(() => run?.summaries?.folds));
   let foldsLoading = $state(false);
   let foldsLoaded = $state(untrack(() => summariesCount === 0));
   let foldsNext = $state<number | null>(untrack(() => (summariesCount ? 0 : null)));
   let foldsError = $state<unknown>(null);
-  const folds = $derived(
-    runFolds(run.context.project_id, { summaries: { folds: foldsValue ?? null } }),
-  );
+  const folds = $derived(runFolds(projectId, { summaries: { folds: foldsValue ?? null } }));
   type Filters = {
     contains: string;
     role?: 'user' | 'assistant' | 'tool';
@@ -63,13 +76,7 @@
     usageLoading = true;
     usageError = null;
     try {
-      const page = await api.runHistory(
-        run.context.project_id,
-        run.context.session_id,
-        runName,
-        'usage',
-        usageRows.length,
-      );
+      const page = await api.runHistory(projectId, sessionId, runName, 'usage', usageRows.length);
       usageRows = [...usageRows, ...page.items.map((item) => item.value as ModelUsage)];
     } catch (caught) {
       usageError = caught;
@@ -92,13 +99,7 @@
       };
       const position = foldsNext;
       try {
-        const page = await api.runHistory(
-          run.context.project_id,
-          run.context.session_id,
-          runName,
-          'summaries',
-          position,
-        );
+        const page = await api.runHistory(projectId, sessionId, runName, 'summaries', position);
         for (const item of page.items) inspect(item.value);
         foldsNext = page.next_offset;
       } catch (caught) {
@@ -108,8 +109,8 @@
         let total = 0;
         while (offset !== null) {
           const part = await api.runHistoryChunk(
-            run.context.project_id,
-            run.context.session_id,
+            projectId,
+            sessionId,
             runName,
             'summaries',
             position,
@@ -167,12 +168,11 @@
     loading = true;
     error = null;
     try {
-      const page = await api.contextHistory(
-        run.context.project_id,
-        run.context.session_id,
-        runName,
-        { after, ...applied, signal: controller.signal },
-      );
+      const page = await api.contextHistory(projectId, sessionId, runName, {
+        after,
+        ...applied,
+        signal: controller.signal,
+      });
       if (ticket !== serial) return false;
       matched += page.messages.length;
       items = (reset ? page.messages : [...items, ...page.messages]).slice(-200);
@@ -244,19 +244,22 @@
   >
     <header class="context-header">
       <div>
-        <span class="eyebrow">Agent diagnostics · saved attempt</span>
+        <span class="eyebrow">Agent diagnostics · {run ? 'saved' : 'live or unsaved'} attempt</span>
         <h2 id="context-heading">Context management</h2>
         <p class="muted">
-          {run.context.project_id} / {run.context.session_id} · {run.role === 'delegated'
+          {projectId} / {sessionId} · {run?.role === 'delegated'
             ? 'Delegated agent'
-            : 'Main agent'} · <code>{runName}</code>
+            : run?.role === 'main'
+              ? 'Main agent'
+              : 'Agent'} · <code>{runName}</code>
         </p>
       </div>
       <button type="button" aria-label="Close context management" onclick={close}>Close</button>
     </header>
     <p class="notice">
-      Timeline and folds describe this saved attempt, without live in-flight calls. Original history
-      can also search this agent's recorded continuation attempts.
+      The timeline reads this attempt's recorded observations while it runs. An in-flight model call
+      has no answer observation yet. Original history can also search this agent's recorded
+      continuation attempts.
     </p>
     <nav class="context-tabs" aria-label="Context sections">
       {#each ['timeline', 'folds', 'context', 'history'] as choice}
@@ -275,78 +278,79 @@
     </nav>
     <div class="context-body">
       {#if tab === 'timeline'}
-        <h3>Input context by answered model call</h3>
-        <p class="muted">
-          Horizontal position is call number, not time. Input tokens are provider-reported; missing
-          calls remain gaps. Fold events cannot yet be placed at a measured call time.
-        </p>
-        {#if totalCalls > usageRows.length}<p class="muted">
-            Loaded {usageRows.length} of {totalCalls} archived model calls. The graph and cache statistics
-            cover the loaded prefix only.
-          </p>
-          <button type="button" disabled={usageLoading} onclick={() => void loadUsage()}
-            >{usageLoading ? 'Loading usage…' : 'Load more usage'}</button
-          >{/if}
-        {#if usageError}<ErrorMessage error={usageError} />{/if}
-        {#if usage.points.length}
-          <svg
-            class="usage-plot"
-            viewBox="0 0 640 240"
-            role="img"
-            aria-label="Provider-reported input tokens by answered model call"
-          >
-            <path d="M 40 30 V 210 H 610" fill="none" stroke="currentColor" />
-            {#each usage.segments as segment}
-              {#if segment.length > 1}<polyline
-                  points={segment
-                    .map(
-                      (point) =>
-                        `${plotX(point.call, totalCalls)},${plotY(point.input, usage.maximum)}`,
-                    )
-                    .join(' ')}
-                  fill="none"
-                  stroke="var(--accent, #287364)"
-                  stroke-width="3"
-                />{/if}
-              {#each segment as point}<circle
-                  cx={plotX(point.call, totalCalls)}
-                  cy={plotY(point.input, usage.maximum)}
-                  r="4"
-                  fill="var(--accent, #287364)"
-                />{/each}
-            {/each}
-            <text x="42" y="23">{usage.maximum.toLocaleString()} input tokens</text>
-            <text x="540" y="231">Call {totalCalls}</text>
-          </svg>
-          <p>
-            Cache-read share: {usage.readShare === null
-              ? 'unavailable'
-              : `${(usage.readShare * 100).toFixed(1)}%`} · coverage {usage.cacheKnown} of {usage.eligible}
-            calls with input counts. Reported cache reads {usage.cacheRead === null
-              ? 'unavailable'
-              : `${usage.cacheRead.toLocaleString()} tokens`}; reported cache writes {usage.cacheWrite ===
-            null
-              ? 'unavailable'
-              : `${usage.cacheWrite.toLocaleString()} tokens`}.
-          </p>
+        <ContextTimeline project={projectId} session={sessionId} run={runName} />
+        {#if run}<h3>Saved call-number record</h3>
           <p class="muted">
-            The share weights known calls by input tokens. Cache writes are separate from hits;
-            cached tokens still occupy context. No configured ceiling or fold trigger is projected
-            for this saved attempt.
+            This archived fallback uses call number, not time. It may overlap the journaled answer
+            observations above; use it for legacy calls without timestamps.
           </p>
-          <ol class="usage-calls">
-            {#each usage.points as point}<li>
-                Call {point.call}: {point.input.toLocaleString()} input, {point.output === null
-                  ? 'output unavailable'
-                  : `${point.output.toLocaleString()} output`}; cache read {point.read === null
-                  ? 'unavailable'
-                  : point.read.toLocaleString()}, write {point.write === null
-                  ? 'unavailable'
-                  : point.write.toLocaleString()}.
-              </li>{/each}
-          </ol>
-        {:else if totalCalls > usageRows.length}<p>Archived usage is still loading.</p>
-        {:else}<p>No provider input counts are saved for this attempt.</p>{/if}
+          {#if totalCalls > usageRows.length}<p class="muted">
+              Loaded {usageRows.length} of {totalCalls} archived model calls. The graph and cache statistics
+              cover the loaded prefix only.
+            </p>
+            <button type="button" disabled={usageLoading} onclick={() => void loadUsage()}
+              >{usageLoading ? 'Loading usage…' : 'Load more usage'}</button
+            >{/if}
+          {#if usageError}<ErrorMessage error={usageError} />{/if}
+          {#if usage.points.length}
+            <svg
+              class="usage-plot"
+              viewBox="0 0 640 240"
+              role="img"
+              aria-label="Provider-reported input tokens by answered model call"
+            >
+              <path d="M 40 30 V 210 H 610" fill="none" stroke="currentColor" />
+              {#each usage.segments as segment}
+                {#if segment.length > 1}<polyline
+                    points={segment
+                      .map(
+                        (point) =>
+                          `${plotX(point.call, totalCalls)},${plotY(point.input, usage.maximum)}`,
+                      )
+                      .join(' ')}
+                    fill="none"
+                    stroke="var(--accent, #287364)"
+                    stroke-width="3"
+                  />{/if}
+                {#each segment as point}<circle
+                    cx={plotX(point.call, totalCalls)}
+                    cy={plotY(point.input, usage.maximum)}
+                    r="4"
+                    fill="var(--accent, #287364)"
+                  />{/each}
+              {/each}
+              <text x="42" y="23">{usage.maximum.toLocaleString()} input tokens</text>
+              <text x="540" y="231">Call {totalCalls}</text>
+            </svg>
+            <p>
+              Cache-read share: {usage.readShare === null
+                ? 'unavailable'
+                : `${(usage.readShare * 100).toFixed(1)}%`} · coverage {usage.cacheKnown} of {usage.eligible}
+              calls with input counts. Reported cache reads {usage.cacheRead === null
+                ? 'unavailable'
+                : `${usage.cacheRead.toLocaleString()} tokens`}; reported cache writes {usage.cacheWrite ===
+              null
+                ? 'unavailable'
+                : `${usage.cacheWrite.toLocaleString()} tokens`}.
+            </p>
+            <p class="muted">
+              The share weights known calls by input tokens. Cache writes are separate from hits;
+              cached tokens still occupy context. No configured ceiling or fold trigger is projected
+              for this saved attempt.
+            </p>
+            <ol class="usage-calls">
+              {#each usage.points as point}<li>
+                  Call {point.call}: {point.input.toLocaleString()} input, {point.output === null
+                    ? 'output unavailable'
+                    : `${point.output.toLocaleString()} output`}; cache read {point.read === null
+                    ? 'unavailable'
+                    : point.read.toLocaleString()}, write {point.write === null
+                    ? 'unavailable'
+                    : point.write.toLocaleString()}.
+                </li>{/each}
+            </ol>
+          {:else if totalCalls > usageRows.length}<p>Archived usage is still loading.</p>
+          {:else}<p>No provider input counts are saved in the run record.</p>{/if}{/if}
       {:else if tab === 'folds'}
         <h3>Fold and summary records</h3>
         {#if summariesCount > 0 && !foldsLoaded}<p class="muted">
@@ -383,14 +387,19 @@
                 </li>{/each}
             </ul>{/if}
         {:else if !foldsLoaded}<p>Fold records in the archive have not been loaded yet.</p>
-        {:else}<p>No fold summary is saved for this attempt.</p>{/if}
+        {:else}<p>
+            No fold summary is saved for this attempt. Recorded fold events appear on the timeline.
+          </p>{/if}
       {:else if tab === 'context'}
         <h3>Captured context composition</h3>
-        <p>
-          This run record keeps {run.messages.length} inline message previews{#if run.stored_history}
-            and {run.stored_history.collections?.messages ?? 0} archived run messages{/if}. The
-          original archive is available in the next tab.
-        </p>
+        {#if run}<p>
+            This run record keeps {run.messages.length} inline message previews{#if run.stored_history}
+              and {run.stored_history.collections?.messages ?? 0} archived run messages{/if}. The
+            original archive is available in the next tab.
+          </p>{:else}<p>
+            No final run record has been saved for this attempt yet. Recorded answers and fold
+            events are available on the timeline.
+          </p>{/if}
         <p class="muted">
           An exact last working-context snapshot and its section-by-section token counts were not
           captured here. Fold records show what was summarized, but this screen will not infer a
@@ -401,12 +410,7 @@
           </p>{/if}
       {:else}
         <h3>Original retained messages</h3>
-        <ContextAttempts
-          project={run.context.project_id}
-          session={run.context.session_id}
-          run={runName}
-          {close}
-        />
+        <ContextAttempts project={projectId} session={sessionId} run={runName} {close} />
         <p class="muted">
           This server-side search reads retained original text and tool-call arguments in the
           selected scope, unaffected by folding. Search is an exact, case-sensitive substring.
@@ -481,8 +485,7 @@
                   · position {item.position} · attempt <code>{item.run}</code>
                 </div>
                 <p class="snippet">{visible(item.snippet)}</p>
-                <a href={messageHref(run.context.project_id, item.message)}>Open original message</a
-                >
+                <a href={messageHref(projectId, item.message)}>Open original message</a>
               </li>{:else}<li>
                 {nextAfter === null
                   ? 'No retained messages match this scope and query.'

@@ -249,6 +249,18 @@ export interface ContextHistoryPage {
   coverage: string;
 }
 
+export interface ContextTimelinePage {
+  answers: TimelineAnswer[];
+  folds: TimelineFold[];
+  auxiliary: TimelineAuxiliary[];
+  answers_after: number;
+  events_after: number;
+  more_answers: boolean;
+  more_events: boolean;
+  more_auxiliary: boolean;
+  coverage: string;
+}
+
 /** A project whose record cannot be read, listed with the store's error. */
 export interface DamagedProject {
   project_id: string;
@@ -924,6 +936,21 @@ export interface ModelCost {
   model_info_total: number | null;
 }
 
+export interface ModelUsage {
+  intent_id: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  characters: number | null;
+  cost: number | null;
+  cost_source: "gateway" | "model_info" | null;
+  gateway_version: string | null;
+  thinking_replay: string | null;
+  retried: string[];
+}
+
 /** A Python distribution that pip or uv installed beside the Conda packages. */
 export interface PipDistribution {
   name: string;
@@ -1490,6 +1517,32 @@ export interface StatusPage {
   next_resume: string | null;
   pending_kernel_restore_work: string | null;
   pending_kernel_restore_identity: string | null;
+}
+
+export interface TimelineAnswer {
+  ordinal: number;
+  message: string;
+  observed_at: string;
+  role: "main" | "delegated";
+  usage: ModelUsage;
+}
+
+export interface TimelineAuxiliary {
+  identity: string;
+  kind: "reviewer" | "watcher" | "fold" | "skills" | "embedding";
+  intent_at: string;
+  usage: ModelUsage | null;
+}
+
+export interface TimelineFold {
+  seq: number;
+  at: string;
+  state: string | null;
+  fold: string | null;
+  span_start: number | null;
+  span_end: number | null;
+  freed_estimate: number | null;
+  tokens_estimate: number | null;
 }
 
 /** One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing. */

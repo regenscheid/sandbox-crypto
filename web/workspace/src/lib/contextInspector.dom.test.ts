@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { RunRecord } from './api';
 import { contextUsage } from './contextUsage';
 import ContextInspector from '../views/ContextInspector.svelte';
+import ContextTimeline from '../views/ContextTimeline.svelte';
 import SavedContext from '../views/SavedContext.svelte';
 
 const mounted: ReturnType<typeof mount>[] = [];
@@ -11,6 +12,7 @@ afterEach(async () => {
   for (const component of mounted.splice(0)) await unmount(component);
   document.body.innerHTML = '';
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 async function settle() {
@@ -114,8 +116,8 @@ it('opens the saved attempt history and submits server-side search', async () =>
     .querySelector('form')!
     .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   await settle();
-  expect(fetcher).toHaveBeenCalledTimes(2);
-  expect(String(fetcher.mock.calls[1]?.[0])).toContain('contains=SNOVA');
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(String(fetcher.mock.calls[2]?.[0])).toContain('contains=SNOVA');
   target.querySelector<HTMLButtonElement>('[aria-label="Close context management"]')!.click();
   expect(close).toHaveBeenCalledOnce();
 });
@@ -214,7 +216,7 @@ it('loads archived usage and fold summaries instead of treating a compact run as
   await settle();
   expect(target.textContent).toContain('Open fold record');
   expect(target.textContent).not.toContain('No fold summary is saved');
-  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
 it('reads an archived fold summary over the collection listing limit in byte pages', async () => {
@@ -307,7 +309,23 @@ it('keeps paging on submitted filters and clears stale results when a new search
     tools: [],
     usage: [],
   };
+  let historyCalls = 0;
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input).includes('/context/timeline'))
+      return new Response(
+        JSON.stringify({
+          answers: [],
+          folds: [],
+          auxiliary: [],
+          answers_after: 0,
+          events_after: 0,
+          more_answers: false,
+          more_events: false,
+          more_auxiliary: false,
+          coverage: 'attempt',
+        }),
+      );
+    historyCalls++;
     if (String(input).includes('contains=new'))
       return new Response(
         JSON.stringify({ error: { kind: 'unavailable', message: 'Search failed' } }),
@@ -317,8 +335,8 @@ it('keeps paging on submitted filters and clears stale results when a new search
       JSON.stringify({
         messages: [
           {
-            message: `msg-${fetcher.mock.calls.length.toString(16).padStart(16, '0')}`,
-            position: fetcher.mock.calls.length,
+            message: `msg-${historyCalls.toString(16).padStart(16, '0')}`,
+            position: historyCalls,
             run: runName,
             parent: null,
             created: '2026-10-18T12:00:00Z',
@@ -328,7 +346,7 @@ it('keeps paging on submitted filters and clears stale results when a new search
             snippet: 'old result',
           },
         ],
-        next_after: fetcher.mock.calls.length === 1 ? 1 : null,
+        next_after: historyCalls === 1 ? 1 : null,
         coverage: 'partial',
       }),
     );
@@ -347,12 +365,12 @@ it('keeps paging on submitted filters and clears stale results when a new search
   search.dispatchEvent(new Event('input', { bubbles: true }));
   target.querySelector<HTMLButtonElement>('.history-results + button')!.click();
   await settle();
-  expect(String(fetcher.mock.calls[1]?.[0])).not.toContain('contains=new');
+  expect(String(fetcher.mock.calls.at(-1)?.[0])).not.toContain('contains=new');
   target
     .querySelector('form')!
     .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   await settle();
-  expect(String(fetcher.mock.calls[2]?.[0])).toContain('contains=new');
+  expect(String(fetcher.mock.calls.at(-1)?.[0])).toContain('contains=new');
   expect(target.textContent).not.toContain('old result');
   expect(target.textContent).toContain('Search failed');
 });
@@ -447,7 +465,21 @@ it('searches continuation pages through empty slices and identifies each origina
 it('discards an old in-flight search after Stop and a newer search', async () => {
   let resolveOld: (value: Response) => void = () => {};
   let calls = 0;
-  vi.stubGlobal('fetch', async () => {
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+    if (String(input).includes('/context/timeline'))
+      return new Response(
+        JSON.stringify({
+          answers: [],
+          folds: [],
+          auxiliary: [],
+          answers_after: 0,
+          events_after: 0,
+          more_answers: false,
+          more_events: false,
+          more_auxiliary: false,
+          coverage: 'attempt',
+        }),
+      );
     calls++;
     if (calls === 2)
       return new Promise<Response>((resolve) => {
@@ -585,4 +617,208 @@ it('restores focus to the saved-context trigger after async loading and dismissa
   await settle();
   expect(target.querySelector('[role="dialog"]')).toBeNull();
   expect(document.activeElement).toBe(trigger);
+});
+
+it('plots response observation time, fold event time and refreshed auxiliary settlement separately', async () => {
+  const pages = [
+    {
+      answers: [
+        {
+          ordinal: 1,
+          message: 'msg-1234567890abcdef',
+          observed_at: '2026-10-18T12:00:00Z',
+          role: 'delegated',
+          usage: {
+            model: 'm',
+            input_tokens: 100,
+            output_tokens: 5,
+            cache_read_input_tokens: 50,
+            cache_creation_input_tokens: null,
+          },
+        },
+      ],
+      folds: [
+        {
+          seq: 1,
+          at: '2026-10-18T12:01:00Z',
+          state: 'skeleton_only',
+          fold: 'msg-abcdef1234567890',
+          span_start: 1,
+          span_end: 4,
+          freed_estimate: 12,
+          tokens_estimate: null,
+        },
+      ],
+      auxiliary: [
+        { identity: 'model-a', kind: 'fold', intent_at: '2026-10-18T11:59:00Z', usage: null },
+      ],
+      answers_after: 1,
+      events_after: 1,
+      more_answers: false,
+      more_events: false,
+      more_auxiliary: false,
+      coverage: 'One selected attempt',
+    },
+    {
+      answers: [
+        {
+          ordinal: 2,
+          message: 'msg-2222222222222222',
+          observed_at: '2026-10-18T12:02:00Z',
+          role: 'delegated',
+          usage: {
+            model: 'm',
+            input_tokens: null,
+            output_tokens: 5,
+            cache_read_input_tokens: null,
+            cache_creation_input_tokens: null,
+          },
+        },
+      ],
+      folds: [],
+      auxiliary: [
+        { identity: 'model-b', kind: 'reviewer', intent_at: '2026-10-18T11:59:00Z', usage: null },
+        {
+          identity: 'model-a',
+          kind: 'fold',
+          intent_at: '2026-10-18T11:59:00Z',
+          usage: {
+            model: 'm',
+            input_tokens: 42,
+            output_tokens: 3,
+            cache_read_input_tokens: null,
+            cache_creation_input_tokens: null,
+          },
+        },
+      ],
+      answers_after: 2,
+      events_after: 1,
+      more_answers: false,
+      more_events: false,
+      more_auxiliary: false,
+      coverage: 'One selected attempt',
+    },
+  ];
+  const fetcher = vi.fn(
+    async (_input: RequestInfo | URL) => new Response(JSON.stringify(pages.shift())),
+  );
+  vi.stubGlobal('fetch', fetcher);
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(
+    mount(ContextTimeline, { target, props: { project: 'p1', session: 's1', run: 'r1' } }),
+  );
+  await settle();
+  expect(target.textContent).toContain('Cache-read share: 50.0%');
+  expect(target.textContent).toMatch(/response\s+observed/);
+  expect(target.textContent).toContain('skeleton_only');
+  expect(target.textContent).toContain('usage unavailable or unresolved');
+  expect(target.querySelectorAll('svg circle')).toHaveLength(1);
+  clickNamed(target, 'Refresh observations');
+  await settle();
+  expect(String(fetcher.mock.calls[1]?.[0])).toContain('answers_after=1');
+  expect(target.textContent).toContain('observed 42 input tokens');
+  expect(target.textContent).toContain('input tokens unavailable');
+  expect(target.querySelectorAll('svg circle')).toHaveLength(1);
+  expect(target.querySelectorAll('.timeline-list').length).toBe(3);
+});
+
+it('aborts live timeline reads on close and opens an attempt without a final run record', async () => {
+  let signal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', (_input: RequestInfo | URL, init?: RequestInit) => {
+    signal = init?.signal ?? undefined;
+    return new Promise<Response>(() => {});
+  });
+  const target = document.createElement('div');
+  document.body.append(target);
+  const component = mount(ContextTimeline, {
+    target,
+    props: { project: 'p1', session: 's1', run: 'r1' },
+  });
+  await settle();
+  expect(signal?.aborted).toBe(false);
+  await unmount(component);
+  expect(signal?.aborted).toBe(true);
+
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+    if (!String(input).includes('/context/timeline'))
+      return new Response(JSON.stringify({ error: { kind: 'not_found', message: 'not saved' } }), {
+        status: 404,
+      });
+    return new Response(
+      JSON.stringify({
+        answers: [],
+        folds: [],
+        auxiliary: [],
+        answers_after: 0,
+        events_after: 0,
+        more_answers: false,
+        more_events: false,
+        more_auxiliary: false,
+        coverage: 'live attempt',
+      }),
+    );
+  });
+  const holder = document.createElement('div');
+  document.body.append(holder);
+  mounted.push(
+    mount(SavedContext, {
+      target: holder,
+      props: { project: 'p1', session: 's1', run: '20261018T120000000000Z-live' },
+    }),
+  );
+  holder.querySelector<HTMLButtonElement>('button')!.click();
+  await settle();
+  expect(holder.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(holder.textContent).toContain('live or unsaved attempt');
+  expect(holder.textContent).toContain('No journaled answer observations');
+});
+
+it('checks the visible attempt for later observations without a manual refresh', async () => {
+  vi.useFakeTimers();
+  let reads = 0;
+  const fetcher = vi.fn(async (_input: RequestInfo | URL) => {
+    reads++;
+    return new Response(
+      JSON.stringify({
+        answers: [
+          {
+            ordinal: reads,
+            message: reads === 1 ? 'msg-1111111111111111' : 'msg-2222222222222222',
+            observed_at: '2026-10-18T12:00:00Z',
+            role: 'delegated',
+            usage: { input_tokens: reads * 100, cache_read_input_tokens: 0 },
+          },
+        ],
+        folds: [],
+        auxiliary: [],
+        answers_after: reads,
+        events_after: 0,
+        more_answers: false,
+        more_events: false,
+        more_auxiliary: false,
+        coverage: 'One selected attempt',
+      }),
+    );
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(
+    mount(ContextTimeline, { target, props: { project: 'p1', session: 's1', run: 'r1' } }),
+  );
+  for (let index = 0; index < 4; index++) {
+    await vi.advanceTimersByTimeAsync(0);
+    flushSync();
+  }
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(5000);
+  flushSync();
+  for (let index = 0; index < 4; index++) {
+    await vi.advanceTimersByTimeAsync(0);
+    flushSync();
+  }
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(String(fetcher.mock.calls[1]?.[0])).toContain('answers_after=1');
+  expect(target.textContent).toContain('200 input tokens');
 });
