@@ -269,7 +269,7 @@ def test_pages_exclude_missing_final_records_before_limit_and_remain_bounded(tmp
 
 def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypatch):
     from sandbox_science.orchestrator.control import migrations
-    from sandbox_science.orchestrator.history import Archive
+    from sandbox_science.orchestrator.history import Archive, inspector_index
     from sandbox_science.orchestrator.history.archive import Entry
 
     current = migrations.MIGRATIONS
@@ -278,6 +278,9 @@ def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypat
             migrations, "MIGRATIONS", current[: current.index(migrations._child_settlements)]
         )
         previous.setattr(migrations, "VERSION", 64)
+        # Schema 64's archive writer had no inspector index. Keep its real
+        # immutable append and old schema, omitting only that newer derived hook.
+        previous.setattr(inspector_index, "append", lambda *args: None)
         state, documents = stores(tmp_path)
         state.projects.open_session("p", "s", dedicated=False)
         state.projects.save_run(record(RUN))
