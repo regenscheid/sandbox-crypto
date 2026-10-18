@@ -185,6 +185,29 @@ def test_grant_exhaustion_and_cancellation_are_not_auto_resumed(projects: Projec
     assert recovery.queue("p", "s", RUN) is None
 
 
+def test_cancelled_prior_attempt_does_not_repeat_auto_queue(projects: ProjectStore):
+    failed_model(projects)
+    works = WorkRecords(projects.control)
+    request = works.request("p", "s")
+    assert request is not None
+    state = RunState(projects.control)
+    state.acquire("p", "s", CONTINUATION, "fixture")
+    try:
+        _, epoch = works.claim("p", "s", request, lease_run=CONTINUATION)
+    finally:
+        state.release("p", "s", "fixture")
+    works.admit("p", "s", CONTINUATION, work=RUN, predecessor=RUN, epoch=epoch)
+    failed = record(CONTINUATION, stopped="error").model_copy(
+        update={"failure": "model", "final_text": None}
+    )
+    projects.save_run(failed)
+    works.finish(failed)
+    state.cancel("p", "s", RUN)
+    assert works.get("p", "s", RUN).current == CONTINUATION
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
+    assert works.queued() == []
+
+
 def test_exhausted_cumulative_token_grant_needs_owner_approval(projects: ProjectStore):
     works = WorkRecords(projects.control)
     owner = works.admit("p", "s", RUN)

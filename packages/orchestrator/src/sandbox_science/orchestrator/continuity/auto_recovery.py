@@ -16,6 +16,7 @@ from sandbox_science.orchestrator.control import ControlStore
 
 from .grants import grant_total
 from .plans import spent_tokens
+from .records import tree_cancelled
 
 MAX_NO_PROGRESS: Final = 3
 RETRY_SECONDS: Final = 30
@@ -119,13 +120,7 @@ class AutoRecovery:
                 for _, reason, phase in unfinished
             ):
                 return None
-            if any(
-                db.execute(
-                    "SELECT 1 FROM run_cancels WHERE project_id=? AND session_id=? AND run=?",
-                    (project, session, current),
-                ).fetchone()
-                for current, _, _ in unfinished
-            ):
+            if tree_cancelled(db, project, session, root):
                 return None
             # A tool operation without its original result may have changed the
             # outside world. Only an explicit reconciliation can release it.

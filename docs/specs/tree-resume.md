@@ -55,7 +55,8 @@ cost, policy, environment and kernel checks. It leaves stopped/cancelled work,
 spent token grants, uncertain tool effects and other failures for explicit handling.
 The automatic request rechecks Stop, cancellation, a newer root and fresh user
 messages atomically when claiming the session epoch; an invalidated request becomes
-blocked without dispatch. Each control-service pass reads at most 100 candidate
+blocked without dispatch. Cancellation on any prior attempt in the tree also prevents
+queuing it again. Each control-service pass reads at most 100 candidate
 roots and rotates its cursor for later passes.
 Unknown model charges remain visible but do not by themselves prevent this bounded
 continuation. Its positive classification is intentionally narrow: a saved `error`
