@@ -321,7 +321,14 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     page = [] if derived is None else ["--skills-metadata-model", derived]
     services = []
     if config.mcp_proxy is not None:
-        services = ["--mcp-project", config.mcp_project()]
+        services = [
+            "--mcp-project",
+            config.mcp_project(),
+            "--mcp-proxy",
+            f"http://{config.mcp_proxy.listen}",
+            "--mcp-proxy-token-file",
+            str(layout.token(mcp.PROXY_CALLER)),
+        ]
         for server in config.mcp_proxy.servers:
             services += ["--mcp-service", f"{server}={config.mcp_proxy.about.get(server, '')}"]
     named = workspace.preview_name

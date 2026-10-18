@@ -137,6 +137,7 @@ All routes need the session and answer JSON, except original upload downloads. E
 | GET | `/api/v0/projects/{project}/skills` | The project's skills ([skills](SKILLS.md)): its skill settings (always loaded, excluded, the user's overrides) at their revision, each pinned source at its revision with the import it pins and that import's report, and the skills a run is given now, with their short descriptions and topics and who set them |
 | POST | `/api/v0/projects/{project}/skills/settings` | The user's change of the always-loaded and excluded skills, naming the settings' revision seen (`expected`), as `skills settings --expected` makes it; a stale revision is a 409 |
 | GET | `/api/v0/projects/{project}/mcp-services` | The configured top-level MCP service names and purposes for the launcher-selected project, current project policy revision, and the newest dated listing outcome found per service in a bounded sample: at most 24 main run records from eight recently opened sessions, examining at most 64 recent run entries and eight main runs per session. It may miss newer runs in older sessions or behind many child runs. Reports inspected and skipped records; exposes no endpoint, credential, remote failure text, live status or tool schema |
+| POST | `/api/v0/projects/{project}/mcp-services/{server}/check` | Explicit same-origin USER metadata listing through the host/proxy seam, bounded to 15 seconds/32 pages; returns a dated status category and never invokes a tool |
 | GET | `/api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/figure` | With `?sha256=`, how a page shows that figure file of at most 8 MiB, its capability open for 10 minutes: `image`, a PNG or JPEG's URL on the preview origin for an `<img>`; `svg`, the figure frame's URL and the capability the page posts to it; `html`, the file's URL, a frame's page without scripts; `pdf`, the viewer's URL in its figure mode. Any other file is unsupported and shown as a link ([figures](specs/figures.md), FG-12 to FG-14) |
 | GET | `/api/v0/projects/{project}/figures/chart` | With `?data=ARTIFACT:REVISION:SHA256` for each data file a chart pins, in order (at most 16; CSV, TSV or JSON, 8 MiB in all), the figure frame's URL and a capability for each, open for 10 minutes ([figures](specs/figures.md), FG-15) |
 | GET | `/api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/viewer` | With `?sha256=`, the viewer's URL for that PDF revision on the preview origin, open for 10 minutes, and the path it was published from ([the PDF viewer's origin](#the-pdf-viewers-origin)) |
@@ -586,3 +587,19 @@ or 200 new matches. **Continue automatic search** resumes at the cursor. Stop
 and dialog dismissal abort the pending request. The latest 200 snippets remain
 in memory; earlier originals remain archived and can be found again. No live
 context or complete prompt reconstruction is inferred from these saved records.
+
+### Workspace browser state and MCP inspection
+
+Overview leads with sessions, recent documents, a bounded review inbox and research
+shortcuts; policy/environment/math/file-capture operations remain in Project settings.
+Memory separates the accepted receive order from its proposal inbox, with selected
+exact text/differences and revision history. Filtering never reorders agent memory.
+Entry edits, new-entry text, Skills loading choices and browser selections survive
+navigation in the same tab. Stale drafts retain their original revision and require
+comparison before a new revision is used. Plan step selection and Agents/Activity
+filters preserve the existing editors, document tabs, reviews, jobs and kernels.
+
+MCP service views read only safe passive proxy metadata. An explicit Check availability
+lists upstream metadata through the host and policy-enforcing proxy, never calls a
+tool, and reports time, uncertainty and stale observations separately from policy.
+See [workspace browsers](specs/workspace-browsers.md) for bounds and provenance.

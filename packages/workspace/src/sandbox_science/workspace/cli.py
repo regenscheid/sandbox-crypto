@@ -48,6 +48,7 @@ from .app import create_app
 from .context import CONTEXT
 from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
+from .mcp_metadata import MetadataClient
 from .mcp_services import ServiceConfig
 from .preview import Capabilities, Preview, create_preview_app, own_host
 
@@ -262,6 +263,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="NAME=PURPOSE",
         help="a configured MCP service and its public purpose; repeat for each service",
     )
+    command.add_argument("--mcp-proxy", help="private host proxy address for metadata")
+    command.add_argument(
+        "--mcp-proxy-token-file", type=Path, help="host-only proxy caller token path"
+    )
     repairs = command.add_argument_group(
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
     )
@@ -360,6 +365,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_inventory.append(ServiceConfig(name=name, purpose=purpose))
         except ValueError:
             parser.error("--mcp-service needs a valid service name and purpose")
+    metadata = None
+    if args.mcp_proxy is not None or args.mcp_proxy_token_file is not None:
+        if args.mcp_proxy is None or args.mcp_proxy_token_file is None or args.mcp_project is None:
+            parser.error("MCP metadata needs proxy, token file and project together")
+        try:
+            metadata = MetadataClient(args.mcp_proxy, args.mcp_proxy_token_file.read_text().strip())
+        except (OSError, UnicodeError, ValueError):
+            parser.error("cannot configure MCP metadata source")
     try:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
@@ -373,6 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             skills_metadata=args.skills_metadata_model,
             mcp_project=args.mcp_project,
             mcp_inventory=tuple(mcp_inventory),
+            mcp_metadata=metadata,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)

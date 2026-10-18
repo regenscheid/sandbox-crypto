@@ -313,6 +313,10 @@ def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
     assert workspace[workspace.index("--mcp-project") :] == [
         "--mcp-project",
         "crypto",
+        "--mcp-proxy",
+        "http://127.0.0.1:18080",
+        "--mcp-proxy-token-file",
+        str(layout.token("mcp-orchestrator")),
         "--mcp-service",
         "s=the policy's server s",
         "--mcp-service",

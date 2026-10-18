@@ -8,6 +8,7 @@ const mounted: ReturnType<typeof mount>[] = [];
 afterEach(async () => {
   for (const component of mounted.splice(0)) await unmount(component);
   document.body.innerHTML = '';
+  sessionStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -56,10 +57,7 @@ it('keeps configured, observed, and unknown service states distinct without live
   const tabs = [...target.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
   tabs.find((button) => button.textContent === 'Tools')!.click();
   flushSync();
-  expect(target.textContent).toContain('listed 3 tools');
-  expect(target.textContent?.replace(/\s+/g, ' ')).toContain(
-    'does not retain service-scoped tool names',
-  );
+  expect(target.textContent).toContain('Tool metadata unavailable');
   tabs.find((button) => button.textContent === 'Observations')!.click();
   flushSync();
   expect(target.textContent).toContain('r1');
@@ -69,7 +67,58 @@ it('keeps configured, observed, and unknown service states distinct without live
   filter.dispatchEvent(new Event('change', { bubbles: true }));
   await settle();
   expect(target.querySelectorAll('.mcp-row')).toHaveLength(1);
+  expect(target.querySelector('.mcp-detail h2')?.textContent).toBe('papers');
+  target.querySelector<HTMLButtonElement>('.mcp-row')!.click();
+  flushSync();
   expect(target.querySelector('.mcp-detail h2')?.textContent).toBe('archive');
   expect(target.querySelector('.mcp-row')?.getAttribute('aria-pressed')).toBe('true');
   expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it('checks availability only after an explicit action and never calls a tool', async () => {
+  const requests: string[] = [];
+  const inventory = {
+    project_id: 'check-p',
+    policy_revision: 'a',
+    inspected_runs: 0,
+    skipped_runs: 0,
+    observation_scope: 'Bounded',
+    services: [
+      {
+        name: 'papers',
+        purpose: 'Papers',
+        observation: null,
+        metadata: null,
+        proxy_status: 'reachable',
+        proxy_checked_at: '2026-10-18T12:00:00Z',
+        availability: null,
+      },
+    ],
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options?: RequestInit) => {
+      requests.push(`${options?.method ?? 'GET'} ${url}`);
+      return new Response(
+        JSON.stringify(
+          options?.method === 'POST'
+            ? { checked_at: '2026-10-18T12:00:00Z', status: 'listed' }
+            : inventory,
+        ),
+      );
+    }),
+  );
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(McpServices, { target, props: { projectId: 'check-p' } }));
+  await settle();
+  expect(requests).toHaveLength(1);
+  [...target.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent === 'Check availability')!
+    .click();
+  await settle();
+  expect(requests.filter((item) => item.startsWith('POST'))).toEqual([
+    'POST /api/v0/projects/check-p/mcp-services/papers/check',
+  ]);
+  expect(requests.every((item) => !item.includes('tools/call'))).toBe(true);
 });

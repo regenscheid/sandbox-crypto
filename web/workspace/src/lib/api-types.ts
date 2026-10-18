@@ -77,6 +77,11 @@ export interface Author {
   attempt_id: string | null;
 }
 
+export interface AvailabilityCheck {
+  checked_at: string;
+  status: "listed" | "unavailable" | "denied" | "timeout";
+}
+
 /** A body edit against an exact base version. */
 export interface BodyChange {
   operation_id: string;
@@ -828,10 +833,49 @@ export interface McpObservation {
   listed_tools: number | null;
 }
 
+export interface McpPolicyMetadata {
+  revision: string;
+  protocol: string;
+  authentication: string;
+  default_action: string;
+  listing_action: string;
+  worker_access: boolean;
+  worker_tools: string[];
+  allow: string[];
+  escalate: string[];
+  deny: string[];
+  argument_bytes: number;
+  response_bytes: number;
+}
+
+export interface McpServiceMetadata {
+  server: string;
+  observed_at: string;
+  policy: McpPolicyMetadata;
+  checked_at: string | null;
+  status: "unknown" | "listed" | "responded" | "unavailable" | "denied";
+  listing_at: string | null;
+  listing_policy: string | null;
+  tools: McpToolMetadata[];
+  truncated: boolean;
+  schema_projection: string;
+}
+
 export interface McpServiceView {
   name: string;
   purpose: string;
   observation: McpObservation | null;
+  metadata: McpServiceMetadata | null;
+  proxy_checked_at: string | null;
+  proxy_status: "reachable" | "unknown" | "unavailable";
+  availability: AvailabilityCheck | null;
+}
+
+export interface McpToolMetadata {
+  name: string;
+  description: string;
+  parameters_json: string;
+  action: string;
 }
 
 /** A project's memory as the Memory page shows it: the accepted entries in order. */

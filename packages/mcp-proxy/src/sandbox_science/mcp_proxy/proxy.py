@@ -33,10 +33,11 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Final, cast, get_args
+from typing import Final, Literal, cast, get_args
 
 from aiohttp import hdrs, web
 
+from sandbox_science.contracts.mcp_metadata import McpPolicyMetadata, McpServiceMetadata
 from sandbox_science.policy import (
     Action,
     Decision,
@@ -64,6 +65,7 @@ from .callers import SESSION_HEADER, Attribution, Caller, Callers, attribute
 from .credentials import contains_placeholder, credential_headers
 from .errors import MessageError, RefusalError, SessionGoneError, StoreError, UpstreamError
 from .jsonrpc import JsonObject, Notification, Request, RequestId, Response
+from .metadata import Metadata
 from .reasons import (
     APPROVAL_DENIED,
     APPROVAL_REQUIRED,
@@ -255,6 +257,7 @@ class McpProxy:
         """``requests`` reads the event store's records after a sequence number, from which
         permission requests and their answers are known (D76). Without it, every escalation
         is recorded and refused, and none can be approved."""
+        self._metadata = Metadata()
         self._requests = requests
         self._now = now
         self._approvals = Approvals()
@@ -274,12 +277,82 @@ class McpProxy:
     def application(self, *, max_body_bytes: int) -> web.Application:
         """The aiohttp application; request bodies over ``max_body_bytes`` are refused."""
         app = web.Application(client_max_size=max_body_bytes)
+        app.router.add_get("/metadata/{server}", self._metadata_view)
         app.router.add_route("POST", "/mcp/{server}", self._post)
         app.router.add_route("GET", "/mcp/{server}", self._get)
         app.router.add_route("DELETE", "/mcp/{server}", self._delete)
         return app
 
     # --- HTTP handlers --------------------------------------------------------------------
+
+    async def _metadata_view(self, request: web.Request) -> web.Response:
+        """Authenticated operator metadata; no upstream operation is performed."""
+        caller = self._authenticate(request)
+        if isinstance(caller, web.Response):
+            return caller
+        if caller.kind != "orchestrator" or request.query or request.can_read_body:
+            return web.Response(status=403)
+        try:
+            loaded = self._policy(caller.project)
+        except _TransportError:
+            return web.Response(status=503)
+        name = request.match_info["server"]
+        server = loaded.policy.mcp.servers.get(name)
+        if server is None:
+            return web.Response(status=404)
+
+        def action(method: str, tool: str | None = None) -> str:
+            params: JsonObject = {"name": tool, "arguments": {}} if tool else {}
+            return evaluate_mcp_message(
+                name,
+                jsonrpc.request(0, method, params),
+                loaded,
+                origin="orchestrator",
+                ceiling=self._ceiling,
+                floor=self._floor,
+            ).action.value
+
+        snapshot = self._metadata.tools.get((caller.project, name))
+        observation = self._metadata.observations.get((caller.project, name))
+        settings = loaded.policy.mcp.proxy
+        answer = McpServiceMetadata(
+            server=name,
+            observed_at=self._now(),
+            policy=McpPolicyMetadata(
+                revision=loaded.digest,
+                protocol=server.revision,
+                authentication=server.auth.mode,
+                default_action=loaded.policy.defaults.action.value,
+                listing_action=action("tools/list"),
+                worker_access=settings.worker_access,
+                worker_tools=(settings.worker_tools,)
+                if isinstance(settings.worker_tools, str)
+                else settings.worker_tools,
+                allow=server.tools.allow,
+                escalate=server.tools.escalate,
+                deny=server.tools.deny,
+                argument_bytes=settings.max_argument_bytes,
+                response_bytes=settings.max_response_bytes,
+            ),
+            checked_at=observation[0] if observation else None,
+            status=observation[1] if observation else "unknown",
+            listing_at=snapshot[0] if snapshot else None,
+            listing_policy=snapshot[1] if snapshot else None,
+            tools=tuple(
+                item.model_copy(update={"action": action("tools/call", item.name)})
+                for item in snapshot[2]
+            )
+            if snapshot
+            else (),
+            truncated=(snapshot[3] or (caller.project, name) in self._metadata.incomplete)
+            if snapshot
+            else False,
+        )
+        return web.Response(
+            text=answer.model_dump_json(),
+            content_type="application/json",
+            headers={hdrs.CACHE_CONTROL: "no-store"},
+        )
 
     async def _post(self, request: web.Request) -> web.Response:
         caller = self._authenticate(request)
@@ -573,6 +646,7 @@ class McpProxy:
                 del session.in_flight[message.id]
         if exchange.tools_changed:
             session.tools.invalidate()
+            self._metadata.tools.pop((call.caller.project, call.server), None)
         response = exchange.response
         if response.result is None:
             return self._relay_error(call, message.id, response)
@@ -582,6 +656,14 @@ class McpProxy:
             try:
                 names, next_cursor = tool_names(result)
                 session.tools.page(cursor if isinstance(cursor, str) else None, names, next_cursor)
+                self._metadata.listing(
+                    call.caller.project,
+                    call.server,
+                    None,
+                    loaded.digest,
+                    result,
+                    first=cursor is None,
+                )
             except (MessageError, ValueError) as exc:
                 raise UpstreamError(UPSTREAM_ERROR, str(exc)) from exc
             result = self._callable(call, loaded, result)
@@ -698,6 +780,14 @@ class McpProxy:
             try:
                 names, next_cursor = tool_names(result)
                 session.tools.page(cursor, names, next_cursor)
+                self._metadata.listing(
+                    session.caller.project,
+                    session.server,
+                    None,
+                    loaded.digest,
+                    result,
+                    first=cursor is None,
+                )
             except (MessageError, ValueError) as exc:
                 raise UpstreamError(UPSTREAM_ERROR, str(exc)) from exc
             if next_cursor is None:
@@ -861,6 +951,17 @@ class McpProxy:
         return _server_answer({"jsonrpc": "2.0", "id": request_id, "error": error})
 
     async def _audit(self, call: Call) -> None:
+        if call.method and call.outcome != "local":
+            status: Literal["listed", "responded", "denied", "unavailable"] = (
+                "listed"
+                if call.method == "tools/list" and call.outcome == "forwarded"
+                else "responded"
+                if call.outcome in ("forwarded", "server_error")
+                else "denied"
+                if call.outcome == "refused"
+                else "unavailable"
+            )
+            self._metadata.observe(call.caller.project, call.server, self._now(), status)
         try:
             await self._events.record("mcp-call", call.record(time.monotonic()))
         except Exception:

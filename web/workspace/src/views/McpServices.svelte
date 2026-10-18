@@ -1,6 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- Configured identity and historical observations only. Viewing this page never calls the proxy. -->
+<!-- Viewing reads safe cached proxy metadata; only an explicit check lists upstream tools. -->
 <script lang="ts">
+  import { untrack, onMount } from 'svelte';
+  import { browserState } from '../lib/browserState';
+  import { post } from '../lib/http';
   import { api } from '../lib/api';
   import type { McpInventory } from '../lib/api-types';
   import { formatTime } from '../lib/format';
@@ -12,11 +15,53 @@
   let { projectId }: { projectId: string } = $props();
   let shown = $state<McpInventory | null>(null);
   let error = $state<unknown>(null);
-  let selected = $state<string | null>(null);
-  let search = $state('');
-  let filter = $state('all');
-  let tab = $state<'overview' | 'tools' | 'policy' | 'observations'>('overview');
-  let width = $state(460);
+  const scope = untrack(() => `mcp:${projectId}`);
+  const kept = untrack(() => browserState.load(scope).draft ?? {});
+  let selected = $state<string | null>(kept.selected || null);
+  let search = $state(kept.search ?? '');
+  let filter = $state(kept.filter ?? 'all');
+  let tab = $state(kept.tab ?? 'overview');
+  let width = $state(
+    Math.min(Number(kept.width) || 460, Math.max(320, Math.floor(window.innerWidth / 2))),
+  );
+  let toolSearch = $state(kept.toolSearch ?? '');
+  let selectedTool = $state(kept.selectedTool ?? '');
+  let checking = $state(false);
+  let now = $state(Date.now());
+  onMount(() => {
+    const timer = setInterval(() => {
+      now = Date.now();
+    }, 30_000);
+    return () => clearInterval(timer);
+  });
+  $effect(() => {
+    browserState.save(scope, {
+      selected: selected ?? '',
+      search,
+      filter,
+      tab,
+      width: String(width),
+      toolSearch,
+      selectedTool,
+    });
+  });
+  const stale = (at: string | null | undefined) => !at || now - Date.parse(at) > 300_000;
+  async function check() {
+    if (!current || checking) return;
+    checking = true;
+    try {
+      await post(
+        `/projects/${encodeURIComponent(projectId)}/mcp-services/${encodeURIComponent(current.name)}/check`,
+        {},
+        { deadlineMs: 20_000 },
+      );
+      await load();
+    } catch (caught) {
+      error = caught;
+    } finally {
+      checking = false;
+    }
+  }
   let viewportWidth = $state(window.innerWidth);
   const maxWidth = $derived(Math.max(320, Math.floor(viewportWidth / 2)));
   const services = $derived(shown?.services ?? []);
@@ -32,7 +77,7 @@
     ),
   );
   const current = $derived(
-    filtered.find((service) => service.name === selected) ?? filtered[0] ?? null,
+    services.find((service) => service.name === selected) ?? filtered[0] ?? null,
   );
 
   async function load() {
@@ -61,13 +106,14 @@
 <h1>MCP services</h1>
 <p class="muted">
   Configured services and observations from a bounded sample of recorded runs. The most recent
-  result shown for a service may not be its latest run. This page does not test current
-  availability.
+  result shown for a service may not be its latest run. Viewing never invokes a tool. Use Check
+  availability for a bounded metadata listing through the proxy.
 </p>
-{#if error}<ErrorMessage {error} /><button type="button" onclick={() => void load()}
-    >Retry inventory</button
-  >
-{:else if shown === null}<p class="muted">Loading…</p>
+{#if error}<ErrorMessage {error} />
+  <p role="status">Inventory refresh failed; any retained observation is previous data.</p>
+  <button type="button" onclick={() => void load()}>Retry inventory</button>
+{/if}
+{#if shown === null}<p class="muted">Loading…</p>
 {:else}
   <div class="mcp-filters">
     <label
@@ -127,6 +173,22 @@
         <span class="eyebrow">Configured service</span>
         <h2>{visible(current.name)}</h2>
         <p>{current.purpose ? visible(current.purpose) : 'No purpose configured.'}</p>
+        <p>
+          Proxy: {current.proxy_status ?? 'unknown'}{#if current.proxy_checked_at}
+            · observed {formatTime(current.proxy_checked_at)}{/if}.
+        </p>
+        <p>
+          Availability: {current.availability
+            ? `${current.availability.status}${stale(current.availability.checked_at) ? ' · stale' : ''} · checked ${formatTime(current.availability.checked_at)}`
+            : 'Unknown · no explicit availability check in this workspace process'}.
+        </p>
+        <button disabled={checking} onclick={() => void check()}
+          >{checking ? 'Checking metadata…' : 'Check availability'}</button
+        >
+        <p class="muted">
+          Checks initialize and list metadata only. A listing does not prove a particular tool call
+          will succeed. Observations become stale after five minutes.
+        </p>
         <div class="detail-tabs" role="tablist" aria-label="Service details">
           {#each ['overview', 'tools', 'policy', 'observations'] as choice}
             <button
@@ -153,19 +215,83 @@
             </dd>
           </dl>
         {:else if tab === 'tools'}
-          {#if current.observation?.status === 'listed'}<p>
-              A recorded run listed {current.observation.listed_tools} tools. This record does not retain
-              service-scoped tool names, descriptions or schemas.
-            </p>{:else}<p>No successful tool listing is present in the bounded run sample.</p>{/if}
-          <p class="muted">
-            Viewing tool information here never invokes a service or grants tool access.
-          </p>
+          {#if current.metadata}
+            <p class="muted">
+              {current.metadata.schema_projection} Listed {current.metadata.listing_at
+                ? formatTime(current.metadata.listing_at)
+                : 'never'}{#if stale(current.metadata.listing_at)}
+                · stale or unknown{/if}. {#if current.metadata.truncated}Partial listing; some
+                metadata was omitted.{/if}
+            </p>
+            {#if current.metadata.listing_policy !== current.metadata.policy.revision}<p
+                role="status"
+              >
+                This listing predates the current policy. Tool decisions below use the current
+                policy.
+              </p>{/if}
+            <label>Search tools <input type="search" bind:value={toolSearch} /></label>
+            <ul>
+              {#each current.metadata.tools.filter((tool) => `${tool.name} ${tool.description}`
+                  .toLocaleLowerCase()
+                  .includes(toolSearch.toLocaleLowerCase())) as tool (tool.name)}
+                <li>
+                  <button
+                    aria-expanded={selectedTool === tool.name}
+                    onclick={() => (selectedTool = selectedTool === tool.name ? '' : tool.name)}
+                    >{tool.name} · {tool.action}</button
+                  >
+                  {#if selectedTool === tool.name}<p>{visible(tool.description)}</p>
+                    <pre>{tool.parameters_json}</pre>{/if}
+                </li>
+              {:else}<li>
+                  No tool metadata in this snapshot. Check availability to request a listing.
+                </li>{/each}
+            </ul>
+          {:else}<p>
+              Tool metadata unavailable. No tool names or schemas are inferred from historical
+              counts.
+            </p>{/if}
         {:else if tab === 'policy'}
-          <p>Project policy revision: <code>{visible(shown.policy_revision)}</code>.</p>
-          <p class="muted">
-            The workspace does not yet project service-specific policy or approval rules.
-            Configuration and past listings are not proof that a future call will be permitted.
-          </p>
+          {#if current.metadata}{@const policy = current.metadata.policy}
+            {#if current.proxy_status !== 'reachable'}<p role="status">
+                Previous policy snapshot; current proxy policy is unknown while the proxy is
+                unavailable.
+              </p>{/if}
+            <dl class="facts">
+              <dt>Proxy policy revision</dt>
+              <dd><code>{policy.revision}</code></dd>
+              <dt>Protocol</dt>
+              <dd>{policy.protocol}</dd>
+              <dt>Authentication mode</dt>
+              <dd>{policy.authentication}</dd>
+              <dt>Listing decision</dt>
+              <dd>{policy.listing_action}</dd>
+              <dt>Default action</dt>
+              <dd>{policy.default_action}</dd>
+              <dt>Allow tool patterns</dt>
+              <dd>{policy.allow.join(', ') || 'None'}</dd>
+              <dt>Require approval</dt>
+              <dd>{policy.escalate.join(', ') || 'None'}</dd>
+              <dt>Deny tool patterns</dt>
+              <dd>{policy.deny.join(', ') || 'None'}</dd>
+              <dt>Worker access</dt>
+              <dd>
+                {policy.worker_access ? 'Enabled' : 'Disabled'} · {policy.worker_tools.join(', ')}
+              </dd>
+              <dt>Payload bounds</dt>
+              <dd>
+                {policy.argument_bytes.toLocaleString()} argument bytes / {policy.response_bytes.toLocaleString()}
+                response bytes
+              </dd>
+            </dl>
+            <p class="muted">
+              Per-tool decisions include current policy, hard floor and pool ceiling. Approvals and
+              request arguments are checked again when a tool is called.
+            </p>
+          {:else}<p>
+              Applicable proxy policy is unknown because the metadata source is unavailable. Project
+              record revision: {shown.policy_revision}.
+            </p>{/if}
         {:else}
           {#if current.observation}<dl class="facts">
               <dt>Recorded result</dt>
@@ -196,6 +322,12 @@
 {/if}
 
 <style>
+  pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 24rem;
+    overflow: auto;
+  }
   .mcp-filters {
     display: flex;
     flex-wrap: wrap;

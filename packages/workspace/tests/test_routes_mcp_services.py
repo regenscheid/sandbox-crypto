@@ -131,3 +131,82 @@ async def test_recent_delegated_runs_do_not_hide_main_service_observation(
     assert found.services[0].observation is not None
     assert found.services[0].observation.run == main.name
     assert found.services[0].observation.listed_tools == 4
+
+
+async def test_explicit_metadata_check_is_same_origin_and_does_not_execute_tools(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    from aiohttp import web
+
+    from sandbox_science.workspace.mcp_metadata import MetadataClient
+
+    from .route_support import origin
+
+    calls: list[str] = []
+    healthy = True
+
+    async def rpc(request: web.Request) -> web.Response:
+        assert request.headers["Authorization"] == "Bearer test-secret-metadata-caller"
+        body = await request.json()
+        method = body["method"]
+        calls.append(method)
+        assert method != "tools/call"
+        if not healthy:
+            return web.Response(status=503)
+        if method == "notifications/initialized":
+            return web.Response(status=202)
+        result = (
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "serverInfo": {"name": "fixture", "version": "1"},
+            }
+            if method == "initialize"
+            else {"tools": []}
+        )
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": body["id"], "result": result},
+            headers={"Mcp-Session-Id": "metadata-session"},
+        )
+
+    async def metadata(request: web.Request) -> web.Response:
+        assert request.headers["Authorization"] == "Bearer test-secret-metadata-caller"
+        return web.Response(status=503)
+
+    app = web.Application()
+    app.router.add_post("/mcp/papers", rpc)
+    app.router.add_get("/metadata/papers", metadata)
+    proxy = await aiohttp_client(app)
+    source = MetadataClient(str(proxy.make_url("")).rstrip("/"), "test-secret-metadata-caller")
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        mcp_project="p1",
+        mcp_inventory=(ServiceConfig(name="papers", purpose="Research"),),
+        mcp_metadata=source,
+    )
+    path = "/api/v0/projects/p1/mcp-services"
+    first = await (await client.get(path)).json()
+    assert first["services"][0]["proxy_status"] == "unavailable"
+    assert calls == []
+    assert (await client.post(path + "/papers/check", json={})).status == 403
+    checked = await client.post(path + "/papers/check", json={}, headers=origin(client))
+    assert checked.status == 200
+    assert (await checked.json())["status"] == "listed"
+    assert set(calls) == {"initialize", "notifications/initialized", "tools/list"}
+    assert (
+        await client.post(path + "/unknown/check", json={}, headers=origin(client))
+    ).status == 404
+    healthy = False
+    assert (
+        await (await client.post(path + "/papers/check", json={}, headers=origin(client))).json()
+    )["status"] == "unavailable"
+    healthy = True
+    assert (
+        await (await client.post(path + "/papers/check", json={}, headers=origin(client))).json()
+    )["status"] == "listed"
+    anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
+    assert (
+        await anonymous.post(path + "/papers/check", json={}, headers=origin(anonymous))
+    ).status == 401

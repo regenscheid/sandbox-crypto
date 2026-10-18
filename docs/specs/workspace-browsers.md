@@ -1,12 +1,13 @@
 # Workspace browsers
 
-Status: proposed interaction details for owner review, 2026-10-17. The owner
-accepted the ledger's list/detail direction and requested the same usability
-work on the other screens, especially Skills and MCP services. Local Codex
-has produced a connected prototype with synthetic records. The ledger and Skills
-browsers are integrated on local `dev`; the first MCP service browser is implemented
-locally, while its tool and policy detail, Overview, Memory and session refinements
-remain proposals. Authenticated synthetic browser exercise of the initial Skills and MCP screens is recorded in the [acceptance report](../../.agents/docs/agent-reports/context-continuations-2026-10-18.md); it does not qualify actual MCP calls or deployed configuration.
+Status: implemented in the authenticated workspace, 2026-10-18. The ledger and
+Skills browsers retain their existing list/detail and explicit save operations.
+Overview, Memory and session Plan/Agents/Activity now use searchable, selected
+records with tab-scoped view state. Memory edits and skill-loading drafts retain
+the original revision across navigation and conflicts. MCP metadata and explicit
+availability checks use the controlled host-to-proxy seam described below.
+Deployment and real browser acceptance are recorded separately; local checks do
+not establish deployed service health.
 
 ## Shared interaction
 
@@ -65,33 +66,44 @@ Configuration, permission and availability answer different questions:
   does not establish present availability or successful execution. No observation
   is unknown, not a failure. Old or failed observations remain visibly dated.
 
-The first authenticated, project-scoped inventory endpoint projects only the
-configured top-level service name and operator-written purpose, the project's
-policy revision, and the newest matching observation within a bounded sample of
-recorded main runs. Each sampled session scans at most 64 recent run entries for
-up to eight main runs. Because the sample favors recently opened sessions, it may
-miss newer runs in older sessions or behind many delegated runs. It reports the
-sample and skipped records. It never connects
-to the proxy when viewed. No raw configuration, credential reference, auth
-header, endpoint URL or remote failure message is serialized. The launcher must
-provide the project's safe service identities to the workspace; an independently
-started workspace without them shows an empty inventory. Auth mode, specific
-policy rules and live availability are not projected yet.
+The authenticated project inventory retains the bounded historical run sample
+(at most 24 main runs across eight sessions, scanning at most 64 recent entries
+and eight main runs per session). It also reads `/metadata/{server}` through a
+private host-to-proxy client. This authenticated endpoint accepts orchestrator
+callers only, scopes by their bound project and rejects browser Origin headers.
+It reads the current bound policy and process-lifetime cached observations;
+viewing never connects to an upstream service. A standalone workspace without
+launcher metadata wiring reports unknown metadata rather than inferring it.
 
-Run connector summaries currently retain listed counts, loaded tool names and
-specification hashes, refused names and unavailable reasons. They do not retain
-complete tool schemas or establish a live connection. The proposed inventory
-must define the source and age of any future tool metadata, associate observations
-with their run, and report missing data. The current screen shows listed tool
-counts only. It does not add browser access to the MCP proxy, connection tests,
-credential entry or approval actions.
+Actual `tools/list` traffic populates a bounded proxy snapshot: at most 128 tools
+per service, 512 KiB of projected schema/prose, 32 cached service snapshots. Tool
+schemas show structural types, properties and bounds; defaults, examples, enum
+values, schema descriptions and external references are omitted explicitly.
+Descriptions are untrusted plain text; addresses and credential placeholders are
+withheld. Current per-tool policy decisions include the hard floor and pool
+ceiling. Metadata shows authentication mode, tool patterns, worker access and
+payload limits, without URLs, credential references, raw configuration or remote
+error bodies. A policy revision change leaves the old listing visibly dated.
+Tool-list-change notifications invalidate the cached listing.
+
+**Check availability** is a separate same-origin authenticated POST to
+`/api/v0/projects/{project}/mcp-services/{server}/check` with `{}`. It performs only
+the normal policy-checked initialize/metadata-list handshake through the host
+client, bounded to 15 seconds and 32 pages, and never invokes `tools/call`.
+The result records a checked timestamp and listed/denied/unavailable/timeout
+category. Proxy reachability and service availability are distinct. Observations
+become stale after five minutes; missing checks or a process restart are unknown.
+A listing success does not prove that a particular tool call will succeed.
+Previous safe snapshots survive a failed refresh in this workspace process and
+are labeled previous; current policy is unknown while the proxy is unreachable.
+No browser gets proxy credentials or direct MCP access.
 
 ## Other screens
 
 An [agent context inspector](context-inspector.md) is available from secondary
 orchestrator/agent actions as an embedded dialog. It covers context usage and
 cache telemetry, fold provenance and searchable original conversation history.
-Its production telemetry/API integration is still pending.
+Its recorded-attempt telemetry and original-history APIs are available; exact working-context composition is separately scoped in that specification.
 
 - **Overview:** sessions, recent documents, pending reviews and useful shortcuts
   first. Policy, environment, math macros and file capture settings get a separate

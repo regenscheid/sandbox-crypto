@@ -208,6 +208,7 @@ def create_app(
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
     mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
+    mcp_metadata: mcp_services.MetadataClient | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -330,7 +331,9 @@ def create_app(
     app[documents.WRITER] = writer
     if skills_metadata is not None:
         app[skills.METADATA] = skills_metadata
-    app[mcp_services.CONFIGURATION] = mcp_services.Configuration(mcp_project, mcp_inventory)
+    app[mcp_services.CONFIGURATION] = mcp_services.Configuration(
+        mcp_project, mcp_inventory, mcp_metadata
+    )
     app[CONTEXT] = WorkspaceContext(
         projects=store,
         documents=document_store,

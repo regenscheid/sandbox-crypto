@@ -18,11 +18,13 @@ from typing import Final, Literal
 from aiohttp import web
 from pydantic import Field
 
-from sandbox_science.contracts import Contract, Identifier
+from sandbox_science.contracts import Contract, ErrorKind, Identifier
+from sandbox_science.contracts.mcp_metadata import McpServiceMetadata
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
 from .api import dumps
-from .context import CONTEXT, identifier, json_answer, no_query
+from .context import CONTEXT, identifier, json_answer, json_body, no_query
+from .mcp_metadata import AvailabilityCheck, MetadataClient
 
 PATH: Final = "/api/v0/projects/{project}/mcp-services"
 MAX_SESSIONS: Final = 8
@@ -43,6 +45,7 @@ class ServiceConfig(Contract):
 class Configuration:
     project: str | None = None
     services: tuple[ServiceConfig, ...] = ()
+    source: MetadataClient | None = None
 
 
 CONFIGURATION: Final = web.AppKey("mcp_service_configuration", Configuration)
@@ -62,6 +65,10 @@ class McpServiceView(Contract):
     name: Identifier
     purpose: str
     observation: McpObservation | None
+    metadata: McpServiceMetadata | None = None
+    proxy_checked_at: datetime | None = None
+    proxy_status: Literal["reachable", "unknown", "unavailable"] = "unknown"
+    availability: AvailabilityCheck | None = None
 
 
 class McpInventory(Contract):
@@ -75,6 +82,7 @@ class McpInventory(Contract):
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, services)
+    app.router.add_post(PATH + "/{server}/check", check_service)
 
 
 def _observations(
@@ -167,4 +175,38 @@ async def services(request: web.Request) -> web.Response:
     config = request.app.get(CONFIGURATION, Configuration())
     store = request.app[CONTEXT].projects
     answer = await asyncio.to_thread(_inventory, store, project, config)
+    source = config.source
+    if source is not None and config.project == project:
+
+        async def inspect(item: McpServiceView) -> McpServiceView:
+            metadata = await source.read(item.name)
+            return item.model_copy(
+                update={
+                    "metadata": metadata or source.last.get(item.name),
+                    "proxy_status": "reachable" if metadata else "unavailable",
+                    "proxy_checked_at": datetime.now().astimezone(),
+                    "availability": source.checks.get(item.name),
+                }
+            )
+
+        answer = answer.model_copy(
+            update={
+                "services": list(await asyncio.gather(*(inspect(item) for item in answer.services)))
+            }
+        )
     return json_answer(dumps(answer.model_dump(mode="json")))
+
+
+async def check_service(request: web.Request) -> web.Response:
+    """An explicit same-origin USER check lists metadata, never executes a tool."""
+    project, server = identifier(request, "project"), identifier(request, "server")
+    if request.query or await json_body(request, "MCP metadata check") != {}:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "metadata check needs an empty object")
+    request.app[CONTEXT].projects.get(project)
+    config = request.app.get(CONFIGURATION, Configuration())
+    if config.project != project or server not in {item.name for item in config.services}:
+        raise ProjectError(ErrorKind.NOT_FOUND, "configured MCP service was not found")
+    if config.source is None:
+        raise ProjectError(ErrorKind.UNAVAILABLE, "MCP metadata source is not configured")
+    answer = await config.source.check(server)
+    return json_answer(answer.model_dump_json())
