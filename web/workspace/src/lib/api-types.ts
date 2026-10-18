@@ -765,6 +765,30 @@ export interface LockfileSelection {
   lockfile: LockfileRef | null;
 }
 
+export interface McpInventory {
+  project_id: string;
+  policy_revision: string;
+  services: McpServiceView[];
+  inspected_runs: number;
+  skipped_runs: number;
+  observation_scope: string;
+}
+
+/** One run's last recorded listing of this service, not its present state. */
+export interface McpObservation {
+  session: string;
+  run: string;
+  at: string;
+  status: "listed" | "unavailable";
+  listed_tools: number | null;
+}
+
+export interface McpServiceView {
+  name: string;
+  purpose: string;
+  observation: McpObservation | null;
+}
+
 /** A project's memory as the Memory page shows it: the accepted entries in order. */
 export interface Memory {
   project: string;

@@ -48,6 +48,7 @@ from .app import create_app
 from .context import CONTEXT
 from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
+from .mcp_services import ServiceConfig
 from .preview import Capabilities, Preview, create_preview_app, own_host
 
 _log = logging.getLogger("sandbox_science.workspace")
@@ -251,6 +252,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="the alias of the import's pass whose topics, entry skills and short "
         "descriptions the skills page shows, as runs are given them (default: none)",
     )
+    command.add_argument(
+        "--mcp-project", help="the one project whose configured MCP service names are shown"
+    )
+    command.add_argument(
+        "--mcp-service",
+        action="append",
+        default=[],
+        metavar="NAME=PURPOSE",
+        help="a configured MCP service and its public purpose; repeat for each service",
+    )
     repairs = command.add_argument_group(
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
     )
@@ -338,6 +349,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
     login_token = secrets.token_urlsafe(32)
     preview = Preview(Capabilities())
+    mcp_inventory: list[ServiceConfig] = []
+    if args.mcp_service and args.mcp_project is None:
+        parser.error("--mcp-service needs --mcp-project")
+    for item in args.mcp_service:
+        name, separator, purpose = item.partition("=")
+        if not separator or any(found.name == name for found in mcp_inventory):
+            parser.error("--mcp-service needs a unique NAME=PURPOSE")
+        try:
+            mcp_inventory.append(ServiceConfig(name=name, purpose=purpose))
+        except ValueError:
+            parser.error("--mcp-service needs a valid service name and purpose")
     try:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
@@ -349,6 +371,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_state=job_state,
             preview=preview,
             skills_metadata=args.skills_metadata_model,
+            mcp_project=args.mcp_project,
+            mcp_inventory=tuple(mcp_inventory),
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)

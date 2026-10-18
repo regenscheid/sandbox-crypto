@@ -59,6 +59,7 @@ from . import (
     jobs,
     kernels,
     ledger,
+    mcp_services,
     memory,
     messages,
     plan_edits,
@@ -204,6 +205,8 @@ def create_app(
     timeouts: api.Timeouts = api.TIMEOUTS,
     preview: Preview | None = None,
     skills_metadata: str | None = None,
+    mcp_project: str | None = None,
+    mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -218,6 +221,8 @@ def create_app(
     that pass derived, as runs are given it."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
+    if mcp_inventory and mcp_project is None:
+        raise ValueError("MCP inventory needs an explicit project scope")
     if document_store is not None and not document_store.readonly:
         raise ValueError("the workspace's document_store must be read-only")
     sessions = Sessions(login_token)
@@ -324,6 +329,7 @@ def create_app(
     app[documents.WRITER] = writer
     if skills_metadata is not None:
         app[skills.METADATA] = skills_metadata
+    app[mcp_services.CONFIGURATION] = mcp_services.Configuration(mcp_project, mcp_inventory)
     app[CONTEXT] = WorkspaceContext(
         projects=store,
         documents=document_store,
@@ -352,6 +358,7 @@ def create_app(
         frontier,
         memory,
         skills,
+        mcp_services,
         messages,
         uploads,
     ):

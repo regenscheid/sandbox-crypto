@@ -6,6 +6,7 @@
     sessionHref,
     ledgerHref,
     memoryHref,
+    mcpHref,
     skillsHref,
     type Route,
   } from '../lib/router';
@@ -85,6 +86,11 @@
         href={skillsHref(projectId)}
         onclick={close}
         aria-current={route.view === 'skills' ? 'page' : undefined}>Skills</a
+      >
+      <a
+        href={mcpHref(projectId)}
+        onclick={close}
+        aria-current={route.view === 'mcp' ? 'page' : undefined}>MCP services</a
       >
     </div>
     <div class="sidebar-section sessions">

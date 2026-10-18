@@ -309,6 +309,12 @@ def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
         "--mcp-about", "s/e-print-mcp=IACR ePrint papers", "--mcp-about", "s=the policy's server s",
         "--mcp-index", "s/e-print-mcp",
     ]  # fmt: skip
+    workspace = parts.workspace_argv(config, layout)
+    assert workspace[workspace.index("--mcp-project") :] == [
+        "--mcp-project", "crypto", "--mcp-service", "s=the policy's server s",
+        "--mcp-service", "t=",
+    ]
+    assert "IACR ePrint papers" not in workspace  # behind-service purpose is not top-level
     for wrong in (
         {"about": {"Not_A_Server": "x"}},
         {"about": {"e-print-mcp": "IACR ePrint"}},  # not behind a configured server

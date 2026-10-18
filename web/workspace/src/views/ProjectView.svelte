@@ -3,7 +3,14 @@
   import { api } from '../lib/api';
   import { formatCost, formatTime } from '../lib/format';
   import { costByRole, costSource } from '../lib/modelCost';
-  import { documentHref, ledgerHref, memoryHref, sessionHref, skillsHref } from '../lib/router';
+  import {
+    documentHref,
+    ledgerHref,
+    mcpHref,
+    memoryHref,
+    sessionHref,
+    skillsHref,
+  } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectFiles from './ProjectFiles.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
@@ -70,6 +77,10 @@
   <p>
     <a href={skillsHref(projectId)}>The project's skills</a>: the packs it pins, their import
     reports, and the skills a run is given.
+  </p>
+  <p>
+    <a href={mcpHref(projectId)}>MCP services</a>: configured service purposes and dated run
+    observations.
   </p>
   <ProjectFiles {projectId} />
 

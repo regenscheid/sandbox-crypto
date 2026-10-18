@@ -4,7 +4,8 @@ Status: proposed interaction details for owner review, 2026-10-17. The owner
 accepted the ledger's list/detail direction and requested the same usability
 work on the other screens, especially Skills and MCP services. Local Codex
 has produced a connected prototype with synthetic records. The ledger and Skills
-browsers are integrated on local `dev`; MCP, Overview, Memory and session refinements
+browsers are integrated on local `dev`; the first MCP service browser is implemented
+locally, while its tool and policy detail, Overview, Memory and session refinements
 remain proposals.
 
 ## Shared interaction
@@ -64,19 +65,26 @@ Configuration, permission and availability answer different questions:
   does not establish present availability or successful execution. No observation
   is unknown, not a failure. Old or failed observations remain visibly dated.
 
-There is no workspace MCP inventory endpoint today. Integration first needs an
-authenticated, project-scoped, read-only projection. Configuration should expose
-an explicit allowlist of safe identity, purpose, revision, auth mode and policy
-fields. Never serialize raw configuration, credential references, auth headers
-or unsanitized endpoint URLs. Any tool metadata and failure messages need the
-same treatment as untrusted remote content elsewhere in the workspace.
+The first authenticated, project-scoped inventory endpoint projects only the
+configured top-level service name and operator-written purpose, the project's
+policy revision, and the newest matching observation within a bounded sample of
+recorded main runs. Each sampled session scans at most 64 recent run entries for
+up to eight main runs. Because the sample favors recently opened sessions, it may
+miss newer runs in older sessions or behind many delegated runs. It reports the
+sample and skipped records. It never connects
+to the proxy when viewed. No raw configuration, credential reference, auth
+header, endpoint URL or remote failure message is serialized. The launcher must
+provide the project's safe service identities to the workspace; an independently
+started workspace without them shows an empty inventory. Auth mode, specific
+policy rules and live availability are not projected yet.
 
 Run connector summaries currently retain listed counts, loaded tool names and
 specification hashes, refused names and unavailable reasons. They do not retain
 complete tool schemas or establish a live connection. The proposed inventory
-must define the source and age of its tool metadata, associate observations with
-their run, and report missing data. This proposal does not add browser access to
-the MCP proxy, connection tests, credential entry or approval actions.
+must define the source and age of any future tool metadata, associate observations
+with their run, and report missing data. The current screen shows listed tool
+counts only. It does not add browser access to the MCP proxy, connection tests,
+credential entry or approval actions.
 
 ## Other screens
 

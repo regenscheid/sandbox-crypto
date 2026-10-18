@@ -53,6 +53,7 @@ export type Route =
     }
   | { view: 'memory'; project: string }
   | { view: 'skills'; project: string }
+  | { view: 'mcp'; project: string }
   | { view: 'message'; project: string; message: string }
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
@@ -90,6 +91,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 2) return { view: 'project', project };
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts.length === 3 && parts[2] === 'skills') return { view: 'skills', project };
+  if (parts.length === 3 && parts[2] === 'mcp') return { view: 'mcp', project };
   if (parts.length === 4 && parts[2] === 'messages') {
     const message = parts[3]!;
     return MESSAGE_ID.test(message) ? { view: 'message', project, message } : { view: 'missing' };
@@ -173,6 +175,10 @@ function ledgerRoute(project: string, rest: string[]): Route {
 
 export function projectHref(project: string): string {
   return `#/projects/${encodeURIComponent(project)}`;
+}
+
+export function mcpHref(project: string): string {
+  return `${projectHref(project)}/mcp`;
 }
 
 export function sessionHref(project: string, session: string): string {

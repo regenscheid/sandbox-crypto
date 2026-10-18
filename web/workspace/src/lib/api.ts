@@ -27,6 +27,7 @@ import type {
   MemoryChange,
   MemoryHistory,
   MemoryProposals,
+  McpInventory,
   ProjectAnswer,
   ProjectListing,
   ProjectSkills,
@@ -756,6 +757,8 @@ export const api = {
   /** The project's skills: its settings, its pins with their imports' reports, and the
    * skills a run is given now. */
   skills: (project: string) => get<ProjectSkills>(`/projects/${part(project)}/skills`),
+  /** Safe configured MCP service identity and bounded historical run observations. */
+  mcpServices: (project: string) => get<McpInventory>(`/projects/${part(project)}/mcp-services`),
   /** The user's change of the always-loaded and excluded skills, at `expected`. */
   changeSkillSettings: (project: string, change: SkillSettingsChange) =>
     post<SkillSettingsView>(`/projects/${part(project)}/skills/settings`, change),

@@ -66,6 +66,7 @@ from sandbox_science.workspace.ledger import (
     LedgerListing,
     LedgerWork,
 )
+from sandbox_science.workspace.mcp_services import McpInventory
 from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
 from sandbox_science.workspace.messages import ToolRecordChunk, ToolRecordListing
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
@@ -119,6 +120,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     FrontierPastAnswer,
     MemoryAnswer,
     ProjectSkills,
+    McpInventory,
     FoldProposalList,
     SkillSettingsChange,
     SkillSettingsView,

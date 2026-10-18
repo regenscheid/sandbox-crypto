@@ -319,6 +319,11 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     # The skills page shows what the pass runs are given derived.
     derived = config.skills.metadata_model
     page = [] if derived is None else ["--skills-metadata-model", derived]
+    services = []
+    if config.mcp_proxy is not None:
+        services = ["--mcp-project", config.mcp_project()]
+        for server in config.mcp_proxy.servers:
+            services += ["--mcp-service", f"{server}={config.mcp_proxy.about.get(server, '')}"]
     named = workspace.preview_name
     viewer = [] if named is None else ["--preview-name", named]
     return [
@@ -328,4 +333,5 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--listen", workspace.listen, "--preview-listen", workspace.preview(), *viewer,
         "--worker", worker_url(config),
         "--worker-token-file", str(layout.token("workspace-worker")), *repairs, *page,
+        *services,
     ]  # fmt: skip
