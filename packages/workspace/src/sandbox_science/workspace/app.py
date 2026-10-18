@@ -79,6 +79,7 @@ from .mathrepair import (
     SessionLimitError,
     parse_request,
 )
+from .mcp_metadata import MetadataClient
 from .preview import Preview
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -208,7 +209,7 @@ def create_app(
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
     mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
-    mcp_metadata: mcp_services.MetadataClient | None = None,
+    mcp_metadata: MetadataClient | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
