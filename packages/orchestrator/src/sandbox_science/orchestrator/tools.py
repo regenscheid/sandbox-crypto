@@ -41,6 +41,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import Language
 
+from .agent_messages import CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC, AgentMailbox
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .connectors import MAX_LOAD, MAX_LOADED_CHARS, MAX_QUERY, Connectors
@@ -482,6 +483,10 @@ def _harness_tool_names() -> frozenset[str]:
         LEDGER_PROPOSALS,
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
+        CHILD_SPEC,
+        PARENT_SPEC,
+        STATUS_SPEC,
+        WAIT_SPEC,
         *TRACK_SPECS,
         *QUESTION_SPECS,
         SKILL_SPEC,
@@ -521,6 +526,7 @@ class Toolbox:
         recorder: FileRecorder | None = None,
         kernel_run: str | None = None,
         delegations: Delegations | None = None,
+        mailbox: AgentMailbox | None = None,
         questions: QuestionTool | None = None,
         delegated: bool = False,
         check: bool = False,
@@ -557,6 +563,7 @@ class Toolbox:
         """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
         session's, which main runs share."""
         self.delegations = delegations
+        self.mailbox = mailbox
         self.questions = questions
         self.delegated = delegated
         if delegated and connectors is not None:
@@ -688,6 +695,12 @@ class Toolbox:
                 delegations.specs,
                 lambda name, call: delegations.call(name, call.args, operation=call.operation),
                 delegation_specs.EFFECTS,
+            )
+        if mailbox is not None:
+            entries += _group(
+                mailbox.specs,
+                lambda name, call: mailbox.call(name, call.args, call.operation),
+                {spec.name: "read" for spec in mailbox.specs},
             )
         self.skills = skills
         """The run's skills: their system-message section and the ``skills`` tool."""
@@ -959,6 +972,8 @@ class Toolbox:
             hooks.append(JobNotices(self.jobs, max_chars=self.output_chars // 4))
         if self.delegations is not None:
             hooks.append(self.delegations)
+        if self.mailbox is not None:
+            hooks.append(self.mailbox)
         if self.questions is not None:
             hooks.append(self.questions)
         if self.plans is not None:

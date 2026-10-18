@@ -97,13 +97,13 @@ async def test_a_run_writes_its_events_as_it_goes(harness: Harness) -> None:
     events = state.events(PROJECT, SESSION, entry.name)
     # The tool call's result was an event before the second model call returned.
     assert seen == [
-        ["started", "user", "model"],
-        ["started", "user", "model", "assistant", "tool", "model"],
+        ["started", "user", "model", "notice"],
+        ["started", "user", "model", "notice", "assistant", "tool", "model", "notice"],
     ]
     assert [e.kind for e in events] == [
-        "started", "user", "model", "assistant", "tool", "model", "assistant", "stopped",
+        "started", "user", "model", "notice", "assistant", "tool", "model", "notice", "assistant", "stopped",
     ]  # fmt: skip
-    started, user, _, asked, tool, _, answered, stopped = (e.data for e in events)
+    started, user, _, _, asked, tool, _, _, answered, stopped = (e.data for e in events)
     assert started["run_id"] == "run-1"
     # The root of its session's tree of runs (PD-32): no parent, no delegation.
     assert (started["role"], started["parent"], started["delegation"]) == ("main", None, None)

@@ -145,6 +145,7 @@ def test_the_geometry_scales_its_budgets_on_small_ceilings_and_refuses_too_littl
 
 async def test_the_gateways_input_limit_caps_the_ceiling(harness: Harness) -> None:
     # Keep this positive capping fixture above the system/tool geometry floor.
+
     harness.gateway.limits = {"main": {"max_input_tokens": 100_000, "max_output_tokens": 8_000}}
     record = await harness.run("run-1", [Reply("Hi.")])
     assert folds(record)["geometry"]["ceiling"] == 100_000  # the output is not in it

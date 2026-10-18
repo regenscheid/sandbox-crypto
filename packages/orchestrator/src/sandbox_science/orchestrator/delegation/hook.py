@@ -226,7 +226,7 @@ class Delegations(TurnHook):
         blueprint: Callable[[Child], Blueprint] | None = None,
         max_turns: int,
         offer: bool,
-        wake: Callable[[], Awaitable[None]] | None = None,
+        wake: Callable[[], Awaitable[str | None]] | None = None,
         waiting: Callable[[Sequence[str] | None], Awaitable[None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         limits: DelegationSettings | None = None,
@@ -608,12 +608,15 @@ class Delegations(TurnHook):
         """Wait without spending model turns; cancelling this wait leaves cleanup
         of the children's tasks to the owning lease."""
         ending: asyncio.Future[None] = asyncio.ensure_future(_ended(pending, when))
-        waiting = [ending]
+        waiting: list[asyncio.Future[None] | asyncio.Task[str | None]] = [ending]
         if self.wake is not None:
             waiting.append(asyncio.ensure_future(self.wake()))
         try:
             done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-            return "ended" if ending in done else "user_message"
+            if ending in done:
+                return "ended"
+            woke = next(future for future in done if future is not ending)
+            return woke.result() or "user_message"
         finally:
             for future in waiting:
                 future.cancel()

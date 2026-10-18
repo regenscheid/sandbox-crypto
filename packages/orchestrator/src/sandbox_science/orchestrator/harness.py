@@ -42,6 +42,7 @@ from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import Language
 
 from . import figurechecks, mathchecks
+from .agent_messages import AgentMailbox, AgentMessageStore
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
@@ -830,6 +831,8 @@ class Harness:
                         delegations,
                         stop,
                     )
+                    if delegations is not None and toolbox.mailbox is not None:
+                        delegations.wake = toolbox.mailbox.wake
                     hooks = toolbox.turn_hooks()
                     if work is not None:
                         owner = work.owner
@@ -1667,6 +1670,19 @@ class Harness:
             kernel_run=kernel_run,
             recorder=recorder,
             delegations=delegations,
+            mailbox=AgentMailbox(
+                AgentMessageStore(stores.projects.control, clock=self.clock),
+                context,
+                run=run_name(admitted.started_at, admitted.run_id),
+                delegation=admitted.request.delegation,
+                may_message_child=delegations is not None and bool(delegations.specs),
+                user_arrived=(
+                    chat.arrived
+                    if chat is not None and admitted.request.delegation is None
+                    else None
+                ),
+                clock=self.clock,
+            ),
             questions=questions,
             delegated=delegated,
             # A check reads and recomputes; it changes no entry, document or memory.

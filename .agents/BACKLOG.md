@@ -145,6 +145,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## W1: shared references and one worker adapter
 
 - [x] Local real-model recovery corrections: drain admitted attempt effects before closing publishers; reconcile interrupted child observations without fabricated results or redispatch. Independent review clear; 52 focused regressions pass (integration pending).
+- [x] Live research-tree steering (D87, PD-44): durable direct-parent `message_child` and `message_parent` calls, delivery status and wait, safe-point notices with acknowledgment after the saved run, a delivery-failure notice when a delegation ends, and MAIN routing guidance that includes creating or revising the session plan. No separate mailbox GUI yet.
+
 
 - [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
 - [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)

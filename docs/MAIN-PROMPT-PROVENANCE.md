@@ -15,7 +15,7 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-10`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-11`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
    `main`, which says what the text is, not who supplied it.
 2. `stock`, with the selected template's version, when a research template is

@@ -4,6 +4,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- **Research-tree steering** (the owner, D87; [PD-44](../docs/specs/plans-and-delegation.md)): the root routes user messages among its own work, a new or revised plan, child assignments, and feedback on research records. Direct parent-child messages are durable and delivered at saved-run safe points; an ended recipient causes a delivery-failure notice to the root.
 - The owner requires configurable model reasoning effort by role and normally uses `max` for research; the live trial had inherited `medium`. Requested profiles are now pinned across Resume, with explicit operator effort overrides audited without rewriting original inputs (`43889b45`); live provider verification remains pending.
 - Extended cryptanalysis must iterate beyond initial pilots/checklists. MAIN/planning/stock guidance now distinguishes bounded tasks from extended exploration; requested skill workflows also require reading applicable supporting references and applying their procedures, not just declaring Discover mode.
 
@@ -28,6 +29,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 - **Initial recovery is explicit:** process restart and `replace-orchestrator` preserve unfinished work but do not authorize another paid call. Resume claims a new epoch, reconciles original effects and schedules descendants before parents ([contract](../docs/specs/research-continuity.md#explicit-tree-recovery-coordinator)).
 - **Durable boundary and bounded history:** the normal launcher uses a separate agent VM with fixed scoped host capabilities; historical collections and exact paid-call links replace whole-run in-memory copies ([confinement](../docs/specs/orchestrator-confinement.md), [accounting](../docs/specs/auxiliary-usage.md)). Provider cache ordering remains unchanged pending live measurements.
 - **Observed model usage (D87 implementation refinement):** save response usage/cost atomically with the archive and use its observation time for the daily budget, so multi-day runs keep counting. Legacy fallback retains run-start time; pre-dispatch model intent and unknown charges remain recovery work ([contract](../docs/specs/research-continuity.md#observed-model-usage-increment)).
+
 
 ## 2026-10-16
 
