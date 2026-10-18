@@ -62,7 +62,14 @@ class Lab(recovery.Lab):
 
         recovery.wait(restarted)
         recovery.wait(self.ready)
-        after = recovery.wait(lambda: self.same_job(before))
+
+        def ready_job():
+            try:
+                return self.same_job(before)
+            except OSError:
+                return None
+
+        after = recovery.wait(ready_job)
         self.evidence(
             "automatic-worker",
             {"before": before, "after": after, "automatic": True, "at": time.time()},

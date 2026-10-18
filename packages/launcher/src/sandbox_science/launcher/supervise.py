@@ -340,11 +340,17 @@ class Supervisor:
             steady = self.clock.monotonic() - running.since >= self.steady
             restarts = 1 if steady else running.restarts + 1
             if restarts > self.restarts:
-                return (
+                reason = (
                     f"the {running.part.title} kept stopping: it was started again "
                     f"{self.restarts} times in a row; the end of its log, {running.log}:\n"
                     + tail(running.log)
                 )
+                if running.part.required:
+                    return reason
+                running.reported = True
+                self.changed()
+                print(reason + "; remaining services and research VMs retained", flush=True)
+                continue
             delay = self.restart_delays[min(restarts, len(self.restart_delays)) - 1]
             print(
                 f"the {running.part.title} stopped, with status {running.process.returncode}; "
@@ -356,11 +362,25 @@ class Supervisor:
             await asyncio.to_thread(end_session, running.process.pid)
             address = running.part.address
             if address is not None and not free(address):
-                return (
+                reason = (
                     f"something else listens on {address}, where the {running.part.title} "
                     "would: it is not started again"
                 )
-            again = await self._spawn(running.part)
+                if running.part.required:
+                    return reason
+                running.reported = True
+                self.changed()
+                print(reason + "; remaining services and research VMs retained", flush=True)
+                continue
+            try:
+                again = await self._spawn(running.part)
+            except OSError as exc:
+                # No replacement process was admitted. Keep the dead owned part
+                # as the retry identity so this failure consumes the same bound.
+                running.restarts = restarts
+                running.since = self.clock.monotonic()
+                print(f"could not restart {running.part.title}: {exc}", flush=True)
+                continue
             again.restarts = restarts
             again.start_timeout = running.start_timeout
             self.running[self.running.index(running)] = again

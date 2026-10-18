@@ -17,7 +17,6 @@ import hashlib
 import json
 import secrets
 import shlex
-import socket
 import sys
 import time
 import tomllib
@@ -80,16 +79,7 @@ def private_json(path: Path, value: object) -> None:
     recovery.private(path, json.dumps(value, indent=2) + "\n")
 
 
-def stop_units(units: list[str], command=recovery.run) -> dict:
-    """Try every exact owned unit even when a prior stop fails or times out."""
-    receipts = {}
-    for unit in units:
-        try:
-            result = command(["systemctl", "--user", "stop", unit], timeout=30, check=False)
-            receipts[unit] = {"exit_code": result.returncode}
-        except (OSError, TimeoutError, recovery.subprocess.TimeoutExpired) as error:
-            receipts[unit] = {"error_type": type(error).__name__}
-    return receipts
+stop_units = recovery.stop_units
 
 
 def live_model(key_file: Path) -> dict:
@@ -623,100 +613,15 @@ class Lab(recovery.Lab):
         super().cleanup(incomplete=True)
 
     def abort(self):
-        # A failed bring-up may precede creation of the control database. Do not
-        # turn optional scientific reporting into a prerequisite for teardown.
-        try:
-            if store_path(self.path / "instance/control").exists():
-                try:
-                    self.snapshot()
-                except Exception as error:
-                    # Abort is the failure cleanup boundary. A corrupt or incomplete
-                    # research store must not prevent exact owned service teardown.
-                    self.evidence(
-                        "quality-abort-export-error",
-                        {"error_type": type(error).__name__, "scientific_quality_qualified": False},
-                    )
-            super().cleanup(incomplete=True)
-        except Exception as error:
-            self.stop_owned_services(error)
-            raise RuntimeError(
-                "Full cleanup is incomplete; exact owned service shutdown was checked. "
-                "The private lab root is retained for VM ownership and evidence inspection."
-            ) from error
-
-    def stop_owned_services(self, cleanup_error: Exception):
-        """A failed gateway query must not leave the owned host units running.
-
-        This deliberately cannot certify VM deletion or remove the private root:
-        that requires the normal gateway/ownership reconciliation to succeed.
-        """
-        assert json.loads((self.path / "identity.json").read_text()) == self.identity
-        units = [
-            self.prefix + "-" + name + ".service"
-            for name in ("launcher", "worker-probe", "model", "gateway", "middleware", "cache")
-        ]
-        processes = {}
-        inventory_error = None
-        try:
-            for unit in units:
-                group = recovery.run(
-                    ["systemctl", "--user", "show", "--property=ControlGroup", "--value", unit],
-                    check=False,
-                ).stdout.strip()
-                if not group:
-                    continue
-                for file in (Path("/sys/fs/cgroup") / group.lstrip("/")).rglob("cgroup.procs"):
-                    for value in file.read_text().splitlines():
-                        pid = int(value)
-                        try:
-                            processes[pid] = (
-                                Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-                            )
-                        except FileNotFoundError:
-                            continue
-        except Exception as error:
-            inventory_error = type(error).__name__
-        finally:
-            stops = stop_units(units)
-        status = {
-            unit: recovery.run(
-                ["systemctl", "--user", "is-active", unit], check=False
-            ).stdout.strip()
-            for unit in units
-        }
-        remaining = []
-        for pid, started in processes.items():
+        if store_path(self.path / "instance/control").exists():
             try:
-                stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            except FileNotFoundError:
-                continue
-            if stat[19] == started and stat[0] != "Z":
-                remaining.append(pid)
-        open_ports = []
-        for port in self.ports.values():
-            with socket.socket() as peer:
-                peer.settimeout(0.2)
-                if peer.connect_ex(("127.0.0.1", port)) == 0:
-                    open_ports.append(port)
-        receipt = {
-            "cleanup_error_type": type(cleanup_error).__name__,
-            "stops": stops,
-            "unit_status": status,
-            "observed_process_count": len(processes),
-            "process_inventory_error": inventory_error,
-            "remaining_owned_processes": remaining,
-            "open_owned_ports": open_ports,
-            "root_preserved": True,
-            "vm_cleanup_verified": False,
-            "complete": False,
-        }
-        self.evidence("quality-abort-owned-services", receipt)
-        assert inventory_error is None, (
-            "process inventory incomplete; inspect preserved abort receipt"
-        )
-        assert not remaining, "owned processes remain; inspect preserved abort receipt"
-        assert not open_ports, "owned ports remain; inspect preserved abort receipt"
-        assert all(value in {"inactive", "failed", "unknown"} for value in status.values()), status
+                self.snapshot()
+            except Exception as error:
+                self.evidence(
+                    "quality-abort-export-error",
+                    {"error_type": type(error).__name__, "scientific_quality_qualified": False},
+                )
+        super().cleanup(incomplete=True)
 
 
 def main():

@@ -252,6 +252,7 @@ async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) 
             directory,
             ready_line="control capability service ready",
             restart=configured(config).recover_infrastructure,
+            required=not configured(config).recover_infrastructure,
             env=passed(config.run_service.pass_env),
         ),
         config.start_timeout,

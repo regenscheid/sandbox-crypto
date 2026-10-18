@@ -18,7 +18,7 @@ from sandbox_science.contracts.model import Contract, Counter
 
 from . import instance, orchestrator
 from .config import LauncherConfig, LauncherError
-from .infrastructure import InfrastructureRecovery
+from .infrastructure import InfrastructureRecovery, RecoveryState
 from .state import Layout, check_private, write_private
 from .supervise import Supervisor, start_time
 
@@ -153,6 +153,8 @@ async def _manage(
                 raise LauncherError("runtime replacement belongs to another launcher generation")
             print("replacing the orchestrator; control and workspace remain available", flush=True)
             await orchestrator.replace(config, layout, supervisor)
+            if recovery.enabled:
+                recovery.save(RecoveryState())
         except (LauncherError, OSError, ValueError, ValidationError) as exc:
             error = str(exc)[:512]
             print("runtime replacement failed: " + error, flush=True)

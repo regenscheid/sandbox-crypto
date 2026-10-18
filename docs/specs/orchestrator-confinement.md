@@ -168,8 +168,12 @@ workspace processes with bounded increasing delays and readiness checks. It
 replaces a failed agent VM through the same immutable-identity reconciliation
 used by explicit replacement, leaving research VMs running. Replacement attempts
 are recorded before dispatch in a bounded private journal and stop after ten
-consecutive failures; sixty healthy seconds reset the streak. A replacement left
+consecutive failures; sixty healthy seconds reset the streak. Exhausted host
+restart retries leave the remaining services and research VMs in degraded status
+instead of tearing them down. A replacement left
 pending by launcher loss is reported as unknown and is not automatically replayed.
+A successful explicit `replace-orchestrator` reconciles the original VM and
+clears that automatic replacement block.
 
 The corresponding control policy admits interrupted work to the existing bounded
 automatic tree Resume queue. It honors explicit Stop, fresh user messages, token
