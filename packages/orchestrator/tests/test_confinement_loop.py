@@ -226,6 +226,27 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
                 assert tx.sql.execute(
                     "SELECT count(*) FROM research_model_calls WHERE kind='main'"
                 ).fetchone()[0] == (1 if memory_pause else 2)
+                # Canonical archive rows own the full native model replies. The host's
+                # paged working history must retain only scoped archive references.
+                rows = tx.sql.execute(
+                    "SELECT item FROM run_collections WHERE project=? AND session=? "
+                    "AND collection='messages'",
+                    (PROJECT, SESSION),
+                ).fetchall()
+                assert any('"archive_message"' in item for (item,) in rows)
+                assert not any('"assistant-cache-v1"' in item for (item,) in rows)
+                assert (
+                    tx.sql.execute(
+                        "SELECT count(*) FROM run_collections c LEFT JOIN archive_messages a "
+                        "ON a.project=c.project AND a.message_id="
+                        "json_extract(c.item,'$.archive_message') "
+                        "WHERE c.project=? AND c.session=? AND c.collection='messages' "
+                        "AND json_extract(c.item,'$.archive_message') IS NOT NULL "
+                        "AND a.message_id IS NULL",
+                        (PROJECT, SESSION),
+                    ).fetchone()[0]
+                    == 0
+                )
         finally:
             release.set()
             await runtime.close()

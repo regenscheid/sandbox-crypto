@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.continuity.records import (
     check_owner,
 )
 from sandbox_science.orchestrator.control import ControlError, ControlStore
+from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.history.log import RunArchive
 from sandbox_science.orchestrator.history.retention import fits
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
@@ -391,7 +392,18 @@ class Prepared:
         message = await self.log.append(source, appended)
         if IMAGE in source:
             message = {**message, IMAGE: source[IMAGE]}
-        self.shadow.messages.append(message)
+        if (
+            not isinstance(self.shadow.messages, Collection)
+            or not isinstance(self.log, RunArchive)
+            or self.log.last_message is None
+        ):
+            raise TransportError("internal", "confined history has no canonical archive entry")
+        self.shadow.messages.append_encoded(
+            {
+                "archive_message": self.log.last_message,
+                **({IMAGE: source[IMAGE]} if IMAGE in source else {}),
+            }
+        )
         if request.kind == "task":
             self.task_pending = False
         if consumed is not None:
