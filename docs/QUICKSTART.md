@@ -95,6 +95,13 @@ sandbox deletion and rotates its scoped token before the replacement handshake.
 Then explicitly Resume unfinished work in the GUI; replacement does not restart
 research automatically.
 
+If replacement reports `old runtime control connection did not settle`, it has
+refused the replacement while admitted work finishes cleanup. Keep the worker and
+research sandboxes running, inspect `status` and the control log, and retry the
+replacement only after the old connection has disconnected. The default drain
+wait is 30 seconds; a longer tool operation can outlast it. This refusal does not
+mean the original operation should be submitted again.
+
 ## Logging in
 
 The workspace makes a new login address each time it starts. The launcher puts it in `workspace-login` in the state directory (mode 600), never on the screen or in a log. Open that address in your browser. It takes you to the GUI and sets your session's cookie, and it works until Sandbox Science stops.

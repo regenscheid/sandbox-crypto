@@ -4,7 +4,7 @@ Updated 2026-10-18. Development is local branch `dev` in `/home/andy/.cache/pt/d
 
 ## Current work and evidence
 
-- Current continuation: `d1e88f59` adds bounded fold-repair diagnostics. Child narrative folding/shared grant accounting is under focused verification and independent review; fresh synthetic recovery/Sage qualification uses its own `recovery-acceptance` worktree at `d20e5fe3`. Do not treat earlier full-suite totals as covering this in-progress code.
+- Current continuation: child narrative/shared-grant code at `d6d37c70` passed 14,380 Python tests (50 skips). Reviewed cancellation accounting and automatic-recovery cleanup fixes are integrated through `84bb0a4e`; 164 final focused lifecycle checks, Ruff and Pyright pass; a final broad suite is running. The owned recovery lab first used `d20e5fe3`, then qualified the narrow host cleanup fix separately. It passed three-level archive retrieval, literal Python restoration and automatic recovery after a synthetic streamed EOF. Its genuine hour-long Sage job is still running; do not claim completion or stop it early.
 
 - Relevant UI, writing-skill, agent messaging, history and autonomous-recovery work has been consolidated on `dev`. User wants one development branch and signed local commits, not repeated permission requests for routine implementation. No implicit push/deployment or paid-research continuation.
 - `dbc40a4e` adds delegated-parent descendant-history retrieval; `198dd6cc` adds saved-attempt context inspection. Current follow-up adds same-work continuation navigation/search, bounded cancellable automatic scanning and an inspector entry on individual run pages. Each result identifies its attempt; children/siblings are not silently merged.
@@ -26,7 +26,7 @@ Updated 2026-10-18. Development is local branch `dev` in `/home/andy/.cache/pt/d
 - Unknown model prices are visible estimates, never silently zero, but do not by themselves block admission/explicit Resume. LiteLLM enforces the primary cost ceiling. Unknown worker/MCP effects still reconcile by original identity before replay.
 - Audited cumulative token grants are implemented. Broader adaptive time/turn/storage renewal is not. The owner's requested policy starts at 20,000,000 tokens and asks for each next 10,000,000-token increment; inspect actual configuration/grant before applying it.
 - Parents wait for child responsibility; root-level Resume drives the tree. Automatic recovery and narrow literal Python reconstruction need more live qualification. No arbitrary kernel-memory restoration is claimed.
-- Context inspector currently shows saved attempts. Live usage, exact working-context capture, time/fold placement and reviewer/summarizer accounting remain. Child folds are skeleton-only; original archive remains readable.
+- Context inspector currently shows saved attempts. Live usage, exact working-context capture, time/fold placement and reviewer/summarizer accounting remain. Child narrative/overview folds now share the child's cumulative grant; original archive remains readable.
 - Built-in writing skill prefers annotated outlines, verified citations and self-standing current findings. Tool `show_outline` is implemented; docs and immutable Markdown artifacts remain distinct.
 
 ## Secrets and source boundaries

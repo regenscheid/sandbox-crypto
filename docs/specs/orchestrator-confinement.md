@@ -161,6 +161,11 @@ launcher confirms deletion of the original immutable sandbox ID, waits for the o
 control connection to drain, rotates the runtime token/generation and admits a fresh
 image handshake. Failure retains ownership and degraded status. Replacement creates
 no research Resume request; the user must explicitly Resume unfinished work.
+The drain wait uses the configured launcher `stop_timeout` (30 seconds by
+default). A known refusal because the old connection has not settled may be
+retried after that connection actually disconnects; admitted tool effects retain
+their original identities throughout. Do not interpret a replacement refusal as
+permission to redispatch an operation.
 
 Confined paid model and embedding responses have a 6 MiB body ceiling, including auxiliary calls.
 This keeps native base64 plus decoded message fields within the 24 MiB transport
