@@ -4,6 +4,9 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-18
 
+- Context inspection now follows immutable same-agent continuation identity, with separate parent/child scopes, cursor-based automatic search, bounded per-click work and abortable requests. Sparse searches first bound their session index slice; unsaved attempts are labelled without broken links ([spec](../docs/specs/context-inspector.md)).
+- Add actual subprocess-death acceptance at final save/ACK/work-finish and child ledger/receipt boundaries, reusing public store operations and excluding model/worker calls. Keep this distinct from OpenShell/host restart qualification.
+
 - Lost-kernel recovery now has a narrow local replay path: journal complete opt-in literal Python cells, fence unresolved reconstruction across main work, and require an explicit decision for other state. After accepted loss, clear the lineage without starting an empty kernel; live worker qualification remains open (D87).
 - The owner reaffirmed that unknown model charges must not stop local run admission. The optional daily gate compares observed costs plus explicit reservations with its unchanged cap; unknown calls remain visible and the upstream LiteLLM budget is the primary spending control (D88, RS-6a).
 - **D35 reviewer effectiveness follow-up** (SNOVA audit; [consistency review](../docs/specs/consistency-review.md), CR-2 and CR-34): bounded, contiguous evidence spans replace repeated oversized windows; capped retries shrink, partial delegated spans retain provenance, and terminal holds catch up within a configured bound. Clean global certification and idle backlog draining remain separate work.
@@ -20,7 +23,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 - The owner clarified that an unknown provider price should not indefinitely block SNOVA research when the operator has made an explicit conservative reservation. A legacy fold estimate without an intent ID now requires an exact audited USER link to that reserved intent; unrelated unknowns and known charges remain counted ([run service](../docs/specs/run-service.md), [recovery controls](../docs/specs/recovery-controls.md)).
 
-- The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; implementation remains planned.
+- The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; narrow USER cumulative token renewal is implemented, while broader parent policy remains planned.
 
 - Real SNOVA research reached the 8 MiB active-payload bound before token folding because provider responses echoed tool schemas and usage attribution. Preserve originals in the archive, project active native replay fields, and raise the per-agent active backstop to 64 MiB at the owner's request.
 - Local recovery acceptance exposed suspended environments at explicit Resume: prepare the recorded worker before its retention claim, without recreating missing environments or dispatching research before readiness.
@@ -104,7 +107,7 @@ Decisions of the coordinator on the ledger's research state, from #440's reviews
 
 Decision of the owner on pausing work:
 
-- **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md#open-questions)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md). The approval above lifted the pause.
+- **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md). The approval above lifted the pause.
 - **Direction for context management.** The owner uses both Claude and GPT models, so the approach must work for both. The owner prefers an existing library known to be good for long research sessions; failing that, the project follows closely how Claude Science and OpenScience manage context, rather than designing its own. A survey of libraries and a close study of those systems is under way, and the owner decides from its result. No live evaluation is planned.
 
 Decisions of the owner on the skills spec's questions 15 and 16, with the spec's approval (#373):

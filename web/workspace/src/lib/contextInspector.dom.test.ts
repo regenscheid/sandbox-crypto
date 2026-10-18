@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { RunRecord } from './api';
 import { contextUsage } from './contextUsage';
 import ContextInspector from '../views/ContextInspector.svelte';
+import SavedContext from '../views/SavedContext.svelte';
 
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(async () => {
@@ -354,4 +355,234 @@ it('keeps paging on submitted filters and clears stale results when a new search
   expect(String(fetcher.mock.calls[2]?.[0])).toContain('contains=new');
   expect(target.textContent).not.toContain('old result');
   expect(target.textContent).toContain('Search failed');
+});
+
+const historyRun: RunRecord = {
+  run_id: 'run-history',
+  context: {
+    project_id: 'p1',
+    session_id: 's1',
+    environment_id: 'e1',
+    policy_revision: null,
+    actor: 'agent',
+  },
+  task: 'Research',
+  started_at: '2026-10-18T12:00:00Z',
+  ended_at: '2026-10-18T12:05:00Z',
+  stopped: 'answered',
+  final_text: null,
+  messages: [],
+  tools: [],
+  usage: [],
+  summaries: {},
+};
+
+function clickNamed(target: HTMLElement, label: string) {
+  [...target.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.trim() === label)!
+    .click();
+}
+
+function openHistory() {
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(
+    mount(ContextInspector, {
+      target,
+      props: {
+        run: historyRun,
+        runName: '20261018T120000000000Z-run-history',
+        close: vi.fn(),
+      },
+    }),
+  );
+  flushSync();
+  clickNamed(target, 'Original history');
+  return target;
+}
+
+it('searches continuation pages through empty slices and identifies each original attempt', async () => {
+  const seen: string[] = [];
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+    const url = String(input);
+    seen.push(url);
+    const more = url.includes('scope=agent') && !url.includes('after=64');
+    return new Response(
+      JSON.stringify({
+        messages: more
+          ? []
+          : [
+              {
+                message: 'msg-1234567890abcdef',
+                position: 65,
+                run: 'earlier-attempt',
+                parent: null,
+                created: '2026-10-18T10:00:00Z',
+                role: 'assistant',
+                kind: 'assistant',
+                source: null,
+                snippet: 'recovered original',
+              },
+            ],
+        next_after: more ? 64 : null,
+        unsearched_oversized_tool_calls: 0,
+        coverage: 'selected scope',
+      }),
+    );
+  });
+  const target = openHistory();
+  await settle();
+  const select = target.querySelector<HTMLSelectElement>('select')!;
+  select.value = 'agent';
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  flushSync();
+  clickNamed(target, 'Search all pages');
+  await settle();
+  expect(seen.at(-1)).toContain('after=64');
+  expect(seen.at(-1)).toContain('scope=agent');
+  expect(target.textContent).toContain('earlier-attempt');
+  expect(target.textContent).toContain('scan complete');
+});
+
+it('discards an old in-flight search after Stop and a newer search', async () => {
+  let resolveOld: (value: Response) => void = () => {};
+  let calls = 0;
+  vi.stubGlobal('fetch', async () => {
+    calls++;
+    if (calls === 2)
+      return new Promise<Response>((resolve) => {
+        resolveOld = resolve;
+      });
+    return new Response(
+      JSON.stringify({
+        messages: [],
+        next_after: null,
+        unsearched_oversized_tool_calls: 0,
+        coverage: 'new search completed',
+      }),
+    );
+  });
+  const target = openHistory();
+  await settle();
+  clickNamed(target, 'Search all pages');
+  await settle();
+  clickNamed(target, 'Stop search');
+  flushSync();
+  clickNamed(target, 'Search all pages');
+  await settle();
+  resolveOld(
+    new Response(
+      JSON.stringify({
+        messages: [],
+        next_after: 64,
+        unsearched_oversized_tool_calls: 0,
+        coverage: 'stale response',
+      }),
+    ),
+  );
+  await settle();
+  expect(target.textContent).toContain('new search completed');
+  expect(target.textContent).not.toContain('stale response');
+  expect(calls).toBe(3);
+});
+
+it('pauses an automatic scan at 200 matches and keeps later result memory bounded', async () => {
+  let index = 0;
+  vi.stubGlobal('fetch', async () => {
+    const messages = Array.from({ length: 20 }, () => {
+      const position = ++index;
+      return {
+        message: `msg-${String(position).padStart(16, '0')}`,
+        position,
+        run: 'attempt',
+        parent: null,
+        created: '2026-10-18T10:00:00Z',
+        role: 'assistant',
+        kind: 'assistant',
+        source: null,
+        snippet: `message ${position}`,
+      };
+    });
+    return new Response(
+      JSON.stringify({
+        messages,
+        next_after: index,
+        unsearched_oversized_tool_calls: 0,
+        coverage: 'selected scope',
+      }),
+    );
+  });
+  const target = openHistory();
+  await settle();
+  clickNamed(target, 'Search all pages');
+  await settle();
+  expect(target.querySelectorAll('.history-results li')).toHaveLength(200);
+  expect(target.textContent).toContain('200 matching messages found');
+  clickNamed(target, 'Continue search / more messages');
+  await settle();
+  expect(target.querySelectorAll('.history-results li')).toHaveLength(200);
+  expect(target.textContent).toContain('220 matching messages found');
+  expect(target.textContent).toContain('Showing the latest 200');
+});
+
+it('pauses sparse scans after 100 pages and resumes from the cursor', async () => {
+  const cursors: number[] = [];
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+    const after = Number(new URL(String(input), 'http://fixture').searchParams.get('after') ?? 0);
+    cursors.push(after);
+    return new Response(
+      JSON.stringify({
+        messages: [],
+        next_after: after + 64,
+        unsearched_oversized_tool_calls: 0,
+        coverage: 'selected scope',
+      }),
+    );
+  });
+  const target = openHistory();
+  await settle();
+  cursors.length = 0;
+  clickNamed(target, 'Search all pages');
+  await settle();
+  expect(cursors).toHaveLength(100);
+  expect(target.textContent).toContain('Search paused after 100 pages');
+  clickNamed(target, 'Continue automatic search');
+  await settle();
+  expect(cursors).toHaveLength(200);
+  expect(cursors[100]).toBe(6400);
+});
+
+it('aborts the pending history request when the inspector closes', async () => {
+  let signal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', (_input: RequestInfo | URL, init?: RequestInit) => {
+    signal = init?.signal ?? undefined;
+    return new Promise<Response>(() => {});
+  });
+  openHistory();
+  await settle();
+  expect(signal?.aborted).toBe(false);
+  await unmount(mounted.pop()!);
+  expect(signal?.aborted).toBe(true);
+});
+
+it('restores focus to the saved-context trigger after async loading and dismissal', async () => {
+  vi.stubGlobal('fetch', async () => new Response(JSON.stringify(historyRun)));
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(
+    mount(SavedContext, {
+      target,
+      props: { project: 'p1', session: 's1', run: '20261018T120000000000Z-run-history' },
+    }),
+  );
+  flushSync();
+  const trigger = target.querySelector<HTMLButtonElement>('button')!;
+  trigger.focus();
+  trigger.click();
+  await settle();
+  expect(target.querySelector('[role="dialog"]')).not.toBeNull();
+  target.querySelector<HTMLButtonElement>('[aria-label="Close context management"]')!.click();
+  await settle();
+  expect(target.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.activeElement).toBe(trigger);
 });

@@ -216,6 +216,19 @@ export interface CondaPackage {
   license: string | null;
 }
 
+export interface ContextAttempt {
+  run: string;
+  predecessor: string | null;
+  epoch: number | null;
+  outcome: string | null;
+  saved: boolean;
+}
+
+export interface ContextAttemptsPage {
+  attempts: ContextAttempt[];
+  next_after: string | null;
+}
+
 export interface ContextHistoryMessage {
   message: string;
   position: number;
@@ -229,6 +242,7 @@ export interface ContextHistoryMessage {
 }
 
 export interface ContextHistoryPage {
+  scope: "attempt" | "agent";
   messages: ContextHistoryMessage[];
   next_after: number | null;
   unsearched_oversized_tool_calls: number;

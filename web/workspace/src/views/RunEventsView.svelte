@@ -9,6 +9,7 @@
   import { projectHref, sessionHref, treeHref } from '../lib/router';
   import { visible } from '../lib/text';
   import ChatRun from './ChatRun.svelte';
+  import SavedContext from './SavedContext.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
 
   let { projectId, sessionId, run }: { projectId: string; sessionId: string; run: string } =
@@ -57,6 +58,7 @@
       ? 'Ended.'
       : 'Interrupted: its process died.'}
 </p>
+<SavedContext project={projectId} session={sessionId} run={name} />
 <ChatRun run={shown} />
 {#if !loading && !error && shown.events.length === 0}<p class="muted">No events yet.</p>{/if}
 {#if loading}<p class="muted">Loading…</p>{/if}

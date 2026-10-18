@@ -28,6 +28,7 @@ class Query(Contract):
     role: Literal["user", "assistant", "tool"] | None = None
     kind: Annotated[str, Field(pattern=r"^[a-z_]{1,32}$")] | None = None
     include_derived: Literal["0", "1"] = "0"
+    scope: Literal["attempt", "agent"] = "attempt"
 
 
 class ContextHistoryMessage(Contract):
@@ -42,12 +43,31 @@ class ContextHistoryMessage(Contract):
     snippet: str
 
 
+class ContextAttempt(Contract):
+    run: str
+    predecessor: str | None
+    epoch: int | None
+    outcome: str | None
+    saved: bool
+
+
+class ContextAttemptsPage(Contract):
+    attempts: tuple[ContextAttempt, ...]
+    next_after: str | None
+
+
+class AttemptsQuery(Contract):
+    after: Annotated[str, Field(max_length=256)] = ""
+    limit: Annotated[int, Field(ge=1, le=50)] = 20
+
+
 class ContextHistoryPage(Contract):
+    scope: Literal["attempt", "agent"] = "attempt"
     messages: tuple[ContextHistoryMessage, ...]
     next_after: Counter | None
     unsearched_oversized_tool_calls: Counter = 0
     coverage: str = (
-        "Retained original text and tool-call arguments in this attempt; native provider "
+        "Retained original text and tool-call arguments in the selected scope; native provider "
         "payloads, tool-call fields over 8 MiB and separately stored tool-record bytes are "
         "not searched. Exact "
         "substring search is case-sensitive. Legacy runs without an archive have no rows."
@@ -56,6 +76,7 @@ class ContextHistoryPage(Contract):
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, history)
+    app.router.add_get(PATH.removesuffix("history") + "attempts", attempts)
 
 
 async def history(request: web.Request) -> web.Response:
@@ -81,13 +102,39 @@ async def history(request: web.Request) -> web.Response:
             role=query.role,
             kind=query.kind,
             include_derived=query.include_derived == "1",
+            continuations=query.scope == "agent",
         )
         return ContextHistoryPage(
+            scope=query.scope,
             messages=tuple(
                 ContextHistoryMessage.model_validate(item.__dict__) for item in page.messages
             ),
             next_after=page.next_after,
             unsearched_oversized_tool_calls=page.unsearched_oversized_tool_calls,
+        ).model_dump(mode="json")
+
+    return await documents.answer(request, read)
+
+
+async def attempts(request: web.Request) -> web.Response:
+    if request.can_read_body or len(request.query) != len(dict(request.query)):
+        raise DocumentError("invalid_request", "invalid context-attempt query")
+    try:
+        query = AttemptsQuery.model_validate(dict(request.query))
+        run = _RUN.validate_python(request.match_info["run"], strict=True)
+    except ValidationError:
+        raise DocumentError("invalid_request", "invalid context-attempt query") from None
+    project, session = identifier(request, "project"), identifier(request, "session")
+    context = request.app[CONTEXT]
+
+    def read(store: DocumentStore) -> dict[str, object]:
+        session_record(context.projects, project, session)
+        page = OriginalHistory(store).attempts(
+            project, session, run, after=query.after, limit=query.limit
+        )
+        return ContextAttemptsPage(
+            attempts=tuple(ContextAttempt.model_validate(item.__dict__) for item in page.attempts),
+            next_after=page.next_after,
         ).model_dump(mode="json")
 
     return await documents.answer(request, read)

@@ -6,7 +6,7 @@ work on the other screens, especially Skills and MCP services. Local Codex
 has produced a connected prototype with synthetic records. The ledger and Skills
 browsers are integrated on local `dev`; the first MCP service browser is implemented
 locally, while its tool and policy detail, Overview, Memory and session refinements
-remain proposals.
+remain proposals. Authenticated synthetic browser exercise of the initial Skills and MCP screens is recorded in the [acceptance report](../../.agents/docs/agent-reports/context-continuations-2026-10-18.md); it does not qualify actual MCP calls or deployed configuration.
 
 ## Shared interaction
 

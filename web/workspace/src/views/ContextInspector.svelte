@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- A saved attempt's measured usage, folds and original retained history. -->
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import type { Json, ModelUsage, RunRecord } from '../lib/api';
   import type { ContextHistoryMessage } from '../lib/api-types';
   import { api, ApiError } from '../lib/api';
@@ -12,6 +12,7 @@
   import { messageHref } from '../lib/router';
   import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
+  import ContextAttempts from './ContextAttempts.svelte';
 
   let { run, runName, close }: { run: RunRecord; runName: string; close: () => void } = $props();
   let tab = $state<'timeline' | 'folds' | 'context' | 'history'>('timeline');
@@ -19,6 +20,13 @@
   let role = $state('');
   let kind = $state('');
   let includeDerived = $state(false);
+  let scope = $state<'attempt' | 'agent'>('attempt');
+  let scanning = $state(false);
+  let searchGeneration = 0;
+  let requestController: AbortController | null = null;
+  let scanPause = $state('');
+  let matched = $state(0);
+  onDestroy(stopSearch);
   let items = $state<ContextHistoryMessage[]>([]);
   let nextAfter = $state<number | null>(null);
   let coverage = $state('');
@@ -46,8 +54,9 @@
     role?: 'user' | 'assistant' | 'tool';
     kind?: string;
     includeDerived: boolean;
+    scope: 'attempt' | 'agent';
   };
-  let applied = $state<Filters>({ contains: '', includeDerived: false });
+  let applied = $state<Filters>({ contains: '', includeDerived: false, scope: 'attempt' });
 
   async function loadUsage() {
     if (usageLoading || usageRows.length >= totalCalls) return;
@@ -133,9 +142,12 @@
 
   if (untrack(() => usageRows.length < totalCalls)) void loadUsage();
 
-  async function load(reset: boolean) {
-    if (!reset && nextAfter === null) return;
+  async function load(reset: boolean): Promise<boolean> {
+    if (!reset && nextAfter === null) return false;
     const ticket = ++serial;
+    requestController?.abort();
+    const controller = new AbortController();
+    requestController = controller;
     const after = reset ? 0 : (nextAfter ?? 0);
     if (reset) {
       applied = {
@@ -143,8 +155,10 @@
         role: role ? (role as Filters['role']) : undefined,
         kind: kind.trim() || undefined,
         includeDerived,
+        scope,
       };
       items = [];
+      matched = 0;
       nextAfter = null;
       coverage = '';
       unsearchedCalls = 0;
@@ -157,23 +171,62 @@
         run.context.project_id,
         run.context.session_id,
         runName,
-        { after, ...applied },
+        { after, ...applied, signal: controller.signal },
       );
-      if (ticket !== serial) return;
-      items = reset ? page.messages : [...items, ...page.messages];
+      if (ticket !== serial) return false;
+      matched += page.messages.length;
+      items = (reset ? page.messages : [...items, ...page.messages]).slice(-200);
       nextAfter = page.next_after;
       coverage = page.coverage;
       unsearchedCalls += page.unsearched_oversized_tool_calls;
       loaded = true;
+      return true;
     } catch (caught) {
-      if (ticket !== serial) return;
+      if (ticket !== serial) return false;
       error = caught;
+      return false;
     } finally {
       if (ticket === serial) loading = false;
     }
   }
 
+  function stopSearch() {
+    requestController?.abort();
+    requestController = null;
+    serial++;
+    searchGeneration++;
+    scanning = false;
+    loading = false;
+  }
+
+  async function searchAll(reset = true) {
+    stopSearch();
+    scanning = true;
+    scanPause = '';
+    const generation = searchGeneration;
+    const initialMatches = reset ? 0 : matched;
+    let pages = 1;
+    let ok = await load(reset);
+    while (
+      generation === searchGeneration &&
+      scanning &&
+      ok &&
+      nextAfter !== null &&
+      matched - initialMatches < 200 &&
+      pages < 100
+    ) {
+      pages++;
+      ok = await load(false);
+    }
+    if (generation === searchGeneration) {
+      scanning = false;
+      if (ok && nextAfter !== null)
+        scanPause = `Search paused after ${pages} pages or 200 new matches. Continue from the saved cursor.`;
+    }
+  }
+
   function choose(next: typeof tab) {
+    if (next !== tab) stopSearch();
     tab = next;
     if (next === 'history' && !loaded) void load(true);
     if (next === 'folds' && !foldsLoaded) void loadFolds();
@@ -202,8 +255,8 @@
       <button type="button" aria-label="Close context management" onclick={close}>Close</button>
     </header>
     <p class="notice">
-      This is a read-only view of a saved attempt. It does not show live in-flight calls or merge
-      separate continuation attempts.
+      Timeline and folds describe this saved attempt, without live in-flight calls. Original history
+      can also search this agent's recorded continuation attempts.
     </p>
     <nav class="context-tabs" aria-label="Context sections">
       {#each ['timeline', 'folds', 'context', 'history'] as choice}
@@ -348,17 +401,33 @@
           </p>{/if}
       {:else}
         <h3>Original retained messages</h3>
+        <ContextAttempts
+          project={run.context.project_id}
+          session={run.context.session_id}
+          run={runName}
+          {close}
+        />
         <p class="muted">
-          This server-side search reads the selected attempt's retained original text and tool-call
-          arguments, not its folded working view. Search is an exact, case-sensitive substring.
+          This server-side search reads retained original text and tool-call arguments in the
+          selected scope, unaffected by folding. Search is an exact, case-sensitive substring.
         </p>
         <form
           class="history-filters"
           onsubmit={(event) => {
             event.preventDefault();
+            stopSearch();
             void load(true);
           }}
         >
+          <label
+            >History scope <select
+              value={scope}
+              onchange={(event) => (scope = event.currentTarget.value as typeof scope)}
+            >
+              <option value="attempt">Selected attempt</option>
+              <option value="agent">This agent across continuations</option>
+            </select></label
+          >
           <label>Search text <input type="search" bind:value={query} maxlength="128" /></label>
           <label
             >Role <select value={role} onchange={(event) => (role = event.currentTarget.value)}
@@ -372,13 +441,23 @@
             ><input type="checkbox" bind:checked={includeDerived} /> Include derived fold/state records</label
           >
           <button type="submit">Search retained history</button>
+          <button type="button" disabled={scanning} onclick={() => void searchAll()}
+            >Search all pages</button
+          >
+          {#if scanning || loading}<button type="button" onclick={stopSearch}>Stop search</button
+            >{/if}
         </form>
+        {#if scanPause}<p class="notice">{scanPause}</p>{/if}
+        {#if loaded && nextAfter !== null && !loading}<button
+            type="button"
+            onclick={() => void searchAll(false)}>Continue automatic search</button
+          >{/if}
         {#if coverage}<p class="muted">{coverage}</p>{/if}
         {#if unsearchedCalls}<p class="muted">
             {unsearchedCalls} oversized tool-call field(s) in scanned messages were omitted from text
             search. Their messages remain available for direct inspection.
           </p>{/if}
-        {#if loaded && (query.trim() !== applied.contains || role !== (applied.role ?? '') || kind.trim() !== (applied.kind ?? '') || includeDerived !== applied.includeDerived)}<p
+        {#if loaded && (query.trim() !== applied.contains || role !== (applied.role ?? '') || kind.trim() !== (applied.kind ?? '') || includeDerived !== applied.includeDerived || scope !== applied.scope)}<p
             class="muted"
           >
             Filters changed. The results below still use the last submitted search; submit again to
@@ -387,13 +466,19 @@
         {#if error}<ErrorMessage {error} />{/if}
         {#if loading && !loaded}<p>Loading original history…</p>{/if}
         {#if loaded}
+          <p class="muted">
+            {matched} matching messages found{nextAfter !== null
+              ? ' so far; more archive remains'
+              : '; scan complete'}. {#if matched > items.length}Showing the latest {items.length} results
+              to bound memory.{/if}
+          </p>
           <ol class="history-results">
             {#each items as item (item.message)}<li>
                 <div>
                   <strong>{visible(item.kind)}</strong> · {visible(item.role)} · {formatTime(
                     item.created,
                   )}
-                  · position {item.position}
+                  · position {item.position} · attempt <code>{item.run}</code>
                 </div>
                 <p class="snippet">{visible(item.snippet)}</p>
                 <a href={messageHref(run.context.project_id, item.message)}>Open original message</a

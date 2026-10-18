@@ -3,8 +3,10 @@
 Status: requested by the owner, 2026-10-17. A first read-only inspector for saved
 main and delegated attempts is integrated locally on `dev`: measured per-answer
 input/cache chart by call number, saved fold summaries, explicit unavailable
-working-view fields, and server-side original-message search. Live telemetry,
-remaining provenance and attempt navigation are pending.
+working-view fields, and server-side original-message search. Recorded continuation
+attempts can be listed and their history searched through the stable work identity;
+children and siblings remain separate. Live telemetry and captured working-view
+provenance are still pending.
 
 ## Entry and scope
 
@@ -96,11 +98,14 @@ Verified against the working branch on 2026-10-17:
 - The workspace already exposes run records, message-by-ID reads, paged saved
   history collections and chunked tool records. These are building blocks, not
   a complete context-inspector API. The first read-only route pages retained
-  original messages for one selected run attempt and searches their content and
-  tool-call arguments in SQLite, including retrieval echoes the agent's FTS
+  original messages for one selected run attempt, or all recorded attempts of the
+  same stable work, and searches their content and tool-call arguments in SQLite,
+  including retrieval echoes the agent's FTS
   deliberately omits. Search is exact and case-sensitive, submitted explicitly;
-  each request sizes at most 65 candidates without loading bodies, then scans
-  at most 64 rows or 8 MiB of text, apart from one content field of up to
+  each request first bounds 64 session positions (plus one lookahead), then filters
+  the selected work/role/kind and sizes candidates without loading bodies. This
+  prevents sparse-agent queries walking an entire shared session. It scans at most
+  64 rows or 8 MiB of text, apart from one content field of up to
   64 MiB. Tool-call JSON above 8 MiB is omitted from search and counted in the
   response; its original bytes remain accessible by message chunk reads. A
   continuation cursor advances a search
@@ -111,15 +116,21 @@ Verified against the working branch on 2026-10-17:
   click. Derived
   fold/state records are excluded by default. Native provider payloads and
   separately stored tool-record bytes are not searched. A legacy run with no
-  archive produces an empty page. Current context snapshots, live usage and
-  cross-attempt search/navigation still need authenticated projections.
+  archive produces an empty page. Current context snapshots and live usage still
+  need authenticated projections. The attempts endpoint pages immutable same-work
+  ancestry and marks records that were never saved; those have no broken navigation
+  link. Automatic search advances through up to 100 pages or 200 new matches per
+  click, then offers cursor continuation. Stop, closing the dialog and changing
+  tabs abort the active fetch; server SQL remains independently bounded. At most
+  200 result snippets are retained in the dialog. Each match identifies its
+  original attempt.
 - Input occupancy, configured limits and fold estimates need explicit provenance
   and capture points before the graph can claim to represent actual live behavior.
 - `ViewMeter` retains only its first 100 call estimates. Long-session charts need
   a durable bounded-page time series, not a graph drawn as though that sample were
   complete. The current chart pages the saved attempt's complete usage collection
   when the run record's 128 KiB inline preview is absent, and labels a partially
-  loaded prefix. The Folds tab likewise pages archived summaries and reports an
+  loaded prefix. The Folds tab likewise pages archived summaries and reads
   oversized summaries through exact byte chunks (up to a 2 MiB display limit),
   and reports larger or unavailable records instead of saying no folds were saved.
   The chart uses only answered calls in the saved run record or archive,

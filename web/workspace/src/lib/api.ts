@@ -9,6 +9,7 @@
 import type {
   ChartLink,
   ContextHistoryPage,
+  ContextAttemptsPage,
   FigureLink,
   HistoryPage,
   HistoryChunk,
@@ -539,6 +540,11 @@ export const api = {
     ),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
+  contextAttempts: (project: string, session: string, run: string, after = '') =>
+    get<ContextAttemptsPage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/attempts?` +
+        new URLSearchParams({ after }),
+    ),
   contextHistory: (
     project: string,
     session: string,
@@ -549,6 +555,8 @@ export const api = {
       role?: 'user' | 'assistant' | 'tool';
       kind?: string;
       includeDerived?: boolean;
+      scope?: 'attempt' | 'agent';
+      signal?: AbortSignal;
     } = {},
   ) => {
     const query = new URLSearchParams();
@@ -556,10 +564,12 @@ export const api = {
     if (options.contains) query.set('contains', options.contains);
     if (options.role) query.set('role', options.role);
     if (options.kind) query.set('kind', options.kind);
+    if (options.scope) query.set('scope', options.scope);
     if (options.includeDerived) query.set('include_derived', '1');
     return get<ContextHistoryPage>(
       `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/history` +
         (query.size ? `?${query}` : ''),
+      { signal: options.signal },
     );
   },
   runHistory: (project: string, session: string, run: string, collection: string, offset = 0) =>

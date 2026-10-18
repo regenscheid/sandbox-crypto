@@ -1,51 +1,34 @@
 # Handoff
 
-Updated 2026-10-18 on local `dev` at `1f9eb6f0`, with a new context inspector and descendant-history retrieval in progress. Replace; under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md). The trial details below are historical 2026-10-17 evidence, not a statement of the later live SNOVA continuation's current state.
+Updated 2026-10-18. Development is local branch `dev` in `/home/andy/.cache/pt/dev-local`. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md) and [CONVENTIONS.md](CONVENTIONS.md). Primary `/home/andy/Git_Projects/sandbox-crypto` is a different checkout; preserve its unrelated state.
 
-## Where things stand
+## Current work and evidence
 
-- **Requested episode delivered:** the reviewed SNOVA DISCOVER plan is revision 8, notebook revision 11, active scientific plan version 7. All three later max-effort children and the parent completed their scoped handoffs; no verified novel attack. [Final acceptance report](docs/agent-reports/snova-research-acceptance-2026-10-17.md) has exact evidence and limits.
-- **Preservation and shutdown:** the local acceptance cache holds the research export/archive: current and historical documents/artifacts, sources, ledger, plans and 1,977 original visible messages. This is not an automatic control-store import or kernel snapshot. All disposable VMs, eight lab units, 21 captured processes, owned state and listening ports are gone. Preserve UI 29183 and Local Codex 5175. Do not restart paid research implicitly.
-- **Checkouts:** development remains the managed research-foundations worktree on `codex/research-ui`. Final frozen runtime/image `e2cf7f42` passed 17 container/Landlock checks; its worktree is archived. Schema 68, worker 9, executor 3, private runtime protocol 3; upgrade together. MAIN9/planning1/index3 remained pinned through Resume, distinct from new dev guidance.
-- **Acceptance boundaries:** max was verified on parent and children. Parent narrative/skeleton folds and two child skeleton folds continued to reports. Measured fold retry repair `46ccc5a9` passed 51 tests/review and bounded live exercise; explicit retry-reason telemetry remains pending. Live 100 MiB upload and 512 MiB retained artifact download after worker deletion passed ([report](docs/agent-reports/large-artifacts-2026-10-17.md)). Root Resume recovered an append without duplication; volatile kernel recovery needed explicit recomputation. Observed shared spend $66.2841164; one unknown paid call retains a separate $4/token-upper-bound reservation, within the $200 ceiling.
-- **Research depth:** MAIN10/planning2 (`f96d8d15`) and skills framing4 (`36147403`) add extended-research and required-reference guidance for new work. The old tree kept its pins, subsequently read the references and corrected its initial shallow baseline. Toy invariants do not establish novel attacks.
-- **Adaptive allowances:** [spec](../docs/specs/adaptive-research-resources.md) records renewable time/token/turn/storage grants with parent escalation, hard outer ceilings and durable safe-point recovery. Planned, not implemented.
-- **UI:** local `dev` has the sidebar/chat/research workspace, 100 MiB uploads, half-window drag pane, document filters/tabs, Skills and MCP browsers, and the saved-attempt context inspector. The inspector shows measured usage/cache, fold links and server-side original history; large message text uses byte pages. It has passed focused tests, type checks and a production build, but authenticated live browser acceptance remains. The independent history-tool reviewer found no remaining high/medium issue after fixes. A delegated parent can search and read its descendants; checks remain own-run only. Earlier foundation [acceptance](docs/agent-reports/foundation-acceptance-2026-10-17.md) is historical scope.
+- Relevant UI, writing-skill, agent messaging, history and autonomous-recovery work has been consolidated on `dev`. User wants one development branch and signed local commits, not repeated permission requests for routine implementation. No implicit push/deployment or paid-research continuation.
+- `dbc40a4e` adds delegated-parent descendant-history retrieval; `198dd6cc` adds saved-attempt context inspection. Current follow-up adds same-work continuation navigation/search, bounded cancellable automatic scanning and an inspector entry on individual run pages. Each result identifies its attempt; children/siblings are not silently merged.
+- `2f972a2c` adds four true process-death recovery cases. All four pass. Local browser/HTTP/DOM coverage and precise limits are in [context and continuity acceptance](docs/agent-reports/context-continuations-2026-10-18.md). The final source-frozen suite passed 14,355 Python tests (63 prerequisite/opt-in skips); all 2,218 web tests passed. The earlier mixed-source run was not green and is documented separately.
+- Disposable UI testing uses `.agents/labs/context_browser.py`. It creates only its own `/var/tmp/ss-context-browser-*` directory and loopback listener, with visibly synthetic credentials/data and no worker/model calls. SIGTERM/SIGINT cleanup removes that fixture. Do not confuse it with the user's UI at 29183 or design instance at 5175.
+- The preserved SNOVA run is not being resumed. Its monitor was stopped by the owner. Older lab teardown/episode details are historical evidence, not current acceptance-service state. Any future paid research requires the current authorization/budget and actual service/archive inspection.
 
-## How work is done
+## Workflow
 
-- **Review by risk:** independent read-only review for security, storage, concurrency and new features; diff/latest-check review for tested code moves, docs and test-only fixes. Current instructions govern delegation.
-- **Model routing:** this session uses the owner-requested GPT-6.1-Sol subagents for independent reviews. Current instructions take precedence.
-- **Test hygiene:** one pytest suite, at most `-n 4`; unset `SS_LIVE_GATEWAY` and `SS_INTEGRATION` for ordinary checks. Logs use `~/.cache/pt/`. Foundation fixtures use `/var/tmp/sandbox-science-test-cache/` because `/home/andy` is itself a Git checkout and security tests reject fake CLIs below it. Other fixtures use the home cache. Delete scratch by exact absolute path.
-- **Migration numbers:** this branch is at 68, its foundation base at 65. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
-- **Integration:** this session has no push or merge authorization. Preserve the primary checkout; use signed commits in the managed worktree. Recheck migration numbers and lockstep image/protocol compatibility before future integration.
-- **Tracking files:** only the coordinator, or an agent whose task says so, edits STATUS, this file, PLAN-CHANGES and the plan's progress. Other PRs put their summary in the description and update the `docs/` pages and BACKLOG items they touch.
-- **Never `cd` the coordinator's shell outside the repository.** It moves the Desktop session's working directory, and running subagents are told to work there. Use absolute paths.
+- Keep docs/specs and development trackers current with code. Before implementation, inspect local and remote branches for overlapping work. The last remote-head check found `main`, `codex/agent-messaging` and `spike/pydantic-ai`; no newer matching inspector/recovery test implementation.
+- Use signed commits through the owner's existing git configuration; no attribution lines. The owner asked to consolidate local work on `dev`. Separate temporary agent checkouts may be used for isolated tasks and archived after integration.
+- Independent read-only review for security, storage, concurrency and new features; light review for test-only changes and fixes to review findings. Earlier owner authorization for GPT-6.1-Sol reviews remains applicable. Current tool/developer instructions govern agent spawning.
+- Run one Python suite at a time, at most `-n 4`, with `SS_LIVE_GATEWAY`/`SS_INTEGRATION` unset. Use a unique `/var/tmp/sandbox-science-test-cache-*` basetemp: `/tmp` and `/home/andy` are Git checkouts, so security fixtures below them can fail correctly. Do not edit Python/generated API source while a broad suite runs; subprocess/import tests can otherwise mix old and new modules.
+- Logs/screenshots go under `~/.cache/pt/`. Regenerate workspace API types on contract changes. Python uses the locked `.venv`; `pyright --pythonpath .venv/bin/python` resolves the workspace environment explicitly.
+- Never launch a real service from an actively edited checkout. New runtime qualification must preserve worker isolation, personal services and archived data, then fully tear down only the owned lab.
 
-## Prompt research
+## Design boundaries
 
-The owner's research on other products' prompts lives outside this repository. The repository holds only our own words (D56): nothing from another product's prompts or skills is copied or paraphrased. Never import OpenScience's two skills derived from a Claude Science prompt collection ([licensing](../docs/LICENSING.md)); check NOTICE files before borrowing from it.
+- Unknown model prices are visible estimates, never silently zero, but do not by themselves block admission/explicit Resume. LiteLLM enforces the primary cost ceiling. Unknown worker/MCP effects still reconcile by original identity before replay.
+- Audited cumulative token grants are implemented. Broader adaptive time/turn/storage renewal is not. The owner's requested policy starts at 20,000,000 tokens and asks for each next 10,000,000-token increment; inspect actual configuration/grant before applying it.
+- Parents wait for child responsibility; root-level Resume drives the tree. Automatic recovery and narrow literal Python reconstruction need more live qualification. No arbitrary kernel-memory restoration is claimed.
+- Context inspector currently shows saved attempts. Live usage, exact working-context capture, time/fold placement and reviewer/summarizer accounting remain. Child folds are skeleton-only; original archive remains readable.
+- Built-in writing skill prefers annotated outlines, verified citations and self-standing current findings. Tool `show_outline` is implemented; docs and immutable Markdown artifacts remain distinct.
 
-## Secrets
+## Secrets and source boundaries
 
-- The owner's keys are files in `~/.config/sandbox-science/secrets/`: `litellm-harness.key` (the model gateway) and `cloudflare.env` (crypto-research-mcp's Access token). Agents never open, read, list, copy or print them; a program gets a path only when its task says so. Tests use synthetic tokens (`test-secret-…`).
-- **The `cloudflare.env` helper** (the owner, "for now"): `[mcp_proxy] provider_env_file` makes `up` run `sandbox_science.launcher.access_provider`, which reads the file in its own process and registers the OpenShell provider when the gateway lacks it. Only a lab's own config outside the repository names the real file. Labs never copy, archive or query the gateway's store.
+The owner's real keys are under `~/.config/sandbox-science/secrets/`; never open, read, list, copy or print them. Programs receive existing paths only for explicitly authorized runtime work. Tests use synthetic credentials. No sudo/security-setting changes, Docker pruning or destructive operations on real data.
 
-## Labs
-
-- **Tooling** is in [`.agents/labs/`](labs/README.md): `lab_up.sh`, `worker_up.sh`, `lab_down.sh` and `launcher_config.py`, which writes a lab's config outside the repo.
-- Historical labs deliberately used the weaker `sandbox-orchestrator` alias. This trial explicitly uses owner-authorized arrcodex models; the latest request is max effort with configurable roles.
-- **Rules:** run from a worktree. Qualification checks go through `systemd-run --user`. Stop any forward unit before `lab_down.sh`. The lab's `env.sh` hides `gh`'s auth: use another shell. Raw evidence stays outside git.
-- **CI:** `gh pr checks N --watch` right after `gh pr create` can exit at once; wait a few seconds. Rerun a stalled `test (fast)` job.
-
-## Code pointers
-
-Features use `hooks.py`; `harness.py` assembles them and `service.py` admits work. Research continuity is in `continuity/`, worker isolation in `worker/`, context/archive/folds in `history/`, and role transport in `confinement/`. The gateway chooses Responses or Messages adapters per alias. Launcher configuration is in `packages/launcher`; frontend in `web/workspace`. Regenerate workspace API types when response shapes change.
-
-The owner's ledger rule: weakening a settled state needs no authority; strengthening needs the user or a passing gate. Main can reopen an obstructed question with a reason. Worker protocol changes require lockstep component upgrades; new routes alone do not.
-
-## What is next
-
-1. Keep signed local work unpushed/unmerged for review. Research artifacts and exact evidence are preserved; disposable-lab teardown is verified. No more calls or experiments are pending for this episode.
-2. Qualify the context inspector and descendant-history retrieval in an authenticated live workspace and a scoped OpenShell run when available. Then implement adaptive allowances, delegated narrative enrichment with shared accounting and explicit fold-retry metadata. Actual child folds are skeleton-only; no broad scientific continuity is proved by the focused tests.
-3. Future acceptance still needs hour-long meaningful Sage computations, broader scientific continuity and the deferred model/context arms. Any resumed SNOVA investigation starts from the retained plan, sources, code and results; the export does not automatically restore the runtime.
+Product prompts are our own wording. Never import the two OpenScience skills derived from proprietary prompt collections; check licenses/notices before adapting sources. Features plug into existing hooks/routes; do not grow the central harness/app into unrelated responsibilities.
