@@ -1,5 +1,13 @@
 # Plans and delegation
 
+Current resource policy (2026-10-18): new check/task defaults are 20,000,000 tokens
+and 300 turns. Historical implementation notes below describe earlier defaults.
+Durable parent check-ins and bounded turn renewal are implemented; each additional
+10,000,000 tokens requires explicit USER approval. Existing settings and cumulative
+usage survive Resume. Parent finishing and descendant settlement follow the
+[current adaptive policy](adaptive-research-resources.md) and
+[tree Resume contract](tree-resume.md).
+
 Date: 2026-10-11, delegation design added 2026-10-14. **Status: Approved (2026-10-14).** The owner's answers on delegation limits and kernels are recorded (PD-14, PD-15); the delegation design on the harness (PD-32 to PD-43) and questions 1, 2 and 9 to 16 were decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, each as recommended. Question 6 was decided on 2026-10-15, when questions to the user were built; question 7 was decided on 2026-10-15; question 5 was answered with the ledger's question 8 (2026-10-14). W0 behavior specification; conventions in the [index](README.md).
 
 The planning phase and live plan progress are a confirmed requirement ([D86](../DECISIONS.md)); that does not settle every detail or open question in this draft. Built: the [plan and progress core](../SESSION-PLANS.md) (PD-1–5, PD-7, PD-9 and PD-10, with an explicit goal outcome on completion), the [MAIN plan tools and guidance](../ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools), the read-only [workspace view](../SESSION-PLAN-WORKSPACE.md) and USER [plan body editing](../SESSION-PLAN-EDITING.md). Not built: PD-6 approval, the reviewer's check of completion claims (PD-8), questions to the user and most of delegation (the run tree's parent link, PD-32, kernels per run, PD-37, and one level of check delegations are built). The design introduces no execution approval gate.

@@ -59,7 +59,7 @@ def _sized(tokens: int, *, used: int = 0) -> Transcript:
 
 async def test_with_nothing_set_delegate_wait_and_halt_all_work(delegating: Harness) -> None:
     """Under the run service, with no cost limit and no share, four checks each get the
-    project's 150,000 tokens, the root waits for them and answers: nothing is reserved,
+    project's 20,000,000 tokens, the root waits for them and answers: nothing is reserved,
     refused or stopped for spending."""
     free = asyncio.Event()
 
@@ -82,7 +82,7 @@ async def test_with_nothing_set_delegate_wait_and_halt_all_work(delegating: Harn
         await ended(delegating, 5)
     (root,) = [r for r in records(delegating) if r.role == "main"]
     started = [json.loads(r) for r in results(root)[:4]]
-    assert [s["limits"]["tokens"] for s in started] == [150_000] * 4
+    assert [s["limits"]["tokens"] for s in started] == [20_000_000] * 4
     assert root.final_text == "Four checks ran."
 
 
@@ -96,7 +96,7 @@ async def test_a_check_gets_its_configured_turns_even_when_its_parent_has_fewer_
         max_turns=3,
     )
     started = json.loads(results(root)[0])
-    assert started["limits"]["turns"] == 12
+    assert started["limits"]["turns"] == 300
 
 
 async def test_a_child_stops_before_a_call_that_would_pass_its_limit(tmp_path: Path) -> None:

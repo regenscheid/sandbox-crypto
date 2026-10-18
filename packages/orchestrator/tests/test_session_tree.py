@@ -164,6 +164,6 @@ async def test_a_delegated_check_is_in_its_sessions_tree(delegating: Harness) ->
     )
     (made,) = tree.delegations
     assert (made.run, made.parent, made.ended) == (child.name, root.name, "returned")
-    assert made.brief["limits"] == {"turns": 12, "tokens": 150_000}
+    assert made.brief["limits"] == {"turns": 300, "tokens": 20_000_000}
     assert child.limits is not None
-    assert child.limits["max_turns"] == 12
+    assert child.limits["max_turns"] == 300

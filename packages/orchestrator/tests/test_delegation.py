@@ -808,7 +808,7 @@ async def test_a_parent_reads_and_cancels_its_check(delegating: Harness) -> None
     finally:
         free.set()
     status, cancelled, again = (json.loads(r) for r in results(root)[1:])
-    assert (status["state"], status["limits"]) == ("running", {"turns": 12, "tokens": 150_000})
+    assert (status["state"], status["limits"]) == ("running", {"turns": 300, "tokens": 20_000_000})
     assert (cancelled["ended"], cancelled["cancelled"]) == ("cancelled", True)
     assert (again["ended"], again["cancelled"]) == ("cancelled", False)
     (child,) = children(delegating, root)
