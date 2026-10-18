@@ -23,7 +23,18 @@ USAGE_SUM = (
 )
 
 
-def _scope(run: str | None) -> str:
+def _scope(run: str | None, *, subtree: bool = False) -> str:
+    if subtree:
+        return (
+            "WITH RECURSIVE scope(project,session,work) AS (SELECT project,session,work "
+            "FROM research_work WHERE project=? AND session=? AND work=? UNION ALL "
+            "SELECT w.project,w.session,w.work FROM research_work w JOIN scope s ON "
+            "w.project=s.project AND w.session=s.session AND w.parent=s.work), "
+            "attempts AS (SELECT a.project,a.session,a.work,a.run FROM research_attempts a "
+            "JOIN scope USING(project,session,work)"
+            + (" WHERE a.run=?" if run is not None else "")
+            + ") "
+        )
     return (
         "WITH attempts AS (SELECT project,session,work,run FROM research_attempts "
         "WHERE project=? AND session=? AND work=?"
@@ -85,9 +96,15 @@ def fold_tokens(db: sqlite3.Connection, project: str, session: str, work: str, *
 
 
 def spent_tokens(
-    db: sqlite3.Connection, project: str, session: str, work: str, *, run: str | None = None
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    work: str,
+    *,
+    run: str | None = None,
+    subtree: bool = False,
 ) -> int:
-    """Observed plus explicitly reserved tokens for one work or its current attempt."""
+    """Observed plus reserved tokens, optionally including the work's descendants."""
     responses = (
         "SELECT u.usage FROM archive_model_usage u JOIN attempts a USING(project,session,run) "
         "UNION ALL SELECT c.usage FROM research_model_calls c JOIN attempts a "
@@ -98,7 +115,7 @@ def spent_tokens(
         "AND json_extract(o.detail,'$.resolution.identity')=c.identity)"
     )
     query = (
-        _scope(run)
+        _scope(run, subtree=subtree)
         + "SELECT (SELECT "
         + USAGE_SUM
         + " FROM ("

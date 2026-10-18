@@ -95,13 +95,13 @@ _ON_TRACK: Final = (
 
 TASK_TURNS: Final = 300
 """A task's turns by default (the owner, 2026-10-16: a delegated task does real work)."""
-TASK_TOKENS: Final = 5_000_000
+TASK_TOKENS: Final = 20_000_000
 """A task's tokens by default, its calls' input and output together. Stored delegated
 runs fold their own context. Tokens still bound total model usage across calls,
 including cached input; they do not count only fresh context."""
 MAX_TURNS: Final = 10_000
 """The most turns a project may give a check or a task."""
-MAX_TOKENS: Final = 50_000_000
+MAX_TOKENS: Final = 1_000_000_000
 """The most tokens a project may give a check or a task."""
 FORMER_DEFAULTS: Final = {"task_tokens": 200_000, "task_turns": 20}
 """A task's limits by default before 2026-10-16. A setting written then holds every
@@ -123,15 +123,21 @@ class DelegationSettings(Contract):
     """How deep its runs may delegate; 0 offers no delegation."""
     cap: int = Field(default=10, ge=1, le=20)
     """Delegated runs a session's tree runs at once."""
-    check_tokens: int = Field(default=150_000, ge=50_000, le=MAX_TOKENS)
+    check_tokens: int = Field(default=TASK_TOKENS, ge=50_000, le=MAX_TOKENS)
     """A check's tokens, at most: a bound on a runaway check (PD-38)."""
-    check_turns: int = Field(default=12, ge=1, le=MAX_TURNS)
+    check_turns: int = Field(default=TASK_TURNS, ge=1, le=MAX_TURNS)
     """A check's turns, at most, independently of its parent's remaining calls."""
     task_tokens: int = Field(default=TASK_TOKENS, ge=50_000, le=MAX_TOKENS)
     """A task's tokens, at most (PD-11, PD-38): a bound on a runaway task, not on its
     work."""
     task_turns: int = Field(default=TASK_TURNS, ge=1, le=MAX_TURNS)
     """A task's turns, at most, independently of its parent's remaining calls."""
+    turn_ceiling: int = Field(default=MAX_TURNS, ge=1, le=MAX_TURNS)
+    """Cumulative turns a direct parent may approve; initial explicit turns remain.
+    Lowering this does not revoke an existing recorded grant.
+    """
+    max_token_grant: int = Field(default=MAX_TOKENS, ge=50_000, le=MAX_TOKENS)
+    """Hard ceiling for explicit USER token extensions, separate from initial grants."""
     models: tuple[Alias, ...] = Field(default=(), max_length=MAX_MODELS)
     """The model aliases a brief may choose (PD-28); none, the default, allows no choice,
     and a brief that names none gets the delegated role's."""

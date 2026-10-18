@@ -51,7 +51,7 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
     try:
         records = DelegationRecords(store.control)
         assert records.settings(PROJECT) == DelegationSettings(
-            depth=0, cap=10, check_tokens=150_000, check_turns=12
+            depth=0, cap=10, check_tokens=20_000_000, check_turns=300
         )
         assert records.configure(PROJECT, cap=3) == DelegationSettings(cap=3)
         changed = records.configure(PROJECT, depth=1, check_turns=5)
@@ -68,7 +68,7 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"cap": 0}, "cap"),
         ({"cap": 21}, "cap"),
         ({"check_tokens": 49_999}, "check_tokens"),
-        ({"check_tokens": 50_000_001}, "check_tokens"),
+        ({"check_tokens": 1_000_000_001}, "check_tokens"),
         ({"check_turns": 0}, "check_turns"),
         ({"check_turns": 10_001}, "check_turns"),
         ({"turns": 3}, "turns"),
@@ -78,7 +78,7 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"models": ("-a",)}, "models.0"),
         ({"fallback": "x" * 129}, "fallback"),
         ({"task_tokens": 49_999}, "task_tokens"),
-        ({"task_tokens": 50_000_001}, "task_tokens"),
+        ({"task_tokens": 1_000_000_001}, "task_tokens"),
         ({"task_turns": 10_001}, "task_turns"),
     ],
 )
@@ -125,17 +125,17 @@ def test_a_setting_keeps_what_was_set_and_a_former_default_follows_the_new_one(
         records = DelegationRecords(store.control)
         found = records.settings(PROJECT)
         assert (found.depth, found.cap, found.task_turns, found.task_tokens) == (
-            1, 4, 300, 5_000_000
+            1, 4, 300, 20_000_000
         )  # fmt: skip
-        assert found == DelegationSettings(depth=1, cap=4)
+        assert found == DelegationSettings(depth=1, cap=4, check_tokens=150_000, check_turns=12)
         # A change keeps what the old setting set, and not the former defaults.
         assert records.configure(PROJECT, check_turns=6) == DelegationSettings(
-            depth=1, cap=4, check_turns=6
+            depth=1, cap=4, check_tokens=150_000, check_turns=6
         )
         # Set since, a former default's value is kept as set.
         assert records.configure(PROJECT, task_turns=20).task_turns == 20
         assert records.settings(PROJECT).task_turns == 20
-        assert records.settings(PROJECT).task_tokens == 5_000_000
+        assert records.settings(PROJECT).task_tokens == 20_000_000
         with store.control.read() as tx:
             (kept,) = tx.sql.execute("SELECT limits FROM project_delegation").fetchone()
         assert json.loads(kept) == {
@@ -186,14 +186,14 @@ def test_the_cli_shows_and_changes_the_whole_setting(
     assert cli.main(argv) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 0 (off); at most 10 delegated runs at once; "
-        "a check gets 150000 tokens and 12 turns, a task 5000000 tokens and 300 turns; a brief "
+        "a check gets 20000000 tokens and 300 turns, a task 20000000 tokens and 300 turns; a brief "
         "may choose the models: none; "
         "fallback: none\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 1 (main runs delegate); at most 3 "
-        "delegated runs at once; a check gets 150000 tokens and 4 turns, a task 5000000 "
+        "delegated runs at once; a check gets 20000000 tokens and 4 turns, a task 20000000 "
         "tokens and 300 turns; a brief may choose the models: none; fallback: none\n"
     )
     assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0

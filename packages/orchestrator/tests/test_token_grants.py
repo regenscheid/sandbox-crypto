@@ -80,7 +80,7 @@ def test_user_grant_refuses_unbounded_stale_nested_or_active_work(tmp_path: Path
             grants.renew("p", "s", request(), operator="user")
         RunState(state.projects.control).set_cost_limit("p", 100)
         with pytest.raises(ControlError, match="configured child ceiling"):
-            grants.renew("p", "s", request(total=6_000_000), operator="user")
+            grants.renew("p", "s", request(total=21_000_000), operator="user")
         with pytest.raises(ControlError, match="attempt or epoch changed"):
             grants.renew("p", "s", request().model_copy(update={"epoch": 2}), operator="user")
         with pytest.raises(ControlError, match="direct root children"):
