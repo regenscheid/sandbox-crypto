@@ -25,9 +25,11 @@ def test_range_reply_accepts_empty_eof_after_file_end() -> None:
     [
         {"content_b64": "", "size": 6, "offset": 13500, "eof": False},
         {"content_b64": base64.b64encode(b"x").decode(), "size": 6, "offset": 13500, "eof": True},
+        {"content_b64": "", "size": 6, "offset": 3, "eof": True},
+        {"content_b64": "", "size": 13500, "offset": 13500, "eof": False},
     ],
 )
 def test_range_reply_rejects_false_eof_or_data_past_end(reply: dict[str, object]) -> None:
     with pytest.raises(WorkerError) as error:
-        _range_reply(reply, 13500, 10000, hashed=False)
+        _range_reply(reply, int(reply["offset"]), 10000, hashed=False)
     assert error.value.kind == ErrorKind.INTERNAL

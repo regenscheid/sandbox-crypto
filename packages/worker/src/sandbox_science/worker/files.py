@@ -68,8 +68,14 @@ def _range_reply(reply: Message, offset: int, length: int, *, hashed: bool) -> R
         start = integer(reply.get("offset"), 0, 2**62)
         sha256 = reply.get("sha256")
         beyond_end = size is not None and offset + len(data) > size
-        empty_eof = not data and reply.get("eof") is True
-        if size is None or start != offset or len(data) > length or (beyond_end and not empty_eof):
+        expected_eof = size is not None and offset + len(data) >= size
+        if (
+            size is None
+            or start != offset
+            or len(data) > length
+            or (beyond_end and bool(data))
+            or reply.get("eof") is not expected_eof
+        ):
             raise ValueError("a range that was not asked for")
         if hashed and not (isinstance(sha256, str) and len(sha256) == 64):
             raise ValueError("no SHA-256")
