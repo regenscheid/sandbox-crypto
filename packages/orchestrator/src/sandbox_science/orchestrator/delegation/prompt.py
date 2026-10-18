@@ -15,12 +15,13 @@ from typing import Final
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 
-CHECK_VERSION: Final = "sandbox-delegated-check-9"
+CHECK_VERSION: Final = "sandbox-delegated-check-10"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Resource check-ins are not completion: "
     "save evidence and a concise progress report before an allowance ends. A parent "
-    "may renew turn allowance using resource_decide but cannot increase your token grant; "
+    "may renew soft turn, active-time or retained-artifact allowance using resource_decide "
+    "within operator policy, but cannot increase your token grant; "
     "that requires explicit user approval. Use message_parent to escalate a needed "
     "decision. Another agent of this session, your parent, "
     "started you to check one ledger entry independently; the first user message is "
@@ -73,12 +74,13 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-9"
+TASK_VERSION: Final = "sandbox-delegated-task-10"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Resource check-ins are not completion: "
     "save evidence and a concise progress report before an allowance ends. A parent "
-    "may renew turn allowance using resource_decide but cannot increase your token grant; "
+    "may renew soft turn, active-time or retained-artifact allowance using resource_decide "
+    "within operator policy, but cannot increase your token grant; "
     "that requires explicit user approval. Use message_parent to escalate a needed "
     "decision. Another agent of this session, your parent, "
     "started you for one task; the first user message is its brief: the task, what you "

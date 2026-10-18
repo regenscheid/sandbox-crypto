@@ -1784,6 +1784,7 @@ class Harness:
                     turns=admitted.request.max_turns or self.settings.max_turns,
                     tokens=admitted.request.tokens,
                     delegated=delegated,
+                    inventory=inventory,
                     clock=self.clock,
                 )
                 if context.authority is not None

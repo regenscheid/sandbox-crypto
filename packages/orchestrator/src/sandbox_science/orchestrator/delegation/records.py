@@ -138,6 +138,14 @@ class DelegationSettings(Contract):
     """
     max_token_grant: int = Field(default=MAX_TOKENS, ge=50_000, le=MAX_TOKENS)
     """Hard ceiling for explicit USER token extensions, separate from initial grants."""
+    research_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
+    """Optional cumulative observed active-time allowance, independent of tool deadlines."""
+    time_ceiling_seconds: int = Field(default=604_800, ge=1, le=31_536_000)
+    storage_bytes: int | None = Field(default=None, ge=1, le=256 * 1024**3)
+    """Optional retained-artifact allowance; not research-VM disk usage."""
+    storage_ceiling_bytes: int = Field(default=64 * 1024**3, ge=1, le=256 * 1024**3)
+    root_resource_renewal: bool = False
+    """Permit audited root self-renewal of soft allowances with persisted progress."""
     models: tuple[Alias, ...] = Field(default=(), max_length=MAX_MODELS)
     """The model aliases a brief may choose (PD-28); none, the default, allows no choice,
     and a brief that names none gets the delegated role's."""

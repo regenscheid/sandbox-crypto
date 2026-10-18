@@ -188,17 +188,25 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         f"project {PROJECT}: delegation depth 0 (off); at most 10 delegated runs at once; "
         "a check gets 20000000 tokens and 300 turns, a task 20000000 tokens and 300 turns; a brief "
         "may choose the models: none; "
-        "fallback: none\n"
+        "fallback: none; turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 1 (main runs delegate); at most 3 "
         "delegated runs at once; a check gets 20000000 tokens and 4 turns, a task 20000000 "
-        "tokens and 300 turns; a brief may choose the models: none; fallback: none\n"
+        "tokens and 300 turns; a brief may choose the models: none; fallback: none; "
+        "turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0
     assert capsys.readouterr().out.endswith(
-        "a brief may choose the models: checker-b, anthropic/opus; fallback: main\n"
+        "a brief may choose the models: checker-b, anthropic/opus; fallback: main; "
+        "turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--check-tokens", "10"]) == 1
     assert capsys.readouterr().err.startswith("error: check_tokens: ")
@@ -213,7 +221,12 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         depth=1, cap=3, check_turns=4, models=("checker-b", "anthropic/opus"), fallback="main"
     )
     assert cli.main([*argv, "--models", "", "--fallback", ""]) == 0
-    assert capsys.readouterr().out.endswith("the models: none; fallback: none\n")
+    assert capsys.readouterr().out.endswith(
+        "the models: none; fallback: none; "
+        "turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
+    )
 
 
 async def test_a_check_gets_the_projects_turns_and_tokens(delegating: Harness) -> None:
@@ -335,3 +348,44 @@ async def test_a_run_record_without_alias_or_limits_still_reads(delegating: Harn
     older = root.model_dump(mode="json", exclude={"alias", "limits"})
     read = type(root).model_validate(older)
     assert (read.alias, read.limits) == (None, None)
+
+
+def test_operator_can_enable_bound_and_disable_research_resource_policy(tmp_path, capsys):
+    _store(tmp_path).close()
+    argv = ["project", "delegation", "--state-dir", str(tmp_path), "--project", PROJECT]
+    assert (
+        cli.main(
+            [
+                *argv,
+                "--check-turns",
+                "4",
+                "--research-seconds",
+                "60",
+                "--time-ceiling-seconds",
+                "600",
+                "--storage-bytes",
+                "1024",
+                "--storage-ceiling-bytes",
+                "4096",
+                "--root-resource-renewal",
+            ]
+        )
+        == 0
+    )
+    assert "root resource renewal: True" in capsys.readouterr().out
+    assert (
+        cli.main(
+            [*argv, "--no-research-time-limit", "--no-storage-limit", "--no-root-resource-renewal"]
+        )
+        == 0
+    )
+    store = ProjectStore(tmp_path)
+    try:
+        settings = DelegationRecords(store.control).settings(PROJECT)
+        assert settings.research_seconds is None
+        assert settings.storage_bytes is None
+        assert settings.root_resource_renewal is False
+        assert settings.check_turns == 4
+        assert settings.time_ceiling_seconds == 600
+    finally:
+        store.close()

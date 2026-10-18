@@ -196,6 +196,9 @@ def observed(end: ChildEnd) -> Ended:
             | "runaway"
             | "resource_pause"
             | "resource_report"
+            | "resource_time"
+            | "resource_storage"
+            | "resource_retention"
         ):
             # A limit, or the runaway guard: the answer of its report round, if it took
             # one, is the delegation's report (RS-6f).
@@ -932,6 +935,9 @@ class Delegations(TurnHook):
             "research_state",
             "resource_pause",
             "resource_report",
+            "resource_time",
+            "resource_storage",
+            "resource_retention",
         }:
             return None
         running = self._running()

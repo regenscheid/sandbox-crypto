@@ -110,7 +110,7 @@ async def test_parent_actions_are_durable_and_token_grants_do_not_change(project
     _, parent, child, requests = setup(projects)
     warning = requests.observe(child, "tokens", used=16_000_000, total=20_000_000, revision=0)
     assert warning is not None
-    with pytest.raises(ControlError, match="only turn allowances"):
+    with pytest.raises(ControlError, match="not renewable"):
         decide(requests, parent, warning)
     decide(requests, parent, warning, action=action)
     projects.control.close()

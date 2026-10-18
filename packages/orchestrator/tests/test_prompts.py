@@ -63,6 +63,11 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-13": "f711149fab6e3794b8dc812d2b5cc045b586f75f0402d82e920f899c27c4c3d6",
+    "sandbox-delegated-check-10": (
+        "7a7a25a2f16db7fd2b1aa785fb4a16311a94298eaed54559fe079495e71a155b"
+    ),
+    "sandbox-delegated-task-10": "a841796e6f7c045fd406db57b271a91d4df3fc5ccfc30d3f4542235c985396da",
     "sandbox-main-12": "6da989a0f7f7fb55760bda37ab9cdb554c9c19a9e316f2ce0528afec12aacd19",
     "sandbox-delegated-check-9": "35de7e126f4daf28e92c08248ea66ba4feeac529955e10da77ee9e738dd7e489",
     "sandbox-delegated-task-9": "70e83d0cf1f6f803b862cf773d3c35f1d67a390391ab0419ade26836989f7ee1",

@@ -96,6 +96,18 @@ class ArtifactLimits(Contract):
 
 
 @dataclass(frozen=True)
+class RetentionPressure:
+    """Logical retention usage, including pending transfers; never research VM disk usage."""
+
+    resource: Literal[
+        "retention_bytes", "retention_revisions", "retention_operations", "retention_metadata_bytes"
+    ]
+    scope: Literal["project", "global"]
+    used: int
+    total: int
+
+
+@dataclass(frozen=True)
 class ArtifactOperation:
     state: Literal["intent", "transfer", "done"]
     worker: ArtifactRef | None
@@ -125,6 +137,54 @@ class ArtifactInventory:
         self.documents = documents
         self.limits = limits or ArtifactLimits()
         self.blobs = ArtifactBlobs(documents.control.path)
+
+    def pressure(self, project: str) -> tuple[RetentionPressure, ...]:
+        """Report the existing hard quota counters without reading artifact contents."""
+        self._scope(project)
+        limits = self.limits
+        found: list[RetentionPressure] = []
+        with self.documents.control.read() as tx:
+            for scope, maximums in (
+                (
+                    project,
+                    (
+                        limits.project_revisions,
+                        limits.project_bytes,
+                        limits.project_operations,
+                        limits.project_metadata_bytes,
+                    ),
+                ),
+                (
+                    None,
+                    (
+                        limits.total_revisions,
+                        limits.total_bytes,
+                        limits.total_operations,
+                        limits.metadata_bytes,
+                    ),
+                ),
+            ):
+                revisions, size, operations, metadata = self._usage(tx.sql, scope)
+                pending, staged = self._reserved(tx.sql, scope)
+                used = (revisions + pending, size + staged, operations, metadata)
+                for resource, current, maximum in zip(
+                    (
+                        "retention_revisions",
+                        "retention_bytes",
+                        "retention_operations",
+                        "retention_metadata_bytes",
+                    ),
+                    used,
+                    maximums,
+                    strict=True,
+                ):
+                    if current * 5 >= maximum * 4:
+                        found.append(
+                            RetentionPressure(
+                                resource, "project" if scope else "global", current, maximum
+                            )
+                        )
+        return tuple(found)
 
     def _reserved(self, db: sqlite3.Connection, project: str | None) -> tuple[int, int]:
         row = db.execute(

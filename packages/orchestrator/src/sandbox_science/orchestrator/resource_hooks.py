@@ -9,6 +9,7 @@ from typing import Any
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.continuity.records import Ownership
 from sandbox_science.orchestrator.continuity.resources import (
     ResourceDecisionRequest,
@@ -25,8 +26,13 @@ SPEC = ToolSpec(
     "Decide one direct child resource check-in after reading its checkpoint and progress. "
     "continue keeps its current allowance; redirect includes corrected instructions; report "
     "requests its final checkpoint report; pause checkpoints before its next model call. "
-    "extend_turns adds up to 300 cumulative turns within project policy and its existing "
-    "token grant. Tokens require explicit USER approval of exactly 10,000,000 more: "
+    "extend_turns adds up to 300 cumulative turns; extend_time adds up to 3600 observed active "
+    "seconds; extend_storage adds up to 1 GiB retained artifact bytes, within configured "
+    "ceilings. Hard retention capacity, worker disk space and execution deadlines cannot be "
+    "extended here. A root may renew its own soft allowance only when operator policy opts in "
+    "and it has saved a checkpoint plus new artifacts, plan progress or completed child work "
+    "since its last same-resource renewal. Tokens require explicit USER approval of "
+    "exactly 10,000,000 more: "
     "ask the user at the root, or message_parent to escalate. No action replays a tool.",
     ResourceDecisionRequest.model_json_schema(),
 )
@@ -44,12 +50,51 @@ class Resources(TurnHook):
         turns: int,
         tokens: int | None,
         delegated: bool,
+        inventory: ArtifactInventory | None = None,
         clock: Clock = SYSTEM_CLOCK,
     ):
         self.store, self.owner, self.clock = store, owner, clock
         self.turns, self.tokens, self.delegated = turns, tokens, delegated
         self.specs = (SPEC,)
         self.seen: frozenset[str] = frozenset()
+        self.inventory = inventory
+        self.started = clock.monotonic()
+
+    async def _sample(self) -> str | None:
+        stopped = None
+        samples = await threaded(
+            self.store.sample,
+            self.owner,
+            seconds=max(0, int(self.clock.monotonic() - self.started)),
+        )
+        for resource, used, total, revision in samples:
+            await threaded(
+                self.store.observe,
+                self.owner,
+                resource,
+                used=used,
+                total=total,
+                revision=revision,
+                force=used >= total,
+            )
+            if used >= total:
+                stopped = "resource_time" if resource == "elapsed_seconds" else "resource_storage"
+        if self.inventory is not None:
+            for pressure in await threaded(self.inventory.pressure, self.owner.project):
+                await threaded(
+                    self.store.observe,
+                    self.owner,
+                    pressure.resource,
+                    used=pressure.used,
+                    total=pressure.total,
+                    revision=pressure.total,
+                    scope=pressure.scope,
+                    renewable=False,
+                    force=pressure.used >= pressure.total,
+                )
+                if pressure.used >= pressure.total:
+                    stopped = "resource_retention"
+        return stopped
 
     async def call(
         self, name: str, args: dict[str, Any], operation: str
@@ -65,6 +110,7 @@ class Resources(TurnHook):
         }
 
     async def turn_limit(self, run: RunView) -> int | None:
+        await self._sample()
         total, revision, token_total, token_revision, prior = await threaded(
             self.store.limits, self.owner, turns=self.turns, tokens=self.tokens
         )
@@ -82,9 +128,13 @@ class Resources(TurnHook):
                 total=token_total,
                 revision=token_revision,
             )
-        return max(0, total - prior) if self.delegated else None
+        enabled = (
+            self.delegated or revision > 0 or await threaded(self.store.root_enabled, self.owner)
+        )
+        return max(0, total - prior) if enabled else None
 
     async def finishing(self, run: RunView, stopped: str) -> str | None:
+        await self._sample()
         if stopped in ("run_budget", "turn_limit"):
             total, revision, tokens, token_revision, prior = await threaded(
                 self.store.limits, self.owner, turns=self.turns, tokens=self.tokens
@@ -108,7 +158,9 @@ class Resources(TurnHook):
 
     async def halt(self, run: RunView) -> str | None:
         decisions = await threaded(self.store.decisions, self.owner)
-        return "resource_pause" if any(d.request.action == "pause" for d in decisions) else None
+        if any(d.request.action == "pause" for d in decisions):
+            return "resource_pause"
+        return await self._sample()
 
     async def last_call(self, run: RunView) -> str | None:
         decisions = await threaded(self.store.decisions, self.owner)
@@ -128,7 +180,7 @@ class Resources(TurnHook):
                     Notice(
                         self.name,
                         (identity,),
-                        "Your parent recorded a resource decision. This does not change security "
+                        "A resource decision was recorded. This does not change security "
                         "policy, spending caps, deadlines or your token grant.",
                         decision.model_dump(mode="json"),
                     )
@@ -141,7 +193,8 @@ class Resources(TurnHook):
             SOURCE,
             (request.request_id,),
             "Research resource check-in. Read the checkpoint and assess actual progress; "
-            "this is not scientific completion. A direct parent may use resource_decide. "
+            "this is not scientific completion. A direct parent may use resource_decide; an "
+            "opted-in root may renew its own soft allowance with saved progress. "
             "Token increases require an explicit USER decision. "
             "Save results before the allowance ends.",
             request.model_dump(mode="json"),

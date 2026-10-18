@@ -106,7 +106,7 @@ async def test_actual_inputs_select_exact_framing_without_adding_tools(
         pin = transcript.prompt_provenance
         assert isinstance(pin, PromptPins)
         assert [(section.id, section.version) for section in pin.sections] == [
-            ("main", "sandbox-main-12"),
+            ("main", "sandbox-main-13"),
             ("stock", selected.version),
         ] + ([("planning", GUIDANCE_VERSION)] if planning else [])
         assert kept(transcript, context).prompt_provenance == pin

@@ -1,7 +1,8 @@
 # Adaptive research resource policy
 
 Status: implemented for durable token/turn check-ins, parent turn decisions and
-explicit USER token renewal. Time and storage renewal remain separate follow-ups.
+explicit USER token renewal; the extended policy below also covers observed active time,
+retained artifacts and operator-enabled root renewal.
 
 ## Purpose
 
@@ -31,7 +32,7 @@ The project `turn_ceiling` (default 10,000) bounds parent-approved cumulative tu
 An explicit low initial `check_turns` or `task_turns` is retained. A parent may grant
 up to 300 more turns per check-in, never above that ceiling. This does not add tokens,
 change a deadline or increase the parent's own allowance. Root turn allowance remains
-an operator setting; the root cannot self-approve a resource request.
+an operator setting; the root may renew only when the explicit root policy below permits it.
 
 ## Durable check-ins and parent decisions
 
@@ -61,7 +62,8 @@ The parent reads the checkpoint and supporting history, then calls `resource_dec
 
 The decision requires the current direct-parent work, recipient attempt and session
 epoch. It is idempotent under the original tool operation. Competing or stale decisions
-are rejected. A child cannot decide its own request or grant itself tokens. Decisions
+are rejected. A child cannot decide its own request or grant itself tokens. An opted-in root may
+renew its own soft allowance under the evidence requirements below. Decisions
 are shown to the child at a safe point; `pause` and `report` do not cancel or replay an
 in-flight worker operation. Explicit Stop remains authoritative.
 
@@ -104,12 +106,77 @@ The USER resource list is bounded to 100 items per page, newest first, with a co
 time/ID continuation cursor. It distinguishes superseded attempts, current work state,
 parent decisions and token requests resolved by a USER grant.
 
-## Boundaries and remaining qualification
+## Time, retained artifacts and root policy
 
-No adaptive time or storage allowance is implemented here. Explicit deadlines,
-transport timeouts, worker leases, security policy and actual disk/RAM capacity are
-unchanged. Long admitted tools retain their original operation identity. The root
-cannot autonomously renew its own turn ceiling. Decisions express a parent's judgment
-of scientific progress; the platform does not infer novelty or productivity from
-usage alone. Real-model scientific quality and prolonged renewable-grant operation
-still need isolated live acceptance evidence beyond deterministic regression tests.
+The existing project delegation settings carry these operator controls (also exposed
+by the supported `project delegation` CLI): `research_seconds` and `storage_bytes`
+are optional initial soft allowances, disabled when omitted; `time_ceiling_seconds`
+defaults to 604800 and `storage_ceiling_bytes` to 68719476736. A direct parent can
+approve up to 3600 more seconds (`extend_time`) or 1073741824 more retained bytes
+(`extend_storage`), bounded by those ceilings. Existing explicit settings are retained.
+
+Time means observed active-attempt elapsed seconds, including model, tool and child
+wait time. Durable safe-point samples accumulate across attempts; paused/offline time
+is excluded. Unobserved time immediately before a process loss is not invented.
+This allowance never changes execution deadlines, transport timeouts, worker leases,
+Stop propagation or security policy. Reaching it pauses at the next safe point; an
+in-flight operation keeps its original identity and is allowed to settle.
+
+Storage means logical retained artifact revision bytes attributed to this work across
+its attempts, including retained prior revisions. It does not measure unpublished
+research-VM files, scratch disk, RSS or physical free space. Metadata-only artifact
+records do not count as retained content. Existing project/global artifact retention
+bytes, metadata, revision and operation quotas produce nonrenewable capacity notices;
+these remain hard boundaries and require an operator to change capacity or retention.
+No parent decision changes them, and no filesystem scan is run on the host.
+
+`root_resource_renewal` defaults to false. Enabling it authorizes the root to use the
+same `resource_decide` tool on its own turn/time/artifact request, within the existing
+ceilings and increments. Each decision needs a checkpoint, a progress-based reason,
+and a newer persisted evidence counter than its prior self-renewal of that resource.
+The counter includes published artifact revisions, plan progress records and completed
+children; model calls and resource-control calls alone are not progress. This bounds
+no-progress renewal without claiming that a counter proves scientific novelty.
+Root renewal never extends tokens. Explicit Stop or a lost ownership fence rejects it.
+
+An authenticated USER can explicitly extend a paused root or child soft allowance in
+the recovery UI. The decision is audited as an operator decision and requires the
+same current work, attempt, epoch and allowance. It does not dispatch work. Root
+Resume remains the continuation entry point. Parent-approved paused child time/turn/
+storage extensions use the existing bounded automatic tree recovery path when all
+other unfinished effects and budgets permit it. Hard capacity refusals are never
+turned into automatic retries.
+
+## Boundaries and qualification
+
+Token approval remains exactly one explicit USER increment of 10,000,000 tokens.
+Unknown model prices remain diagnostic under the upstream LiteLLM budget. Physical
+worker/disk limits and security controls are not soft allowances. No resource decision
+replays an uncertain operation. Real-model research quality and prolonged operation
+need isolated runtime evidence in addition to deterministic regression coverage.
+
+### Operator controls
+
+Read or update the current project without changing existing research records:
+
+```sh
+sandbox-science-harness project delegation --state-dir STATE --project PROJECT
+sandbox-science-harness project delegation --state-dir STATE --project PROJECT \
+  --research-seconds 14400 --time-ceiling-seconds 604800 \
+  --storage-bytes 1073741824 --storage-ceiling-bytes 8589934592 \
+  --turn-ceiling 10000 --root-resource-renewal
+```
+
+Use `--no-root-resource-renewal`, `--no-research-time-limit`, or
+`--no-storage-limit` to disable the corresponding optional policy. Initial soft
+allowances are pinned per work item when first observed; changing an initial
+value affects new work, while extension ceilings are checked against current
+operator policy. Turning off an allowance disables its safe-point pause and
+warnings; it does not discard the previous measured usage or audit decisions.
+Hard retention settings and the worker's storage remain separate controls.
+
+The first safe-point evidence counter prevents old results from previous work in
+the same session from qualifying the root for a fresh allowance. Each subsequent
+root extension requires another evidence increase for that resource. Parent
+extensions remain explicit progress-based decisions. Neither path changes the
+20,000,000-token default or the USER-only exact 10,000,000-token increments.

@@ -18,11 +18,22 @@ from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import RunName
 
 from .grants import grant_total
-from .records import Ownership, State, check_owner
+from .records import Ownership, State, check_owner, tree_cancelled
+from .resource_policy import (
+    EXTENSIONS,
+    ceiling,
+    extension,
+    initial_allowance,
+    soft_grant,
+)
+from .resource_policy import (
+    Action as Action,
+)
+from .resource_policy import (
+    Resource as Resource,
+)
+from .resource_usage import research_progress, retained_bytes, sample_elapsed
 from .token_usage import spent_tokens
-
-Resource = Literal["tokens", "turns"]
-Action = Literal["continue", "redirect", "report", "pause", "extend_turns"]
 
 
 class ResourceDecisionRequest(Contract):
@@ -37,6 +48,16 @@ class ResourceDecision(Contract):
     operation: str
     total: int
     observed: float
+    operator: str | None = None
+    progress: int = 0
+
+
+class ResourceApprovalRequest(ResourceDecisionRequest):
+    """The USER confirms the exact paused attempt and allowance shown in the UI."""
+
+    current: RunName
+    epoch: int = Field(ge=1)
+    total: int = Field(ge=1)
 
 
 class ResourceRequest(Contract):
@@ -56,6 +77,8 @@ class ResourceRequest(Contract):
     superseded: bool = False
     user_grant_revision: int | None = None
     decision: ResourceDecision | None = None
+    scope: Literal["work", "project", "global"] = "work"
+    renewable: bool = True
 
 
 class ResourceRequestPage(Contract):
@@ -82,16 +105,7 @@ def turn_usage(db: sqlite3.Connection, owner: Ownership, *, previous: bool = Fal
 
 
 def turn_grant(db: sqlite3.Connection, owner: Ownership, original: int) -> tuple[int, int]:
-    row = db.execute(
-        "SELECT detail FROM research_observations WHERE project=? AND session=? AND work=? "
-        "AND kind='resource_decision' AND json_extract(detail,'$.request.action')='extend_turns' "
-        "ORDER BY json_extract(detail,'$.total') DESC LIMIT 1",
-        (owner.project, owner.session, owner.work),
-    ).fetchone()
-    if row is None:
-        return original, 0
-    decision = ResourceDecision.model_validate_json(row[0])
-    return decision.total, decision.total
+    return soft_grant(db, owner, "turns", original)
 
 
 class ResourceRequests:
@@ -110,10 +124,12 @@ class ResourceRequests:
         total: int,
         revision: int,
         force: bool = False,
+        scope: Literal["work", "project", "global"] = "work",
+        renewable: bool = True,
     ) -> ResourceRequest | None:
         if total <= 0 or (not force and used * 5 < total * 4):
             return None
-        identity = f"{resource}-{revision}-{owner.run}" + ("-exhausted" if force else "")
+        identity = f"{resource}-{scope}-{revision}-{owner.run}" + ("-exhausted" if force else "")
         with self.control.write() as tx:
             db = tx.sql
             check_owner(db, owner)
@@ -153,6 +169,8 @@ class ResourceRequests:
                 checkpoint_message_id=last[0] if last else None,
                 created_at=self.clock.now().timestamp(),
                 task=str(brief[0] or "")[:300] if brief else "",
+                scope=scope,
+                renewable=renewable,
             )
             db.execute(
                 "INSERT INTO research_observations VALUES (?,?,?,'resource_request',?,?,?)",
@@ -207,13 +225,13 @@ class ResourceRequests:
                         "user_grant_revision": self._resolved(tx.sql, project, session, item),
                         "superseded": item.superseded
                         or (
-                            item.resource == "turns"
+                            extension(item.resource) is not None
                             and tx.sql.execute(
                                 "SELECT 1 FROM research_observations WHERE project=? "
                                 "AND session=? AND work=? AND kind='resource_decision' "
-                                "AND json_extract(detail,'$.request.action')='extend_turns' "
+                                "AND json_extract(detail,'$.request.action')=? "
                                 "AND json_extract(detail,'$.total')>? LIMIT 1",
-                                (project, session, item.work, item.total),
+                                (project, session, item.work, extension(item.resource), item.total),
                             ).fetchone()
                             is not None
                         ),
@@ -262,8 +280,10 @@ class ResourceRequests:
                 "AND d.identity=json_extract(o.detail,'$.request_id')) "
                 "AND NOT EXISTS (SELECT 1 FROM research_observations t WHERE t.project=o.project "
                 "AND t.session=o.session AND t.work=o.work AND t.kind='resource_decision' "
-                "AND json_extract(o.detail,'$.resource')='turns' "
-                "AND json_extract(t.detail,'$.request.action')='extend_turns' "
+                "AND json_extract(t.detail,'$.request.action')=CASE "
+                "json_extract(o.detail,'$.resource') WHEN 'turns' THEN 'extend_turns' "
+                "WHEN 'elapsed_seconds' THEN 'extend_time' WHEN 'retained_bytes' "
+                "THEN 'extend_storage' END "
                 "AND json_extract(t.detail,'$.total')>json_extract(o.detail,'$.total')) "
                 "AND NOT EXISTS (SELECT 1 FROM research_observations g WHERE g.project=o.project "
                 "AND g.session=o.session AND g.work=o.work AND g.kind='token_grant' "
@@ -286,77 +306,220 @@ class ResourceRequests:
     def decide(
         self, owner: Ownership, request: ResourceDecisionRequest, *, operation: str
     ) -> ResourceDecision:
-        """Only the current direct parent decides; an agent never increases tokens."""
-        if not request.reason.strip():
-            raise ControlError(INVALID_REQUEST, "a progress-based reason is required")
+        """A direct parent decides, or an opted-in root renews with saved progress."""
+        with self.control.write() as tx:
+            return self._decide(tx.sql, owner, request, operation=operation)
+
+    def approve(
+        self, project: str, session: str, request: ResourceApprovalRequest, *, operator: str
+    ) -> ResourceDecision:
+        """Explicit USER extension of paused work; never dispatches or resumes it."""
+        if not operator.strip() or request.action not in EXTENSIONS:
+            raise ControlError(INVALID_REQUEST, "USER approval must name a soft extension")
         with self.control.write() as tx:
             db = tx.sql
-            check_owner(db, owner)
-            row = db.execute(
-                "SELECT o.work,o.detail,w.parent,w.current,w.state FROM research_observations o "
-                "JOIN research_work w USING(project,session,work) WHERE o.project=? AND "
-                "o.session=? "
-                "AND o.kind='resource_request' AND json_extract(o.detail,'$.request_id')=?",
-                (owner.project, owner.session, request.request_id),
+            root = db.execute(
+                "SELECT w.work,w.current,s.epoch FROM research_sessions s "
+                "JOIN research_work w ON w.project=s.project AND w.session=s.session "
+                "AND w.work=s.root WHERE s.project=? AND s.session=?",
+                (project, session),
             ).fetchone()
-            if row is None:
-                raise ControlError(NOT_FOUND, "resource request was not found")
-            work, detail, parent, current, state = row
-            warned = ResourceRequest.model_validate_json(detail)
-            existing = db.execute(
-                "SELECT detail FROM research_observations WHERE project=? AND session=? AND work=? "
-                "AND kind='resource_decision' AND identity=?",
-                (owner.project, owner.session, work, request.request_id),
-            ).fetchone()
-            if existing:
-                prior = ResourceDecision.model_validate_json(existing[0])
-                if (
-                    prior.request != request
-                    or prior.operation != operation
-                    or prior.parent_run != owner.run
-                ):
-                    raise ControlError(CONFLICT, "resource request already has another decision")
-                return prior
-            if parent != owner.work or current != warned.current or owner.epoch != warned.epoch:
-                raise ControlError(CONFLICT, "resource request parent, attempt or epoch changed")
-            if state not in ("running", "waiting", "paused", "blocked"):
-                raise ControlError(CONFLICT, "resource recipient already ended")
-            total = warned.total
-            latest = db.execute(
-                "SELECT max(json_extract(detail,'$.total')) FROM research_observations WHERE "
-                "project=? "
-                "AND session=? AND work=? AND kind='resource_decision' "
-                "AND json_extract(detail,'$.request.action')='extend_turns'",
-                (owner.project, owner.session, work),
-            ).fetchone()[0]
-            if warned.resource == "turns" and latest is not None and latest != total:
-                raise ControlError(CONFLICT, "resource grant revision changed")
-            if request.action == "extend_turns":
-                if warned.resource != "turns":
-                    raise ControlError(INVALID_REQUEST, "only turn allowances are parent-renewable")
-                limits = settings_in(db, owner.project)
-                if total >= limits.turn_ceiling:
-                    raise ControlError(CONFLICT, "configured cumulative turn ceiling reached")
-                total = min(total + 300, limits.turn_ceiling)
-            decision = ResourceDecision(
-                request=request,
-                parent_run=owner.run,
-                operation=operation,
-                total=total,
-                observed=self.clock.now().timestamp(),
+            if root is None:
+                raise ControlError(NOT_FOUND, "research session was not found")
+            if db.execute(
+                "SELECT 1 FROM run_leases WHERE project_id=? AND session_id=? UNION ALL "
+                "SELECT 1 FROM research_resumes WHERE project=? AND session=? "
+                "AND status IN ('queued','running') UNION ALL SELECT 1 FROM research_work "
+                "WHERE project=? AND session=? AND state IN ('running','waiting') LIMIT 1",
+                (project, session, project, session, project, session),
+            ).fetchone():
+                raise ControlError(CONFLICT, "wait for the active research tree before approving")
+            owner = Ownership(
+                project=project, session=session, work=root[0], run=root[1], epoch=root[2]
             )
-            db.execute(
-                "INSERT INTO research_observations VALUES (?,?,?,'resource_decision',?,?,?)",
-                (
-                    owner.project,
-                    owner.session,
-                    work,
-                    request.request_id,
-                    decision.observed,
-                    decision.model_dump_json(),
+            return self._decide(
+                db,
+                owner,
+                ResourceDecisionRequest(
+                    request_id=request.request_id, action=request.action, reason=request.reason
                 ),
+                operation="user-resource:" + request.request_id,
+                operator=operator,
+                approval=request,
             )
-            return decision
+
+    def _decide(
+        self,
+        db: sqlite3.Connection,
+        owner: Ownership,
+        request: ResourceDecisionRequest,
+        *,
+        operation: str,
+        operator: str | None = None,
+        approval: ResourceApprovalRequest | None = None,
+    ) -> ResourceDecision:
+        if not request.reason.strip():
+            raise ControlError(INVALID_REQUEST, "a progress-based reason is required")
+        check_owner(db, owner)
+        row = db.execute(
+            "SELECT o.work,o.detail,w.parent,w.current,w.state,w.root FROM research_observations o "
+            "JOIN research_work w USING(project,session,work) WHERE o.project=? AND "
+            "o.session=? AND o.kind='resource_request' AND json_extract(o.detail,'$.request_id')=?",
+            (owner.project, owner.session, request.request_id),
+        ).fetchone()
+        if row is None:
+            raise ControlError(NOT_FOUND, "resource request was not found")
+        work, detail, parent, current, state, root = row
+        warned = ResourceRequest.model_validate_json(detail)
+        if approval is not None and (
+            approval.current != warned.current
+            or approval.epoch != warned.epoch
+            or approval.total != warned.total
+        ):
+            raise ControlError(CONFLICT, "paused resource attempt or allowance changed")
+        existing = db.execute(
+            "SELECT detail FROM research_observations WHERE project=? AND session=? AND work=? "
+            "AND kind='resource_decision' AND identity=?",
+            (owner.project, owner.session, work, request.request_id),
+        ).fetchone()
+        if existing:
+            prior = ResourceDecision.model_validate_json(existing[0])
+            if (
+                prior.request != request
+                or prior.operation != operation
+                or prior.parent_run != owner.run
+                or prior.operator != operator
+            ):
+                raise ControlError(CONFLICT, "resource request already has another decision")
+            return prior
+        self_renewal = parent is None and work == owner.work and operator is None
+        if (
+            (parent != owner.work and not self_renewal and operator is None)
+            or current != warned.current
+            or owner.epoch != warned.epoch
+        ):
+            raise ControlError(CONFLICT, "resource request parent, attempt or epoch changed")
+        if state not in ("running", "waiting", "paused", "blocked") or tree_cancelled(
+            db, owner.project, owner.session, root
+        ):
+            raise ControlError(CONFLICT, "resource recipient already ended or was stopped")
+        if approval is not None and (
+            state not in ("paused", "blocked")
+            or approval.current != current
+            or approval.epoch != warned.epoch
+            or approval.total != warned.total
+        ):
+            raise ControlError(CONFLICT, "paused resource attempt or allowance changed")
+        total, progress = warned.total, 0
+        target = Ownership(
+            project=owner.project, session=owner.session, work=work, run=current, epoch=owner.epoch
+        )
+        _, latest = soft_grant(db, target, warned.resource, total)
+        if latest and latest != total:
+            raise ControlError(CONFLICT, "resource grant revision changed")
+        limits = settings_in(db, owner.project)
+        if self_renewal:
+            if not limits.root_resource_renewal or request.action not in EXTENSIONS:
+                raise ControlError(CONFLICT, "root self-renewal is not enabled for this action")
+            progress = research_progress(db, owner)
+            prior_progress = db.execute(
+                "SELECT coalesce(max(json_extract(detail,'$.progress')),0) "
+                "FROM research_observations "
+                "WHERE project=? AND session=? AND work=? AND kind='resource_decision' "
+                "AND json_extract(detail,'$.request.action')=? "
+                "AND json_extract(detail,'$.operator') IS NULL",
+                (owner.project, owner.session, owner.work, request.action),
+            ).fetchone()[0]
+            baseline = db.execute(
+                "SELECT detail FROM research_observations WHERE project=? AND session=? "
+                "AND work=? AND kind='resource_progress' AND identity='initial'",
+                (owner.project, owner.session, owner.work),
+            ).fetchone()
+            prior_progress = max(prior_progress, int(baseline[0]) if baseline else 0)
+            if warned.checkpoint_message_id is None or progress <= prior_progress:
+                raise ControlError(
+                    CONFLICT, "save a checkpoint and new research evidence before self-renewal"
+                )
+        if request.action in EXTENSIONS:
+            kind, increment, _ = EXTENSIONS[request.action]
+            if warned.resource != kind or not warned.renewable:
+                raise ControlError(INVALID_REQUEST, "this resource is not renewable by that action")
+            if (kind == "elapsed_seconds" and limits.research_seconds is None) or (
+                kind == "retained_bytes" and limits.storage_bytes is None
+            ):
+                raise ControlError(CONFLICT, "the optional resource allowance is disabled")
+            maximum = ceiling(limits, request.action)
+            if total >= maximum:
+                raise ControlError(CONFLICT, "configured cumulative resource ceiling reached")
+            total = min(total + increment, maximum)
+        decision = ResourceDecision(
+            request=request,
+            parent_run=owner.run,
+            operation=operation,
+            total=total,
+            observed=self.clock.now().timestamp(),
+            operator=operator,
+            progress=progress,
+        )
+        db.execute(
+            "INSERT INTO research_observations VALUES (?,?,?,'resource_decision',?,?,?)",
+            (
+                owner.project,
+                owner.session,
+                work,
+                request.request_id,
+                decision.observed,
+                decision.model_dump_json(),
+            ),
+        )
+        return decision
+
+    def sample(
+        self, owner: Ownership, *, seconds: int
+    ) -> tuple[tuple[Resource, int, int, int], ...]:
+        """Observe active time and optional logical retained-byte allowances safely."""
+        with self.control.write() as tx:
+            db = tx.sql
+            elapsed = sample_elapsed(db, owner, seconds, self.clock.now().timestamp())
+            settings = settings_in(db, owner.project)
+            if not db.execute(
+                "SELECT 1 FROM research_observations WHERE project=? AND session=? "
+                "AND work=? AND kind='resource_progress' AND identity='initial'",
+                (owner.project, owner.session, owner.work),
+            ).fetchone():
+                db.execute(
+                    "INSERT INTO research_observations "
+                    "VALUES (?,?,?,'resource_progress','initial',?,?)",
+                    (
+                        owner.project,
+                        owner.session,
+                        owner.work,
+                        self.clock.now().timestamp(),
+                        str(research_progress(db, owner)),
+                    ),
+                )
+            samples: list[tuple[Resource, int, int, int]] = []
+            for kind, configured in (
+                ("elapsed_seconds", settings.research_seconds),
+                ("retained_bytes", settings.storage_bytes),
+            ):
+                if configured is not None:
+                    original = initial_allowance(db, owner, kind, configured)
+                    total, revision = soft_grant(db, owner, kind, original)
+                    used = elapsed if kind == "elapsed_seconds" else retained_bytes(db, owner)
+                    samples.append(
+                        (
+                            "elapsed_seconds" if kind == "elapsed_seconds" else "retained_bytes",
+                            used,
+                            total,
+                            revision,
+                        )
+                    )
+            return tuple(samples)
+
+    def root_enabled(self, owner: Ownership) -> bool:
+        with self.control.read() as tx:
+            return settings_in(tx.sql, owner.project).root_resource_renewal
 
     def limits(
         self, owner: Ownership, *, turns: int, tokens: int | None
@@ -401,7 +564,8 @@ class ResourceRequests:
                 "json_extract(r.detail,'$.request_id')=d.identity "
                 "WHERE d.project=? AND d.session=? AND d.work=? AND d.kind='resource_decision' "
                 "AND json_extract(r.detail,'$.current')=? AND json_extract(r.detail,'$.epoch')=? "
-                "ORDER BY d.observed DESC LIMIT 4",
+                "ORDER BY json_extract(d.detail,'$.request.action') IN ('pause','report') DESC, "
+                "d.observed DESC LIMIT 4",
                 (owner.project, owner.session, owner.work, owner.run, owner.epoch),
             ).fetchall()
         return [ResourceDecision.model_validate_json(row[0]) for row in rows]

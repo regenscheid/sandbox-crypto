@@ -75,9 +75,20 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                     "check_turns",
                     "task_tokens",
                     "task_turns",
+                    "turn_ceiling",
+                    "max_token_grant",
+                    "research_seconds",
+                    "time_ceiling_seconds",
+                    "storage_bytes",
+                    "storage_ceiling_bytes",
+                    "root_resource_renewal",
                 )
                 if (value := getattr(args, name)) is not None
             }
+            if args.no_research_time_limit:
+                changes["research_seconds"] = None
+            if args.no_storage_limit:
+                changes["storage_bytes"] = None
             if args.models is not None:  # empty: no choice
                 changes["models"] = tuple(m.strip() for m in args.models.split(",") if m.strip())
             if args.fallback is not None:  # empty: none
@@ -98,7 +109,12 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 f"{found.cap} delegated runs at once; a check gets {found.check_tokens} "
                 f"tokens and {found.check_turns} turns, a task {found.task_tokens} tokens and "
                 f"{found.task_turns} turns; a brief may choose the models: "
-                f"{models}; fallback: {found.fallback or 'none'}"
+                f"{models}; fallback: {found.fallback or 'none'}; "
+                f"turn ceiling: {found.turn_ceiling}; token ceiling: {found.max_token_grant}; "
+                f"active seconds: {found.research_seconds or 'off'} "
+                f"(ceiling {found.time_ceiling_seconds}); retained artifact bytes: "
+                f"{found.storage_bytes or 'off'} (ceiling {found.storage_ceiling_bytes}); "
+                f"root resource renewal: {found.root_resource_renewal}"
             )
         case "macros":
             from .documents import USER, DocumentStore, store_path
@@ -476,18 +492,65 @@ def add_parsers(commands: Any) -> None:
         "--cap", type=int, help="delegation: delegated runs a session runs at once (10)"
     )
     projects.add_argument(
-        "--check-tokens", type=int, help="delegation: a check's tokens, at most (150000)"
+        "--check-tokens", type=int, help="delegation: a check's tokens, at most (20000000)"
     )
     projects.add_argument(
-        "--check-turns", type=int, help="delegation: a check's turns, at most (12)"
+        "--check-turns", type=int, help="delegation: a check's turns, at most (300)"
     )
     projects.add_argument(
         "--task-tokens",
         type=int,
-        help="delegation: a task's tokens, at most (5000000; 50000 to 50000000)",
+        help="delegation: a task's tokens, at most (20000000; 50000 to 1000000000)",
     )
     projects.add_argument(
         "--task-turns", type=int, help="delegation: a task's turns, at most (300; 1 to 10000)"
+    )
+    projects.add_argument(
+        "--turn-ceiling", type=int, help="delegation: cumulative renewable turn ceiling (10000)"
+    )
+    projects.add_argument(
+        "--max-token-grant",
+        type=int,
+        help="delegation: USER cumulative token approval ceiling (1000000000)",
+    )
+    time = projects.add_mutually_exclusive_group()
+    time.add_argument(
+        "--research-seconds",
+        type=int,
+        help="delegation: optional cumulative observed active-time allowance",
+    )
+    time.add_argument(
+        "--no-research-time-limit",
+        action="store_true",
+        help="delegation: disable the soft active-time allowance",
+    )
+    projects.add_argument(
+        "--time-ceiling-seconds",
+        type=int,
+        help="delegation: renewable active-time ceiling (604800)",
+    )
+    storage = projects.add_mutually_exclusive_group()
+    storage.add_argument(
+        "--storage-bytes",
+        type=int,
+        help="delegation: optional per-work retained artifact byte allowance, not VM disk usage",
+    )
+    storage.add_argument(
+        "--no-storage-limit",
+        action="store_true",
+        help="delegation: disable the soft retained-artifact allowance",
+    )
+    projects.add_argument(
+        "--storage-ceiling-bytes",
+        type=int,
+        help="delegation: renewable retained-artifact ceiling (68719476736)",
+    )
+    projects.add_argument(
+        "--root-resource-renewal",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="delegation: permit root soft-allowance renewal with saved progress; "
+        "tokens still require USER approval",
     )
     projects.add_argument(
         "--models",
