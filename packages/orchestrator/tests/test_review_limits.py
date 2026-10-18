@@ -330,13 +330,16 @@ def test_three_failed_attempts_leave_only_smallest_span_unreviewed(store) -> Non
 
 
 @pytest.mark.asyncio
-async def test_terminal_hold_catches_up_more_than_three_small_windows(store) -> None:
+@pytest.mark.parametrize("max_terminal_windows", [5, 24])
+async def test_terminal_hold_catches_up_more_than_three_small_windows(
+    store, max_terminal_windows: int
+) -> None:
     from sandbox_science.orchestrator.consistency.controller import ReviewController
 
     from .test_consistency import context_for
 
     reviews, _, _ = store
-    reviews.defaults = ReviewConfig(max_feed_items=4, max_terminal_windows=24)
+    reviews.defaults = ReviewConfig(max_feed_items=4, max_terminal_windows=max_terminal_windows)
     for n in range(20):
         claim(reviews, f"Claim {n} is supported.", key=f"claim-{n}")
 

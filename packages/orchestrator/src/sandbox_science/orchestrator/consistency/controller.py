@@ -652,7 +652,10 @@ class ReviewController:
         else:
             progress = await asyncio.to_thread(self.store.progress, *self.scope)
             if progress["retry_end"] is None and not progress["remaining"]:
-                summary["outcome"] = "unreviewed"
+                # The final terminal window may have finished on the last
+                # allowed iteration. Keep that result instead of replacing it.
+                if "outcome" not in summary:
+                    summary["outcome"] = "unreviewed"
             else:
                 summary["pending"] = True
         summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
