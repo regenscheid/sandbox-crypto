@@ -2,6 +2,10 @@
 
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
 
+## 2026-10-17
+
+- **Research-tree steering** (the owner, D87; [PD-44](../docs/specs/plans-and-delegation.md)): the root routes user messages among its own work, a new or revised plan, child assignments, and feedback on research records. Direct parent-child messages are durable and delivered at saved-run safe points; an ended recipient causes a delivery-failure notice to the root.
+
 ## 2026-10-16
 
 Decisions of the owner, later the same day (after #467):

@@ -213,7 +213,7 @@ class Delegations(TurnHook):
         runner: ChildRunner,
         max_turns: int,
         offer: bool,
-        wake: Callable[[], Awaitable[None]] | None = None,
+        wake: Callable[[], Awaitable[str | None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         limits: DelegationSettings | None = None,
         models: ModelChoice | None = None,
@@ -544,13 +544,14 @@ class Delegations(TurnHook):
         if pending:
             when = asyncio.FIRST_COMPLETED if request.mode == "first" else asyncio.ALL_COMPLETED
             ending: asyncio.Future[None] = asyncio.ensure_future(_ended(pending, when))
-            waiting = [ending]
+            waiting: list[asyncio.Future[None] | asyncio.Task[str | None]] = [ending]
             if self.wake is not None:
                 waiting.append(asyncio.ensure_future(self.wake()))
             try:
                 done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
                 if ending not in done:
-                    reason = "user_message"
+                    woke = next(future for future in done if future is not ending)
+                    reason = woke.result() or "user_message"
             finally:
                 for future in waiting:
                     future.cancel()  # the children's tasks go on

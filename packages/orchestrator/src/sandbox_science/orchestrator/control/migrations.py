@@ -2885,6 +2885,42 @@ def _figure_checks(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _agent_messages(schema: Schema) -> None:
+    """Durable messages between directly related runs of one research tree."""
+    for statement in (
+        """CREATE TABLE agent_messages (
+    message_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    sender_run TEXT NOT NULL,
+    sender_delegation TEXT,
+    recipient_delegation TEXT,
+    body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) BETWEEN 1 AND 4096),
+    created_at TEXT NOT NULL,
+    delivered_run TEXT,
+    UNIQUE (project_id, session_id, operation_id),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id),
+    FOREIGN KEY (sender_delegation) REFERENCES delegations (delegation_id),
+    FOREIGN KEY (recipient_delegation) REFERENCES delegations (delegation_id)
+) STRICT""",
+        "CREATE INDEX agent_messages_pending ON agent_messages "
+        "(project_id, session_id, recipient_delegation, delivered_run)",
+        """CREATE TRIGGER agent_messages_kept BEFORE UPDATE ON agent_messages
+WHEN NEW.message_id IS NOT OLD.message_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.operation_id IS NOT OLD.operation_id
+OR NEW.sender_run IS NOT OLD.sender_run
+OR NEW.sender_delegation IS NOT OLD.sender_delegation
+OR NEW.recipient_delegation IS NOT OLD.recipient_delegation
+OR NEW.body IS NOT OLD.body OR NEW.created_at IS NOT OLD.created_at
+OR OLD.delivered_run IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'an agent message is kept'); END""",
+        """CREATE TRIGGER agent_messages_no_delete BEFORE DELETE ON agent_messages
+BEGIN SELECT RAISE(ABORT, 'agent messages are kept'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2942,6 +2978,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _document_pins,
     _statement_and_chat_pins,
     _figure_checks,
+    _agent_messages,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
