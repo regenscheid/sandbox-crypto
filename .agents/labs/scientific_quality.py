@@ -155,7 +155,7 @@ class Lab(recovery.Lab):
     def authorize(self, key_file: Path, allowance: float, note: str):
         """Record the owner's separate allowance; do not consume the referenced key."""
         assert self.quality["mode"] == "prepared"
-        assert allowance == 75, "this reviewed proposal is exactly a separate USD 75 allowance"
+        assert allowance == 150, "the owner authorized USD 150 aggregate new test spend"
         assert note.strip(), "record the owner's explicit authorization text"
         assert key_file.is_absolute()
         config = recovery.load_config(self.config).model_dump(mode="json", exclude_none=True)
@@ -165,7 +165,7 @@ class Lab(recovery.Lab):
         self.quality.update(
             mode="authorized",
             allowance=allowance,
-            admission_stop=65.0,
+            admission_stop=130.0,
             authorization=note,
             authorized=datetime.now(UTC).isoformat(),
         )
@@ -253,9 +253,9 @@ class Lab(recovery.Lab):
             value = self.budget()
             self.evidence("quality-budget", value)
             known = (value["observed"] or 0) + value["reserved"]
-            if known >= 50 and not warned:
+            if known >= 100 and not warned:
                 print(
-                    "Quality lab reached USD 50 known plus reserved; inspect progress and unknowns.",
+                    "Quality lab reached USD 100 known plus reserved; inspect progress and unknowns.",
                     flush=True,
                 )
                 warned = True

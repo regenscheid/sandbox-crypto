@@ -1,7 +1,7 @@
-# Proposed scientific-quality acceptance
+# Scientific-quality acceptance
 
 Prepared against `ae8ef6b2` on 2026-10-18. **No paid calls have been dispatched.**
-The owner must authorize this experiment's budget before live startup; the coordinator verifies that authorization.
+The owner authorized $150 aggregate new testing spend on 2026-10-18. The coordinator records that authorization before startup.
 This is a small reproducible cryptanalysis exercise, not a continuation of SNOVA
 and not a claim of novel cryptanalysis or broad long-context qualification.
 
@@ -68,11 +68,11 @@ a 160,000-token working ceiling and checks the serialized request stays below
 the long-context threshold. The listing does not prove max-effort transport or
 review quality; record actual requests and outcomes when the lab runs.
 
-Proposed allowance: **USD 75 total estimated spend for this new lab only**.
+Authorized allowance: **USD 150 total estimated spend across this new test campaign**.
 Expected size: 60–100 Sol research calls, 4–8 Sol fold/overview calls, and 20–40
 Luna reviewer calls, roughly USD 20–45 at the described rates depending on cache
 and reasoning output. This is a forecast, not a cost guarantee. Inspect progress
-at USD 50; stop admitting new research at USD 65, leaving USD 10 for settlement
+at USD 100; stop admitting new research at USD 130, leaving USD 20 for settlement
 and a short report. Do not reset the lifetime estimate or silently launch another
 arm. Upstream LiteLLM controls remain primary; unknown costs stay visible and do
 not alone become an admission refusal. Warn if unpriced work makes the estimate

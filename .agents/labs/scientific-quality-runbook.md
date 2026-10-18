@@ -1,7 +1,7 @@
 # Scientific-quality lab operator runbook
 
-**Prepared, not run with real models.** The separate USD 75 allowance still needs
-the owner's authorization. The earlier SNOVA allowance is not reused. No lab
+**Prepared, not yet run with real models.** The owner authorized USD 150 aggregate
+new testing spend on 2026-10-18. The earlier SNOVA allowance is not reused. No lab
 service is started by importing the driver, its offline selftest, `prepare`, or
 `authorize`. The last operation records an authorization supplied by the human
 operator; it does not independently establish that the owner actually gave it.
@@ -53,7 +53,7 @@ Do not print, open, list or copy the owner's key yourself. The existing launcher
 alone consumes the referenced key and prepares the confined runtime.
 
 ```sh
-.venv/bin/python -I .agents/labs/scientific_quality.py authorize "$QUALITY_LAB" --allowance 75 --key-file /absolute/authorized/key-file --authorization 'Exact owner authorization'
+.venv/bin/python -I .agents/labs/scientific_quality.py authorize "$QUALITY_LAB" --allowance 150 --key-file /absolute/authorized/key-file --authorization 'Exact owner authorization'
 .venv/bin/python -I .agents/labs/scientific_quality.py up "$QUALITY_LAB"
 .venv/bin/python -I .agents/labs/scientific_quality.py inspect "$QUALITY_LAB"
 ```
@@ -65,9 +65,9 @@ or skills-generation model is enabled. Startup never sends a research message.
 
 The lab's owned `-model.service` unit is repurposed as a five-second lifetime
 estimate guard after the unused synthetic model peer is stopped. It reports at
-USD 50 and sets the lab project's daily admission cap to zero at USD 65 observed
+USD 100 and sets the lab project's daily admission cap to zero at USD 130 observed
 plus explicit reservations. Unknown/unpriced calls remain visible. Do not reset
-the guard or silently spend the USD 10 reserve; it is headroom for in-flight
+the guard or silently spend the USD 20 reserve; it is headroom for in-flight
 settlement and reporting, not automatic authorization to increase the cap.
 The upstream gateway remains the primary spending control. Inspect uncertainty
 at each meaningful checkpoint; do not interpret an unavailable cost as zero.
