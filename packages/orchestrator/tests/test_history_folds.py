@@ -144,9 +144,9 @@ def test_the_geometry_scales_its_budgets_on_small_ceilings_and_refuses_too_littl
 
 
 async def test_the_gateways_input_limit_caps_the_ceiling(harness: Harness) -> None:
-    harness.gateway.limits = {"main": {"max_input_tokens": 90_000, "max_output_tokens": 8_000}}
+    harness.gateway.limits = {"main": {"max_input_tokens": 100_000, "max_output_tokens": 8_000}}
     record = await harness.run("run-1", [Reply("Hi.")])
-    assert folds(record)["geometry"]["ceiling"] == 90_000  # the output is not in it
+    assert folds(record)["geometry"]["ceiling"] == 100_000  # the output is not in it
 
 
 async def test_a_claude_models_window_is_shared_with_its_answer(harness: Harness) -> None:

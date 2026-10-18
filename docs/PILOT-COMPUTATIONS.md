@@ -22,7 +22,7 @@ before repeating them. This adds no mandatory USER approval gate.
 
 The guidance is short original text in `SYSTEM_PROMPT` in
 [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py), part
-of MAIN base content version `sandbox-main-9` (`MAIN_VERSION`). There is no measurement or cost-estimation tool, enforced
+of MAIN base content version `sandbox-main-10` (`MAIN_VERSION`). There is no measurement or cost-estimation tool, enforced
 computation classifier, trial executor, additional model call, controller decision
 or permission for pilots. Nothing mechanically certifies representativeness,
 correctness or a scaling estimate; actual results and missing capabilities still

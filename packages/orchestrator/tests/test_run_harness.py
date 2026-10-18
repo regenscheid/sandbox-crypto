@@ -89,6 +89,7 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     assert names == [
         "requests",
         "delegations",  # handbacks, whether or not the project delegates
+        "agent_messages",  # direct-parent messages, including delivery failures
         "questions",  # where each reply begins, for ask_user's one question per reply
         "plans",
         "reviews",
