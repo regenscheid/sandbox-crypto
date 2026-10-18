@@ -14,6 +14,9 @@ from typing import Final
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, new_id
 from sandbox_science.orchestrator.control import ControlStore
 
+from .grants import grant_total
+from .plans import spent_tokens
+
 MAX_NO_PROGRESS: Final = 3
 RETRY_SECONDS: Final = 30
 
@@ -28,15 +31,27 @@ class AutoRecovery:
         self, *, after: tuple[str, str, str] = ("", "", "")
     ) -> tuple[tuple[str, str, str], ...]:
         """Page roots that might need recovery without reading transcripts or payloads."""
+        recently_checked = self.clock.now().timestamp() - RETRY_SECONDS
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT w.project,w.session,w.work FROM research_work w "
+                "JOIN research_sessions rs USING(project,session) "
                 "JOIN sessions s ON s.project_id=w.project AND s.session_id=w.session "
                 "WHERE w.parent IS NULL AND w.state IN ('paused','blocked') "
                 "AND w.reason IN ('error','unfinished_children') AND s.closed_at IS NULL "
+                "AND w.root=rs.root "
+                "AND NOT EXISTS (SELECT 1 FROM research_resumes q WHERE q.project=w.project "
+                "AND q.session=w.session AND q.status IN ('queued','running')) "
+                "AND NOT EXISTS (SELECT 1 FROM run_leases l WHERE l.project_id=w.project "
+                "AND l.session_id=w.session) "
+                "AND NOT EXISTS (SELECT 1 FROM session_messages m WHERE m.project_id=w.project "
+                "AND m.session_id=w.session AND m.state='queued') "
+                "AND NOT EXISTS (SELECT 1 FROM research_observations o WHERE o.project=w.project "
+                "AND o.session=w.session AND o.work=w.work AND o.kind='auto_resume' "
+                "AND o.observed>?) "
                 "AND (w.project,w.session,w.work)>(?,?,?) "
                 "ORDER BY w.project,w.session,w.work LIMIT 100",
-                after,
+                (recently_checked, *after),
             ).fetchall()
         return tuple((str(p), str(s), str(r)) for p, s, r in rows)
 
@@ -77,8 +92,10 @@ class AutoRecovery:
             ).fetchone():
                 return None
             work = db.execute(
-                "SELECT state,reason FROM research_work WHERE project=? AND session=? "
-                "AND work=? AND root=? AND parent IS NULL",
+                "SELECT w.state,w.reason FROM research_work w "
+                "JOIN research_sessions s USING(project,session) WHERE w.project=? "
+                "AND w.session=? AND w.work=? AND w.root=? AND w.root=s.root "
+                "AND w.parent IS NULL",
                 (project, session, root, root),
             ).fetchone()
             if (
@@ -95,7 +112,9 @@ class AutoRecovery:
                 "AND w.state NOT IN ('completed','stopped')",
                 (project, session, root),
             ).fetchall()
-            if not unfinished or any(
+            if not any(reason == "error" and phase == "model" for _, reason, phase in unfinished):
+                return None
+            if any(
                 reason != "unfinished_children" and not (reason == "error" and phase == "model")
                 for _, reason, phase in unfinished
             ):
@@ -120,6 +139,24 @@ class AutoRecovery:
                 "AND t.operation_id=i.operation_id) LIMIT 1",
                 (project, session, root),
             ).fetchone():
+                return None
+            # A grant is cumulative across attempts. Only a USER grant decision
+            # can increase it; do not queue a recovery that would immediately
+            # fail before its first model dispatch.
+            grants = db.execute(
+                "SELECT w.work,json_extract(b.snapshot,'$.request.tokens') "
+                "FROM research_work w LEFT JOIN research_blueprints b "
+                "ON b.project=w.project AND b.session=w.session AND b.work=w.work "
+                "WHERE w.project=? AND w.session=? AND w.root=? "
+                "AND w.state NOT IN ('completed','stopped')",
+                (project, session, root),
+            ).fetchall()
+            if any(
+                isinstance(original, int)
+                and spent_tokens(db, project, session, work)
+                >= grant_total(db, project, session, work, original)
+                for work, original in grants
+            ):
                 return None
             progress = db.execute(
                 "SELECT (SELECT count(*) FROM research_work WHERE project=? AND session=? "

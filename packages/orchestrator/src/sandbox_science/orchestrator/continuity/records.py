@@ -96,6 +96,46 @@ def _work(row: tuple[object, ...] | None) -> Work:
     return Work.model_validate(dict(zip(Work.model_fields, row, strict=True)))
 
 
+def _auto_claim_refusal(
+    db: sqlite3.Connection, project: str, session: str, root: str, request: str
+) -> str | None:
+    """Recheck late USER changes inside the automatic request's claim transaction."""
+    if (
+        db.execute(
+            "SELECT 1 FROM research_observations WHERE project=? AND session=? AND work=? "
+            "AND kind='auto_resume' AND identity=?",
+            (project, session, root, request),
+        ).fetchone()
+        is None
+    ):
+        return None  # explicit Resume retains its own operator-selected semantics
+    if (
+        db.execute(
+            "SELECT 1 FROM research_work w JOIN research_sessions s USING(project,session) "
+            "WHERE w.project=? AND w.session=? AND w.work=? AND w.root=s.root "
+            "AND w.state IN ('paused','blocked')",
+            (project, session, root),
+        ).fetchone()
+        is None
+    ):
+        return "automatic Resume invalidated by Stop or a newer research tree"
+    if db.execute(
+        "SELECT 1 FROM session_messages WHERE project_id=? AND session_id=? "
+        "AND state='queued' LIMIT 1",
+        (project, session),
+    ).fetchone():
+        return "automatic Resume invalidated by a new user message"
+    if db.execute(
+        "SELECT 1 FROM run_cancels c JOIN research_attempts a "
+        "ON a.project=c.project_id AND a.session=c.session_id AND a.run=c.run "
+        "JOIN research_work w ON w.project=a.project AND w.session=a.session "
+        "AND w.work=a.work WHERE w.project=? AND w.session=? AND w.root=? LIMIT 1",
+        (project, session, root),
+    ).fetchone():
+        return "automatic Resume invalidated by cancellation"
+    return None
+
+
 def check_owner(db: sqlite3.Connection, owner: Ownership | None = None) -> None:
     """Fence a state mutation inside its transaction, including delayed thread work."""
     owner = owner or CURRENT.get()
@@ -492,6 +532,8 @@ class WorkRecords:
 
     def claim(self, project: str, session: str, request: str, *, lease_run: str) -> tuple[str, int]:
         """Advance the session fence while its caller holds the session run lease."""
+        refusal: str | None = None
+        epoch: int | None = None
         with self.control.write() as tx:
             db = tx.sql
             if (
@@ -510,53 +552,76 @@ class WorkRecords:
             if row is None:
                 raise ControlError(CONFLICT, "Resume is no longer queued")
             root = str(row[0])
-            db.execute(
-                "UPDATE research_sessions SET epoch=epoch+1,root=? WHERE project=? AND session=?",
-                (root, project, session),
-            )
-            epoch = int(
+            refusal = _auto_claim_refusal(db, project, session, root, request)
+            if refusal is None:
+                epoch = self._accept_claim(db, project, session, request, root, lease_run)
+            else:
                 db.execute(
-                    "SELECT epoch FROM research_sessions WHERE project=? AND session=?",
-                    (project, session),
-                ).fetchone()[0]
-            )
-            db.execute(
-                "UPDATE research_resumes SET status='running' WHERE project=? "
-                "AND session=? AND request=?",
-                (project, session, request),
-            )
-            db.execute(
-                "INSERT INTO research_observations VALUES (?,?,?,'resume_lease',?,?,?)",
-                (
-                    project,
-                    session,
-                    root,
-                    request,
-                    self.clock.now().timestamp(),
-                    json.dumps({"run": lease_run, "epoch": epoch}),
-                ),
-            )
-            db.execute(
-                "UPDATE research_work SET state='waiting',reason=NULL WHERE project=? "
-                "AND session=? "
-                "AND root=? AND state NOT IN ('completed','stopped')",
-                (project, session, root),
-            )
-            # Claim owns input admission too: an operator may have disconnected
-            # immediately after saving the Resume request. Never unhold another
-            # tree, a terminal branch, or an input already consumed canonically.
-            db.execute(
-                "UPDATE session_messages AS m SET state='queued',updated_at=? "
-                "WHERE m.project_id=? AND m.session_id=? AND m.state='held' AND EXISTS "
-                "(SELECT 1 FROM research_attempts a JOIN research_work w "
-                "USING(project,session,work) WHERE a.project=m.project_id "
-                "AND a.session=m.session_id AND a.run=m.offered AND w.root=? "
-                "AND w.state NOT IN ('completed','stopped')) AND NOT EXISTS "
-                "(SELECT 1 FROM response_receipts r WHERE r.project=m.project_id "
-                "AND r.session=m.session_id AND r.source='messages' AND r.notice=m.message_id)",
-                (self.clock.now().isoformat(), project, session, root),
-            )
+                    "UPDATE research_resumes SET status='blocked',reason=? "
+                    "WHERE project=? AND session=? AND request=? AND status='queued'",
+                    (refusal, project, session, request),
+                )
+        if refusal is not None:
+            raise ControlError(CONFLICT, refusal)
+        if epoch is None:
+            raise ControlError(CONFLICT, "Resume did not claim an epoch")
         return root, epoch
+
+    def _accept_claim(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        request: str,
+        root: str,
+        lease_run: str,
+    ) -> int:
+        db.execute(
+            "UPDATE research_sessions SET epoch=epoch+1,root=? WHERE project=? AND session=?",
+            (root, project, session),
+        )
+        epoch = int(
+            db.execute(
+                "SELECT epoch FROM research_sessions WHERE project=? AND session=?",
+                (project, session),
+            ).fetchone()[0]
+        )
+        db.execute(
+            "UPDATE research_resumes SET status='running' WHERE project=? "
+            "AND session=? AND request=?",
+            (project, session, request),
+        )
+        db.execute(
+            "INSERT INTO research_observations VALUES (?,?,?,'resume_lease',?,?,?)",
+            (
+                project,
+                session,
+                root,
+                request,
+                self.clock.now().timestamp(),
+                json.dumps({"run": lease_run, "epoch": epoch}),
+            ),
+        )
+        db.execute(
+            "UPDATE research_work SET state='waiting',reason=NULL WHERE project=? "
+            "AND session=? AND root=? AND state NOT IN ('completed','stopped')",
+            (project, session, root),
+        )
+        # Claim owns input admission too: an operator may have disconnected
+        # immediately after saving the Resume request. Never unhold another
+        # tree, a terminal branch, or an input already consumed canonically.
+        db.execute(
+            "UPDATE session_messages AS m SET state='queued',updated_at=? "
+            "WHERE m.project_id=? AND m.session_id=? AND m.state='held' AND EXISTS "
+            "(SELECT 1 FROM research_attempts a JOIN research_work w "
+            "USING(project,session,work) WHERE a.project=m.project_id "
+            "AND a.session=m.session_id AND a.run=m.offered AND w.root=? "
+            "AND w.state NOT IN ('completed','stopped')) AND NOT EXISTS "
+            "(SELECT 1 FROM response_receipts r WHERE r.project=m.project_id "
+            "AND r.session=m.session_id AND r.source='messages' AND r.notice=m.message_id)",
+            (self.clock.now().isoformat(), project, session, root),
+        )
+        return epoch
 
     def complete_request(
         self, project: str, session: str, request: str, *, error: str | None = None
