@@ -22,9 +22,9 @@ from sandbox_science.orchestrator.loop import (
     Transcript,
     run_task,
 )
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
 from sandbox_science.orchestrator.notices import REPORT
-from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
+from sandbox_science.orchestrator.tools import Request, Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
@@ -139,22 +139,23 @@ async def test_a_run_whose_tokens_leave_one_call_makes_it_its_report_round() -> 
     assert json.loads(last_user(model.requests[-1])[len(REPORT.text) :])["limit"] == "run_budget"
 
 
-async def test_a_run_that_does_not_fold_reports_before_its_conversation_is_too_long(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Within an eighth of ``max_input_chars``, a run that does not fold, as a delegated
-    run, takes its report round while the call still fits."""
+async def test_a_run_that_does_not_fold_reports_before_its_conversation_is_too_long() -> None:
+    """A run without folding takes its report round while the call still fits.
 
-    async def read(*args: object, **kwargs: object) -> ToolOutcome:
-        return ToolOutcome("x" * 27_000, {"path": "big"})
+    Keep occupancy independent of the default system prompt and tool inventory.
+    """
 
-    monkeypatch.setattr(Toolbox, "call", read)
-    model = ScriptedModel([failing(1), ModelTurn("What I read so far.")])
-    transcript = await run_task(model, toolbox(), "go", run_id="r", max_input_chars=40_000)
-    assert (transcript.stopped, transcript.final_text) == ("context_limit", "What I read so far.")
-    assert json.loads(last_user(model.requests[-1])[len(REPORT.text) :])["limit"] == (
-        "context_limit"
+    async def read(request: Request) -> ToolOutcome:
+        return ToolOutcome("x" * 36_000, {"path": "big"})
+
+    box = toolbox()
+    box.entries = {"read": ToolEntry(ToolSpec("read", "Fixture", {"type": "object"}), "read", read)}
+    model = ScriptedModel([calling("read", "{}", 1), ModelTurn("What I read so far.")])
+    transcript = await run_task(
+        model, box, "go", run_id="r", system="Synthetic reporting test.", max_input_chars=40_000
     )
+    assert (transcript.stopped, transcript.final_text) == ("context_limit", "What I read so far.")
+    assert json.loads(last_user(model.requests[-1])[len(REPORT.text) :])["limit"] == "context_limit"
 
 
 async def test_the_runaway_guard_stops_the_same_error_repeated() -> None:

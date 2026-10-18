@@ -641,11 +641,20 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
         "returned",
         None,
     )
-    # The resource check-in wakes the parent before the lead has settled; its
-    # eventual outcome remains durable with the unconsumed descendant result.
+    # The lead can settle before the resource poll, or the check-in can wake the
+    # parent first. Either ordering preserves the unconsumed descendant result.
     waited = answer(root, 1)
-    assert waited["reason"] == "resource_request"
+    assert waited["reason"] in {"ended", "resource_request"}
     (lead,) = started(root)
+    if waited["reason"] == "ended":
+        (returned_lead,) = waited["delegations"]
+        assert (returned_lead["delegation_id"], returned_lead["ended"]) == (lead, "limit_reached")
+        (unreceived,) = returned_lead["unreceived"]
+        assert (unreceived["delegation_id"], unreceived["ended"], unreceived["stopped"]) == (
+            part,
+            "returned",
+            "answered",
+        )
     saved = delegation(delegating, lead)
     assert saved.ended == "limit_reached"
     with contextlib.closing(ProjectStore(delegating.state)) as projects:

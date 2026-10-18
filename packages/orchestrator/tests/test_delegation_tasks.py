@@ -70,7 +70,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     )
     began = json.loads(results(root)[0])
     assert began["task"] == TASK[1]["task"]
-    assert began["limits"] == {"turns": 300, "tokens": 5_000_000}
+    assert began["limits"] == {"turns": 300, "tokens": 20_000_000}
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
     assert (found.kind, found.ended) == ("task", "returned")
@@ -83,7 +83,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     assert isinstance(outcome, dict)
     assert outcome["format"] == TASK_FORMAT
     assert child.limits is not None
-    assert child.limits["tokens"] == 5_000_000
+    assert child.limits["tokens"] == 20_000_000
 
 
 async def test_a_task_has_a_delegated_agents_ledger_authority(delegating: Harness) -> None:
