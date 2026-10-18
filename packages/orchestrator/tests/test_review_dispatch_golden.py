@@ -34,9 +34,10 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "8eeb925be258128f4166b36af4d0fdce333a2cc256816542e32b262a6d93dec1",
+    # Author and fallback windows now include recent prior evidence for boundary checks.
+    "author": "369596643f3b73619c546c2b7eaae099d7f57f0bf9f3851aa7b80c75a3288f72",
     "confirmation": "051c8004029a30a6283bf09b7e182dec2049aa2dcc76d64906cebae716192d0e",
-    "fallback": "9496f06ca425c6e8f02c39507b46713fc6e5730cef2eb099641e986939c58360",
+    "fallback": "6b7bc99daf4406415c4d7328026f56100fe1782ef7d1e832db89bbb6bc9482be",
 }
 
 

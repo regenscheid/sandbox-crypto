@@ -6,6 +6,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 - The owner reaffirmed that unknown model charges must not stop local run admission. The optional daily gate compares observed costs plus explicit reservations with its unchanged cap; unknown calls remain visible and the upstream LiteLLM budget is the primary spending control (D88, RS-6a).
 - **D35 reviewer effectiveness follow-up** (SNOVA audit; [consistency review](../docs/specs/consistency-review.md), CR-2 and CR-34): bounded, contiguous evidence spans replace repeated oversized windows; capped retries shrink, partial delegated spans retain provenance, and terminal holds catch up within a configured bound. Clean global certification and idle backlog draining remain separate work.
+- The reviewer audit found missed boundary contradictions and failed-span retry storms. Adjacent windows now carry bounded exact prior evidence; clean prefixes can pass their own spans, but inconclusive historical spans prevent a session-wide pass. Repeated failures defer without advancing the watermark (CR-2, CR-34 amended).
 
 ## 2026-10-17
 

@@ -73,11 +73,16 @@ MAX_SNAPSHOT_BYTES: Final = 8 * 1024 * 1024
 MAX_SNAPSHOT_ITEMS: Final = 256
 ITEM_OVERHEAD: Final = 256
 """Bytes a snapshot's budget counts for each item beyond its locator and payload."""
+PRIOR_ITEMS: Final = 8
+PRIOR_BYTES: Final = 128 * 1024
+"""Recent exact evidence carried into the next bounded review for boundary checks."""
 MAX_SNAPSHOT_FINDINGS: Final = 100
 """Open findings a snapshot copies; one more is read to tell whether some were left out."""
 CONFIRMATION_ATTEMPTS: Final = 3
 """Failed or dropped confirmations of the same targets before they are given up."""
 LEASE_SECONDS: Final = 120
+FAILURE_COOLDOWN_SECONDS: Final = 300
+"""Minimum wait between attempts after repeated reviewer failures."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +167,7 @@ class _Plan:
     targets: list[tuple[str, int]]
     response_pins: dict[str, Json]
     complete: bool
+    span_complete: bool
     confirmation_key: str | None
 
 
@@ -593,7 +599,33 @@ class ReviewStore:
                 ).fetchone()
                 is not None
             )
-        return {"watermark": watermark, "retry_end": retry, "remaining": remaining}
+            historical_holes = (
+                db.execute(
+                    "SELECT 1 FROM review_runs WHERE project=? AND session=? "
+                    "AND kind IN ('checkpoint','terminal') AND end_seq<=? "
+                    "AND (state='inconclusive' OR (state IN ('findings','passed') AND "
+                    "coverage_complete=0 AND NOT EXISTS (SELECT 1 FROM control_events e "
+                    "WHERE e.project=review_runs.project AND e.session=review_runs.session "
+                    "AND e.subject_type='review' AND e.subject_id=review_runs.review_id "
+                    "AND e.kind='review.dispatched' AND "
+                    "json_extract(e.payload,'$.span_complete')=1))) LIMIT 1",
+                    (project, session, watermark),
+                ).fetchone()
+                is not None
+                or db.execute(
+                    "SELECT 1 FROM control_events WHERE project=? AND session=? "
+                    "AND kind='review.unreviewed' AND "
+                    "json_extract(payload,'$.start') IS NOT NULL LIMIT 1",
+                    (project, session),
+                ).fetchone()
+                is not None
+            )
+        return {
+            "watermark": watermark,
+            "retry_end": retry,
+            "remaining": remaining,
+            "historical_holes": historical_holes,
+        }
 
     def request(self, project: str, session: str) -> None:
         self.scope(project, session)
@@ -605,6 +637,27 @@ class ReviewStore:
                 (project, session),
             )
 
+    def _cooling(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        failures: int,
+        retry_end: int | None,
+    ) -> bool:
+        if failures < 3 or retry_end is None:
+            return False
+        row = db.execute(
+            "SELECT max(ended) FROM review_runs WHERE project=? AND session=? "
+            "AND end_seq=? AND state IN ('failed','dropped','capped')",
+            (project, session, retry_end),
+        ).fetchone()
+        return bool(
+            row is not None
+            and row[0] is not None
+            and self.clock() - row[0] < FAILURE_COOLDOWN_SECONDS
+        )
+
     def due(self, project: str, session: str) -> bool:
         config, _ = self.config(project)
         if not config.enabled:
@@ -615,7 +668,7 @@ class ReviewStore:
             db = tx.sql
             row = db.execute(
                 (
-                    "SELECT watermark,last_dispatch,retry_end,requested FROM "
+                    "SELECT watermark,last_dispatch,retry_end,requested,failures FROM "
                     "review_windows WHERE project=? AND session=?"
                 ),
                 (project, session),
@@ -633,7 +686,10 @@ class ReviewStore:
                 WHERE project=? AND session=? AND seq>?""",
                 (project, session, row[0]),
             ).fetchone()
+            cooling = self._cooling(db, project, session, row[4], row[2])
         elapsed = self.clock() - row[1] if row[1] is not None else float("inf")
+        if cooling:
+            return False
         return elapsed >= config.min_interval_seconds and (
             row[2] is not None
             or row[3]
@@ -819,14 +875,20 @@ class ReviewStore:
             room = (MAX_SNAPSHOT_BYTES - reserved.size, MAX_SNAPSHOT_ITEMS - reserved.items)
             # A cap retries less evidence, rather than spending the same token budget
             # on the same oversized window three times. The remaining feed stays queued.
-            shrink = 4**window.failures
+            shrink = 4 ** min(window.failures, 2)
             room = (
                 min(room[0], max(1, effective.max_feed_bytes // shrink)),
                 min(room[1], max(1, effective.max_feed_items // shrink)),
             )
             with self.documents.control.read() as tx:
                 selected_end, pinned = self._feed_items(
-                    tx.sql, project, session, window, earlier, room
+                    tx.sql,
+                    project,
+                    session,
+                    window,
+                    earlier,
+                    room,
+                    ceiling_items=MAX_SNAPSHOT_ITEMS - reserved.items,
                 )
         budget = SnapshotBudget(
             size=sum(item.size for item in pinned) + reserved.size,
@@ -859,17 +921,14 @@ class ReviewStore:
                 pinned.append(item)
         # A confirmation pins finding groups rather than consuming author work.
         # A failed author window stays independently queued, with its exact end.
-        complete = (
+        span_complete = (
             coverage_complete
-            and (
-                set(included) == set(targets)
-                if kind == "confirmation"
-                else selected_end == window.end
-            )
+            and (set(included) == set(targets) if kind == "confirmation" else True)
             and groups == len(findings)
             and all(item.complete for item in pinned)
             and all(grant["complete"] for grant in grants.values())
         )
+        complete = span_complete and (kind == "confirmation" or selected_end == window.end)
         return _Plan(
             kind=kind,
             window=window,
@@ -879,6 +938,7 @@ class ReviewStore:
             targets=included,
             response_pins=response_pins,
             complete=complete,
+            span_complete=span_complete,
             confirmation_key=_confirmation_key(included, response_pins)
             if kind == "confirmation"
             else None,
@@ -1009,6 +1069,8 @@ class ReviewStore:
         window: _Window,
         earlier: Earlier | None = None,
         room: tuple[int, int] | None = None,
+        *,
+        ceiling_items: int = MAX_SNAPSHOT_ITEMS,
     ) -> tuple[int, list[EvidenceItem]]:
         """The feed's next items after the watermark, as many as ``room``, the bytes and
         items the snapshot leaves them, allows, and the last one's sequence number. What a
@@ -1026,25 +1088,70 @@ class ReviewStore:
         items: list[EvidenceItem] = []
         actions: list[tuple[Json, Json]] = []
         revised: list[Json] = []
-        size, end = 0, window.watermark
+        size, new_items, end = 0, 0, window.watermark
         first = db.execute(
             "SELECT source_key FROM review_feed WHERE project=? AND session=? AND "
             "seq>? AND seq<=? ORDER BY seq LIMIT 1",
             (project, session, window.watermark, window.end),
         ).fetchone()
+        if window.watermark and first is not None:
+            # A claim and its contradicting observation can straddle two windows.
+            # Carry recent items as context; only rows after the watermark
+            # advance coverage. A prior ledger entry is never a newly reviewed
+            # ledger item, even if the reviewer uses it to find a contradiction.
+            carried: list[EvidenceItem] = []
+            prior_size = 0
+            prior_limit = max(1, PRIOR_ITEMS // (4 ** min(window.failures, 2)))
+            byte_limit = max(1, PRIOR_BYTES // (4 ** min(window.failures, 2)))
+            for kind, locator, payload, sha, complete in db.execute(
+                "SELECT kind,locator,payload,sha256,complete FROM review_feed WHERE "
+                "project=? AND session=? AND seq<=? AND "
+                "kind!='action' AND "
+                "(kind!='source' OR source_key GLOB 'quoted:*') "
+                "ORDER BY seq DESC LIMIT ?",
+                (project, session, window.watermark, prior_limit),
+            ):
+                item = EvidenceItem(
+                    "context" if kind == "ledger" else kind,
+                    dump({"prior_kind": kind, "locator": stored_json(locator)})
+                    if kind == "ledger"
+                    else locator,
+                    payload,
+                    sha,
+                    complete,
+                )
+                if prior_size + item.size > byte_limit:
+                    if not carried:
+                        marker = dump(
+                            {
+                                "prior_kind": kind,
+                                "sha256": sha,
+                                "bytes": item.size,
+                                "omitted": "prior item exceeds carry allowance",
+                            }
+                        )
+                        carried.append(EvidenceItem("context", locator, marker, digest(marker), 1))
+                    break
+                if len(carried) >= max(0, ceiling_items - 1):
+                    break
+                carried.append(item)
+                prior_size += item.size
+            items.extend(reversed(carried))
+            size += prior_size
         if first is not None:
             parts = str(first[0]).split(":", 2)
             if len(parts) == 3 and parts[0] == "delegated":
-                prior = db.execute(
+                prior_row = db.execute(
                     "SELECT kind,locator,payload,sha256,complete FROM review_feed WHERE "
                     "project=? AND session=? AND source_key=? AND seq<=?",
                     (project, session, ":".join(parts[:2]), window.watermark),
                 ).fetchone()
-                if prior is not None:
-                    kind, locator, payload, sha, complete = prior
+                if prior_row is not None:
+                    kind, locator, payload, sha, complete = prior_row
                     context = EvidenceItem(kind, locator, payload, sha, complete)
-                    items.append(context)
-                    size += context.size
+                    if context not in items:
+                        items.append(context)
+                        size += context.size
         # A raw source's row is passed over without reading its payload, which may be
         # 256 KiB: it takes no item and only moves the window's end.
         for seq, key, kind, locator, payload, sha, complete in db.execute(
@@ -1066,7 +1173,8 @@ class ReviewStore:
                 and end > window.watermark
                 and (
                     size + item.size > max_bytes - min(16 * 1024, max_bytes // 8)
-                    or len(items) >= max_items
+                    or new_items >= max_items
+                    or len(items) >= ceiling_items
                 )
             )
             if full:
@@ -1080,6 +1188,7 @@ class ReviewStore:
                 continue
             items.append(item)
             size += item.size
+            new_items += 1
             if kind == "document" and key.startswith("document:"):
                 revised.append(_revised(stored_json(payload)))
         if (
@@ -1325,6 +1434,10 @@ class ReviewStore:
         ).fetchone()
         if tuple(actual) != (window.watermark, window.retry, window.failures):
             return False
+        if plan.kind != "confirmation" and self._cooling(
+            db, project, session, window.failures, window.retry
+        ):
+            return False
         for finding, pinned in plan.response_pins.items():
             current = response_pin(db, finding, pinned["response_revision"])
             if current is None or (current["revision"], current["sha256"]) != (
@@ -1418,6 +1531,7 @@ class ReviewStore:
                 "type": plan.kind,
                 "start": window.watermark + 1,
                 "end": plan.selected_end,
+                "span_complete": plan.span_complete,
                 **_archived(plan.items),
             },
         )
@@ -1521,6 +1635,22 @@ class ReviewStore:
         found.pop("lease_until", None)
         return found
 
+    @staticmethod
+    def _span_complete(db: sqlite3.Connection, project: str, session: str, review: str) -> bool:
+        row = db.execute(
+            "SELECT json_extract(payload,'$.span_complete') FROM control_events "
+            "WHERE project=? AND session=? AND kind='review.dispatched' AND "
+            "subject_type='review' AND subject_id=? ORDER BY seq DESC LIMIT 1",
+            (project, session, review),
+        ).fetchone()
+        return bool(row is not None and row[0] == 1)
+
+    def span_complete(self, project: str, session: str, review: str) -> bool:
+        """Whether the immutable dispatch covered every item in its selected prefix."""
+        self.scope(project, session)
+        with self.documents.control.read() as tx:
+            return self._span_complete(tx.sql, project, session, review)
+
     def renew(self, project: str, session: str, review: str, owner: str) -> None:
         with self.documents.control.write() as tx:
             db = tx.sql
@@ -1560,8 +1690,11 @@ class ReviewStore:
         require_expired: bool = False,
         retry: bool = False,
     ) -> None:
-        """End a review. A failed or dropped one, or one a limit ended (``retry``),
-        leaves its window to be reviewed again; the third time, it is left unreviewed."""
+        """End a review. Failed, dropped and capped windows retain their watermark.
+
+        Three failures defer further attempts; they never silently certify or skip the
+        failed evidence.
+        """
         if outcome == "running":
             raise DocumentError(INVALID_REQUEST, "a review must end with an outcome")
         # The reviewer's own summary was checked when it gave it (runner.py); the
@@ -1576,7 +1709,7 @@ class ReviewStore:
                 raise DocumentError(CONFLICT, "the review owner renewed its lease")
             if outcome != "dropped":
                 self.owner(found, owner)
-            if outcome == "passed" and not found["coverage_complete"]:
+            if outcome == "passed" and not self._span_complete(db, project, session, review):
                 outcome = "inconclusive"
             cap_reached = cap_reached or bool(found["cap_reached"])
             if cap_reached and outcome in ("passed", "findings", "inconclusive"):
@@ -1610,35 +1743,25 @@ class ReviewStore:
                     "SELECT failures FROM review_windows WHERE project=? AND session=?",
                     (project, session),
                 ).fetchone()
-                failures = window[0] + 1
-                if failures >= 3:
-                    db.execute(
-                        (
-                            "UPDATE review_windows SET "
-                            "watermark=max(watermark,?),retry_end=NULL,failures=0 WHERE "
-                            "project=? AND session=?"
-                        ),
-                        (found["end_seq"], project, session),
-                    )
+                failures = min(window[0] + 1, 3)
+                db.execute(
+                    "UPDATE review_windows SET retry_end=?,failures=? WHERE "
+                    "project=? AND session=?",
+                    (found["end_seq"], failures, project, session),
+                )
+                if failures == 3:
                     self.event(
                         db,
                         project,
                         session,
-                        "review.unreviewed",
+                        "review.deferred",
                         {
                             "review": review,
                             "start": found["start_seq"],
                             "end": found["end_seq"],
-                            "failures": failures,
+                            "reason": summary,
+                            "retry_after_seconds": FAILURE_COOLDOWN_SECONDS,
                         },
-                    )
-                else:
-                    db.execute(
-                        (
-                            "UPDATE review_windows SET retry_end=?,failures=? WHERE "
-                            "project=? AND session=?"
-                        ),
-                        (found["end_seq"], failures, project, session),
                     )
             else:
                 db.execute(

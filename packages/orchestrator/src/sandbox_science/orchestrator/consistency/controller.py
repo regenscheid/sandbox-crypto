@@ -629,7 +629,11 @@ class ReviewController:
             self.task = None
             ended = await asyncio.to_thread(self.store.run, *self.scope, review)
             if ended["state"] in ("failed", "dropped"):
-                continue
+                # Another immediate dispatch would repeat the same failing call.
+                # Keep its window pending for a later, paced attempt.
+                summary["outcome"] = ended["state"]
+                summary["pending"] = True
+                break
             if (
                 ended["state"] == "capped"
                 and (await asyncio.to_thread(self.store.progress, *self.scope))["retry_end"]
@@ -658,6 +662,10 @@ class ReviewController:
                     summary["outcome"] = "unreviewed"
             else:
                 summary["pending"] = True
+        progress = await asyncio.to_thread(self.store.progress, *self.scope)
+        if summary.get("outcome") == "passed" and progress["historical_holes"]:
+            summary["outcome"] = "inconclusive"
+            summary["coverage_gap"] = True
         summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
         return self._review_summary(summary)
 

@@ -277,12 +277,10 @@ async def test_large_feed_is_reviewed_in_complete_bounded_windows(store) -> None
         review = dispatch(reviews)
         run = reviews.run("p", "s", review)
         assert bool(run["coverage_complete"]) == (run["end_seq"] == 10)
-        assert len(reviews.manifest("p", "s", review)["evidence"]) <= 4
+        assert len(reviews.manifest("p", "s", review)["evidence"]) <= 12
         covered.append((run["start_seq"], run["end_seq"]))
         await ReviewerRunner(reviews, "p", "s", review, "owner", LabReviewer()).run()
-        assert reviews.run("p", "s", review)["state"] == (
-            "passed" if run["end_seq"] == 10 else "inconclusive"
-        )
+        assert reviews.run("p", "s", review)["state"] == "passed"
     assert covered == [(1, 4), (5, 8), (9, 10)]
 
 
@@ -311,8 +309,8 @@ async def test_capped_window_shrinks_before_retry_without_skipping_feed(store) -
     assert reviews.run("p", "s", dispatch(reviews))["start_seq"] == 5
 
 
-def test_three_failed_attempts_leave_only_smallest_span_unreviewed(store) -> None:
-    reviews, _, _ = store
+def test_three_failed_attempts_defer_without_skipping_evidence(store) -> None:
+    reviews, _, now = store
     reviews.defaults = ReviewConfig(max_feed_items=16)
     for n in range(20):
         claim(reviews, f"Claim {n}.", key=f"claim-{n}")
@@ -324,9 +322,140 @@ def test_three_failed_attempts_leave_only_smallest_span_unreviewed(store) -> Non
         attempts.append((run["start_seq"], run["end_seq"]))
         reviews.finish("p", "s", review, "owner", "failed", "Synthetic model failure.")
     assert attempts == [(1, 16), (1, 4), (1, 1)]
-    assert reviews.progress("p", "s")["watermark"] == 1
+    assert reviews.progress("p", "s")["watermark"] == 0
+    assert reviews.progress("p", "s")["retry_end"] == 1
     assert reviews.progress("p", "s")["remaining"]
-    assert reviews.run("p", "s", dispatch(reviews))["start_seq"] == 2
+    assert (
+        reviews.dispatch(
+            "p", "s", "terminal", author_run="author-1", owner="owner", alias="reviewer"
+        )
+        is None
+    )
+    now[0] += 300
+    assert reviews.run("p", "s", dispatch(reviews))["start_seq"] == 1
+
+
+def test_cooldown_starts_when_the_slow_failure_ends(store) -> None:
+    reviews, _, now = store
+    claim(reviews)
+    for _ in range(3):
+        review = dispatch(reviews)
+        now[0] += 100
+        reviews.finish("p", "s", review, "owner", "failed", "Model timed out.")
+    assert (
+        reviews.dispatch(
+            "p", "s", "terminal", author_run="author-1", owner="owner", alias="reviewer"
+        )
+        is None
+    )
+    now[0] += 250
+    assert not reviews.due("p", "s")
+    now[0] += 50
+    assert dispatch(reviews)
+
+
+def test_incomplete_finding_span_remains_a_historical_gap(store) -> None:
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=1)
+    reviews.observe(
+        "p",
+        "s",
+        "incomplete",
+        "transcript",
+        {"run": "author-1"},
+        {"role": "assistant", "content": "The result is 16."},
+        complete=False,
+    )
+    claim(reviews, "Later result is 15.", "later")
+    first = dispatch(reviews)
+    assert not reviews.span_complete("p", "s", first)
+    reviews.finish("p", "s", first, "owner", "findings", "Found a problem.")
+    assert reviews.progress("p", "s")["historical_holes"]
+    second = dispatch(reviews)
+    reviews.finish("p", "s", second, "owner", "passed", "Checked later span.")
+    assert reviews.progress("p", "s")["historical_holes"]
+
+
+def test_prior_ledger_claim_is_context_and_cannot_count_as_new_coverage(store) -> None:
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=1)
+    reviews.observe(
+        "p",
+        "s",
+        "entry-claim",
+        "ledger",
+        {"entry": "entry-1", "revision": 1},
+        {"claim": "The count is 16."},
+    )
+    reviews.observe(
+        "p",
+        "s",
+        "observed",
+        "execution",
+        {"run": "author-1"},
+        {"stdout": "count = 15"},
+    )
+    first = dispatch(reviews)
+    reviews.finish("p", "s", first, "owner", "passed", "Checked entry.")
+    second = dispatch(reviews)
+    items = reviews.manifest("p", "s", second)["evidence"]
+    assert [item["kind"] for item in items] == ["context", "execution"]
+    assert (
+        "The count is 16." in reviews.read_evidence("p", "s", second, items[0]["evidence"])["text"]
+    )
+
+
+def test_oversized_prior_item_does_not_defeat_retry_shrink(store) -> None:
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=1)
+    claim(reviews, "A" * (200 * 1024), "large-prior")
+    claim(reviews, "Current evidence.", "current")
+    first = dispatch(reviews)
+    reviews.finish("p", "s", first, "owner", "passed", "Checked large claim.")
+    second = dispatch(reviews)
+    items = reviews.manifest("p", "s", second)["evidence"]
+    assert items[0]["kind"] == "context"
+    assert "omitted" in reviews.read_evidence("p", "s", second, items[0]["evidence"])["text"]
+    assert items[1]["kind"] == "transcript"
+
+
+def test_oversized_delegated_observation_is_an_incomplete_marker(store, monkeypatch) -> None:
+    from sandbox_science.orchestrator.consistency import delegated
+    from sandbox_science.orchestrator.consistency.delegated import Delegated
+    from sandbox_science.orchestrator.consistency.store import MAX_ITEM_BYTES
+
+    reviews, _, _ = store
+    monkeypatch.setattr(
+        delegated, "ended_delegations", lambda *_: [("dlg", "saved-run", "child-run")]
+    )
+    monkeypatch.setattr(
+        delegated,
+        "delegated_work",
+        lambda *_: [
+            Delegated("delegated:dlg", "delegation", {"delegation": "dlg"}, {"status": "done"}),
+            Delegated(
+                "delegated:dlg:execution:large",
+                "execution",
+                {"delegation": "dlg"},
+                {"stdout": "x" * (MAX_ITEM_BYTES + 1)},
+            ),
+        ],
+    )
+    assert delegated.observe_delegated(reviews, "p", "s", "author-1") == 1
+    review = dispatch(reviews)
+    items = reviews.manifest("p", "s", review)["evidence"]
+    assert [item["complete"] for item in items] == [False, False]
+    assert (
+        "review_observations_omitted"
+        in reviews.read_evidence("p", "s", review, items[0]["evidence"])["text"]
+    )
+    assert (
+        "delegated observation exceeds review bound"
+        in reviews.read_evidence("p", "s", review, items[1]["evidence"])["text"]
+    )
+    reviews.finish("p", "s", review, "owner", "passed", "Claimed all checked.")
+    assert reviews.run("p", "s", review)["state"] == "inconclusive"
+    assert reviews.progress("p", "s")["historical_holes"]
 
 
 @pytest.mark.asyncio
@@ -357,6 +486,27 @@ async def test_terminal_hold_catches_up_more_than_three_small_windows(
     assert not summary.get("pending")
     assert not reviews.progress("p", "s")["remaining"]
     assert len(reviews.listing("p", "s")["reviews"]) >= 5
+
+
+@pytest.mark.asyncio
+async def test_terminal_pass_keeps_an_earlier_inconclusive_gap_visible(store) -> None:
+    from sandbox_science.orchestrator.consistency.controller import ReviewController
+
+    from .test_consistency import context_for
+
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=4)
+    for n in range(5):
+        claim(reviews, f"Claim {n} is supported.", key=f"claim-{n}")
+    first = dispatch(reviews)
+    reviews.finish("p", "s", first, "owner", "inconclusive", "Evidence was not decisive.")
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=LabReviewer(), alias="reviewer"
+    )
+    summary = await controller.terminal([], "The task is complete.")
+    assert summary["outcome"] == "inconclusive"
+    assert summary["coverage_gap"]
+    assert reviews.progress("p", "s")["historical_holes"]
 
 
 @pytest.mark.asyncio
@@ -422,3 +572,75 @@ async def test_smaller_window_still_records_a_consequential_finding(store) -> No
         reviews.run("p", "s", dispatch(reviews))["start_seq"]
         > reviews.run("p", "s", second)["end_seq"]
     )
+
+
+@pytest.mark.asyncio
+async def test_next_window_can_find_a_contradiction_at_its_boundary(store) -> None:
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=16)
+    for n in range(15):
+        claim(reviews, f"Unrelated claim {n}.", key=f"claim-{n}")
+    claim(reviews, "The measured count is 16.", key="count-claim")
+    reviews.observe(
+        "p",
+        "s",
+        "measured-count",
+        "execution",
+        {"run": "author-1"},
+        {"status": "succeeded", "stdout": "measured count = 15"},
+    )
+    first = dispatch(reviews)
+    assert reviews.run("p", "s", first)["end_seq"] == 16
+    reviews.finish("p", "s", first, "owner", "inconclusive", "First span checked.")
+
+    second = dispatch(reviews)
+    assert reviews.run("p", "s", second)["start_seq"] == 17
+    entries = reviews.manifest("p", "s", second, limit=50)["evidence"]
+    claim_item = next(
+        item
+        for item in entries
+        if "measured count is 16"
+        in json.dumps(reviews.evidence("p", "s", second, item["evidence"])["payload"])
+    )
+    measurement = next(
+        item
+        for item in entries
+        if "measured count = 15"
+        in json.dumps(reviews.evidence("p", "s", second, item["evidence"])["payload"])
+    )
+    model = ScriptedModel.from_json(
+        [
+            {"tool_calls": [{"name": "review_manifest", "arguments": {}}]},
+            {
+                "tool_calls": [
+                    {"name": "review_read", "arguments": {"evidence": claim_item["evidence"]}},
+                    {"name": "review_read", "arguments": {"evidence": measurement["evidence"]}},
+                    {
+                        "name": "review_finding",
+                        "arguments": {
+                            "severity": "fail",
+                            "category": "contradicting_value",
+                            "statement": "Reported count conflicts with the next observation.",
+                            "anchors": [
+                                {"evidence": claim_item["evidence"]},
+                                {"evidence": measurement["evidence"]},
+                            ],
+                            "operation_id": "boundary-contradiction",
+                        },
+                    },
+                ]
+            },
+            {
+                "text": json.dumps(
+                    {
+                        "outcome": "findings",
+                        "summary": "Count differs.",
+                        "cap_reached": False,
+                    }
+                )
+            },
+        ]
+    )
+    await ReviewerRunner(reviews, "p", "s", second, "owner", model).run()
+    assert reviews.run("p", "s", second)["state"] == "findings"
+    assert reviews.finding_states("p", "s")["open"] == 1

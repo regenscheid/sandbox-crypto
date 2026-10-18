@@ -525,7 +525,12 @@ async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
     await controller.safe_point(transcript)
     terminal = dispatch(reviews)
     items = reviews.manifest("p", "s", terminal, limit=50)["evidence"]
-    assert [i["kind"] for i in items if i["kind"] != "actions"] == ["transcript"]
+    # Recent transcript evidence from the preceding window is now carried as
+    # context so the closing answer can be checked against earlier claims.
+    non_actions = [i for i in items if i["kind"] != "actions"]
+    assert non_actions
+    assert {i["kind"] for i in non_actions} <= {"transcript", "document"}
+    assert any(i["kind"] == "transcript" for i in non_actions)
     (listed,) = [i for i in items if i["kind"] == "actions"]
     found = json.loads(reviews.read_evidence("p", "s", terminal, listed["evidence"])["text"])
     assert (found["actions"], found["documents"]) == ([], [])

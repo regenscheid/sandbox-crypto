@@ -128,9 +128,9 @@ Terms:
 ### Review outcomes, recovery and configuration
 
 - CR-33. A review ends `passed` (no findings), `findings`, `inconclusive` (the main claims could not be evaluated), `capped`, `failed` (reviewer error, or invalid output after one retry) or `dropped` (lost to a restart). Only `passed` reads as a pass (feature plan).
-- CR-34. An orchestrator restart drops the reviews in progress. A review that fails or is dropped is dispatched again with its window, at most twice; after the third failure the window is listed in the session as unreviewed and the watermark moves past it (CScience reconciles dropped reviews with bounded recovery).
+- CR-34. An orchestrator restart drops the reviews in progress. A failed, dropped or capped author-work review retains its exact window and watermark. After three failures further attempts are admitted at least five minutes after the last failure, when a later safe point or terminal boundary asks for review; failure never silently moves the watermark past evidence. Confirmation attempts remain separately bounded (amended 2026-10-18 after the SNOVA review audit).
 
-  *Amended 2026-10-18 after the SNOVA audit:* a large author-work window is partitioned into contiguous, reviewable evidence spans. A cap or failure shrinks the next attempted span to at most one quarter of its prior item and byte allowance. Only the final attempted span is marked unreviewed after three failures; the remaining feed is still pending. A partial delegated batch keeps its pinned outcome as context and cannot claim complete coverage. Terminal closing catches up at most 24 windows, then reports pending work rather than treating the last answer as fully reviewed.
+  *Amended 2026-10-18 after the SNOVA audit:* a large author-work window is partitioned into contiguous, reviewable evidence spans. A cap or failure shrinks the next attempted span to at most one quarter of its prior item and byte allowance. Each later span carries bounded exact recent evidence for adjacent cross-window checks. A clean prefix may pass its own span while whole-feed coverage remains incomplete; prior inconclusive, incomplete finding or unreviewed spans prevent a later terminal result from certifying the session. A partial delegated batch keeps its pinned outcome as context and cannot claim complete coverage. Terminal closing catches up at most 24 windows, then reports pending work rather than treating the last answer as fully reviewed.
 - CR-35. Automatic review is on by default (D04, D35). Per project: thresholds, minimum interval, the hold of CR-15, bounds and the severity that interrupts. Each review records the configuration revision it ran under ([product](../PRODUCT.md): record the active configuration).
 
   *Amended 2026-10-16 by the coordinator for lab 43's B6, which the owner can reverse:* with no reviewer configured (no reviewer alias), automatic review is off: no review is dispatched or recorded as failed, and the session's review list says so, recorded once until a review is dispatched again. A configured reviewer alias whose model is unavailable still fails its windows (CR-F10).
@@ -209,7 +209,7 @@ All fixtures are `scripted`: the author's and the reviewer's model output is scr
 
 **CR-F10 Failure and restart** (CR-14, CR-33, CR-34)
 - *When* the reviewer alias is unavailable for one review, and the orchestrator restarts during another.
-- *Then* the first review ends `failed` and the watermark stays, so the next review covers its window. The second is `dropped`, queued again and completed. A window that fails three times is listed as unreviewed.
+- *Then* the first review ends `failed` and the watermark stays, so the next review covers its window. The second is `dropped`, queued again and completed. A window that fails three times remains pending under paced retries.
 
 **CR-F11 Which turns get a terminal review** (CR-11, CR-12)
 - *Given* three turns: conversation only; a turn whose last message claims the task is complete; and a turn the user interrupts after it writes an artifact.

@@ -227,6 +227,7 @@ class ReviewerRunner:
         """Images viewed this turn, which follow its results."""
         self.findings = Findings(store)
         self.record = store.run(project, session, review)
+        self.span_complete = store.span_complete(project, session, review)
         self.config = ReviewConfig.model_validate(self.record["config"])
 
     async def tool(self, call: ToolCall) -> str:
@@ -593,9 +594,7 @@ class ReviewerRunner:
             outcome = finish.outcome
             if count:
                 outcome = "findings"
-            elif outcome == "passed" and (
-                not checked or undecided or not self.record["coverage_complete"]
-            ):
+            elif outcome == "passed" and (not checked or undecided or not self.span_complete):
                 outcome = "inconclusive"
             await self._finish(outcome, finish.summary, cap=finish.cap_reached)
             return

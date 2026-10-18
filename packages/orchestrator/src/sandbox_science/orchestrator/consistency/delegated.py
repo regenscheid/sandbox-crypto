@@ -29,14 +29,12 @@ which marks the delegation as recorded: a review window takes a batch whole or n
 from __future__ import annotations
 
 import json
-import logging
 from collections.abc import Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import chain
 from typing import Any, Final, cast
 
-from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.history import Archive
 from sandbox_science.orchestrator.history.memory import RunMemory
 from sandbox_science.orchestrator.history.scratch import Scratch
@@ -48,9 +46,7 @@ from .artifacts import pinned_artifact
 from .executions import execution_projection
 from .ledger import delegation_outcome
 from .numbers import distance, numbers
-from .store import Json, ReviewStore, dump
-
-_log = logging.getLogger(__name__)
+from .store import MAX_ITEM_BYTES, Json, ReviewStore, digest, dump
 
 MAX_DEPTH: Final = 3
 """How many levels of delegations below a run its review follows."""
@@ -442,27 +438,52 @@ def observe_delegated(store: ReviewStore, project: str, session: str, run_id: st
     """Record the work of each ended delegation below run ``run_id`` the session's feed
     does not hold yet; how many delegations it recorded. Each delegation's observations
     are recorded in one change, its outcome first, so the feed holds its batch whole or
-    not at all; a record the feed refuses is left out, and logged."""
+    not at all. Oversized observations become explicit incomplete markers."""
     recorded = 0
     for delegation, name, child in ended_delegations(store, project, session, run_id):
         found = delegated_work(store, project, session, delegation, name, child, run_id)
         if found is None:
             continue  # its run record comes later
-        store.scope(project, session)
-        with store.documents.control.write() as tx:
-            for item in found:
-                try:
-                    store.record_observation(
-                        tx.sql,
-                        project,
-                        session,
+        bounded: list[Delegated] = []
+        omitted = 0
+        for item in found:
+            payload, locator = dump(item.payload), dump(item.locator)
+            if len(payload.encode()) > MAX_ITEM_BYTES or len(locator.encode()) > 4096:
+                omitted += 1
+                marker = {
+                    "omitted": "delegated observation exceeds review bound",
+                    "kind": item.kind,
+                    "sha256": digest(payload),
+                }
+                bounded.append(
+                    Delegated(
                         item.key,
                         item.kind,
-                        item.locator,
-                        item.payload,
-                        complete=item.complete,
+                        {"delegation": delegation, "for_run": run_id, "key": item.key},
+                        marker,
+                        complete=False,
                     )
-                except DocumentError:  # refused before it wrote anything
-                    _log.warning("left out %s for %s/%s", item.key, project, session)
+                )
+            else:
+                bounded.append(item)
+        if omitted and bounded and bounded[0].kind == "delegation":
+            bounded[0] = replace(
+                bounded[0],
+                payload={**bounded[0].payload, "review_observations_omitted": omitted},
+                complete=False,
+            )
+        store.scope(project, session)
+        with store.documents.control.write() as tx:
+            for item in bounded:
+                store.record_observation(
+                    tx.sql,
+                    project,
+                    session,
+                    item.key,
+                    item.kind,
+                    item.locator,
+                    item.payload,
+                    complete=item.complete,
+                )
         recorded += 1
     return recorded
