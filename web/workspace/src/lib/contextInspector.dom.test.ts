@@ -824,3 +824,149 @@ it('checks the visible attempt for later observations without a manual refresh',
   expect(String(fetcher.mock.calls[1]?.[0])).toContain('answers_after=1');
   expect(target.textContent).toContain('200 input tokens');
 });
+
+it('shows captured composition and fetches only the selected text chunk', async () => {
+  const { default: ContextComposition } = await import('../views/ContextComposition.svelte');
+  const run = '20261018T120000000000Z-run-capture';
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/parts/0'))
+      return new Response(
+        JSON.stringify({
+          text: url.includes('offset=10') ? 'second chunk' : 'actual system source',
+          offset: url.includes('offset=10') ? 10 : 0,
+          next_offset: url.includes('offset=10') ? null : 10,
+          total: 22,
+          sha256: 'a'.repeat(64),
+        }),
+      );
+    if (url.includes('/parts?'))
+      return new Response(
+        JSON.stringify({
+          parts: [
+            {
+              ordinal: 0,
+              sha256: 'a'.repeat(64),
+              bytes: 22,
+              kind: 'system_section',
+              role: 'system',
+              format: 'text',
+              section: 'skills',
+              version: 'v1',
+              origin: null,
+              native_omitted: false,
+            },
+          ],
+          next_after: null,
+          coverage: 'Captured visible request; native replay unavailable.',
+        }),
+      );
+    return new Response(
+      JSON.stringify({
+        calls: [
+          {
+            cursor: 1,
+            identity: 'model-capture',
+            run,
+            at: '2026-10-18T12:00:00Z',
+            kind: 'main',
+            alias: 'fixture',
+            captured: true,
+          },
+          {
+            cursor: 2,
+            identity: 'model-legacy',
+            run,
+            at: '2026-10-18T11:00:00Z',
+            kind: 'fold',
+            alias: 'fixture',
+            captured: false,
+          },
+        ],
+        next_before: null,
+      }),
+    );
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(mount(ContextComposition, { target, props: { project: 'p1', session: 's1', run } }));
+  await settle();
+  expect(target.textContent).toContain('Capture unavailable');
+  [...target.querySelectorAll<HTMLButtonElement>('.calls button')]
+    .find((button) => button.textContent?.includes('main'))!
+    .click();
+  await settle();
+  expect(target.textContent).toContain('native replay unavailable');
+  expect(target.querySelector('pre')).toBeNull();
+  target.querySelector<HTMLButtonElement>('.parts button')!.click();
+  await settle();
+  expect(target.querySelector('pre')!.textContent).toBe('actual system source');
+  [...target.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent === 'Next text chunk')!
+    .click();
+  await settle();
+  expect(target.querySelector('pre')!.textContent).toBe('second chunk');
+  const scope = target.querySelector('select')!;
+  scope.value = 'agent';
+  scope.dispatchEvent(new Event('change', { bubbles: true }));
+  await settle();
+  expect(fetcher.mock.calls.some(([input]) => String(input).includes('scope=agent'))).toBe(true);
+  expect(target.querySelector('pre')).toBeNull();
+});
+
+it('does not label an incomplete history index as a complete negative search', async () => {
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('/context/attempts'))
+      return new Response(JSON.stringify({ attempts: [], next_after: null }));
+    if (url.includes('/context/timeline'))
+      return new Response(
+        JSON.stringify({
+          answers: [],
+          folds: [],
+          auxiliary: [],
+          answers_after: 0,
+          events_after: 0,
+          more_answers: false,
+          more_events: false,
+          more_auxiliary: false,
+          coverage: '',
+        }),
+      );
+    return new Response(
+      JSON.stringify({
+        messages: [],
+        next_after: null,
+        index_pending: true,
+        indexed: true,
+        coverage: 'Partial indexed search',
+        unsearched_oversized_tool_calls: 0,
+      }),
+    );
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const target = document.createElement('div');
+  document.body.append(target);
+  mounted.push(
+    mount(ContextInspector, {
+      target,
+      props: {
+        run: null,
+        runName: '20261018T120000000000Z-run-1',
+        project: 'p1',
+        session: 's1',
+        close: vi.fn(),
+      },
+    }),
+  );
+  await settle();
+  [...target.querySelectorAll<HTMLButtonElement>('.context-tabs button')]
+    .find((button) => button.textContent?.includes('Original history'))!
+    .click();
+  await settle();
+  expect(target.textContent).toContain('These results are partial');
+  expect(target.textContent).toContain('original messages remain to index');
+  expect(target.textContent).not.toContain('; scan complete');
+  expect(fetcher.mock.calls.some(([input]) => String(input).includes('indexed=1'))).toBe(true);
+});

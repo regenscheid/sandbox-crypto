@@ -14,6 +14,7 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import ContextAttempts from './ContextAttempts.svelte';
   import ContextTimeline from './ContextTimeline.svelte';
+  import ContextComposition from './ContextComposition.svelte';
 
   let {
     run,
@@ -46,6 +47,8 @@
   let nextAfter = $state<number | null>(null);
   let coverage = $state('');
   let unsearchedCalls = $state(0);
+  let indexPending = $state(false);
+  let indexing = $state(false);
   let loaded = $state(false);
   let loading = $state(false);
   let error = $state<unknown>(null);
@@ -152,7 +155,7 @@
     const after = reset ? 0 : (nextAfter ?? 0);
     if (reset) {
       applied = {
-        contains: query.trim(),
+        contains: query,
         role: role ? (role as Filters['role']) : undefined,
         kind: kind.trim() || undefined,
         includeDerived,
@@ -179,6 +182,7 @@
       nextAfter = page.next_after;
       coverage = page.coverage;
       unsearchedCalls += page.unsearched_oversized_tool_calls;
+      indexPending = page.index_pending;
       loaded = true;
       return true;
     } catch (caught) {
@@ -187,6 +191,19 @@
       return false;
     } finally {
       if (ticket === serial) loading = false;
+    }
+  }
+
+  async function indexBatch() {
+    indexing = true;
+    try {
+      const progress = await api.indexContextHistory(projectId, sessionId, runName, applied.scope);
+      indexPending = progress.pending;
+      await load(true);
+    } catch (caught) {
+      error = caught;
+    } finally {
+      indexing = false;
     }
   }
 
@@ -391,23 +408,7 @@
             No fold summary is saved for this attempt. Recorded fold events appear on the timeline.
           </p>{/if}
       {:else if tab === 'context'}
-        <h3>Captured context composition</h3>
-        {#if run}<p>
-            This run record keeps {run.messages.length} inline message previews{#if run.stored_history}
-              and {run.stored_history.collections?.messages ?? 0} archived run messages{/if}. The
-            original archive is available in the next tab.
-          </p>{:else}<p>
-            No final run record has been saved for this attempt yet. Recorded answers and fold
-            events are available on the timeline.
-          </p>{/if}
-        <p class="muted">
-          An exact last working-context snapshot and its section-by-section token counts were not
-          captured here. Fold records show what was summarized, but this screen will not infer a
-          precise final prompt from an inline preview or aggregate token usage.
-        </p>
-        {#if folds?.folds.length}<p>
-            {folds.folds.length} fold or overview records are summarized under Folds.
-          </p>{/if}
+        <ContextComposition project={projectId} session={sessionId} run={runName} />
       {:else}
         <h3>Original retained messages</h3>
         <ContextAttempts project={projectId} session={sessionId} run={runName} {close} />
@@ -457,11 +458,19 @@
             onclick={() => void searchAll(false)}>Continue automatic search</button
           >{/if}
         {#if coverage}<p class="muted">{coverage}</p>{/if}
+        {#if indexPending}<p class="notice">
+            Some original messages are not indexed yet. These results are partial; a miss is not a
+            complete negative result.
+          </p>
+          <button type="button" disabled={indexing || loading} onclick={() => void indexBatch()}
+            >{indexing ? 'Indexing…' : 'Index next batch of original text'}</button
+          >
+        {/if}
         {#if unsearchedCalls}<p class="muted">
             {unsearchedCalls} oversized tool-call field(s) in scanned messages were omitted from text
             search. Their messages remain available for direct inspection.
           </p>{/if}
-        {#if loaded && (query.trim() !== applied.contains || role !== (applied.role ?? '') || kind.trim() !== (applied.kind ?? '') || includeDerived !== applied.includeDerived || scope !== applied.scope)}<p
+        {#if loaded && (query !== applied.contains || role !== (applied.role ?? '') || kind.trim() !== (applied.kind ?? '') || includeDerived !== applied.includeDerived || scope !== applied.scope)}<p
             class="muted"
           >
             Filters changed. The results below still use the last submitted search; submit again to
@@ -473,7 +482,9 @@
           <p class="muted">
             {matched} matching messages found{nextAfter !== null
               ? ' so far; more archive remains'
-              : '; scan complete'}. {#if matched > items.length}Showing the latest {items.length} results
+              : indexPending
+                ? '; indexed portion complete'
+                : '; scan complete'}. {#if matched > items.length}Showing the latest {items.length} results
               to bound memory.{/if}
           </p>
           <ol class="history-results">
@@ -488,7 +499,9 @@
                 <a href={messageHref(projectId, item.message)}>Open original message</a>
               </li>{:else}<li>
                 {nextAfter === null
-                  ? 'No retained messages match this scope and query.'
+                  ? indexPending
+                    ? 'No matches in indexed text; original messages remain to index.'
+                    : 'No retained messages match this scope and query.'
                   : 'No matches in this scanned portion; continue the search.'}
               </li>{/each}
           </ol>

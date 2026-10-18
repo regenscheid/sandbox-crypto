@@ -7,6 +7,10 @@
  * request, and the browser adds the `Origin` header the server requires of a POST.
  */
 import type {
+  CapturedCalls,
+  ContextParts,
+  ContextText,
+  IndexStatus,
   ChartLink,
   ContextHistoryPage,
   ContextAttemptsPage,
@@ -565,6 +569,53 @@ export const api = {
         }),
       { signal, maxBytes: 2 * 1024 * 1024 },
     ),
+  contextCaptures: (
+    project: string,
+    session: string,
+    run: string,
+    scope: 'attempt' | 'agent',
+    before = 0,
+    signal?: AbortSignal,
+  ) =>
+    get<CapturedCalls>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/captures?${new URLSearchParams({ scope, before: String(before) })}`,
+      { signal },
+    ),
+  contextParts: (
+    project: string,
+    session: string,
+    run: string,
+    identity: string,
+    after = 0,
+    signal?: AbortSignal,
+  ) =>
+    get<ContextParts>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/captures/${part(identity)}/parts?after=${after}`,
+      { signal },
+    ),
+  contextPartText: (
+    project: string,
+    session: string,
+    run: string,
+    identity: string,
+    ordinal: number,
+    offset = 0,
+    signal?: AbortSignal,
+  ) =>
+    get<ContextText>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/captures/${part(identity)}/parts/${ordinal}?offset=${offset}`,
+      { signal },
+    ),
+  indexContextHistory: (
+    project: string,
+    session: string,
+    run: string,
+    scope: 'attempt' | 'agent',
+  ) =>
+    post<IndexStatus>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/history/index?scope=${scope}`,
+      undefined,
+    ),
   contextHistory: (
     project: string,
     session: string,
@@ -582,6 +633,7 @@ export const api = {
     const query = new URLSearchParams();
     if (options.after) query.set('after', String(options.after));
     if (options.contains) query.set('contains', options.contains);
+    query.set('indexed', '1');
     if (options.role) query.set('role', options.role);
     if (options.kind) query.set('kind', options.kind);
     if (options.scope) query.set('scope', options.scope);
