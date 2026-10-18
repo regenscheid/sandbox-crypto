@@ -2,6 +2,13 @@
 
 Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). Tick items in the pull request that completes them.
 
+## Research continuity after the SNOVA acceptance run
+
+- [ ] Integrate and qualify the bounded automatic Resume of a saved model-phase failure from `codex/snova-autonomous-recovery`; local deterministic tests pass, but no live OpenShell interruption lab or merged deployment has run.
+- [ ] Continue a clean `answered` root when its scientific plan remains active. This needs a durable new-root input grounded in the latest plan and child evidence; completed work must stay completed.
+- [ ] Recover a lost kernel from verifiable code/input provenance; retain an explicit decision for state that cannot be reconstructed safely.
+- [ ] Classify transient worker/model failures at the source and exercise process-loss windows, so automatic recovery covers more than saved model-phase errors without replaying unknown effects.
+
 ## Track P: infrastructure
 
 ### Policy (`packages/policy`)
