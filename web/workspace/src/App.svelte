@@ -12,7 +12,6 @@
   import FrontierList from './views/FrontierList.svelte';
   import FrontierView from './views/FrontierView.svelte';
   import LedgerBoard from './views/LedgerBoard.svelte';
-  import LedgerEntryView from './views/LedgerEntryView.svelte';
   import MemoryPage from './views/MemoryPage.svelte';
   import SkillsPage from './views/SkillsPage.svelte';
   import MessageView from './views/MessageView.svelte';
@@ -117,7 +116,12 @@
       {#if !loggedOut}<button class="quiet-button" type="button" onclick={logout}>Log out</button
         >{/if}
     </header>
-    <main id="workspace-content" class:session-main={inSession} tabindex="-1">
+    <main
+      id="workspace-content"
+      class:session-main={inSession}
+      class:ledger-main={route.view === 'ledger' || route.view === 'entry'}
+      tabindex="-1"
+    >
       <ProjectMath projectId={'project' in route ? route.project : null}>
         {#if loggedOut}
           <p>
@@ -182,21 +186,17 @@
           {#key `${route.project}/${route.message}`}
             <MessageView projectId={route.project} messageId={route.message} />
           {/key}
-        {:else if route.view === 'ledger'}
+        {:else if route.view === 'ledger' || route.view === 'entry'}
           {#key route.project}
-            <LedgerBoard projectId={route.project} />
+            <LedgerBoard
+              projectId={route.project}
+              entryName={route.view === 'entry' ? route.entry : null}
+              revision={route.view === 'entry' ? route.revision : null}
+            />
           {/key}
         {:else if route.view === 'issues'}
           {#key route.project}
             <IssueList projectId={route.project} />
-          {/key}
-        {:else if route.view === 'entry'}
-          {#key `${route.project}/${route.entry}/${route.revision}`}
-            <LedgerEntryView
-              projectId={route.project}
-              entryName={route.entry}
-              revision={route.revision}
-            />
           {/key}
         {:else if route.view === 'categories'}
           {#key route.project}

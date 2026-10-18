@@ -19,7 +19,13 @@
     projectId,
     entryName,
     revision,
-  }: { projectId: string; entryName: string; revision: number | null } = $props();
+    compact = false,
+  }: {
+    projectId: string;
+    entryName: string;
+    revision: number | null;
+    compact?: boolean;
+  } = $props();
   const shown = $state(noDetail<string, LedgerEntry>());
   // The route keys this view by the entry and revision: they never change here.
   const detail = new Detail(shown, () => api.ledgerEntry(projectId, entryName, revision));
@@ -33,10 +39,12 @@
   }
 </script>
 
-<nav class="trail">
-  <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
-  <a href={ledgerHref(projectId)}>Ledger</a> /
-</nav>
+{#if !compact}
+  <nav class="trail">
+    <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
+    <a href={ledgerHref(projectId)}>Ledger</a> /
+  </nav>
+{/if}
 
 {#if shown.value}
   {@const entry = shown.value.entry}

@@ -73,7 +73,8 @@
       <a
         href={ledgerHref(projectId)}
         onclick={close}
-        aria-current={route.view === 'ledger' ? 'page' : undefined}>Research ledger</a
+        aria-current={route.view === 'ledger' || route.view === 'entry' ? 'page' : undefined}
+        >Research ledger</a
       >
       <a
         href={memoryHref(projectId)}

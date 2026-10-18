@@ -158,7 +158,178 @@ th {
   font-size: 0.9rem;
 }
 
-/* The ledger's board: a column for each status, scrolling sideways when they are many. */
+/* The ledger browser keeps the selected entry beside its searchable list. */
+.workspace-body > main.ledger-main {
+  max-width: none;
+}
+
+.ledger-heading,
+.ledger-browser-controls,
+.ledger-links,
+.ledger-mode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+}
+
+.ledger-heading {
+  justify-content: space-between;
+}
+
+.ledger-heading h1 {
+  margin-bottom: 0.25rem;
+}
+
+.ledger-heading p {
+  margin: 0 0 0.8rem;
+}
+
+.ledger-links {
+  margin-bottom: 1rem;
+}
+
+.ledger-mode button[aria-pressed='true'] {
+  font-weight: 600;
+  border-color: var(--text);
+  background: var(--panel);
+}
+
+.ledger-browser-controls {
+  padding: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 8px 8px 0 0;
+  background: var(--panel);
+}
+
+.ledger-browser-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.ledger-browser-controls select,
+.ledger-browser-controls input {
+  min-height: 2.2rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.25rem 0.5rem;
+}
+
+.ledger-browser-controls .ledger-search {
+  flex: 1;
+  min-width: 12rem;
+}
+
+.ledger-split {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1fr) 5px minmax(0, var(--ledger-detail-width));
+  min-height: 34rem;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+}
+
+.ledger-list-pane {
+  min-width: 0;
+  padding: 0.7rem;
+  border-right: 1px solid var(--border);
+}
+
+.ledger-detail-pane {
+  min-width: 0;
+  padding: 1.2rem;
+  overflow-wrap: anywhere;
+}
+
+.ledger-empty-detail {
+  padding: 3rem 1rem;
+  text-align: center;
+}
+
+.ledger-list-count {
+  font-size: 0.8rem;
+  margin: 0.2rem 0 0.6rem;
+}
+
+.ledger-list-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.7rem;
+  border: 1px solid transparent;
+  border-bottom-color: var(--border);
+  border-radius: 5px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.ledger-list-row:hover,
+.ledger-list-row.selected {
+  border-color: var(--border);
+  background: var(--panel);
+}
+
+.ledger-list-row-top,
+.ledger-list-row-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.65rem;
+}
+
+.ledger-list-row-top {
+  justify-content: space-between;
+}
+
+.ledger-list-row-bottom {
+  font-size: 0.78rem;
+}
+
+.ledger-list-title {
+  font-size: 0.9rem;
+}
+
+.ledger-status {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.ledger-board-statuses {
+  margin: 0.7rem 0;
+  border: 0;
+}
+
+.ledger-board-statuses label {
+  margin-right: 0.8rem;
+}
+
+@media (max-width: 1120px) {
+  .ledger-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ledger-list-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    max-height: 18rem;
+    overflow: auto;
+  }
+
+  .ledger-split .pane-resizer {
+    display: none;
+  }
+}
+
+/* The ledger's optional board scrolls sideways when it has many statuses. */
 .board-controls {
   display: flex;
   flex-wrap: wrap;

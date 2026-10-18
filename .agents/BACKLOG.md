@@ -168,7 +168,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [x] Local 100 MiB upload support, migration-preserved originals, larger worker delivery and shared upload copies; independent concurrency review clear; browser retention and local two-environment transfer verified. Real OpenShell qualification remains before integration.
 - [x] Local UI review refinement: half-window research pane, searchable/filterable document library, and named closable document tabs preserving unsaved drafts. Not yet merged or deployed.
-- [ ] Adapt the Local Codex ledger prototype to production; the owner accepted its list/detail and optional board direction on 2026-10-17. Preserve shared session navigation and the draggable detail pane.
+- [x] Adapt the Local Codex ledger prototype to production on local `dev`: list/detail default, optional board, explicit loaded-page search scope, shared session navigation and draggable detail pane. Browser acceptance against an authenticated live server remains open.
 - [ ] Review the connected Skills/MCP/Overview/Memory/session prototype, then integrate the [workspace browsers](../docs/specs/workspace-browsers.md) in small steps. Skills can reuse existing revisioned settings; MCP needs a sanitized read-only inventory and attributed observation contract first.
 - [ ] Add the [agent context inspector](../docs/specs/context-inspector.md): secondary embedded dialog for each agent, usage/fold timeline, cache accounting, current-context provenance and original-history search. Read-only telemetry projections and durable cache counters remain integration work.
 

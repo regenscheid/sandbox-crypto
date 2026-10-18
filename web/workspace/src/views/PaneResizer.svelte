@@ -3,7 +3,8 @@
   let {
     width = $bindable(460),
     maxWidth = Math.floor(window.innerWidth / 2),
-  }: { width?: number; maxWidth?: number } = $props();
+    label = 'Resize research pane',
+  }: { width?: number; maxWidth?: number; label?: string } = $props();
   let start: { x: number; width: number } | null = null;
   const clamp = (value: number) => Math.min(maxWidth, Math.max(320, value));
 </script>
@@ -14,7 +15,7 @@
   class="pane-resizer"
   role="separator"
   tabindex="0"
-  aria-label="Resize research pane"
+  aria-label={label}
   aria-orientation="vertical"
   aria-valuemin="320"
   aria-valuemax={maxWidth}

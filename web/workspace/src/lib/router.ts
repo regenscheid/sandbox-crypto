@@ -18,7 +18,7 @@
  *   recorded, as a delegation's files link to them;
  * - `#/projects/<project>/memory` the project memory: its entries and the proposals that
  *   wait for the user;
- * - `#/projects/<project>/ledger` the project's ledger as a board,
+ * - `#/projects/<project>/ledger` the project's ledger browser,
  *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
  *   `…/revisions/<number>` for an earlier revision;

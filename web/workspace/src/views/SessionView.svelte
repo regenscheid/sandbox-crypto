@@ -10,6 +10,7 @@
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { projectHref } from '../lib/router';
   import { kernelPanelScope } from '../lib/kernels';
+  import { rememberSession } from '../lib/lastSession';
   import ChatPanel from './ChatPanel.svelte';
   import FoldProposals from './FoldProposals.svelte';
   import JobsPanel from './JobsPanel.svelte';
@@ -62,6 +63,7 @@
   $effect(() => {
     const project = projectId,
       session = sessionId;
+    rememberSession(project, session);
     view = initialPoll();
     const poller = new Poller(
       (signal) => api.session(project, session, signal),

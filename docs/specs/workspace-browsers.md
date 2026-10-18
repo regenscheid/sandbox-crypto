@@ -4,7 +4,7 @@ Status: proposed interaction details for owner review, 2026-10-17. The owner
 accepted the ledger's list/detail direction and requested the same usability
 work on the other screens, especially Skills and MCP services. Local Codex
 has produced a connected prototype with synthetic records. These screens are not
-yet integrated into the Svelte application.
+yet integrated into the Svelte application, except for the ledger browser on local `dev`.
 
 ## Shared interaction
 
