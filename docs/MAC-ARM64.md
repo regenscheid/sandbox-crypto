@@ -1,6 +1,6 @@
 # Apple Silicon qualification
 
-This is the path toward a local ARM64 Mac deployment. The project has not yet passed a Mac run. Its current `sandbox-science up` launcher uses Linux `/proc` for process identity and cleanup and a Linux `prctl` death signal. Running that launcher directly on macOS would fail; an ARM64 image build alone does not make the application Mac-ready.
+This is the path toward a local ARM64 Mac deployment. The project has not yet passed a Mac run. The launcher now has a Darwin process-identity implementation and a parent-pipe watcher for abrupt launcher death. Its protocol is tested on Linux, but process discovery, `down`, replacement and Resume still need native Mac acceptance. An ARM64 image build alone does not make the application Mac-ready.
 
 ## Initial runtime choice
 
@@ -38,8 +38,8 @@ For example, set `XDG_STATE_HOME=/Volumes/Research/ss-gateway` and `OPENSHELL_LO
 
 ## Sequence and evidence
 
-1. **Native ARM64 image gate.** Run the manually dispatched `arm64 image qualification` workflow on `dev`. It builds and checks `minimal`, `orchestrator` and `mcp-proxy` on a Linux ARM64 runner. `images/build.sh` now selects the host architecture by default; `PLATFORM=linux/arm64` states it explicitly. This gate does not test OpenShell or macOS. The `crypto-base` image still needs a larger ARM64 builder and confirmation that Ubuntu's pinned ports snapshot resolves.
-2. **Portable host supervision.** Replace the launcher's Linux `/proc` process identity, session enumeration and `prctl` trampoline with a Darwin implementation that retains its PID reuse and orphan cleanup guarantees. Exercise start, crash, `down`, replacement and resume on the Mac before claiming local support. The trusted worker, control store and GUI can then run as host processes; research code remains in OpenShell sandboxes.
+1. **Native ARM64 image gate.** The `arm64 image qualification` workflow has built and checked `minimal`, `orchestrator` and `mcp-proxy` on a Linux ARM64 runner. Its optional `crypto_base` dispatch runs the large Sage/G6K build and tests; that profile is pending qualification. `images/build.sh` selects the host architecture by default; `PLATFORM=linux/arm64` states it explicitly. This gate does not test OpenShell or macOS.
+2. **Portable host supervision.** The Darwin path uses the process creation time and boot time from the kernel (through psutil), enumerates session members, and runs each part under a wrapper watching a pipe held only by the launcher. The wrapper ends its session when the pipe closes after a launcher crash; `down` rechecks boot, creation time, session and command identity before cleanup. Exercise start, crash, `down`, replacement and Resume on the Mac before claiming local support. The trusted worker, control store and GUI then run as host processes; research code remains in OpenShell sandboxes.
 3. **Mac gateway and policy gate.** Install a pinned OpenShell release, choose the MicroVM driver explicitly, and validate gateway, middleware registration, policy compilation, provider binding, file confinement, outbound network decisions, SSH worker transport and worker lifecycle against actual ARM64 sandboxes. Build or transfer the ARM64 profile images without publishing `crypto-base` publicly. Confirm the browser login and PDF viewer's loopback origins.
 4. **Recovery gate.** Interrupt long Sage work, the agent runtime and the worker separately. Confirm that one orchestrator Resume reconciles children and original effects without duplication and that durable artifacts survive sandbox replacement.
 

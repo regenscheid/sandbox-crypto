@@ -2,6 +2,9 @@
 
 ## 2026-10-19
 
+- The ARM64 workflow can opt into native `crypto-base` build and sandbox-mode checks. A publication command joins verified immutable AMD64/ARM64 digests under one shared tag only after the operator confirms private registry access for GPL-bearing `crypto-base`; real image publication remains contingent on those gates ([images](../docs/IMAGES.md#arm64)).
+- The host launcher has a Darwin identity/session path and a parent-pipe watcher for launcher death; Linux process tests cover its protocol. Mac runtime support still requires native OpenShell, process-lifecycle and Resume acceptance ([D63](../docs/DECISIONS.md), [Mac qualification](../docs/MAC-ARM64.md)).
+- Cold skill inventory scans now have a dedicated bounded executor reply deadline, and the scanner reuses resolved installation roots; both staging CI modules passed locally after the fix.
 - Mac and ARM64 Kubernetes nodes share the `linux/arm64` image variant. Mac setup now requires explicit owner-selected paths for application data, OpenShell VM disks/image cache, gateway state and Docker's local image store before deployment ([D63](../docs/DECISIONS.md), [Mac qualification](../docs/MAC-ARM64.md#choose-storage-locations)).
 - ARM64 portability begins with native Linux ARM64 image qualification and a host-architecture build default; Mac support still requires portable launcher supervision and real OpenShell MicroVM acceptance. The mixed Kubernetes pool follows the same image and recovery gates ([Mac qualification](../docs/MAC-ARM64.md)).
 - Post-merge CI keeps process-heavy skill-staging modules in dedicated single-worker jobs on Python 3.12 and 3.13; nightly flake sampling repeats them in the same isolation. Race tests wait for completed lease cleanup and allow bounded setup scheduling under runner load.

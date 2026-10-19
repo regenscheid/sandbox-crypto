@@ -140,9 +140,12 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Multi-arch base images: `minimal` and the `crypto-base` recipe (D46); babbage MicroVM gateway configuration (D63)
   - [x] Recipes for both profiles in `images/` (D77, [images](../docs/IMAGES.md)): pinned sources, Conda lockfiles for linux-64 and linux-aarch64, build and test scripts. Built for linux/amd64 on babbage and checked as plain containers: read-only root, uid 1000, and under a Landlock ruleset like OpenShell's
   - [ ] arm64 images: build and test on an arm64 host; check that the Ubuntu snapshot service covers the ports archive; a registry for multi-platform images (D63)
+    - [x] Native ARM64 build and container/Landlock checks for minimal, orchestrator and mcp-proxy; crypto-base is available as an opt-in ARM64 workflow job and remains unqualified.
   - [ ] Mac deployment: require owner-selected Sandbox Science, OpenShell VM/cache, gateway and Docker image-store paths before first run; verify restart/recovery uses the same stores and no large state lands at an unintended default ([Mac qualification](../docs/MAC-ARM64.md#choose-storage-locations), D63)
+    - [x] Implement Darwin launcher process identity, session cleanup and parent-death watcher; Linux protocol and launcher tests pass. Native Mac start/crash/down/replacement/Resume acceptance remains open.
   - [x] Run the linux/amd64 images in OpenShell: worker profiles and compiled `sandbox.filesystem` settings ([images](../docs/IMAGES.md#openshell-filesystem-paths)) passed the unchanged external conformance suite in [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md); both Python 3.14.8, with no new Sage assertion; arm64/multi-platform acceptance remains open
   - [ ] A private registry for crypto-base (open question), and a standard-format SBOM before `minimal` is published
+    - [x] Add digest- and platform-checked image-index publication command; real publication awaits a selected private registry and qualified ARM64 crypto-base image.
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 
 ## W0: behavior specification and harness foundation

@@ -16,8 +16,8 @@ up on it after ``RESTARTS`` in a row, or at once if something else took its addr
 Besides the parts, the launcher can have actions to take when it stops, such as deleting
 a sandbox it made; they run in the same reverse order.
 
-Each part dies with the launcher (Linux's ``PR_SET_PDEATHSIG``, set by a small
-trampoline before the part's command runs), so a launcher killed outright leaves no part
+Each part dies with the launcher (Linux's ``PR_SET_PDEATHSIG`` or a Darwin
+parent-pipe watcher), so a launcher killed outright leaves no part
 running unsupervised. A part gets only the environment variables ``ENVIRONMENT`` names
 and those the config passes on, never the whole shell's: an API key exported there does
 not reach the run service.
@@ -42,6 +42,8 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
 
 from .config import LauncherError
+from .processes import members
+from .processes import start_time as start_time
 from .state import Layout, write_private
 
 CHUNK = 65536
@@ -82,15 +84,6 @@ def environment() -> dict[str, str]:
 def passed(names: Iterable[str]) -> dict[str, str]:
     """The variables of the launcher's environment a part's ``pass_env`` names."""
     return {name: os.environ[name] for name in names if name in os.environ}
-
-
-def start_time(pid: int) -> int | None:
-    """When the process started, in clock ticks since boot; None if it is gone."""
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as stat:
-            return int(stat.read().rsplit(b")", 1)[1].split()[19])
-    except (OSError, IndexError, ValueError):
-        return None
 
 
 def free(address: str) -> bool:
@@ -142,6 +135,8 @@ class Running:
     reported: bool = False
     start_timeout: float = 300
     restarts: int = 0
+    parent_pipe: int | None = None
+    """Darwin's write end: EOF tells the part its launcher died."""
     """Times in a row it was started again, for a part that is."""
 
 
@@ -319,6 +314,9 @@ class Supervisor:
             if stopped in done:
                 return None
             running = next(exits[waiting] for waiting in exits if waiting in done)
+            if running.parent_pipe is not None:
+                os.close(running.parent_pipe)
+                running.parent_pipe = None
             if running.pump is not None:
                 await running.pump
             if not running.part.required and not running.part.restart:
@@ -435,19 +433,41 @@ class Supervisor:
         # Whatever the part started and left in its session goes with it.
         await asyncio.to_thread(end_session, process.pid)
         await process.wait()
+        if running.parent_pipe is not None:
+            os.close(running.parent_pipe)
+            running.parent_pipe = None
         if running.pump is not None:
             await running.pump
 
     async def _spawn(self, part: Part) -> Running:
         log = self.layout.log(part.name)
         os.close(_append(log))
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, "-I", "-c", _TRAMPOLINE, str(os.getpid()), *part.argv,
-            cwd=part.cwd, env={**self.env, **part.env},
-            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT, start_new_session=True,
-        )  # fmt: skip
-        running = Running(part, process, log, since=self.clock.monotonic())
+        if sys.platform == "darwin":
+            read_fd, write_fd = os.pipe()
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable, "-I", "-m", "sandbox_science.launcher.parent_watch",
+                    str(read_fd), str(os.getpid()), *part.argv,
+                    cwd=part.cwd, env={**self.env, **part.env}, pass_fds=(read_fd,),
+                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                )  # fmt: skip
+            except BaseException:
+                os.close(write_fd)
+                raise
+            finally:
+                os.close(read_fd)
+            running = Running(
+                part, process, log, since=self.clock.monotonic(), parent_pipe=write_fd
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                sys.executable, "-I", "-c", _TRAMPOLINE, str(os.getpid()), *part.argv,
+                cwd=part.cwd, env={**self.env, **part.env},
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+            )  # fmt: skip
+            running = Running(part, process, log, since=self.clock.monotonic())
         running.pump = asyncio.ensure_future(self._pump(running))
         return running
 
@@ -496,23 +516,6 @@ def end_session(session: int) -> None:
         if not _end_session(session, 0):
             return
     _end_session(session, signal.SIGKILL)
-
-
-def members(session: int) -> list[int]:
-    """The processes in ``session``, by ``/proc``."""
-    found: list[int] = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/stat", "rb") as stat:
-                fields = stat.read().rsplit(b")", 1)[1].split()
-            # A zombie has ended already; only its parent's wait is left.
-            if fields[0] != b"Z" and int(fields[3]) == session:
-                found.append(int(entry))
-        except (OSError, IndexError, ValueError):
-            continue
-    return found
 
 
 def _end_session(session: int, signal_number: int) -> bool:
