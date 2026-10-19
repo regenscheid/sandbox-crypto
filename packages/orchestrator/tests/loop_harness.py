@@ -630,6 +630,7 @@ class Reviewer:
                         category="completion",
                         statement=f"Window {self.windows}: the answer claims more than it shows.",
                         anchors=[{"evidence": evidence}],
+                        assessment="supported",
                         operation_id=f"flag-{self.windows}",
                     )
                 ]
