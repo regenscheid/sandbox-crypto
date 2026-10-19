@@ -39,7 +39,9 @@ def main() -> int:
     if not command or os.getppid() != int(parent):
         return 70
     session = os.getsid(0)
+    print("launcher parent watcher starting part", file=sys.stderr, flush=True)
     child = subprocess.Popen(command, close_fds=True)  # noqa: S603 - trusted launcher command
+    print(f"launcher parent watcher started part PID {child.pid}", file=sys.stderr, flush=True)
     try:
         while child.poll() is None:
             ready, _, _ = select.select([int(fd)], [], [], 0.2)
