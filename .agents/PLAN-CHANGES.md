@@ -2,6 +2,7 @@
 
 ## 2026-10-19
 
+- Mac and ARM64 Kubernetes nodes share the `linux/arm64` image variant. Mac setup now requires explicit owner-selected paths for application data, OpenShell VM disks/image cache, gateway state and Docker's local image store before deployment ([D63](../docs/DECISIONS.md), [Mac qualification](../docs/MAC-ARM64.md#choose-storage-locations)).
 - ARM64 portability begins with native Linux ARM64 image qualification and a host-architecture build default; Mac support still requires portable launcher supervision and real OpenShell MicroVM acceptance. The mixed Kubernetes pool follows the same image and recovery gates ([Mac qualification](../docs/MAC-ARM64.md)).
 - Post-merge CI keeps process-heavy skill-staging modules in dedicated single-worker jobs on Python 3.12 and 3.13; nightly flake sampling repeats them in the same isolation. Race tests wait for completed lease cleanup and allow bounded setup scheduling under runner load.
 - Pull-request tests now give the 14,000-test general tiers an 18-minute diagnostic deadline and run each process-heavy staging integration module in its own 10-minute, single-worker shard. Fast and general slow retain work-level balancing. Synthetic transport tests apply their deliberately short timeout only after the executor handshake, so runner scheduling cannot turn a transfer-cancellation test into an unrelated protocol failure.
