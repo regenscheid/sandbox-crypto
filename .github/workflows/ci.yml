@@ -51,17 +51,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - tier: fast
+          - name: fast
+            tier: fast
             deadline: 1080
             distribution: load
+            selection: ""
             test_timeout: 120
             stack_dump: 100
-          - tier: slow
+          - name: slow
+            tier: slow
             deadline: 1080
-            distribution: loadscope
+            distribution: load
+            selection: >-
+              --ignore=packages/orchestrator/tests/test_skills_staging.py
+              --ignore=packages/worker/tests/test_skill_staging.py
             test_timeout: 300
             stack_dump: 280
-    name: test (${{ matrix.tier }})
+          - name: staging
+            tier: slow
+            deadline: 600
+            distribution: loadscope
+            selection: >-
+              packages/orchestrator/tests/test_skills_staging.py
+              packages/worker/tests/test_skill_staging.py
+            test_timeout: 300
+            stack_dump: 280
+    name: test (${{ matrix.name }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -79,7 +94,7 @@ jobs:
           scripts/ci_pytest.sh ${{ matrix.deadline }} ${{ matrix.tier }} -n auto
           --dist=${{ matrix.distribution }} --durations=25
           --timeout=${{ matrix.test_timeout }} --timeout-method=thread
-          -o faulthandler_timeout=${{ matrix.stack_dump }}
+          -o faulthandler_timeout=${{ matrix.stack_dump }} ${{ matrix.selection }}
 
   # The whole suite, serially and unfiltered, on every supported Python.
   full:

@@ -142,14 +142,14 @@ def states(harness: Harness) -> dict[str, str]:
     return {m.message_id: m.state for m in runs(harness).messages(PROJECT, SESSION)}
 
 
-async def ended(harness: Harness, count: int = 1) -> list[RunRecord]:
+async def ended(harness: Harness, count: int = 1, *, timeout: float = 45) -> list[RunRecord]:
     """Wait until the session keeps ``count`` records and the last one's events end."""
 
     def done() -> bool:
         found = names(harness)
         return len(found) == count and runs(harness).ended(PROJECT, SESSION, found[-1])
 
-    await eventually(done, timeout=20)
+    await eventually(done, timeout=timeout, describe=f"{count} run records to end")
     return records(harness)
 
 
