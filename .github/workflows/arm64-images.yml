@@ -2,13 +2,18 @@
 name: arm64 image qualification
 
 # Native Linux ARM64 validates the image recipe before trying the Mac's OpenShell runtime.
-# The large crypto-base image needs a machine with more disk and memory than this runner.
+# crypto-base is opt-in because its large Conda/Sage layers may exhaust a standard runner.
 on:
   pull_request:
     paths:
       - images/**
       - .github/workflows/arm64-images.yml
   workflow_dispatch:
+    inputs:
+      crypto_base:
+        description: Build and test the large crypto-base image on native ARM64
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,3 +39,7 @@ jobs:
       - run: NETWORK=0 images/test.sh orchestrator
       - run: images/build.sh mcp-proxy
       - run: NETWORK=0 images/test.sh mcp-proxy
+      - if: ${{ inputs.crypto_base }}
+        run: df -h / /var/lib/docker && docker system df && images/build.sh crypto-base
+      - if: ${{ inputs.crypto_base }}
+        run: NETWORK=0 images/test.sh crypto-base

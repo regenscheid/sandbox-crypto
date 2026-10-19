@@ -267,7 +267,7 @@ What the checks show about the paths:
 
 ## arm64
 
-The recipe builds for `linux/arm64` too, but no arm64 image has been built or tested. What it already has:
+The native Linux ARM64 [qualification run](https://github.com/regenscheid/sandbox-crypto/actions/runs/39309274461) built and tested `minimal`, `orchestrator` and `mcp-proxy` in both container and Landlock modes with network disabled. This validates those images on that runner, not the Mac OpenShell runtime. `crypto-base` has not yet passed an ARM64 build or test. Its recipe already has:
 
 - the micromamba release and its SHA-256 for linux-aarch64;
 - lockfiles that cover linux-aarch64: the same packages and versions as linux-64, apart from the compilers' architecture-named packages and two minor version differences (charset-normalizer, libglib) where a build was missing;
@@ -276,10 +276,32 @@ The recipe builds for `linux/arm64` too, but no arm64 image has been built or te
 
 What arm64 still needs:
 
-- **A build.** On an arm64 host, such as a Raspberry Pi 5 node or the Mac, or under QEMU emulation, where compiling G6K and unpacking about 400 packages is slow.
+- **A crypto-base build.** The manual ARM64 workflow can opt into this large build. The standard runner has limited disk; a larger native builder may be required for Sage and G6K.
 - **Ubuntu's pinned archive.** Noble's ARM64 base image names `ports.ubuntu.com`, but its `ubuntu-ports` snapshot route returns 401. The recipe points its ARM64 source directly at the dated signed archive under `snapshot.ubuntu.com/ubuntu` and disables a second snapshot lookup for that source. The native ARM64 build must verify that package installation and the resulting image work; a 200 response for the index alone is insufficient.
 - **A multi-platform image.** It needs a registry or an OCI layout to hold both architectures under one tag; `build.sh` loads one platform into the local store.
-- **The tests**, run on an arm64 host.
+- **The crypto-base tests**, run on an arm64 host, including Sage, G6K and the declared filesystem checks.
+
+After both native builds pass `images/test.sh`, tag and push each local image to the
+**same private repository** as immutable architecture-specific manifests. Keep the
+digests printed by `docker push`, for example
+`registry.example/ss/crypto-base@sha256:...`; do not use mutable arch tags as
+inputs. With registry access already configured, first inspect the proposed index:
+
+```bash
+python3 images/publish_index.py crypto-base registry.example/ss/crypto-base:REVISION \
+  registry.example/ss/crypto-base@sha256:AMD64_DIGEST \
+  registry.example/ss/crypto-base@sha256:ARM64_DIGEST \
+  --private-registry-confirmed --dry-run
+```
+
+Run the same command without `--dry-run` to create the shared tag. The script
+checks both source architectures, the profile and matching recipe revision labels,
+then verifies the published index contains exactly those two digests. It refuses
+`crypto-base` without an explicit confirmation that the destination package is
+private. The operator must verify the registry's access setting; Docker cannot
+infer it from a name. `images/build.sh` never pushes. The publication script is
+ready, but no remote multi-platform image has been published yet because no
+private destination has been selected and the ARM64 crypto-base build remains open.
 
 ## In OpenShell
 
