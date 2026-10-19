@@ -21,8 +21,11 @@ from sandbox_science.testing import eventually
 pytestmark = pytest.mark.slow
 
 
-def test_parent_pipe_watcher_ends_the_session_after_parent_loss(tmp_path: Path) -> None:
-    """The part must leave the session after the launcher's pipe closes."""
+@pytest.mark.parametrize("stop_by_signal", [False, True])
+def test_parent_watcher_ends_the_session_after_parent_loss_or_stop(
+    tmp_path: Path, stop_by_signal: bool
+) -> None:
+    """The part must leave the session after pipe EOF or an explicit stop."""
     read_fd, write_fd = os.pipe()
     marker = tmp_path / "child.pid"
     process = subprocess.Popen(
@@ -35,7 +38,9 @@ def test_parent_pipe_watcher_ends_the_session_after_parent_loss(tmp_path: Path) 
             str(os.getpid()),
             sys.executable,
             "-c",
-            "import os,time,pathlib; "
+            "import os,time,pathlib,signal; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN) if "
+            f"{stop_by_signal!r} else None; "
             f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid())); "
             "time.sleep(60)",
         ],
@@ -51,11 +56,15 @@ def test_parent_pipe_watcher_ends_the_session_after_parent_loss(tmp_path: Path) 
         assert marker.exists()
         child_pid = int(marker.read_text())
         assert child_pid in members(process.pid)
-        os.close(write_fd)
-        write_fd = -1
-        # Darwin can terminate the watcher with its session while the watcher
-        # is stopping the child. Either exit is acceptable if the part is gone.
-        assert process.wait(timeout=10) in (70, -signal.SIGTERM)
+        if stop_by_signal:
+            process.send_signal(signal.SIGTERM)
+        else:
+            os.close(write_fd)
+            write_fd = -1
+        assert process.wait(timeout=10) == 70
+        deadline = time.monotonic() + 5
+        while child_pid in members(process.pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert child_pid not in members(process.pid)
     finally:
         if write_fd >= 0:

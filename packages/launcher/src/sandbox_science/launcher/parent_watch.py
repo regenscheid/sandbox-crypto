@@ -14,6 +14,7 @@ import select
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 from .processes import members
@@ -39,9 +40,14 @@ def main() -> int:
     if not command or os.getppid() != int(parent):
         return 70
     session = os.getsid(0)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.set())
     child = subprocess.Popen(command, close_fds=True)  # noqa: S603 - trusted launcher command
     try:
         while child.poll() is None:
+            if stop.is_set():
+                _stop_session(session)
+                return 70
             ready, _, _ = select.select([int(fd)], [], [], 0.2)
             if ready and not os.read(int(fd), 1):
                 _stop_session(session)

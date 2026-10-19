@@ -13,6 +13,7 @@ import signal
 import socket
 import stat
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -316,6 +317,12 @@ def test_a_part_left_behind_is_shown_and_stopped_by_down(site: dict[str, Any]) -
     launcher.finish()
     (harness,) = [part for part in record.parts if part.name == "control-service"]
     wait_for(lambda: "sandbox-science-worker stop" in journal(site["journal"]), "worker")
+    if sys.platform == "darwin":
+        # The parent-pipe watcher ends even a SIGTERM-ignoring child.
+        wait_for(lambda: not alive(harness, record), "control service outlived its watcher")
+        assert launcher.command("down").returncode == 0
+        assert not layout.record.exists()
+        return
     assert alive(harness, record)  # it ignored the SIGTERM it got when the launcher died
     shown = launcher.command("status")
     assert shown.returncode == 4
@@ -337,6 +344,11 @@ def test_a_child_that_outlived_its_part_is_found_and_stopped_by_down(
     launcher.finish()
     # The workspace dies with the launcher; its child, which has no death signal, does not.
     wait_for(lambda: "sandbox-science-workspace stop" in journal(site["journal"]), "workspace")
+    if sys.platform == "darwin":
+        # The watcher enumerates its session, including other process groups.
+        wait_for(lambda: start_time(child) is None, "child outlived its watcher")
+        assert launcher.command("down").returncode == 0
+        return
     assert start_time(child) is not None
     shown = launcher.command("status")
     assert shown.returncode == 4
