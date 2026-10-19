@@ -142,8 +142,33 @@ match args:
         state["sandboxes"][name] = {"id": uuid.uuid4().hex, "phase": "Ready", "image": image}
         save(state)
         note(f"sandbox create {name} {image} provider {provider} {' '.join(command)}")
+    case [
+        "sandbox",
+        "create",
+        "--name",
+        name,
+        "--from",
+        image,
+        "--policy",
+        policy,
+        "--no-auto-providers",
+        "--detach",
+        "--",
+        *command,
+    ]:
+        if behaviour == "create-fails":
+            print("error: create failed", file=sys.stderr)
+            sys.exit(1)
+        state = load()
+        state["sandboxes"][name] = {"id": uuid.uuid4().hex, "phase": "Ready", "image": image}
+        save(state)
+        note(f"sandbox create {name} {image} {' '.join(command)}")
     case ["sandbox", "exec", "-n", name, "--no-tty", "--no-login-shell", "--", *command]:
         note(f"exec {name} {' '.join(command)}")
+        if "sandbox_science.orchestrator.confinement.runtime" in command:
+            print("confined agent runtime ready", flush=True)
+            while True:
+                time.sleep(0.1)
     case ["sandbox", "upload", "--no-git-ignore", name, local, remote]:
         if not Path(local).is_file():
             sys.exit(2)

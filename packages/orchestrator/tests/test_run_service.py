@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import json
 import logging
 import signal
@@ -28,6 +27,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator import service as service_module
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import Harness as Core
@@ -36,6 +36,7 @@ from sandbox_science.orchestrator.harness import admit as harness_admit
 from sandbox_science.orchestrator.history import Folder, body
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.loop import MAX_TURNS
 from sandbox_science.orchestrator.model import OpenAICompatibleModel, ScriptedModel
 from sandbox_science.orchestrator.notices import CONSOLIDATION
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -79,6 +80,7 @@ async def serving(
     retry: float = 0.2,
     clock: Clock = SYSTEM_CLOCK,
     run_share: float | None = None,
+    max_turns: int = MAX_TURNS,
     serve: bool = True,
 ) -> AsyncIterator[RunService]:
     """The run service on the harness's state directory, worker and gateway, keeping the
@@ -99,7 +101,12 @@ async def serving(
                 client,
                 Role(model, "main"),
                 stores=stores,
-                settings=Settings(min_isolation_tier=None, cost_limits=True, run_share=run_share),
+                settings=Settings(
+                    min_isolation_tier=None,
+                    cost_limits=True,
+                    run_share=run_share,
+                    max_turns=max_turns,
+                ),
                 clock=clock,
             )
             service = RunService(core, poll=0.02, retry=retry, clock=clock)
@@ -135,14 +142,14 @@ def states(harness: Harness) -> dict[str, str]:
     return {m.message_id: m.state for m in runs(harness).messages(PROJECT, SESSION)}
 
 
-async def ended(harness: Harness, count: int = 1) -> list[RunRecord]:
+async def ended(harness: Harness, count: int = 1, *, timeout: float = 45) -> list[RunRecord]:
     """Wait until the session keeps ``count`` records and the last one's events end."""
 
     def done() -> bool:
         found = names(harness)
         return len(found) == count and runs(harness).ended(PROJECT, SESSION, found[-1])
 
-    await eventually(done, timeout=20)
+    await eventually(done, timeout=timeout, describe=f"{count} run records to end")
     return records(harness)
 
 
@@ -161,7 +168,14 @@ async def test_a_first_message_starts_a_run(harness: Harness) -> None:
     (first,) = harness.gateway.main
     assert user_text(first[-1]) == "What is $2+2$?"
     events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
-    assert [e.kind for e in events] == ["started", "user", "model", "assistant", "stopped"]
+    assert [e.kind for e in events] == [
+        "started",
+        "user",
+        "model",
+        "notice",  # the pinned model profile is recorded before the response
+        "assistant",
+        "stopped",
+    ]
     assert events[0].data["message_ids"] == ["m-1"]
     assert events[1].data == {"message_id": "m-1", "text": "What is $2+2$?"}
 
@@ -548,21 +562,23 @@ async def test_a_cancel_during_a_foreground_tool_call(harness: Harness) -> None:
     assert states(harness) == {"m-1": "delivered"}  # the first call saw it
 
 
-async def test_a_failing_session_waits_longer_each_time_then_holds_its_messages(
+async def test_a_failing_session_holds_original_input_for_explicit_resume(
     harness: Harness,
 ) -> None:
     post(harness, "m-1", "Hello?")
-    async with serving(harness, *[Reply(status=500) for _ in range(20)], retry=0.05):
+    async with serving(harness, Reply(status=500), Reply("Never sent."), retry=0.05) as service:
         await eventually(lambda: states(harness) == {"m-1": "held"}, timeout=20)
-        await asyncio.sleep(0.5)
-        assert len(names(harness)) == 5
+        await ended(harness)
+        assert await service.waiting_work() == ()
+        works = WorkRecords(service.stores.projects.control)
+        original = names(harness)[0]
+        assert works.get(PROJECT, SESSION, original).state == "paused"
+        assert works.request(PROJECT, SESSION, original) is not None
+        assert works.get(PROJECT, SESSION, original).state == "paused"
+        assert len(names(harness)) == 1
+        assert len(harness.gateway.main) == 1
     (message,) = runs(harness).messages(PROJECT, SESSION)
-    assert message.reason == "5 runs failed in a row"
-    started = [datetime.strptime(name.split("-")[0], "%Y%m%dT%H%M%S%fZ") for name in names(harness)]
-    gaps = [(b - a).total_seconds() for a, b in itertools.pairwise(started)]
-    # Each run starts at least the doubled wait after the one before; a run's own
-    # duration, which varies under load, only adds to it.
-    assert [gap >= 0.05 * 2**n - 0.01 for n, gap in enumerate(gaps)] == [True] * 4, gaps
+    assert message.reason == "interrupted"
 
 
 async def test_sigterm_stops_serve_and_its_run_ends_interrupted(harness: Harness) -> None:
@@ -630,7 +646,15 @@ async def test_a_killed_service_leaves_a_run_the_next_one_ends_interrupted(
         await eventually(lambda: states(harness) == {"m-1": "held"})
         runs(harness).post(PROJECT, SESSION, "m-2", "Hello again.", author="user")
         (record,) = await ended(harness)
-    assert record.delivered["messages"] == ["m-1", "m-2"]  # writing again resumed m-1
+    assert record.delivered["messages"] == ["m-2"]
+    assert states(harness) == {"m-1": "held", "m-2": "delivered"}
+    # Fresh input does not replay the old unresolved model intent.
+    projects = ProjectStore(harness.state)
+    try:
+        old = WorkRecords(projects.control).get(PROJECT, SESSION, lease.run)
+        assert old.state == "paused"
+    finally:
+        projects.close()
 
 
 async def test_a_service_run_holds_the_session_against_the_command_line(
@@ -847,7 +871,7 @@ async def test_a_run_that_stops_for_its_lost_lease_ends_and_backs_off(
         e.data for e in runs(harness).events(PROJECT, SESSION, lease.run) if e.kind == "stopped"
     ]
     assert [data["stopped"] for data in stopped] == ["interrupted"]
-    assert states(harness) == {"m-1": "queued"}
+    assert states(harness) == {"m-1": "held"}
     assert names(harness) == []
 
 
@@ -859,7 +883,8 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
     then starts a consolidation run, told to propose how to consolidate them, and the
     held one still waits (the coordinator's decision of 2026-10-16). A change of the
     ledger that leaves the session's decisions as they were queues nothing; a change of
-    them queues the held messages again, and so does the user's resume."""
+    them clears the consolidation prerequisite but never restarts durable work.
+    Only explicit research-tree Resume can continue the original attempt."""
 
     async def research_state(self: Folder, transcript: Any) -> bool:
         self.geometry = self.start
@@ -872,9 +897,9 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
     monkeypatch.setattr(Ledger, "mark", lambda self, project: mark[0])
     monkeypatch.setattr(RunService, "_decided", lambda self, project, session: decided[0])
     post(harness, "m-1", "Go on.")
-    async with serving(harness, Reply("Shall I merge D-1 to D-4 into one decision?")):
+    async with serving(harness, Reply("Shall I merge D-1 to D-4 into one decision?")) as service:
         await eventually(lambda: states(harness) == {"m-1": "held"}, timeout=20)
-        (record,) = records(harness)
+        (record,) = await ended(harness)
         assert record.stopped == "context_limit"
         events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
         (stopped,) = [event.data for event in events if event.kind == "stopped"]
@@ -883,14 +908,76 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         await eventually(lambda: states(harness) == {"m-1": "held", "m-2": "delivered"}, timeout=20)
         (sent,) = harness.gateway.main
         assert any(CONSOLIDATION.text in str(message["content"]) for message in sent)
-        assert records(harness)[1].task == "What now?"  # the held one is not its task
+        _, consolidation = await ended(harness, 2)
+        assert consolidation.task == "What now?"  # the held one is not its task
         reasons = {m.message_id: m.reason for m in runs(harness).messages(PROJECT, SESSION)}
         assert reasons["m-1"] == "research_state"
         mark[0] = (2, 9)  # another session's change: these decisions are as they were
         await asyncio.sleep(0.3)
         assert (len(names(harness)), states(harness)["m-1"]) == (2, "held")
         mark[0], decided[0] = (3, 10), (("D-1", 2, "reversed"),)  # the user consolidated
-        await eventually(lambda: len(names(harness)) == 3, timeout=20)
-        await eventually(lambda: states(harness)["m-1"] == "held", timeout=20)
-        runs(harness).resume(PROJECT, SESSION)  # the user resumes: a run starts
-        await eventually(lambda: len(names(harness)) == 4, timeout=20)
+        await eventually(
+            lambda: runs(harness).messages(PROJECT, SESSION)[0].reason == "interrupted",
+            timeout=20,
+        )
+        assert await service.waiting_work() == ()
+        assert len(names(harness)) == 2
+        works = WorkRecords(service.stores.projects.control)
+        original = names(harness)[0]
+        assert works.request(PROJECT, SESSION, original) is not None
+        await ended(harness, 3)
+        assert states(harness)["m-1"] == "held"
+        assert works.get(PROJECT, SESSION, original).current != original
+        assert runs(harness).messages(PROJECT, SESSION)[0].reason == "research_state"
+
+    # A replacement service first observes this held prerequisite without erasing
+    # it. Fresh input still receives consolidation guidance after another pause.
+    async with serving(harness, Reply("Consolidate the resumed state."), serve=False) as service:
+        await service.maintenance_tick()
+        assert states(harness)["m-1"] == "held"
+        assert runs(harness).messages(PROJECT, SESSION)[0].reason == "research_state"
+        assert await service.waiting_work() == ()
+        post(harness, "m-3", "Help consolidate again.")
+        await service.tick()
+        active = service.active[(PROJECT, SESSION)]
+        assert active.task is not None
+        await asyncio.wait_for(asyncio.shield(active.task), timeout=20)
+        await ended(harness, 4)
+        assert any(CONSOLIDATION.text in str(m["content"]) for m in harness.gateway.main[-1])
+        assert states(harness) == {"m-1": "held", "m-2": "delivered", "m-3": "delivered"}
+        await service.close()
+
+
+async def test_research_state_hold_covers_more_than_one_input_page(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def research_state(self: Folder, transcript: Any) -> bool:
+        self.geometry = self.start
+        return self._stop("research_state", "the decisions do not fit")
+
+    monkeypatch.setattr(Folder, "before_call", research_state)
+    for number in range(205):
+        post(harness, f"m-{number}", "Review the current decisions.")
+    async with serving(harness, Reply("Never sent.")):
+        await ended(harness)
+    first = runs(harness).messages(PROJECT, SESSION)
+    second = runs(harness).messages(PROJECT, SESSION, after=first[-1].number)
+    assert len(first) + len(second) == 205
+    assert all((m.state, m.reason) == ("held", "research_state") for m in [*first, *second])
+    assert harness.gateway.main == []
+
+
+async def test_confined_queue_selection_does_not_start_roots_until_selected(
+    harness: Harness,
+) -> None:
+    async with serving(harness, Reply("Selected."), serve=False) as service:
+        service.runs.post(PROJECT, SESSION, "msg-selected", "Do this", author="user")
+        await service.maintenance_tick()
+        assert await service.waiting_work() == ((PROJECT, SESSION),)
+        assert not service.active
+        assert not await service.start_selected(PROJECT, "not-queued")
+        assert await service.start_selected(PROJECT, SESSION)
+        assert not await service.start_selected(PROJECT, SESSION)
+        task = service.active[PROJECT, SESSION].task
+        assert task is not None
+        await task

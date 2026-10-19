@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.connectors import (
     check_proxy,
 )
 from sandbox_science.orchestrator.documents.agent_text import hidden_characters
+from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolSpec
@@ -375,7 +376,7 @@ async def test_an_answer_longer_than_one_read_is_read_whole(proxied: Proxied) ->
     assert len(connectors.specs) == len(proxied.fake.tools) - 2  # not the admin_ tools
 
 
-async def test_a_call_whose_answer_is_lost_says_not_to_retry_blindly() -> None:
+async def test_a_call_whose_answer_is_lost_keeps_unknown_outcome() -> None:
     async def cut(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         if body["method"] == "initialize":
@@ -400,12 +401,46 @@ async def test_a_call_whose_answer_is_lost_says_not_to_retry_blindly() -> None:
     connectors = Connectors(client, ["papers"], session="s-1")
     connectors.tools["spend"] = ConnectorTool("papers", ToolSpec("spend", "", {"type": "object"}))
     try:
-        text, record = await connectors.call("spend", {})
+        with pytest.raises(UnknownEffectError) as failed:
+            await connectors.call("spend", {})
     finally:
         await client.close()
         await server.close()
-    assert record["error"] == "no_usable_answer"
-    assert "check its effect before calling again" in error_of(text)["message"]
+    assert failed.value.kind == "no_usable_answer"
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(200, b"not-json"), (200, b'{"jsonrpc":"2.0","id":1}'), (502, b"bad gateway")],
+)
+async def test_unusable_answer_after_connector_call_keeps_unknown_outcome(
+    status: int, body: bytes
+) -> None:
+    async def reply(request: web.Request) -> web.Response:
+        payload = await request.json()
+        if payload["method"] == "initialize":
+            return web.json_response(
+                {"jsonrpc": "2.0", "id": payload["id"], "result": {}},
+                headers={"Mcp-Session-Id": "m-1"},
+            )
+        if "id" not in payload:
+            return web.Response(status=202)
+        return web.Response(status=status, body=body)
+
+    app = web.Application()
+    app.router.add_route("*", "/mcp/{server}", reply)
+    server = TestServer(app, host="127.0.0.1")
+    await server.start_server()
+    client = ProxyClient(str(server.make_url("")).rstrip("/"), TOKEN)
+    connectors = Connectors(client, ["papers"], session="s-1")
+    connectors.tools["spend"] = ConnectorTool("papers", ToolSpec("spend", "", {"type": "object"}))
+    try:
+        with pytest.raises(UnknownEffectError) as failed:
+            await connectors.call("spend", {})
+    finally:
+        await client.close()
+        await server.close()
+    assert failed.value.kind == "no_usable_answer"
 
 
 @pytest.mark.parametrize("name", ["_private", "-dash", "x" * 65, "has space", "a.b"])

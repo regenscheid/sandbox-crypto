@@ -48,6 +48,7 @@ from sandbox_science.contracts import (
     ErrorInfo,
     ErrorKind,
     Execution,
+    ExecutionContext,
     ExecutionState,
     Lockfile,
     ProbeResult,
@@ -85,6 +86,7 @@ from .identity import execution_digest, provision_digest, same_execution, same_p
 from .manager import ExecutionManager
 from .permissions import Permissions, PermissionStoreError
 from .provision_events import ProvisionEvents
+from .recovery_fence import check_dispatch, control_context
 from .resolution import Decided, Resolved, ResolveError
 from .revisions import read_lockfile
 from .timeouts import seconds
@@ -275,6 +277,10 @@ class Provisioner:
             not request.conda or request.pip or request.system or request.capability is not None
         ):
             raise WorkerError(ErrorKind.INVALID_REQUEST, "upgrade requires named Conda specs only")
+        with self.store.recovery_fences.bind(request.context):
+            return await self._submit_owned(request)
+
+    async def _submit_owned(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
         environment_id = request.context.environment_id
         if request.capability is not None and self.catalog.get(request.capability) is None:
             names = ", ".join(sorted(self.catalog.capabilities))
@@ -363,10 +369,22 @@ class Provisioner:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(asyncio.shield(op.changed), remaining)
 
-    async def cancel(self, provision_id: str, project_id: str | None = None) -> ProvisionOperation:
+    async def cancel(
+        self,
+        provision_id: str,
+        project_id: str | None = None,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> ProvisionOperation:
         """Cancel the operation: one waiting ends at once, a running step is cancelled like
         any execution, and an install that changed the packages follows CP-13."""
         record = self.get(provision_id, project_id)
+        with self.store.recovery_fences.bind(control_context(record.request.context, context)):
+            return await self._cancel_owned(provision_id, record)
+
+    async def _cancel_owned(
+        self, provision_id: str, record: ProvisionOperation
+    ) -> ProvisionOperation:
         op = self._ops.get(provision_id)
         if op is None or record.state is ProvisionState.FINISHED:
             return record
@@ -690,6 +708,7 @@ class Provisioner:
         step's own package commands made it (managed), as only the install's do."""
         if op.cancelled.is_set():
             raise _cancelled(stage)
+        check_dispatch()
         if label in installer_records.LABELS:
             if any(step.label == label for step in op.record.installer_steps or ()):
                 raise WorkerError(ErrorKind.CONFLICT, "installer step already has retained intent")
@@ -1160,7 +1179,8 @@ class Provisioner:
             ],
         }
         try:
-            seq = await asyncio.to_thread(self.permissions.request, key, payload)
+            check_dispatch()
+            seq = self.permissions.request_record(key, payload)
         except PermissionStoreError as exc:
             raise _Stop(
                 ProvisionOutcome.DENIED,
@@ -1168,6 +1188,10 @@ class Provisioner:
                 "permission",
                 ErrorInfo(kind=ErrorKind.UNAVAILABLE, message=str(exc)),
             ) from None
+        try:
+            await asyncio.to_thread(self.permissions.refresh)
+        except PermissionStoreError as exc:
+            _log.warning("permission request %d: %s", seq, exc)
         minutes = max(1, round(timeout.total_seconds() / 60))
         self._update(
             op,
@@ -1299,6 +1323,7 @@ class Provisioner:
         (CP-10, CP-14); return the revisions before and after. A request names Conda or pip
         packages, never both, so one step installs them: micromamba pinned to the decided
         files, or pip with exactly them."""
+        check_dispatch()
         environment_id = op.record.request.context.environment_id
         current = self.store.revision(environment_id)
         before = current.revision if current is not None else None

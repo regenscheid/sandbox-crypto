@@ -17,7 +17,9 @@
     type,
     status,
     filter,
-  }: { projectId: string; type: EntryType; status: string; filter: string } = $props();
+    onselect,
+  }: { projectId: string; type: EntryType; status: string; filter: string; onselect?: () => void } =
+    $props();
   const entries = $state(emptyList<EntrySummary, string>());
   // The board keys each column by its type and status, so these never change under it.
   const list = new PagedList(entries, async (after) => {
@@ -38,7 +40,7 @@
   {/if}
   {#each shown as entry (entry.entry_id)}
     <article class="card">
-      <a href={ledgerEntryHref(projectId, entry.handle)}>{entry.handle}</a>
+      <a href={ledgerEntryHref(projectId, entry.handle)} onclick={onselect}>{entry.handle}</a>
       {#if entry.origin === 'published'}<span class="muted">published</span>{/if}
       {#if entry.asserted_only}<span class="muted">asserted only</span>{/if}
       {#if entry.open_flags > 0}<strong class="flagged">{openFlagsText(entry.open_flags)}</strong

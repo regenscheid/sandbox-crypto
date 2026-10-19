@@ -13,7 +13,7 @@ from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Revision, Sha256
 from .worker import MediaType
 
-MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+MAX_ARTIFACT_BYTES = 1024**3
 ShortText = Annotated[str, Field(max_length=256)]
 
 

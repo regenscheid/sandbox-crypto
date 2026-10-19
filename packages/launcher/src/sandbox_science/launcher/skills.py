@@ -32,7 +32,9 @@ from .state import Layout
 from .supervise import Supervisor, passed
 
 
-def import_argv(config: LauncherConfig, name: str, pack: SkillPackConfig) -> list[str]:
+def import_argv(
+    config: LauncherConfig, name: str, pack: SkillPackConfig, *, models: bool = True
+) -> list[str]:
     """``skills import``'s action and options for ``pack``: the key file by its path, and
     the first project that names the pack, whose cost the import's model calls count for."""
     origin = ["--git", pack.git] if pack.git is not None else ["--archive", str(pack.archive)]
@@ -41,15 +43,21 @@ def import_argv(config: LauncherConfig, name: str, pack: SkillPackConfig) -> lis
         argv += ["--ref", pack.ref]
     if pack.path is not None:
         argv += ["--path", pack.path]
-    models = {
-        "--embedding-model": config.skills.embedding_model,
-        "--metadata-model": config.skills.metadata_model,
+    model_options = {
+        "--embedding-model": config.skills.embedding_model if models else None,
+        "--metadata-model": config.skills.metadata_model if models else None,
     }
-    for flag, model in models.items():
+    for flag, model in model_options.items():
         if model is not None:
             argv += [flag, model]
-    if any(model is not None for model in models.values()):
+    if any(model is not None for model in model_options.values()):
         argv += ["--model-url", config.model.url, "--api-key-file", str(config.model.api_key_file)]
+        if config.skills.metadata_model is not None:
+            alias = config.skills.metadata_model
+            if alias in config.model.api:
+                argv += ["--api", f"{alias}={config.model.api[alias]}"]
+            if (effort := config.model.reasoning_effort.get("skills_metadata")) is not None:
+                argv += ["--reasoning-effort", f"skills_metadata={effort}"]
         users = [project.id for project in config.projects if name in project.skills]
         argv += ["--project", users[0]] if users else []
     return argv
@@ -62,6 +70,7 @@ async def keep(
     *,
     update: bool = False,
     only: Iterable[str] = (),
+    models: bool = True,
 ) -> tuple[list[str], list[str]]:
     """Import and pin the config's packs, or only those named: what happened, a line each,
     and the packs that failed, each left as it was."""
@@ -99,7 +108,9 @@ async def keep(
         try:
             imports = cast(list[dict[str, Any]], await answer("list", "--source", name))
             if update or not imports:
-                found = cast(dict[str, Any], await answer(*import_argv(config, name, pack)))
+                found = cast(
+                    dict[str, Any], await answer(*import_argv(config, name, pack, models=models))
+                )
                 lines.append(_imported(name, found, first=not imports))
             else:
                 found = imports[0]

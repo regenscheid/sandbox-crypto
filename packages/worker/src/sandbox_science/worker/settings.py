@@ -166,6 +166,10 @@ class ClientSettings(_Model):
     document_catalog: bool = Field(default=False, strict=True)
     """Explicit control-service permission to ingest/status document catalogs. Ordinary
     execution clients remain denied, even for their own projects."""
+    recovery_control: bool = Field(default=False, strict=True)
+    """Trusted host control service may install recovery epochs for its projects."""
+    operator: bool = Field(default=False, strict=True)
+    """Authenticated maintenance may mutate fenced sessions without agent authority."""
 
 
 class Settings(_Model):

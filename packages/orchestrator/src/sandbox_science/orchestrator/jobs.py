@@ -30,10 +30,11 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.contracts.worker import TERMINAL_STATES
 
 from .aio import lease, threaded
+from .effects import UnknownEffectError
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
 from .memory_prompt import MemoryGiven
-from .model import ChatModel, ToolSpec
+from .model import ChatModel, ModelError, ToolSpec
 from .notices import JOBS, JOBS_ATTACHED
 from .pricing import CostSource
 from .recording import FileRecorder, Written
@@ -233,6 +234,7 @@ class JobTools:
         """``memory`` reads the project memory the watcher is given, as it is at each
         check (PM-8)."""
         self.bindings: Callable[[], dict[str, str]] | None = None
+        self.binding_inventory: Callable[[], str | None] | None = None
         """The run's skill bindings, as its jobs carry them (SK-16)."""
         if watcher is not None and (not watcher_alias or state is None):
             raise ValueError("a watcher requires its own alias and durable job state")
@@ -324,7 +326,15 @@ class JobTools:
             )
         bindings = self.bindings() if self.bindings is not None else {}
         request = JobRequest.model_validate(
-            {"operation_id": operation, "context": self.context, **args, "bindings": bindings}
+            {
+                "operation_id": operation,
+                "context": self.context,
+                **args,
+                "bindings": bindings,
+                "binding_inventory": self.binding_inventory()
+                if self.binding_inventory is not None
+                else None,
+            }
         )
         if request.wake_session:
             raise WorkerAPIError(
@@ -332,11 +342,19 @@ class JobTools:
                 "waking a detached session needs the future harness scheduler",
             )
         execution = await self.client.submit(request)
-        if self.state is not None:
-            await asyncio.to_thread(
-                self.state.origin, self.context, execution.execution_id, self.run_id
-            )
-        value = summary(await self.owned(execution.execution_id), self.clock.now())
+        try:
+            if self.state is not None:
+                await asyncio.to_thread(
+                    self.state.origin, self.context, execution.execution_id, self.run_id
+                )
+            value = summary(await self.owned(execution.execution_id), self.clock.now())
+        except Exception as exc:
+            # Submission has already returned an execution. A failed status read or
+            # origin write cannot be presented as a safely retryable start failure.
+            raise UnknownEffectError(
+                "job_post_submit",
+                "start_job was accepted but its status or origin could not be confirmed",
+            ) from exc
         return dump(value), {"job": value, "execution": execution.model_dump(mode="json")}
 
     async def list(self, args: dict[str, Any], operation: str) -> tuple[str, dict[str, Any]]:
@@ -407,7 +425,7 @@ class JobTools:
     async def cancel(self, args: dict[str, Any], operation: str) -> tuple[str, dict[str, Any]]:
         job = await self.owned(self.job_id(args))
         execution = await self.client.cancel(
-            job.execution.execution_id, project_id=self.context.project_id
+            job.execution.execution_id, project_id=self.context.project_id, context=self.context
         )
         self.check_owner(execution)
         if execution.execution_id != job.execution.execution_id:
@@ -606,16 +624,20 @@ class JobTools:
         output_tokens: int | None = None
         cost: float | None = None
         cost_source: CostSource | None = None
+        intent_id: str | None = None
         try:
             async with asyncio.timeout(self.watcher_timeout):
                 reply = await self.watcher.complete(watcher_input.messages(), ())
             resolved = reply.model
+            intent_id = reply.intent_id
             input_tokens, output_tokens, cost = reply.input_tokens, reply.output_tokens, reply.cost
             cost_source = reply.cost_source
             if reply.tool_calls or reply.text is None or len(reply.text) > 1200:
                 raise ValueError("watcher returned tools, no text, or an oversized answer")
             answer = WatcherAnswer.model_validate_json(reply.text)
-        except (Exception, asyncio.CancelledError):
+        except (Exception, asyncio.CancelledError) as error:
+            if isinstance(error, ModelError):
+                cost, intent_id = error.cost, error.intent_id
             await asyncio.to_thread(
                 self.state.finish_call,
                 reservation,
@@ -625,6 +647,7 @@ class JobTools:
                 output_tokens,
                 cost,
                 cost_source,
+                intent_id,
             )
             # Failure wakes the main agent; the watcher never takes action on its own.
             current = asyncio.current_task()
@@ -640,6 +663,7 @@ class JobTools:
             output_tokens,
             cost,
             cost_source,
+            intent_id,
         )
         value: dict[str, object] = {
             "job_id": execution.execution_id,

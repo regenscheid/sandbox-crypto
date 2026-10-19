@@ -87,7 +87,7 @@ npm run build
 npm run build:math
 ```
 
-CI runs the same checks, and the math checker's tests (`uv run pytest -q packages/orchestrator/tests/test_mathcheck.py`) after `npm run build:math`. On a pull request it runs them on Python 3.13, with the tests in two parallel jobs, the fast tier and the slow tier, beside the web app's checks. `scripts/ci_pytest.sh` runs a tier there (`uv run python scripts/tiers.py run fast -n auto`, and `slow`) with its output in a file, printed when pytest ends or a 15-minute deadline stops it. A push to main also runs the whole suite serially on Python 3.12 and 3.13. A nightly run does the same, and runs the slow tier ten times over to measure how often its tests flake.
+CI runs the same checks, and the math checker's tests (`uv run pytest -q packages/orchestrator/tests/test_mathcheck.py`) after `npm run build:math`. On a pull request it runs them on Python 3.13, with the fast tier, the general slow tier and two process-staging shards beside the web app's checks. Each staging module has its own runner and one xdist worker, so its executor processes do not compete with another staging module; the general jobs retain work-level balancing. `scripts/ci_pytest.sh` keeps each job's output in a file, printed when pytest ends or its diagnostic deadline stops it: 18 minutes for the general tiers and 10 minutes for staging. A push to main also runs the whole suite serially on Python 3.12 and 3.13. A nightly run does the same, and runs the slow tier ten times over to measure how often its tests flake.
 
 ## Licensing
 

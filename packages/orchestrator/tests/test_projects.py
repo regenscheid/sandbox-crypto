@@ -7,6 +7,7 @@ import gc
 import re
 import sqlite3
 import threading
+import tracemalloc
 import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,7 +25,9 @@ from sandbox_science.contracts import (
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.control import migrations, store_path
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.history.view import recorded_words
 from sandbox_science.orchestrator.projects import (
+    RUN_READ_BYTES,
     ProjectError,
     ProjectRecord,
     ProjectStore,
@@ -32,6 +35,7 @@ from sandbox_science.orchestrator.projects import (
     ensure_environment,
     environment_id,
 )
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 POLICY = "sha256:" + "a" * 64
@@ -520,3 +524,36 @@ def test_a_read_never_makes_the_control_store(tmp_path: Path) -> None:
     assert store.runs("p1", "a") == []
     store.close()
     assert not store_path(tmp_path).exists()
+
+
+def test_oversized_legacy_run_is_refused_without_loading_it(session_store: ProjectStore) -> None:
+    entry = session_store.save_run(run_record(text="x" * RUN_READ_BYTES))
+    gc.collect()
+    tracemalloc.start()
+    try:
+        with pytest.raises(ProjectError, match="streamed stored-evidence") as error:
+            session_store.run("p1", "a", entry.name)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert error.value.kind is ErrorKind.UNSUPPORTED
+    assert peak < 1024 * 1024
+    # Rebuilding from legacy records must not silently lose the user's constraints.
+    with pytest.raises(ProjectError, match="streamed stored-evidence"):
+        recorded_words(session_store, RunState(session_store.control), "p1", "a", [entry.name])
+    # An explicit offline full read remains available; the default is bounded.
+    assert (
+        session_store.run("p1", "a", entry.name, max_bytes=None).final_text == "x" * RUN_READ_BYTES
+    )
+
+
+def test_run_read_bound_counts_encoded_bytes_and_accepts_exact_size(
+    session_store: ProjectStore,
+) -> None:
+    record = run_record(text="A Unicode answer: λ and 🧮")
+    size = len(record.to_json().encode())
+    entry = session_store.save_run(record)
+    assert session_store.run("p1", "a", entry.name, max_bytes=size) == record
+    with pytest.raises(ProjectError) as error:
+        session_store.run("p1", "a", entry.name, max_bytes=size - 1)
+    assert error.value.kind is ErrorKind.UNSUPPORTED

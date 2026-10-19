@@ -80,12 +80,20 @@ def _sibling(name: str) -> ModuleType:
 
 
 if TYPE_CHECKING:
-    from . import capture, provisioning, sandbox_files, sandbox_processes, sandbox_setup
+    from . import (
+        binding_inventory,
+        capture,
+        provisioning,
+        sandbox_files,
+        sandbox_processes,
+        sandbox_setup,
+    )
     from .sandbox_files import MAX_PATH_BYTES as MAX_PATH_BYTES
     from .sandbox_files import SHARED as SHARED
     from .sandbox_files import ToolError as ToolError
     from .sandbox_files import encode_line as encode_line
 else:
+    binding_inventory = _sibling("binding_inventory")
     capture = _sibling("capture")
     provisioning = _sibling("provisioning")
     sandbox_files = _sibling("sandbox_files")
@@ -96,12 +104,12 @@ else:
     SHARED = sandbox_files.SHARED
     MAX_PATH_BYTES = sandbox_files.MAX_PATH_BYTES
 
-PROTOCOL = 2
-"""The executor's protocol with the worker: 2 takes skill bindings in executions, which the
-worker sends only to an executor of 2 or more (docs/specs/skills.md, SK-16)."""
+PROTOCOL = 3
+"""The executor's protocol: 3 checks generated restrictions at every binding-bearing
+launch and surviving-kernel cell. Older executors must be recycled (SK-16, RC-24)."""
 MAX_LINE = 16 * 1024 * 1024
 """The longest line the executor sends; the worker drops longer ones."""
-MAX_REQUEST = 64 * 1024 * 1024
+MAX_REQUEST = 4 * ((100 * 1024 * 1024 + 2) // 3) + 64 * 1024
 """The longest request line it reads (a file write carries the file)."""
 MAX_READ = 8 * 1024 * 1024
 MAX_LIST = 5000
@@ -331,6 +339,7 @@ class Running:
     controller: Callable[[], bool] | None = None
     bindings: dict[str, str] = field(default_factory=dict[str, str])
     """A cell's skill bindings, to say when its kernel holds others."""
+    binding_inventory: str | None = None
     bindings_dropped: tuple[str, ...] = ()
     """The skill bindings left out as naming the environment's own variables, which the
     result names for the run's notice."""
@@ -358,6 +367,8 @@ class Kernel:
     start_environment: str | None = None
     start_execution: str | None = None
     start_package_epoch: int | None = None
+    start_binding_inventory: str | None = None
+    binding_inventory: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held by the running cell: cells queue on it in submission order."""
     control: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -703,6 +714,8 @@ class Executor:
         """The attempts each call or kernel ran, with when they started, by its OWNER mark."""
         self.reported = ""
         self.package_epoch = 0
+        self.binding_inventory = binding_inventory.Inventory()
+        self.binding_inventory_lock = asyncio.Lock()
         """The packages' fingerprint as the worker knows it, from ``hello`` and the
         ``revision`` events since."""
         try:
@@ -841,6 +854,67 @@ class Executor:
                 continue
             found[name] = value
         return found, tuple(sorted(dropped))
+
+    async def current_binding_inventory(self) -> None:
+        """Refresh static restrictions from this guest, never the worker host."""
+        sites = tuple(
+            Path(p) for p in (*self.places.site, *([self.places.user] if self.places.user else []))
+        )
+        try:
+            cancelled = asyncio.Event()
+            async with self.binding_inventory_lock:
+                await _owned(
+                    asyncio.to_thread(
+                        self.binding_inventory.current,
+                        Path(sys.prefix),
+                        sites,
+                        lambda: (
+                            provisioning.fingerprint(self.places)
+                            + binding_inventory.system_fingerprint()
+                        ),
+                        self.root / ".executor" / "binding-inventory.json",
+                    ),
+                    cancelled.set,
+                )
+            if cancelled.is_set():
+                raise asyncio.CancelledError
+        except (binding_inventory.InventoryError, OSError) as error:
+            raise ToolError("unavailable", str(error)) from None
+
+    @contextlib.asynccontextmanager
+    async def binding_guard(self, names: set[str], expected: str | None = None):
+        """Exclude cooperating package changes through binding-bearing launch admission."""
+        descriptor: int | None = None
+        if names:
+            try:
+                if self.provisioning is None:
+                    raise ToolError(
+                        "unavailable", "package observation unavailable for skill bindings"
+                    )
+                descriptor = self.packages.try_lock(exclusive=False)
+                if descriptor is None:
+                    raise ToolError(
+                        "unavailable", "packages changing; retry skill bindings after provisioning"
+                    )
+                await self.current_binding_inventory()
+                self.binding_inventory.require(names)
+                if expected is not None and (
+                    self.binding_inventory.manifest is None
+                    or expected != self.binding_inventory.manifest["digest"]
+                ):
+                    raise ToolError(
+                        "unavailable",
+                        "skill binding inventory changed; reload skills and explicitly restart "
+                        "kernels retaining old bindings",
+                    )
+                yield
+            except binding_inventory.InventoryError as error:
+                raise ToolError("policy_denied", str(error)) from None
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        else:
+            yield
 
     def session_name(self, session: object) -> str:
         if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
@@ -1144,6 +1218,7 @@ class Executor:
         await self.reply(
             request,
             protocol=PROTOCOL,
+            max_request_bytes=MAX_REQUEST,
             package_gate=self.package_gate_id,
             languages=languages,
             location={
@@ -1161,6 +1236,7 @@ class Executor:
             output_observation_protocol=1,
             kernel_revision_protocol=1,
             run_kernels=1,
+            conditional_kernel_restart=1,
             environment=await self.baseline(),
             package_epoch=self.package_epoch,
         )
@@ -1277,7 +1353,13 @@ class Executor:
                 raise ToolError(
                     "unavailable", "controller detached or executor closing before kernel startup"
                 )
-            await work()
+            async with self.binding_guard(set(kernel.bindings), kernel.binding_inventory):
+                await work()
+            kernel.start_binding_inventory = (
+                self.binding_inventory.manifest["digest"]
+                if kernel.bindings and self.binding_inventory.manifest is not None
+                else None
+            )
             kernel.birth_id = "birth-" + secrets.token_hex(12)
             kernel.start_environment = fingerprint
             kernel.start_package_epoch = epoch
@@ -1386,6 +1468,12 @@ class Executor:
         if execution in self.running:
             raise ToolError("conflict", f"execution {execution} is already running")
         running = Running(execution=execution, kind=kind)
+        inventory = request.get("binding_inventory")
+        if inventory is not None and (
+            not isinstance(inventory, str) or _SHA256_RE.fullmatch(inventory) is None
+        ):
+            raise ToolError("invalid_request", "invalid binding inventory digest")
+        running.binding_inventory = inventory
         operation = request.get("package_operation", "")
         generation = request.get("package_generation", -1)
         if not isinstance(operation, str) or type(generation) is not int:
@@ -1431,6 +1519,7 @@ class Executor:
         bindings, dropped = self.bindings(request, env)
         running = self.accept(request, "job" if is_job else "shell")
         running.session = session
+        running.bindings = bindings
         running.bindings_dropped = dropped
         await self.reply(request)
         running.task = self.spawn(
@@ -1486,7 +1575,10 @@ class Executor:
             # The process is the executor's child before its pid is in spawned.
             with sandbox_processes.starting_children():
                 try:
-                    async with self.launch(running, timeout):
+                    async with (
+                        self.launch(running, timeout),
+                        self.binding_guard(set(running.bindings), running.binding_inventory),
+                    ):
                         process = await self.own_launch(
                             running,
                             asyncio.create_subprocess_exec(
@@ -1775,6 +1867,7 @@ class Executor:
         running = self.accept(request, "cell")
         running.kernel = kernel
         running.bindings = kernel.bindings = bindings
+        kernel.binding_inventory = running.binding_inventory
         running.bindings_dropped = dropped
         await self.reply(request)
         running.task = self.spawn(
@@ -1817,7 +1910,15 @@ class Executor:
                 ran_on = kernel.info()
                 state_lost, kernel.state_lost = kernel.state_lost, False
                 before = await asyncio.to_thread(self.snapshot, kernel.session)
-                async with self.launch(running, timeout):
+                async with (
+                    self.launch(running, timeout),
+                    self.binding_guard(
+                        set(running.bindings) | set(kernel.started_bindings),
+                        kernel.start_binding_inventory
+                        if kernel.started_bindings
+                        else running.binding_inventory,
+                    ),
+                ):
                     msg_id = kernel.client.execute(code, store_history=True, allow_stdin=False)
                     running.started = True
                 if kernel.start_execution == execution:
@@ -2019,6 +2120,10 @@ class Executor:
                 if self.closing or self.package_mode != "ready":
                     raise ToolError(
                         "unavailable", "package admission is closed; kernel restart refused"
+                    )
+                if request.get("only_if_absent") is True and await kernel.alive():
+                    raise ToolError(
+                        "conflict", "kernel became live before conditional recovery restart"
                     )
                 # The running cell does not hold up a restart: it ends, cancelled.
                 for running in self.running.values():
@@ -2255,6 +2360,27 @@ class Executor:
         found["commands"] = [
             n for n in names if _COMMAND_RE.fullmatch(n) and shutil.which(n, path=path)
         ]
+        raw_bindings = request.get("binding_names", [])
+        candidates = cast(list[object], raw_bindings) if isinstance(raw_bindings, list) else []
+        names = [n for n in candidates if isinstance(n, str)]
+        if (
+            not isinstance(raw_bindings, list)
+            or len(candidates) > 8192
+            or len(names) != len(candidates)
+            or any(len(n) > 128 for n in names)
+        ):
+            raise ToolError("invalid_request", "invalid binding inventory candidates")
+        try:
+            # Staging is observation; package admission repeats the authoritative check.
+            async with self.binding_guard(set(names) or {"INVENTORY_QUERY"}):
+                pass
+        except ToolError as error:
+            if error.kind == "policy_denied" and self.binding_inventory.manifest is not None:
+                found["inventory"] = self.binding_inventory.projection(names, self.package_epoch)
+            else:
+                found["inventory"] = {"state": "unavailable", "coverage": error.message[:2000]}
+        else:
+            found["inventory"] = self.binding_inventory.projection(names, self.package_epoch)
         await self.reply(request, **found)
 
     async def op_skills_put(self, request: Message) -> None:

@@ -398,7 +398,7 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
             ended_at=datetime.now(UTC),
             stopped="answered",
             final_text="Respond",
-            messages=transcript.messages,
+            messages=list(transcript.messages),
             tools=[],
             delivered={"requests": sorted(transcript.delivered_ids("requests"))},
         ).model_dump(mode="json")
@@ -886,7 +886,7 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
         ended_at=now,
         stopped="error",
         failure="model",
-        messages=transcript.messages,
+        messages=list(transcript.messages),
         tools=[],
         delivered={"requests": sorted(transcript.delivered_ids("requests"))},
     )

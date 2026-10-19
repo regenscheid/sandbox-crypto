@@ -35,13 +35,15 @@ STARTED = [
     "sandbox-science-harness project create crypto",
     "sandbox-science-harness project revise crypto",
     "sandbox-science-harness session open crypto main",
-    "sandbox-science-harness start",
+    "sandbox-science-control start",
     "sandbox-science-workspace start",
 ]
 
 
 def journal(path: Path) -> list[str]:
-    return path.read_text().splitlines()
+    # VM lifecycle commands are asserted separately; these checks compare host
+    # service process ordering with the worker/workspace lifecycle.
+    return [line for line in path.read_text().splitlines() if not line.startswith("openshell ")]
 
 
 def wait_for(condition: Callable[[], bool], what: str, timeout: float = 15) -> None:
@@ -67,15 +69,18 @@ def test_up_imports_and_pins_the_skill_packs_before_the_run_service(
     launcher.expect("Sandbox Science is running.")
     steps = journal(site["journal"])
     opened = steps.index("sandbox-science-harness session open crypto main")
-    assert steps[opened + 1 : opened + 7] == [
+    assert steps[opened + 1 : opened + 5] == [
         "sandbox-science-harness skills list crypto",
         "sandbox-science-harness skills list ss",
-        "sandbox-science-harness skills import crypto ss",  # its calls count for crypto
-        "sandbox-science-harness skills embed with embed",
+        "sandbox-science-harness skills import ss",
         "sandbox-science-harness skills pin crypto ss",
-        "sandbox-science-harness embeds with embed",
     ]
-    assert steps[opened + 7] == "sandbox-science-harness start"
+    assert steps[opened + 5] == "sandbox-science-control start"
+    settings = json.loads(
+        (load_config(launcher.config).state_dir / "orchestrator/control.json").read_text()
+    )
+    assert settings["embedding"] == "embed"
+    assert not any("skills embed with" in line for line in steps)
     assert f"skills: ss imported at {'c' * 12}, 1 skill" in launcher.output
     assert f"skills: crypto pins ss at {'c' * 12}" in launcher.output
     launcher.process.send_signal(signal.SIGINT)
@@ -84,7 +89,7 @@ def test_up_imports_and_pins_the_skill_packs_before_the_run_service(
 
 STOPPED = [
     "sandbox-science-workspace stop",
-    "sandbox-science-harness stop",
+    "sandbox-science-control stop",
     "sandbox-science-worker stop",
 ]
 
@@ -95,6 +100,16 @@ def test_up_runs_until_ctrl_c_and_then_stops_the_parts_in_reverse(site: dict[str
     launcher.expect("Stop:")
     assert journal(site["journal"]) == STARTED
     layout = Layout(load_config(launcher.config).state_dir)
+    raw = site["journal"].read_text().splitlines()
+    created = next(line for line in raw if line.startswith("openshell sandbox create ss-orch-"))
+    name = created.split()[3]
+    assert any(
+        line.startswith(f"openshell exec {name} ")
+        and "sandbox_science.orchestrator.confinement.runtime --settings" in line
+        for line in raw
+    )
+    assert not any("sandbox-science-harness serve" in line for line in raw)
+    assert json.loads((layout.root / "orchestrator/sandbox.json").read_text())["id"]
     # The login address is in a private file, and nowhere else the launcher writes.
     assert LOGIN_TOKEN in layout.login.read_text()
     assert stat.S_IMODE(layout.login.stat().st_mode) == 0o600
@@ -103,7 +118,7 @@ def test_up_runs_until_ctrl_c_and_then_stops_the_parts_in_reverse(site: dict[str
     assert not any(LOGIN_TOKEN in log.read_text() for log in layout.logs.iterdir())
     shown = launcher.command("status")
     assert shown.returncode == 0, shown.stdout + shown.stderr
-    for part in ("worker", "run-service", "workspace"):
+    for part in ("worker", "control-service", "workspace"):
         assert f"  {part}: process" in shown.stdout
     assert shown.stdout.count("answers") == 2
     launcher.process.send_signal(signal.SIGINT)
@@ -112,6 +127,8 @@ def test_up_runs_until_ctrl_c_and_then_stops_the_parts_in_reverse(site: dict[str
     assert journal(site["journal"]) == [*STARTED, *STOPPED]
     assert not layout.login.exists()
     assert not layout.record.exists()
+    assert not (layout.root / "orchestrator/sandbox.json").exists()
+    assert f"openshell sandbox delete {name}" in site["journal"].read_text().splitlines()
     assert launcher.command("status").returncode == 3
 
 
@@ -179,11 +196,11 @@ def test_down_signals_only_the_launcher_its_record_names(site: dict[str, Any]) -
         (
             {"sandbox-science-workspace": "exit-at-start"},
             "the workspace stopped as it started, with status 4",
-            ["sandbox-science-harness stop", "sandbox-science-worker stop"],
+            ["sandbox-science-control stop", "sandbox-science-worker stop"],
         ),
         (
-            {"sandbox-science-harness": "exit-later"},
-            "the run service stopped by itself, with status 5",
+            {"sandbox-science-control": "exit-later"},
+            "the control service stopped by itself, with status 5",
             ["sandbox-science-workspace stop", "sandbox-science-worker stop"],
         ),
         (
@@ -225,7 +242,7 @@ def test_each_part_gets_only_the_environment_its_table_names(site: dict[str, Any
     )
     launcher.expect("Stop:")
     seen = [line for line in journal(site["journal"]) if " saw " in line]
-    assert seen == ["sandbox-science-harness saw PASSED_ON"]  # not the workspace
+    assert seen == ["sandbox-science-control saw PASSED_ON"]  # not the workspace
 
 
 def test_a_state_directory_open_to_others_is_refused_before_it_is_read(
@@ -249,12 +266,12 @@ def test_a_state_directory_open_to_others_is_refused_before_it_is_read(
 def test_a_part_that_ignores_sigterm_is_killed_after_its_stop_timeout(
     site: dict[str, Any],
 ) -> None:
-    launcher = site["launch"]({"sandbox-science-harness": "ignore-term"}, stop_timeout=1)
+    launcher = site["launch"]({"sandbox-science-control": "ignore-term"}, stop_timeout=1)
     launcher.expect("Sandbox Science is running.")
     launcher.process.send_signal(signal.SIGTERM)
     assert launcher.finish() == 0
-    assert "the run service did not stop in time; killing it" in launcher.output
-    assert "sandbox-science-harness stop" not in journal(site["journal"])
+    assert "the control service did not stop in time; killing it" in launcher.output
+    assert "sandbox-science-control stop" not in journal(site["journal"])
     assert journal(site["journal"])[-1] == "sandbox-science-worker stop"
 
 
@@ -278,26 +295,33 @@ def test_parts_die_with_a_launcher_killed_outright(site: dict[str, Any]) -> None
         lambda: all(line in journal(site["journal"]) for line in STOPPED),
         "a part outlived the launcher",
     )
+    assert launcher.command("status").returncode == 4
+    assert launcher.command("down").returncode == 0
     assert launcher.command("status").returncode == 3
 
 
 def test_a_part_left_behind_is_shown_and_stopped_by_down(site: dict[str, Any]) -> None:
-    launcher = site["launch"]({"sandbox-science-harness": "ignore-term"})
+    launcher = site["launch"]({"sandbox-science-control": "ignore-term"})
     launcher.expect("Stop:")
     layout = Layout(load_config(launcher.config).state_dir)
     record = read(layout)
     assert record is not None
-    assert [part.name for part in record.parts] == ["worker", "run-service", "workspace"]
+    assert [part.name for part in record.parts] == [
+        "worker",
+        "control-service",
+        "agent-runtime",
+        "workspace",
+    ]
     launcher.process.kill()
     launcher.finish()
-    (harness,) = [part for part in record.parts if part.name == "run-service"]
+    (harness,) = [part for part in record.parts if part.name == "control-service"]
     wait_for(lambda: "sandbox-science-worker stop" in journal(site["journal"]), "worker")
     assert alive(harness, record)  # it ignored the SIGTERM it got when the launcher died
     shown = launcher.command("status")
     assert shown.returncode == 4
-    assert "but the run-service an earlier launcher started still runs" in shown.stdout
+    assert "but the control-service an earlier launcher started still runs" in shown.stdout
     stopped = launcher.command("down")
-    assert "stopped the run-service" in stopped.stdout
+    assert "stopped the control-service" in stopped.stdout
     assert not alive(harness, record)
     assert not layout.record.exists()
 
@@ -355,3 +379,103 @@ def test_a_recorded_process_from_another_boot_or_time_is_left_alone(
     finally:
         stranger.kill()
         stranger.wait()
+
+
+def test_runtime_loss_preserves_ui_and_explicit_replacement_rotates_only_agent(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    layout = Layout(load_config(launcher.config).state_dir)
+    prior = read(layout)
+    assert prior is not None
+    identities = {part.name: part.pid for part in prior.parts}
+    original = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+    generation = (layout.root / "orchestrator/generation").read_text()
+    token = layout.token("runtime-control").read_text()
+    os.kill(identities["agent-runtime"], signal.SIGTERM)
+    launcher.expect("Control and workspace remain available")
+    assert launcher.command("status").returncode == 4
+    assert launcher.process.poll() is None
+    for part in prior.parts:
+        if part.name != "agent-runtime":
+            assert alive(part, prior)
+    replaced = launcher.command("replace-orchestrator")
+    assert replaced.returncode == 0, replaced.stdout + replaced.stderr
+    assert "explicitly Resume" in replaced.stdout
+    current = read(layout)
+    assert current is not None
+    now = {part.name: part.pid for part in current.parts}
+    assert now["agent-runtime"] != identities["agent-runtime"]
+    for name in ("worker", "workspace", "control-service"):
+        assert now[name] == identities[name]
+    replacement = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+    assert replacement["name"] != original["name"]
+    assert replacement["id"] != original["id"]
+    assert layout.token("runtime-control").read_text() != token
+    assert (layout.root / "orchestrator/generation").read_text() != generation
+    assert f"openshell sandbox delete {original['name']}" in site["journal"].read_text()
+    assert launcher.command("status").returncode == 0
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+
+
+def test_replacement_request_for_another_launcher_cannot_stop_the_runtime(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    layout = Layout(load_config(launcher.config).state_dir)
+    prior = read(layout)
+    assert prior is not None
+    original = (layout.root / "orchestrator/sandbox.json").read_text()
+    request = layout.root / "orchestrator/replacement-request"
+    request.write_text(
+        json.dumps({"nonce": "replacement-" + "a" * 32, "pid": 0, "started": 0, "boot": prior.boot})
+    )
+    request.chmod(0o600)
+    os.kill(prior.pid, signal.SIGUSR2)
+    launcher.expect("runtime replacement belongs to another launcher generation")
+    assert (layout.root / "orchestrator/sandbox.json").read_text() == original
+    assert launcher.command("status").returncode == 0
+    for part in prior.parts:
+        assert alive(part, prior)
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+
+
+def test_autonomous_policy_recovers_owned_worker_and_agent_without_stopping_ui(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"](orchestrator={"recover_infrastructure": True})
+    launcher.expect("Stop:")
+    layout = Layout(load_config(launcher.config).state_dir)
+    prior = read(layout)
+    assert prior is not None
+    identities = {part.name: part.pid for part in prior.parts}
+    original = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+
+    def changed(name: str) -> bool:
+        current = read(layout)
+        return current is not None and any(
+            part.name == name and part.pid != identities[name] and alive(part, current)
+            for part in current.parts
+        )
+
+    os.kill(identities["worker"], signal.SIGKILL)
+    wait_for(lambda: changed("worker"), "worker did not restart", 30)
+    os.kill(identities["agent-runtime"], signal.SIGKILL)
+    wait_for(lambda: changed("agent-runtime"), "agent did not replace", 30)
+    wait_for(lambda: launcher.command("status").returncode == 0, "recovery not ready", 30)
+    current = read(layout)
+    assert current is not None
+    now = {part.name: part.pid for part in current.parts}
+    for name in ("workspace", "control-service"):
+        assert now[name] == identities[name]
+    replacement = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+    assert replacement["id"] != original["id"]
+    assert site["journal"].read_text().count(f"openshell sandbox delete {original['name']}") == 1
+    settings = json.loads((layout.root / "orchestrator/control.json").read_text())
+    assert settings["settings"]["recover_interrupted"] is True
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0

@@ -58,9 +58,11 @@ PREFIX = "/opt/sandbox-science"
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = (
     "executor.py",
+    "binding_inventory.py",
     "provisioning.py",
     "pdfhelper.py",
     "daemon.py",
+    "request_frames.py",
     "capture.py",
     "sandbox_files.py",
     "sandbox_processes.py",
@@ -778,6 +780,9 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         for command in ([], ["run"], ["project"], ["session"]):
             usage = self.harness(*command, "--help")
             expect(usage.startswith("usage: sandbox-science-harness"), f"help: {usage[:200]!r}")
+        for entrypoint in ("sandbox-science-control", "sandbox-science-agent-runtime"):
+            usage = self.command(f"{PREFIX}/bin/{entrypoint}", "--help")
+            expect("--settings" in usage, f"{entrypoint} has no settings contract")
         return f"{HARNESS} ({interpreter}): --help for itself, run, project and session"
 
     def harness_imports(self) -> str:

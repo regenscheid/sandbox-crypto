@@ -42,7 +42,7 @@ builder=()
 [ -z "${BUILDER:-}" ] || builder=(--builder "$BUILDER")
 
 started=$(date +%s)
-contexts=()
+contexts=(--build-context "binding-inventory=$here/../packages/worker/src/sandbox_science/worker")
 recipe_packages "$profile"
 if [ ${#packages[@]} -gt 0 ]; then
   # The packages the image installs, as wheels, from the same files the revision covers.
@@ -50,7 +50,7 @@ if [ ${#packages[@]} -gt 0 ]; then
     uv --directory "$here/.." build --package "sandbox-science-$package" --wheel \
       --no-create-gitignore --out-dir "$work/wheels"
   done
-  contexts=(--build-context "wheels=$work/wheels")
+  contexts+=(--build-context "wheels=$work/wheels")
 fi
 docker buildx build "${builder[@]}" \
   --platform "${PLATFORM:-linux/amd64}" \

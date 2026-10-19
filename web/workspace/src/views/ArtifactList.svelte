@@ -10,10 +10,12 @@
   let {
     projectId,
     initial = NO_FILTER,
+    externalFilter = null,
   }: {
     projectId: string;
     /** The filter to start with, such as a delegated run's, as a link names it. */
     initial?: ArtifactFilter;
+    externalFilter?: ArtifactFilter | null;
   } = $props();
   const start = untrack(() => initial);
   let session = $state(start.session),
@@ -21,6 +23,7 @@
     contains = $state(start.contains);
   // Applied when the user leaves a field, not on every key.
   let filter = $state<ArtifactFilter>({ ...start });
+  const applied = $derived(externalFilter ?? filter);
   function apply() {
     const next = { session: session.trim(), run: run.trim(), contains };
     if (JSON.stringify(next) !== JSON.stringify(filter)) filter = next;
@@ -28,12 +31,12 @@
 </script>
 
 <h2>Artifacts</h2>
-<p class="filters">
-  <label>Path contains <input bind:value={contains} onchange={apply} size="20" /></label>
-  <label>Session <input bind:value={session} onchange={apply} size="16" /></label>
-  <label>Run <input bind:value={run} onchange={apply} size="16" /></label>
-</p>
-{#if byRevision(filter)}
+{#if externalFilter === null}<p class="filters">
+    <label>Path contains <input bind:value={contains} onchange={apply} size="20" /></label>
+    <label>Session <input bind:value={session} onchange={apply} size="16" /></label>
+    <label>Run <input bind:value={run} onchange={apply} size="16" /></label>
+  </p>{/if}
+{#if byRevision(applied)}
   <p class="muted">
     Listed: the files with a revision of this session or run. Each row shows its latest revision,
     which someone else may have made.
@@ -43,7 +46,7 @@
 <ArtifactTable
   {projectId}
   group="results"
-  {filter}
+  filter={applied}
   empty="No results yet. An agent publishes a file with publish; a delegated run declares its results."
 />
 <details>
@@ -51,7 +54,7 @@
   <ArtifactTable
     {projectId}
     group="files"
-    {filter}
+    filter={applied}
     empty="No other recorded files. Every file a call writes is recorded, unless the project records results only or an ignore pattern leaves it out."
   />
 </details>

@@ -205,3 +205,17 @@ The owner decided these on 2026-10-14 for [files from executions and delegated r
 ## Sources
 
 [Feature plan](../FEATURE-PLAN.md) (provenance), [research workspace](../RESEARCH-WORKSPACE.md), [projects and sessions](../PROJECTS-AND-SESSIONS.md) (data sharing), [architecture](../ARCHITECTURE.md) (storage, execution history), [implementation plan](../IMPLEMENTATION-PLAN.md) (shared contracts), [MCP connectors](../MCP-CONNECTORS.md), decisions D09, D10, D23, D25, D28, D29, D37, D40, D67. Behavior evidence: the [Claude Science](../../.agents/docs/agent-reports/claude-science.md) report (artifact versions, lineage, annotations, pinned and live references) and the [OpenScience Desktop](../../.agents/docs/agent-reports/openscience-desktop.md) report with its pinned `provenance.rs` and `runs.ts` (MIT).
+
+
+### Durable large content (2026-10-17 amendment)
+
+The owner requested artifacts independent of agent containers. New retained content
+uses the control application's adjacent content-addressed filesystem store; a PVC
+can mount the same directory. S3 is future work. Limits are now 1 GiB/file, 2 GiB
+retained/call, 16 GiB/project and 64 GiB/store. Earlier 8 MiB/64 MiB limits above
+describe the prior increment. Existing SQLite content is still readable. Per-call
+exhaustion records hash/size metadata rather than dropping the file entirely.
+
+See [durable artifact blobs](durable-artifact-blobs.md) for streaming ingestion,
+durable reservations, publication crash boundaries and backup/cleanup requirements.
+General authenticated pinned downloads stream independently of preview/model limits.

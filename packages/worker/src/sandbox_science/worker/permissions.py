@@ -72,6 +72,15 @@ class Permissions:
 
     def request(self, key: RequestKey, payload: Mapping[str, object]) -> int:
         """Record a permission request and return its sequence number. Blocking."""
+        seq = self.request_record(key, payload)
+        try:
+            self.refresh()
+        except PermissionStoreError as exc:
+            _log.warning("permission request %d: %s", seq, exc)
+        return seq
+
+    def request_record(self, key: RequestKey, payload: Mapping[str, object]) -> int:
+        """One bounded durable append; admission and this commit run on the serving loop."""
         try:
             record = self._store().append(ESCALATION, SOURCE, {**payload, "target": key.payload()})
         except EventStoreError as exc:
@@ -80,11 +89,6 @@ class Permissions:
             ) from exc
         with self._lock:
             self._keys[record.seq] = key
-        try:
-            self.refresh()
-        except PermissionStoreError as exc:
-            # It is recorded: the operation waits for it, and reads again as it waits.
-            _log.warning("permission request %d: %s", record.seq, exc)
         return record.seq
 
     def observation(self, kind: str, payload: Mapping[str, object]) -> int:

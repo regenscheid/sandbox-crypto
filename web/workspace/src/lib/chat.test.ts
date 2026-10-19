@@ -370,6 +370,18 @@ describe("a session's chat, polled", () => {
 });
 
 describe('the transcript of a run', () => {
+  it('shows the start and end of a parent waiting for delegated work', () => {
+    expect(
+      chatEntries([
+        event(1, 'waiting', { delegation_ids: ['d1', 'd2'], mode: 'all' }),
+        event(2, 'waiting', { delegation_ids: null, mode: null }),
+      ]),
+    ).toEqual([
+      { kind: 'note', seq: 1, text: 'Waiting for delegated work: d1, d2.', problem: false },
+      { kind: 'note', seq: 2, text: 'The wait for delegated work ended.', problem: false },
+    ]);
+  });
+
   it('shows what each event says, as text', () => {
     const entries = chatEntries([
       event(1, 'started', { run_id: 'r1', message_ids: ['m1'] }),

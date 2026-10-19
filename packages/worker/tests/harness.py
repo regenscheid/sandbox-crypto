@@ -40,6 +40,7 @@ from sandbox_science.worker.channel import (
     Message,
 )
 from sandbox_science.worker.connections import Connection, EnvironmentConnections
+from sandbox_science.worker.files import Files
 from sandbox_science.worker.kernels import _Observer
 from sandbox_science.worker.lifecycle import UNMANAGED, EnvironmentLifecycle
 from sandbox_science.worker.live import Live
@@ -68,6 +69,10 @@ class ManagerView:
 
     def __init__(self, manager: ExecutionManager) -> None:
         self.manager = manager
+
+    def file_tools(self) -> Files:
+        """File dispatch seam for deterministic admission tests without a backend effect."""
+        return self.manager._files
 
     # Environment connections.
 

@@ -4,8 +4,8 @@
 The sender records a message once under its tool operation ID. The recipient sees it
 at a model-call safe point, and its saved run record acknowledges delivery. A run that
 dies before saving its record leaves the message for the next attempt of that logical
-recipient (the session root, or a delegation). The mailbox does not make a child see
-the root's chat or grant either agent authority beyond its existing role.
+recipient (the session root, or a delegation's durable work). The mailbox does not
+make a child see the root's chat or grant either agent authority beyond its role.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from pydantic import Field
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, new_id
 from sandbox_science.contracts.model import Contract
 
+from .agent_message_routes import received_by, recipient_state, recipient_target, work_for_run
 from .aio import threaded
 from .control import ControlError, ControlStore
 from .control.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND
@@ -240,22 +241,14 @@ class AgentMessageStore:
         seen: frozenset[str] = frozenset(),
         limit: int = 2,
     ) -> list[AgentMessage]:
-        target = (
-            "(recipient_delegation IS NULL OR recipient_delegation IN "
-            "(SELECT delegation_id FROM delegations WHERE ended IS NOT NULL))"
-            if recipient is None
-            else "recipient_delegation = ?"
-        )
-        parameters: tuple[object, ...] = (project, session)
-        if recipient is not None:
-            parameters += (recipient,)
         with self.control.read() as tx:
+            target, parameters = recipient_target(tx.sql, project, session, recipient)
             rows = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM agent_messages WHERE project_id=? AND session_id=? "  # noqa: S608 - fixed columns
                 f"AND {target} AND delivered_run IS NULL "
                 "AND message_id NOT IN (SELECT value FROM json_each(?)) "
                 "ORDER BY rowid LIMIT ?",
-                (*parameters, json.dumps(sorted(seen)), limit),
+                (project, session, *parameters, json.dumps(sorted(seen)), limit),
             ).fetchall()
         return [_row(row) for row in rows]
 
@@ -263,9 +256,15 @@ class AgentMessageStore:
         with self.control.read() as tx:
             row = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM agent_messages WHERE project_id=? AND "  # noqa: S608 - fixed columns
-                "session_id=? AND sender_run=? AND message_id=?",
-                (project, session, sender, message_id),
+                "session_id=? AND message_id=?",
+                (project, session, message_id),
             ).fetchone()
+            if row is not None and str(row[1]) != sender:
+                original_work = work_for_run(tx.sql, project, session, str(row[1]))
+                if original_work is None or original_work != work_for_run(
+                    tx.sql, project, session, sender
+                ):
+                    row = None
         if row is None:
             raise ControlError(NOT_FOUND, f"no message {message_id!r} sent by this run")
         return _row(row)
@@ -278,21 +277,15 @@ class AgentMessageStore:
         run: str,
         message_ids: list[str],
     ) -> None:
-        target = (
-            "(recipient_delegation IS NULL OR recipient_delegation IN "
-            "(SELECT delegation_id FROM delegations WHERE ended IS NOT NULL))"
-            if recipient is None
-            else "recipient_delegation = ?"
-        )
-        parameters: tuple[object, ...] = (project, session)
-        if recipient is not None:
-            parameters += (recipient,)
         with self.control.write() as tx:
+            if recipient is not None and not received_by(tx.sql, project, session, recipient, run):
+                raise ControlError(CONFLICT, "the acknowledgment is not from the recipient's work")
+            target, parameters = recipient_target(tx.sql, project, session, recipient)
             tx.sql.execute(
                 "UPDATE agent_messages SET delivered_run=? WHERE project_id=? "  # noqa: S608 - fixed predicates
                 f"AND session_id=? AND {target} AND delivered_run IS NULL "
                 "AND message_id IN (SELECT value FROM json_each(?))",
-                (run, *parameters, json.dumps(message_ids)),
+                (run, project, session, *parameters, json.dumps(message_ids)),
             )
 
     def target_state(
@@ -301,12 +294,13 @@ class AgentMessageStore:
         if delegation is None:
             return None
         with self.control.read() as tx:
-            row = tx.sql.execute(
-                "SELECT run, ended FROM delegations WHERE project_id=? AND session_id=? "
-                "AND delegation_id=?",
-                (project, session, delegation),
-            ).fetchone()
-        return None if row is None else (str(row[0]), row[1] is not None)
+            state = recipient_state(tx.sql, project, session, delegation)
+        return None if state is None else (state[0], state[1])
+
+    def delivered_to_recipient(self, project: str, session: str, delegation: str, run: str) -> bool:
+        """A resumed recipient is a delivery; a root failure notice is not."""
+        with self.control.read() as tx:
+            return received_by(tx.sql, project, session, delegation, run)
 
     def target_ended(self, project: str, session: str, delegation: str | None) -> bool:
         state = self.target_state(project, session, delegation)
@@ -477,8 +471,15 @@ class AgentMailbox(TurnHook):
         ended = target is not None and target[1]
         failed_delivery = (
             target is not None
+            and message.recipient_delegation is not None
             and message.delivered_run is not None
-            and message.delivered_run != target[0]
+            and not await threaded(
+                self.store.delivered_to_recipient,
+                project,
+                session,
+                message.recipient_delegation,
+                message.delivered_run,
+            )
         )
         result = {
             "message_id": message.message_id,

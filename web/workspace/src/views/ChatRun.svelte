@@ -12,13 +12,16 @@
 
 <ol class="transcript">
   {#each entries as entry (entry.seq)}
-    <li>
+    <li
+      class:user-message={entry.kind === 'user'}
+      class:assistant-message={entry.kind === 'assistant'}
+    >
       {#if entry.kind === 'user'}
         <h3>You</h3>
         <Markdown source={entry.text} pins={entry.pins} {projectId} />
         <HiddenBanner text={entry.text} links />
       {:else if entry.kind === 'assistant'}
-        <h3>Agent</h3>
+        <h3>Research agent</h3>
         {#if entry.text}<Markdown source={entry.text} pins={entry.pins} {projectId} /><HiddenBanner
             text={entry.text}
             links

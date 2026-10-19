@@ -33,8 +33,10 @@ import sqlite3
 import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
 
+from sandbox_science.orchestrator.artifact_blobs import ArtifactBlobs, Blob
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.notices import requests
 from sandbox_science.orchestrator.projects import operator_ref, run_id_of
@@ -451,11 +453,17 @@ def _observations(
 
 def _artifact(db: sqlite3.Connection, project: str, artifact: str, revision: int) -> str:
     row = db.execute(
-        "SELECT substr(data,1,?) FROM artifact_revisions WHERE project=? AND artifact=? "
-        "AND number=?",
+        "SELECT substr(r.data,1,?),b.sha256,b.size FROM artifact_revisions r "
+        "LEFT JOIN artifact_revision_blobs b ON b.project=r.project AND b.artifact=r.artifact "
+        "AND b.number=r.number WHERE r.project=? AND r.artifact=? AND r.number=?",
         (TEXT_BYTES, project, artifact, revision),
     ).fetchone()
     data = row[0] if row is not None else None
+    if row is not None and row[1] is not None:
+        database = next(
+            path for _, name, path in db.execute("PRAGMA database_list") if name == "main"
+        )
+        data = ArtifactBlobs(Path(database)).prefix(Blob(row[1], row[2]), TEXT_BYTES)
     return data.decode("utf-8", "replace") if isinstance(data, bytes) else ""
 
 

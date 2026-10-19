@@ -70,7 +70,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     )
     began = json.loads(results(root)[0])
     assert began["task"] == TASK[1]["task"]
-    assert began["limits"] == {"turns": 300, "tokens": 5_000_000}
+    assert began["limits"] == {"turns": 300, "tokens": 20_000_000}
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
     assert (found.kind, found.ended) == ("task", "returned")
@@ -83,7 +83,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     assert isinstance(outcome, dict)
     assert outcome["format"] == TASK_FORMAT
     assert child.limits is not None
-    assert child.limits["tokens"] == 5_000_000
+    assert child.limits["tokens"] == 20_000_000
 
 
 async def test_a_task_has_a_delegated_agents_ledger_authority(delegating: Harness) -> None:
@@ -293,7 +293,9 @@ async def test_a_task_at_a_limit_reports_what_it_found_to_its_parent(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
         delegated=[*replies, Reply(PARTIAL)],
+        status=3,
     )
+    assert root.stopped == "unfinished_children"
     (child,) = children(delegating, root)
     assert (child.stopped, child.final_text) == (stopped, PARTIAL)
     (delegation_id,) = started(root)
@@ -304,5 +306,13 @@ async def test_a_task_at_a_limit_reports_what_it_found_to_its_parent(
         PARTIAL,
         None,
     )
-    (waited,) = json.loads(results(root)[1])["delegations"]
-    assert waited["answer"] == PARTIAL
+    waited = json.loads(results(root)[1])
+    if "tool_result" in waited:
+        waited = json.loads(waited["tool_result"])
+    # The child's warning can wake the parent before its bounded report round ends.
+    # Either ordering is valid; the durable delegation record above must retain the
+    # report even when this particular wait returned the resource check-in first.
+    assert waited["reason"] in {"ended", "resource_request"}
+    if waited["reason"] == "ended":
+        (reported,) = waited["delegations"]
+        assert reported["answer"] == PARTIAL

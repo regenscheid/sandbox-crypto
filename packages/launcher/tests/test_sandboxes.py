@@ -69,12 +69,14 @@ def test_ctrl_c_suspends_the_projects_sandboxes_before_the_worker_stops(
     assert shown.returncode == 0
     assert "ss-1111 (env-crypto-1, project crypto): running" in shown.stdout
     assert "ss-2222" not in shown.stdout  # another project's: not this launcher's to see
+    (runtime,) = [name for name in phases(research["state"]) if name.startswith("ss-orch-")]
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
     assert "suspended the research sandboxes ss-1111 (env-crypto-1)" in launcher.output
-    assert journal(research["journal"])[-4:] == [
+    assert journal(research["journal"])[-5:] == [
         "sandbox-science-workspace stop",
-        "sandbox-science-harness stop",
+        f"openshell sandbox delete {runtime}",
+        "sandbox-science-control stop",
         "sandbox-science-worker suspend env-crypto-1",
         "sandbox-science-worker stop",
     ]
@@ -127,7 +129,7 @@ def test_a_sandbox_still_in_use_is_named_and_down_fails(research: dict[str, Any]
 def test_a_part_that_dies_leaves_the_sandboxes_running_and_says_so(
     research: dict[str, Any],
 ) -> None:
-    launcher = research["launch"]({"sandbox-science-harness": "exit-later"})
+    launcher = research["launch"]({"sandbox-science-control": "exit-later"})
     assert launcher.finish() == 1
     assert (
         "the research sandboxes ss-1111 (env-crypto-1) are still running: "

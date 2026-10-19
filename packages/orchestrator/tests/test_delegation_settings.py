@@ -51,7 +51,7 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
     try:
         records = DelegationRecords(store.control)
         assert records.settings(PROJECT) == DelegationSettings(
-            depth=0, cap=10, check_tokens=150_000, check_turns=12
+            depth=0, cap=10, check_tokens=20_000_000, check_turns=300
         )
         assert records.configure(PROJECT, cap=3) == DelegationSettings(cap=3)
         changed = records.configure(PROJECT, depth=1, check_turns=5)
@@ -68,7 +68,7 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"cap": 0}, "cap"),
         ({"cap": 21}, "cap"),
         ({"check_tokens": 49_999}, "check_tokens"),
-        ({"check_tokens": 50_000_001}, "check_tokens"),
+        ({"check_tokens": 1_000_000_001}, "check_tokens"),
         ({"check_turns": 0}, "check_turns"),
         ({"check_turns": 10_001}, "check_turns"),
         ({"turns": 3}, "turns"),
@@ -78,7 +78,7 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"models": ("-a",)}, "models.0"),
         ({"fallback": "x" * 129}, "fallback"),
         ({"task_tokens": 49_999}, "task_tokens"),
-        ({"task_tokens": 50_000_001}, "task_tokens"),
+        ({"task_tokens": 1_000_000_001}, "task_tokens"),
         ({"task_turns": 10_001}, "task_turns"),
     ],
 )
@@ -125,17 +125,17 @@ def test_a_setting_keeps_what_was_set_and_a_former_default_follows_the_new_one(
         records = DelegationRecords(store.control)
         found = records.settings(PROJECT)
         assert (found.depth, found.cap, found.task_turns, found.task_tokens) == (
-            1, 4, 300, 5_000_000
+            1, 4, 300, 20_000_000
         )  # fmt: skip
-        assert found == DelegationSettings(depth=1, cap=4)
+        assert found == DelegationSettings(depth=1, cap=4, check_tokens=150_000, check_turns=12)
         # A change keeps what the old setting set, and not the former defaults.
         assert records.configure(PROJECT, check_turns=6) == DelegationSettings(
-            depth=1, cap=4, check_turns=6
+            depth=1, cap=4, check_tokens=150_000, check_turns=6
         )
         # Set since, a former default's value is kept as set.
         assert records.configure(PROJECT, task_turns=20).task_turns == 20
         assert records.settings(PROJECT).task_turns == 20
-        assert records.settings(PROJECT).task_tokens == 5_000_000
+        assert records.settings(PROJECT).task_tokens == 20_000_000
         with store.control.read() as tx:
             (kept,) = tx.sql.execute("SELECT limits FROM project_delegation").fetchone()
         assert json.loads(kept) == {
@@ -186,19 +186,27 @@ def test_the_cli_shows_and_changes_the_whole_setting(
     assert cli.main(argv) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 0 (off); at most 10 delegated runs at once; "
-        "a check gets 150000 tokens and 12 turns, a task 5000000 tokens and 300 turns; a brief "
+        "a check gets 20000000 tokens and 300 turns, a task 20000000 tokens and 300 turns; a brief "
         "may choose the models: none; "
-        "fallback: none\n"
+        "fallback: none; turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 1 (main runs delegate); at most 3 "
-        "delegated runs at once; a check gets 150000 tokens and 4 turns, a task 5000000 "
-        "tokens and 300 turns; a brief may choose the models: none; fallback: none\n"
+        "delegated runs at once; a check gets 20000000 tokens and 4 turns, a task 20000000 "
+        "tokens and 300 turns; a brief may choose the models: none; fallback: none; "
+        "turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0
     assert capsys.readouterr().out.endswith(
-        "a brief may choose the models: checker-b, anthropic/opus; fallback: main\n"
+        "a brief may choose the models: checker-b, anthropic/opus; fallback: main; "
+        "turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--check-tokens", "10"]) == 1
     assert capsys.readouterr().err.startswith("error: check_tokens: ")
@@ -213,7 +221,12 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         depth=1, cap=3, check_turns=4, models=("checker-b", "anthropic/opus"), fallback="main"
     )
     assert cli.main([*argv, "--models", "", "--fallback", ""]) == 0
-    assert capsys.readouterr().out.endswith("the models: none; fallback: none\n")
+    assert capsys.readouterr().out.endswith(
+        "the models: none; fallback: none; "
+        "turn ceiling: 10000; token ceiling: 1000000000; "
+        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "(ceiling 68719476736); root resource renewal: False\n"
+    )
 
 
 async def test_a_check_gets_the_projects_turns_and_tokens(delegating: Harness) -> None:
@@ -230,6 +243,33 @@ async def test_a_check_gets_the_projects_turns_and_tokens(delegating: Harness) -
     assert root.limits is not None
     assert "tokens" not in root.limits
     assert {"max_turns", "max_input_chars"} <= set(root.limits)
+
+
+async def test_new_child_uses_settings_changed_while_parent_runs(delegating: Harness) -> None:
+    configure(delegating, check_turns=20, check_tokens=300_000)
+
+    async def increase() -> None:
+        configure(delegating, check_turns=100, check_tokens=2_000_000)
+
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK], before=increase), wait(), Reply("Done.")],
+        delegated=[Reply(REPORT)],
+    )
+    assert json.loads(results(root)[0])["limits"] == {"turns": 100, "tokens": 2_000_000}
+    (child,) = children(delegating, root)
+    assert child.limits is not None
+    assert (child.limits["max_turns"], child.limits["tokens"]) == (100, 2_000_000)
+
+
+async def test_reduced_depth_refuses_new_child_in_existing_parent(delegating: Harness) -> None:
+    async def disable() -> None:
+        configure(delegating, depth=0)
+
+    root = await delegating.run("root", [Reply(calls=[CHECK], before=disable), Reply("Done.")])
+    result = json.loads(results(root)[0])
+    assert "delegation depth was reduced" in str(result)
+    assert children(delegating, root) == []
 
 
 async def test_delegated_runs_call_the_delegated_model(delegating: Harness) -> None:
@@ -308,3 +348,44 @@ async def test_a_run_record_without_alias_or_limits_still_reads(delegating: Harn
     older = root.model_dump(mode="json", exclude={"alias", "limits"})
     read = type(root).model_validate(older)
     assert (read.alias, read.limits) == (None, None)
+
+
+def test_operator_can_enable_bound_and_disable_research_resource_policy(tmp_path, capsys):
+    _store(tmp_path).close()
+    argv = ["project", "delegation", "--state-dir", str(tmp_path), "--project", PROJECT]
+    assert (
+        cli.main(
+            [
+                *argv,
+                "--check-turns",
+                "4",
+                "--research-seconds",
+                "60",
+                "--time-ceiling-seconds",
+                "600",
+                "--storage-bytes",
+                "1024",
+                "--storage-ceiling-bytes",
+                "4096",
+                "--root-resource-renewal",
+            ]
+        )
+        == 0
+    )
+    assert "root resource renewal: True" in capsys.readouterr().out
+    assert (
+        cli.main(
+            [*argv, "--no-research-time-limit", "--no-storage-limit", "--no-root-resource-renewal"]
+        )
+        == 0
+    )
+    store = ProjectStore(tmp_path)
+    try:
+        settings = DelegationRecords(store.control).settings(PROJECT)
+        assert settings.research_seconds is None
+        assert settings.storage_bytes is None
+        assert settings.root_resource_renewal is False
+        assert settings.check_turns == 4
+        assert settings.time_ceiling_seconds == 600
+    finally:
+        store.close()

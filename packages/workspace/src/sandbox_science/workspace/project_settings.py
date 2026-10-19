@@ -4,14 +4,28 @@ write (research artifacts, RA-29, RA-39); same-origin guard is shared."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from aiohttp import web
 
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.documents.project_macros import ProjectMacros
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
+from sandbox_science.orchestrator.model_profiles import ModelProfile
+from sandbox_science.orchestrator.model_settings import AgentModelRole, ProjectModels
 
 from . import documents
 from .context import json_body
+
+
+@dataclass(frozen=True)
+class ModelConfiguration:
+    defaults: dict[AgentModelRole, ModelProfile]
+    available: dict[str, Literal["chat", "responses", "messages"]]
+
+
+MODEL_CONFIGURATION = web.AppKey("model-configuration", ModelConfiguration)
 
 
 def add_routes(app: web.Application) -> None:
@@ -19,6 +33,8 @@ def add_routes(app: web.Application) -> None:
     app.router.add_post("/api/v0/projects/{project}/macros", change)
     app.router.add_get("/api/v0/projects/{project}/files/settings", file_settings)
     app.router.add_post("/api/v0/projects/{project}/files/settings", change_files)
+    app.router.add_get("/api/v0/projects/{project}/models/settings", model_settings)
+    app.router.add_post("/api/v0/projects/{project}/models/settings", change_models)
 
 
 async def macros(request: web.Request) -> web.Response:
@@ -53,5 +69,42 @@ async def change_files(request: web.Request) -> web.Response:
     def changed(store: DocumentStore) -> dict[str, object]:
         settings, replayed = ProjectFiles(store).change(request.match_info["project"], value, USER)
         return {**settings.model_dump(), "replayed": replayed}
+
+    return await documents.answer(request, changed, writer=True)
+
+
+def _models(request: web.Request) -> ModelConfiguration:
+    configured = request.app.get(MODEL_CONFIGURATION)
+    if configured is None:
+        raise web.HTTPServiceUnavailable(text="agent model settings are not configured")
+    return configured
+
+
+async def model_settings(request: web.Request) -> web.Response:
+    """The three agent roles' selected aliases and efforts, and trusted choices."""
+    configured = _models(request)
+    return await documents.answer(
+        request,
+        lambda store: (
+            ProjectModels(store)
+            .get(request.match_info["project"], configured.defaults, configured.available)
+            .model_dump(mode="json")
+        ),
+    )
+
+
+async def change_models(request: web.Request) -> web.Response:
+    value = await json_body(request, "project model settings JSON")
+    configured = _models(request)
+
+    def changed(store: DocumentStore) -> dict[str, object]:
+        settings, replayed = ProjectModels(store).change(
+            request.match_info["project"],
+            value,
+            USER,
+            defaults=configured.defaults,
+            available=configured.available,
+        )
+        return {**settings.model_dump(mode="json"), "replayed": replayed}
 
     return await documents.answer(request, changed, writer=True)

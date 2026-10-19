@@ -1,0 +1,465 @@
+# SPDX-License-Identifier: MIT
+"""Trusted recovery bookkeeping; the configured runtime selects ready branches."""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+from contextlib import AsyncExitStack, suppress
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+from pydantic import TypeAdapter
+
+from sandbox_science.contracts import new_id
+from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.recovery import RecoveryFence
+from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.chat import session_lease
+from sandbox_science.orchestrator.control import ControlError
+from sandbox_science.orchestrator.control.errors import CONFLICT, NOT_FOUND
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
+from sandbox_science.orchestrator.environment_claim import environment_claim
+from sandbox_science.orchestrator.harness import Admitted, RunRequest, save, tier_in_effect
+from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.projects import run_id_of, run_name
+from sandbox_science.orchestrator.run_inputs import RunInputs
+
+from .blueprints import Blueprints
+from .child_settlement import ChildSettlement
+from .effort import apply_resume_effort
+from .grants import GRANT_EXHAUSTED, TokenGrants
+from .kernels import KernelJournal
+from .plans import Plans
+from .reconcile import Reconciler
+from .records import Ownership, Work, WorkRecords
+
+if TYPE_CHECKING:
+    from sandbox_science.orchestrator.harness import Harness, RunSink
+
+
+class Recovery:
+    """One explicit Resume holds one session lease until all selected branches settle."""
+
+    def __init__(self, harness: Harness, project: str, session: str, request: str) -> None:
+        if harness.stores is None:
+            raise ValueError("Resume requires durable stores")
+        self.harness, self.stores = harness, harness.stores
+        self.project, self.session, self.request = project, session, request
+        self.records = WorkRecords(self.stores.projects.control)
+        self.plans = Plans(self.stores.projects.control, project, session, request)
+        self.root: str | None = None
+        self.epoch: int | None = None
+        self.started_at = datetime.now(UTC)
+        self.run_name = run_name(self.started_at, new_id("run"))
+        self.started = False
+        self.active: dict[str, asyncio.Task[object]] = {}
+        self._delegation_lock = asyncio.Lock()
+        self.changed = asyncio.Condition()
+        self.wake = asyncio.Event()
+        self.stop: asyncio.Event | None = None
+        self.sink: RunSink | None = None
+
+    async def run(self, sink: RunSink, stop: asyncio.Event) -> bool:
+        """No branch/model scheduling here: resume_next/resume_branch drive this holder."""
+        self.sink, self.stop = sink, stop
+        started, name = self.started_at, self.run_name
+        queued = await threaded(self.records.queued)
+        root = next(
+            (r for p, s, q, r in queued if (p, s, q) == (self.project, self.session, self.request)),
+            None,
+        )
+        if root is None:
+            return False
+        try:
+            blueprint = await threaded(
+                Blueprints(self.stores.projects.control).get, self.project, self.session, root
+            )
+        except ControlError as exc:
+            await threaded(
+                self.records.reject_queued, self.project, self.session, self.request, str(exc)
+            )
+            return True
+        error: str | None = None
+        async with (
+            session_lease(self.stores.runs, blueprint.context, name, clock=self.harness.clock),
+            AsyncExitStack() as resources,
+        ):
+            try:
+                self.root, self.epoch = await threaded(
+                    self.records.claim, self.project, self.session, self.request, lease_run=name
+                )
+            except ControlError as exc:
+                if exc.message.startswith("automatic Resume invalidated"):
+                    # A new USER action won the claim race. The durable request is
+                    # blocked already; this is not a failed research run and must
+                    # not delay that user's queued correction.
+                    return False
+                raise
+            try:
+                await self.harness.client.fence(
+                    RecoveryFence(
+                        project_id=self.project, session_id=self.session, epoch=self.epoch
+                    )
+                )
+                owned_context = blueprint.context.model_copy(
+                    update={"authority": ExecutionAuthority(work=root, run=name, epoch=self.epoch)}
+                )
+                # Claims deliberately cannot wake a suspended VM. Prepare the existing
+                # environment first, as ordinary admission does before retaining it.
+                await self.harness.client.capabilities(owned_context.environment_id)
+                await resources.enter_async_context(
+                    environment_claim(
+                        self.harness.client, owned_context, name, clock=self.harness.clock
+                    )
+                )
+                with self.plans.authority(self.epoch, name):
+                    await ChildSettlement(
+                        self.stores.projects.control, Ledger(self.stores.documents)
+                    ).drain(self.project, self.session, root=root)
+                    await self.harness.release_completed_children(owned_context, root)
+                    await threaded(self.plans.prepare, root, run=name, started=started)
+                    await threaded(self._reserve_delegations, root)
+                self.started = True
+                while True:
+                    self.wake.clear()
+                    if not self.active and not await threaded(self.plans.ready):
+                        break
+                    await self.wake.wait()
+                error = await threaded(self.plans.unfinished)
+            except BaseException as exc:
+                error = str(exc) or type(exc).__name__
+                with suppress(ControlError), self.plans.authority(self.epoch, name):
+                    if stop.is_set():
+                        await threaded(self.records.stop, self.project, self.session, root)
+                    else:
+                        await threaded(self.records.interrupt, self.project, self.session, root)
+                raise
+            finally:
+                self.started = False
+                tasks = tuple(self.active.values())
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                with suppress(ControlError), self.plans.authority(self.epoch, name):
+                    await threaded(
+                        self.records.complete_request,
+                        self.project,
+                        self.session,
+                        self.request,
+                        error=error,
+                    )
+        return error is not None
+
+    async def next(self) -> tuple[str, ...]:
+        if not self.started:
+            return ()
+        ready = await threaded(self.plans.ready)
+        return tuple(work for work in ready if work not in self.active)[
+            : max(0, 4 - len(self.active))
+        ]
+
+    async def branch(self, work_id: str) -> bool:
+        if not self.started or work_id not in await self.next():
+            return False
+        if work_id in self.active or len(self.active) >= 4:
+            return False
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("recovery branch requires an async task")
+        self.active[work_id] = task
+        try:
+            if self.epoch is None:
+                raise ControlError(CONFLICT, "Resume has no claimed epoch")
+            with self.plans.authority(self.epoch, self.run_name):
+                return await self._branch(work_id)
+        finally:
+            self.active.pop(work_id, None)
+            self.wake.set()
+            async with self.changed:
+                self.changed.notify_all()
+
+    async def _branch(self, work_id: str) -> bool:
+        try:
+            work = await threaded(self.records.get, self.project, self.session, work_id)
+            admitted = await self.prepare(work)
+            if self.sink is None:
+                raise RuntimeError("Resume has no sink")
+            finished = await self.harness.start(
+                admitted,
+                self.sink,
+                stop=self.stop,
+                wait_children=lambda: self.wait_children(work_id),
+            )
+            settlement = (
+                await self.harness.checkpoint_child(finished)
+                if admitted.request.delegation is not None
+                else None
+            )
+            await save(
+                finished.fields(),
+                finished.status,
+                finished.hooks,
+                projects=self.stores.projects,
+                error=self.sink.error,
+            )
+            if settlement is not None:
+                await settlement.settle(
+                    self.project, self.session, run_name(finished.started_at, finished.run_id)
+                )
+                await self.harness.release_child(finished)
+            return True
+        except asyncio.CancelledError:
+            await threaded(self.records.block, self.project, self.session, work_id, "interrupted")
+            raise
+        except Exception as exc:
+            reason = (
+                "run_budget"
+                if isinstance(exc, ControlError) and exc.message == GRANT_EXHAUSTED
+                else f"{type(exc).__name__}: {exc}"
+            )
+            await threaded(
+                self.records.block,
+                self.project,
+                self.session,
+                work_id,
+                reason,
+            )
+            return False
+
+    def _reserve_delegations(self, root: str) -> None:
+        """Reserve every mailbox identity, then fence only stale open delegations."""
+        after = ""
+        while page := self.records.page(self.project, self.session, root, after=after):
+            for work in page:
+                if work.parent is not None and work.state not in ("completed", "stopped"):
+                    try:
+                        self._delegation_for(work)
+                    except ControlError as exc:
+                        if exc.kind != NOT_FOUND:
+                            raise
+                        # A malformed historical branch is reported when its own
+                        # preparation runs. It must not prevent the recovery holder
+                        # from releasing already-terminal kernels first.
+            after = page[-1].work
+        DelegationRecords(self.stores.projects.control, clock=self.harness.clock).abandon(
+            self.project, self.session, resume=self.request
+        )
+
+    async def wait_children(self, work: str) -> bool:
+        """Wait for this continuation's direct children to settle or block.
+
+        The condition belongs to Recovery because its branch tasks, rather than the
+        resumed parent's Delegations hook, own those child processes. The boolean says
+        whether all direct child work reached a terminal state with evidence available.
+        """
+        while True:
+            children = await threaded(self.plans.children, work)
+            progress = await threaded(self.plans.child_progress, work)
+            if any(child in self.active for child in children):
+                progress = "active"
+            if progress != "active":
+                return progress == "settled"
+            async with self.changed:
+                children = await threaded(self.plans.children, work)
+                progress = await threaded(self.plans.child_progress, work)
+                if any(child in self.active for child in children):
+                    progress = "active"
+                if progress != "active":
+                    return progress == "settled"
+                await self.changed.wait()
+
+    def _delegation_for(self, work: Work) -> str | None:
+        """Reserve a continuation's parent chain before a leaf can send messages.
+
+        A grandchild's parent needs its delegation identity even while that parent's
+        continuation is still waiting.
+        The caller serializes this method across sibling branches, and the saved run
+        identity lets an interrupted preparation reuse the same record.
+        """
+        if work.parent is None:
+            return None
+        control = self.stores.projects.control
+        parent_work = self.records.get(self.project, self.session, work.parent)
+        if parent_work.parent is not None:
+            self._delegation_for(parent_work)
+        parent_run = self.plans.get(work.parent).run
+        plan = self.plans.get(work.work)
+        with control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT delegation_id,parent,ended FROM delegations WHERE project_id=? "
+                "AND session_id=? AND run=?",
+                (self.project, self.session, plan.run),
+            ).fetchone()
+        if row is not None:
+            if row[1] != parent_run or row[2] is not None:
+                raise ControlError(CONFLICT, "continuation delegation changed or ended")
+            return str(row[0])
+        blueprint = Blueprints(control).get(self.project, self.session, work.work)
+        request = TypeAdapter(RunRequest).validate_python(blueprint.request)
+        if request.delegation is None:
+            raise ControlError(CONFLICT, "delegated recovery inputs lack original delegation")
+        records = DelegationRecords(control)
+        original = records.get(self.project, self.session, request.delegation)
+        delegation = new_id("dlg")
+        records.start(
+            self.project,
+            self.session,
+            Delegation(
+                delegation_id=delegation,
+                parent=parent_run,
+                run=plan.run,
+                kind=original.kind,
+                brief=original.brief,
+                started_at=plan.started,
+            ),
+        )
+        return delegation
+
+    async def prepare(self, work: Work) -> Admitted:
+        """Validate original inputs, policy, budget, operations and kernels before dispatch."""
+        control = self.stores.projects.control
+        blueprint = await threaded(Blueprints(control).get, self.project, self.session, work.work)
+        try:
+            inputs = await threaded(
+                RunInputs(control).get, self.project, self.session, work.current
+            )
+        except ControlError as exc:
+            if exc.kind != NOT_FOUND:
+                raise
+            request = TypeAdapter(RunRequest).validate_python(blueprint.request)
+        else:
+            request = TypeAdapter(RunRequest).validate_python(inputs.request)
+        project = await threaded(self.stores.projects.get, self.project)
+        session = project.sessions.get(self.session)
+        if (
+            session is None
+            or session.closed_at is not None
+            or session.environment_id != blueprint.context.environment_id
+            or project.policy != blueprint.context.policy_revision
+        ):
+            raise ControlError(
+                CONFLICT, "recovery configuration changed: session/environment/policy"
+            )
+        if await threaded(self.stores.runs.over_cost_limit, self.project, self.harness.clock.now()):
+            raise ControlError(CONFLICT, "model_budget: project budget is exhausted")
+        # The original blueprint is immutable. An explicit USER token grant extends
+        # the same work's cumulative ceiling; lifetime usage is deducted only once.
+        original = TypeAdapter(RunRequest).validate_python(blueprint.request)
+        tokens = original.tokens
+        if tokens is not None:
+            grants = TokenGrants(control)
+            if await threaded(grants.extended, self.project, self.session, work.work):
+                cap = await threaded(self.stores.runs.cost_limit, self.project)
+                if cap is None or cap <= 0:
+                    raise ControlError(CONFLICT, "model_budget: renewed work requires a cost cap")
+            tokens = await threaded(grants.total, self.project, self.session, work.work, tokens)
+            tokens -= await threaded(self.plans.spent_tokens, work.work)
+            if tokens <= 0:
+                raise ControlError(CONFLICT, GRANT_EXHAUSTED)
+        alias = request.alias or original.alias
+        if alias is None:
+            raise ControlError(CONFLICT, "recovery configuration lacks the original model alias")
+        request = dataclasses.replace(request, alias=alias)
+        if request.model_profiles is None:
+            request = dataclasses.replace(
+                request, model_profiles=self.harness.model_profiles(request, legacy=True)
+            )
+        if original.model_profiles is None:
+            # Legacy work did not store caller settings. Recover adapters from its
+            # own archived responses; never infer effort from a provider default.
+            with control.read() as tx:
+                formats = tx.sql.execute(
+                    "SELECT DISTINCT m.alias,m.native_format FROM archive_messages m "
+                    "JOIN research_attempts a ON a.project=m.project AND a.session=m.session "
+                    "AND a.run=m.run WHERE a.project=? AND a.session=? AND a.work=? "
+                    "AND m.role='assistant' AND m.alias IS NOT NULL "
+                    "AND m.native_format IS NOT NULL",
+                    (self.project, self.session, work.work),
+                ).fetchall()
+            known = {
+                alias: {fmt for named, fmt in formats if named == alias} for alias, _ in formats
+            }
+            pinned = dict(request.model_profiles or {})
+            for role, profile in pinned.items():
+                observed = known.get(profile.alias, set())
+                if len(observed) > 1:
+                    raise ControlError(CONFLICT, "legacy work has ambiguous model adapter history")
+                if observed:
+                    api = next(iter(observed))
+                    api = "chat" if api == "chat_completions" else api
+                    pinned[role] = profile.model_copy(update={"api": api})
+            request = dataclasses.replace(request, model_profiles=pinned)
+        if self.epoch is None:
+            raise ControlError(CONFLICT, "recovery epoch is absent")
+        request = dataclasses.replace(
+            request,
+            model_profiles=await threaded(
+                apply_resume_effort,
+                control,
+                self.request,
+                work,
+                request.model_profiles or {},
+                epoch=self.epoch,
+                lease_run=self.run_name,
+            ),
+        )
+        if alias != self.harness.role(request).alias:
+            raise ControlError(CONFLICT, "model alias changed since the saved attempt")
+        await Reconciler(control, self.harness.client, clock=self.harness.clock).work(work)
+        plan = await threaded(self.plans.get, work.work)
+        owner = Ownership(
+            project=self.project,
+            session=self.session,
+            work=work.work,
+            run=work.current,
+            epoch=work.epoch,
+        )
+        capabilities = await self.harness.client.capabilities(blueprint.context.environment_id)
+        tier, minimum = (
+            tier_in_effect(capabilities.location),
+            self.harness.settings.min_isolation_tier,
+        )
+        if minimum is not None and (tier is None or tier < minimum):
+            raise ControlError(CONFLICT, "worker no longer meets the required isolation tier")
+        authorized_context = blueprint.context.model_copy(
+            update={"authority": ExecutionAuthority(work=work.work, run=plan.run, epoch=self.epoch)}
+        )
+        await KernelJournal(control, owner, work.kernel).reconcile(
+            self.harness.client, authorized_context
+        )
+        parent = None if work.parent is None else (await threaded(self.plans.get, work.parent)).run
+        async with self._delegation_lock:
+            delegation = await threaded(self._delegation_for, work)
+        run_id = run_id_of(plan.run)
+        if run_id is None:
+            raise ControlError(CONFLICT, "invalid continuation run identity")
+        request = dataclasses.replace(
+            request,
+            run_id=run_id,
+            history=(),
+            stop_by=None,
+            work=work.work,
+            predecessor=plan.predecessor,
+            resume_source=await threaded(
+                self.records.resume_source, self.project, self.session, self.request
+            ),
+            epoch=self.epoch,
+            parent=parent,
+            delegation=delegation,
+            root=self.run_name,
+            tokens=tokens,
+            message_ids=(),
+            requests=False,
+            operator=False,
+        )
+        return Admitted(
+            request,
+            run_id,
+            blueprint.context,
+            tuple(capabilities.languages),
+            tuple(capabilities.features),
+            True,
+            plan.started,
+        )

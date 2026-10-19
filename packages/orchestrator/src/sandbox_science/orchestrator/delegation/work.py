@@ -26,7 +26,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import run_id_of
 
 from .records import Delegation
@@ -189,3 +191,19 @@ def _cited(delegation: Delegation, note: str) -> Json:
 
 def _clipped(text: str, size: int) -> str:
     return text if len(text) <= size else text[: size - 1] + "…"
+
+
+async def record_work(
+    ledger: Ledger, project: str, session: str, delegation: Delegation, created: Sequence[str] = ()
+) -> None:
+    """Idempotent outcome provenance shared by initial and continued children."""
+    found = work_record(delegation, session, created)
+    if found is not None:
+        mutation, author = found
+        await threaded(
+            ledger.change,
+            project,
+            mutation,
+            author,
+            provenance={"delegation": delegation.delegation_id},
+        )

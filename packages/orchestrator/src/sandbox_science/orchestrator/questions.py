@@ -106,6 +106,18 @@ LISTED: Final = 50
 """The most questions a listing returns: a session's latest."""
 
 
+def _resumable(db: sqlite3.Connection, project: str, session: str, run: str) -> bool:
+    return (
+        db.execute(
+            "SELECT 1 FROM research_attempts a JOIN research_work w USING(project,session,work) "
+            "WHERE a.project=? AND a.session=? AND a.run=? "
+            "AND w.state NOT IN ('completed','stopped')",
+            (project, session, run),
+        ).fetchone()
+        is not None
+    )
+
+
 def _question(row: tuple[object, ...]) -> Question:
     (
         question_id, project, session, run, tool_call, text, options, multiple, state,
@@ -291,6 +303,19 @@ class Questions:
             )
             return _get(db, project, session, question_id)
 
+    def by_operation(self, project: str, session: str, operation: str) -> Question | None:
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM user_questions "  # noqa: S608
+                "WHERE project_id=? AND session_id=? AND operation=?",
+                (project, session, operation),
+            ).fetchone()
+        return None if row is None else _question(row)
+
+    def resumable(self, question: Question) -> bool:
+        with self.control.read() as tx:
+            return _resumable(tx.sql, question.project, question.session, question.run)
+
     def close_orphans(self) -> list[tuple[str, str, str]]:
         """Close ``interrupted`` every open question whose run holds no lease, live or
         expired: the run ended without closing it, as when its own close failed as it was
@@ -299,7 +324,11 @@ class Questions:
         orphan = (
             "state = 'open' AND NOT EXISTS (SELECT 1 FROM run_leases AS l WHERE "
             "l.project_id = user_questions.project_id AND "
-            "l.session_id = user_questions.session_id AND l.run = user_questions.run)"
+            "l.session_id = user_questions.session_id AND l.run = user_questions.run) "
+            "AND NOT EXISTS (SELECT 1 FROM research_attempts a JOIN research_work w "
+            "USING(project,session,work) WHERE a.project=user_questions.project_id "
+            "AND a.session=user_questions.session_id AND a.run=user_questions.run "
+            "AND w.state NOT IN ('completed','stopped'))"
         )
         with self.control.read() as tx:
             if tx.sql.execute(f"SELECT 1 FROM user_questions WHERE {orphan}").fetchone() is None:  # noqa: S608
@@ -463,7 +492,7 @@ def _live(db: sqlite3.Connection, question: Question, live_after: float) -> bool
         "AND renewed_at > ?",
         (question.project, question.session, question.run, live_after),
     ).fetchone()
-    return found is not None
+    return found is not None or _resumable(db, question.project, question.session, question.run)
 
 
 def _checked(question: Question, answer: Answer) -> Answer:

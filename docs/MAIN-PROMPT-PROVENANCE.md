@@ -15,7 +15,7 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-10`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-11`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
    `main`, which says what the text is, not who supplied it.
 2. `stock`, with the selected template's version, when a research template is
@@ -25,11 +25,18 @@ The system message is its sections' texts joined by a blank line, in order
    ([project memory](MEMORY.md)). Its text is not from the catalog, so the section pin
    has no version; the `memory` pin below names the framing's.
 4. `skills`, with no version, when the project pins skills: the framing
-   `sandbox-skills-index-3`, the index of the run's skills and the skills loaded at its
+   `sandbox-skills-index-4`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
-5. `planning`, version `sandbox-main-plan-1`, when the plan tools are offered. Plan
+5. `planning`, version `sandbox-main-plan-2`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
+
+MAIN version 10 and planning version 2 add conditional extended-research guidance:
+evolving hypotheses, version-specific prior art, a faithful reference bridge for
+toy results, parental assessment of child evidence, active-plan revision and
+evidence-based stopping. They preserve bounded tasks, finite child briefs and
+resource ceilings. These are prompt rules, not a new quality gate; existing runs
+retain their original pins and do not receive a live prompt replacement.
 
 ## Pins
 

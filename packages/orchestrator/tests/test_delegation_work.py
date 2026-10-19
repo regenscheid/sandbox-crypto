@@ -55,11 +55,13 @@ async def test_a_check_without_a_result_ends_its_work_at_a_limit(delegating: Har
     """The child used its one turn on a call: it stopped at its turn limit, with no
     result, and its work ended ``limit``: its time ran out."""
     configure(delegating, check_turns=1)
-    await delegating.run(
+    root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
         delegated=[Reply(calls=[call("ledger_read", entry="C-1", revision=1)])],
+        status=3,
     )
+    assert root.stopped == "unfinished_children"
     (work,) = recorded(delegating)
     assert (work.ending, work.limit) == ("limit", "time")
     assert work.references[0]["note"] == "limit_reached, turn_limit: no result"

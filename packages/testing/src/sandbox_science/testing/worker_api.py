@@ -17,6 +17,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.typedefs import Middleware
 
+from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import MAX_EVENT_BYTES, PROTOCOL_HEADER, PROTOCOL_VERSION
 
 from .waiting import eventually
@@ -36,7 +37,13 @@ def fake_worker_app(*, middlewares: Iterable[Middleware] = ()) -> web.Applicatio
     async def speak(request: web.Request, response: web.StreamResponse) -> None:
         response.headers[PROTOCOL_HEADER] = str(PROTOCOL_VERSION)
 
+    async def fence(request: web.Request) -> web.Response:
+        # The fake has no execution backend; real admission semantics have worker tests.
+        value = RecoveryFence.model_validate(await request.json())
+        return web.json_response(value.model_dump(mode="json"))
+
     app = web.Application(middlewares=middlewares)
+    app.router.add_post("/v1/recovery/fence", fence)
     app.on_response_prepare.append(speak)
     return app
 
@@ -135,6 +142,9 @@ class WorkerApi:
         )
 
     async def cancel(self, execution_id: str) -> Json:
-        status, execution = await self.post(f"/v1/executions/{execution_id}/cancel", {})
+        execution = await self.execution(execution_id)
+        status, execution = await self.post(
+            f"/v1/executions/{execution_id}/cancel", {"context": execution["context"]}
+        )
         _expect(status, (200,), execution)
         return execution

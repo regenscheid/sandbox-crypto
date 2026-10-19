@@ -2885,6 +2885,205 @@ def _figure_checks(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _tool_journal(schema: Schema) -> None:
+    """Version 58: tool intents before dispatch and full tool records saved atomically
+    with their archive messages (research-continuity.md, RC-10, RC-14). Older messages
+    have no tool record here; their finished run records remain the original source."""
+    for statement in (
+        """CREATE TABLE tool_intents (
+    seq INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    operation_id TEXT NOT NULL CHECK (length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128),
+    body_bytes INTEGER NOT NULL CHECK (body_bytes =
+        length(CAST(call_id AS BLOB)) + length(CAST(tool AS BLOB)) +
+        length(CAST(arguments AS BLOB)) + length(CAST(context AS BLOB)) +
+        length(CAST(created AS BLOB))),
+    call_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    context TEXT NOT NULL CHECK (json_valid(context) AND json_type(context) = 'object'),
+    created TEXT NOT NULL,
+    UNIQUE (project, session, run, operation_id),
+    FOREIGN KEY (project, session) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        "CREATE INDEX tool_intents_run ON tool_intents (project, session, run, seq)",
+        """CREATE TABLE archive_tool_records (
+    project TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    operation_id TEXT,
+    record_bytes INTEGER NOT NULL CHECK (record_bytes = length(CAST(record AS BLOB))),
+    record TEXT NOT NULL CHECK (json_valid(record) AND json_type(record) = 'object'),
+    PRIMARY KEY (project, message_id),
+    UNIQUE (project, session, run, operation_id),
+    FOREIGN KEY (project, message_id) REFERENCES archive_messages (project, message_id),
+    FOREIGN KEY (project, session, run, operation_id)
+        REFERENCES tool_intents (project, session, run, operation_id)
+) STRICT""",
+    ):
+        schema.execute(statement)
+    for table in ("tool_intents", "archive_tool_records"):
+        for action in ("UPDATE", "DELETE"):
+            schema.execute(
+                f"CREATE TRIGGER {table}_no_{action.lower()} BEFORE {action} ON {table} "
+                "BEGIN SELECT RAISE(ABORT, 'tool evidence is written once'); END"
+            )
+
+
+def _run_inputs(schema: Schema) -> None:
+    """Version 59: mandatory immutable starting inputs before a stored run's calls."""
+    schema.execute("""CREATE TABLE run_inputs (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    snapshot TEXT NOT NULL CHECK (json_valid(snapshot) AND json_type(snapshot) = 'object'
+        AND length(CAST(snapshot AS BLOB)) <= 1048576),
+    PRIMARY KEY (project, session, run),
+    FOREIGN KEY (project, session) REFERENCES sessions (project_id, session_id)
+) STRICT""")
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER run_inputs_no_{action.lower()} BEFORE {action} ON run_inputs "
+            "BEGIN SELECT RAISE(ABORT, 'starting inputs are written once'); END"
+        )
+
+
+def _model_usage(schema: Schema) -> None:
+    """Version 60: observed main/delegated usage committed with each assistant row."""
+    schema.execute("""CREATE TABLE archive_model_usage (
+    project TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 1 AND 999999999),
+    role TEXT NOT NULL CHECK (role IN ('main', 'delegated')),
+    observed REAL NOT NULL CHECK (observed >= 0),
+    usage TEXT NOT NULL CHECK (json_valid(usage) AND json_type(usage) = 'object'
+        AND length(CAST(usage AS BLOB)) <= 16384),
+    PRIMARY KEY (project, message_id),
+    UNIQUE (project, session, run, ordinal),
+    FOREIGN KEY (project, message_id) REFERENCES archive_messages (project, message_id)
+) STRICT""")
+    schema.execute(
+        "CREATE INDEX archive_model_usage_window ON archive_model_usage (project,observed)"
+    )
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER archive_model_usage_no_{action.lower()} "
+            f"BEFORE {action} ON archive_model_usage "
+            "BEGIN SELECT RAISE(ABORT, 'model usage is written once'); END"
+        )
+
+
+def _run_collections(schema: Schema) -> None:
+    """Version 61: paged run history and immutable successful-response receipts."""
+    schema.execute("""CREATE TABLE run_collections (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    collection TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    item TEXT NOT NULL CHECK (json_valid(item)),
+    PRIMARY KEY (project,session,run,collection,position)
+) STRICT""")
+    schema.execute("""CREATE TABLE run_members (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    collection TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (project,session,run,collection,value)
+) STRICT""")
+    schema.execute("""CREATE TABLE response_receipts (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    source TEXT NOT NULL,
+    notice TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    PRIMARY KEY (project,session,run,source,notice),
+    FOREIGN KEY (project,message_id) REFERENCES archive_messages (project,message_id)
+) STRICT""")
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER response_receipts_no_{action.lower()} BEFORE {action} "
+            "ON response_receipts BEGIN SELECT RAISE(ABORT, 'response receipts are immutable'); END"
+        )
+
+
+def _research_work(schema: Schema) -> None:
+    """Version 62: durable responsibilities and explicit fenced Resume requests."""
+    from sandbox_science.orchestrator.continuity.schema import install
+
+    install(schema)
+
+
+def _immutable_run_collections(schema: Schema) -> None:
+    """Version 63: final history references resolve immutable collection rows."""
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER run_collections_no_{action.lower()} BEFORE {action} "
+            "ON run_collections BEGIN SELECT RAISE(ABORT, 'run collections are immutable'); END"
+        )
+
+
+def _recovery_dispatch(schema: Schema) -> None:
+    """Version 64: durable child inputs and paid-dispatch uncertainty."""
+    from sandbox_science.orchestrator.continuity.recovery_schema import install
+
+    install(schema)
+
+
+def _child_settlements(schema: Schema) -> None:
+    """Version65: replayable typed delegated outcomes."""
+    from sandbox_science.orchestrator.continuity.child_settlement import install
+
+    install(schema)
+
+
+def _user_uploads(schema: Schema) -> None:
+    """Version 66: immutable original user uploads."""
+    from sandbox_science.orchestrator.uploads import install
+
+    install(schema)
+
+
+def _larger_user_uploads(schema: Schema) -> None:
+    """Version 67: 100 MiB immutable original uploads."""
+    from sandbox_science.orchestrator.uploads import expand_limit
+
+    expand_limit(schema)
+
+
+def _artifact_blobs(schema: Schema) -> None:
+    """Version 68: external immutable content and durable bounded transfer admission."""
+    schema.execute("""CREATE TABLE artifact_revision_blobs (
+        artifact TEXT NOT NULL, number INTEGER NOT NULL, project TEXT NOT NULL,
+        sha256 TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>=0),
+        PRIMARY KEY(artifact,number),
+        FOREIGN KEY(artifact,number) REFERENCES artifact_revisions(artifact,number)) STRICT""")
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER artifact_revision_blobs_no_{action.lower()} BEFORE {action} "
+            "ON artifact_revision_blobs BEGIN "
+            "SELECT RAISE(ABORT,'artifact blobs are immutable'); END"
+        )
+    schema.execute("""CREATE TABLE artifact_transfers (
+        identity TEXT PRIMARY KEY, project TEXT NOT NULL,
+        bytes INTEGER NOT NULL CHECK(bytes>=0),sha256 TEXT NOT NULL) STRICT""")
+    schema.execute("DROP TRIGGER artifact_usage_revision")
+    schema.execute(
+        "CREATE TRIGGER artifact_usage_revision AFTER INSERT ON artifact_revisions BEGIN "  # noqa: S608 - fixed SQL
+        f"{_USAGE_ROWS} UPDATE artifact_usage SET revisions=revisions+1,"
+        "bytes=bytes+CASE WHEN json_extract(NEW.record,'$.content_retained') "
+        "THEN NEW.size ELSE 0 END,metadata=metadata+length(CAST(NEW.record AS BLOB)) "
+        f"{_USAGE_OF}; END"
+    )
+
+
 def _agent_messages(schema: Schema) -> None:
     """Durable messages between directly related runs of one research tree."""
     for statement in (
@@ -2919,6 +3118,40 @@ BEGIN SELECT RAISE(ABORT, 'an agent message is kept'); END""",
 BEGIN SELECT RAISE(ABORT, 'agent messages are kept'); END""",
     ):
         schema.execute(statement)
+
+
+def _kernel_cell_lookup(schema: Schema) -> None:
+    """Version 70: find cell provenance by operation across long research sessions."""
+    schema.execute(
+        "CREATE INDEX research_kernel_cell_identity ON research_observations "
+        "(project,session,kind,identity) WHERE kind='kernel_cell'"
+    )
+
+
+def _context_auxiliary_window(schema: Schema) -> None:
+    """Version 71: bound the inspector's latest auxiliary-intent snapshot."""
+    schema.execute(
+        "CREATE INDEX research_model_context_window ON research_model_calls "
+        "(project,session,run,created DESC,identity DESC) "
+        "WHERE kind NOT IN ('main','delegated')"
+    )
+
+
+def _context_captures(schema: Schema) -> None:
+    """Version 72: actual dispatch captures and independent inspector search."""
+    from sandbox_science.orchestrator.history.capture_schema import create
+
+    create(schema)
+
+
+def _project_model_settings(schema: Schema) -> None:
+    """Version 73: project-selected aliases and efforts from a trusted catalog."""
+    schema.execute("""CREATE TABLE project_model_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    selections TEXT NOT NULL,
+    author TEXT NOT NULL
+) STRICT""")
 
 
 MIGRATIONS: Final[tuple[Migration, ...]] = (
@@ -2978,7 +3211,22 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _document_pins,
     _statement_and_chat_pins,
     _figure_checks,
+    _tool_journal,
+    _run_inputs,
+    _model_usage,
+    _run_collections,
+    _research_work,
+    _immutable_run_collections,
+    _recovery_dispatch,
+    _child_settlements,
+    _user_uploads,
+    _larger_user_uploads,
+    _artifact_blobs,
     _agent_messages,
+    _kernel_cell_lookup,
+    _context_auxiliary_window,
+    _context_captures,
+    _project_model_settings,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

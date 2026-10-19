@@ -82,12 +82,13 @@ class Closing:
     - ``respond``: the notices are findings to answer; the run takes a response round,
       one for every hook that asks in this closing.
     - ``retry``: the answer cannot stand; another turn, or the run stops as ``stopped``.
-    - ``stop``: the run ends without an answer, as ``stopped``.
+    - ``stop``: the run ends as ``stopped``, optionally retaining its checkpoint answer.
     """
 
     action: Literal["accept", "continue", "respond", "retry", "stop"] = "accept"
     notices: tuple[Notice, ...] = ()
     stopped: str = "user_message"
+    retain_answer: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,15 +111,30 @@ class Appended:
     reply: ModelTurn | None = None
     call: ToolCall | None = None
     outcome: ToolOutcome | None = None
+    operation_id: str | None = None
+    """The intent saved before entering the toolbox; absent for report-round refusals."""
+    consumed: Mapping[str, AbstractSet[str]] | None = None
+    usage: ModelUsage | None = None
+    usage_index: int | None = None
+    """One-based answered-response index, independent of refused model attempts."""
 
 
 class MessageLog(Protocol):
     """Where a run keeps each message as it adds it to its conversation: the session's
     archive (docs/specs/context-management.md, CM-4)."""
 
+    async def start_tool(self, call: ToolCall, operation_id: str) -> None:
+        """Persist intent before dispatch. A failure prevents the call from running."""
+        ...
+
     async def append(self, message: Message, appended: Appended) -> Message:
         """Keep ``message``, before the next model call; the message as the
         conversation holds it, with its ID header (CM-4a). A failure fails the run."""
+        ...
+
+    def retained_tool(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Historical representation of the just-committed tool result. The loop keeps
+        the original current result through its observers before replacing it."""
         ...
 
 
@@ -182,7 +198,7 @@ class RunView(Protocol):
         last closing then has no turn to take."""
         ...
 
-    def delivered_ids(self, source: str) -> frozenset[str]: ...
+    def delivered_ids(self, source: str) -> AbstractSet[str]: ...
 
 
 class TurnHook:
@@ -199,8 +215,12 @@ class TurnHook:
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         return ()
 
+    async def turn_limit(self, run: RunView) -> int | None:
+        """An authoritative allowance's current attempt ceiling, or no override."""
+        return None
+
     async def halt(self, run: RunView) -> str | None:
-        """Before each model call after the first, and before its notices: the reason the
+        """Before every model call, including the first, and before its notices: the reason the
         run stops there instead, which becomes its ``stopped``, or ``None`` to go on."""
         return None
 
@@ -210,6 +230,10 @@ class TurnHook:
         round and becomes its ``stopped`` (a delegated run's tokens, ``run_budget``), or
         ``None`` to go on (run-service spec, RS-6f)."""
         return None
+
+    async def consumption(self) -> Sequence[str]:
+        """Input IDs already shown by tools, under this hook's source; no display change."""
+        return ()
 
     async def model_returned(self, run: RunView) -> None:
         """After each successful model call, once the loop has counted its deliveries and
@@ -227,6 +251,13 @@ class TurnHook:
 
     async def accept(self, run: RunView) -> None:
         """Every hook accepted the closing answer and no response round follows."""
+
+    async def finishing(self, run: RunView, stopped: str) -> str | None:
+        """After the loop ends normally, before releasing its leases. May wait for
+        owned work without model calls. Cancellation still follows lease cleanup.
+        Return a replacement stop reason only when finalization finds a missing outcome.
+        """
+        return None
 
     def summary(self) -> object | None:
         """What the run's record keeps for this source at the end, if anything."""

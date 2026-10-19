@@ -53,12 +53,14 @@ from . import (
     api,
     artifacts,
     chat,
+    context_inspector,
     documents,
     errors,
     frontier,
     jobs,
     kernels,
     ledger,
+    mcp_services,
     memory,
     messages,
     plan_edits,
@@ -67,6 +69,7 @@ from . import (
     provisioning,
     reviews,
     skills,
+    uploads,
 )
 from .context import CONTEXT, WorkspaceContext, json_body, listener, own_hosts
 from .errors import json_error
@@ -76,6 +79,7 @@ from .mathrepair import (
     SessionLimitError,
     parse_request,
 )
+from .mcp_metadata import MetadataClient
 from .preview import Preview
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
@@ -203,6 +207,10 @@ def create_app(
     timeouts: api.Timeouts = api.TIMEOUTS,
     preview: Preview | None = None,
     skills_metadata: str | None = None,
+    mcp_project: str | None = None,
+    mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
+    mcp_metadata: MetadataClient | None = None,
+    model_configuration: project_settings.ModelConfiguration | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -217,6 +225,8 @@ def create_app(
     that pass derived, as runs are given it."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
+    if mcp_inventory and mcp_project is None:
+        raise ValueError("MCP inventory needs an explicit project scope")
     if document_store is not None and not document_store.readonly:
         raise ValueError("the workspace's document_store must be read-only")
     sessions = Sessions(login_token)
@@ -323,6 +333,11 @@ def create_app(
     app[documents.WRITER] = writer
     if skills_metadata is not None:
         app[skills.METADATA] = skills_metadata
+    app[mcp_services.CONFIGURATION] = mcp_services.Configuration(
+        mcp_project, mcp_inventory, mcp_metadata
+    )
+    if model_configuration is not None:
+        app[project_settings.MODEL_CONFIGURATION] = model_configuration
     app[CONTEXT] = WorkspaceContext(
         projects=store,
         documents=document_store,
@@ -350,8 +365,11 @@ def create_app(
         ledger,
         frontier,
         memory,
+        context_inspector,
         skills,
+        mcp_services,
         messages,
+        uploads,
     ):
         feature.add_routes(app)
     app.router.add_post("/api/v0/logout", logout)

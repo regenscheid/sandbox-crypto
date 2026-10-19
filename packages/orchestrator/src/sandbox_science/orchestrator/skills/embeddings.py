@@ -52,7 +52,19 @@ class EmbeddingError(Exception):
     """The gateway's embeddings could not be had, or are not of the vectors in use."""
 
 
-Paid = list[tuple[str, int, float | None]]
+@dataclass(frozen=True)
+class PaidCall:
+    model: str
+    texts: int
+    cost: float | None
+    intent_id: str
+
+
+def paid_values(call: tuple[str, int, float | None] | PaidCall) -> tuple[str, int, float | None]:
+    return (call.model, call.texts, call.cost) if isinstance(call, PaidCall) else call
+
+
+Paid = list[tuple[str, int, float | None] | PaidCall]
 """Calls the gateway answered, each with its model (the alias when the answer named none),
 the texts and the cost it reported: kept as they come, so a later failure loses none."""
 
@@ -75,8 +87,19 @@ class Embedded:
 class Embedder:
     """The gateway's OpenAI-compatible ``/embeddings`` for one model alias."""
 
-    def __init__(self, base_url: str, alias: str, api_key: str, *, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        alias: str,
+        api_key: str,
+        *,
+        timeout: float = 60.0,
+        max_response_bytes: int = MAX_ANSWER_BYTES,
+    ) -> None:
         self.base_url, self.alias, self._key = base_url.rstrip("/"), alias, api_key
+        if not 1 <= max_response_bytes <= MAX_ANSWER_BYTES:
+            raise ValueError("embedding response ceiling is outside its supported bound")
+        self.max_response_bytes = max_response_bytes
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
 
@@ -117,12 +140,12 @@ class Embedder:
             ) as response:
                 cost = _cost(response.headers.get(COST_HEADER))
                 try:  # to its end: a single read returns only what has arrived (lab 42, B1)
-                    raw = await read_limited(response, MAX_ANSWER_BYTES)
+                    raw = await read_limited(response, self.max_response_bytes)
                 except ModelError:
                     if response.status == 200 and paid is not None:  # charged all the same
                         paid.append((self.alias, len(texts), cost))
                     raise EmbeddingError(
-                        f"the gateway's answer is larger than {MAX_ANSWER_BYTES:,} bytes"
+                        f"the gateway's answer is larger than {self.max_response_bytes:,} bytes"
                     ) from None
                 if response.status != 200:
                     said = raw.decode(errors="replace")
@@ -252,8 +275,18 @@ async def count_paid(store: SkillStore, project: str | None, paid: Paid) -> None
     """Count ``project``'s calls the gateway answered, priced as it reported (RS-6a)."""
     if project is None:
         return
-    for model, texts, cost in paid:
-        await threaded(store.add_embedding_call, project, model, texts, cost)
+    for call in paid:
+        if isinstance(call, PaidCall):
+            await threaded(
+                store.add_embedding_call,
+                project,
+                call.model,
+                call.texts,
+                call.cost,
+                intent_id=call.intent_id,
+            )
+        else:
+            await threaded(store.add_embedding_call, project, *call)
 
 
 class SkillVectors:

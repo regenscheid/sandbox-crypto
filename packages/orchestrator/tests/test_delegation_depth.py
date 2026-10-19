@@ -22,6 +22,12 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.continuity.resources import (
+    Action,
+    ResourceDecisionRequest,
+    ResourceRequests,
+)
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation import hook
 from sandbox_science.orchestrator.delegation.hook import (
@@ -47,6 +53,7 @@ from sandbox_science.orchestrator.projects import (
     run_id_of,
     run_name,
 )
+from sandbox_science.orchestrator.run_inputs import RunInputs
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import eventually
@@ -58,6 +65,7 @@ from .loop_harness import worker as worker
 from .test_delegation import (
     CHECK,
     about,
+    awaiting_children,
     children,
     configure,
     delegation,
@@ -120,6 +128,14 @@ async def test_a_task_delegates_once_more_and_its_child_hands_back_to_it(
     store = ProjectStore(delegating.state)
     try:
         assert DelegationRecords(store.control).handbacks(PROJECT, SESSION) == []
+        for record, may_delegate in ((root, False), (child, True), (grandchild, False)):
+            inputs = RunInputs(store.control).get(PROJECT, SESSION, name(record))
+            assert inputs.request["parent"] == record.parent
+            assert inputs.request["delegation"] == record.delegation
+            assert inputs.request["may_delegate"] is may_delegate
+            assert inputs.pins == record.prompt_provenance
+            assert "history" not in inputs.request
+            assert "stop_by" not in inputs.request
     finally:
         store.close()
 
@@ -348,6 +364,39 @@ async def test_delegations_started_at_once_keep_the_cap(tmp_path: Path) -> None:
             free.set()
 
 
+async def test_nested_grant_refreshes_fold_usage_after_awaited_admission(tmp_path: Path) -> None:
+    extra = 5000
+    dispatched: list[int] = []
+
+    async def auxiliary() -> int:
+        return extra
+
+    async def held(child: Child, stop: asyncio.Event) -> ChildEnd:
+        dispatched.append(child.tokens)
+        return ChildEnd("answered", False, json.dumps(DONE))
+
+    async def gate() -> bool:
+        nonlocal extra
+        # A fold response plus its retry hold arrive during an earlier tool or
+        # model-choice/admission await, without another foreground model return.
+        extra += 40000
+        return False
+
+    with tree(tmp_path) as found:
+        lead = found.hook(held, parent=CHILD, depth=1, tokens=100000)
+        lead.auxiliary_tokens = auxiliary
+        lead.over_budget = gate
+        async with lead.lease():
+            await lead.model_returned(
+                Transcript(messages=[], usage=[ModelUsage(input_tokens=20000, output_tokens=0)])
+            )
+            text, _ = await lead.call("delegate", {"task": "Do a part."})
+            assert json.loads(text)["limits"]["tokens"] == 35000
+            with pytest.raises(WorkerAPIError, match="no tokens left"):
+                await lead.call("delegate", {"task": "Another part."})
+            await eventually(lambda: dispatched == [35000])
+
+
 def test_a_track_is_busy_while_any_delegation_of_the_session_runs_on_it(tmp_path: Path) -> None:
     with tree(tmp_path) as found:
         records = found.records
@@ -512,7 +561,7 @@ async def test_each_level_stops_its_children_within_its_parents_time(
         records = found.records
         leading = records.get(PROJECT, SESSION, json.loads(text)["delegation_id"])
         (part,) = records.handbacks(PROJECT, SESSION, parent=leading.run)
-        assert (leading.ended, part.ended) == ("cancelled", "interrupted")
+        assert (leading.ended, part.ended) == ("interrupted", "interrupted")
         assert part.ended_at is not None
         assert leading.ended_at is not None
         assert part.ended_at <= leading.ended_at
@@ -542,22 +591,21 @@ def _below(harness: Harness, parent: str) -> list[RunRecord]:
         store.close()
 
 
-async def test_a_leads_turn_limit_stops_its_child_mid_call_and_hands_the_outcome_up(
+async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outcome_up(
     delegating: Harness,
 ) -> None:
-    """The lead reaches its turn limit while its child is in a model call: the child is
-    cancelled and saved first, and the root receives the outcome the lead never did with
-    the lead's own."""
+    """A limited lead waits for its child, whose unconsumed result accompanies its own."""
     configure(delegating, depth=2, task_turns=2)
     working, free, part_answer = _working()
 
     async def after_it_started() -> None:
         await working.wait()
 
-    try:
-        root = await delegating.run(
+    task = asyncio.create_task(
+        delegating.run(
             "root",
             [Reply(calls=[LEAD]), wait(), Reply("Done.")],
+            status=3,
             routed={
                 "Lead the work.": [
                     Reply(calls=[PART]),
@@ -566,21 +614,111 @@ async def test_a_leads_turn_limit_stops_its_child_mid_call_and_hands_the_outcome
                 "Do a part.": [part_answer],
             },
         )
+    )
+    try:
+        await awaiting_children(delegating, delegated=True)
+        assert not task.done()
+        assert len(delegating.gateway.children) == 3
     finally:
         free.set()
+    root = await task
     (child,) = children(delegating, root)
     (grandchild,) = children(delegating, child)
-    assert (child.stopped, grandchild.stopped) == ("turn_limit", "cancelled")
+    assert (child.stopped, grandchild.stopped) == ("turn_limit", "answered")
+    assert root.stopped == "unfinished_children"
+    with contextlib.closing(ProjectStore(delegating.state)) as projects:
+        works = WorkRecords(projects.control)
+        assert (
+            works.get(PROJECT, SESSION, run_name(child.started_at, child.run_id)).state == "paused"
+        )
+        assert (
+            works.get(PROJECT, SESSION, run_name(grandchild.started_at, grandchild.run_id)).state
+            == "completed"
+        )
     assert grandchild.ended_at <= child.ended_at
     (part,) = started(child)
     assert (delegation(delegating, part).ended, delegation(delegating, part).acknowledged) == (
-        "cancelled",
+        "returned",
         None,
     )
-    (waited,) = answer(root, 1)["delegations"]
-    assert waited["ended"] == "limit_reached"
-    (left,) = waited["unreceived"]
-    assert (left["delegation_id"], left["ended"]) == (part, "cancelled")
+    # The lead can settle before the resource poll, or the check-in can wake the
+    # parent first. Either ordering preserves the unconsumed descendant result.
+    waited = answer(root, 1)
+    assert waited["reason"] in {"ended", "resource_request"}
+    (lead,) = started(root)
+    if waited["reason"] == "ended":
+        (returned_lead,) = waited["delegations"]
+        assert (returned_lead["delegation_id"], returned_lead["ended"]) == (lead, "limit_reached")
+        (unreceived,) = returned_lead["unreceived"]
+        assert (unreceived["delegation_id"], unreceived["ended"], unreceived["stopped"]) == (
+            part,
+            "returned",
+            "answered",
+        )
+    saved = delegation(delegating, lead)
+    assert saved.ended == "limit_reached"
+    with contextlib.closing(ProjectStore(delegating.state)) as projects:
+        (left,) = DelegationRecords(projects.control).handbacks(
+            PROJECT, SESSION, parent=name(child)
+        )
+        assert (left.delegation_id, left.ended) == (part, "returned")
+
+
+@pytest.mark.parametrize("action", ["pause", "report"])
+async def test_parent_resource_decision_waits_for_the_authorized_grandchild(
+    delegating: Harness, action: Action
+) -> None:
+    configure(delegating, depth=2, task_turns=300)
+    working, free, part_answer = _working()
+
+    async def decide_after_child_started() -> None:
+        await working.wait()
+        with contextlib.closing(ProjectStore(delegating.state)) as projects:
+            records, _ = DelegationRecords(projects.control).listed(PROJECT, SESSION)
+            lead = next(d for d in records if d.brief.get("task") == "Lead the work.")
+            works = WorkRecords(projects.control)
+            owner = works.owner(PROJECT, SESSION, lead.run)
+            parent = works.owner(PROJECT, SESSION, lead.parent)
+            assert owner is not None
+            assert parent is not None
+            requests = ResourceRequests(projects.control)
+            request = requests.observe(owner, "turns", used=1, total=300, revision=0, force=True)
+            assert request is not None
+            requests.decide(
+                parent,
+                ResourceDecisionRequest(
+                    request_id=request.request_id, action=action, reason="Save"
+                ),
+                operation="fixture-resource-decision",
+            )
+
+    task = asyncio.create_task(
+        delegating.run(
+            "root",
+            [Reply(calls=[LEAD]), wait(), Reply("Saved for continuation.")],
+            status=3,
+            routed={
+                "Lead the work.": [
+                    Reply(calls=[PART]),
+                    Reply("Checkpoint.", before=decide_after_child_started),
+                ],
+                "Do a part.": [part_answer],
+            },
+        )
+    )
+    try:
+        await awaiting_children(delegating, delegated=True)
+        assert not task.done()
+    finally:
+        free.set()
+    root = await task
+    (child,) = children(delegating, root)
+    (grandchild,) = children(delegating, child)
+    assert (child.stopped, grandchild.stopped) == (f"resource_{action}", "answered")
+    assert child.final_text == "Checkpoint."
+    assert grandchild.ended_at <= child.ended_at
+    (lead,) = started(root)
+    assert delegation(delegating, lead).ended == "limit_reached"
 
 
 async def test_the_users_cancel_of_the_root_stops_its_grandchild_mid_call_first(
@@ -643,10 +781,10 @@ async def test_a_lost_lease_stops_the_tree_with_its_grandchild_mid_call(
     finally:
         free.set()
     try:
-        assert (child.stopped, grandchild.stopped) == ("cancelled", "cancelled")
+        assert (child.stopped, grandchild.stopped) == ("interrupted", "interrupted")
         assert grandchild.ended_at <= child.ended_at
         assert records.running(PROJECT, SESSION) == []
         ended = [d.ended for d in records.listed(PROJECT, SESSION)[0]]
-        assert ended == ["cancelled", "cancelled"]
+        assert ended == ["interrupted", "interrupted"]
     finally:
         store.close()

@@ -4,10 +4,12 @@ Date: 2026-10-10. This is the design proposal, kept as written except where the 
 
 ## Component boundary
 
+**Implemented locally, 2026-10-17 (D47):** the normal launcher runs the agent-facing orchestrator in a restricted OpenShell sandbox separate from research workloads. Parent and child model loops, prompt assembly and model adapters share this orchestration sandbox. A trusted host control service owns durable state, scoped worker/tool capabilities and the environment leases; the worker controller, gateway and enforcement services stay outside both sandboxes. Fixed authenticated capabilities carry bounded requests and results, with no generic SQL, host filesystem or method-dispatch API. The UI and durable state survive orchestrator replacement; interrupted trees require explicit Resume. See [orchestrator confinement](specs/orchestrator-confinement.md) and [research continuity](specs/research-continuity.md).
+
 ```mermaid
 flowchart LR
   B[Browser] --> W[Web GUI / API proxy container]
-  W --> O[Orchestrator / harness container]
+  W --> O[Orchestrator / harness OpenShell sandbox]
   O --> M[Model gateway]
   O --> D[(Project knowledge, documents, sessions and run records)]
   O --> C[Research connector broker]
@@ -135,7 +137,7 @@ The confirmed monitor response model is policy-based blocking, permission escala
 
 Keep model/provider keys, worker enrollment authority, gateway administration, and engine/cluster credentials on their appropriate trusted services. Workloads receive only explicit data and endpoint-scoped access needed for the task. Credentials reach workers as OpenShell provider placeholders that resolve only at bound endpoints (D57), and external services are mostly MCP endpoints with per-project tool allowlists (D58); see [monitoring](MONITORING.md#credentials-and-mcp-access). Reusable project grants should let ordinary research proceed without repeated command approvals.
 
-The orchestrator is **semi-trusted** (D47). Its state is trusted, but it reads untrusted papers and web content and acts on model output. Limit its egress to the model gateway and policy-governed MCP endpoints, and evaluate running it as an OpenShell sandbox with providers so it holds placeholders rather than raw keys. Apply worker egress rules to connector fetches, preferably by running fetch-type connectors in a worker sandbox. Log its outbound requests in the same event store as worker traffic, and give it no engine or cluster credentials.
+The agent runtime is **semi-trusted** (D47): it reads untrusted papers and web content and acts on model output. Its OpenShell sandbox permits only the configured model gateway and scoped state transport. Trusted handlers validate tool requests and reach workers and the policy-governed MCP proxy; no engine, cluster or worker administrative credential enters the runtime. Durable state stays in the trusted control service. The current launcher uploads the model gateway key into the sandbox by its configured file path; provider-injected placeholders are a future credential-hardening option. Connector fetches remain subject to their worker/proxy egress policies.
 
 Each pool has a locally configured **policy ceiling** (D49): maximum egress destinations, mounts, resources and data classes. Remote control can narrow it but never raise it. Enrolling a local pool, or raising its ceiling, requires local user action. This bounds what a compromised hosted orchestrator can do on the user's machine in the hosted-control/local-compute profile.
 

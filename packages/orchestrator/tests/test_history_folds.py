@@ -9,6 +9,7 @@ the archive's own API."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
@@ -40,12 +41,19 @@ from sandbox_science.orchestrator.history.folds import build, span
 from sandbox_science.orchestrator.history.geometry import input_limit
 from sandbox_science.orchestrator.history.reads import Read, Register
 from sandbox_science.orchestrator.history.skeleton import _fit
-from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import Limits, session_cache_key
+from sandbox_science.orchestrator.loop import Transcript, run_task
+from sandbox_science.orchestrator.model import (
+    GatewayModel,
+    Limits,
+    Message,
+    ToolSpec,
+    session_cache_key,
+)
 from sandbox_science.orchestrator.notices import FOLD_ENRICH, FOLD_REGION, STATE_BLOCK
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
-from sandbox_science.orchestrator.worker_client import dump
+from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.worker_client import WorkerClient, dump
 
 from .control_versions import older_store
 from .loop_harness import PROJECT, SESSION, Harness, Reply
@@ -56,8 +64,8 @@ from .test_model_limits import TOO_LONG
 
 Json = dict[str, Any]
 CONTEXT = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
-ENRICHED = ["--context-ceiling", "100000", "--fold-chunk", "10000"]
-"""C = 100,000 and K = 10,000: trigger 75,000, wall 90,000, floor 7,000, a record 1,000."""
+ENRICHED = ["--context-ceiling", "110000", "--fold-chunk", "10000"]
+"""C = 110,000 and K = 10,000: trigger 82,500, wall 99,000."""
 SMALL = [*ENRICHED, "--skeleton-only-folds"]
 """The same, its folds skeleton-only and applied at once."""
 
@@ -144,6 +152,7 @@ def test_the_geometry_scales_its_budgets_on_small_ceilings_and_refuses_too_littl
 
 
 async def test_the_gateways_input_limit_caps_the_ceiling(harness: Harness) -> None:
+    # Keep this positive capping fixture above the system/tool geometry floor.
     harness.gateway.limits = {"main": {"max_input_tokens": 100_000, "max_output_tokens": 8_000}}
     record = await harness.run("run-1", [Reply("Hi.")])
     assert folds(record)["geometry"]["ceiling"] == 100_000  # the output is not in it
@@ -1122,6 +1131,37 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
     assert "quoted:\n> Earlier work, as its outline shows." in region
 
 
+async def test_saved_answer_includes_fold_cancelled_during_run_cleanup(harness: Harness) -> None:
+    """The persisted run summary is captured after its fold lease settles."""
+    harness.gateway.per_token = 4.0
+    seed(harness, 13)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked_enrichment() -> None:
+        entered.set()
+        await release.wait()
+
+    async def wait_for_enrichment() -> None:
+        await asyncio.wait_for(entered.wait(), 5)
+
+    harness.gateway.enrich = [Reply(None, before=blocked_enrichment)]
+    try:
+        result = await harness.run(
+            "run-cleanup",
+            [
+                Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})]),
+                Reply("Done.", before=wait_for_enrichment),
+            ],
+            options=ENRICHED,
+        )
+    finally:
+        release.set()
+    assert result.answer == "Done."
+    calls = folds(result)["calls"]
+    assert len(calls) == 1
+    assert (calls[0]["cancelled"], calls[0]["estimated"]) == (True, True)
+
+
 class Silent:
     """A model that never answers."""
 
@@ -1367,9 +1407,11 @@ async def wall_run(archive: Archive, model: object) -> tuple[Folder, Transcript,
 async def test_an_enrichment_that_fails_unexpectedly_folds_skeleton_only(archive: Archive) -> None:
     """#461's review, M2: an error no check expects in the enrichment leaves the fold
     skeleton-only, never lost."""
-    _, _, events = await wall_run(archive, Failing())
+    made, _, events = await wall_run(archive, Failing())
     assert events[-1]["state"] == "skeleton_only"
     assert events[-1]["reason"] == "skeleton-only: it failed (RuntimeError)"
+    assert len(made.spent) == 1
+    assert made.spent[0]["estimated"] is True
 
 
 async def test_each_enrichment_call_counts_as_it_returns(archive: Archive) -> None:
@@ -1380,6 +1422,175 @@ async def test_each_enrichment_call_counts_as_it_returns(archive: Archive) -> No
     first, cancelled = made.spent
     assert (first["input_tokens"], first["cost"]) == (50_000, 0.01)
     assert (cancelled["cancelled"], cancelled["estimated"]) == (True, True)
+
+
+@pytest.mark.parametrize("stage", ["admission", "dispatch"])
+async def test_run_end_counts_only_a_dispatched_fold_once(archive: Archive, stage: str) -> None:
+    """Ending during admission has no paid call; ending during complete has one
+    estimated receipt, even when the summary is read repeatedly."""
+    for n in range(36):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    entered = asyncio.Event()
+
+    class Waiting:
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            if stage == "dispatch":
+                entered.set()
+            await asyncio.sleep(3600)
+
+    async def admit(messages: Sequence[Message], tools: Sequence[ToolSpec]) -> bool:
+        if stage == "admission":
+            entered.set()
+            await asyncio.sleep(3600)
+        return True
+
+    made = Folder(
+        archive,
+        CONTEXT,
+        run="r",
+        view=view,
+        start=start,
+        ceiling=48_000,
+        chunk=10_000,
+        model=cast(Any, Waiting()),
+        admit=admit,
+    )
+    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    async with made.lease():
+        assert await made.before_call(transcript)
+        await asyncio.wait_for(entered.wait(), 1)
+        made.summary()
+        made.summary()
+    summary = cast(Json, made.summary())
+    made.summary()
+    if stage == "admission":
+        assert summary["calls"] == []
+    else:
+        assert len(summary["calls"]) == 1
+        assert summary["calls"][0]["cancelled"] is True
+        assert summary["calls"][0]["estimated"] is True
+        assert summary["calls"][0]["input_tokens"] > 30_000
+    assert len(made.spent) == len(summary["calls"])
+
+
+async def test_cancelled_run_snapshots_fold_receipt_after_lease(archive: Archive) -> None:
+    """A user's cancellation also returns a final summary with settled fold usage."""
+    for n in range(36):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    folding, main = asyncio.Event(), asyncio.Event()
+
+    class WaitingFold:
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            folding.set()
+            await asyncio.sleep(3600)
+
+    class WaitingMain:
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            main.set()
+            await asyncio.sleep(3600)
+
+    folder = Folder(
+        archive,
+        CONTEXT,
+        run="r",
+        view=view,
+        start=start,
+        ceiling=48_000,
+        chunk=10_000,
+        model=cast(Any, WaitingFold()),
+    )
+    stop = asyncio.Event()
+    toolbox = Toolbox(WorkerClient("http://unused.invalid", "test-secret-unused"), CONTEXT)
+    run = asyncio.create_task(
+        run_task(
+            WaitingMain(),
+            toolbox,
+            "Continue",
+            run_id="r",
+            history=view.messages,
+            stop=stop,
+            hooks=(folder,),
+            folds=folder,
+            system="System.",
+        )
+    )
+    await asyncio.wait_for(asyncio.gather(folding.wait(), main.wait()), 5)
+    stop.set()
+    run.cancel()
+    transcript = await run
+    assert transcript.stopped == "cancelled"
+    calls = cast(Json, transcript.summaries["folds"])["calls"]
+    assert len(calls) == 1
+    assert calls[0]["cancelled"] is True
+
+
+@pytest.mark.parametrize("phase", ["pre_intent", "observed"])
+async def test_journaled_fold_never_adds_identityless_cancel_estimate(
+    archive: Archive, phase: str
+) -> None:
+    """The exact paid-intent journal owns both an unbegun and observed confined call."""
+    for n in range(36):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    entered = asyncio.Event()
+    journal: list[tuple[str, str]] = []
+
+    class Journaled(GatewayModel):
+        @property
+        def durable_intents(self) -> bool:
+            return True
+
+        async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> Any:
+            if phase == "observed":
+                journal.append(("model-1", "observed"))
+            entered.set()
+            await asyncio.sleep(3600)
+
+    model = Journaled("http://unused.invalid", "scripted", "unused")
+    made = Folder(
+        archive, CONTEXT, run="r", view=view, start=start, ceiling=48_000,
+        chunk=10_000, model=model,
+    )  # fmt: skip
+    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    async with made.lease():
+        assert await made.before_call(transcript)
+        await asyncio.wait_for(entered.wait(), 1)
+    assert cast(Json, made.summary())["calls"] == []
+    assert journal == ([] if phase == "pre_intent" else [("model-1", "observed")])
+
+
+async def test_fold_response_cancelled_during_validation_has_no_input_estimate(
+    archive: Archive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The returned call's usage owns it, including if validation is interrupted."""
+    from sandbox_science.orchestrator.history.enrich import EnrichmentProgress, enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "A supported result remains open.")
+    entered = asyncio.Event()
+
+    async def waiting_check(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr("sandbox_science.orchestrator.history.enrich.threaded", waiting_check)
+    model = ScriptedModel([ModelTurn(answer_with("A supported result remains open."))])
+    progress = EnrichmentProgress()
+    spent: list[ModelUsage] = []
+    task = asyncio.create_task(
+        enrich(model, (), (), record, rows, share=4000, spent=spent.append, progress=progress)
+    )
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert progress.inflight_input_tokens is None
+    assert len(spent) == 1
 
 
 # The re-check of #461.
@@ -1449,3 +1660,219 @@ async def test_a_fold_whose_archiving_failed_counts_its_calls_once(archive: Arch
     summary = cast(Json, made.summary())
     assert [call.get("cancelled") for call in summary["calls"]] == [None]
     assert summary["calls"][0]["input_tokens"] == 40_000
+
+
+@pytest.mark.parametrize("failure", ["narrative", "record_share"])
+async def test_size_rejected_enrichment_gets_measured_bounded_repair(
+    archive: Archive,
+    failure: str,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "Known result; the proof obligation remains open.")
+    if failure == "record_share":
+        record = replace(record, skeleton=("x" * 3400,))
+        rejected = "A" * 600
+    else:
+        rejected = "A" * 1200
+    reference = rows[-1].message_id
+    repaired = f"Known result in {reference}; the proof obligation remains open."
+    model = ScriptedModel(
+        [
+            ModelTurn(answer_with(rejected), cost=1),
+            ModelTurn(answer_with(repaired, keys=[]), cost=2),
+        ]
+    )
+    view = [{"role": "system", "content": "Original cached prefix"}]
+    spent: list[ModelUsage] = []
+    made = await enrich(model, view, (), record, rows, share=4000, spent=spent.append)
+    assert made.failed is None
+    assert made.record.state == "applied"
+    assert made.record.narrative == repaired
+    assert made.record.chars <= 4000
+    assert len(model.requests) == 2
+    assert model.requests[1][:-1] == model.requests[0]
+    assert model.requests[0][:-1] == view
+    feedback = model.requests[1][-1]["content"]
+    assert len(feedback) < 4000
+    assert f"{len(rejected):,} characters" in feedback
+    assert "full-record share remains 4,000" in feedback
+    assert "leaving" in feedback
+    assert "keys: []" in feedback
+    assert "critical handoff" in feedback
+    assert "source/artifact references" in feedback
+    assert rejected not in feedback
+    if failure == "narrative":
+        assert "overage 200" in feedback
+        assert "target of at most 500 characters" in feedback
+    else:
+        measured = replace(record, narrative=rejected, state="applied").chars
+        assert f"record measured {measured:,} characters" in feedback
+        assert f"{measured - 4000:,} over its full-record share" in feedback
+    assert [call.cost for call in made.calls] == [1, 2]
+    assert spent == list(made.calls)
+    assert [item["outcome"] for item in made.attempts] == [
+        "narrative_limit" if failure == "narrative" else "record_share",
+        "accepted",
+    ]
+    measured = made.attempts[0]["size"]
+    assert measured["narrative_chars"] == len(rejected)
+    assert measured["narrative_limit"] == 1000
+    assert measured["record_limit"] == 4000
+    assert rejected not in json.dumps(made.attempts)
+
+
+async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "Unresolved proof obligation and retained source.")
+    model = ScriptedModel(
+        [
+            ModelTurn(answer_with("x" * 1200), cost=1),
+            ModelTurn(answer_with("y" * 1300), cost=2),
+            ModelTurn(answer_with("A third call is forbidden."), cost=3),
+        ]
+    )
+    made = await enrich(model, (), (), record, rows, share=4000)
+    assert made.record == record
+    assert made.record.state == "skeleton_only"
+    assert (
+        made.failed
+        == "its narrative passed 1,000 characters; its narrative passed 1,000 characters"
+    )
+    assert len(model.requests) == 2
+    assert [call.cost for call in made.calls] == [1, 2]
+    assert [item["outcome"] for item in made.attempts] == ["narrative_limit", "narrative_limit"]
+
+
+async def test_fold_admission_denial_keeps_the_skeleton_without_a_paid_call(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "An unresolved proof obligation remains.")
+    model = ScriptedModel([ModelTurn(answer_with("Never dispatched."), cost=1)])
+    admitted: list[int] = []
+    released: list[int] = []
+
+    async def deny(messages: Sequence[Message], specs: Sequence[ToolSpec]) -> bool:
+        admitted.append(len(messages))
+        assert not specs
+        return False
+
+    made = await enrich(
+        model, (), (), record, rows, share=4000, admit=deny, release=lambda: released.append(1)
+    )
+    assert made.record == record
+    assert made.failed == "child token allowance reserved for reporting"
+    assert made.attempts == ({"attempt": 1, "outcome": "admission_denied"},)
+    assert made.calls == ()
+    assert len(admitted) == 1
+    assert released == []
+    assert model.requests == []
+
+
+async def test_fold_retry_checks_admission_again_and_releases_its_first_hold(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "An unresolved proof obligation remains.")
+    model = ScriptedModel([ModelTurn(answer_with("x" * 1200), cost=1)])
+    decisions = iter((True, False))
+    admitted: list[int] = []
+    released: list[int] = []
+
+    async def admit(messages: Sequence[Message], specs: Sequence[ToolSpec]) -> bool:
+        admitted.append(len(messages))
+        assert not specs
+        return next(decisions)
+
+    made = await enrich(
+        model,
+        (),
+        (),
+        record,
+        rows,
+        share=4000,
+        admit=admit,
+        release=lambda: released.append(1),
+    )
+    assert made.record == record
+    assert made.failed == "child token allowance reserved for reporting"
+    assert [item["outcome"] for item in made.attempts] == ["narrative_limit", "admission_denied"]
+    assert len(made.calls) == 1
+    assert admitted == [1, 2]
+    assert released == [1]
+    assert len(model.requests) == 1
+
+
+async def test_fold_admission_hold_releases_when_model_call_is_cancelled(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn
+
+    rows, record = spanned(archive, "An unresolved proof obligation remains.")
+    released: list[int] = []
+
+    class CancelledModel:
+        async def complete(
+            self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        ) -> ModelTurn:
+            raise asyncio.CancelledError
+
+    async def admit(messages: Sequence[Message], specs: Sequence[ToolSpec]) -> bool:
+        return True
+
+    with pytest.raises(asyncio.CancelledError):
+        await enrich(
+            CancelledModel(),
+            (),
+            (),
+            record,
+            rows,
+            share=4000,
+            admit=admit,
+            release=lambda: released.append(1),
+        )
+    assert released == [1]
+
+
+async def test_fold_size_repair_runs_through_gateway_and_keeps_cached_prefix(
+    harness: Harness,
+) -> None:
+    harness.gateway.per_token = 4.0
+    seed(harness, 13)
+    harness.gateway.enrich = [
+        Reply(answer_with("x" * 20_000)),
+        Reply(answer_with("Earlier work remains conditional.", keys=[])),
+    ]
+    outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
+    record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
+    (made,) = folds(record)["folds"]
+    assert made["state"] == "applied"
+    assert [item["outcome"] for item in made["attempts"]] == ["narrative_limit", "accepted"]
+    store = ProjectStore(harness.state)
+    try:
+        events = RunState(store.control).events(PROJECT, SESSION, name(record))
+    finally:
+        store.close()
+    applied = [event.data for event in events if event.kind == "fold" and event.data.get("fold")]
+    assert applied[-1]["attempts"] == made["attempts"]
+    region = next(
+        str(message["content"])
+        for message in harness.gateway.main[-1]
+        if FOLD_REGION.text in str(message.get("content"))
+    )
+    assert "quoted:\n> Earlier work remains conditional." in region
+    first, repair = harness.gateway.requests["enrich"]
+    assert repair[:-1] == first
+    assert "Size repair for the existing final retry" in repair[-1]["content"]
+    assert len(folds(record)["calls"]) == 2

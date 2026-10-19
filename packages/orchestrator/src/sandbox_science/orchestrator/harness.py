@@ -20,11 +20,11 @@ import json
 import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -37,6 +37,8 @@ from sandbox_science.contracts import (
     Location,
     new_id,
 )
+from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import Language
 
 from . import figurechecks, mathchecks
@@ -48,8 +50,16 @@ from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
 from .consistency.findings import Findings
-from .consistency.models import ReviewConfig
+from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .consistency.store import ReviewStore
+from .continuity.blueprints import Blueprint, Blueprints
+from .continuity.child_settlement import ChildSettlement
+from .continuity.grants import TokenGrants
+from .continuity.hook import WorkHook
+from .continuity.kernels import KernelJournal
+from .continuity.models import IntentModel, ModelIntents
+from .continuity.records import Ownership, Work, WorkRecords, authority
+from .continuity.resources import ResourceRequests
 from .control import ControlError
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
@@ -61,6 +71,7 @@ from .delegation.tracks import TrackTools, grant
 from .digest import Digest, Rendered, constraints_block, render
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
+from .environment_claim import environment_claim
 from .file_settings import ProjectFiles
 from .history import (
     CEILING,
@@ -82,10 +93,16 @@ from .history import (
     session_view,
     settle,
 )
+from .history.delegated import FoldAllowance, delegated_folder
 from .history.geometry import DEFAULT_SHARES, Shares
+from .history.limits import WorkingMemoryLimitError
+from .history.receipts import Receipts
+from .history.retention import fits
+from .history.snapshot import inline
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
+from .kernel_check import KernelCheck
 from .ledger import Ledger
 from .ledger.proposals import FoldProposals
 from .ledger.tool import LedgerTool
@@ -114,6 +131,8 @@ from .model import (
     ModelGateway,
     cached_for,
 )
+from .model_profiles import PROFILES, ModelProfile, ModelRole, profiles
+from .model_settings import AgentModelRole, AgentModelSelection, ProjectModels
 from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
@@ -123,11 +142,14 @@ from .projects import (
     RunRole,
     ensure_environment,
     operator_ref,
+    run_id_of,
     run_name,
 )
 from .question_tool import QuestionTool
 from .questions import Questions
 from .recording import FileRecorder, RecordedFiles
+from .resource_hooks import Resources
+from .run_inputs import RecordInputs, RunInputs
 from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
 from .skills import SkillStore, SkillTool
@@ -211,8 +233,8 @@ class Settings:
     min_isolation_tier: int | None = 3
     """``None`` accepts a worker with any isolation, for development."""
     max_turns: int = MAX_TURNS
-    """A main run's model calls before its report round (RS-6f), and the most a delegated
-    run of it may have: 2,000 by default, a safety net rather than a bound on the work."""
+    """A main run's model calls before its report round (RS-6f): 2,000 by default.
+    Delegated runs have independent role allowances; work may outlive an attempt."""
     max_input_chars: int | None = None
     """The longest conversation a run is sent, in characters; a longer one stops the
     run. ``None``: ``MAX_INPUT_CHARS`` for a run that does not fold, and none for a main
@@ -243,6 +265,8 @@ class Settings:
     """The tokens one consistency review may use, over all its calls."""
     review_calls_per_hour: int = ReviewConfig().calls_per_hour
     """The reviewer calls a project may make in an hour."""
+    recover_interrupted: bool = False
+    """Operator policy allowing bounded automatic Resume after infrastructure loss."""
     cost_limits: bool = False
     """With stores, whether each main run keeps its project's daily cost limit, if the
     project has one, at its safe points, as the run service's runs do (RS-6c)."""
@@ -312,6 +336,7 @@ class RunRequest:
     alias: str | None = None
     """For a delegated run, the model alias its delegation chose (PD-28, PD-30);
     ``None`` for the delegated role's."""
+    model_profiles: dict[ModelRole, ModelProfile] | None = None
     track: tuple[PlanRef, str] | None = None
     """For a task on a track, the plan version it works under and the track (PD-9)."""
     root: str | None = None
@@ -319,6 +344,13 @@ class RunRequest:
     ``None`` for a child of the root, whose parent is it."""
     may_delegate: bool = False
     """For a delegated task, whether it may delegate tasks once more (PD-15)."""
+    work: str | None = None
+    """A continuation's durable work identity; set only by explicit recovery."""
+    predecessor: str | None = None
+    resume_source: Literal["operator", "automatic"] | None = None
+    """Trusted provenance for a continuation created by Recovery. It distinguishes an
+    operator-requested Resume from bounded automatic recovery; ordinary runs leave it unset."""
+    epoch: int | None = None
     stop_by: Deadline | None = None
     """For a delegated run, when its end must have stopped its own children, which its
     parent sets as it cancels it (PD-39)."""
@@ -464,6 +496,7 @@ class Finished:
     ended_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     parent: str | None = None
     delegation: str | None = None
+    model_profiles: dict[ModelRole, ModelProfile] | None = None
     alias: str | None = None
     limits: dict[str, JsonValue] | None = None
 
@@ -476,12 +509,36 @@ class Finished:
     def fields(self) -> dict[str, object]:
         """The run record's fields, as the harness has them."""
         transcript = self.transcript
-        return {
+        memory = transcript.memory
+        messages = inline(transcript.messages) if memory is not None else transcript.messages
+        tools = inline(transcript.tool_records) if memory is not None else transcript.tool_records
+        usage = (
+            inline(transcript.usage)
+            if memory is not None
+            else [item.model_dump(mode="json") for item in transcript.usage]
+        )
+        delivered: dict[str, object] = {}
+        summaries = (
+            memory.summaries(transcript.summaries) if memory is not None else transcript.summaries
+        )
+        complete = True
+        for source, ids in transcript.delivered.items():
+            page = inline(ids) if memory is not None else sorted(ids)
+            if page is None:
+                complete = False
+            else:
+                delivered[source] = sorted(page)
+        fields: dict[str, object] = {
+            "stored_history": memory.reference() if memory is not None else None,
             "run_id": self.run_id,
             "role": "main" if self.parent is None else "delegated",
             "parent": self.parent,
             "delegation": self.delegation,
             "alias": self.alias,
+            "model_profiles": {
+                key: value.model_dump(mode="json")
+                for key, value in (self.model_profiles or {}).items()
+            },
             "limits": self.limits,
             "context": self.context.model_dump(mode="json"),
             "task": self.task,
@@ -491,17 +548,37 @@ class Finished:
             "failure": transcript.failure,
             "final_text": transcript.final_text,
             "answer": transcript.answer,
-            "messages": transcript.messages,
+            "messages": messages or [],
             "prompt_provenance": (
                 transcript.prompt_provenance.model_dump(mode="json")
                 if transcript.prompt_provenance is not None
                 else None
             ),
-            "tools": transcript.tool_records,
-            "delivered": {s: sorted(ids) for s, ids in transcript.delivered.items() if ids},
-            "usage": [usage.model_dump(mode="json") for usage in transcript.usage],
-            "summaries": transcript.summaries,
+            "tools": tools or [],
+            "delivered": delivered if complete else {},
+            "usage": usage or [],
+            "summaries": summaries,
         }
+        if memory is not None:
+            for name in ("task", "answer", "final_text"):
+                text = fields[name]
+                if isinstance(text, str) and len(text) > 16384:
+                    fields[name] = (
+                        text[:8192]
+                        + "\n[Preview; exact text is in stored evidence.]\n"
+                        + text[-8192:]
+                    )
+            checked = {
+                **fields,
+                "started_at": self.started_at.isoformat(),
+                "ended_at": self.ended_at.isoformat(),
+            }
+            if not fits(checked, 1024 * 1024):
+                for name in ("messages", "tools", "usage"):
+                    fields[name] = []
+                fields["delivered"] = {}
+                fields["prompt_provenance"] = None
+        return fields
 
 
 class Harness:
@@ -521,6 +598,8 @@ class Harness:
         gateway: ModelGateway | None = None,
         vectors: SkillVectors | None = None,
         skills_metadata: str | None = None,
+        loop_runner: Callable[..., Awaitable[Transcript]] = run_task,
+        prepare_attempt: Callable[[Admitted], AbstractAsyncContextManager[None]] | None = None,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores. ``delegated`` is
@@ -534,6 +613,8 @@ class Harness:
         if stores is None and (reviewer is not None or checker is not None):
             raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
+        self.loop_runner = loop_runner
+        self.prepare_attempt = prepare_attempt
         self.vectors = vectors
         self.derived = None if skills_metadata is None else (skills_metadata, PASS_VERSION)
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
@@ -542,29 +623,175 @@ class Harness:
         """The time the run's messages and leases are read in."""
         self.mcp = mcp
         """The MCP proxy and the servers behind it whose tools runs are offered."""
-        self.delegated = delegated or main
+        self.delegated = delegated or (
+            Role(
+                main.model.cached_as("unassigned").for_role(
+                    "delegated", gateway.profile(main.alias, role="delegated") if gateway else None
+                ),
+                main.alias,
+            )
+            if isinstance(main.model, GatewayModel)
+            else main
+        )
         self.gateway = gateway
         self._limits_seen: dict[str, Limits] | None = None
         """The limits the gateway's model information gave, once it gave them."""
         self._learned: dict[str, int] = {}
         """Each alias's ceiling a context error capped, for later runs (CM-43)."""
 
+    def model_profiles(
+        self, request: RunRequest, *, legacy: bool = False
+    ) -> dict[ModelRole, ModelProfile]:
+        """Snapshot callers before work admission, including explicit default absence."""
+        if request.model_profiles is not None:
+            return dict(request.model_profiles)
+        inherited = PROFILES.get()
+        if inherited is not None and not legacy:
+            result = dict(inherited)
+        else:
+            result: dict[ModelRole, ModelProfile] = {}
+            for name, role in (
+                ("main", self.main),
+                ("delegated", self.delegated),
+                ("reviewer", self.reviewer),
+                ("watcher", self.watcher),
+            ):
+                if role is not None and isinstance(role.model, GatewayModel):
+                    result[cast(ModelRole, name)] = role.model.requested_profile
+            if not legacy and self.stores is not None and request.parent is None:
+                _, selected = ProjectModels(self.stores.documents).selections(request.project)
+                for role, choice in selected.items():
+                    result[role] = self._selected_profile(role, choice)
+            if legacy and request.alias is not None and self.gateway is not None:
+                # A legacy blueprint has no profile snapshot, but its immutable alias was
+                # saved. Reconstruct that caller instead of adopting later project settings.
+                active: AgentModelRole = "main" if request.parent is None else "delegated"
+                result[active] = self.gateway.profile(request.alias, role=active)
+            for name in ("fold", "overview", "skills_metadata"):
+                summary_role: AgentModelRole = "delegated" if request.parent is not None else "main"
+                alias = (
+                    (self.derived[0] if self.derived else None)
+                    if name == "skills_metadata"
+                    else self.settings.fold_alias
+                    or (
+                        result[summary_role].alias
+                        if summary_role in result
+                        else (self.delegated if request.parent is not None else self.main).alias
+                    )
+                )
+                if alias is not None and self.gateway is not None:
+                    result[cast(ModelRole, name)] = self.gateway.profile(
+                        alias, role=cast(ModelRole, name)
+                    )
+        if request.parent is not None and request.alias is not None and self.gateway is not None:
+            result["delegated"] = ModelProfile.model_validate(
+                {
+                    "alias": request.alias,
+                    "api": self.gateway.apis.get(request.alias, "chat"),
+                    "reasoning_effort": result["delegated"].reasoning_effort
+                    if "delegated" in result
+                    else None,
+                }
+            )
+        if request.parent is not None and self.gateway is not None:
+            # A newly constructed child's summaries follow its recorded selection.
+            # An explicit saved profile returned above remains immutable on Resume.
+            delegated = result.get("delegated")
+            alias = (
+                self.settings.fold_alias
+                or request.alias
+                or (delegated.alias if delegated is not None else self.delegated.alias)
+            )
+            for role in ("fold", "overview"):
+                key = cast(ModelRole, role)
+                previous = result.get(key)
+                result[key] = self.gateway.profile(alias, role=key).model_copy(
+                    update={"reasoning_effort": previous.reasoning_effort if previous else None}
+                )
+        if legacy:
+            result = {
+                key: value.model_copy(update={"reasoning_effort": None})
+                for key, value in result.items()
+            }
+        return result
+
+    def _agent_catalog(self) -> frozenset[str]:
+        return frozenset(
+            role.alias for role in (self.main, self.delegated, self.reviewer) if role is not None
+        )
+
+    def _selected_profile(
+        self, role: AgentModelRole, selection: AgentModelSelection
+    ) -> ModelProfile:
+        if selection.alias not in self._agent_catalog():
+            raise ModelError(f"project {role} model is outside the deployment catalog")
+        configured = {
+            "main": self.main,
+            "delegated": self.delegated,
+            "reviewer": self.reviewer,
+        }[role]
+        if configured is None:
+            raise ModelError(f"project selected an unavailable {role} model")
+        if self.gateway is None:
+            raise ModelError(f"project cannot change {role} model without a gateway")
+        profile = self.gateway.profile(selection.alias, role=role)
+        return profile.model_copy(update={"reasoning_effort": selection.reasoning_effort})
+
     def role(self, request: RunRequest) -> Role:
         """The model a run calls: the delegated role's for a delegated run, or the one
         its delegation chose (PD-28, PD-30)."""
-        if request.parent is None:
-            return self.main
-        if request.alias is None or request.alias == self.delegated.alias:
-            return self.delegated
+        name: AgentModelRole = "main" if request.parent is None else "delegated"
+        configured = self.main if name == "main" else self.delegated
+        selected = (request.model_profiles or {}).get(name)
+        alias = request.alias if request.parent is not None and request.alias is not None else None
+        alias = alias or (selected.alias if selected is not None else configured.alias)
+        if alias == configured.alias:
+            return configured
         if self.gateway is None:
-            raise ModelError(f"no model gateway serves {request.alias!r}")
-        return Role(self.gateway.model(request.alias), request.alias)
+            raise ModelError(f"no model gateway serves {alias!r}")
+        return Role(self.gateway.model(alias, role=name), alias)
+
+    def reviewer_role(self, request: RunRequest) -> Role | None:
+        """The consistency reviewer pinned for this tree, with reviewer response bounds."""
+        configured = self.reviewer
+        if configured is None:
+            return None
+        selected = (request.model_profiles or {}).get("reviewer")
+        alias = selected.alias if selected is not None else configured.alias
+        if alias == configured.alias:
+            return configured
+        if self.gateway is None:
+            raise ModelError(f"no model gateway serves reviewer {alias!r}")
+        return Role(
+            self.gateway.model(alias, role="reviewer").limited(
+                max_output=4096, max_response_bytes=REVIEWER_MAX_RESPONSE_BYTES
+            ),
+            alias,
+        )
 
     def _model(self, admitted: Admitted) -> ChatModel:
         """The model a run calls (``role``), calling as its session, so that all of the
         session's calls share one prompt cache (CM-32)."""
         context = admitted.context
-        return cached_for(self.role(admitted.request).model, context.project_id, context.session_id)
+        model = cached_for(
+            self.role(admitted.request).model, context.project_id, context.session_id
+        )
+        if self.stores is None or self.loop_runner is not run_task:
+            return model
+        owner = WorkRecords(self.stores.projects.control).owner(
+            context.project_id, context.session_id, run_name(admitted.started_at, admitted.run_id)
+        )
+        return (
+            model
+            if owner is None
+            else IntentModel(
+                model,
+                ModelIntents(self.stores.projects.control),
+                owner,
+                self.role(admitted.request).alias,
+                kind="delegated" if admitted.request.parent is not None else "main",
+            )
+        )
 
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
@@ -579,7 +806,12 @@ class Harness:
         return await self.start(admitted, sink)
 
     async def start(
-        self, admitted: Admitted, sink: RunSink, *, stop: asyncio.Event | None = None
+        self,
+        admitted: Admitted,
+        sink: RunSink,
+        *,
+        stop: asyncio.Event | None = None,
+        wait_children: Callable[[], Awaitable[bool]] | None = None,
     ) -> Finished:
         """Run an admitted task to its end.
 
@@ -588,6 +820,74 @@ class Harness:
         user's, which ends the run ``cancelled``, or, once its loop has ended, leaves the
         run's own outcome.
         """
+        admitted = dataclasses.replace(
+            admitted,
+            request=dataclasses.replace(
+                admitted.request, model_profiles=self.model_profiles(admitted.request)
+            ),
+        )
+        if self.stores is None:
+            return await self._start(admitted, sink, stop=stop)
+        request = admitted.request
+        records = WorkRecords(self.stores.projects.control, clock=self.clock)
+        owner = await threaded(
+            records.admit,
+            request.project,
+            request.session,
+            run_name(admitted.started_at, admitted.run_id),
+            parent=request.parent,
+            work=request.work,
+            predecessor=request.predecessor,
+            epoch=request.epoch,
+        )
+        await threaded(
+            Blueprints(self.stores.projects.control).save, owner, self._blueprint(admitted)
+        )
+        await self.client.fence(
+            RecoveryFence(project_id=owner.project, session_id=owner.session, epoch=owner.epoch)
+        )
+        admitted = dataclasses.replace(
+            admitted,
+            context=admitted.context.model_copy(
+                update={
+                    "authority": ExecutionAuthority(
+                        work=owner.work, run=owner.run, epoch=owner.epoch
+                    )
+                }
+            ),
+        )
+        request = dataclasses.replace(request, work=owner.work, epoch=owner.epoch)
+        admitted = dataclasses.replace(admitted, request=request)
+        with authority(owner):
+            try:
+                return await self._start(
+                    admitted,
+                    sink,
+                    stop=stop,
+                    recovering=wait_children is not None,
+                    work=WorkHook(
+                        records,
+                        owner,
+                        predecessor=request.predecessor,
+                        resume_source=request.resume_source,
+                        wait_children=wait_children,
+                    ),
+                )
+            except BaseException:
+                await threaded(
+                    records.block, owner.project, owner.session, owner.work, "interrupted"
+                )
+                raise
+
+    async def _start(
+        self,
+        admitted: Admitted,
+        sink: RunSink,
+        *,
+        stop: asyncio.Event | None = None,
+        recovering: bool = False,
+        work: WorkHook | None = None,
+    ) -> Finished:
         if admitted.stateful != (self.stores is not None):
             raise ValueError("the run was admitted with other stores than this harness has")
         transcript: Transcript | None = None
@@ -595,10 +895,27 @@ class Harness:
         interruption = Interruption()
         try:
             async with AsyncExitStack() as stack:
+                stack.enter_context(profiles(admitted.request.model_profiles or {}))
                 with interruption.protect():
+                    if (
+                        admitted.stateful
+                        and admitted.request.parent is None
+                        and admitted.request.predecessor is None
+                    ):
+                        await stack.enter_async_context(
+                            environment_claim(
+                                self.client,
+                                admitted.context,
+                                run_name(admitted.started_at, admitted.run_id),
+                                clock=self.clock,
+                            )
+                        )
+                    if self.prepare_attempt is not None:
+                        await stack.enter_async_context(self.prepare_attempt(admitted))
                     memory = await self.memory(admitted)
-                    folder = await self._folder(admitted)
-                    view = folder.view if folder is not None else await self._task_view(admitted)
+                    allowance = self._fold_allowance(admitted)
+                    folder = await self._folder(admitted, allowance=allowance)
+                    view = folder.view if folder is not None else None
                     if view is not None:
                         # The session's view is the earlier conversation (CM-29).
                         request = dataclasses.replace(admitted.request, history=view.messages)
@@ -606,7 +923,14 @@ class Harness:
                     chat = self.chat(admitted)
                     if chat is not None and view is not None:
                         chat.shown = view.shown
-                    delegations = await self._delegations(admitted, chat, memory)
+                    delegations = await self._delegations(
+                        admitted,
+                        chat,
+                        memory,
+                        stop,
+                        allowance=allowance,
+                        recovering=recovering,
+                    )
                     toolbox = await self._toolbox(
                         admitted,
                         chat,
@@ -615,9 +939,33 @@ class Harness:
                         delegations,
                         stop,
                     )
-                    if delegations is not None and toolbox.mailbox is not None:
-                        delegations.wake = toolbox.mailbox.wake
+                    if toolbox.mailbox is not None:
+                        child_wake = (
+                            functools.partial(toolbox.resources.wake, toolbox.mailbox.wake)
+                            if toolbox.resources is not None
+                            else toolbox.mailbox.wake
+                        )
+                        if delegations is not None:
+                            delegations.wake = child_wake
+                        if work is not None:
+                            work.wake = child_wake
                     hooks = toolbox.turn_hooks()
+                    if work is not None:
+                        owner = work.owner
+                        for hook in hooks:
+                            if isinstance(hook, KernelCheck):
+                                journal = KernelJournal(
+                                    work.records.control, owner, toolbox.kernel_run
+                                )
+                                hook.record = journal.record
+                                hook.record_tool = journal.record_tool
+                                hook.retain = lambda kernel: threaded(
+                                    work.records.retains_kernel,
+                                    owner.project,
+                                    owner.session,
+                                    kernel,
+                                )
+                        hooks = (*hooks, work)
                     request = admitted.request
                     if view is not None and toolbox.skills is not None:
                         toolbox.skills.hold(view.loaded)  # CM-29b
@@ -638,11 +986,15 @@ class Harness:
                                 )
                         hooks = (*hooks, discovery)
                     if chat is not None:
-                        hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
+                        hooks = (
+                            *hooks,
+                            *await self._chat_hooks(admitted, chat, discovery, allowance=allowance),
+                        )
                     if view is not None:
                         hooks = (*hooks, ViewMeter(view))
                     if folder is not None and chat is not None:
                         hooks = (*hooks, folder)
+                        chat.context_stop = lambda: folder.stopped
                         folder.events = functools.partial(chat.write, "fold")
                         folder.refit = functools.partial(_refit, toolbox, discovery)
                         folder.specs = lambda: toolbox.specs
@@ -659,7 +1011,33 @@ class Harness:
                             or ((operator_ref(chat.run),) if request.operator else ()),
                             clock=self.clock,
                         )
-                    transcript = await run_task(
+                        resolved = dataclasses.replace(
+                            request,
+                            run_id=admitted.run_id,
+                            memory_version=memory[0] if memory is not None else None,
+                            max_turns=request.max_turns or self.settings.max_turns,
+                            alias=self.role(request).alias,
+                        )
+                        hooks = (
+                            RecordInputs(
+                                RunInputs(self.stores.projects.control),
+                                admitted.context,
+                                chat.run,
+                                cast(
+                                    dict[str, JsonValue],
+                                    TypeAdapter(RunRequest).dump_python(
+                                        resolved, mode="json", exclude={"history", "stop_by"}
+                                    ),
+                                ),
+                                cast(
+                                    dict[str, JsonValue],
+                                    TypeAdapter(Settings).dump_python(self.settings, mode="json"),
+                                ),
+                                predecessor=request.predecessor,
+                            ),
+                            *hooks,
+                        )
+                    transcript = await self.loop_runner(
                         self._model(admitted),
                         toolbox,
                         None if request.queued else request.task,
@@ -688,6 +1066,10 @@ class Harness:
                 pass  # it came as the run closed: the run's own outcome stands
             elif interruption.error is not None:
                 raise interruption.error from None
+            elif isinstance(error, WorkingMemoryLimitError):
+                transcript = transcript or Transcript(messages=[])
+                transcript.stopped = "memory_limit"
+                transcript.summaries["memory"] = {"blocked": str(error)}
             elif not isinstance(error, Exception) or transcript is None:
                 raise
             else:
@@ -699,29 +1081,63 @@ class Harness:
             admitted.started_at,
             transcript,
             hooks,
+            model_profiles=admitted.request.model_profiles,
             parent=admitted.request.parent,
             delegation=admitted.request.delegation,
             alias=self.role(admitted.request).alias,
             limits=self._limits(admitted.request),
         )
 
-    async def _folder(self, admitted: Admitted) -> Folder | None:
+    def _fold_allowance(self, admitted: Admitted) -> FoldAllowance | None:
+        request = admitted.request
+        if self.stores is None or request.parent is None or request.tokens is None:
+            return None
+        run = run_name(admitted.started_at, admitted.run_id)
+        return FoldAllowance(
+            self.stores.projects.control,
+            admitted.context,
+            work=request.work or run,
+            run=run,
+            tokens=request.tokens,
+        )
+
+    async def _folder(
+        self, admitted: Admitted, *, allowance: FoldAllowance | None = None
+    ) -> Folder | None:
         """A main run's folds, with stores (CM-24, CM-29), holding the view of its session
         it starts with: the earlier messages of its session from the archive, folded as
         its records say, after a state block that holds the research-state digest
-        (CM-16, CM-26); ``None`` for any other run."""
+        (CM-16, CM-26). Children use their own attempt-scoped folder; no stores, no folds."""
         stores, request, context = self.stores, admitted.request, admitted.context
-        if stores is None or request.parent is not None:
+        if stores is None:
             return None
+        if request.parent is not None:
+            block = await threaded(
+                self._task_block, stores, context.project_id, context.session_id, request
+            )
+            return await delegated_folder(
+                Archive(stores.projects.control, clock=self.clock, chain=True),
+                context,
+                run=run_name(admitted.started_at, admitted.run_id),
+                parent=request.parent,
+                brief=request.task,
+                constraints=block,
+                ceiling=await self._ceiling(self.role(request)),
+                chunk=self.settings.chunk,
+                shares=self.settings.shares,
+                clock=self.clock,
+                model=self._child_narrator(request, context),
+                allowance=allowance or self._fold_allowance(admitted),
+            )
         project, session = context.project_id, context.session_id
+        main = self.role(request)
         archive = Archive(stores.projects.control, clock=self.clock)
         name = run_name(admitted.started_at, admitted.run_id)
-        calls = await threaded(stores.projects.usage, project, session, self.main.alias)
-        entries = await threaded(stores.projects.runs, project, session)
-        runs = [entry.name for entry in entries if entry.role == "main"]
+        calls = await threaded(stores.projects.usage, project, session, main.alias)
+        runs = await threaded(stores.projects.unarchived_runs, project, session)
         earlier = functools.partial(recorded_words, stores.projects, stores.runs, project, session)
         settings = self.settings
-        top = await self._ceiling()
+        top = await self._ceiling(main)
         start = geometry(top, 0, settings.chunk, settings.shares)  # no system message yet
         per_token = chars_per_token(calls)
         ledger = Ledger(stores.documents)
@@ -763,10 +1179,12 @@ class Harness:
 
         # The session's last main run on another model: this one refits to its own
         # geometry first, that model writing the refit's narratives (CM-31).
-        switched = await threaded(_switched, stores.projects, project, session, self.main.alias)
+        switched = await threaded(_switched, stores.projects, project, session, main.alias)
         former = None
         if switched is not None and self.gateway is not None and not settings.skeleton_only:
-            former = cached_for(self.gateway.model(switched[0]), project, session)
+            former = cached_for(
+                self.gateway.model(switched[0], role="fold").for_former(), project, session
+            )
         made = Folder(
             archive,
             context,
@@ -780,7 +1198,7 @@ class Harness:
             earlier=earlier,
             kernels=kernels,
             digest=digest,
-            model=self._narrator(project, session),
+            model=self._narrator(project, session, request),
             exists=exists,
             judge=judge,
             consolidating=request.consolidate,
@@ -791,7 +1209,7 @@ class Harness:
         )
         # The ceiling a context error capped, carried to later runs: this service's, or
         # the session's last main run's on the alias, as its record keeps it (CM-43).
-        alias = self.main.alias
+        alias = main.alias
         made.learned = self._learned.get(alias)
         if made.learned is None:
             made.learned = await threaded(_learned, stores.projects, project, session, alias)
@@ -804,27 +1222,44 @@ class Harness:
         made.propose = functools.partial(FoldProposals(ledger).propose, project, session, name)
         return made
 
-    async def _ceiling(self) -> int:
+    async def _ceiling(self, role: Role | None = None) -> int:
         """MAIN's ceiling C (CM-27): the role's, capped by the model's limit: the setting's
         input limit, or the gateway's model information's. For a Claude model that is a
         window input and output share, so the answer's room comes off it. A gateway that
         cannot be asked is asked again at the next run's start."""
         settings = self.settings
+        role = role or self.main
         if settings.input_limit is not None:
             return ceiling(settings.ceiling, input_limit=settings.input_limit)
         if self.gateway is not None and self._limits_seen is None:
             self._limits_seen = await self.gateway.input_limits()
-        found = (self._limits_seen or {}).get(self.main.alias)
+        found = (self._limits_seen or {}).get(role.alias)
         if found is None:
             return settings.ceiling
-        model = self.main.model
-        named = " ".join(name or "" for name in (found.provider, found.model, self.main.alias))
+        model = role.model
+        named = " ".join(name or "" for name in (found.provider, found.model, role.alias))
         if isinstance(model, MessagesModel) or "anthropic" in named or "claude" in named.lower():
             output = model.max_output if isinstance(model, GatewayModel) else None
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
         return ceiling(settings.ceiling, input_limit=found.input)
 
-    def _narrator(self, project: str, session: str) -> ChatModel | None:
+    def _child_narrator(self, request: RunRequest, context: ExecutionContext) -> ChatModel | None:
+        if self.settings.skeleton_only:
+            return None
+        profile = (request.model_profiles or PROFILES.get() or {}).get("fold")
+        alias = profile.alias if profile else self.settings.fold_alias
+        if alias is not None and self.gateway is not None:
+            model = self.gateway.model(alias, role="fold")
+        else:
+            own = self.role(request).model
+            if not isinstance(own, GatewayModel):
+                return None
+            return cast(
+                GatewayModel, cached_for(own, context.project_id, context.session_id)
+            ).for_role("fold")
+        return cached_for(model, context.project_id, context.session_id)
+
+    def _narrator(self, project: str, session: str, request: RunRequest) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
         the gateway, or MAIN's own; none for skeleton-only folds, or for a model that is
         not the gateway's, as a scripted one, whose answers are the run's (CM-19). It
@@ -832,28 +1267,14 @@ class Harness:
         cache (CM-32)."""
         if self.settings.skeleton_only:
             return None
-        if self.settings.fold_alias is not None and self.gateway is not None:
-            return cached_for(self.gateway.model(self.settings.fold_alias), project, session)
-        if isinstance(self.main.model, GatewayModel):
-            return cached_for(self.main.model, project, session)
+        profile = (request.model_profiles or {}).get("fold")
+        alias = profile.alias if profile is not None else self.settings.fold_alias
+        if alias is not None and self.gateway is not None:
+            return cached_for(self.gateway.model(alias, role="fold"), project, session)
+        main = self.role(request)
+        if isinstance(main.model, GatewayModel):
+            return cast(GatewayModel, cached_for(main.model, project, session)).for_role("fold")
         return None
-
-    async def _task_view(self, admitted: Admitted) -> View | None:
-        """A delegated task's view, with stores: the user's standing constraints alone; a
-        check's, nothing (CM-37a)."""
-        stores, request, context = self.stores, admitted.request, admitted.context
-        if stores is None or request.parent is None:
-            return None
-        project, session = context.project_id, context.session_id
-        block = await threaded(self._task_block, stores, project, session, request)
-        if block is None:
-            return None
-        archive = Archive(stores.projects.control, clock=self.clock)
-        name = run_name(admitted.started_at, admitted.run_id)
-        return await settle(
-            View(digest=block), archive, context, run=name, kernels=None,
-            parent=request.parent, clock=self.clock,
-        )  # fmt: skip
 
     def _input_chars(self, *, folding: bool) -> int:
         """The longest conversation a run is sent, in characters: the setting's, or by
@@ -909,9 +1330,7 @@ class Harness:
             "max_turns": request.max_turns or self.settings.max_turns,
             "max_input_chars": (
                 None
-                if self.settings.max_input_chars is None
-                and self.stores is not None
-                and request.parent is None
+                if self.settings.max_input_chars is None and self.stores is not None
                 else self._input_chars(folding=False)
             ),
         }
@@ -922,7 +1341,13 @@ class Harness:
         return found
 
     async def _chat_hooks(
-        self, admitted: Admitted, chat: RunChat, discovery: SkillDiscovery | None = None
+        self,
+        admitted: Admitted,
+        chat: RunChat,
+        discovery: SkillDiscovery | None = None,
+        *,
+        allowance: FoldAllowance | None = None,
+        recovering: bool = False,
     ) -> tuple[TurnHook, ...]:
         """A run's budget, the user's messages, which reach the model last, and its
         events, which come last. A delegated run keeps its token limit, and its calls that
@@ -932,7 +1357,20 @@ class Harness:
         if request.parent is not None and self.stores is not None:
             limit = ()
             if request.tokens is not None:
-                limit = (ModelBudget(chat, tokens=request.tokens),)
+                renewed = request.work is not None and await threaded(
+                    TokenGrants(self.stores.projects.control).extended,
+                    request.project,
+                    request.session,
+                    request.work,
+                )
+                limit = (
+                    ModelBudget(
+                        chat,
+                        tokens=request.tokens,
+                        require_cost_limit=renewed,
+                        auxiliary_tokens=allowance.additional if allowance else None,
+                    ),
+                )
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
@@ -954,6 +1392,10 @@ class Harness:
         admitted: Admitted,
         chat: RunChat | None,
         memory: Snapshot | None,
+        stop: asyncio.Event | None,
+        *,
+        allowance: FoldAllowance | None = None,
+        recovering: bool = False,
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
         its project lets its runs delegate (PD-33, PD-35); and a delegated task's own, when
@@ -971,6 +1413,10 @@ class Harness:
         async def over_budget() -> bool:
             return await threaded(stores.runs.over_cost_limit, context.project_id, clock.now())
 
+        async def waiting(ids: Sequence[str] | None) -> None:
+            if chat is not None:
+                await chat.write("waiting", {"delegation_ids": ids, "mode": "all" if ids else None})
+
         # Every run of the tree is given the memory its root was (PM-8).
         version = memory[0] if memory is not None else None
         return Delegations(
@@ -978,14 +1424,22 @@ class Harness:
             Ledger(stores.documents),
             context,
             parent=run_name(admitted.started_at, admitted.run_id),
+            work=request.work if request.predecessor is not None else None,
             runner=functools.partial(self.run_child, admitted, version),
+            blueprint=lambda child: self._blueprint(self._child_admitted(admitted, version, child)),
             max_turns=request.max_turns or self.settings.max_turns,
             offer=limits.depth >= 1 + depth,
             wake=chat.arrived if chat is not None and depth == 0 else None,
+            waiting=waiting,
             over_budget=over_budget,
             limits=limits,
+            refresh_settings=lambda: threaded(records.settings, context.project_id),
             models=ModelChoice(
-                self.delegated.alias,
+                (
+                    (request.model_profiles or {})["delegated"].alias
+                    if "delegated" in (request.model_profiles or {})
+                    else self.delegated.alias
+                ),
                 limits,
                 self.gateway.aliases if self.gateway is not None else None,
                 self.gateway.tool_calling if self.gateway is not None else None,
@@ -997,18 +1451,29 @@ class Harness:
             ),
             depth=depth,
             tokens=request.tokens if depth > 0 else None,
+            auxiliary_tokens=allowance.additional if allowance else None,
             stop_by=request.stop_by,
+            stop=stop,
+            recovering=recovering,
             clock=clock,
         )
 
-    async def run_child(
-        self, parent: Admitted, memory_version: int | None, child: Child, stop: asyncio.Event
-    ) -> ChildEnd:
-        """Run a delegated run of ``parent`` to its end and save its record (PD-34): in
-        the parent's session and environment, with the memory version its root was
-        given (PM-8). A cancel while ``stop`` is set ends it ``cancelled``."""
-        if self.stores is None:
-            raise ValueError("a delegated run needs the state directory's stores")
+    def _blueprint(self, admitted: Admitted) -> Blueprint:
+        return Blueprint(
+            context=admitted.context,
+            request=cast(
+                dict[str, JsonValue],
+                TypeAdapter(RunRequest).dump_python(
+                    dataclasses.replace(admitted.request, alias=self.role(admitted.request).alias),
+                    mode="json",
+                    exclude={"history", "stop_by"},
+                ),
+            ),
+        )
+
+    def _child_admitted(
+        self, parent: Admitted, memory_version: int | None, child: Child
+    ) -> Admitted:
         request = RunRequest(
             parent.request.project,
             parent.request.session,
@@ -1025,12 +1490,52 @@ class Harness:
             root=parent.request.root or parent.request.parent,
             may_delegate=child.delegate,
             stop_by=child.deadline,
+            model_profiles=dict(parent.request.model_profiles or {}),
         )
-        admitted = dataclasses.replace(
+        profiles_for_child = dict(request.model_profiles or {})
+        if child.alias is not None:
+            previous = profiles_for_child.get("delegated")
+            if self.gateway is None and child.alias != self.delegated.alias:
+                raise ModelError(f"no model gateway serves {child.alias!r}")
+            if self.gateway is not None:
+                profiles_for_child["delegated"] = self.gateway.profile(
+                    child.alias, role="delegated"
+                ).model_copy(
+                    update={"reasoning_effort": previous.reasoning_effort if previous else None}
+                )
+        if self.gateway is not None:
+            # A child's narrative summaries use its selected model unless the deployment
+            # names a dedicated folding model. The parent's effort pins remain immutable.
+            delegated = profiles_for_child.get("delegated")
+            alias = self.settings.fold_alias or (
+                delegated.alias if delegated is not None else self.delegated.alias
+            )
+            for role in ("fold", "overview"):
+                key = cast(ModelRole, role)
+                previous = profiles_for_child.get(key)
+                profiles_for_child[key] = self.gateway.profile(alias, role=key).model_copy(
+                    update={"reasoning_effort": previous.reasoning_effort if previous else None}
+                )
+        request = dataclasses.replace(request, model_profiles=profiles_for_child)
+        return dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
         )
+
+    async def run_child(
+        self, parent: Admitted, memory_version: int | None, child: Child, stop: asyncio.Event
+    ) -> ChildEnd:
+        """Run a delegated run of ``parent`` to its end and save its record (PD-34): in
+        the parent's session and environment, with the memory version its root was
+        given (PM-8). Cleanup saves partial evidence; only an explicit Stop ends it
+        ``cancelled``, while parent failure or lease loss ends it ``interrupted``."""
+        if self.stores is None:
+            raise ValueError("a delegated run needs the state directory's stores")
+        admitted = self._child_admitted(parent, memory_version, child)
         sink = _ChildSink(child.run_id)
         finished = await self.start(admitted, sink, stop=stop)
+        if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
+            finished.transcript.stopped = "interrupted"
+        settlement = await self.checkpoint_child(finished)
         await save(
             finished.fields(),
             finished.status,
@@ -1038,10 +1543,84 @@ class Harness:
             projects=self.stores.projects,
             error=sink.error,
         )
+        await self.release_child(finished)
+        return await settlement.settle(
+            finished.context.project_id,
+            finished.context.session_id,
+            run_name(finished.started_at, finished.run_id),
+        )
+
+    async def checkpoint_child(self, finished: Finished) -> ChildSettlement:
+        """Save typed validation evidence before final persistence can complete work."""
+        if self.stores is None or finished.delegation is None:
+            raise ValueError("child settlement requires a durable delegated run")
+        settlement = ChildSettlement(self.stores.projects.control, Ledger(self.stores.documents))
+        await threaded(
+            settlement.keep,
+            finished.context.project_id,
+            finished.context.session_id,
+            run_name(finished.started_at, finished.run_id),
+            finished.delegation,
+            self.child_outcome(finished, finished.status),
+        )
+        return settlement
+
+    async def release_child(self, finished: Finished) -> None:
+        """Release only completed/stopped child kernels after durable finalization."""
+        if self.stores is None:
+            return
+        work = await threaded(
+            WorkRecords(self.stores.projects.control).for_run,
+            finished.context.project_id,
+            finished.context.session_id,
+            run_name(finished.started_at, finished.run_id),
+        )
+        if work is not None:
+            await self._release_child_kernel(finished.context, work)
+
+    async def release_completed_children(self, context: ExecutionContext, root: str) -> None:
+        """Reconcile terminal child kernels under the current Resume root's authority."""
+        if self.stores is None or context.authority is None or context.authority.work != root:
+            raise ValueError("child kernel recovery requires the current root authority")
+        records = WorkRecords(self.stores.projects.control)
+        after = ""
+        while page := await threaded(
+            records.page, context.project_id, context.session_id, root, after=after
+        ):
+            for work in page:
+                await self._release_child_kernel(context, work)
+            after = page[-1].work
+
+    async def _release_child_kernel(self, context: ExecutionContext, work: Work) -> None:
+        if work.parent is None or work.kernel is None or work.state not in ("completed", "stopped"):
+            return
+        try:
+            async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
+                await self.client.close_session(context, run=work.kernel)
+        except (WorkerAPIError, TimeoutError) as exc:
+            _log.warning("could not close completed work kernels: %r", exc)
+
+    def child_outcome(self, finished: Finished, saved_status: int) -> ChildEnd:
+        """Typed durable handback shared by first and continued child attempts."""
         transcript = finished.transcript
+        if saved_status == 1 and transcript.failure is None:
+            # Saving or acknowledging failed after the child computed its answer.
+            # Preserve its report, but never advertise an unsettled result as returned.
+            return ChildEnd(
+                "persistence_error",
+                True,
+                transcript.final_text,
+                errors=("the child's record or delivery acknowledgements could not be saved",),
+                alias=finished.alias or self.delegated.alias,
+            )
         fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
         found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
         failed = transcript.failure is not None
+        errors = tuple(found.errors) if found is not None else ()
+        if transcript.failure is not None:
+            # The exception may contain gateway data or credentials. Hand the parent
+            # the trusted failure phase, not an exception string or a false result.
+            errors = (*errors, f"the child's {transcript.failure} phase failed")
         # A result stands only for a run that ended with that answer.
         result = result_of(found, transcript.stopped, failed) if found is not None else None
         return ChildEnd(
@@ -1050,8 +1629,8 @@ class Harness:
             transcript.final_text,
             fence.refused if fence is not None else None,
             result.model_dump(mode="json") if result is not None else None,
-            tuple(found.errors) if found is not None else (),
-            request.alias or self.delegated.alias,
+            errors,
+            finished.alias or self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,
@@ -1110,7 +1689,7 @@ class Harness:
         not end its job waits (PD-34)."""
         stores, settings = self.stores, self.settings
         alias = self.role(admitted.request).alias
-        watcher, reviewer = self.watcher, self.reviewer
+        watcher, reviewer = self.watcher, self.reviewer_role(admitted.request)
         context, run_id = admitted.context, admitted.run_id
         languages, features = admitted.languages, admitted.features
         role = admitted.request.role
@@ -1222,7 +1801,7 @@ class Harness:
                 connectors=connectors.servers if connectors is not None else (),
                 earlier=len(admitted.request.history),
                 archived_as=chat.run if chat is not None else None,
-                images=await self._reviewer_images(inventory, context),
+                images=await self._reviewer_images(inventory, context, reviewer),
             )
             on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
@@ -1277,19 +1856,15 @@ class Harness:
                 granted=track[0],
                 track=track[1],
             )
-        kernel_run = admitted.run_id if admitted.request.parent is not None else None
-        client = self.client
-        if kernel_run is not None:
-
-            async def stop_kernels() -> None:
-                try:
-                    async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
-                        await client.close_session(context, run=kernel_run)
-                except (WorkerAPIError, TimeoutError) as exc:
-                    # The next main run of the session closes them.
-                    _log.warning("could not stop run %s's kernels: %r", kernel_run, exc)
-
-            on_close(stop_kernels)
+        kernel_run = (
+            (
+                run_id_of(admitted.request.work)
+                if admitted.request.work is not None
+                else admitted.run_id
+            )
+            if admitted.request.parent is not None
+            else None
+        )
         return Toolbox(
             self.client,
             context,
@@ -1322,15 +1897,34 @@ class Harness:
                 ),
                 clock=self.clock,
             ),
+            resources=(
+                Resources(
+                    ResourceRequests(stores.projects.control, clock=self.clock),
+                    Ownership(
+                        project=context.project_id,
+                        session=context.session_id,
+                        work=context.authority.work,
+                        run=context.authority.run,
+                        epoch=context.authority.epoch,
+                    ),
+                    turns=admitted.request.max_turns or self.settings.max_turns,
+                    tokens=admitted.request.tokens,
+                    delegated=delegated,
+                    inventory=inventory,
+                    clock=self.clock,
+                )
+                if context.authority is not None
+                else None
+            ),
             questions=questions,
             delegated=delegated,
             # A check reads and recomputes; it changes no entry, document or memory.
             check=admitted.request.target is not None,
             tracks=tracks,
             skills=skills,
-            # Main and delegated runs read the archive; a delegated run its own run (CM-37).
+            # Main reads its session; delegated runs read their own subtree (CM-37).
             history=HistoryTool(
-                Archive(stores.projects.control, clock=self.clock),
+                Archive(stores.projects.control, clock=self.clock, chain=True),
                 context,
                 run=run_name(admitted.started_at, admitted.run_id),
                 delegated=delegated,
@@ -1340,11 +1934,11 @@ class Harness:
         )
 
     async def _reviewer_images(
-        self, inventory: ArtifactInventory, context: ExecutionContext
+        self, inventory: ArtifactInventory, context: ExecutionContext, reviewer: Role | None
     ) -> ImageViewer | None:
         """The reviewer's viewer, when its alias accepts images (FG-39). What it draws
         is the platform's execution, never the reviewer's (CR-2, CR-F8)."""
-        if self.reviewer is None or not (await self._images(self.reviewer.alias))[0]:
+        if reviewer is None or not (await self._images(reviewer.alias))[0]:
             return None
         return ImageViewer(inventory, context.model_copy(update={"actor": "platform"}), self.client)
 
@@ -1368,12 +1962,14 @@ class Harness:
 def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> int | None:
     """The ceiling the session's last main run on ``alias`` capped after a context
     error, as its record keeps it (``summaries.folds.capped``), if it did."""
-    for entry in reversed(projects.runs(project, session)):
+    for entry in projects.iter_runs(project, session, newest_first=True):
         if entry.role != "main":
             continue
         try:
             record = projects.run(project, session, entry.name)
-        except ProjectError:
+        except ProjectError as error:
+            if error.kind is ErrorKind.UNSUPPORTED:
+                raise  # Do not discard persisted fold/model constraints at a read bound.
             return None
         folds = record.summaries.get("folds")
         capped = folds.get("capped") if isinstance(folds, dict) else None
@@ -1384,12 +1980,14 @@ def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> 
 def _carried(projects: ProjectStore, project: str, session: str) -> tuple[str, str] | None:
     """The session's last main run that began folding, and the fold it kept for the next
     run's start (``summaries.folds.kept``, CM-24a), if it kept one."""
-    for entry in reversed(projects.runs(project, session)):
+    for entry in projects.iter_runs(project, session, newest_first=True):
         if entry.role != "main":
             continue
         try:
             record = projects.run(project, session, entry.name)
-        except ProjectError:
+        except ProjectError as error:
+            if error.kind is ErrorKind.UNSUPPORTED:
+                raise  # Do not discard persisted fold/model constraints at a read bound.
             return None
         folds = record.summaries.get("folds")
         if not isinstance(folds, dict):  # it stopped before its first call
@@ -1406,12 +2004,14 @@ def _switched(
     on another alias than ``alias``, as its record keeps them (CM-31); or, when that run
     refused a switch, the alias and ceiling it refused to switch from, so that every run
     names the switch until one on the new alias goes on."""
-    for entry in reversed(projects.runs(project, session)):
+    for entry in projects.iter_runs(project, session, newest_first=True):
         if entry.role != "main":
             continue
         try:
             record = projects.run(project, session, entry.name)
-        except ProjectError:
+        except ProjectError as error:
+            if error.kind is ErrorKind.UNSUPPORTED:
+                raise  # Do not discard persisted fold/model constraints at a read bound.
             return None
         folds = record.summaries.get("folds")
         shape = folds.get("geometry") if isinstance(folds, dict) else None
@@ -1522,6 +2122,42 @@ async def save(
     acknowledgement safely repeats those notices. A hook that fails to acknowledge is
     reported; the others still acknowledge theirs.
     """
+    owner = None
+    if projects is not None:
+        try:
+            candidate = RunRecord.model_validate(fields)
+            owner = await threaded(
+                WorkRecords(projects.control).owner,
+                candidate.context.project_id,
+                candidate.context.session_id,
+                run_name(candidate.started_at, candidate.run_id),
+            )
+        except (ValidationError, RecursionError):
+            pass  # _save preserves the invalid transcript and reports the exact error
+    try:
+        if owner is not None:
+            with authority(owner):
+                return await _save(
+                    fields, status, hooks, projects=projects, error=error, transcript=transcript
+                )
+        return await _save(
+            fields, status, hooks, projects=projects, error=error, transcript=transcript
+        )
+    except ControlError as exc:
+        error(f"the run's ownership or persistence failed: {exc}")
+        return 1
+
+
+async def _save(
+    fields: dict[str, object],
+    status: int,
+    hooks: Sequence[TurnHook],
+    *,
+    projects: ProjectStore | None,
+    error: Callable[[str], None],
+    transcript: Path | None,
+) -> int:
+    persisted = True
     try:
         # A large record takes long to check and to write: off the event loop, which
         # the session's other runs share.
@@ -1536,6 +2172,7 @@ async def save(
         except (OSError, ValueError, RecursionError) as exc:
             error(f"the transcript could not be written: {exc}")
             status = 1
+            persisted = False
     if projects is None:
         return status
     try:
@@ -1544,11 +2181,32 @@ async def save(
         await threaded(projects.save_run, record)
     except (ProjectError, DocumentError, OSError, ValueError, RecursionError, sqlite3.Error) as exc:
         error(f"the run's record could not be kept: {exc}")
+        if record is not None:
+            await threaded(WorkRecords(projects.control).finish, record, persisted=False)
         return 1
     for hook in hooks:
         try:
-            await hook.acknowledge(record)
+            if record.stored_history is not None and hook.name not in ("events",):
+                receipts = Receipts(
+                    projects.control,
+                    record.context.project_id,
+                    record.context.session_id,
+                    run_name(record.started_at, record.run_id),
+                )
+                source = hook.name
+                after = ""
+                while page := await threaded(receipts.page, source, after=after):
+                    await hook.acknowledge(
+                        record.model_copy(update={"delivered": {source: list(page)}})
+                    )
+                    after = page[-1]
+                if not after:
+                    await hook.acknowledge(record)
+            else:
+                await hook.acknowledge(record)
         except Exception as exc:
             error(f"the run's {hook.name} could not be acknowledged: {exc}")
             status = 1
+            persisted = False
+    await threaded(WorkRecords(projects.control).finish, record, persisted=persisted)
     return status

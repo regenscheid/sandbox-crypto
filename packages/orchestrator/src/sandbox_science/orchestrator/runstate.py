@@ -24,6 +24,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
 
@@ -56,19 +58,107 @@ call was made: the reviewer's, the job watcher's and the import pass's. Each kee
 its cost came from (``cost_source``, version 53)."""
 
 
-def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
-    """A query of each usage entry (``u``) of the project's runs that started at ``since``
-    or later: saved records' and the ``assistant`` events' of runs without a record."""
+def _response_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
+    """Answered-call usage by role: journal first, then each unjournaled ordinal
+    from the saved record, or its event if no record exists. Suppression ignores
+    the time window so an old journal entry cannot reappear through a fallback.
+    Journal timestamps are per response; legacy fallbacks retain run-start time."""
     first = "" if since is None else run_name(since, "")
+    after = 0.0 if since is None else since.timestamp()
     return (
-        "SELECT usage.value AS u FROM runs, json_each(runs.record, '$.usage') AS usage "
-        "WHERE runs.project_id = ? AND runs.name >= ? "
-        "UNION ALL SELECT json_extract(e.data, '$.usage') FROM run_events AS e "
-        "WHERE e.project_id = ? AND e.run >= ? AND e.kind = 'assistant' "
-        "AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.project_id = e.project_id "
-        "AND runs.session_id = e.session_id AND runs.name = e.run)",
-        (project, first, project, first),
+        "SELECT j.role, j.usage AS u FROM archive_model_usage j "
+        "WHERE j.project=? AND j.observed>=? "
+        "UNION ALL SELECT CASE c.kind WHEN 'reviewer' THEN 'reviewer' "
+        "WHEN 'watcher' THEN 'watcher' WHEN 'embedding' THEN 'embeddings' "
+        "WHEN 'skills' THEN 'metadata' ELSE w.role END, "
+        "json_object('cost',json_extract(o.detail,'$.resolution.cost')) "
+        "FROM research_observations o JOIN research_work w USING(project,session,work) "
+        "JOIN research_model_calls c ON c.project=o.project AND c.session=o.session "
+        "AND c.run=json_extract(o.detail,'$.resolution.run') "
+        "AND c.identity=json_extract(o.detail,'$.resolution.identity') "
+        "WHERE o.project=? AND o.kind='resolution:model_usage' AND c.created>=? "
+        "AND (c.usage IS NULL OR c.kind IN ('main','delegated')) "
+        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'), usage.value "
+        "FROM runs r, json_each(r.record,'$.usage') usage "
+        "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS ("
+        "SELECT 1 FROM archive_model_usage j WHERE j.project=r.project_id "
+        "AND j.session=r.session_id AND j.run=r.name AND j.ordinal=CAST(usage.key AS INTEGER)+1) "
+        "UNION ALL SELECT coalesce((SELECT json_extract(s.data,'$.role') "
+        "FROM run_events s WHERE s.project_id=e.project_id AND s.session_id=e.session_id "
+        "AND s.run=e.run AND s.kind='started' LIMIT 1),'main'), json_extract(e.data,'$.usage') "
+        "FROM run_events e WHERE e.project_id=? AND e.run>=? AND e.kind='assistant' "
+        "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
+        "AND r.session_id=e.session_id AND r.name=e.run) "
+        "AND NOT EXISTS (SELECT 1 FROM archive_model_usage j WHERE j.project=e.project_id "
+        "AND j.session=e.session_id AND j.run=e.run AND j.ordinal=json_extract(e.data,'$.turn'))",
+        (project, after, project, after, project, first, project, first),
     )
+
+
+def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
+    """Canonical observations, exactly linked legacy copies, then unlinked history."""
+    from .continuity.fold_usage import fold_copy
+    from .continuity.materializations import Table, fallback
+
+    query, values = _response_usage(project, since)
+    after = 0.0 if since is None else since.timestamp()
+    first = "" if since is None else run_name(since, "")
+    query += (
+        " UNION ALL SELECT CASE c.kind WHEN 'reviewer' THEN 'reviewer' "
+        "WHEN 'watcher' THEN 'watcher' WHEN 'skills' THEN 'metadata' "
+        "WHEN 'embedding' THEN 'embeddings' ELSE w.role END,c.usage "
+        "FROM research_model_calls c JOIN research_attempts a USING(project,session,run) "
+        "JOIN research_work w USING(project,session,work) WHERE c.project=? AND c.created>=? "
+        "AND c.kind NOT IN ('main','delegated') AND c.usage IS NOT NULL"
+    )
+    values += (project, after)
+    sources: tuple[tuple[str, Table, str], ...] = (
+        ("reviewer", "review_calls", "created"),
+        ("watcher", "job_watcher_calls", "requested_at"),
+        ("metadata", "skill_metadata_calls", "created"),
+        ("embeddings", "skill_embedding_calls", "created"),
+    )
+    for role, table, made in sources:
+        usage = (
+            "json_object('cost',cost,'cost_source',cost_source,"
+            "'input_tokens',input_tokens,'output_tokens',output_tokens)"
+            if table != "skill_embedding_calls"
+            else "json_object('cost',cost,'cost_source','gateway')"
+        )
+        query += (
+            f" UNION ALL SELECT '{role}',{usage} FROM {table} legacy "  # noqa: S608 - fixed tables
+            f"WHERE project=? AND {made}>=? AND {fallback(table, 'legacy')}"
+        )
+        values += (project, after)
+
+    # Fold usage is copied into collection, saved-summary and event forms. Preserve
+    # their old precedence. A linked intent suppresses its copy only after observation
+    # or reservation. An older copy without an intent ID needs an exact USER link.
+
+    event_fold = fold_copy(
+        "u.value", "e.project_id", "e.session_id", "e.run", "event", "u.key", "e.seq"
+    )
+    query += (
+        " UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM archive_messages m "  # noqa: S608
+        "WHERE m.project=c.project AND m.session=c.session AND m.run=c.run "
+        "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item "
+        "FROM run_collections c WHERE c.project=? AND c.run>=? AND c.collection='fold_calls' "
+        f"AND {fold_copy('c.item', 'c.project', 'c.session', 'c.run', 'collection', 'c.position')} "
+        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'),u.value "
+        "FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
+        "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS (SELECT 1 FROM run_collections h "
+        "WHERE h.project=r.project_id AND h.session=r.session_id AND h.run=r.name "
+        "AND h.collection='fold_calls') "
+        f"AND {fold_copy('u.value', 'r.project_id', 'r.session_id', 'r.name', 'summary', 'u.key')} "
+        "UNION ALL SELECT 'main',u.value FROM run_events e,json_each(e.data,'$.calls') u "
+        "WHERE e.project_id=? AND e.run>=? AND e.kind='fold' "
+        "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
+        "AND r.session_id=e.session_id AND r.name=e.run) "
+        "AND NOT EXISTS (SELECT 1 FROM run_collections h WHERE h.project=e.project_id "
+        "AND h.session=e.session_id AND h.run=e.run AND h.collection='fold_calls') "
+        f"AND {event_fold}"
+    )
+    return query, (*values, project, first, project, first, project, first)
 
 
 WINDOW: Final = timedelta(hours=24)
@@ -168,6 +258,8 @@ class RunState:
     ) -> None:
         self.control = store if isinstance(store, ControlStore) else store.control
         self.clock, self.lease_seconds = clock, lease_seconds
+        self._unpriced_warning_lock = threading.Lock()
+        self._unpriced_warning: dict[str, tuple[int, int]] = {}
 
     def _now(self) -> datetime:
         return self.clock.now().astimezone(UTC)
@@ -192,6 +284,47 @@ class RunState:
             if by_message(db, message_id):
                 raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
             return _queue(db, project, session, message_id, text, author, now)
+
+    def post_if(
+        self,
+        project: str,
+        session: str,
+        message_id: str,
+        text: str,
+        *,
+        author: str,
+        eligible: Callable[[sqlite3.Connection], bool],
+        on_queue: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> bool:
+        """Queue trusted service input only while its saved preconditions still hold.
+
+        The predicate and insert share one write transaction. An already recorded
+        message, including a delivered or refused one, is never queued again.
+        """
+        _check_text(text)
+        now = self._now().isoformat()
+        with self.control.write() as tx:
+            db = tx.sql
+            if _found(db, project, session, message_id, text) is not None:
+                return False
+            _session(db, project, session)
+            if not eligible(db):
+                return False
+            if by_message(db, message_id):
+                raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
+            _queue(db, project, session, message_id, text, author, now)
+            if on_queue is not None:
+                on_queue(db)
+            return True
+
+    def replay_message(
+        self, project: str, session: str, message_id: str, text: str
+    ) -> ChatMessage | Question | None:
+        """Return an identical already-accepted send before repeating attachment delivery."""
+        with self.control.read() as tx:
+            return _found(tx.sql, project, session, message_id, text) or answered_by(
+                tx.sql, project, session, message_id, text
+            )
 
     def say(
         self,
@@ -309,17 +442,29 @@ class RunState:
         those an interrupted run saw, or a failing session's."""
         self._set_state(project, session, ids, "held", reason)
 
-    def resume(self, project: str, session: str, *, reason: str | None = None) -> int:
+    def resume(
+        self,
+        project: str,
+        session: str,
+        *,
+        reason: str | None = None,
+        clear_reason: bool = False,
+    ) -> int:
         """Queue the session's held messages again, or only those held for ``reason``;
-        how many."""
+        how many. Clear the old reason only when its prerequisite has changed.
+
+        This does not authorize continuing durable work: its original offered inputs
+        remain subject to reconciliation and an explicit research-tree Resume.
+        """
         now = self._now().isoformat()
         with self.control.write() as tx:
             _session(tx.sql, project, session)
             return tx.sql.execute(
-                "UPDATE session_messages SET state = 'queued', updated_at = ? "
+                "UPDATE session_messages SET state = 'queued', updated_at = ?, "
+                "reason = CASE WHEN ? THEN NULL ELSE reason END "
                 "WHERE project_id = ? AND session_id = ? AND state = 'held' "
                 "AND (? IS NULL OR reason = ?)",
-                (now, project, session, reason, reason),
+                (now, clear_reason, project, session, reason, reason),
             ).rowcount
 
     def held_for(self, reason: str) -> list[tuple[str, str]]:
@@ -331,6 +476,40 @@ class RunState:
                 (reason,),
             ).fetchall()
         return [(project, session) for project, session in rows]
+
+    def reconcile_inputs(self, project: str, session: str) -> None:
+        """Canonical response receipts win over a crash before chat delivery."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE session_messages AS m SET state='delivered',updated_at=?,run=("
+                "SELECT r.run FROM response_receipts r WHERE r.project=m.project_id "
+                "AND r.session=m.session_id AND r.source='messages' AND r.notice=m.message_id "
+                "ORDER BY r.run LIMIT 1) WHERE m.project_id=? AND m.session_id=? "
+                "AND m.state IN ('queued','held') AND EXISTS (SELECT 1 FROM response_receipts r "
+                "WHERE r.project=m.project_id AND r.session=m.session_id "
+                "AND r.source='messages' AND r.notice=m.message_id)",
+                (self._now().isoformat(), project, session),
+            )
+            tx.sql.execute(
+                "UPDATE session_messages AS m SET state='held', "
+                "reason=coalesce(m.reason,'interrupted'),updated_at=? "
+                "WHERE m.project_id=? AND m.session_id=? AND m.state='queued' AND EXISTS "
+                "(SELECT 1 FROM research_attempts a JOIN research_work w "
+                "USING(project,session,work) WHERE a.project=m.project_id "
+                "AND a.session=m.session_id AND a.run=m.offered "
+                "AND w.state NOT IN ('completed','stopped') AND NOT EXISTS "
+                "(SELECT 1 FROM research_resumes q WHERE q.project=w.project "
+                "AND q.session=w.session AND q.root=w.root "
+                "AND q.status IN ('queued','running'))) AND NOT EXISTS "
+                "(SELECT 1 FROM run_leases l WHERE l.project_id=m.project_id "
+                "AND l.session_id=m.session_id AND l.run=m.offered AND l.renewed_at>?)",
+                (
+                    self._now().isoformat(),
+                    project,
+                    session,
+                    self._now().timestamp() - self.lease_seconds,
+                ),
+            )
 
     def waiting(self) -> list[tuple[str, str]]:
         """Every session with queued messages, as (project, session)."""
@@ -454,7 +633,9 @@ class RunState:
     # --- Cancels, the service's heartbeat and the budget -------------------------------
 
     def cancel(self, project: str, session: str, run: str) -> None:
-        """Ask for the run to be cancelled (RS-11); asking again changes nothing."""
+        """Persist an explicit Stop for this run and its subtree before signalling it.
+        The immutable delegation ancestry carries this intent across process loss.
+        Asking again changes nothing; an already saved outcome remains authoritative."""
         with self.control.write() as tx:
             _session(tx.sql, project, session)
             tx.sql.execute(
@@ -464,11 +645,12 @@ class RunState:
 
     def cancelled(self, project: str, session: str, run: str) -> bool:
         with self.control.read() as tx:
-            found = tx.sql.execute(
-                "SELECT 1 FROM run_cancels WHERE project_id = ? AND session_id = ? AND run = ?",
-                (project, session, run),
-            ).fetchone()
-        return found is not None
+            return cancel_requested(tx.sql, project, session, run)
+
+    def cancelled_runs(self, project: str, session: str, runs: Sequence[str]) -> set[str]:
+        """Resolve a live sibling set's durable Stop ancestry in one read snapshot."""
+        with self.control.read() as tx:
+            return {run for run in runs if cancel_requested(tx.sql, project, session, run)}
 
     def beat(self, holder: str) -> None:
         """The run service is running (RS-3)."""
@@ -511,34 +693,94 @@ class RunState:
             )
 
     def over_cost_limit(self, project: str, now: datetime) -> bool:
-        """Whether the project has a daily cost limit and its calls in the window to
-        ``now`` reached it, at their costs; or whether, with a limit, a call in the
-        window used tokens and has no known cost (``unpriced_calls``), so that what was
-        spent cannot be known (lab 43, B2): the limit counts as reached until that call
-        leaves the window."""
-        limit = self.cost_limit(project)
-        if limit is None:
-            return False
+        """Whether known costs and explicit reservations reach the daily limit.
+
+        Unpriced calls remain visible through ``unpriced_calls`` but do not block
+        admission; the upstream gateway enforces the primary spending budget.
+        """
+        return self.cost_gate(project, now)[1]
+
+    def cost_gate(
+        self, project: str, now: datetime, *, require_limit: bool = False
+    ) -> tuple[float | None, bool]:
+        """Read cap presence and its observed/reserved spend in one snapshot.
+
+        An explicitly renewed child requires a cap even if an operator removed the
+        project's general limit after issuing the grant. Unknown charges are not
+        assigned zero cost, but cannot alone prove this local limit was reached.
+        """
+        from .continuity.reservations import RESERVATIONS
+
         since = now - WINDOW
-        spent = self.model_cost(project, since)
-        if spent is not None and spent >= limit:
-            return True
-        if unknown := self.unpriced_calls(project, since):
+        runs, values = _run_usage(project, since)
+        with self.control.read() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT daily_cost FROM project_cost_limits WHERE project_id=?", (project,)
+            ).fetchone()
+            if row is None:
+                return None, require_limit
+            limit = float(row[0])
+            spent, unknown = db.execute(
+                "SELECT coalesce(sum(json_extract(u,'$.cost')),0), "  # noqa: S608 - fixed SQL
+                "count(*) FILTER (WHERE json_extract(u,'$.cost') IS NULL "
+                "AND coalesce(json_extract(u,'$.input_tokens'),0)+"
+                "coalesce(json_extract(u,'$.output_tokens'),0)>0) "
+                f"FROM ({runs})",
+                values,
+            ).fetchone()
+            reserved = db.execute(
+                f"SELECT coalesce(sum(cost),0) FROM ({RESERVATIONS}) "  # noqa: S608 - fixed SQL
+                "WHERE project=? AND created>=?",
+                (project, since.timestamp()),
+            ).fetchone()[0]
+        self._note_unpriced(project, int(unknown))
+        return limit, float(spent) + float(reserved) >= limit
+
+    def _note_unpriced(self, project: str, unknown: int) -> None:
+        """Keep a changing warning visible without repeating it on every admission."""
+        with self._unpriced_warning_lock:
+            previous = self._unpriced_warning.get(project)
+            if unknown == 0:
+                self._unpriced_warning.pop(project, None)
+                action = "cleared" if previous is not None else "silent"
+                occurrences = previous[1] if previous is not None else 0
+            elif previous is None or previous[0] != unknown:
+                self._unpriced_warning[project] = (unknown, 1)
+                action, occurrences = "changed", 1
+            else:
+                occurrences = previous[1] + 1
+                self._unpriced_warning[project] = (unknown, occurrences)
+                action = "repeat" if occurrences % 100 == 0 else "silent"
+        if action == "changed":
             _log.warning(
                 "project %s keeps a daily cost limit, and %s of its model calls in the "
-                "last 24 hours have no known cost: it counts as at its limit",
+                "last 24 hours have no known cost: local admission uses known costs "
+                "and explicit reservations; actual spending remains uncertain",
                 project,
                 unknown,
             )
-            return True
-        return False
+        elif action == "repeat":
+            _log.warning(
+                "project %s still has %s unpriced calls after %s cost-gate checks",
+                project,
+                unknown,
+                occurrences,
+            )
+        elif action == "cleared":
+            _log.info(
+                "project %s has no unpriced calls in the current daily window "
+                "after %s earlier cost-gate checks",
+                project,
+                occurrences,
+            )
 
     def unpriced_calls(self, project: str, since: datetime) -> int:
         """How many of the project's model calls since ``since`` used tokens and have no
-        cost, neither reported by the gateway nor priced from its model information: its
-        runs' that started then or later, from saved records' ``usage`` and the
-        ``assistant`` events of runs without a record, as ``model_costs`` reads them; and
-        the reviewer's, the job watcher's and the import pass's made then or later."""
+        cost, neither reported by the gateway nor priced from its model information.
+        Run responses use journal observation time, falling back to run-start time
+        for legacy records/events. Reviewer, watcher and import calls use their own
+        timestamps. Each run response is counted once, as in ``model_costs``."""
         unpriced = (
             "json_extract(u, '$.cost') IS NULL AND coalesce(json_extract(u, "
             "'$.input_tokens'), 0) + coalesce(json_extract(u, '$.output_tokens'), 0) > 0"
@@ -549,33 +791,18 @@ class RunState:
                 f"SELECT count(*) FROM ({runs}) WHERE {unpriced}",  # noqa: S608
                 values,
             ).fetchone()
-            for table, made in TOKEN_CALLS:
-                (more,) = tx.sql.execute(
-                    f"SELECT count(*) FROM {table} WHERE project = ? AND {made} >= ? "  # noqa: S608
-                    "AND cost IS NULL AND coalesce(input_tokens, 0) + "
-                    "coalesce(output_tokens, 0) > 0",
-                    (project, since.timestamp()),
-                ).fetchone()
-                found += more
         return int(found)
 
     def model_info_cost(self, project: str, since: datetime | None = None) -> float | None:
         """The part of ``model_cost`` priced from the gateway's model information rather
         than reported by it (``cost_source``, lab 43, B2); ``None`` when no call's was."""
         runs, values = _run_usage(project, since)
-        after = 0.0 if since is None else since.timestamp()
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT sum(json_extract(u, '$.cost')), count(json_extract(u, '$.cost')) "  # noqa: S608
                 f"FROM ({runs}) WHERE json_extract(u, '$.cost_source') = 'model_info'",
                 values,
             ).fetchall()
-            for table, made in TOKEN_CALLS:
-                rows += tx.sql.execute(
-                    f"SELECT sum(cost), count(cost) FROM {table} WHERE project = ? "  # noqa: S608
-                    f"AND {made} >= ? AND cost_source = 'model_info'",
-                    (project, after),
-                ).fetchall()
         priced = [float(total) for total, count in rows if count]
         return sum(priced) if priced else None
 
@@ -586,55 +813,39 @@ class RunState:
         costs = self.model_costs(project, since)
         return sum(costs.values()) if costs else None
 
-    def model_costs(self, project: str, since: datetime | None = None) -> dict[CostRole, float]:
-        """What the project's model calls cost by role, as the gateway reported it, in
-        ``COST_ROLES``' order: the calls of its runs that started at ``since`` or later,
-        main and delegated, from saved records' ``usage`` and the ``assistant`` events of
-        runs without a record, and their folds' enrichment calls, from the records'
-        ``summaries.folds.calls`` and the ``fold`` events of runs without one; and the
-        reviewer's, the job watcher's and the skills'
-        embedding calls made at ``since`` or later (lab 40, B5). Every call without
-        ``since``. A role none of whose calls the gateway priced is left out."""
-        first = "" if since is None else run_name(since, "")
-        after = 0.0 if since is None else since.timestamp()
-        cost = "json_extract(u, '$.cost')"
+    def model_reservations(
+        self, project: str, since: datetime | None = None
+    ) -> dict[CostRole, float]:
+        """Conservative upper-bound cost by role, separately from observed spend."""
+        from .continuity.reservations import RESERVATIONS
+
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                f"SELECT role, sum({cost}), count({cost}) FROM ("  # noqa: S608
-                "SELECT coalesce(json_extract(runs.record, '$.role'), 'main') AS role, "
-                "usage.value AS u FROM runs, json_each(runs.record, '$.usage') AS usage "
-                "WHERE runs.project_id = ? AND runs.name >= ? "
-                "UNION ALL SELECT coalesce((SELECT json_extract(s.data, '$.role') "
-                "FROM run_events AS s WHERE s.project_id = e.project_id "
-                "AND s.session_id = e.session_id AND s.run = e.run AND s.kind = 'started' "
-                "LIMIT 1), 'main'), json_extract(e.data, '$.usage') "
-                "FROM run_events AS e WHERE e.project_id = ? AND e.run >= ? "
-                "AND e.kind = 'assistant' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
-                "runs.project_id = e.project_id AND runs.session_id = e.session_id "
-                "AND runs.name = e.run) "
-                # A fold's enrichment calls: in its run's record, or its fold events.
-                "UNION ALL SELECT coalesce(json_extract(runs.record, '$.role'), 'main'), "
-                "c.value FROM runs, json_each(runs.record, '$.summaries.folds.calls') AS c "
-                "WHERE runs.project_id = ? AND runs.name >= ? "
-                "UNION ALL SELECT 'main', c.value FROM run_events AS e, "
-                "json_each(e.data, '$.calls') AS c WHERE e.project_id = ? AND e.run >= ? "
-                "AND e.kind = 'fold' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
-                "runs.project_id = e.project_id AND runs.session_id = e.session_id "
-                "AND runs.name = e.run)) GROUP BY role",
-                (project, first, project, first, project, first, project, first),
+                f"SELECT role,sum(cost) FROM ({RESERVATIONS}) WHERE project=? AND created>=? "  # noqa: S608
+                "GROUP BY role",
+                (project, 0.0 if since is None else since.timestamp()),
             ).fetchall()
-            for role, table, made in (
-                ("reviewer", "review_calls", "created"),
-                ("watcher", "job_watcher_calls", "requested_at"),
-                ("embeddings", "skill_embedding_calls", "created"),
-                ("metadata", "skill_metadata_calls", "created"),
-            ):
-                rows += tx.sql.execute(
-                    f"SELECT ?, sum(cost), count(cost) FROM {table} "  # noqa: S608
-                    f"WHERE project = ? AND {made} >= ?",
-                    (role, project, after),
-                ).fetchall()
-        priced = {str(role): float(total) for role, total, count in rows if count}
+        totals = {str(role): float(cost) for role, cost in rows}
+        return {role: totals[role] for role in COST_ROLES if role in totals}
+
+    def model_costs(self, project: str, since: datetime | None = None) -> dict[CostRole, float]:
+        """Known model cost by role in ``COST_ROLES`` order, after ``since`` if given.
+        Main/delegated responses prefer the usage journal and observation time;
+        unjournaled ordinals use saved records or events and their run-start time.
+        Fold enrichment retains its run-start cutoff and record/event precedence.
+        Reviewer, watcher and skills embedding calls use their own timestamps.
+        A role without any priced call is left out."""
+        runs, values = _run_usage(project, since)
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT role,sum(json_extract(u,'$.cost')),count(json_extract(u,'$.cost')) "  # noqa: S608
+                f"FROM ({runs}) GROUP BY role",
+                values,
+            ).fetchall()
+        priced: dict[str, float] = {}
+        for role, total, count in rows:
+            if count:
+                priced[str(role)] = priced.get(str(role), 0.0) + float(total)
         return {role: priced[role] for role in COST_ROLES if role in priced}
 
     def offered_to(self, project: str, session: str, run: str) -> list[str]:
@@ -771,7 +982,8 @@ def _queue(
     except sqlite3.IntegrityError as error:
         raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
     pinned = _pin_chat(db, project, session, "message", message_id, text)
-    # Writing again is resuming: the session's held messages go with this one.
+    # Legacy held input can accompany fresh chat. Durable unfinished work is
+    # re-held by reconciliation unless a research-tree Resume authorized it.
     db.execute(
         "UPDATE session_messages SET state = 'queued', updated_at = ? "
         "WHERE project_id = ? AND session_id = ? AND state = 'held'",
@@ -838,6 +1050,22 @@ def _message(row: tuple[object, ...]) -> ChatMessage:
     )
 
 
+def cancel_requested(db: sqlite3.Connection, project: str, session: str, run: str) -> bool:
+    """Whether this run or an ancestor has a durable explicit Stop, in this transaction.
+    UNION also bounds traversal of malformed cyclic legacy ancestry."""
+    return (
+        db.execute(
+            "WITH RECURSIVE ancestry(run) AS (SELECT ? UNION SELECT d.parent "
+            "FROM delegations AS d JOIN ancestry AS a ON d.run = a.run "
+            "WHERE d.project_id = ? AND d.session_id = ?) "
+            "SELECT 1 FROM run_cancels WHERE project_id = ? AND session_id = ? "
+            "AND run IN (SELECT run FROM ancestry) LIMIT 1",
+            (run, project, session, project, session),
+        ).fetchone()
+        is not None
+    )
+
+
 def close_events(
     db: sqlite3.Connection, project: str, session: str, run: str, now: datetime
 ) -> bool:
@@ -866,7 +1094,14 @@ def close_events(
             "record": run,
         }
         if saved is not None
-        else {"stopped": "interrupted", "failure": None, "final_text": None, "record": None}
+        else {
+            "stopped": "cancelled"
+            if cancel_requested(db, project, session, run)
+            else "interrupted",
+            "failure": None,
+            "final_text": None,
+            "record": None,
+        }
     )
     db.execute(
         "INSERT INTO run_events VALUES (?, ?, ?, ?, ?, 'stopped', ?)",

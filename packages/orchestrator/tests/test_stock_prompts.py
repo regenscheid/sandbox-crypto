@@ -54,8 +54,8 @@ def kept(transcript: Transcript, context: ExecutionContext = CONTEXT) -> RunReco
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=transcript.messages,
-        tools=transcript.tool_records,
+        messages=list(transcript.messages),
+        tools=list(transcript.tool_records),
         prompt_provenance=transcript.prompt_provenance,
     )
 
@@ -106,7 +106,7 @@ async def test_actual_inputs_select_exact_framing_without_adding_tools(
         pin = transcript.prompt_provenance
         assert isinstance(pin, PromptPins)
         assert [(section.id, section.version) for section in pin.sections] == [
-            ("main", "sandbox-main-10"),
+            ("main", "sandbox-main-13"),
             ("stock", selected.version),
         ] + ([("planning", GUIDANCE_VERSION)] if planning else [])
         assert kept(transcript, context).prompt_provenance == pin
@@ -366,6 +366,16 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
 
         async def __aexit__(self, *args):
             closed.append("client")
+
+        async def claim_environment(self, request):
+            from sandbox_science.contracts.environment_claims import EnvironmentClaimResult
+
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="unmanaged"
+            )
+
+        async def fence(self, request):
+            return request
 
         async def capabilities(self, *args):
             return SimpleNamespace(

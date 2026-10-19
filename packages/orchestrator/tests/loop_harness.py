@@ -411,8 +411,14 @@ class Gateway:
                        else int(len(json.dumps(body)) / self.per_token), "output_tokens": 1}}
         )  # fmt: skip
         self.responded.append(text)
-        headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}
-        return web.Response(text=text, headers=headers)
+        headers = {"x-litellm-version": self.version}
+        if body.get("stream") is True:
+            event = json.dumps({"type": "response.completed", "response": json.loads(text)})
+            return web.Response(
+                text=f": keepalive\n\nevent: response.completed\ndata: {event}\n\ndata: [DONE]\n\n",
+                headers={**headers, "Content-Type": "text/event-stream"},
+            )
+        return web.Response(text=text, headers={**headers, "Content-Type": "application/json"})
 
     claude: list[Json] = field(default_factory=list[Json])
     """The body of each ``/messages`` request, in order."""
@@ -624,6 +630,7 @@ class Reviewer:
                         category="completion",
                         statement=f"Window {self.windows}: the answer claims more than it shows.",
                         anchors=[{"evidence": evidence}],
+                        assessment="supported",
                         operation_id=f"flag-{self.windows}",
                     )
                 ]

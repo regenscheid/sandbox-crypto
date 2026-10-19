@@ -146,11 +146,11 @@ async def test_resume_and_cancel_are_written_for_the_service(
     state.beat("a-service")
     assert (await (await client.get(SESSION + "/messages")).json())["service"] is True
     resumed = await client.post(SESSION + "/resume", json={}, headers=origin(client))
-    assert await resumed.json() == {"requested": True, "resumed": 1}
+    assert await resumed.json() == {"requested": True, "resumed": 1, "resume_request": None}
     assert [m.state for m in state.messages("p1", "a")] == ["queued"]
     cancel = SESSION + "/runs/run-x/cancel"
     answered = await client.post(cancel, json={}, headers=origin(client))
-    assert await answered.json() == {"requested": True, "resumed": 0}
+    assert await answered.json() == {"requested": True, "resumed": 0, "resume_request": None}
     assert state.cancelled("p1", "a", "run-x")
     await error_of(
         await client.post(cancel, json={"now": True}, headers=origin(client)),

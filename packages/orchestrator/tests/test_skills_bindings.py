@@ -332,3 +332,23 @@ def test_a_pack_with_gits_own_files_is_refused(
     status, said = _cli(capsys, root, "import", "--name", "bare", "--archive", str(archive))
     assert status == 1
     assert "is named as one of git's own files" in said
+
+
+def test_generated_inventory_supplements_approval_and_holds_missing_inventory(state: Path) -> None:
+    projects = ProjectStore(state)
+    try:
+        store = SkillStore(projects.control)
+        # The ordinary namespace remains usable under a current observed inventory.
+        assert store.bindings("p", PASS).set["ss"]["SS_DATA"] == "tool/start.py"
+        store.set_overrides("p", USER, 0, skills={}, unbound={}, approved={"ss": ["SS_DATA"]})
+        generated = store.bindings("p", PASS, reserved=("SS_DATA",))
+        assert "SS_DATA" not in generated.set.get("ss", {})
+        assert any("generated reserved" in item["reason"] for item in generated.held["ss"])
+        absent = store.bindings("p", PASS, inventory_ready=False)
+        assert absent.set == {}
+        assert any(item["variable"] == "SS_DATA" for item in absent.held["ss"])
+        # All maintained denials still apply when the generated projection is empty.
+        current = store.bindings("p", PASS, reserved=(), namespaces=())
+        assert not (NEVER & set(current.set.get("ss", {})))
+    finally:
+        projects.close()

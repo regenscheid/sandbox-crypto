@@ -10,6 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.orchestrator.projects import ProjectStore, ensure_environment
 from sandbox_science.orchestrator.worker_client import (
@@ -134,6 +135,20 @@ async def test_an_error_from_a_worker_of_another_version_is_a_mismatch() -> None
         with pytest.raises(WorkerProtocolError) as error:
             await client.environment("env1")
     assert error.value.kind is ErrorKind.UNSUPPORTED
+
+
+@pytest.mark.parametrize("status", [500, 503])
+async def test_proxy_failure_after_mutating_request_keeps_unknown_effect(status: int) -> None:
+    async with (
+        TestServer(gateway(status)) as server,
+        WorkerClient(str(server.make_url("")), TOKEN) as client,
+    ):
+        with pytest.raises(WorkerAPIError) as submitted:
+            await client.fence(RecoveryFence(project_id="p", session_id="s", epoch=1))
+        with pytest.raises(WorkerAPIError) as observed:
+            await client.capabilities("env1")
+    assert submitted.value.uncertain is True
+    assert observed.value.uncertain is False
 
 
 @pytest.mark.parametrize("peer", ["old", "gateway"])

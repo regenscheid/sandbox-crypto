@@ -201,6 +201,8 @@ describe('the chat panel', () => {
         const listing: MessageListing = { messages: [], run, service: true, environment: null };
         return new Response(JSON.stringify(listing));
       }
+      if (url.includes('/recovery/resources'))
+        return new Response(JSON.stringify({ requests: [], next_after: null }));
       return new Response(JSON.stringify({ state: 'active', events: [] }));
     });
     vi.stubGlobal('fetch', fetch);

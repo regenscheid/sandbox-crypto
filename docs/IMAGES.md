@@ -81,14 +81,14 @@ mcp_proxy:
 
 ### The orchestrator image
 
-The harness runs in its own OpenShell sandbox (Z2 in the [threat model](THREAT-MODEL.md)), under the compiled orchestrator policy, which admits only the worker API and the model gateway ([policy](POLICY.md), "Mapping to enforcement"). The `orchestrator` image has it installed; run from the image in its own sandbox, the harness reached only the worker API and had the worker create a project's environments ([lab 12](../.agents/docs/agent-reports/babbage-openshell-lab-12-2026-10-11.md)). The image differs from the contract above in these points:
+The `orchestrator` image runs the normal launcher's agent runtime in a dedicated OpenShell sandbox (Z2 in the [threat model](THREAT-MODEL.md)). It owns root and child model/tool loops, model adapters and queue selection. A trusted host control service keeps durable repositories and validates scoped tool/state capabilities; the GUI remains independent. The compiled policy permits only the configured worker, model, control and optional MCP service endpoints. The normal launcher has no host agent fallback. Historical [lab 12](../.agents/docs/agent-reports/babbage-openshell-lab-12-2026-10-11.md) predates this transport and does not qualify its replacement behavior; the [confinement contract](specs/orchestrator-confinement.md) defines the required disposable acceptance. The image differs from the contract above in these points:
 
 - **Harness.** `sandbox-science-harness` and its contracts are in the prefix, installed from wheels of `packages/contracts` and `packages/orchestrator` that `build.sh` builds from the checkout (`uv build`) and passes to the build as the named context `wheels`.
   - pip installs only those two, with `--no-deps --no-index`. aiohttp, pydantic and their dependencies come from the lockfile, in the minor versions `uv.lock` pins (aiohttp 3.14, pydantic 2.14); a test keeps them in step.
-  - The build fails unless `pip check` passes and `sandbox-science-harness --help` runs.
+  - The build fails unless `pip check` passes and `sandbox-science-harness --help` runs. The image checks also require the control and agent runtime entrypoints to accept `--settings`.
   - Building the `orchestrator` target without the `wheels` context stops with a message, rather than looking for an image named `wheels`.
 - **No kernels.** It has no ipykernel, jupyter_client or kernelspecs, and nothing else from the research profiles: the orchestrator runs no research code (D11). micromamba is there, from the shared base stage.
-- **Read-only prefix.** The harness installs nothing at runtime, so `/opt/sandbox-science` is read-only, and the writable paths are `/sandbox` and `/tmp`. The harness's state (`--state-dir`) and the worker's token file belong under `/sandbox`.
+- **Read-only prefix.** The harness installs nothing at runtime, so `/opt/sandbox-science` is read-only, and the writable paths are `/sandbox` and `/tmp`. The runtime stores replaceable scratch/configuration under `/sandbox/runtime`; the durable control store and worker credential stay on the host.
 - **Running it.** OpenShell's VM driver does not apply the image's `PATH`, so run the harness by its full path, `/opt/sandbox-science/bin/sandbox-science-harness`. Its first line names the prefix's `python`, which is what the targets file's `orchestrator.binaries` admits to the worker API and the model gateway.
 
 ### The MCP proxy image
@@ -296,3 +296,12 @@ Every image has run in OpenShell VM sandboxes on babbage, under the compiled pol
 - **A private registry** for crypto-base, and for multi-platform images. OpenShell's VM driver can create sandboxes from images in the local Docker store, so babbage needs none yet.
 - **An SBOM** in a standard format (SPDX or CycloneDX) before `minimal` is published. The image record lists every package and license, but in its own format.
 - **Restore and rebuild.** The record and lockfile are there; capturing an environment's changes and rebuilding it from the lockfile belong to the environment manager (W3, D48).
+
+Research images also contain `/usr/share/sandbox-science/binding-inventory.json`, a
+canonical static inventory generated after the final package installation by the
+same scanner shipped to executors. Its version, extractor hash, package ownership,
+source-built revisions, restriction provenance and coverage notes are recorded in
+its content digest. No installed tool or skill helper is executed to discover
+variable names. Runtime provisioning requires a new observation; the base image's
+inventory is not treated as current after package changes. See the
+[binding inventory contract](specs/skill-binding-inventory.md).

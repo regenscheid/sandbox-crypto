@@ -770,23 +770,27 @@ class SessionPlans:
         if self.documents.control.missing:
             return None
         with self.documents.control.read() as tx:
-            db = tx.sql
-            pointer = self._current(db, authority.scope)
-            if pointer is None:
-                return None
-            head = self._head(db, authority.scope, pointer.ref)
-            event = self._event(db, authority.scope, pointer.event_cursor)
-            result = PlanSummary(
-                head=head.ref,
-                status=head.status,
-                status_revision=head.status_revision,
-                progress_cursor=head.progress_cursor,
-                event_cursor=pointer.event_cursor,
-                goal_outcome=head.outcome.status if head.outcome else None,
-                last_event=event,
-            )
-            _json(result, 8192)
-            return result
+            return self.summary_in(tx.sql, authority)
+
+    def summary_in(self, db: sqlite3.Connection, authority: PlanAuthority) -> PlanSummary | None:
+        """Read the current plan identity in the caller's control transaction."""
+        authority = _checked(PlanAuthority, authority)
+        pointer = self._current(db, authority.scope)
+        if pointer is None:
+            return None
+        head = self._head(db, authority.scope, pointer.ref)
+        event = self._event(db, authority.scope, pointer.event_cursor)
+        result = PlanSummary(
+            head=head.ref,
+            status=head.status,
+            status_revision=head.status_revision,
+            progress_cursor=head.progress_cursor,
+            event_cursor=pointer.event_cursor,
+            goal_outcome=head.outcome.status if head.outcome else None,
+            last_event=event,
+        )
+        _json(result, 8192)
+        return result
 
     @staticmethod
     def _main(authority: PlanAuthority) -> None:

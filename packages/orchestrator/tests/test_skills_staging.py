@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any, cast
 
+import pytest
+
 from sandbox_science.contracts import (
     ExecutionContext,
     StageCheck,
@@ -19,6 +21,7 @@ from sandbox_science.contracts import (
     StagePutRequest,
     StagePutResult,
 )
+from sandbox_science.contracts.worker import BindingInventory
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.skills import SkillStore, snapshot
@@ -30,6 +33,8 @@ from .loop_harness import PROJECT, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+
+pytestmark = pytest.mark.slow
 
 FILES = {
     "tool/SKILL.md": "---\nname: tool\ndescription: Runs the tool.\n---\nRun run.sh.\n",
@@ -48,15 +53,20 @@ OPTIONS = ("--skills-metadata-model", "pass")
 SHOW = 'echo "[${LIBFOO_PLUGIN_DIR-unset}][${PYTHONSTARTUP-unset}][${BASH_ENV-unset}]"'
 
 
-def _pin(harness: Harness, source: str = "qzpack", bindings: dict[str, str] = BINDINGS) -> None:
+def _pin(
+    harness: Harness,
+    source: str = "qzpack",
+    bindings: dict[str, str] = BINDINGS,
+    files: dict[str, str] = FILES,
+) -> None:
     projects = ProjectStore(harness.state)
     try:
         store = SkillStore(projects.control)
         packed = tuple(
             PackFile(path, text.encode(), executable=path.endswith(".sh"))
-            for path, text in FILES.items()
+            for path, text in files.items()
         )
-        digest = hashlib.sha256(repr(sorted(FILES.items())).encode()).hexdigest()
+        digest = hashlib.sha256(repr(sorted(files.items())).encode()).hexdigest()
         found, _ = store.add(
             source,
             snapshot(Fetched("archive", "a.tar", "", packed, (), archive_sha256=digest)),
@@ -177,7 +187,12 @@ async def test_a_staging_that_fails_takes_the_packs_bindings_away(harness: Harne
         ready = True
 
         async def stage_check(self, request: StageCheckRequest) -> StageCheck:
-            return StageCheck(location="/staged", ready=self.ready, sealed=self.ready)
+            return StageCheck(
+                location="/staged",
+                ready=self.ready,
+                sealed=self.ready,
+                inventory=BindingInventory(state="ready", digest="ab" * 32, fingerprint="fixture"),
+            )
 
         async def stage_put(self, request: StagePutRequest) -> StagePutResult:
             return StagePutResult(written=len(request.files))
@@ -197,5 +212,59 @@ async def test_a_staging_that_fails_takes_the_packs_bindings_away(harness: Harne
         assert failed is not None
         assert failed["state"] == "failed"
         assert stager.bindings == {}
+    finally:
+        projects.close()
+
+
+async def test_refreshing_one_pack_revalidates_every_loaded_sources_bindings(
+    harness: Harness,
+) -> None:
+    _pin(harness)
+    _pin(
+        harness,
+        "other",
+        {"OTHER_DIR": ""},
+        {
+            "other/SKILL.md": "---\nname: other\ndescription: Another pack.\n---\nRun run.sh.\n",
+            "other/run.sh": "#!/bin/sh\nprintf other\n",
+        },
+    )
+
+    class Client:
+        version = 1
+
+        async def stage_check(self, request: StageCheckRequest) -> StageCheck:
+            assert "QZPACK_DIR" in request.binding_names
+            if self.version == 3:
+                observed = BindingInventory()
+            else:
+                observed = BindingInventory(
+                    state="ready",
+                    digest=("ab" if self.version == 1 else "cd") * 32,
+                    fingerprint=str(self.version),
+                    reserved=() if self.version == 1 else ("QZPACK_DIR",),
+                )
+            return StageCheck(location=f"/staged/{request.source}", ready=True, inventory=observed)
+
+    client = Client()
+    projects = ProjectStore(harness.state)
+    try:
+        store = SkillStore(projects.control)
+        entries = {
+            e.source: e for e in store.effective(PROJECT).entries if e.name in {"tool", "other"}
+        }
+        context = ExecutionContext(project_id=PROJECT, session_id="s", environment_id="e")
+        stager = Stager(cast(Any, client), context, store, ("pass", VERSION))
+        await stager.stage(entries["qzpack"])
+        assert stager.bindings == {"QZPACK_DIR": "/staged/qzpack"}
+        assert stager.inventory_digest == "ab" * 32
+        client.version = 2
+        await stager.stage(entries["other"])
+        assert stager.bindings == {"OTHER_DIR": "/staged/other"}
+        assert stager.inventory_digest == "cd" * 32
+        client.version = 3
+        await stager.stage(entries["other"])
+        assert stager.bindings == {}
+        assert stager.inventory_digest is None
     finally:
         projects.close()

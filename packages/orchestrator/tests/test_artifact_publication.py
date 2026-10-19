@@ -30,7 +30,7 @@ from sandbox_science.contracts import (
 from sandbox_science.orchestrator import cli, harness
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
-from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
@@ -114,7 +114,7 @@ async def test_real_worker_http_publication_and_trusted_gateway_model(
         )
         outcome = await toolbox.call(call, "op1", model="gateway-model")
         first = outcome.record["artifact_inventory"]
-        assert first["state"] == "recorded"
+        assert first["state"] == "recorded", first["message"]
         assert first["revision"]["mode"] == "pinned"
         await publisher.aclose()
     revision = inventory.list("p1").entries[0]
@@ -146,6 +146,9 @@ class SnapshotClient(WorkerClient):
         if self.unknown:
             raise WorkerAPIError(ErrorKind.UNAVAILABLE, "reply lost after remote snapshot")
         return ref
+
+    async def stream_artifact_content(self, reference, write, *, max_bytes=1024**3):
+        await write(await self.verified_artifact_content(reference, max_bytes=max_bytes))
 
     async def verified_artifact_content(self, reference, *, max_bytes=8 * 1024 * 1024):
         self.transfers += 1
@@ -274,7 +277,16 @@ async def test_pending_admission_is_bounded_and_cancelled_waiters_retain_slots(
         release.set()
         await publisher.aclose()
         await asyncio.gather(*tasks, return_exceptions=True)
-    assert len(inventory.events("p1").entries) == 8
+    # The publisher owns all eight calls, while disk staging separately admits
+    # only two per project. Refused transfers retain their pinned outcomes.
+    assert len(inventory.events("p1").entries) == 2
+    with documents.control.read() as tx:
+        assert (
+            tx.sql.execute(
+                "SELECT count(*) FROM artifact_operations WHERE state='transfer'"
+            ).fetchone()[0]
+            == 6
+        )
     assert client.publishes == 8
     documents.close()
 
@@ -311,6 +323,9 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
     class Model:
         def __init__(self, url, alias, key, **kwargs):
             self.alias = alias
+
+        def for_role(self, role, identity):
+            return self
 
         async def close(self):
             closed.append(self.alias)
@@ -510,3 +525,59 @@ async def test_transfer_total_deadline_and_size_refusal_before_network() -> None
             assert requests == 1
         finally:
             release.set()
+
+
+async def test_http_bulk_publication_keeps_sqlite_and_default_preview_small(tmp_path: Path):
+    chunk = b"bounded content\n" * 16384
+    repeats = 36
+    digest = hashlib.sha256()
+    for _ in range(repeats):
+        digest.update(chunk)
+    ref = snapshot(b"").model_copy(
+        update={"sha256": digest.hexdigest(), "size": len(chunk) * repeats}
+    )
+
+    async def publish(request):
+        return web.json_response(ref.model_dump(mode="json"), status=201)
+
+    async def content(request):
+        response = web.StreamResponse(
+            headers={"X-Content-SHA256": ref.sha256, "Content-Length": str(ref.size)}
+        )
+        await response.prepare(request)
+        for _ in range(repeats):
+            await response.write(chunk)
+        return response
+
+    app = fake_worker_app()
+    app.router.add_post("/v1/artifacts", publish)
+    app.router.add_get("/v1/artifacts/{id}/content", content)
+    documents = DocumentStore(tmp_path / "control.sqlite3")
+    inventory = ArtifactInventory(documents)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("/")).rstrip("/"), TOKEN) as client,
+    ):
+        publisher = ArtifactPublisher(inventory, client, CONTEXT, run_id="run1")
+        outcome = await publisher.publish(
+            PublishRequest(context=CONTEXT, path="out.bin"), "bulk", tool_call="bulk"
+        )
+        await publisher.aclose()
+    assert outcome.receipt.state == "recorded", outcome.receipt.message
+    reference = outcome.receipt.revision
+    assert reference is not None
+    assert reference.size > 8 * 1024 * 1024
+    with documents.control.read() as tx:
+        assert tx.sql.execute("SELECT length(data) FROM artifact_revisions").fetchone()[0] == 0
+        assert (
+            tx.sql.execute("SELECT bytes FROM artifact_usage WHERE project='p1'").fetchone()[0]
+            == ref.size
+        )
+    with pytest.raises(DocumentError, match="consumer bound"):
+        inventory.content("p1", reference)
+    with inventory.open_content("p1", reference) as stream:
+        actual = hashlib.sha256()
+        while part := stream.read(512 * 1024):
+            actual.update(part)
+    assert actual.hexdigest() == ref.sha256
+    documents.close()

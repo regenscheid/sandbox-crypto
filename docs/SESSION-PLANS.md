@@ -114,6 +114,13 @@ revision. They are same-project claims, with no resource lookup, verification,
 parser, read grant, worker access or reviewer execution. No consistency reviewer
 checks these completion claims.
 
+For explicitly extended exploratory work, the [research guidance](specs/plans-and-delegation.md#progress)
+treats the initial checklist as an iteration: assess baseline and child evidence,
+choose justified follow-on branches, and revise the active plan before finishing.
+Stopping criteria and hypotheses fit the existing goal, feasibility and evidence
+fields. This prompt guidance adds no mechanical research-depth check. Bounded tasks
+can finish at their requested scope; unused budget is not a reason to prolong them.
+
 `active` is a workflow record only. The store permits trusted USER/MAIN status
 bookkeeping; it does not implement PD-6's exact-version USER approval, revoke
 execution grants, or enforce an execution barrier. There is no approval state until

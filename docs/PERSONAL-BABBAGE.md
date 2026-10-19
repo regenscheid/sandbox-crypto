@@ -95,7 +95,7 @@ provider_env_file = "<the owner's Cloudflare Access file>"
 provider_profile = "<the repository>/examples/openshell/profiles/cloudflare-access.yaml"
 ```
 
-- **The context ceiling** is the run service's default, 600,000 tokens ([context management](specs/context-management.md), CM-27): the launcher has no setting for it, and the model's input limit, which the gateway gives, is larger. The folds' narratives are written by the main agent's own alias.
+- **The context ceiling** defaults to 600,000 tokens ([context management](specs/context-management.md), CM-27). `[run_service] context_ceiling` sets a positive token ceiling, capped by the gateway's model input limit when reported. The folds' narratives are written by the main agent's own alias. This is context occupancy, not a cumulative research token budget.
 - **Delegation** is a project setting in the control store, set once after the first start (depth 2 lets a task delegate once more):
 
   ```sh

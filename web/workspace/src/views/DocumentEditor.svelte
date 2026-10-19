@@ -21,7 +21,15 @@
     projectId,
     found,
     refreshed,
-  }: { projectId: string; found: DocumentRevision; refreshed: () => void } = $props();
+    compact = false,
+    requestedEdit = null,
+  }: {
+    projectId: string;
+    found: DocumentRevision;
+    refreshed: () => void;
+    compact?: boolean;
+    requestedEdit?: { block: string } | null;
+  } = $props();
   const id = $derived(found.document.document_id);
   const scope = $derived(`${projectId}:${id}`);
   const initial = untrack(() => found);
@@ -35,6 +43,17 @@
   let block = $state<string | null>(restored?.block ?? null);
   let retained = $state(restored?.retained ?? '');
   let selected = $state(initial.blocks[0]?.id ?? '');
+  let moreActions = $state(false);
+  const blockLabel = (item: DocumentRevision['blocks'][number]) => {
+    const excerpt = (item.source ?? '').replace(/\s+/g, ' ').trim().slice(0, 42);
+    return `${item.id} · ${item.kind}${excerpt ? ` · ${excerpt}` : ''}`;
+  };
+  $effect(() => {
+    if (requestedEdit && found.blocks.some((item) => item.id === requestedEdit.block)) {
+      selected = requestedEdit.block;
+      moreActions = true;
+    }
+  });
   let busy = $state(false);
   let error = $state<unknown>(null);
   let result = $state<DocumentChange | null>(null);
@@ -141,19 +160,28 @@
   {#if !open}
     {#if !found.revision.tombstone && found.matched && found.revision.number === found.document.head}
       <button onclick={() => begin(null)}>Edit Markdown source</button>
-      <label
-        >Block <select bind:value={selected}
-          >{#each found.blocks as item (item.id)}<option value={item.id}
-              >{item.id} · {item.kind}</option
-            >{/each}</select
-        ></label
-      >
-      <button disabled={!selected} onclick={() => begin(selected)}>Edit selected block</button>
-      {#if found.document.scope === 'session'}
-        <label>Project document name <input bind:value={projectName} maxlength="64" /></label>
-        <button disabled={busy || confirming !== null} onclick={() => ask('promote')}
-          >Move to project…</button
+      {#if compact}<button
+          class="quiet-button"
+          aria-expanded={moreActions}
+          onclick={() => {
+            moreActions = !moreActions;
+          }}>More actions</button
+        >{/if}
+      {#if !compact || moreActions}
+        <label
+          >Block <select bind:value={selected}
+            >{#each found.blocks as item (item.id)}<option value={item.id}
+                >{blockLabel(item)}</option
+              >{/each}</select
+          ></label
         >
+        <button disabled={!selected} onclick={() => begin(selected)}>Edit selected block</button>
+        {#if found.document.scope === 'session'}
+          <label>Project document name <input bind:value={projectName} maxlength="64" /></label>
+          <button disabled={busy || confirming !== null} onclick={() => ask('promote')}
+            >Move to project…</button
+          >
+        {/if}
       {/if}
     {:else if !found.revision.tombstone && found.revision.number < found.document.head}
       <p>
@@ -234,10 +262,7 @@
 
 <style>
   .editor {
-    margin: 1.5rem 0;
-    padding: 1rem;
-    border: 1px solid var(--border, #9996);
-    border-radius: 0.4rem;
+    margin: 0;
   }
   label {
     display: block;
@@ -248,6 +273,14 @@
     width: 100%;
     font-family: monospace;
     box-sizing: border-box;
+  }
+  select,
+  input {
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  select {
+    width: 100%;
   }
   pre {
     white-space: pre-wrap;

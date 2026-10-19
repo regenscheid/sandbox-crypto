@@ -1,58 +1,27 @@
 # SPDX-License-Identifier: MIT
-"""The run service: the session's main agent, run for the GUI (docs/specs/run-service.md).
+"""Durable scheduling and bookkeeping for GUI chat and explicit tree recovery.
 
-``sandbox-science-harness serve`` builds one ``Harness`` and runs a ``RunService`` on it
-until it is stopped (RS-1). The service and the workspace share the control store
-(RS-2): about once a ``poll``, the service
+The normal launcher delegates agent-loop execution to its separate OpenShell
+runtime. This service renews authority, reconciles receipts and expired leases,
+validates runtime-selected admissions, and owns cancellation/final cleanup.
+Research code executes through scoped worker capabilities.
 
-- renews its heartbeat, which the workspace shows (RS-3);
-- ends every run whose lease expired, its holder dead, unless the run is one of its
-  own (a lease can look expired while its holder lives, as after a suspend). A run
-  whose record was saved is acknowledged from the record; any other gets a ``stopped``
-  event, ``interrupted``, and the messages it was offered are held until the user
-  resumes or writes again (RS-12). Its delegations still running end ``interrupted``,
-  and each of its children's runs gets its ``stopped`` event, from its record if it
-  saved one (PD-40). Its questions to the user still open close ``interrupted``: no
-  run is left to receive their answers (PD-23), and so does an open question whose run
-  holds no lease, as one whose own close failed as it was cancelled;
-- starts a run for each session that has queued messages and no run (RS-6), within the
-  project's model budget (RS-6a). The run's conversation begins with the session's
-  view, which the harness builds from the archive (RS-10 as amended, CM-29), then the
-  messages queued once it holds the lease;
-- starts a run in the same way for each session that has waiting work requests, the
-  user's comments addressed to its main agent (LD-22), and no queued messages. Its
-  conversation begins with the requests, as the run's hooks offer them. A request has
-  no ``held`` or ``refused`` state: where a message would be held, the service keeps
-  the request from starting a run until the session's next run or the service's
-  restart, and a spent budget makes it wait ``MAX_WAIT`` before it is looked at again;
-- cancels a run the user asked to cancel (RS-11), once, while it runs: the run ends
-  ``cancelled``, its record is saved, and the messages it was offered and did not
-  answer are held.
+Fresh chat and unoffered annotations can start new work within current budgets.
+Original offered input stays attached to unfinished work: neither restart nor a
+retry delay permits fresh paid replay. Explicit Resume reconciles the selected
+work tree and reuses its original grants and effect identities.
 
-Each run is admitted, run, saved and acknowledged as ``run`` does, holding the session's
-run lease from admission until its record is saved. A session whose runs fail waits
-``retry`` seconds, doubling with each failure in a row up to ``MAX_WAIT``; after
-``MAX_FAILURES`` in a row, its queued messages are held with the reason ``failed`` (RS-9),
-and its work requests start no run. A run that stops because the session's current
-decisions do not fit its view (``research_state``, CM-45) holds what it was offered and
-what is queued with that reason, and its work requests: the next run would stop the same
-way. They are queued again when this session's current decisions change (their handles,
-revisions and statuses, as its fold records name them and the ledger holds them), or
-when the user resumes; a service that restarts queues them once more, and the next run
-holds them again if nothing changed. A message the user writes meanwhile starts a
-consolidation run (the coordinator's decision of 2026-10-16): its view shows every
-current decision in one line, and it is told to propose how to consolidate them, for
-the user to approve; the held messages and requests still wait.
+A research_state context stop retains a consolidation hold. Fresh input can ask
+for help consolidating decisions; a confirmed decision change clears that
+prerequisite, while unfinished work still requires explicit Resume. A replacement
+service first observes the current decision set without treating restart as change.
 
-Each look also starts, unless one still runs, the figure checks of the documents and
-ledger entries saved since (``figurechecks``, FG-19), wherever they were saved, with the
-configured figure checker: a check never holds up a run.
+Figure checks run independently and never hold up a research run.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import dataclasses
 import logging
 import secrets
@@ -64,8 +33,12 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
-from .aio import threaded
+from .aio import owned, threaded
 from .chat import SOURCE, session_lease
+from .continuity.auto_continuation import AutoContinuation
+from .continuity.auto_recovery import AutoRecovery
+from .continuity.records import WorkRecords
+from .continuity.recovery import Recovery
 from .control import ControlError
 from .control.errors import BUSY
 from .delegation.records import DelegationRecords
@@ -76,6 +49,7 @@ from .figurechecks import FigureChecks
 from .harness import Harness, RunRequest, admit, save
 from .history import Archive, Folder
 from .history.markers import Decided, current_decisions
+from .history.receipts import Receipts
 from .hooks import TurnHook
 from .ledger import Ledger
 from .model import GATEWAY_BUDGET
@@ -86,9 +60,11 @@ from .tools import ToolOutcome
 
 _log = logging.getLogger(__name__)
 
+MAX_ACTIVE_ROOTS: Final = 4
 POLL_SECONDS: Final = 1.0
 """The percent of the project's daily MAIN budget one run may use, by default (RS-6a)."""
 BEAT_SECONDS: Final = 10.0
+AUTO_RECOVERY_SECONDS: Final = 10.0
 RETRY_SECONDS: Final = 30.0
 MAX_WAIT: Final = 900.0
 """The longest wait between a session's failing runs."""
@@ -122,6 +98,7 @@ class _Active:
     message_ids: list[str] = field(default_factory=list[str])
     request_ids: list[str] = field(default_factory=list[str])
     """The work requests that waited when the run began."""
+    recovery: Recovery | None = None
     consolidate: bool = False
     """A consolidation run, for a message written after a ``research_state`` stop."""
 
@@ -154,8 +131,20 @@ class RunService:
         the session's next run is offered them with the others."""
         self.holder = secrets.token_hex(16)
         self._beaten = -BEAT_SECONDS
+        self._auto_checked = -AUTO_RECOVERY_SECONDS
+        self._auto_after = ("", "", "")
+        self._continue_after = ("", "", "")
+        self.auto_recovery = AutoRecovery(
+            harness.stores.projects.control,
+            clock=clock,
+            interrupted=harness.settings.recover_interrupted,
+        )
+        self.auto_continuation = AutoContinuation(
+            harness.stores.projects.control, harness.stores.documents, self.runs
+        )
         self.ledger = Ledger(harness.stores.documents)
         self.figures = FigureChecks(harness.stores.documents, figures)
+        self.local_branches: set[asyncio.Task[bool]] = set()
         self.checking: asyncio.Task[int] | None = None
         """The figure checks running, which the next look does not start again."""
         self.marks: dict[tuple[str, str], tuple[tuple[int, int], tuple[Decided, ...]]] = {}
@@ -171,21 +160,42 @@ class RunService:
                 await self.tick()
                 await self.clock.sleep(self.poll)
         finally:
-            if self.checking is not None:
-                self.checking.cancel()
-                with contextlib.suppress(BaseException):
-                    await self.checking
-            for (project, session), active in list(self.active.items()):
-                if active.task is None or active.task.done():
-                    continue  # it ended on its own
-                active.task.cancel()
-                with contextlib.suppress(BaseException):
-                    await active.task
-                if active.run is not None:
-                    await self._ended(project, session, active.run)
+            await self.close()
+
+    async def close(self) -> None:
+        """Join admitted work and reconcile inputs before another runtime may select it."""
+        await owned(self._close())
+
+    async def _close(self) -> None:
+        tasks: list[asyncio.Task[object]] = [*self.local_branches]
+        if self.checking is not None:
+            tasks.append(self.checking)
+        active = tuple(self.active.items())
+        tasks.extend(value.task for _, value in active if value.task is not None)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for (project, session), value in active:
+            if value.run is not None:
+                await self._ended(project, session, value.run)
+        self.active.clear()
+        self.local_branches.clear()
 
     async def tick(self) -> None:
-        """One look at the control store."""
+        """One local-service cycle; confined runtimes select work through capabilities."""
+        await self.maintenance_tick()
+        for project, session, request in await self.waiting_resumes():
+            await self.start_selected(project, session, request=request)
+            for work in await self.resume_next(project, session, request):
+                task = asyncio.create_task(self.resume_branch(project, session, request, work))
+                self.local_branches.add(task)
+                task.add_done_callback(self.local_branches.discard)
+        for project, session in await self.waiting_work():
+            await self.start_selected(project, session)
+
+    async def maintenance_tick(self) -> None:
+        """Renew/reconcile existing authority without selecting or admitting new roots."""
         now = self.clock.monotonic()
         if now - self._beaten >= BEAT_SECONDS:
             await threaded(self.runs.beat, self.holder)
@@ -220,33 +230,139 @@ class RunService:
         for key in await threaded(self.runs.held_for, RESEARCH_STATE):
             if key not in self.active:
                 await self._consolidated(*key)
+        if now - self._auto_checked >= AUTO_RECOVERY_SECONDS:
+            self._auto_checked = now
+            await self.auto_recovery_tick()
+            await self.auto_continuation_tick()
+
+    async def auto_recovery_tick(self) -> None:
+        """Offer bounded model-failure recovery; dispatch retains its normal gates."""
+        page = await threaded(self.auto_recovery.candidates, after=self._auto_after)
+        self._auto_after = page[-1] if len(page) == 100 else ("", "", "")
+        for project, session, root in page:
+            if (project, session) in self.active:
+                continue
+            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
+                continue
+            request = await threaded(self.auto_recovery.queue, project, session, root)
+            if request is not None:
+                _log.info(
+                    "session %s queued automatic Resume %s for saved model failure",
+                    session,
+                    request,
+                )
+
+    async def auto_continuation_tick(self) -> None:
+        """Queue one next root for an answered checkpoint with an active plan."""
+        page = await threaded(self.auto_continuation.candidates, after=self._continue_after)
+        self._continue_after = page[-1] if len(page) == 100 else ("", "", "")
+        for project, session, root in page:
+            if (project, session) in self.active:
+                continue
+            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
+                continue
+            try:
+                message = await threaded(self.auto_continuation.queue, project, session, root)
+            except ControlError as error:
+                _log.warning("plan continuation for session %s was not queued: %s", session, error)
+                continue
+            if message is not None:
+                _log.info("session %s queued plan continuation %s", session, message)
+
+    async def waiting_work(self) -> tuple[tuple[str, str], ...]:
+        """Enumerate eligible work without admitting or starting an agent loop."""
         waiting = set(await threaded(self.runs.waiting))
         for project, session, request in await threaded(self.annotations.waiting):
             if request not in self.held.get((project, session), ()):
                 waiting.add((project, session))
-        for key in sorted(waiting):
-            if key in self.active or self.waiting_until.get(key, now) > now:
-                continue
-            consolidate = False
-            if key in self.marks:
-                queued = await threaded(self.runs.messages, *key, state="queued")
-                held = [m.message_id for m in queued if m.reason == RESEARCH_STATE]
-                new = [m for m in queued if m.reason != RESEARCH_STATE]
-                if held and not new:  # the user resumed them alone: the run starts
-                    self.marks.pop(key)
-                else:
-                    # Writing again queued the held ones with the new one (RS-12): they
-                    # wait again, and the new one starts a consolidation run.
-                    await threaded(self.runs.hold, *key, held, RESEARCH_STATE)
-                    self._hold(*key, await self._requests(*key))
-                    if not new:
-                        continue
-                    consolidate = True
-            # Not while a lease is left, even an expired one: it may have expired since
-            # the look for dead leases above, and the next look ends its run first.
-            if not await threaded(self.runs.leased, *key):
-                active = self.active[key] = _Active(consolidate=consolidate)
-                active.task = asyncio.create_task(self._run(*key, active))
+        for project, session in waiting:
+            await threaded(self.runs.reconcile_inputs, project, session)
+            await threaded(self.annotations.reconcile_receipts, project, session)
+        eligible = set(await threaded(self.runs.waiting))
+        eligible.update(
+            (p, s)
+            for p, s, request in await threaded(self.annotations.waiting)
+            if request not in self.held.get((p, s), ())
+        )
+        now = self.clock.monotonic()
+        return tuple(
+            key
+            for key in sorted(waiting & eligible)
+            if key not in self.active and self.waiting_until.get(key, now) <= now
+        )
+
+    async def waiting_resumes(self) -> tuple[tuple[str, str, str], ...]:
+        queued = await threaded(WorkRecords(self.stores.projects.control).queued)
+        waiting = {(p, s, q) for p, s, q, _ in queued if (p, s) not in self.active}
+        waiting.update(
+            (p, s, active.recovery.request)
+            for (p, s), active in self.active.items()
+            if active.recovery is not None
+        )
+        return tuple(sorted(waiting))
+
+    async def resume_next(self, project: str, session: str, request: str) -> tuple[str, ...]:
+        active = self.active.get((project, session))
+        recovery = active.recovery if active else None
+        return () if recovery is None or recovery.request != request else await recovery.next()
+
+    async def resume_branch(self, project: str, session: str, request: str, work: str) -> bool:
+        active = self.active.get((project, session))
+        recovery = active.recovery if active else None
+        if recovery is None or recovery.request != request:
+            return False
+        return await recovery.branch(work)
+
+    async def start_selected(
+        self, project: str, session: str, *, request: str | None = None
+    ) -> bool:
+        """Validate a runtime-selected queue entry and own its trusted bookkeeping.
+
+        Selection grants nothing: recheck queue eligibility and the session lease.
+        The configured harness loop runner owns actual agent-loop execution.
+        """
+        key = project, session
+        await threaded(self.runs.reconcile_inputs, project, session)
+        await threaded(self.annotations.reconcile_receipts, project, session)
+        if request is not None:
+            if (project, session, request) not in await self.waiting_resumes():
+                return False
+            if await threaded(self.runs.leased, *key):
+                return False
+            if key in self.active or len(self.active) >= MAX_ACTIVE_ROOTS:
+                return False
+            recovery = Recovery(self.harness, project, session, request)
+            active = self.active[key] = _Active(
+                recovery=recovery, run=recovery.run_name, phase="running"
+            )
+            active.task = asyncio.create_task(self._run(*key, active))
+            return True
+        if any((p, s) == key for p, s, _ in await self.waiting_resumes()):
+            return False
+        if key not in await self.waiting_work():
+            return False
+        consolidate = False
+        if key in self.marks:
+            queued = await threaded(self.runs.messages, *key, state="queued")
+            held = [m.message_id for m in queued if m.reason == RESEARCH_STATE]
+            new = [m for m in queued if m.reason != RESEARCH_STATE]
+            if held and not new:
+                self.marks.pop(key)
+            else:
+                await threaded(self.runs.hold, *key, held, RESEARCH_STATE)
+                self._hold(*key, await self._requests(*key))
+                if not new:
+                    return False
+                consolidate = True
+        if await threaded(self.runs.leased, *key):
+            return False
+        # No await separates this final active check from assignment. Concurrent
+        # runtime admissions cannot create duplicate bookkeeping tasks here.
+        if key in self.active or len(self.active) >= MAX_ACTIVE_ROOTS:
+            return False
+        active = self.active[key] = _Active(consolidate=consolidate)
+        active.task = asyncio.create_task(self._run(*key, active))
+        return True
 
     async def _ended(self, project: str, session: str, run: str, *, hold: bool = True) -> None:
         """End a run whose holder is gone (RS-12): from its record if it was saved,
@@ -254,6 +370,11 @@ class RunService:
         run that stopped itself (``hold`` false), left queued for the next run (RS-9).
         Its tree ends with it, and its open questions close, whatever fails before
         (PD-40, PD-23)."""
+        works = WorkRecords(self.stores.projects.control)
+        work = await threaded(works.for_run, project, session, run)
+        cancelled = await threaded(self.runs.cancelled, project, session, run)
+        if work is not None:
+            await threaded(works.interrupt_run, project, session, run, stopped=cancelled)
         try:
             await self._root_ended(project, session, run, hold=hold)
         finally:
@@ -263,15 +384,16 @@ class RunService:
                 ):
                     _log.warning("delegation %s of run %s was interrupted", delegation_id, run)
             finally:
-                for question in await threaded(
-                    self.questions.close,
-                    project,
-                    session,
-                    run=run,
-                    state="interrupted",
-                    reason=INTERRUPTED,
-                ):
-                    _log.warning("question %s of run %s was interrupted", question, run)
+                if cancelled or work is None or work.state in ("completed", "stopped"):
+                    for question in await threaded(
+                        self.questions.close,
+                        project,
+                        session,
+                        run=run,
+                        state="interrupted",
+                        reason=INTERRUPTED,
+                    ):
+                        _log.warning("question %s of run %s was interrupted", question, run)
 
     async def _root_ended(self, project: str, session: str, run: str, *, hold: bool) -> None:
         runs = self.runs
@@ -279,10 +401,27 @@ class RunService:
             record = await threaded(self.stores.projects.run, project, session, run)
         except ProjectError:
             record = None
+        # An assistant receipt is durable before final save. Recover it even when
+        # the process died with no RunRecord, so consumed user messages stay consumed.
+        receipts = Receipts(self.stores.projects.control, project, session, run)
+        after = ""
+        while page := await threaded(receipts.page, SOURCE, after=after):
+            await threaded(runs.deliver, project, session, list(page), run)
+            after = page[-1]
+        after = ""
+        while page := await threaded(receipts.page, WorkRequests.name, after=after):
+            await threaded(
+                self.annotations.acknowledge, project, session, run.partition("-")[2], list(page)
+            )
+            after = page[-1]
+        await threaded(self.annotations.reconcile_receipts, project, session)
         stopped: dict[str, JsonValue]
         if record is not None:
             # It died after saving its record, before acknowledging it.
-            await threaded(runs.deliver, project, session, record.delivered.get(SOURCE, []), run)
+            if record.stored_history is None:
+                await threaded(
+                    runs.deliver, project, session, record.delivered.get(SOURCE, []), run
+                )
             stopped = {
                 "stopped": record.stopped,
                 "failure": record.failure,
@@ -291,25 +430,33 @@ class RunService:
             }
         else:
             stopped = {
-                "stopped": "interrupted",
+                "stopped": (
+                    "cancelled"
+                    if await threaded(runs.cancelled, project, session, run)
+                    else "interrupted"
+                ),
                 "failure": None,
                 "final_text": None,
                 "record": None,
             }
-            if hold:
-                offered = await threaded(runs.offered_to, project, session, run)
-                await threaded(runs.hold, project, session, offered)
-                # A run's name is its start time, a dash and its ID, which leased them.
-                run_id = run.partition("-")[2]
-                claimed = await threaded(self.annotations.claimed, project, session, run_id)
-                self._hold(project, session, claimed)
+        if hold:
+            offered = await threaded(runs.offered_to, project, session, run)
+            await threaded(runs.hold, project, session, offered)
+            # A run's name is its start time, a dash and its ID, which leased them.
+            run_id = run.partition("-")[2]
+            claimed = await threaded(self.annotations.claimed, project, session, run_id)
+            self._hold(project, session, claimed)
         if not await threaded(runs.ended, project, session, run):
             await threaded(runs.append, project, session, run, "stopped", stopped)
 
     async def _run(self, project: str, session: str, active: _Active) -> None:
         key = project, session
         try:
-            failed = await self._started(project, session, active)
+            failed = (
+                await active.recovery.run(LogSink(), active.stop)
+                if active.recovery is not None
+                else await self._started(project, session, active)
+            )
         except asyncio.CancelledError:
             if not active.stop.is_set():
                 raise
@@ -349,21 +496,30 @@ class RunService:
         self.waiting_until[key] = self.clock.monotonic() + wait
 
     async def _consolidated(self, project: str, session: str) -> None:
-        """Queue again a session's messages held for its research state once its current
-        decisions changed, or when this service has not seen them held (CM-45). The
-        ledger's mark is read first: the decisions only when it moved."""
+        """Observe the consolidation prerequisite, retaining holds across restart.
+
+        A changed decision set clears that prerequisite, but durable work still
+        requires explicit Resume. Read decisions only when the ledger mark moved.
+        """
         key = project, session
         mark = await threaded(self.ledger.mark, project)
         seen = self.marks.get(key)
         if seen is not None and seen[0] == mark:
             return
         decided = await threaded(self._decided, project, session)
-        if seen is not None and seen[1] == decided:
+        if seen is None:
+            self.marks[key] = (mark, decided)
+            return  # Restart is not evidence that the prerequisite changed.
+        if seen[1] == decided:
             self.marks[key] = (mark, decided)  # another change of the ledger
             return
         self.marks.pop(key, None)
         self.held.pop(key, None)
-        count = await threaded(self.runs.resume, project, session, reason=RESEARCH_STATE)
+        # The changed prerequisite no longer calls for consolidation. Original
+        # durable work still needs explicit Resume and is re-held by reconciliation.
+        count = await threaded(
+            self.runs.resume, project, session, reason=RESEARCH_STATE, clear_reason=True
+        )
         _log.info("session %s: %d messages queued again for its research state", session, count)
 
     def _decided(self, project: str, session: str) -> tuple[Decided, ...]:
@@ -407,8 +563,16 @@ class RunService:
         )
         active.run = name = run_name(admitted.started_at, admitted.run_id)
         async with session_lease(runs, admitted.context, name, clock=self.clock):
-            # Read once the session is held: another run may have answered them.
-            queued = await threaded(runs.messages, project, session, state="queued")
+            # Select under the lease in one write: a late correction cannot be
+            # combined with an already claimed synthetic plan continuation.
+            selected = set(
+                await threaded(self.auto_continuation.claim_queued, project, session, name)
+            )
+            queued = [
+                message
+                for message in await threaded(runs.messages, project, session, state="queued")
+                if message.message_id in selected
+            ]
             # A consolidation run is for the new messages alone: the requests wait.
             requests = [] if active.consolidate else await self._requests(project, session)
             if not queued and not requests:
@@ -460,10 +624,8 @@ class RunService:
                     mark,
                     await threaded(self._decided, project, session),
                 )
-                offered = await threaded(runs.offered_to, project, session, name)
-                queued = await threaded(runs.messages, project, session, state="queued")
-                held = [*offered, *(m.message_id for m in queued if m.message_id not in offered)]
-                await threaded(runs.hold, project, session, held, RESEARCH_STATE)
+                # UserMessages already held queued input before the stopped event.
+                # Do not capture fresh chat arriving after that acknowledged stop.
                 self._hold(project, session, [*active.request_ids, *unanswered(finished.hooks)])
             if finished.transcript.stopped == "cancelled":
                 # What it was offered and did not answer waits for the user (RS-11).

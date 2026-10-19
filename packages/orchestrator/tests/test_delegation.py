@@ -31,16 +31,18 @@ from sandbox_science.orchestrator.delegation.records import (
 )
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.history import Archive, body, geometry, session_view
+from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
-    DELEGATIONS_RUNNING,
     OUTCOME_CORRECTION,
 )
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.testing import eventually
 
 from .control_versions import older_store
 from .loop_harness import DELEGATED, PRIOR, PROJECT, SESSION, Harness, Reply, call, own
@@ -285,68 +287,184 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
 
 
 async def test_a_parent_cannot_answer_while_its_check_runs(delegating: Harness) -> None:
-    """PD-36: a closing answer while a child runs takes another turn, with a notice."""
-    free, release = released()
-
-    async def blocked() -> None:
-        await free.wait()
-
-    root = await delegating.run(
-        "root",
-        [
-            Reply(calls=[CHECK]),
-            Reply("Done already."),
-            Reply(calls_from=wait().calls_from, before=release.before),
-            Reply("Done now."),
-        ],
-        delegated=[Reply(REPORT, before=blocked)],
-    )
-    assert root.final_text == "Done now."
-    third = delegating.gateway.main[2]
-    (notice,) = [
-        body(str(m["content"]))
-        for m in third
-        if m["role"] == "user" and body(str(m["content"])).startswith(DELEGATIONS_RUNNING.text)
-    ]
-    assert _ID.search(notice)
-    assert [r.stopped for r in children(delegating, root)] == ["answered"]
-
-
-async def test_a_parents_end_cancels_its_check_and_the_next_run_gets_the_outcome(
-    delegating: Harness,
-) -> None:
-    """PD-21, PD-35, PD-39: at its turn limit the parent stops without an answer, its
-    running child ends cancelled with its record kept, and the outcome goes to the
-    session's next main run, which acknowledges it."""
+    """RC-5: a closing answer waits without a model turn, then incorporates the child."""
     free = asyncio.Event()
 
     async def blocked() -> None:
         await free.wait()
 
-    try:
-        root = await delegating.run(
+    task = asyncio.create_task(
+        delegating.run(
             "root",
-            [Reply(calls=[CHECK]), Reply("Done.")],
+            [Reply(calls=[CHECK]), Reply("Done already."), Reply("Done now.")],
             delegated=[Reply(REPORT, before=blocked)],
+        )
+    )
+    store = ProjectStore(delegating.state)
+    state = RunState(store.control)
+
+    def waiting() -> bool:
+        held = state.lease(PROJECT, SESSION)
+        return held is not None and any(
+            event.kind == "waiting" and event.data.get("delegation_ids")
+            for event in state.events(PROJECT, SESSION, held.run)
+        )
+
+    try:
+        await eventually(waiting)
+        assert len(delegating.gateway.main) == 2
+        assert not task.done()
+    finally:
+        free.set()
+        store.close()
+    root = await task
+    assert root.final_text == "Done now."
+    third = delegating.gateway.main[2]
+    assert any(
+        m["role"] == "user" and body(str(m["content"])).startswith(DELEGATIONS.text) for m in third
+    )
+    assert [r.stopped for r in children(delegating, root)] == ["answered"]
+
+
+async def awaiting_children(harness: Harness, *, delegated: bool = False) -> str:
+    """Wait for a durable waiting event while the root's session lease is still held."""
+    store = ProjectStore(harness.state)
+    state, records = RunState(store.control), DelegationRecords(store.control)
+    found: list[str] = []
+
+    def waiting() -> bool:
+        held = state.lease(PROJECT, SESSION)
+        if held is None:
+            return False
+        candidates = (
+            [d.run for d in records.listed(PROJECT, SESSION)[0]] if delegated else [held.run]
+        )
+        for run in candidates:
+            if any(
+                event.kind == "waiting" and event.data.get("delegation_ids")
+                for event in state.events(PROJECT, SESSION, run)
+            ):
+                found.append(run)
+                return True
+        return False
+
+    try:
+        await eventually(waiting)
+        return found[0]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("answer", ["Done.", None])
+async def test_a_limited_parent_keeps_its_check_and_the_next_run_gets_the_outcome(
+    delegating: Harness,
+    answer: str | None,
+) -> None:
+    """The parent's final call cannot cancel work with its own remaining allowance."""
+    free = asyncio.Event()
+
+    async def blocked() -> None:
+        await free.wait()
+
+    task = asyncio.create_task(
+        delegating.run(
+            "root",
+            [Reply(calls=[CHECK]), Reply(answer)],
+            delegated=[
+                Reply(calls=[call("ledger_read", entry="C-1")], before=blocked),
+                Reply(REPORT),
+            ],
             max_turns=2,
             status=3,
         )
+    )
+    try:
+        await awaiting_children(delegating)
+        assert len(delegating.gateway.main) == 2
+        assert not task.done()
+        assert kept(delegating) == {}
     finally:
-        free.set()  # lets the gateway answer the abandoned call
+        free.set()
+    root = await task
     assert (root.stopped, root.final_text) == ("turn_limit", None)
     (child,) = children(delegating, root)
-    assert child.stopped == "cancelled"
+    assert child.stopped == "answered"
+    assert len(delegating.gateway.children) == 2
+    assert child.ended_at <= root.ended_at
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
-    assert (outcome.ended, outcome.acknowledged) == ("cancelled", None)
+    assert (outcome.ended, outcome.acknowledged) == ("returned", None)
 
-    later = await delegating.run("later", [Reply("Noted: the check was cancelled.")])
+    later = await delegating.run("later", [Reply("Noted: the check finished.")])
     first = delegating.gateway.main[0]
     handbacks = [m for m in first if body(str(m.get("content", ""))).startswith(DELEGATIONS.text)]
     assert len(handbacks) == 1
     assert delegation_id in str(handbacks[0]["content"])
     assert later.delivered["delegations"] == [delegation_id]
     assert delegation(delegating, delegation_id).acknowledged == name(later)
+
+
+async def test_memory_limited_parent_drains_its_paid_child_before_ending(
+    delegating: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    free, child_entered = asyncio.Event(), asyncio.Event()
+    original = Transcript.sent.fget
+    assert original is not None
+    tripped = False
+
+    def guarded(run: Transcript):
+        nonlocal tripped
+        if not tripped and any(tool.get("tool") == "delegate" for tool in run.tool_records):
+            tripped = True
+            raise WorkingMemoryLimitError("synthetic parent working-state ceiling")
+        return original(run)
+
+    monkeypatch.setattr(Transcript, "sent", property(guarded))
+
+    async def blocked() -> None:
+        child_entered.set()
+        await free.wait()
+
+    task = asyncio.create_task(
+        delegating.run(
+            "root",
+            [Reply(calls=[CHECK])],
+            delegated=[
+                Reply(calls=[call("ledger_read", entry="C-1")], before=blocked),
+                Reply(REPORT),
+            ],
+            max_turns=5,
+            status=3,
+        )
+    )
+    try:
+        await awaiting_children(delegating)
+        await asyncio.wait_for(child_entered.wait(), 5)
+        assert tripped
+        assert len(delegating.gateway.main) == 1
+        assert not task.done()
+        assert kept(delegating) == {}
+    finally:
+        free.set()
+    root = await task
+    assert root.stopped == "memory_limit"
+    assert root.final_text is None
+    assert root.failure is None
+    (child,) = children(delegating, root)
+    assert child.stopped == "answered"
+    assert child.failure is None
+    assert len(delegating.gateway.children) == 2
+    assert child.ended_at <= root.ended_at
+    (delegation_id,) = started(root)
+    assert delegation(delegating, delegation_id).ended == "returned"
+    store = ProjectStore(delegating.state)
+    try:
+        with store.control.read() as tx:
+            assert tx.sql.execute(
+                "SELECT count(*) FROM research_model_calls WHERE usage IS NULL"
+            ).fetchone() == (0,)
+    finally:
+        store.close()
 
 
 async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harness) -> None:
@@ -414,10 +532,12 @@ async def test_a_check_stops_at_its_token_limit(
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("The check ran out of budget.")],
-        delegated=[Reply(calls=[call("ledger_read", entry="C-1")])],
+        status=3,
     )
+    assert root.stopped == "unfinished_children"
     (child,) = children(delegating, root)
     assert child.stopped == "run_budget"
+    assert child.tools == []
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
     assert (outcome.ended, outcome.report) == ("limit_reached", None)
@@ -688,7 +808,7 @@ async def test_a_parent_reads_and_cancels_its_check(delegating: Harness) -> None
     finally:
         free.set()
     status, cancelled, again = (json.loads(r) for r in results(root)[1:])
-    assert (status["state"], status["limits"]) == ("running", {"turns": 12, "tokens": 150_000})
+    assert (status["state"], status["limits"]) == ("running", {"turns": 300, "tokens": 20_000_000})
     assert (cancelled["ended"], cancelled["cancelled"]) == ("cancelled", True)
     assert (again["ended"], again["cancelled"]) == ("cancelled", False)
     (child,) = children(delegating, root)
@@ -841,3 +961,33 @@ async def test_a_checks_brief_names_the_entrys_open_flags(delegating: Harness) -
     (delegation_id,) = started(root)
     written = cast(dict[str, Any], delegation(delegating, delegation_id).brief["check"])
     assert written["flags"] == [flag.flag_id]
+
+
+async def test_same_alias_parent_child_pin_distinct_requested_effort(delegating: Harness) -> None:
+    root = await delegating.run(
+        "effort-parent",
+        [Reply(calls=[CHECK]), wait(), Reply("Checked.")],
+        delegated=[Reply(REPORT)],
+        options=["--reasoning-effort", "main=max", "--reasoning-effort", "delegated=low"],
+    )
+    (child,) = children(delegating, root)
+    assert root.alias == child.alias == "main"
+    for run in (root, child):
+        assert run.model_profiles["main"].reasoning_effort == "max"
+        assert run.model_profiles["delegated"].reasoning_effort == "low"
+    store = ProjectStore(delegating.state)
+    try:
+        for run, expected in ((root, "max"), (child, "low")):
+            events = RunState(store.control).events(PROJECT, SESSION, name(run))
+            requested = [
+                event.data["profile"]
+                for event in events
+                if event.data.get("source") == "model_profile"
+            ]
+            assert requested
+            assert all(
+                isinstance(profile, dict) and profile["reasoning_effort"] == expected
+                for profile in requested
+            )
+    finally:
+        store.close()

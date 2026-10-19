@@ -225,7 +225,7 @@ describe('a rendered document', () => {
     const view = (await import('../views/DocumentView.svelte?raw')).default;
     expect(view.indexOf('<HiddenBanner text={found.text} quiet />')).toBeGreaterThan(-1);
     expect(view.indexOf('<HiddenBanner text={found.text} quiet />')).toBeLessThan(
-      view.indexOf('<article class="document"'),
+      view.indexOf('class="document"'),
     );
   });
 });
@@ -233,6 +233,7 @@ describe('a rendered document', () => {
 it('puts the banner beside the run view and the ledger entry renderings', async () => {
   const run = (await import('../views/RunView.svelte?raw')).default;
   expect(run.match(/<HiddenBanner text=\{step.text\} links \/>/g)).toHaveLength(3);
+  expect(run).toContain("text={run.answer ?? run.final_text ?? ''}");
   const entry = (await import('../views/LedgerEntryBody.svelte?raw')).default;
   expect(entry).toContain('<HiddenBanner text={entry.statement} links />');
 });

@@ -43,8 +43,8 @@ def record(transcript: Transcript, *, context: ExecutionContext = CONTEXT) -> Ru
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=transcript.messages,
-        tools=transcript.tool_records,
+        messages=list(transcript.messages),
+        tools=list(transcript.tool_records),
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     )
 
@@ -172,6 +172,9 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
         def __init__(self, *args, **kwargs):
             super().__init__([ModelTurn("Observed answer before cleanup")])
 
+        def for_role(self, *args, **kwargs):
+            return self
+
         async def complete(self, messages, tools):
             if cancel_phase == "model":
                 raise asyncio.CancelledError("model cancelled")
@@ -201,6 +204,16 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
             closed.append("client")
             if cancel_phase:
                 raise RuntimeError(HOSTILE)
+
+        async def claim_environment(self, request):
+            from sandbox_science.contracts.environment_claims import EnvironmentClaimResult
+
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="unmanaged"
+            )
+
+        async def fence(self, request):
+            return request
 
         async def capabilities(self, *args):
             return SimpleNamespace(

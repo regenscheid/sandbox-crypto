@@ -52,6 +52,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.harness import describe_isolation, save, tier_in_effect
 from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.jobs import JobTools
@@ -287,8 +288,8 @@ async def test_an_unreachable_worker_runs_nothing(tmp_path: Path) -> None:
         toolbox = Toolbox(unreachable, CONTEXT)
         script = [{"tool_calls": [{"name": "shell", "arguments": {"script": f"touch {sentinel}"}}]}]
         (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls
-        outcome = json.loads((await toolbox.call(call, "op-x")).text)
-    assert outcome["error"]["kind"] == "unavailable"
+        with pytest.raises(UnknownEffectError, match="worker_unknown_effect"):
+            await toolbox.call(call, "op-x")
     assert not sentinel.exists()
 
 
@@ -406,7 +407,13 @@ class AdmittingClient(WorkerClient):
         super().__init__("http://127.0.0.1:9", TOKEN)
         self.asked: list[tuple[str, list[HostPort]]] = []
 
-    async def admit_hosts(self, environment_id: str, hosts: Sequence[HostPort]) -> AdmissionResult:
+    async def admit_hosts(
+        self,
+        environment_id: str,
+        hosts: Sequence[HostPort],
+        *,
+        context: ExecutionContext | None = None,
+    ) -> AdmissionResult:
         self.asked.append((environment_id, list(hosts)))
         now = datetime.now(UTC)
         decisions = tuple(
@@ -692,6 +699,34 @@ async def test_m5_inputs_that_crashed_the_harness_are_tool_errors() -> None:
         assert written["error"]["kind"] == "invalid_request"
         read_back = json.loads((await toolbox.call(_call("read_file", {"path": "x"}), "op-b")).text)
         assert read_back["error"]["kind"] == "internal"
+
+
+async def test_read_file_explains_an_empty_range_past_eof() -> None:
+    async def read(request: web.Request) -> web.Response:
+        body = await request.json()
+        return web.json_response(
+            {
+                "path": body["path"],
+                "sha256": "0" * 64,
+                "size": 6,
+                "offset": body["offset"],
+                "eof": True,
+                "content_b64": "",
+            }
+        )
+
+    app = fake_worker_app()
+    app.router.add_post("/v1/files/read", read)
+    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+        toolbox = Toolbox(client, CONTEXT)
+        result = await toolbox.call(
+            _call("read_file", {"path": "short.txt", "offset": 13500, "length": 10000}),
+            "op-past-eof",
+        )
+        shown = json.loads(result.text)
+        assert shown["content"] == ""
+        assert shown["eof"] == "offset 13500 is at or past the end of this 6-byte file"
+        assert result.record["read"]["complete"] is False
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
@@ -1131,6 +1166,28 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
     # A package command still running at the end: the packages may be half installed.
     changing = _describe(execution("4", "4", overlapping=True), 1000, replayed=False)
     assert "still changing" in changing["environment_changed"]
+
+
+async def test_failed_shell_with_redirected_output_has_actionable_diagnostic() -> None:
+    from datetime import UTC, datetime
+
+    from sandbox_science.contracts import ExecutionState
+    from sandbox_science.orchestrator.tools import _describe
+
+    execution = Execution(
+        execution_id="exe-empty-error",
+        attempt_id="att-empty-error",
+        operation_id="op-empty-error",
+        kind="shell",
+        context=CONTEXT,
+        state=ExecutionState.FAILED,
+        submitted_at=datetime.now(UTC),
+        location=Location(pool_id="p", backend="local", hostname="h", environment_revision="1"),
+        result=Result(exit_code=1),
+    )
+    summary = _describe(execution, 1000, replayed=False)
+    assert summary["exit_code"] == 1
+    assert "without captured stdout or stderr" in summary["diagnostic"]
 
 
 async def test_background_job_tools_cross_real_worker_boundary(

@@ -64,14 +64,19 @@ from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind
+from sandbox_science.contracts.worker import MAX_FILE_WRITE_BYTES
 
 from .artifacts import Blobs
 from .errors import WorkerError
+from .recovery_fence import check_dispatch
+from .transfers import offload
 
 _log = logging.getLogger(__name__)
 
 MAX_FILE_BYTES: Final = 32 * 1024 * 1024
-"""The largest file copied between environments: a write to the executor is one line."""
+"""The ordinary shared-file bound; upload copies have their separate limit below."""
+MAX_UPLOAD_BYTES: Final = MAX_FILE_WRITE_BYTES
+"""Upload originals under shared/uploads/ can travel with the project."""
 MAX_PROJECT_BYTES: Final = 2 * 1024 * 1024 * 1024
 """The most a project's copy of its shared files may hold."""
 MAX_PROJECT_FILES: Final = 10_000
@@ -445,6 +450,7 @@ class SharedSync:
         root: Path,
         *,
         max_file_bytes: int = MAX_FILE_BYTES,
+        max_upload_bytes: int = MAX_UPLOAD_BYTES,
         max_project_bytes: int = MAX_PROJECT_BYTES,
         max_project_files: int = MAX_PROJECT_FILES,
         hash_budget: int = HASH_BUDGET,
@@ -461,6 +467,9 @@ class SharedSync:
         self.root = root
         """Each project's blob store is a directory here, named by a hash of its ID."""
         self.max_file_bytes = max_file_bytes
+        self.max_upload_bytes = max_upload_bytes
+        self._transfers = asyncio.Lock()
+        """One encoded project blob at a time, shared by down and conflict restoration."""
         self.max_project_bytes = max_project_bytes
         self.max_project_files = max_project_files
         self.hash_budget = hash_budget
@@ -483,6 +492,10 @@ class SharedSync:
         """By project: digests whose blobs were lost, to read again from an environment."""
         self._held: dict[str, set[bytes]] = {}
         """By environment: files kept back because a process there is writing them."""
+
+    def file_limit(self, path: str) -> int:
+        """Uploads have their own bound; other shared research outputs keep theirs."""
+        return self.max_upload_bytes if path.startswith("shared/uploads/") else self.max_file_bytes
 
     def blobs(self, project_id: str) -> Blobs:
         """The project's blob store: no other project's sync reads or deletes its blobs."""
@@ -647,7 +660,8 @@ class SharedSync:
             # A new sandbox under this ID, a mark removed, or one never synced: what the
             # records say it holds is checked again, and nothing reads as deleted.
             mark = f"{secrets.token_hex(16)} {project_id}"[:256]
-            await asyncio.to_thread(self.records.reclaim, environment_id, project_id, mark)
+            check_dispatch()
+            self.records.reclaim(environment_id, project_id, mark)
             self._reset(environment_id)
             scan = await self._scan(channel, (), mark=mark)
             if scan.mark != mark:
@@ -702,7 +716,10 @@ class SharedSync:
             ):
                 candidates.append(path)
         if candidates:
-            scan = await self._scan(channel, candidates)
+            scan = await self._scan(
+                channel,
+                [path for path in candidates if scan.files[path][0][1] <= self.file_limit(path)],
+            )
         self._note_scan(environment_id, scan)
         removed = (
             []
@@ -914,17 +931,17 @@ class SharedSync:
                         elif copy is None and path in scan.files:
                             continue  # the environment's own file there, which ``up`` decides
                         else:
-                            content = await asyncio.to_thread(_encoded, store, current.sha256)
                             precondition: dict[str, Any] = (
                                 {"expected_sha256": copy.sha256}
                                 if copy is not None
                                 else {"create_only": True}
                             )
-                            reply = await channel.request(
-                                "write",
+                            reply = await self._write_blob(
+                                channel,
+                                store,
+                                current.sha256,
                                 session=session_id,
                                 path=path,
-                                content_b64=content,
                                 executable=current.executable,
                                 if_unused=True,
                                 **precondition,
@@ -1007,12 +1024,12 @@ class SharedSync:
     ) -> Stamp | None:
         """Write the project's version of a file just moved away; its stamp, or None."""
         try:
-            content = await asyncio.to_thread(_encoded, self.blobs(project_id), file.sha256)
-            reply = await channel.request(
-                "write",
+            reply = await self._write_blob(
+                channel,
+                self.blobs(project_id),
+                file.sha256,
                 session=session_id,
                 path=file.path,
-                content_b64=content,
                 executable=file.executable,
                 create_only=True,
             )
@@ -1024,6 +1041,15 @@ class SharedSync:
             return None
         return _stamp(reply.get("stamp"))
 
+    async def _write_blob(
+        self, channel: Channel, store: Blobs, sha256: str, **fields: Any
+    ) -> dict[str, Any]:
+        # Separate from HTTP admission: holding the HTTP gate while waiting for a
+        # project's sync lock must never block another sync that holds that lock.
+        async with self._transfers:
+            content = await offload(_encoded, store, sha256)
+            return await channel.request("write", content_b64=content, **fields)
+
     def _kept_back(self, environment_id: str, path: str, version: int) -> list[str]:
         self._held.setdefault(environment_id, set()).add(_key(path))
         return self._once(
@@ -1033,7 +1059,8 @@ class SharedSync:
         )
 
     async def _apply(self, project_id: str, batch: _Batch) -> None:
-        unused = await asyncio.to_thread(self.records.apply, batch)
+        check_dispatch()
+        unused = self.records.apply(batch)
         if unused:
             await asyncio.to_thread(_unlink, self.blobs(project_id), unused)
 
@@ -1056,7 +1083,8 @@ class SharedSync:
         would gain nothing, and its record keeps naming the content to look for.
         """
         self._missing.setdefault(project_id, set()).add(sha256)
-        await asyncio.to_thread(self.records.unverify, project_id, sha256)
+        check_dispatch()
+        self.records.unverify(project_id, sha256)
 
     # The executor's replies.
 
@@ -1068,7 +1096,7 @@ class SharedSync:
     ) -> _Scan:
         fields: dict[str, Any] = {
             "hash": list(hashed),
-            "hash_limit": self.max_file_bytes,
+            "hash_limit": max(self.max_file_bytes, self.max_upload_bytes),
             "hash_budget": self.hash_budget,
         }
         if mark is not None:
@@ -1122,6 +1150,8 @@ class SharedSync:
                     digests[path] = digest
         too_large = frozenset(
             path for path in _strings(reply.get("too_large"), len(files)) if path in files
+        ) | frozenset(
+            path for path, (stamp, _) in files.items() if stamp[1] > self.file_limit(path)
         )
         odd = tuple(_shown(name) for name in [*_strings(reply.get("odd"), 10), *refused])
         mark, now = reply.get("mark"), reply.get("now")
@@ -1162,7 +1192,7 @@ class SharedSync:
                     return None
                 if offset == 0 and reply.get("sha256") != sha256:
                     return None
-                if offset + len(data) > self.max_file_bytes:
+                if len(data) > READ_BYTES or offset + len(data) > self.file_limit(path):
                     return None
                 await asyncio.to_thread(writer.write, data)
                 offset += len(data)
@@ -1200,7 +1230,7 @@ class SharedSync:
         mib = 1024 * 1024
         return self._once(
             ("large", project_id, path, str(size)),
-            f"{_shown(path)} ({size // mib} MiB) is over {self.max_file_bytes // mib} MiB, so it "
+            f"{_shown(path)} ({size // mib} MiB) is over {self.file_limit(path) // mib} MiB, so it "
             "is not copied to the project's other environments; publish it as an artifact "
             "instead",
         )

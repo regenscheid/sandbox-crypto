@@ -41,7 +41,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
    - Up to the worker's limit (1 MiB a stream by default), the file is the whole stream. Past it, the worker kept only the head and tail, so the result says the file is a sample too and asks for output that large to be written to a file by the script.
    - A cell's printed output, and the text of its rich outputs, are saved the same way (`output-1.txt` for its first output).
    - When a file cannot be saved, the result says why, and still calls what it shows a sample. Saving never fails the call.
-6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept.
+6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept. A nonzero exit with no captured stdout or stderr includes a diagnostic to inspect redirected logs or rerun the failing step with visible output; the diagnostic does not reinterpret the exit status.
 7. **Timeouts.** Each call has a wall-time limit, with a default and a maximum set by policy. When it expires, each of the call's processes gets SIGTERM, then SIGKILL after a short grace period (OpenShell refuses signals to a whole process group, so the executor signals processes one by one; [worker](../WORKER.md#leftover-processes)).
 8. **Leftover processes.** When a call ends, the processes it started that are still running are terminated, including those that left its process group or session. A shell call cannot leave daemons running ([worker](../WORKER.md#leftover-processes) says how far the executor can find them). A computation that should outlive the call is a background job.
 
@@ -94,8 +94,8 @@ A background job is a shell command that runs without holding a tool call open: 
 1. **Paths.** Paths are relative to the session workspace, or start with `shared/` for the project's shared area ([projects and sessions](../PROJECTS-AND-SESSIONS.md)), which the worker keeps in step across the project's environments (D79), or with `documents/` for the living documents' files, whose writes are merged as direct edits ([living documents](living-documents.md), LD-50). Absolute paths, `..` segments and paths through a symlink are refused. The shell can still use symlinks; the file tools do not follow them.
 
    *Not built:* `documents/` has no special meaning to the file tools: it is an ordinary directory of the session workspace, and no write is merged as a direct edit (LD-50). The document sync code meant for this was removed from main ([archive](../../.agents/docs/archive/README.md)).
-2. **Read** returns a file's bytes, up to a size limit (ranges for larger files), with its SHA-256. Directories, devices and FIFOs are refused.
-3. **Write** creates or atomically replaces a file in the session workspace. A write to the shared area must name the content hash it expects to replace (or none for a new file), and fails with `conflict` if the file has changed.
+2. **Read** returns a file's bytes, up to a size limit (ranges for larger files), with its SHA-256. An offset at or beyond the file's end returns an empty EOF range with the file size and hash, so the agent can correct an obsolete offset. Directories, devices and FIFOs are refused.
+3. **Write** creates or atomically replaces a file in the session workspace. A write to the shared area uses `create_only=true` for a new file or `expected_sha256` from `read_file` to replace one, and fails with `conflict` if the file has changed. The agent's `write_file` tool exposes both preconditions.
 4. **List** returns up to a bounded number of entries. Each gives its name, type, size and modification time; symlinks are reported as links and not followed.
 5. **Publish** copies a workspace file into the project's artifact store as an immutable revision. It returns an `ArtifactRef` carrying the content hash, the media type and the producing attempt: the last finished attempt that wrote the file.
 6. **Written files.** Each attempt's result lists the files in the session workspace and the shared area that it created or changed, as the worker observed them. An attempt running at the same time in the session may contribute some of them.
@@ -108,13 +108,13 @@ A background job is a shell command that runs without holding a tool call open: 
 
 ## Errors
 
-Every failure has one of these kinds and a message for the agent, which never contains secrets:
+Every definitive failure has one of these kinds and a message for the agent, which never contains secrets. A worker transport or proxy failure after a submission may leave its effect unknown. In that case the harness stops the attempt with the durable tool intent pending; it does not give the agent an ordinary error that would let it submit a new operation.
 
 | Kind | Meaning |
 | --- | --- |
 | `invalid_request` | Malformed arguments, or a path outside the allowed areas |
 | `unsupported` | The environment lacks the capability, such as a kernel language |
-| `unavailable` | No worker or sandbox can be reached; nothing ran |
+| `unavailable` | A definite refusal before execution, or an unavailable read; the harness separately holds a submitted operation whose effect is unknown |
 | `policy_denied` | The project policy forbids the operation |
 | `not_found` | Unknown execution, kernel or file |
 | `conflict` | An idempotency key was reused with a different request, or a shared file changed |

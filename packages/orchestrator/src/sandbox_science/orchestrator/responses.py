@@ -10,14 +10,14 @@ as the API's input items:
   messages, function calls and their outputs;
 - an answer that came back through this API (an ``AssistantMessage`` whose native
   answer is a response), on this client's alias and from the model the alias answers
-  as now, is sent back as the output items the gateway returned, unchanged: reasoning
+  as now, is sent back as its completed output items: reasoning
   with its ``encrypted_content``, messages with their ``phase``, and the item IDs as the
   gateway rewrote them, which name its deployment. The model the alias answers as now is
   the one its last answer through this client named, or before there is one, the one
   the conversation's newest answer on the alias names: OpenAI carries reasoning only
   within a model family. A reasoning item goes with the item after it, the call or
   message it led to, so one that led to nothing, as at the end of a response cut short,
-  is left out;
+  is left out; an unfinished call is also left out, without a fabricated output;
 - any other answer, from another alias or model, another adapter, or no call at all
   (RS-10's earlier conversation), or whose text or calls are no longer its response's,
   is sent as its text and calls, without reasoning (CM-42);
@@ -59,7 +59,7 @@ from .pairing import CALL, OUTPUT, Item, paired
 from .pricing import Tokens, responses_tokens
 
 RESPONSES: Final = "responses"
-"""The native format of this client's answers: a response, as the gateway sent it."""
+"""The native format of this client's answers: a complete terminal response object."""
 INCLUDE: Final = ("reasoning.encrypted_content",)
 """What every request asks for, though ``store: false`` returns it by default."""
 REASONING: Final = "reasoning"
@@ -88,6 +88,7 @@ class ResponsesModel(GatewayModel):
             "input": items,
             "store": False,
             "include": list(INCLUDE),
+            "stream": True,
         }
         if self._cache_key is not None:
             body["prompt_cache_key"] = self._cache_key
@@ -207,12 +208,16 @@ def _agrees(sent: Sequence[Item], text: str | None, calls: Sequence[ToolCall]) -
 
 
 def _kept(sent: Sequence[Item]) -> list[Item]:
-    """A response's items, each reasoning item with the item after it: one that led to
-    nothing is left out."""
+    """Replay completed items, each reasoning item with the item after it.
+
+    A partial function call is kept in the native archive but cannot be replayed as a
+    call: pairing it would manufacture an aborted output for work never dispatched.
+    """
     kept: list[Item] = []
     follows = False
     for item in reversed(sent):
-        keep = follows if item.get("type") == REASONING else True
+        kind = item.get("type")
+        keep = follows if kind == REASONING else kind != CALL or item.get("status") == "completed"
         if keep:
             kept.append(item)
         follows = keep
@@ -270,6 +275,12 @@ def parse_response(text: str, priced: str | None = None) -> ModelTurn:
         finish = "tool_calls" if calls else "stop"
     usage = data.get("usage")
     usage = cast(dict[str, Any], usage) if isinstance(usage, dict) else {}
+    details = usage.get("input_tokens_details")
+    read = (
+        _tokens(cast(dict[str, Any], details).get("cached_tokens"))
+        if isinstance(details, dict)
+        else None
+    )
     resolved = data.get("model")
     return ModelTurn(
         text=_text(items),
@@ -278,6 +289,8 @@ def parse_response(text: str, priced: str | None = None) -> ModelTurn:
         model=resolved if isinstance(resolved, str) else None,
         input_tokens=_tokens(usage.get("input_tokens")),
         output_tokens=_tokens(usage.get("output_tokens")),
+        cache_read_input_tokens=read,
+        cache_creation_input_tokens=_tokens(usage.get("cache_creation_input_tokens")),
         cost=reported_cost(priced if priced is not None else usage.get("cost")),
     )
 
@@ -285,7 +298,7 @@ def parse_response(text: str, priced: str | None = None) -> ModelTurn:
 def _calls(items: Sequence[Item]) -> list[ToolCall]:
     found: list[ToolCall] = []
     for item in items:
-        if item.get("type") == CALL:
+        if item.get("type") == CALL and item.get("status") == "completed":
             arguments = item.get("arguments", "{}")
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments)

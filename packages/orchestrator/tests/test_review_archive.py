@@ -89,12 +89,16 @@ async def test_a_review_names_archive_places_and_earlier_runs_actions(harness: H
     try:
         reviews = ReviewStore(documents)
         archive = Archive(documents.control)
-        rows = {r.message_id: r for r in archive.messages(PROJECT, SESSION, run=name(second))}
+        rows = {r.message_id: r for r in archive.messages(PROJECT, SESSION)}
         (review, items), *_ = reviews_of(reviews, "run-2")
         placed = [cast(Json, i["locator"]["archive"]) for i in items if i["kind"] == "transcript"]
         assert placed
         assert all(rows[found["id"]].position == found["position"] for found in placed)
-        answer = next(row for row in rows.values() if row.entry.kind == "assistant")
+        answer = next(
+            row
+            for row in archive.messages(PROJECT, SESSION, run=name(second))
+            if row.entry.kind == "assistant"
+        )
         assert {"id": answer.message_id, "position": answer.position} in placed
         with documents.control.read() as tx:
             (dispatched, *_) = reviews.review_log.recent(
@@ -242,6 +246,20 @@ def test_a_shift_among_calls_of_one_tool_gives_no_place(archive: Archive) -> Non
         found is not None for found in results(archive, PROJECT, SESSION, RUN, [record, other])
     )
     assert results(archive, PROJECT, SESSION, RUN, [other, record]) == [None, None]
+
+
+def test_paged_tool_places_extend_after_an_earlier_review(archive: Archive) -> None:
+    from sandbox_science.orchestrator.history.collections import Collection
+
+    tools = Collection(archive.control, (PROJECT, SESSION, RUN), "tools")
+    for number in (1, 2):
+        arguments = json.dumps({"code": str(number)})
+        answer(archive, asked((f"c{number}", arguments)))
+        result(archive, f"c{number}", str(number))
+        tools.append({"tool": "sage", "arguments": arguments})
+        places = results(archive, PROJECT, SESSION, RUN, tools)
+        assert len(places) == number
+        assert all(place is not None for place in places)
 
 
 def test_held_calls_are_the_sessions_earlier_runs_only(archive: Archive) -> None:

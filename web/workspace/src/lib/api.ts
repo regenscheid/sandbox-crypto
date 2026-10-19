@@ -7,8 +7,17 @@
  * request, and the browser adds the `Origin` header the server requires of a POST.
  */
 import type {
+  CapturedCalls,
+  ContextParts,
+  ContextText,
+  IndexStatus,
   ChartLink,
+  ContextHistoryPage,
+  ContextAttemptsPage,
+  ContextTimelinePage,
   FigureLink,
+  HistoryPage,
+  HistoryChunk,
   ArtifactListing,
   Category,
   FoldProposalList,
@@ -27,6 +36,8 @@ import type {
   MemoryChange,
   MemoryHistory,
   MemoryProposals,
+  McpInventory,
+  ModelSettings,
   ProjectAnswer,
   ProjectListing,
   ProjectSkills,
@@ -134,7 +145,16 @@ export interface ToolRecord {
 }
 
 export interface RunRecord {
+  /** Exact historical collections are paged separately when inline snapshots reach their bound. */
+  stored_history?: {
+    format: 'run-history-v1';
+    project: string;
+    session: string;
+    run: string;
+    collections?: Record<string, number>;
+  } | null;
   run_id: string;
+  role?: 'main' | 'delegated';
   context: {
     project_id: string;
     session_id: string;
@@ -182,6 +202,8 @@ export interface ModelUsage {
   model: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
   /** What the call cost: as the gateway reported it, or priced from its model info
    * (`cost_source`); null or absent when neither gives it. */
   cost?: number | null;
@@ -490,13 +512,22 @@ export interface ArchivedMessage {
   text: string;
 }
 
+export interface MessageFieldChunk {
+  message: string;
+  field: 'content' | 'tool_calls';
+  offset: number;
+  total: number;
+  next_offset: number | null;
+  data_base64: string;
+}
+
 export const api = {
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
     post<MacroContext>(`/projects/${part(project)}/macros`, value),
   projects: () => get<ProjectListing>('/projects'),
-  project: (project: string) =>
-    get<ProjectAnswer>(`/projects/${part(project)}`).then((found) => found.project),
+  project: (project: string, signal?: AbortSignal) =>
+    get<ProjectAnswer>(`/projects/${part(project)}`, { signal }).then((found) => found.project),
   session: (project: string, session: string, signal?: AbortSignal) =>
     get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`, { signal }),
   jobs: (project: string, session: string, signal?: AbortSignal) =>
@@ -504,14 +535,135 @@ export const api = {
   cancelJob: (project: string, session: string, job: string) =>
     post(`/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/cancel`, {}),
   /** The session's runs, running ones included, and its delegations (PD-42). */
-  runTree: (project: string, session: string) =>
-    get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`),
+  runTree: (project: string, session: string, signal?: AbortSignal) =>
+    get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`, { signal }),
   message: (project: string, message: string) =>
     get<ArchivedMessage>(`/projects/${part(project)}/messages/${part(message)}`),
+  messageChunk: (project: string, message: string, field: 'content' | 'tool_calls', offset = 0) =>
+    get<MessageFieldChunk>(
+      `/projects/${part(project)}/messages/${part(message)}/chunks?` +
+        new URLSearchParams({ field, offset: String(offset) }),
+    ),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
-  documents: (project: string) =>
-    get<{ documents: DocumentInfo[] }>(`/projects/${part(project)}/documents`).then(
+  contextAttempts: (project: string, session: string, run: string, after = '') =>
+    get<ContextAttemptsPage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/attempts?` +
+        new URLSearchParams({ after }),
+    ),
+  contextTimeline: (
+    project: string,
+    session: string,
+    run: string,
+    answersAfter = 0,
+    eventsAfter = 0,
+    signal?: AbortSignal,
+    tail = false,
+  ) =>
+    get<ContextTimelinePage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/timeline?` +
+        new URLSearchParams({
+          answers_after: String(answersAfter),
+          events_after: String(eventsAfter),
+          limit: '50',
+          tail: tail ? '1' : '0',
+        }),
+      { signal, maxBytes: 2 * 1024 * 1024 },
+    ),
+  contextCaptures: (
+    project: string,
+    session: string,
+    run: string,
+    scope: 'attempt' | 'agent',
+    before = 0,
+    signal?: AbortSignal,
+  ) =>
+    get<CapturedCalls>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/captures?${new URLSearchParams({ scope, before: String(before) })}`,
+      { signal },
+    ),
+  contextParts: (
+    project: string,
+    session: string,
+    run: string,
+    identity: string,
+    after = 0,
+    signal?: AbortSignal,
+  ) =>
+    get<ContextParts>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/captures/${part(identity)}/parts?after=${after}`,
+      { signal },
+    ),
+  contextPartText: (
+    project: string,
+    session: string,
+    run: string,
+    identity: string,
+    ordinal: number,
+    offset = 0,
+    signal?: AbortSignal,
+  ) =>
+    get<ContextText>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/captures/${part(identity)}/parts/${ordinal}?offset=${offset}`,
+      { signal },
+    ),
+  indexContextHistory: (
+    project: string,
+    session: string,
+    run: string,
+    scope: 'attempt' | 'agent',
+  ) =>
+    post<IndexStatus>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/history/index?scope=${scope}`,
+      undefined,
+    ),
+  contextHistory: (
+    project: string,
+    session: string,
+    run: string,
+    options: {
+      after?: number;
+      contains?: string;
+      role?: 'user' | 'assistant' | 'tool';
+      kind?: string;
+      includeDerived?: boolean;
+      scope?: 'attempt' | 'agent';
+      signal?: AbortSignal;
+    } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (options.after) query.set('after', String(options.after));
+    if (options.contains) query.set('contains', options.contains);
+    query.set('indexed', '1');
+    if (options.role) query.set('role', options.role);
+    if (options.kind) query.set('kind', options.kind);
+    if (options.scope) query.set('scope', options.scope);
+    if (options.includeDerived) query.set('include_derived', '1');
+    return get<ContextHistoryPage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/context/history` +
+        (query.size ? `?${query}` : ''),
+      { signal: options.signal },
+    );
+  },
+  runHistory: (project: string, session: string, run: string, collection: string, offset = 0) =>
+    get<HistoryPage>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/history?` +
+        new URLSearchParams({ collection, offset: String(offset), limit: '100' }),
+    ),
+  runHistoryChunk: (
+    project: string,
+    session: string,
+    run: string,
+    collection: string,
+    position: number,
+    offset = 0,
+  ) =>
+    get<HistoryChunk>(
+      `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/history/chunks?` +
+        new URLSearchParams({ collection, position: String(position), offset: String(offset) }),
+    ),
+  documents: (project: string, signal?: AbortSignal) =>
+    get<{ documents: DocumentInfo[] }>(`/projects/${part(project)}/documents`, { signal }).then(
       (found) => found.documents,
     ),
   document: (project: string, document: string, revision: number | null = null) =>
@@ -558,6 +710,11 @@ export const api = {
   fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),
   changeFileSettings: (project: string, value: Record<string, unknown>) =>
     post<FileSettings>(`/projects/${part(project)}/files/settings`, value),
+  /** Model aliases and reasoning effort for newly admitted agent trees. */
+  modelSettings: (project: string) =>
+    get<ModelSettings>(`/projects/${part(project)}/models/settings`),
+  changeModelSettings: (project: string, value: Record<string, unknown>) =>
+    post<ModelSettings>(`/projects/${part(project)}/models/settings`, value),
   /** The figure frame's URL for a chart, and a capability for each data file it pins, in
    * order, for 10 minutes (FG-15). */
   chartLink: (project: string, data: { artifact: string; revision: number; sha256: string }[]) =>
@@ -748,6 +905,8 @@ export const api = {
   /** The project's skills: its settings, its pins with their imports' reports, and the
    * skills a run is given now. */
   skills: (project: string) => get<ProjectSkills>(`/projects/${part(project)}/skills`),
+  /** Safe configured MCP service identity and bounded historical run observations. */
+  mcpServices: (project: string) => get<McpInventory>(`/projects/${part(project)}/mcp-services`),
   /** The user's change of the always-loaded and excluded skills, at `expected`. */
   changeSkillSettings: (project: string, change: SkillSettingsChange) =>
     post<SkillSettingsView>(`/projects/${part(project)}/skills/settings`, change),

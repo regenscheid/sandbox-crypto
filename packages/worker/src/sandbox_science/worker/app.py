@@ -67,12 +67,16 @@ from sandbox_science.contracts.documents import (
     CatalogSnapshotPage,
     CatalogStatus,
 )
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
+from sandbox_science.contracts.readiness import WorkerReadiness
+from sandbox_science.contracts.recovery import EffectControl, OperationLookupRequest, RecoveryFence
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import (
     EVENT_HEARTBEAT_SECONDS,
+    MAX_FILE_WRITE_BODY,
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
     MediaType,
@@ -83,10 +87,13 @@ from .environments import Environments
 from .errors import WorkerError
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
+from .operation_lookup import lookup
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
+from .recovery_fence import operator_scope
 from .settings import ClientSettings, token_digest
 from .suspend import busy
 from .timeouts import seconds
+from .transfers import offload
 
 _log = logging.getLogger(__name__)
 
@@ -100,6 +107,9 @@ CREATING: Final = web.AppKey("creating", dict[str, set[str]])
 """The environments each limited client is creating right now, which its limit counts too."""
 LOCKFILE_DIFFS: Final = web.AppKey("lockfile_diffs", LockfileDiffs)
 HEARTBEAT: Final = web.AppKey("heartbeat", float)
+FILE_WRITE_TIMEOUT: Final = web.AppKey("file_write_timeout", float)
+FILE_WRITES: Final = web.AppKey("file_writes", asyncio.Lock)
+"""Admit one file body before materializing JSON/base64, across all clients/projects."""
 MAX_BODY: Final = 16 * 1024 * 1024
 _REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _EVENT = TypeAdapter[Event](Event)
@@ -121,6 +131,8 @@ class Client:
     projects: frozenset[str] | None
     max_environments: int | None = None
     document_catalog: bool = False
+    recovery_control: bool = False
+    operator: bool = False
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -160,20 +172,24 @@ def create_app(
     document_catalog: DocumentsCatalog | None = None,
     *,
     heartbeat: float = EVENT_HEARTBEAT_SECONDS,
+    file_write_timeout: float = 300.0,
 ) -> web.Application:
     """The worker's HTTP API; event streams carry an empty line after ``heartbeat`` quiet
     seconds."""
     seconds("heartbeat", heartbeat)
+    seconds("file_write_timeout", file_write_timeout)
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
-    pool = Client("pool", None, document_catalog=True)
+    pool = Client("pool", None, document_catalog=True, recovery_control=True, operator=True)
     by_digest = {
         c.token_sha256: Client(
             c.name,
             frozenset(c.projects),
             c.max_environments,
             c.document_catalog,
+            c.recovery_control,
+            c.operator,
         )
         for c in clients
     }
@@ -206,7 +222,8 @@ def create_app(
         request[_CLIENT] = client
         try:
             _check_protocol(request)
-            response = await handler(request)
+            with operator_scope(client.operator):
+                response = await handler(request)
         except WorkerError as error:
             response = _error(error.kind, error.message, error.status)
         except ValidationError as exc:
@@ -224,6 +241,8 @@ def create_app(
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app.on_response_prepare.append(_speak_protocol)
+    app[FILE_WRITES] = asyncio.Lock()
+    app[FILE_WRITE_TIMEOUT] = file_write_timeout
     app[MANAGER] = manager
     app[HEARTBEAT] = heartbeat
     app[CREATING] = {}
@@ -264,7 +283,9 @@ def create_app(
             environments.required_deleted.append(provisioner.forget)
     app.add_routes(
         [
+            web.get("/v1/ready", readiness),
             web.post("/v1/environments", create_environment),
+            web.post("/v1/environment-claims", environment_claim),
             web.get("/v1/environments", list_environments),
             web.get("/v1/environments/{environment_id}", get_environment),
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
@@ -309,6 +330,8 @@ def create_app(
             web.post("/v1/provisioning/{provision_id}/cancel", cancel_provision),
             web.get("/v1/capabilities", capabilities),
             web.post("/v1/executions", submit),
+            web.post("/v1/operations/lookup", lookup_operation),
+            web.post("/v1/recovery/fence", install_recovery_fence),
             web.get("/v1/jobs", list_jobs),
             web.get("/v1/jobs/{execution_id}", job_status),
             web.get("/v1/executions/{execution_id}", get_execution),
@@ -624,13 +647,32 @@ async def suspend_environment(request: web.Request) -> web.Response:
     environments = _environments(request)
     environment_id = _environment(request, environments)
     manager = request.app[MANAGER]
-    if environments.get(environment_id).state is EnvironmentState.READY and await busy(
-        manager, environment_id, manager.clock
+    if environments.protected(environment_id) or (
+        environments.get(environment_id).state is EnvironmentState.READY
+        and await busy(manager, environment_id, manager.clock)
     ):
         suspended = False
     else:
         suspended = await environments.stop_now(environment_id, manager.clock.monotonic())
     return _json(SuspendResult(environment=environments.get(environment_id), suspended=suspended))
+
+
+async def readiness(request: web.Request) -> web.Response:
+    """Authenticated protocol readiness without an environment/backend lookup."""
+    return _json(WorkerReadiness(protocol=PROTOCOL_VERSION))
+
+
+async def environment_claim(request: web.Request) -> web.Response:
+    """A bounded claim for active research; never a request to create or resume a VM."""
+    body = EnvironmentClaim.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    environments = request.app.get(ENVIRONMENTS)
+    if environments is None or environments.records.get(body.context.environment_id) is None:
+        return _json(
+            EnvironmentClaimResult(environment_id=body.context.environment_id, state="unmanaged")
+        )
+    with request.app[MANAGER].store.recovery_fences.bind(body.context):
+        return _json(await environments.claim(body))
 
 
 async def revise_environment(request: web.Request) -> web.Response:
@@ -653,6 +695,22 @@ async def admit_hosts(request: web.Request) -> web.Response:
     body = AdmissionRequest.model_validate_json(await _body(request))
     environments = _environments(request)
     environment_id = _environment(request, environments)
+    if body.context is not None:
+        _context(request, body.context, hide=True)
+        if body.context.environment_id != environment_id:
+            raise WorkerError(ErrorKind.NOT_FOUND, "admission is outside the supplied context")
+        with request.app[MANAGER].store.recovery_fences.bind(body.context):
+            return await _admit_hosts(request, environments, environment_id, body)
+    if _client(request).operator or _client(request).recovery_control:
+        return await _admit_hosts(request, environments, environment_id, body)
+    project = environments.get(environment_id).project_id
+    with request.app[MANAGER].store.recovery_fences.bind_project(project):
+        return await _admit_hosts(request, environments, environment_id, body)
+
+
+async def _admit_hosts(
+    request: web.Request, environments: Environments, environment_id: str, body: AdmissionRequest
+) -> web.Response:
     if not environments.settings.admission:
         raise WorkerError(ErrorKind.UNSUPPORTED, "this pool does not admit hosts on demand")
     await environments.resume(environment_id)
@@ -764,6 +822,20 @@ async def capabilities(request: web.Request) -> web.Response:
     return _json(offered)
 
 
+async def install_recovery_fence(request: web.Request) -> web.Response:
+    if not _client(request).recovery_control:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "client lacks recovery control permission")
+    body = RecoveryFence.model_validate_json(await _body(request))
+    _allowed(request, body.project_id)
+    return _json(request.app[MANAGER].store.recovery_fences.install(body))
+
+
+async def lookup_operation(request: web.Request) -> web.Response:
+    body = OperationLookupRequest.model_validate_json(await _body(request))
+    _allowed(request, body.context.project_id)
+    return _json(lookup(request.app[MANAGER].store, body))
+
+
 async def submit(request: web.Request) -> web.Response:
     execution_request = _REQUEST.validate_json(await _body(request))
     _context(request, execution_request.context)
@@ -840,7 +912,8 @@ async def get_provision(request: web.Request) -> web.Response:
 
 async def cancel_provision(request: web.Request) -> web.Response:
     operation = _provision(request)
-    return _json(await _provisioner(request).cancel(operation.provision_id))
+    context = await _effect_control(request)
+    return _json(await _provisioner(request).cancel(operation.provision_id, context=context))
 
 
 async def provisioning_queue(request: web.Request) -> web.Response:
@@ -1100,7 +1173,18 @@ async def events(request: web.Request) -> web.StreamResponse:
 
 
 async def cancel(request: web.Request) -> web.Response:
-    return _json(await request.app[MANAGER].cancel(_execution(request).execution_id))
+    execution = _execution(request)
+    context = await _effect_control(request)
+    return _json(await request.app[MANAGER].cancel(execution.execution_id, context=context))
+
+
+async def _effect_control(request: web.Request) -> ExecutionContext | None:
+    payload = await _body(request)
+    if not payload:
+        return None
+    context = EffectControl.model_validate_json(payload).context
+    _context(request, context, hide=True)
+    return context
 
 
 async def close_session(request: web.Request) -> web.Response:
@@ -1128,9 +1212,17 @@ async def read_file(request: web.Request) -> web.Response:
 
 
 async def write_file(request: web.Request) -> web.Response:
-    body = WriteFileRequest.model_validate_json(await _body(request))
-    _context(request, body.context)
-    return _json(await request.app[MANAGER].write_file(body))
+    try:
+        async with asyncio.timeout(request.app[FILE_WRITE_TIMEOUT]), request.app[FILE_WRITES]:
+            raw = await request.clone(client_max_size=MAX_FILE_WRITE_BODY).read()
+            body = await offload(WriteFileRequest.model_validate_json, raw)
+            del raw
+            _context(request, body.context)
+            return _json(await request.app[MANAGER].write_file(body))
+    except TimeoutError:
+        raise WorkerError(
+            ErrorKind.UNAVAILABLE, "file transfer timed out; retry the write"
+        ) from None
 
 
 async def skills_check(request: web.Request) -> web.Response:

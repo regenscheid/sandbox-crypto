@@ -43,6 +43,10 @@ def test_manager_and_channel_timeouts_refuse_bad_values(value: Any) -> None:
         ChannelTimeouts(close_grace=value)
     with pytest.raises(ValueError, match="write"):
         ChannelTimeouts(write=value)
+    with pytest.raises(ValueError, match="transfer_write"):
+        ChannelTimeouts(transfer_write=value)
+    with pytest.raises(ValueError, match="transfer_reply"):
+        ChannelTimeouts(transfer_reply=value)
 
 
 @pytest.mark.parametrize("value", BAD)
@@ -50,6 +54,8 @@ def test_the_event_heartbeat_must_be_positive(value: Any) -> None:
     manager = cast(ExecutionManager, SimpleNamespace())
     with pytest.raises(ValueError, match="heartbeat"):
         create_app(manager, "test-secret-" + "t" * 40, heartbeat=value)
+    with pytest.raises(ValueError, match="file_write_timeout"):
+        create_app(manager, "test-secret-" + "t" * 40, file_write_timeout=value)
 
 
 @pytest.mark.parametrize("value", BAD)

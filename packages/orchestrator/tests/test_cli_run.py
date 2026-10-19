@@ -26,6 +26,9 @@ def run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         def __init__(self, base_url, model, key, **kwargs):
             self.alias = model
 
+        def for_role(self, role, profile):
+            return self
+
         async def close(self):
             closed.append(f"model:{self.alias}")
 

@@ -227,7 +227,7 @@ class Pool:
             not isinstance(timeout, int | float)
             or isinstance(timeout, bool)
             or not math.isfinite(timeout)
-            or not 0 < timeout <= 60
+            or not 0 < timeout <= 600
         ):
             raise CaptureError("invalid_request", "invalid capture budget")
         parameters({**data, "root": str(self.root)})
@@ -285,8 +285,9 @@ class Pool:
                     if len(output) + len(chunk) > maximum:
                         raise CaptureError("internal", "capture helper reply is too large")
                     output.extend(chunk)
-                if await process.wait() != 0:
-                    raise CaptureError("internal", "capture helper failed")
+                status = await process.wait()
+                if status != 0:
+                    raise CaptureError("internal", f"capture helper exited with status {status}")
                 try:
                     raw: object = json.loads(output)
                 except (ValueError, RecursionError) as exc:

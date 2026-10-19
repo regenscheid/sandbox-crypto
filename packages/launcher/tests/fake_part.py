@@ -146,6 +146,18 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     return Api
 
 
+class ControlHealth(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        data = b'{"ready": true, "runtime_connected": false}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
 def serve(
     address: str | None,
     lines: list[str],
@@ -234,6 +246,12 @@ match (name, args[:2]):
             print(json.dumps({**imported, "unchanged": False}, indent=2))
         else:
             print(json.dumps({"source": option("--source"), "pinned": imported, "changes": None}))
+    case ("sandbox-science-control", ["--settings", *_]):
+        for seen in ("LEAK_CHECK", "PASSED_ON"):
+            if seen in os.environ:
+                note(f"saw {seen}")
+        settings = json.loads(Path(option("--settings")).read_text())
+        serve(settings["listen"], ["control capability service ready"], api=ControlHealth)
     case ("sandbox-science-harness", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:

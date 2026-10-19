@@ -11,6 +11,7 @@ A living document is Markdown with LaTeX math, kept by the platform with every r
 
 - `document_list` lists the documents, with their current revisions.
 - `document_read` shows a revision as blocks in order: each with its ID, kind and text, and each formula with its ID and TeX. A long document comes in parts; read on from the block where the last part stopped.
+- `show_outline` shows a document's headings and their stable block IDs at a chosen revision. Use its continuation cursor for a long document, then read the sections you need in full.
 - `document_create` makes a document from a short name, a title and its text.
 - `document_patch` changes a document.
 - `document_delete` removes a document your session created; its history stays.

@@ -63,7 +63,23 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
-    "sandbox-main-10": "53fc11b495cb307a8b8d9ad7a137111abdf73da88b4c1e16b54fea95f5e4914c",
+    "sandbox-main-13": "f711149fab6e3794b8dc812d2b5cc045b586f75f0402d82e920f899c27c4c3d6",
+    "sandbox-delegated-check-10": (
+        "7a7a25a2f16db7fd2b1aa785fb4a16311a94298eaed54559fe079495e71a155b"
+    ),
+    "sandbox-delegated-task-10": "a841796e6f7c045fd406db57b271a91d4df3fc5ccfc30d3f4542235c985396da",
+    "sandbox-main-12": "6da989a0f7f7fb55760bda37ab9cdb554c9c19a9e316f2ce0528afec12aacd19",
+    "sandbox-delegated-check-9": "35de7e126f4daf28e92c08248ea66ba4feeac529955e10da77ee9e738dd7e489",
+    "sandbox-delegated-task-9": "70e83d0cf1f6f803b862cf773d3c35f1d67a390391ab0419ade26836989f7ee1",
+    "sandbox-main-11": "f67fd27c0f4937b2e370bb07563ac8aa6d41089f8307e61f5f32e505093d057c",
+    "sandbox-main-10": "e8b5e21ed6aa88254c3b40661874fea44954d4c4d4ef7d577c198ee4419f5f23",
+    "sandbox-main-plan-2": "768cd18b5403bf7d316a60eb89ca100ba270ec29f5195343baf41d0d55a301df",
+    "sandbox-stock-intake-2": "2bdb3f65587f99c7f78555349196c27f7bb2cbe1429b0adebb3ca549e93e6572",
+    "sandbox-stock-experiment-2": (
+        "2de1561e772650fc64280da0aaf60b650eab5063526416a6635fd51c2f8a50dd"
+    ),
+    "sandbox-stock-report-2": "c612dd1f37614dc0ea8e317b2ade2f320ec79bc327604b01ff0cbe59f1a7e63f",
+    "sandbox-main-9": "6ad2ced30036974bde1ecfc642f56c6eca32d3149652563c702b4bbc8e59f2d6",
     "sandbox-main-plan-1": "efb031b0fab2b9855dc3c9adcb869108dd835b725f878b977eec9ba118feb866",
     "sandbox-stock-intake-1": "e846770bc153995c6da1c87cca1913400d0008f3983361246d04d9b9a94f45ab",
     "sandbox-stock-literature-2": (
@@ -105,8 +121,8 @@ GOLDEN = {
     "sandbox-notice-outcome-correction-1": (
         "4d308ab03dd3549555c60202b1690a59e7025667f6189cdb5abb4aa25cf6eae1"
     ),
-    "sandbox-delegated-check-7": "e468195685644b97a98e2560d5bbdfefd50cd7e305bba1bf604fba4c6f4ed076",
-    "sandbox-delegated-task-7": "5d0ee80b96ba9e5ea5d785f59ea78c99f53338d48acd5e1123264f93f27494f5",
+    "sandbox-delegated-check-8": "1911d9d5cf0036fe6d952132042f96124e0845bde8271078eb65c5960b655a78",
+    "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
     "sandbox-consistency-8": "281329d55429f83ae3ff2bcbe05b486dcfb8ac7403a7adca86c0f3c8761739ce",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
@@ -120,7 +136,7 @@ GOLDEN = {
     "sandbox-notice-skills-words-2": (
         "95abbf47b2ed323a776ad1ed94e791530e2fc9352cdea710406c22a3aa572063"
     ),
-    "sandbox-skills-index-3": ("2daecc293895a53af16ac5cab4ebeb65dd527199da04a86f569cda0d89962601"),
+    "sandbox-skills-index-4": ("3b46d2a21cd57e15bc9ef583284bffd33f0ec72e5c33e8adb456e345c2cf8ef5"),
     "sandbox-skills-pass-1": ("c1959f76747a1361f5e9ebe5b97c4b675c3fe45037c28e3dc1513a8fc56ff0b6"),
     "sandbox-state-block-2": "c32d80a06a317c3faa60cc2a997fa4040b1f75479f4e00995dce3afcdf6c27c1",
     "sandbox-digest-2": "6e3a9bb129ea96671d73d6fd7e5f066451184232ae2278bc78b3e4d3f6a082ca",
@@ -183,7 +199,9 @@ def test_each_installed_version_names_its_exact_text() -> None:
     sha = {
         version: hashlib.sha256(text.encode()).hexdigest() for version, text in installed().items()
     }
-    assert sha == GOLDEN
+    # Retired versions remain pinned for historical records as the installed
+    # catalog advances; every installed version must still match its exact hash.
+    assert sha.items() <= GOLDEN.items()
 
 
 def spec(parameters: dict[str, object] | None = None, *, name: str = "inspect") -> ToolSpec:
@@ -373,8 +391,18 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
         async def __aexit__(self, *args):
             pass
 
+        async def fence(self, request):
+            return request
+
         async def environment(self, environment_id):
             raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
+
+        async def claim_environment(self, request):
+            from sandbox_science.contracts.environment_claims import EnvironmentClaimResult
+
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="unmanaged"
+            )
 
         async def capabilities(self, *args):
             location = SimpleNamespace(

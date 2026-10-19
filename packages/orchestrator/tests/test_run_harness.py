@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import (
     Harness,
@@ -25,6 +26,7 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathchecks.jobs import Checker
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
+from sandbox_science.orchestrator.run_inputs import RunInputs
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
@@ -35,8 +37,16 @@ class Worker:
 
     base_url = "http://worker.invalid"
 
+    async def fence(self, request):
+        return request
+
     async def environment(self, environment_id: str) -> None:
         raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
+
+    async def claim_environment(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        return EnvironmentClaimResult(
+            environment_id=request.context.environment_id, state="unmanaged"
+        )
 
     async def capabilities(self, environment_id: str) -> SimpleNamespace:
         self.environment_id = environment_id
@@ -87,15 +97,18 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     assert (finished.status, finished.transcript.final_text) == (0, "Answered.")
     names = [hook.name for hook in finished.hooks]
     assert names == [
+        "inputs",  # mandatory persistence before the first model call
         "requests",
         "delegations",  # handbacks, whether or not the project delegates
         "agent_messages",  # direct-parent messages, including delivery failures
+        "resources",  # durable research check-ins and parent decisions
         "questions",  # where each reply begins, for ask_user's one question per reply
         "plans",
         "reviews",
         "math",
         "kernels",
         "files",
+        "continuity",  # durable ownership and unfinished-child safe points
         "messages",
         "events",
         "view",  # the session's view as the run began, and its size before each call
@@ -110,6 +123,13 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     )
     (entry,) = projects.runs("p", "s")
     assert projects.run("p", "s", entry.name).final_text == "Answered."
+    inputs = RunInputs(projects.control).get("p", "s", entry.name)
+    assert inputs.context == finished.context
+    assert inputs.request["task"] == "Go"
+    assert inputs.request["run_id"] == "run-1"
+    assert inputs.request["alias"] == "scripted"
+    assert inputs.request["max_turns"] == 2000
+    assert inputs.pins == finished.transcript.prompt_provenance
 
 
 async def test_a_worker_below_the_minimum_isolation_is_refused(tmp_path: Path) -> None:
@@ -180,7 +200,7 @@ async def test_a_run_without_stores_uses_its_environment_and_keeps_nothing(
         await harness.run(RunRequest("p", "s", "Go"), Sink())
 
 
-async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> None:
+async def test_unsettled_delegated_kernels_survive_until_explicit_stop(tmp_path: Path) -> None:
     """PD-37: a delegated run's own kernels stop with it; a main run uses the session's
     and first closes those its session's earlier runs left (PD-40)."""
 
@@ -218,7 +238,12 @@ async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> Non
         assert worker.closed == ["left-behind"]  # never the session's own
         parent = run_name(first.started_at, "run-1")
         delegated = RunRequest("p", "s", "Look.", run_id="run-2", parent=parent, delegation="dlg-1")
-        await harness.run(delegated, Sink())
+        unfinished = await harness.run(delegated, Sink())
+        assert worker.closed == ["left-behind"]
+        from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+        WorkRecords(projects.control).stop("p", "s", run_name(unfinished.started_at, "run-2"))
+        await harness.release_child(unfinished)
     finally:
         documents.close()
     assert worker.closed == ["left-behind", "run-2"]

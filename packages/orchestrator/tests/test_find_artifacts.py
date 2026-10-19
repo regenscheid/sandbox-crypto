@@ -52,6 +52,9 @@ class Worker(WorkerClient):
     async def verified_artifact_content(self, reference: Any, *, max_bytes: int = 0) -> bytes:
         return next(data for data, _ in FILES.values() if len(data) == reference.size)
 
+    async def stream_artifact_content(self, reference, write, *, max_bytes=1024**3):
+        await write(await self.verified_artifact_content(reference, max_bytes=max_bytes))
+
 
 async def call(toolbox: Toolbox, name: str, **arguments: Any) -> Any:
     outcome = await toolbox.call(ToolCall("c", name, json.dumps(arguments)), f"op-{name}")

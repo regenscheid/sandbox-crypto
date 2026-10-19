@@ -34,14 +34,22 @@ async def worker(tmp_path: Path) -> AsyncIterator[Harness]:
 
 
 @pytest.mark.slow
-async def test_an_executor_from_before_run_kernels_is_never_asked_for_one(
+async def test_a_legacy_executor_is_never_asked_for_unsupported_kernel_operations(
     worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reattached daemon keeps its old executor, which would put a run's cell in the
-    session's kernel and close the whole session for a run's close."""
+    """A reattached daemon keeps its old executor. The worker must not let it replace
+    a newly live kernel or put a run's cell in the session kernel."""
     await worker.run("seed", kind="cell", code="kept = 1")
     channel = view(worker.manager).connection("env1").channel
     assert channel is not None
+    assert channel.hello["conditional_kernel_restart"] == 1
+    monkeypatch.delitem(channel.hello, "conditional_kernel_restart")
+    with pytest.raises(WorkerError) as conditional:
+        await worker.manager.restart_kernel(
+            KernelRestartRequest(context=SESSION, only_if_absent=True)
+        )
+    assert conditional.value.kind == "unsupported"
+    monkeypatch.setitem(channel.hello, "conditional_kernel_restart", 1)
     assert channel.hello["run_kernels"] == 1
     monkeypatch.delitem(channel.hello, "run_kernels")
     with pytest.raises(WorkerError) as closing:

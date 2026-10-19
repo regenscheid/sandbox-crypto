@@ -118,6 +118,7 @@ async def test_each_message_is_archived_whole_as_it_is_added(
         f"[{result.message_id} · tool result · shell]\n{{"
     )
     assert (result.entry.source, result.entry.call_id) == ("shell", "call-1")
+    assert archive.tool_record(PROJECT, result.message_id) == record.tools[0]
     assert answer.content == "Looking."  # the model's, as it wrote it
     assert answer.tool_calls
     assert (answer.model, answer.gateway_version) == ("scripted-main", GATEWAY_VERSION)
@@ -430,3 +431,34 @@ def test_a_store_without_fts5_or_trigrams_does_not_open(
     assert refused.value.kind == "unavailable"
     assert said in refused.value.message
     assert not (tmp_path / "control.sqlite3").exists()
+
+
+def test_filtered_scan_keeps_scope_and_releases_its_read_between_rows(state: Path) -> None:
+    projects = ProjectStore(state)
+    other = ProjectStore(state)
+    try:
+        archive, writer = Archive(projects.control), Archive(other.control)
+        first = archive.append(PROJECT, SESSION, "root", Entry("user", "task", "one"))
+        archive.append(PROJECT, SESSION, "child", Entry("user", "task", "private"), parent="root")
+        archive.append(PROJECT, SESSION, "root", Entry("user", "state_block", "derived"))
+        scan = archive.scan(PROJECT, SESSION, kinds=("task",), main_only=True)
+        assert next(scan).message_id == first.message_id
+        second = writer.append(PROJECT, SESSION, "root", Entry("user", "task", "two"))
+        assert [row.message_id for row in scan] == [second.message_id]
+        assert [row.entry.content for row in archive.scan(PROJECT, SESSION, run="child")] == [
+            "private"
+        ]
+        assert list(archive.scan("another-project", SESSION)) == []
+        assert list(archive.scan(PROJECT, "another-session")) == []
+        assert list(archive.scan(PROJECT, SESSION, kinds=("task') OR 1=1 --",))) == []
+        assert archive.view_scope(PROJECT, SESSION, run=None, end=second.position) == (
+            ("root",),
+            first.position,
+        )
+        assert archive.view_scope(PROJECT, SESSION, run="child", end=second.position) == (
+            ("child",),
+            first.position + 1,
+        )
+    finally:
+        other.close()
+        projects.close()

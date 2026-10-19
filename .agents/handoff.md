@@ -1,52 +1,36 @@
 # Handoff
 
-Updated 2026-10-16, main `7eb3b1f1`. For the next coordinator: how work is done and what to watch for. This file is replaced, not appended to, and stays under about 6 KB. Read it with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-19. Use local `dev` in `/home/andy/.cache/pt/dev-local`; implementation is integrated through signed `5a238f10`. `/home/andy/Git_Projects/sandbox-crypto` is a separate checkout whose unrelated state must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
-## Where things stand
+## Accepted scope and current evidence
 
-- **The first milestone for real use is met** in [lab 40](docs/agent-reports/babbage-openshell-lab-40-2026-10-15.md). Labs [41](docs/agent-reports/babbage-openshell-lab-41-2026-10-15.md) to [44](docs/agent-reports/babbage-openshell-lab-44-2026-10-16.md) checked what merged after it, and their product bugs are fixed. Nothing is running in a lab. The owner's personal instance runs on babbage ([runbook](../docs/PERSONAL-BABBAGE.md)); `lab_down.sh` ignores its `ss-personal-*` units.
-- **Context management is built (steps a to g); its acceptance is not met.** Lab 44 was round 1 on GPT models ([STATUS](STATUS.md#phase-and-focus)). The owner's checklist in its report is pending. Round 2 needs the Claude arms, 600,000 arms that fold twice, the control repeated and the state block's placement (CM-25) measured first. Lanes: CM-A (archive, history tools, session view, the cite-handle and gateway fixes), CM-B (the ledger's fields and provenance, cache key), CM-D (the adapters, figure charts), G (the GUI), K (skills, images).
-- **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; the deny-list's tool families should be generated from the images, not listed by hand.
-- **Waiting for the owner:** lab 44's checklist, and Q12 to 14 of the skills spec, still the coordinator's reversible acceptance. The state block's placement is a design question for round 2, not for the owner yet.
+The owner authorized **$150 total for new campaign model tests**, superseding the earlier $75 proposal, and requested all six [completion items](docs/agent-reports/completion-campaign-2026-10-18.md). This is not permission to resume SNOVA or approve extra token grants. Root coordinates live labs, spend, final reports and acceptance; implementation agents use isolated worktrees and signed local commits.
 
-## How work is done
+All six implementation areas are integrated: owned infrastructure recovery, adaptive time/turn/storage allowances, actual dispatch capture and original-history indexing, fold/usage diagnostics, safe MCP metadata/current checks, and Overview/Memory/session refinements. Independent reviews covered storage, authority, recovery and read bounds. Reported fixes include huge schema integers, partial HTTP reads, draft durability warnings, capture omissions, incremental SQLite blob reads and approved resource receipts.
 
-- **Briefs:** one task per agent, in its own worktree on a branch from `origin/main`, with the plan's [working rules](CONVENTIONS.md#working-rules). A stacked PR names its base.
-- **Review by risk** (the owner, to save tokens). A full adversarial review by a separate read-only agent for security paths, storage migrations, concurrency and new features. A light check (read the diff, see every check green on its latest run) for code moves backed by tests, docs, test-only PRs and fixes a reviewer suggested.
-- **Model routing:** Sonnet for low-risk implementation, tests, docs, light reviews, rebases, CI fixes and status syncs. Opus for security paths, migrations, concurrency, designs and specs.
-- **Test hygiene:** `pytest -n 4` at most, only the packages touched, one suite at a time: babbage is shared with labs. Tests marked `live` call the real gateway and run only when `SS_LIVE_GATEWAY` is set. `--basetemp` goes under `~/.cache/pt/<task>/`, never `/tmp`. Delete scratch by absolute path with no glob, or Claude Code stops to ask the owner. `--count` needs `-o tmp_path_retention_policy=failed`.
-- **Migration numbers:** the control store has one ordered list of steps, and main is at 56. Whoever merges first takes the next number; every other open PR with a migration renumbers and says so. Never edit `baseline.sql` or a shipped step.
-- **Merging** green PRs, as the owner asked: `gh pr merge N --merge`, then delete the remote branch once the PR reads MERGED. Retarget each stacked dependent first (`gh pr edit N --base main`), since `--delete-branch` on its base closes it for good. Then merge the base, rebase the dependent, renumber its migration and wait for its checks. In a script, end each zsh step with `|| exit 1`. Then fast-forward the main checkout and run `uv sync --locked`.
-- **Tracking files:** only the coordinator, or an agent whose task says so, edits STATUS, this file, PLAN-CHANGES and the plan's progress. Other PRs put their summary in the description and update the `docs/` pages and BACKLOG items they touch.
-- **Never `cd` the coordinator's shell outside the repository.** It moves the Desktop session's working directory, and running subagents are told to work there. Use absolute paths.
+Actual authenticated synthetic browser checks passed MCP available → unavailable → restored with zero tool calls, Memory draft retention/navigation/save, captured-context chunk paging and original-history incomplete → complete indexing across same-work continuations. Web tests: **2,239 passed**. The frozen Python suite at `5a238f10` passed **14,524 tests with 50 skips**; Ruff, format and strict Pyright are clean. The exact isolated image digest and container checks are recorded in [STATUS.md](STATUS.md).
 
-## Prompt research
+Three owned infrastructure probes passed worker restart, agent-VM replacement and host-process-loss root Resume while the same genuine Sage operation continued. The final real-model tree then proved concurrent root/child recovery, durable bidirectional steering, full child-history retrieval, final handback integration and no duplicate child/reference computation. Numeric GF(16)/GF(32) grades passed; two real Luna/medium reviewer findings led to fixes and were confirmed fixed. Observed campaign spend was **$24.56566378** with no unpriced usage. The 52-file evidence archive verifies complete owned teardown. No physical reboot, arbitrary kernel snapshot or broad scientific qualification is implied.
 
-The owner's research on other products' prompts lives outside this repository. The repository holds only our own words (D56): nothing from another product's prompts or skills is copied or paraphrased. Never import OpenScience's two skills derived from a Claude Science prompt collection ([licensing](../docs/LICENSING.md)); check NOTICE files before borrowing from it.
+## Campaign closure
 
-## Secrets
+1. Preserve `/var/tmp/ss-recovery-evidence-a4addfda` while the campaign evidence is useful; its `SHA256.json` covers all 52 allowlisted files.
+2. Do not reuse the five unsettled reviewer intents as permission to replay them. They remain visible while all observed usage is priced.
+3. Treat role-profile edits as next-tree settings. Main/orchestrator, delegated and reviewer aliases and effort are independently configurable in Project settings; ordinary Resume retains the active tree's pins.
+4. Remaining work is the open backlog, especially physical-host reboot qualification, broader lost-kernel provenance and residual transient-failure classes. It is not part of this completed disposable lab.
 
-- The owner's keys are files in `~/.config/sandbox-science/secrets/`: `litellm-harness.key` (the model gateway) and `cloudflare.env` (crypto-research-mcp's Access token). Agents never open, read, list, copy or print them; a program gets a path only when its task says so. Tests use synthetic tokens (`test-secret-…`).
-- **The `cloudflare.env` helper** (the owner, "for now"): `[mcp_proxy] provider_env_file` makes `up` run `sandbox_science.launcher.access_provider`, which reads the file in its own process and registers the OpenShell provider when the gateway lacks it. Only a lab's own config outside the repository names the real file. Labs never copy, archive or query the gateway's store.
+## Runtime and UI boundaries
 
-## Labs
+- Infrastructure recovery is opt-in and bounded. It replaces only an immutable recorded original VM; pending/unknown replacement state cannot silently start another attempt. Exhausted optional host components retain other services/VMs for inspection.
+- Parents retain responsibility for children. Root Resume drives the selected work tree, preserves explicit Stop and reconciles original effects. Approved paused root/child **turn/time/storage** allowances can qualify for automatic root Resume; this path does not grant tokens. Every next 10,000,000 tokens still needs explicit USER approval and exact revision checks. Opt-in root renewal requires newer persisted evidence and cannot relax hard capacity/security limits.
+- Dispatch captures show provider-neutral visible input, not hidden reasoning/native replay/provider transformations or per-part token counts. Oversized captures have explicit omission receipts. Text is paged by UTF-8 bytes. Derived-index pending checks still scan scoped row metadata; index misses are incomplete until remaining originals are indexed. Children/siblings are never merged into same-work continuation scope.
+- MCP schema/policy reads are authenticated, same-origin host → proxy metadata reads with no upstream call. Only the explicit availability control initializes/lists tools. Unknown/stale/unavailable states and last-check times remain separate; browser clients receive no credentials, raw configuration or private endpoints.
+- `.agents/labs/context_browser.py --selftest` validates synthetic seed records offline. Normal invocation starts its own temporary root plus loopback workspace, MCP proxy, TLS peer and control listeners. Printed `mcp_controls` changes only the synthetic peer's availability; `mcp_stats` must retain zero attempted/executed tool calls. Stop it cooperatively and verify all owned listeners/root disappear after browser acceptance.
 
-- **Tooling** is in [`.agents/labs/`](labs/README.md): `lab_up.sh`, `worker_up.sh`, `lab_down.sh` and `launcher_config.py`, which writes a lab's config outside the repo.
-- **The weaker model is deliberate.** Labs use the gateway alias `sandbox-orchestrator` for every role, a weaker model than the owner runs day to day, to exercise how the platform handles model errors. Do not switch models to fix such a failure: it is a finding about the platform's checks.
-- **Rules:** run from a worktree. Qualification checks go through `systemd-run --user`. Stop any forward unit before `lab_down.sh`. The lab's `env.sh` hides `gh`'s auth: use another shell. Raw evidence stays outside git.
-- **CI:** `gh pr checks N --watch` right after `gh pr create` can exit at once; wait a few seconds. Rerun a stalled `test (fast)` job.
+## Workflow and protections
 
-## The code, briefly
+Use signed commits, no attribution lines; do not push or mutate preserved services implicitly. Independent read-only review applies to security, concurrency, storage and new features. Current tool/developer instructions govern agent spawning.
 
-- **Loop and service:** features plug in as turn hooks (`hooks.py`). `Harness` is what `run` and `serve` build; `service.py` starts runs for chat messages and comments. Delegation is `delegation/`; skills are `skills/`, with the built-in pack in `skills/builtin/` at the repository root.
-- **Control store:** `orchestrator/control/`, schema version 56.
-- **Context:** `history/` holds the session archive, the history tools, the session view, the read register and its descriptors; `responses.py` and `messages.py` are the GPT and Claude clients (`model.gateway_model` picks one per alias), `folds.py`, `overview.py`, `bound.py` and `markers.py` hold the folds, and `digest.py` the state block's digest; `consistency/archived.py` ties reviews to the archive. Figures: `view_image` in the orchestrator, the frame and charts in `web/workspace/src/figures`.
-- **Ledger rule** (the owner): weakening a settled state needs no authority; strengthening needs the user or a passing gate. The main agent reopens an obstructed question by itself, with a reason.
-- **Worker:** a change to an existing request or response raises `PROTOCOL_VERSION` (7); a new route does not ([compatibility](../docs/COMPATIBILITY.md)).
-- **Workspace:** rerun `scripts/generate_api_types.py` when a response model changes. Agent text the user approves goes through `check_agent_text`.
-- **Launcher:** `packages/launcher` is the `sandbox-science` command, which also imports the config's skill packs ([quickstart](../docs/QUICKSTART.md)).
+Run one Python suite at a time, at most `-n 4`, with `SS_LIVE_GATEWAY` and `SS_INTEGRATION` unset and a unique `/var/tmp/sandbox-science-test-cache-*` basetemp. `/tmp` and `/home/andy` are Git checkouts. Use the locked `.venv`; strict checks use `pyright --pythonpath .venv/bin/python`. Regenerate API types after contract changes. Logs/screenshots/raw evidence stay outside Git; reports contain only sanitized summaries and hashes.
 
-## What is next
-
-1. Context management: the owner's checklist for lab 44, then round 2. Claude thinking replay stays off until the gateway runs a stable LiteLLM release with the fixes (1.107.0 expected; it runs 1.102.1) and the live check passes.
-2. Figures F6 to F8 and F11b, a skills lab, K7c and K8, [BACKLOG](BACKLOG.md) and Phase 5.
+Never launch a real service from an actively edited checkout. Never read/list/copy/print real keys under `~/.config/sandbox-science/secrets/`; authorized programs receive an existing path only. No sudo, security-setting changes, Docker pruning or destructive actions on real data. SNOVA and its archive stay preserved; do not recreate its stopped monitor. Product prompts are independently written; do not import proprietary-derived OpenScience skills.

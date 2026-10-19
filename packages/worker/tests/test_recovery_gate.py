@@ -434,6 +434,8 @@ async def test_restart_launch_is_owned_by_shutdown_and_cannot_outlive_it(
         manager: object | None = None
         generation = 0
         stops = 0
+        bindings: tuple[str, ...] = ()
+        binding_inventory = None
         control = asyncio.Lock()
         retired = False
 

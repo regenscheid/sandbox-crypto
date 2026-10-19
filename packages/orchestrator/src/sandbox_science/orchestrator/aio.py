@@ -9,6 +9,7 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from contextvars import copy_context
 from typing import Any
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock, wait_or_sleep
@@ -128,7 +129,8 @@ class OwnedExecutor:
 
     async def thread[T](self, call: Callable[[], T]) -> T:
         """``call`` in this executor's one thread."""
-        return await asyncio.get_running_loop().run_in_executor(self._threads, call)
+        context = copy_context()
+        return await asyncio.get_running_loop().run_in_executor(self._threads, context.run, call)
 
     async def aclose(self) -> None:
         """Stop admission and drain the admitted work, under repeated cancellation."""

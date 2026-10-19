@@ -113,17 +113,32 @@ class Judge:
         self.entries, self.completed, self.works, self.cites = entries, completed, works, cites
 
     def retired(
-        self, records: Sequence[tuple[str, FoldRecord]], rows: Sequence[Archived] = ()
+        self,
+        records: Sequence[tuple[str, FoldRecord]],
+        rows: Iterable[Archived] = (),
+        *,
+        history: Iterable[FoldRecord] | None = None,
     ) -> dict[str, dict[int, str]]:
         """For each record, by its archive ID, its retired markers by their index, each
         with why: ``records`` are all the session's, oldest first, those an overview
         covers among them; ``rows`` the session's archived messages, where later calls
         are looked for."""
         newest: dict[str, str] = {}
-        for _, record in records:  # first-level records hold each change once, in order
+        subjects = {
+            str(marker.get("subject"))
+            for _, record in records
+            for marker in record.markers
+            if marker.get("kind") == "decision"
+        }
+        original = history if history is not None else (record for _, record in records)
+        for record in original:  # first-level records hold each change once, in order
             if record.level == 1:
                 for marker in record.markers:
-                    if marker.get("kind") == "decision" and marker.get("at"):
+                    if (
+                        marker.get("kind") == "decision"
+                        and marker.get("at")
+                        and str(marker.get("subject")) in subjects
+                    ):
                         newest[str(marker.get("subject"))] = str(marker["at"])
         held: dict[tuple[str, int | None], Held | None] = {}
         reads: dict[tuple[str, str, str | None], str | None] = {}
@@ -162,7 +177,14 @@ class Judge:
             except Exception:  # unknown: the marker stays current
                 return UNKNOWN
 
-        sources = _Sources(entry, read, works, cited, _succeeded(rows) if rows else lambda _: None)
+        failed_ids = {
+            str(at)
+            for _, record in records
+            for marker in record.markers
+            if marker.get("kind") == "failures"
+            for at in cast(list[object], marker.get("ids") or [])
+        }
+        sources = _Sources(entry, read, works, cited, _succeeded(rows, failed_ids))
         found: dict[str, dict[int, str]] = {}
         for fold, record in records:
             gone: dict[int, str] = {}
@@ -260,44 +282,43 @@ def _assessed(marker: Mapping[str, Any], subject: str, works: Sequence[Work] | N
     return None
 
 
-def _succeeded(rows: Sequence[Archived]) -> Callable[[Sequence[str]], str | None]:
-    """Whether each failed call, by its result's message, was followed by a call of the
-    same tool with the same arguments that succeeded; the last such result's message."""
+def _succeeded(
+    rows: Iterable[Archived],
+    wanted: set[str],
+) -> Callable[[Sequence[str]], str | None]:
+    """Match later successes while discarding each historical payload after reading.
+
+    Only failed result IDs named by the fold markers need an answer. Keep canonical
+    argument digests, pending calls and the first later success for each such ID.
+    """
     calls: dict[tuple[str, str], tuple[str, str]] = {}
-    results: list[Archived] = []
-    for row in rows:
-        if row.entry.role == "assistant":
-            for call in row.entry.tool_calls:
-                function = cast(Json, call.get("function") or {})
-                args = _same(str(function.get("arguments") or ""))
-                calls[row.run, str(call.get("id"))] = (str(function.get("name")), args)
-        elif row.entry.kind == "tool_result":
-            results.append(row)
-    by_id = {row.message_id: row for row in results}
-
-    def key(row: Archived) -> tuple[str, str] | None:
-        return calls.get((row.run, str(row.entry.call_id)))
-
-    def later(at: str) -> str | None:
-        row = by_id.get(at)
-        wanted = key(row) if row is not None else None
-        if row is None or wanted is None:
-            return None
-        return next(
-            (
-                found.message_id
-                for found in results
-                if found.position > row.position and key(found) == wanted and _done(found)
-            ),
-            None,
-        )
+    pending: dict[tuple[str, str], list[str]] = {}
+    matched: dict[str, tuple[int, str]] = {}
+    if wanted:
+        for row in rows:
+            if row.entry.role == "assistant":
+                # A later assistant response closes the previous call group. An
+                # unmatched result cannot legitimately arrive after another answer.
+                calls.clear()
+                for call in row.entry.tool_calls:
+                    function = cast(Json, call.get("function") or {})
+                    args = _same(str(function.get("arguments") or ""))
+                    digest = hashlib.sha256(args.encode()).hexdigest()
+                    calls[row.run, str(call.get("id"))] = (str(function.get("name")), digest)
+            elif row.entry.kind == "tool_result":
+                key = calls.pop((row.run, str(row.entry.call_id)), None)
+                if key is None:
+                    continue
+                if key in pending and _done(row):
+                    for at in pending.pop(key):
+                        matched[at] = row.position, row.message_id
+                if row.message_id in wanted:
+                    pending.setdefault(key, []).append(row.message_id)
 
     def check(ids: Sequence[str]) -> str | None:
-        found = [later(at) for at in ids]
-        done = [at for at in found if at is not None]
-        if not done or len(done) < len(found):  # every call it counts, or it stays current
+        if not ids or any(at not in matched for at in ids):
             return None
-        return max(done, key=lambda at: by_id[at].position)
+        return max(matched[at] for at in ids)[1]
 
     return check
 

@@ -4,8 +4,8 @@
 Each tool call becomes a worker operation whose ID is derived from the call,
 so a repeated call is idempotent. Results go back to the model as compact
 JSON, bounded in size as a whole; the full execution records stay in the
-transcript. A tool call that fails, however it fails, becomes an error the
-model reads: it never ends the task.
+transcript. Definite failures become errors the model can correct. An unknown
+external effect stops the attempt with its durable tool intent still pending.
 """
 
 from __future__ import annotations
@@ -44,7 +44,12 @@ from sandbox_science.contracts.worker import Language
 from .agent_messages import CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC, AgentMailbox
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
-from .connectors import MAX_LOAD, MAX_LOADED_CHARS, MAX_QUERY, Connectors
+from .connectors import (
+    MAX_LOAD,
+    MAX_LOADED_CHARS,
+    MAX_QUERY,
+    Connectors,
+)
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .delegation import specs as delegation_specs
 from .delegation.tracks import EFFECTS as TRACK_EFFECTS
@@ -53,6 +58,7 @@ from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .documents.tool import SPECS as DOCUMENT_SPECS
+from .effects import UnknownEffectError
 from .history import SPECS as HISTORY_SPECS
 from .history import HistoryTool
 from .hooks import Effect, Notice, TurnHook
@@ -72,6 +78,8 @@ from .question_tool import EFFECTS as QUESTION_EFFECTS
 from .question_tool import SPECS as QUESTION_SPECS
 from .question_tool import QuestionTool
 from .recording import FileRecorder, RecordedFiles, Written, with_recorded
+from .resource_hooks import SPEC as RESOURCE_SPEC
+from .resource_hooks import Resources
 from .skills.tool import SPEC as SKILL_SPEC
 from .skills.tool import SkillTool
 from .view_image import SPEC as VIEW_IMAGE
@@ -83,6 +91,7 @@ if TYPE_CHECKING:
     from .delegation.tracks import TrackTools
 
 _log = logging.getLogger(__name__)
+
 
 SAVED_OUTPUT: Final = "call-output"
 """The session workspace's directory for output too long for its result, saved whole and
@@ -262,7 +271,11 @@ SPECS: Final = (
         "shell",
         "Run a bash script in the session's workspace inside the project sandbox. Each call "
         "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output." + LONG_OUTPUT + STOP_AT_FAILURE + SHARED_IN_CODE,
+        "Returns the exit code and the output. If a command might fail, keep its diagnostics "
+        "visible or inspect its redirected log in the same call."
+        + LONG_OUTPUT
+        + STOP_AT_FAILURE
+        + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -281,7 +294,16 @@ SPECS: Final = (
         "the value of the last expression and any exception." + LONG_OUTPUT + SHARED_IN_CODE,
         {
             "type": "object",
-            "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
+            "properties": {
+                "code": {"type": "string"},
+                "timeout_seconds": _TIMEOUT,
+                "replayable": {
+                    "type": "boolean",
+                    "description": "Permit automatic restoration after kernel loss only for "
+                    "assignments of fixed integer, string, boolean or None literals. "
+                    "All other code needs explicit recovery.",
+                },
+            },
             "required": ["code"],
             "additionalProperties": False,
         },
@@ -302,10 +324,17 @@ SPECS: Final = (
     ),
     ToolSpec(
         "write_file",
-        "Write a text file in the workspace, replacing it if it exists.",
+        "Write a text file in the workspace. For shared/ paths, set create_only=true "
+        "to create a new file, or expected_sha256 to the current hash from read_file "
+        "when replacing it. Other paths can omit a precondition.",
         {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "create_only": {"type": "boolean"},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
             "required": ["path", "content"],
             "additionalProperties": False,
         },
@@ -483,6 +512,7 @@ def _harness_tool_names() -> frozenset[str]:
         LEDGER_PROPOSALS,
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
+        RESOURCE_SPEC,
         CHILD_SPEC,
         PARENT_SPEC,
         STATUS_SPEC,
@@ -527,6 +557,7 @@ class Toolbox:
         kernel_run: str | None = None,
         delegations: Delegations | None = None,
         mailbox: AgentMailbox | None = None,
+        resources: Resources | None = None,
         questions: QuestionTool | None = None,
         delegated: bool = False,
         check: bool = False,
@@ -564,6 +595,7 @@ class Toolbox:
         session's, which main runs share."""
         self.delegations = delegations
         self.mailbox = mailbox
+        self.resources = resources
         self.questions = questions
         self.delegated = delegated
         if delegated and connectors is not None:
@@ -693,8 +725,14 @@ class Toolbox:
         if delegations is not None:
             entries += _group(
                 delegations.specs,
-                lambda name, call: delegations.call(name, call.args),
+                lambda name, call: delegations.call(name, call.args, operation=call.operation),
                 delegation_specs.EFFECTS,
+            )
+        if resources is not None:
+            entries += _group(
+                resources.specs,
+                lambda name, call: resources.call(name, call.args, call.operation),
+                {spec.name: "read" for spec in resources.specs},
             )
         if mailbox is not None:
             entries += _group(
@@ -705,7 +743,8 @@ class Toolbox:
         self.skills = skills
         """The run's skills: their system-message section and the ``skills`` tool."""
         if self.jobs is not None:
-            self.jobs.bindings = lambda: self._bindings({})  # a job carries them too
+            self.jobs.bindings = lambda: self._bindings({})
+            self.jobs.binding_inventory = self._binding_inventory  # a job carries them too
         if skills is not None:
             entries += _group(
                 skills.specs,
@@ -893,7 +932,7 @@ class Toolbox:
         model: str | None = None,
         gates: Sequence[TurnHook] = (),
     ) -> ToolOutcome:
-        """Run one tool call; whatever goes wrong comes back as an error for the model.
+        """Run one tool call; definite failures become errors for the model.
 
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
@@ -923,6 +962,8 @@ class Toolbox:
             gates = (*gates, Plans(self.plans))
         try:
             outcome = await self._call(entry, call, operation, model, gates)
+        except UnknownEffectError:
+            raise
         except Exception as exc:  # one bad call must not end the task
             _log.exception("the %s tool failed", call.name)
             outcome = _failure(
@@ -973,6 +1014,8 @@ class Toolbox:
             hooks.append(self.delegations)
         if self.mailbox is not None:
             hooks.append(self.mailbox)
+        if self.resources is not None:
+            hooks.append(self.resources)
         if self.questions is not None:
             hooks.append(self.questions)
         if self.plans is not None:
@@ -1027,6 +1070,12 @@ class Toolbox:
             where = ".".join(str(part) for part in first.get("loc", ()))
             return _failure(ErrorKind.INVALID_REQUEST, f"{where}: {first.get('msg')}")
         except WorkerAPIError as exc:
+            if exc.uncertain:
+                raise UnknownEffectError(
+                    "worker_unknown_effect",
+                    f"the {call.name} operation has an unknown outcome; "
+                    "reconcile its original operation before continuing",
+                ) from exc
             return _failure(exc.kind, exc.message)
         if entry.bound:
             outcome.text = self._cut(outcome.text, outcome.record)
@@ -1044,6 +1093,10 @@ class Toolbox:
         stager = self.skills.stager if self.skills is not None else None
         return dict(stager.bindings) if stager is not None else {}
 
+    def _binding_inventory(self) -> str | None:
+        stager = self.skills.stager if self.skills is not None else None
+        return stager.inventory_digest if stager is not None else None
+
     async def _shell(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         request = ShellRequest.model_validate(
             {
@@ -1051,6 +1104,7 @@ class Toolbox:
                 "context": self.context,
                 **_known(args, "script", "cwd", "timeout_seconds"),
                 "bindings": self._bindings(args),
+                "binding_inventory": self._binding_inventory(),
             }
         )
         return await self._run(request)
@@ -1180,9 +1234,14 @@ class Toolbox:
                 "run": self.kernel_run,
                 **_known(args, "code", "timeout_seconds"),
                 "bindings": self._bindings(args),
+                "binding_inventory": self._binding_inventory(),
             }
         )
-        return await self._run(request)
+        outcome = await self._run(request)
+        outcome.record["kernel_replay_binding_free"] = (
+            not request.bindings and request.binding_inventory is None
+        )
+        return outcome
 
     async def _restart(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         language = args.get("language", self.languages[0] if self.languages else "python")
@@ -1262,6 +1321,10 @@ class Toolbox:
             "size": content.size,
             "sha256": content.sha256,
         }
+        if content.offset >= content.size and not data:
+            summary["eof"] = (
+                f"offset {content.offset} is at or past the end of this {content.size}-byte file"
+            )
         part = self.output_chars // 2  # the most one call shows whole, in bytes or characters
         whole = False
         if text is None:
@@ -1304,7 +1367,7 @@ class Toolbox:
         request = WriteFileRequest.model_validate(
             {
                 "context": self.context,
-                "path": args.get("path"),
+                **_known(args, "path", "create_only", "expected_sha256"),
                 "content_b64": base64.b64encode(encoded).decode(),
             }
         )
@@ -1347,7 +1410,9 @@ class Toolbox:
                 f"hosts must be a list of 1 to {MAX_ADMISSION_HOSTS} host names",
             )
         wanted = [_host_port(host) for host in cast(list[str], hosts)]
-        result = await self.client.admit_hosts(self.context.environment_id, wanted)
+        result = await self.client.admit_hosts(
+            self.context.environment_id, wanted, context=self.context
+        )
         decisions = [decision.model_dump(mode="json") for decision in result.decisions]
         lines = [
             f"{d.host}:{d.port} reachable"
@@ -1453,6 +1518,16 @@ def _describe(
             summary["exit_code"] = result.exit_code
             if result.signal is not None:
                 summary["signal"] = result.signal
+            if (
+                result.exit_code not in (None, 0)
+                and not (result.stdout and result.stdout.total_bytes)
+                and not (result.stderr and result.stderr.total_bytes)
+            ):
+                summary["diagnostic"] = (
+                    "The command exited without captured stdout or stderr. If it redirected "
+                    "output, inspect that log; otherwise rerun the failing step with diagnostics "
+                    "visible."
+                )
         for stream in (result.stdout, result.stderr):
             if stream is not None and stream.total_bytes:
                 summary[stream.name] = bound(stream.text, limit)

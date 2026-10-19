@@ -37,6 +37,7 @@ from .kernel_revisions import KernelStarts
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
 from .provision_observations import ProvisionObservations
+from .recovery_fence import RecoveryFences
 from .schema import inspect, prepare
 
 _log = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ class Store:
         self.provision_observations = ProvisionObservations(self._db)
         self.observations = ObservationJournal(self._db)
         self.kernel_starts = KernelStarts(self._db)
+        self.recovery_fences = RecoveryFences(self._db)
         # Each start closes the gate of every environment with an unfinished operation
         # until the provisioner classifies it, and holds one marked for recovery:
         # never infer readiness from the absence of a gate row. A store from before

@@ -112,6 +112,8 @@ RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
         --base-image "${UBUNTU_IMAGE}" --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" \
         --micromamba "${MICROMAMBA_VERSION}" --lockfile /tmp/conda-lock.yml \
         --expect-licenses "${LICENSES}"
+RUN --mount=type=bind,from=binding-inventory,source=binding_inventory.py,target=/tmp/binding_inventory.py \
+    python -I -B /tmp/binding_inventory.py /usr/share/sandbox-science/binding-inventory.json
 USER 1000:1000
 LABEL org.opencontainers.image.title="Sandbox Science minimal" \
       org.opencontainers.image.description="Base profile: Python with ipykernel and jupyter_client, and micromamba for runtime installs" \
@@ -176,6 +178,8 @@ RUN --mount=type=bind,source=crypto-base/conda-lock.yml,target=/tmp/conda-lock.y
         --source "g6k|${G6K_COMMIT}|GPL-2.0-or-later|https://github.com/fplll/g6k|-march=${g6k_march}" \
         --source "lattice-estimator|${LATTICE_ESTIMATOR_COMMIT}|LGPL-3.0-or-later|https://github.com/malb/lattice-estimator|" \
         --expect-licenses "${LICENSES}"
+RUN --mount=type=bind,from=binding-inventory,source=binding_inventory.py,target=/tmp/binding_inventory.py \
+    python -I -B /tmp/binding_inventory.py /usr/share/sandbox-science/binding-inventory.json
 USER 1000:1000
 LABEL org.opencontainers.image.title="Sandbox Science crypto-base" \
       org.opencontainers.image.description="Base profile: SageMath, fpylll, PARI, FLINT, G6K, lattice-estimator, TeX and PDF tools. Contains GPL software; never publish this image" \

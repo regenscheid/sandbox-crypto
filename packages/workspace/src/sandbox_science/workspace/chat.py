@@ -18,8 +18,10 @@ The workspace writes and reads the run service's records in the control store
   the session and the service is running, the listing also says what the worker's record
   of the session's environment is, since the first run of a project waits for its sandbox
   to be made (``creating``), which takes a minute or more.
-- ``POST …/sessions/{session}/resume`` with ``{}`` queues the session's held messages
-  again, those an interrupted or cancelled run saw (RS-12).
+- ``POST …/sessions/{session}/resume`` with ``{}`` resumes unfinished research work,
+  or queues legacy held messages again (RS-12). Optional ``root`` selects its tree;
+  ``reasoning_effort`` plus an explicit operator ``reason`` audits effort changes
+  for new attempts only, preserving aliases, API kinds and original blueprints.
 - ``POST …/sessions/{session}/runs/{run}/cancel`` with ``{}`` asks the run service to
   cancel the run (RS-11).
 - ``GET …/sessions/{session}/runs/{run}/events?after=N&limit=M`` reads a run's events by
@@ -45,13 +47,15 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract, EnvironmentState, ErrorKind, Identifier
+from sandbox_science.orchestrator.continuity.effort import ResumeRequest
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.projects import ProjectError
-from sandbox_science.orchestrator.questions import Answer, Question, Questions
+from sandbox_science.orchestrator.questions import MAX_ANSWER, Answer, Question, Questions
 from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, RunLease, RunState
 from sandbox_science.orchestrator.runtree import RunTrees
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from . import api
+from . import api, recovery_controls, uploads
 from .context import (
     CONTEXT,
     USER_ID,
@@ -103,6 +107,7 @@ class Requested(Contract):
     """A resume or a cancel, written for the run service."""
 
     requested: bool
+    resume_request: str | None = None
     resumed: int = 0
     """The held messages queued again, for a resume."""
 
@@ -115,6 +120,7 @@ class EventPage(Contract):
 
 
 def add_routes(app: web.Application) -> None:
+    recovery_controls.add_routes(app)
     app.router.add_get(PATH + "/messages", listed)
     app.router.add_post(PATH + "/messages", post)
     app.router.add_get(PATH + "/runs/{run}/events", events)
@@ -142,7 +148,11 @@ async def post(request: web.Request) -> web.Response:
     project, session = _scope(request)
     body = await json_body(request, "message")
     fields = cast(dict[str, object], body) if isinstance(body, dict) else {}
-    if not {"message_id", "text"} <= set(fields) <= {"message_id", "text", "question_id"}:
+    if (
+        not {"message_id", "text"}
+        <= set(fields)
+        <= {"message_id", "text", "question_id", "attachments"}
+    ):
         raise ProjectError(
             ErrorKind.INVALID_REQUEST, "a message is {message_id, text, question_id}"
         )
@@ -160,6 +170,23 @@ async def post(request: web.Request) -> web.Response:
     if not isinstance(text, str):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "a message's text is a string")
     context = request.app[CONTEXT]
+    files = await asyncio.to_thread(
+        uploads.attachments, context, project, session, fields.get("attachments", [])
+    )
+    text = uploads.message_text(text, files)
+    if len(text.encode()) > 65536:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "message and attachment manifest exceed 64 KiB"
+        )
+    if answers is not None and len(text.strip()) > MAX_ANSWER:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "answer and attachments exceed 16000 characters"
+        )
+    replay = await asyncio.to_thread(
+        RunState(context.writer).replay_message, project, session, message_id, text
+    )
+    if replay is None:
+        await uploads.deliver(context, project, session, files)
 
     def write() -> str:
         session_record(context.projects, project, session)
@@ -253,13 +280,25 @@ def _run_name(request: web.Request) -> str:
 
 async def resume(request: web.Request) -> web.Response:
     project, session = _scope(request)
-    await _empty(request, "resume")
+    try:
+        body = ResumeRequest.model_validate(await json_body(request, "resume"))
+    except ValidationError as error:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, error.errors()[0]["msg"][:300]) from None
     context = request.app[CONTEXT]
 
     def write() -> str:
         session_record(context.projects, project, session)
-        resumed = RunState(context.writer).resume(project, session)
-        return api.dumps(Requested(requested=True, resumed=resumed).model_dump(mode="json"))
+        recovery = WorkRecords(context.writer).request(
+            project, session, body.root, effort=body.effort(), operator=USER_ID or "user"
+        )
+        # Durable tree claims admit only their own inputs atomically. Global legacy
+        # requeue here could release another tree's or a stopped branch's messages.
+        resumed = RunState(context.writer).resume(project, session) if recovery is None else 0
+        return api.dumps(
+            Requested(requested=True, resumed=resumed, resume_request=recovery).model_dump(
+                mode="json"
+            )
+        )
 
     return json_answer(await asyncio.to_thread(write))
 

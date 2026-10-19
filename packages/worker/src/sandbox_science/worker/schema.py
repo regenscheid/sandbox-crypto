@@ -235,7 +235,23 @@ def _run_kernels(db: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: list[Migration] = [_admission_checks, _nul_checks_and_clears, _run_kernels]
+def _recovery_fences(db: sqlite3.Connection) -> None:
+    db.execute(
+        f"""CREATE TABLE recovery_fences (
+    project_id TEXT NOT NULL CHECK {_identifier("project_id", nul=True)},
+    session_id TEXT NOT NULL CHECK {_identifier("session_id", nul=True)},
+    epoch INTEGER NOT NULL CHECK (epoch BETWEEN 1 AND 4611686018427387904),
+    PRIMARY KEY (project_id,session_id)
+) STRICT"""
+    )
+
+
+MIGRATIONS: list[Migration] = [
+    _admission_checks,
+    _nul_checks_and_clears,
+    _run_kernels,
+    _recovery_fences,
+]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 
 _STATE: Final = (

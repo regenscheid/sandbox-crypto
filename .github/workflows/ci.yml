@@ -46,18 +46,46 @@ jobs:
   test:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
-          - tier: fast
+          - name: fast
+            tier: fast
+            deadline: 1080
+            workers: auto
+            distribution: load
+            selection: ""
             test_timeout: 120
             stack_dump: 100
-          - tier: slow
+          - name: slow
+            tier: slow
+            deadline: 1080
+            workers: auto
+            distribution: load
+            selection: >-
+              --ignore=packages/orchestrator/tests/test_skills_staging.py
+              --ignore=packages/worker/tests/test_skill_staging.py
             test_timeout: 300
             stack_dump: 280
-    name: test (${{ matrix.tier }})
+          - name: staging-orchestrator
+            tier: slow
+            deadline: 600
+            workers: 1
+            distribution: load
+            selection: packages/orchestrator/tests/test_skills_staging.py
+            test_timeout: 300
+            stack_dump: 280
+          - name: staging-worker
+            tier: slow
+            deadline: 600
+            workers: 1
+            distribution: load
+            selection: packages/worker/tests/test_skill_staging.py
+            test_timeout: 300
+            stack_dump: 280
+    name: test (${{ matrix.name }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -69,12 +97,13 @@ jobs:
       - run: uv sync --locked
       # A test that runs too long has every thread's stack printed (faulthandler), then its
       # worker is ended (pytest-timeout's thread method, which works wherever the test is
-      # stuck); xdist names the test. The run stops at 15 minutes, before the job's limit,
+      # stuck); xdist names the test. The run stops at 18 minutes, before the job's limit,
       # so its output is printed either way.
       - run: >-
-          scripts/ci_pytest.sh 900 ${{ matrix.tier }} -n auto --durations=25
+          scripts/ci_pytest.sh ${{ matrix.deadline }} ${{ matrix.tier }} -n ${{ matrix.workers }}
+          --dist=${{ matrix.distribution }} --durations=25
           --timeout=${{ matrix.test_timeout }} --timeout-method=thread
-          -o faulthandler_timeout=${{ matrix.stack_dump }}
+          -o faulthandler_timeout=${{ matrix.stack_dump }} ${{ matrix.selection }}
 
   # The whole suite, serially and unfiltered, on every supported Python.
   full:

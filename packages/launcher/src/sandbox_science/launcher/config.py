@@ -52,6 +52,7 @@ launcher never reads it, and gives its path to the run service. Nor does it open
 from __future__ import annotations
 
 import ipaddress
+import re
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -189,6 +190,25 @@ class ModelConfig(_Strict):
     CM-40) or ``messages`` (``/v1/messages``, Claude's Messages API with its progress
     notes, CM-38). An alias it leaves out takes ``chat``, as every alias does by default,
     until the labs confirm the others."""
+    reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=7)
+    """Requested effort by caller role. Omitted roles retain provider defaults; the
+    launcher's effective profile defaults a non-Messages reviewer to ``medium``."""
+
+    def effective_efforts(self) -> dict[str, str]:
+        result = dict(self.reasoning_effort)
+        if self.reviewer and self.api.get(self.reviewer, "chat") != "messages":
+            result.setdefault("reviewer", "medium")
+        return result
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _efforts(cls, values: dict[str, str]) -> dict[str, str]:
+        roles = {"main", "delegated", "reviewer", "watcher", "fold", "overview", "skills_metadata"}
+        for role, value in values.items():
+            if role not in roles or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value) is None:
+                raise ValueError("reasoning_effort requires a known role and bounded effort name")
+        return values
+
     images: list[Annotated[str, StringConstraints(min_length=1)]] = Field(
         default_factory=list[str], max_length=64
     )
@@ -336,6 +356,9 @@ class WorkerConfig(_Strict):
 
 
 class RunServiceConfig(_Strict):
+    context_ceiling: int | None = Field(default=None, gt=0)
+    """Context tokens before the provider limit caps them; unset keeps 600,000.
+    This controls folding, not the run's cumulative token or monetary budget."""
     max_turns: int | None = Field(default=None, ge=0, le=100_000)
     """The model calls a main run makes before its report round: a safety net, not a bound
     on its work. Unset or 0: the run service's default, 2,000."""
@@ -495,6 +518,17 @@ class McpProxyConfig(_Strict):
         return self
 
 
+class OrchestratorConfig(_Strict):
+    """The required separate runtime for normal launcher agent loops."""
+
+    image: str = Field(min_length=1, max_length=512)
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    control_listen: Listen = "127.0.0.1:8202"
+    python: str = "/opt/sandbox-science/bin/python"
+    recover_infrastructure: bool = False
+    """Restart owned services/agent VM and admit interrupted tree recovery."""
+
+
 class LauncherConfig(_Strict):
     state_dir: ConfigPath = Field(
         default=Path("~/.local/state/sandbox-science"), validate_default=True
@@ -513,6 +547,7 @@ class LauncherConfig(_Strict):
     openshell: OpenShellConfig
     mcp_proxy: McpProxyConfig | None = None
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    orchestrator: OrchestratorConfig | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -551,6 +586,8 @@ class LauncherConfig(_Strict):
         }
         if self.mcp_proxy is not None:
             addresses["MCP proxy's forward"] = self.mcp_proxy.listen
+        if self.orchestrator is not None:
+            addresses["control capability service"] = self.orchestrator.control_listen
         return addresses
 
     def mcp_project(self) -> str:

@@ -26,6 +26,7 @@ PARTS = (
     "sandbox-science-harness",
     "sandbox-science-workspace",
     "sandbox-science-mcp-proxy",
+    "sandbox-science-control",
 )
 
 
@@ -65,6 +66,7 @@ def make_config(tmp_path: Path) -> ConfigMaker:
                 "api_key_file": "model.key",
             },
             "worker": {"listen": "127.0.0.1:18100", "policy": "policy.yaml"},
+            "orchestrator": {"image": "sandbox-science/orchestrator:test", "revision": "a" * 40},
             "workspace": {"listen": "127.0.0.1:18200", "static": "web/dist"},
             "openshell": {
                 "cli": "bin/openshell",
@@ -260,9 +262,12 @@ class Launcher:
 
 
 @pytest.fixture
-def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator[dict[str, Any]]:
+def site(
+    make_config: ConfigMaker, fake_parts: Path, fake_openshell: Path, tmp_path: Path
+) -> Iterator[dict[str, Any]]:
     """Launch ``sandbox-science up`` with the stand-ins, on free loopback ports."""
     worker, workspace = free_ports()
+    control = free_port({worker, workspace, workspace + 1})
     journal = tmp_path / "journal"
     journal.touch()
 
@@ -277,6 +282,7 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
         config = make_config(
             {
                 "bin_dir": str(fake_parts),
+                "openshell": {"cli": str(fake_openshell)},
                 "start_timeout": 20,
                 "stop_timeout": changes.pop("stop_timeout", 5),
                 "worker": {
@@ -284,6 +290,10 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
                     "pass_env": [*fakes, *extra.get("worker", [])],
                 },
                 "run_service": {"pass_env": [*fakes, *extra.get("run_service", [])]},
+                "orchestrator": {
+                    "control_listen": f"127.0.0.1:{control}",
+                    **changes.pop("orchestrator", {}),
+                },
                 "workspace": {
                     "listen": f"127.0.0.1:{workspace}",
                     "pass_env": [*fakes, *extra.get("workspace", [])],
@@ -319,7 +329,7 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
         "worker": worker,
         "workspace": workspace,
         # The workspace's next port is its own too (``free_ports``).
-        "taken": frozenset({worker, workspace, workspace + 1}),
+        "taken": frozenset({worker, workspace, workspace + 1, control}),
     }
     for launcher in started:
         if launcher.process.poll() is None:

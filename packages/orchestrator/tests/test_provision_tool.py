@@ -18,6 +18,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import (
+    ErrorKind,
     ExecutionContext,
     PackageChange,
     ProbeResult,
@@ -26,10 +27,11 @@ from sandbox_science.contracts import (
     ProvisionRequest,
     ResolvedFile,
 )
+from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.provision import PROVISION, ProvisionTools
 from sandbox_science.orchestrator.tools import Toolbox, operation_id
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import fake_worker_app
 
 pytestmark = pytest.mark.asyncio
@@ -85,8 +87,13 @@ class ScriptedClient(WorkerClient):
         return self._next(after + 1)
 
     async def cancel_provision(
-        self, provision_id: str, *, project_id: str | None = None
+        self,
+        provision_id: str,
+        *,
+        project_id: str | None = None,
+        context: ExecutionContext | None = None,
     ) -> ProvisionOperation:
+        assert context == CONTEXT
         self.cancelled.append(provision_id)
         return self._next(9)
 
@@ -218,6 +225,27 @@ async def test_upgrade_tool_refuses_unsupported_package_kinds(packages: dict[str
         await client.close()
     assert json.loads(outcome.text)["error"]["kind"] == "invalid_request"
     assert client.asked == []
+
+
+async def test_accepted_provision_with_failed_follow_up_keeps_unknown_effect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = ScriptedClient([{"state": "resolving"}])
+
+    async def cannot_read(*args: object, **kwargs: object) -> ProvisionOperation:
+        raise WorkerAPIError(ErrorKind.INTERNAL, "fixture status read failed")
+
+    monkeypatch.setattr(client, "provision_status", cannot_read)
+    toolbox = Toolbox(client, CONTEXT, features=("provisioning",))
+    try:
+        with pytest.raises(UnknownEffectError, match="provision_post_submit"):
+            await toolbox.call(
+                call("provision", {"purpose": "synthetic", "conda": ["fpylll"]}),
+                "original-provision-operation",
+            )
+    finally:
+        await client.close()
+    assert len(client.asked) == 1
 
 
 async def test_provision_asks_once_and_reports_a_wait_for_permission() -> None:

@@ -34,8 +34,14 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.orchestrator.continuity.grants import TokenGrantDecision, TokenGrantStatus
+from sandbox_science.orchestrator.continuity.resources import ResourceRequestPage
+from sandbox_science.orchestrator.continuity.status import StatusPage
+from sandbox_science.orchestrator.history.captured import CapturedCalls, ContextParts, ContextText
 from sandbox_science.orchestrator.memory import MemoryChange
+from sandbox_science.orchestrator.model_settings import ModelSettings
 from sandbox_science.orchestrator.runtree import RunTree
+from sandbox_science.orchestrator.uploads import UploadPage
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
 from sandbox_science.workspace.artifacts import ArtifactListing, ChartLink, FigureLink, ViewerLink
 from sandbox_science.workspace.chat import (
@@ -46,6 +52,12 @@ from sandbox_science.workspace.chat import (
     QuestionListing,
     Requested,
 )
+from sandbox_science.workspace.context_captures import IndexStatus
+from sandbox_science.workspace.context_inspector import (
+    ContextAttemptsPage,
+    ContextHistoryPage,
+    ContextTimelinePage,
+)
 from sandbox_science.workspace.frontier import (
     FrontierAnswer,
     FrontierCategories,
@@ -53,6 +65,7 @@ from sandbox_science.workspace.frontier import (
     FrontierHistoryAnswer,
     FrontierPastAnswer,
 )
+from sandbox_science.workspace.history import HistoryChunk, HistoryPage
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.ledger import (
     FoldProposalList,
@@ -63,7 +76,9 @@ from sandbox_science.workspace.ledger import (
     LedgerListing,
     LedgerWork,
 )
+from sandbox_science.workspace.mcp_services import McpInventory
 from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
+from sandbox_science.workspace.messages import ToolRecordChunk, ToolRecordListing
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
 from sandbox_science.workspace.skills import ProjectSkills, SkillSettingsChange, SkillSettingsView
@@ -71,6 +86,22 @@ from sandbox_science.workspace.skills import ProjectSkills, SkillSettingsChange,
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "web" / "workspace" / "src" / "lib" / "api-types.ts"
 MODELS: tuple[type[BaseModel], ...] = (
+    UploadPage,
+    StatusPage,
+    ResourceRequestPage,
+    TokenGrantStatus,
+    TokenGrantDecision,
+    HistoryChunk,
+    HistoryPage,
+    CapturedCalls,
+    ContextParts,
+    ContextText,
+    IndexStatus,
+    ContextHistoryPage,
+    ContextAttemptsPage,
+    ContextTimelinePage,
+    ToolRecordChunk,
+    ToolRecordListing,
     FigureLink,
     ChartLink,
     ProjectListing,
@@ -109,12 +140,14 @@ MODELS: tuple[type[BaseModel], ...] = (
     FrontierPastAnswer,
     MemoryAnswer,
     ProjectSkills,
+    McpInventory,
     FoldProposalList,
     SkillSettingsChange,
     SkillSettingsView,
     MemoryProposals,
     MemoryHistory,
     MemoryChange,
+    ModelSettings,
 )
 HEADER = (
     "// SPDX-License-Identifier: MIT\n"

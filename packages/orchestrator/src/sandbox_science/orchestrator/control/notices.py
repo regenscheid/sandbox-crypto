@@ -19,7 +19,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-from .store import ControlStore
+from .store import ControlStore, Tx
 
 Json = dict[str, Any]
 
@@ -69,6 +69,7 @@ class LeasedNotices:
         select: str,
         parameters: Sequence[object],
         project: Callable[[tuple[Any, ...]], Json],
+        on_offer: Callable[[Tx, Sequence[Json]], None] | None = None,
     ) -> list[Json]:
         """Lease the next notices to ``run``, which has been offered ``seen``.
 
@@ -76,7 +77,8 @@ class LeasedNotices:
         which keeps the notices no other run holds and that the run was not offered; it
         is then ordered and limited by a last ``?``. ``parameters`` are its own, and
         ``project`` makes a row a notice. The notices are offered in order while they fit
-        ``max_chars`` together."""
+        ``max_chars`` together. ``on_offer`` runs before the claim commits; its failure
+        rolls the claims and callback writes back together."""
         room = min(batch, MAX_PER_RUN - len(seen))
         if room <= 0:
             return []
@@ -108,6 +110,8 @@ class LeasedNotices:
                         for n in values
                     ],
                 )
+                if on_offer is not None:
+                    on_offer(tx, values)
         return values
 
     def renew(self, project: str, session: str, run: str) -> None:

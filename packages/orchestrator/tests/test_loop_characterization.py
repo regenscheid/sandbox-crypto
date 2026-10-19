@@ -179,7 +179,7 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
     assert all_delivered(again) == {**NOTHING, "kernels": [newer]}
 
 
-async def test_a_failed_first_model_call_delivers_nothing_and_everything_returns(
+async def test_a_failed_first_model_call_preserves_its_request_while_other_notices_return(
     harness: Harness,
 ) -> None:
     sources = await six_sources(harness)
@@ -195,15 +195,18 @@ async def test_a_failed_first_model_call_delivers_nothing_and_everything_returns
         "run-2", [Reply(calls=[call("plan_read")]), Reply("Answer A."), Reply("Answer B.")]
     )
     first = harness.gateway.main[0]
-    assert shape(first) == shape(offered)
+    # Fresh explicit work may consume other notices, but cannot implicitly retry
+    # the annotation owned by the earlier unfinished paid attempt.
+    assert shape(first) == [item for item in shape(offered) if item[1] != "requests"]
     assert all_delivered(record) == {
-        "requests": [sources.request],
+        "requests": [],
         "jobs": [sources.job],
         "reviews": [],
         "math": [sources.math],
         "kernels": delivered(record, "kernels"),
     }
     assert shape(first)[-1] == notice("kernels", *delivered(record, "kernels"))
+    assert harness.request_states() == {sources.request: "queued"}
 
 
 async def test_a_failed_response_round_keeps_only_what_earlier_calls_delivered(
@@ -289,7 +292,8 @@ async def test_closing_sources_take_turns_in_todays_order(harness: Harness) -> N
     # Closing 4: nothing new; both delivered findings are bounded.
     assert shape(record.messages) == [*calls_seen[4], ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "Answer 4.")
-    assert reviewer.windows == 2
+    # An inconclusive review leaves its evidence queued for a later window.
+    assert reviewer.windows == 3
     assert all_delivered(record) == {
         **NOTHING,
         "requests": [request],
@@ -400,6 +404,7 @@ async def test_a_review_response_round_then_the_bound(harness: Harness) -> None:
     # the delivered findings are bounded as unaddressed. A-02 step 4 keeps this or
     # changes it deliberately: the bound also covers the re-flag no model saw.
     assert reviewer.windows == 3
+    assert summary(record, "reviews")["reviews_total"] == 3
     assert all_delivered(record) == {**NOTHING, "reviews": [f"{finding}-r1", f"{finding}-r2"]}
     reviews = summary(record, "reviews")
     assert (reviews["outcome"], len(reviews["reviews"]), reviews["counts"]) == (

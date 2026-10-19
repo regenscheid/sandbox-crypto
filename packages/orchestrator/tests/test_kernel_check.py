@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -67,7 +68,7 @@ def turn() -> ModelTurn:
     return ModelTurn(None, (ToolCall("c", "no_such_tool", "{}"),))
 
 
-def kernel_notices(messages: list[dict[str, object]]) -> list[list[dict[str, object]]]:
+def kernel_notices(messages: Sequence[Mapping[str, object]]) -> list[list[dict[str, object]]]:
     return [
         json.loads(str(m["content"]).removeprefix(KERNELS.text))
         for m in messages

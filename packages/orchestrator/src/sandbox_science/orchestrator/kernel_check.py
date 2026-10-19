@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 from sandbox_science.contracts import ExecutionContext, KernelObservation
 
@@ -57,6 +57,11 @@ class KernelCheck(TurnHook):
         self.keep = keep
         """Runs whose kernels the sweep leaves: the run's own live delegated runs, once
         delegation starts them."""
+        self.retain: Callable[[str], Awaitable[bool]] | None = None
+        self.record: Callable[[KernelObservation], Awaitable[None]] | None = None
+        self.record_tool: Callable[[dict[str, Any], KernelObservation], Awaitable[None]] | None = (
+            None
+        )
         self.told: set[str] = set()
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
@@ -67,6 +72,8 @@ class KernelCheck(TurnHook):
         except Exception:  # an unavailable observation tells nothing
             _log.warning("the kernel observation failed; no kernel notice", exc_info=True)
             return ()
+        if self.record is not None:
+            await self.record(observed)
         if self.sweep:
             await self._sweep(observed)
         stale = [
@@ -90,11 +97,28 @@ class KernelCheck(TurnHook):
         self.told.update(ids)
         return (Notice(self.name, ids, KERNELS.text, new),)
 
+    async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
+        # The loop passes the complete current record because compact retained
+        # records in the confined runtime may omit arguments and execution data.
+        if record.get("tool") not in ("python", "sage", "restart_kernel"):
+            return
+        try:
+            observed = await self.client.observe_kernels(self.context)
+        except Exception:  # passive observation is retried at the next turn
+            _log.warning("the post-tool kernel observation failed", exc_info=True)
+            return
+        if self.record_tool is not None:
+            await self.record_tool(record, observed)
+        elif self.record is not None:
+            await self.record(observed)
+
     async def _sweep(self, observed: KernelObservation) -> None:
         runs = {kernel.run for kernel in observed.kernels if kernel.run is not None}
         try:
             kept = await self.keep() if self.keep is not None else set[str]()
             for left in sorted(runs - kept):
+                if self.retain is not None and await self.retain(left):
+                    continue
                 await self.client.close_session(self.context, run=left)
         except Exception:  # a cleanup: tried again at the next turn, never stops the run
             _log.warning("could not close the kernels earlier runs left", exc_info=True)

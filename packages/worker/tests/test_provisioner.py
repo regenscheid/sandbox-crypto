@@ -705,7 +705,7 @@ async def test_recovery_refuses_all_new_work_but_preserves_running_status_files_
     make_world: Factory,
 ) -> None:
     world = await make_world()
-    context = ExecutionContext(**CONTEXT)
+    context = ExecutionContext.model_validate(CONTEXT)
     original = ShellRequest(
         operation_id="already-running",
         context=context,

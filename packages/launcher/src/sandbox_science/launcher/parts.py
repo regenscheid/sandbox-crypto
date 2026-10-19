@@ -57,6 +57,10 @@ def check(config: LauncherConfig) -> None:
         )
         if not path.is_file()
     ]
+    if config.orchestrator is None:
+        problems.append(
+            "configure [orchestrator] image and revision; host agent execution is unavailable"
+        )
     problems += [p for p in key_problems(config) if not p.startswith("no model key file")]
     if not environments.policy_store.is_dir():
         problems.append(f"no policy store at {environments.policy_store}")
@@ -67,7 +71,7 @@ def check(config: LauncherConfig) -> None:
         )
     if shutil.which(config.openshell.cli) is None:
         problems.append(f"no OpenShell CLI {config.openshell.cli}")
-    names = [WORKER, HARNESS, WORKSPACE]
+    names = [WORKER, HARNESS, WORKSPACE, "sandbox-science-control"]
     if config.mcp_proxy is not None:
         names.append(mcp.COMMAND)
         problems.extend(
@@ -159,7 +163,14 @@ def worker_settings(
         "pool_id": config.worker.pool_id,
         "openshell": config.openshell.model_dump(mode="json", exclude_none=True),
         "clients": [
-            {"name": name, "token_sha256": digests[name], "projects": projects} for name in CLIENTS
+            {
+                "name": name,
+                "token_sha256": digests[name],
+                "projects": projects,
+                "recovery_control": name == "harness",
+                "operator": name in {"workspace", "launcher"},
+            }
+            for name in CLIENTS
         ],
     }
 
@@ -249,6 +260,11 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
     # Each alias's gateway API (CM-41); an alias left out takes chat completions.
+    efforts = [
+        option
+        for role, effort in model.effective_efforts().items()
+        for option in ("--reasoning-effort", f"{role}={effort}")
+    ]
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
     # The aliases the deployment declares accept images (figures, FG-33).
     apis += [option for alias in model.images for option in ("--images", alias)]
@@ -258,6 +274,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
     if service.max_turns:  # unset or 0: the run service's default
         shared += ["--max-turns", str(service.max_turns)]
+    if service.context_ceiling is not None:
+        shared += ["--context-ceiling", str(service.context_ceiling)]
     if (embedding := config.skills.embedding_model) is not None:
         shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too
     if (derived := config.skills.metadata_model) is not None:
@@ -278,7 +296,7 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--worker", worker_url(config),
         "--token-file", str(layout.token("harness-worker")),
         "--model-url", model.url, "--model", model.name,
-        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *apis,
+        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *apis, *efforts,
         *shared, *math,
         *mcp.harness_options(config, layout),
     ]  # fmt: skip
@@ -293,9 +311,47 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         if model.reviewer
         else []
     )  # fmt: skip
+    if model.reviewer:
+        if model.reviewer in model.api:
+            repairs += ["--reviewer-api", model.api[model.reviewer]]
+        if (effort := model.effective_efforts().get("reviewer")) is not None:
+            repairs += ["--reviewer-effort", effort]
+    role_aliases = {
+        "main": model.name,
+        "delegated": model.delegated or model.name,
+        **({"reviewer": model.reviewer} if model.reviewer else {}),
+    }
+    agent_models = [
+        option
+        for role, alias in role_aliases.items()
+        for option in ("--agent-model", f"{role}={alias}")
+    ]
+    agent_models += [
+        option
+        for role, effort in model.effective_efforts().items()
+        if role in role_aliases
+        for option in ("--agent-effort", f"{role}={effort}")
+    ]
+    agent_models += [
+        option
+        for alias in dict.fromkeys(role_aliases.values())
+        for option in ("--agent-api", f"{alias}={model.api.get(alias, 'chat')}")
+    ]
     # The skills page shows what the pass runs are given derived.
     derived = config.skills.metadata_model
     page = [] if derived is None else ["--skills-metadata-model", derived]
+    services = []
+    if config.mcp_proxy is not None:
+        services = [
+            "--mcp-project",
+            config.mcp_project(),
+            "--mcp-proxy",
+            f"http://{config.mcp_proxy.listen}",
+            "--mcp-proxy-token-file",
+            str(layout.token(mcp.PROXY_CALLER)),
+        ]
+        for server in config.mcp_proxy.servers:
+            services += ["--mcp-service", f"{server}={config.mcp_proxy.about.get(server, '')}"]
     named = workspace.preview_name
     viewer = [] if named is None else ["--preview-name", named]
     return [
@@ -304,5 +360,7 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--static", str(workspace.static),
         "--listen", workspace.listen, "--preview-listen", workspace.preview(), *viewer,
         "--worker", worker_url(config),
-        "--worker-token-file", str(layout.token("workspace-worker")), *repairs, *page,
+        "--worker-token-file", str(layout.token("workspace-worker")),
+        *repairs, *agent_models, *page,
+        *services,
     ]  # fmt: skip

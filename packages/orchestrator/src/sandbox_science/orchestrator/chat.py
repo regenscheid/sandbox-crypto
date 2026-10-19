@@ -59,6 +59,8 @@ from .runstate import (
     RunState,
     call_tokens,
 )
+from .tool_status import scalar as _scalar
+from .tool_status import tool_outcome as tool_outcome
 from .tools import bound
 
 _log = logging.getLogger(__name__)
@@ -104,6 +106,8 @@ class RunChat:
         self.requests: Callable[[], bool] | None = None
         """Whether a work request waits that the run may be offered: the run's document
         tool says, once it has one."""
+        self.context_stop: Callable[[], str | None] | None = None
+        """The folder's exact stop reason, independent of compact record previews."""
         self.unavailable: Mapping[str, str] = {}
         """The MCP servers whose listing failed at the run's start, with why: the
         ``started`` event says so (lab 41, B4)."""
@@ -179,24 +183,41 @@ class ModelBudget(TurnHook):
 
     name = "budget"
 
-    def __init__(self, chat: RunChat, share: float | None = None, *, tokens: int | None = None):
+    def __init__(
+        self,
+        chat: RunChat,
+        share: float | None = None,
+        *,
+        tokens: int | None = None,
+        require_cost_limit: bool = False,
+        auxiliary_tokens: Callable[[], Awaitable[int]] | None = None,
+    ):
         """``share`` is the part of the project's daily cost limit one run may use, above
         0 and at most 1, if any; ``tokens`` is a delegated run's limit."""
         self.chat, self.share, self.tokens = chat, share, tokens
+        self.require_cost_limit = require_cost_limit
+        self.auxiliary_tokens = auxiliary_tokens
 
     async def halt(self, run: RunView) -> str | None:
         state, project = self.chat.state, self.chat.context.project_id
-        limit = await threaded(state.cost_limit, project)
+        limit, blocked = await threaded(
+            state.cost_gate,
+            project,
+            self.chat.clock.now(),
+            require_limit=self.require_cost_limit,
+        )
+        if blocked:
+            return "budget"
         if limit is not None:
             # Its own calls are among the project's: their events are written as they
-            # return. A call without a known cost counts the limit as reached (lab 43, B2).
-            if await threaded(state.over_cost_limit, project, self.chat.clock.now()):
-                return "budget"
+            # return. Unknown costs remain visible but do not fill the local cap.
             own = sum(usage.cost or 0 for usage in run.usage)
             if self.share is not None and own > 0 and own >= self.share * limit:
                 return "run_budget"
         # A delegated run stops before a call that would take it past its limit.
         used = sum(call_tokens(usage) for usage in run.usage)
+        if self.auxiliary_tokens is not None:
+            used += await self.auxiliary_tokens()
         if self.tokens is not None and used + estimate(run) >= self.tokens:
             return "run_budget"
         return None
@@ -208,6 +229,8 @@ class ModelBudget(TurnHook):
         if self.tokens is None:
             return None
         used = sum(call_tokens(usage) for usage in run.usage)
+        if self.auxiliary_tokens is not None:
+            used += await self.auxiliary_tokens()
         # The next call sends at least what the last one sent and answered.
         last = call_tokens(run.usage[-1]) if run.usage else 0
         return "run_budget" if used + 2 * max(estimate(run), last) >= self.tokens else None
@@ -316,6 +339,31 @@ class UserMessages(TurnHook):
                 self.chat.run,
                 holding=True,
             )
+        if (
+            self.chat.parent is None
+            and record.stopped == "context_limit"
+            and self.chat.context_stop is not None
+            and self.chat.context_stop() == "research_state"
+        ):
+            # Common saved-run hook: resumed roots need the same consolidation
+            # hold as ordinary service runs, which have separate finalization.
+            context = self.chat.context
+            after = 0
+            while queued := await threaded(
+                self.chat.state.messages,
+                context.project_id,
+                context.session_id,
+                state="queued",
+                after=after,
+            ):
+                await threaded(
+                    self.chat.state.hold,
+                    context.project_id,
+                    context.session_id,
+                    [message.message_id for message in queued],
+                    "research_state",
+                )
+                after = queued[-1].number
 
 
 class EventLog(TurnHook):
@@ -459,51 +507,6 @@ def _context_stop(record: RunRecord) -> dict[str, Any]:
         return {}
     found = cast(dict[str, Any], folds)
     return {"reason": found.get("stopped"), "detail": found.get("detail")}
-
-
-def tool_outcome(record: Mapping[str, Any]) -> dict[str, JsonValue]:
-    """A tool call's state, error kind and exit code, as far as its record has them; for
-    the ``skills`` tool, what it found, loaded or read (lab 42)."""
-    if isinstance(skills := record.get("skills"), dict):
-        return _skills_outcome(cast(Mapping[str, Any], skills))
-    execution = record.get("execution")
-    found = cast(Mapping[str, Any], execution) if isinstance(execution, dict) else record
-    error = record.get("error")
-    kind = cast(Mapping[str, Any], error).get("kind") if isinstance(error, dict) else error
-    result = found.get("result")
-    code = cast(Mapping[str, Any], result).get("exit_code") if isinstance(result, dict) else None
-    return {
-        "state": _scalar(found.get("state")),
-        "error": _scalar(kind),
-        "exit_code": _scalar(code),
-    }
-
-
-def _skills_outcome(record: Mapping[str, Any]) -> dict[str, JsonValue]:
-    """A ``skills`` call in a few words: the skills found, loaded or refused, or the file
-    read, or what refused the call."""
-    status = str(record.get("status", ""))
-    action = record.get("action")
-    if action == "search" and status == "ok":
-        found = cast(list[object], record.get("found") or [])
-        said = f"found {len(found)}" + (f": {', '.join(map(str, found))}" if found else "")
-        if record.get("scoring") in ("lexical", "partial") and "embedding" in record:
-            said += " (by words alone)" if record["scoring"] == "lexical" else " (partly by words)"
-    elif action == "load" and isinstance(loads := record.get("loads"), list):
-        by: dict[str, list[str]] = {}
-        for load in cast(list[Mapping[str, Any]], loads):
-            name = str(load.get("id") or load.get("name") or "?")
-            by.setdefault(str(load.get("status", "")).replace("_", " "), []).append(name)
-        said = "; ".join(f"{what} {', '.join(names)}" for what, names in by.items())
-    elif action == "read" and status == "ok":
-        said = f"read {record.get('path', '?')}" + (" (binary)" if record.get("binary") else "")
-    else:
-        return {"state": "refused", "error": _scalar(status or None), "exit_code": None}
-    return {"state": said[:300], "error": None, "exit_code": None}
-
-
-def _scalar(value: object) -> JsonValue:
-    return value if isinstance(value, str | int | float | bool) or value is None else str(value)
 
 
 def _bounded(data: dict[str, Any]) -> dict[str, JsonValue]:

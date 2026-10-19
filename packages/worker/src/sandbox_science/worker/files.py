@@ -36,7 +36,7 @@ from sandbox_science.contracts import (
     WriteFileResult,
 )
 
-from .channel import ExecutorChannel
+from .channel import ExecutorChannel, Message
 from .connections import EnvironmentConnections
 from .errors import WorkerError
 from .journal import ExecutionJournal
@@ -55,6 +55,43 @@ UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
 )
+
+
+def _range_reply(reply: Message, offset: int, length: int, *, hashed: bool) -> Range:
+    """Validate an executor read, including an empty EOF range past the file's end."""
+    try:
+        encoded = reply["content_b64"]
+        if not isinstance(encoded, str):
+            raise TypeError("content_b64")
+        data = base64.b64decode(encoded, validate=True)
+        size = integer(reply.get("size"), 0, 2**62)
+        start = integer(reply.get("offset"), 0, 2**62)
+        sha256 = reply.get("sha256")
+        beyond_end = size is not None and offset + len(data) > size
+        expected_eof = size is not None and offset + len(data) >= size
+        if (
+            size is None
+            or start != offset
+            or len(data) > length
+            or (beyond_end and bool(data))
+            or reply.get("eof") is not expected_eof
+        ):
+            raise ValueError("a range that was not asked for")
+        if hashed and not (isinstance(sha256, str) and len(sha256) == 64):
+            raise ValueError("no SHA-256")
+    except (KeyError, TypeError, ValueError) as exc:  # binascii.Error is a ValueError
+        raise WorkerError(
+            ErrorKind.INTERNAL, f"the executor sent a malformed file reply ({exc})"
+        ) from exc
+    return Range(
+        size=size,
+        sha256=sha256 if hashed else None,
+        modified=epoch(reply.get("modified")),
+        offset=offset,
+        data=data,
+        content_b64=encoded,
+        eof=reply.get("eof") is True,
+    )
 
 
 class Files:
@@ -94,30 +131,7 @@ class Files:
             length=length,
             hash=hashed,
         )
-        try:
-            encoded = reply["content_b64"]
-            if not isinstance(encoded, str):
-                raise TypeError("content_b64")
-            data = base64.b64decode(encoded, validate=True)
-            size, start = integer(reply.get("size"), 0, 2**62), integer(reply.get("offset"), 0)
-            sha256 = reply.get("sha256")
-            if size is None or start != offset or len(data) > length or offset + len(data) > size:
-                raise ValueError("a range that was not asked for")
-            if hashed and not (isinstance(sha256, str) and len(sha256) == 64):
-                raise ValueError("no SHA-256")
-        except (KeyError, TypeError, ValueError) as exc:  # binascii.Error is a ValueError
-            raise WorkerError(
-                ErrorKind.INTERNAL, f"the executor sent a malformed file reply ({exc})"
-            ) from exc
-        return Range(
-            size=size,
-            sha256=sha256 if hashed else None,
-            modified=epoch(reply.get("modified")),
-            offset=offset,
-            data=data,
-            content_b64=encoded,
-            eof=reply.get("eof") is True,
-        )
+        return _range_reply(reply, offset, length, hashed=hashed)
 
     async def read(self, request: ReadFileRequest) -> FileContent:
         async with self.connections.using(request.context.environment_id) as channel:
@@ -175,6 +189,7 @@ class Files:
                 files=[file.model_dump(mode="json") for file in request.files],
                 seal=request.seal,
                 commands=list(request.commands),
+                binding_names=list(request.binding_names),
             )
         return checked(
             StageCheck,
@@ -183,6 +198,7 @@ class Files:
             sealed=reply.get("sealed", False),
             differing=reply.get("differing", []),
             commands=[c for c in _listed(reply.get("commands")) if c in request.commands],
+            inventory=reply.get("inventory", {}),
         )
 
     async def stage_put(self, request: StagePutRequest) -> StagePutResult:

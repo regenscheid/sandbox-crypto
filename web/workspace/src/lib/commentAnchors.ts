@@ -40,7 +40,7 @@ export function startComment(found: DocumentRevision, stored: CommentDraft | nul
       kind: 'block',
       math: '',
       quote: '',
-      session: found.document.session_id ?? '',
+      session: '',
     }
   );
 }

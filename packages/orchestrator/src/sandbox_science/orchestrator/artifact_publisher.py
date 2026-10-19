@@ -20,8 +20,9 @@ from sandbox_science.contracts.artifact_inventory import (
     ArtifactSnapshot,
 )
 
-from .aio import OwnedExecutor
-from .artifacts import ArtifactInventory, Room, scoped_path
+from .aio import OwnedExecutor, owned
+from .artifact_blobs import Blob, BlobWriter
+from .artifacts import ArtifactInventory, ArtifactOperation, ExecutionReplay, Room, scoped_path
 from .documents.errors import DocumentError
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -58,7 +59,7 @@ class ArtifactPublisher:
         self._owner = OwnedExecutor(8, "artifact-inventory")
 
     async def _sql(self, call: Callable[[], _T]) -> _T:
-        return await self._owner.thread(call)
+        return await owned(self._owner.thread(call))
 
     def source(
         self, tool_call: str, model: str | None = None, **attribution: Any
@@ -77,9 +78,54 @@ class ArtifactPublisher:
             }
         )
 
-    async def room(self, size: int) -> Room:
+    async def room(self, size: int, *, requires_operation: bool = False) -> Room:
         """What the project's budget leaves for a revision of ``size`` bytes."""
-        return await self._sql(lambda: self.inventory.room(self.context.project_id, size))
+        return await self._sql(
+            lambda: self.inventory.room(
+                self.context.project_id, size, requires_operation=requires_operation
+            )
+        )
+
+    async def prior_execution(
+        self, operation: str, path: str, source: ArtifactPublicationSource
+    ) -> ExecutionReplay | None:
+        """Read a prior capture of the same worker execution without republishing it."""
+        return await self._sql(lambda: self.inventory.prior_execution(source, operation, path))
+
+    async def begin_execution_record(
+        self, source: ArtifactPublicationSource, operation: str, path: str, media_type: str | None
+    ) -> ArtifactOperation:
+        return await self._sql(lambda: self.inventory.begin(source, operation, path, media_type))
+
+    async def finish_execution_metadata(
+        self,
+        source: ArtifactPublicationSource,
+        operation: str,
+        path: str,
+        *,
+        sha256: str,
+        size: int,
+        media_type: str,
+        note: Literal["too_large", "quota"],
+    ) -> ArtifactReceipt:
+        return await self._sql(
+            lambda: self.inventory.finish_execution_metadata(
+                source,
+                operation,
+                path,
+                sha256=sha256,
+                size=size,
+                media_type=media_type,
+                note=note,
+            )
+        )
+
+    async def finish_execution_deletion(
+        self, source: ArtifactPublicationSource, operation: str, path: str
+    ) -> ArtifactReceipt:
+        return await self._sql(
+            lambda: self.inventory.finish_execution_deletion(source, operation, path)
+        )
 
     async def find(
         self,
@@ -174,6 +220,8 @@ class ArtifactPublisher:
         bound: int,
     ) -> ArtifactPublicationOutcome:
         worker: ArtifactRef | None = None
+        transfer: str | None = None
+        staged: BlobWriter | None = None
         try:
             self._binding()
             state = await self._sql(
@@ -214,11 +262,35 @@ class ArtifactPublisher:
             ):
                 raise ValueError("worker snapshot project/path differs from request")
             self._binding()
-            data = await self.client.verified_artifact_content(pinned_worker, max_bytes=bound)
+            if snapshot.size > bound:
+                raise ValueError("artifact exceeds retained byte allowance")
+            transfer = await self._sql(
+                lambda: self.inventory.reserve_transfer(
+                    self.context.project_id, snapshot.size, snapshot.sha256
+                )
+            )
+            staged = await self._sql(
+                lambda: self.inventory.blobs.writer(Blob(snapshot.sha256, snapshot.size))
+            )
+            writer = staged
+
+            async def write(chunk: bytes) -> None:
+                await self._sql(lambda: writer.write(chunk))
+
+            await self.client.stream_artifact_content(pinned_worker, write, max_bytes=bound)
             self._binding()
+            blob = await self._sql(writer.commit)
+            reservation = transfer
             receipt = await self._sql(
                 lambda: self.inventory.finish(
-                    source, operation, request.path, request.media_type, pinned_worker, data
+                    source,
+                    operation,
+                    request.path,
+                    request.media_type,
+                    pinned_worker,
+                    b"",
+                    blob=blob,
+                    transfer=reservation,
                 )
             )
             return ArtifactPublicationOutcome(worker, receipt)
@@ -229,6 +301,7 @@ class ArtifactPublisher:
             ValueError,
             UnicodeError,
             sqlite3.DatabaseError,
+            OSError,
         ) as error:
             # There is no transaction across worker and control. Keep a known worker
             # reference, including when quota or content verification refuses ingestion.
@@ -257,6 +330,15 @@ class ArtifactPublisher:
                     }
                 )
             return ArtifactPublicationOutcome(worker, receipt)
+        finally:
+            if staged is not None:
+                await self._sql(staged.discard)
+            # An installed blob without a committed reference stays charged. A
+            # crash or DB failure is not permission to remove possibly used bytes.
+            if transfer is not None and (staged is None or not staged.installed):
+                await self._sql(
+                    lambda: self.inventory.release_transfer(self.context.project_id, transfer)
+                )
 
     async def aclose(self) -> None:
         """Stop admission and drain actual admitted tasks, under repeated cancellation.

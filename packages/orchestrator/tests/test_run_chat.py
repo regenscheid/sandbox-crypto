@@ -9,6 +9,7 @@ record, the events and the messages.
 from __future__ import annotations
 
 import asyncio
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -20,7 +21,7 @@ from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.chat import RunChat, session_lease
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history import body
+from sandbox_science.orchestrator.history import Archive, body
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.notices import REDELIVERED
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -96,13 +97,22 @@ async def test_a_run_writes_its_events_as_it_goes(harness: Harness) -> None:
     events = state.events(PROJECT, SESSION, entry.name)
     # The tool call's result was an event before the second model call returned.
     assert seen == [
-        ["started", "user", "model"],
-        ["started", "user", "model", "assistant", "tool", "model"],
+        ["started", "user", "model", "notice"],
+        ["started", "user", "model", "notice", "assistant", "tool", "model", "notice"],
     ]
     assert [e.kind for e in events] == [
-        "started", "user", "model", "assistant", "tool", "model", "assistant", "stopped",
-    ]  # fmt: skip
-    started, user, _, asked, tool, _, answered, stopped = (e.data for e in events)
+        "started",
+        "user",
+        "model",
+        "notice",
+        "assistant",
+        "tool",
+        "model",
+        "notice",
+        "assistant",
+        "stopped",
+    ]
+    started, user, _, _, asked, tool, _, _, answered, stopped = (e.data for e in events)
     assert started["run_id"] == "run-1"
     # The root of its session's tree of runs (PD-32): no parent, no delegation.
     assert (started["role"], started["parent"], started["delegation"]) == ("main", None, None)
@@ -320,16 +330,25 @@ async def test_an_oversized_event_keeps_head_tail_and_usage(tmp_path: Path) -> N
     projects.close()
 
 
-async def test_a_long_answer_is_cut_in_its_event_and_whole_in_the_record(
+async def test_a_long_answer_has_bounded_previews_and_exact_journal_evidence(
     harness: Harness,
 ) -> None:
     answer = "BEGIN " + "y" * 40_000 + " END"
     record = await harness.run("run-1", [Reply(answer)])
     state = runs(harness)
-    (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
+    with closing(ProjectStore(harness.state)) as projects:
+        (entry,) = projects.runs(PROJECT, SESSION)
+        (original,) = Archive(projects.control).messages(
+            PROJECT, SESSION, run=entry.name, kinds=("assistant",)
+        )
+        assert original.entry.content == answer
     (reply,) = [e for e in state.events(PROJECT, SESSION, entry.name) if e.kind == "assistant"]
     text = cast(str, reply.data["text"])
-    assert record.final_text == answer
+    assert record.final_text is not None
+    assert record.final_text.startswith("BEGIN ")
+    assert record.final_text.endswith(" END")
+    assert "Preview; exact text is in stored evidence." in record.final_text
+    assert len(record.final_text) < 17_000
     assert "characters omitted" in text
     assert text.startswith("BEGIN ")
     assert text.endswith(" END")

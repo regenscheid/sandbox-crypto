@@ -54,11 +54,14 @@ _CATALOG = MappingProxyType(
     {
         "intake": StockPrompt(
             "intake",
-            "sandbox-stock-intake-1",
+            "sandbox-stock-intake-2",
             "Research framing: intake. Establish the requested goal, the inputs already known "
             "and the evidence that would make the result useful. Separate supplied facts from "
             "assumptions and feasibility limits. Choose a small concrete next result under the "
             "existing authorization; ask for a missing decision only when it blocks progress. "
+            "For explicitly extended exploration, that result is a first iteration: record "
+            "hypotheses, relevant baseline evidence and stopping criteria, then reassess "
+            "follow-on branches as results arrive. Bounded intake remains a bounded task. "
             "Use durable planning only when its tools are offered. Disclose missing capabilities "
             "without inventing tools, approvals, sources or results.",
         ),
@@ -76,13 +79,18 @@ _CATALOG = MappingProxyType(
         ),
         "experiment": StockPrompt(
             "experiment",
-            "sandbox-stock-experiment-1",
+            "sandbox-stock-experiment-2",
             "Research framing: experiment. State the hypothesis, inputs, controls, stopping "
             "condition and expected evidence before the relevant experiment. Execute only "
             "through offered research tools under current policy. Preserve the actual "
             "environment, commands and observed outputs, including negative or partial results. "
             "Separate an intended experiment from one that ran, and a successful process from "
-            "a supported conclusion. Reconcile uncertain effects before repeating them.",
+            "a supported conclusion. Reconcile uncertain effects before repeating them. "
+            "For explicitly extended research, use results to reassess hypotheses and choose "
+            "justified follow-on experiments; a pilot's stopping condition does not finish "
+            "the investigation. Establish a faithful reference bridge before promoting a "
+            "toy result to the target version and parameters. Respect bounded briefs and "
+            "existing ceilings rather than extending work to spend the budget.",
         ),
         "proof-audit": StockPrompt(
             "proof-audit",
@@ -96,13 +104,17 @@ _CATALOG = MappingProxyType(
         ),
         "report": StockPrompt(
             "report",
-            "sandbox-stock-report-1",
+            "sandbox-stock-report-2",
             "Research framing: report. Organize the result around the requested question and "
             "connect material claims to inspected sources or exact observed outputs. Distinguish "
             "completed work, partial evidence, assumptions and remaining work. Link retained "
             "artifacts only when they exist and are accessible through the offered capabilities. "
             "Keep scientific conclusions separate from workflow completion, process exit "
-            "status and author assertions; report uncertainty without inventing validation.",
+            "status and author assertions; report uncertainty without inventing validation. "
+            "For explicitly extended research, an interim report or finished checklist is "
+            "not closure: assess remaining branches against the requested evidence and "
+            "stopping criteria, and continue justified work within authorization. A bounded "
+            "report request may finish without starting a new research program.",
         ),
     }
 )

@@ -439,6 +439,54 @@ async def test_the_read_view(client: WorkerClient, store: DocumentStore) -> None
     assert json.loads(text)["blocks"][0]["id"] == rest["from_block"]
 
 
+async def test_the_outline_is_revision_pinned_and_can_continue(store: DocumentStore) -> None:
+    store.create(
+        "p1",
+        name="report",
+        title="Report",
+        text="# Result\n\n## Evidence\n\nDetails.\n\n### Computation\n\n# Limits\n",
+        author=USER,
+    )
+    tool = DocumentTool(store, CONTEXT, run_id="r", output_chars=160)
+    text, record = await tool.call("show_outline", {"document": "report"}, operation="read-1")
+    first = json.loads(text)
+    assert first["revision"] == 1
+    assert [heading["title"] for heading in first["headings"]] == ["Result"]
+    assert record["read"]["blocks"] == [first["headings"][0]["id"]]
+
+    text, _ = await tool.call(
+        "show_outline",
+        {"document": "report", "from_heading": first["more"]["from_heading"]},
+        operation="read-2",
+    )
+    rest = json.loads(text)
+    assert rest["headings"][0]["title"] == "Evidence"
+    assert rest["headings"][0]["parent"] == first["headings"][0]["id"]
+
+    invalid, _ = await tool.call(
+        "show_outline", {"document": "report", "from_heading": "missing"}, operation="bad"
+    )
+    assert json.loads(invalid)["error"]["kind"] == "invalid_request"
+
+    store.save_text(
+        "p1",
+        "report",
+        base=1,
+        text="# Result\n\n## Evidence\n\nDetails.\n\n### Computation\n\n# Limits\n\n# Next\n",
+        author=USER,
+        reason="add next section",
+    )
+    full = DocumentTool(store, CONTEXT, run_id="r", output_chars=20000)
+    historic, _ = await full.call(
+        "show_outline", {"document": "report", "revision": 1}, operation="read-old"
+    )
+    assert json.loads(historic)["current_revision"] == 2
+    assert len(json.loads(historic)["headings"]) == 4
+    latest, _ = await full.call("show_outline", {"document": "report"}, operation="read-new")
+    assert json.loads(latest)["revision"] == 2
+    assert [heading["title"] for heading in json.loads(latest)["headings"]][-1] == "Next"
+
+
 async def test_documents_are_created_listed_and_deleted_by_the_session(
     client: WorkerClient, store: DocumentStore
 ) -> None:

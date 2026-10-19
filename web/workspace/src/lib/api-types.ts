@@ -10,6 +10,11 @@ export interface AdmissionSummary {
   recorded: boolean;
 }
 
+export interface AgentModelSelection {
+  alias: string;
+  reasoning_effort: string | null;
+}
+
 /** A place a revision or work record comes from (CM-9), besides the change's own tool call: an archive message by its ID (``message``, with ``quote`` for words of the user's), or a tool result by its call (``call``), whole or the characters ``start`` to ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally its ``sha256``); a document block at a revision (``document``, ``revision``, ``block``); or an entry revision (``entry``, ``revision`` defaulting to its current one). A PDF passage is anchored as a quote evidence link (LG-8). */
 export interface AnchorInput {
   message: string | null;
@@ -77,12 +82,33 @@ export interface Author {
   attempt_id: string | null;
 }
 
+export interface AvailabilityCheck {
+  checked_at: string;
+  status: "listed" | "unavailable" | "denied" | "timeout";
+}
+
 /** A body edit against an exact base version. */
 export interface BodyChange {
   operation_id: string;
   base: PlanRef;
   body: PlanBody;
   reason: string;
+}
+
+export interface CapturedCall {
+  cursor: number;
+  identity: string;
+  run: string;
+  at: string;
+  kind: string;
+  alias: string;
+  captured: boolean;
+  omitted: string | null;
+}
+
+export interface CapturedCalls {
+  calls: CapturedCall[];
+  next_before: number | null;
 }
 
 /** The capability catalog an operation used (CP-3): its version and the file's SHA-256. */
@@ -214,6 +240,80 @@ export interface CondaPackage {
   sha256: string | null;
   md5: string | null;
   license: string | null;
+}
+
+export interface ContextAttempt {
+  run: string;
+  predecessor: string | null;
+  epoch: number | null;
+  outcome: string | null;
+  saved: boolean;
+}
+
+export interface ContextAttemptsPage {
+  attempts: ContextAttempt[];
+  next_after: string | null;
+}
+
+export interface ContextHistoryMessage {
+  message: string;
+  position: number;
+  run: string;
+  parent: string | null;
+  created: string;
+  role: "user" | "assistant" | "tool";
+  kind: string;
+  source: string | null;
+  snippet: string;
+}
+
+export interface ContextHistoryPage {
+  scope: "attempt" | "agent";
+  messages: ContextHistoryMessage[];
+  next_after: number | null;
+  unsearched_oversized_tool_calls: number;
+  indexed: boolean;
+  index_pending: boolean;
+  coverage: string;
+}
+
+export interface ContextPart {
+  ordinal: number;
+  sha256: string;
+  bytes: number;
+  kind: string;
+  role: string;
+  format: string;
+  origin: Origin | null;
+  section: string | null;
+  version: string | null;
+  native_omitted: boolean;
+}
+
+export interface ContextParts {
+  parts: ContextPart[];
+  next_after: number | null;
+  coverage: string;
+}
+
+export interface ContextText {
+  text: string;
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  sha256: string;
+}
+
+export interface ContextTimelinePage {
+  answers: TimelineAnswer[];
+  folds: TimelineFold[];
+  auxiliary: TimelineAuxiliary[];
+  answers_after: number;
+  events_after: number;
+  more_answers: boolean;
+  more_events: boolean;
+  more_auxiliary: boolean;
+  coverage: string;
 }
 
 /** A project whose record cannot be read, listed with the store's error. */
@@ -419,6 +519,13 @@ export interface EvidenceLink {
   locator: Record<string, unknown> | null;
 }
 
+/** Host-control ownership, never supplied by an agent's tool arguments. */
+export interface ExecutionAuthority {
+  work: string;
+  run: string;
+  epoch: number;
+}
+
 /** Who asks for an execution, and for which project, session and environment. ``environment_id`` names the logical environment (the project's default environment or a dedicated session environment). The worker reports the concrete sandbox and the environment revision it used in ``Location``. */
 export interface ExecutionContext {
   project_id: string;
@@ -426,6 +533,7 @@ export interface ExecutionContext {
   environment_id: string;
   policy_revision: string | null;
   actor: string;
+  authority: ExecutionAuthority | null;
 }
 
 /** How a page shows a pinned figure file, and when its capability stops opening it: ``image``, an ``<img>`` of ``url``; ``svg``, the figure frame at ``url``, posted ``capability``; ``html``, a frame without scripts whose page is ``url``; ``pdf``, the viewer's figure mode at ``url``. */
@@ -611,6 +719,32 @@ export interface HeldBinding {
   reason: string;
 }
 
+export interface HistoryChunk {
+  collection: string;
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  data_base64: string;
+}
+
+export interface HistoryItem {
+  position: number;
+  value: JsonValue;
+}
+
+export interface HistoryPage {
+  collection: string;
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  items: HistoryItem[];
+}
+
+export interface IndexStatus {
+  chunks: number;
+  pending: boolean;
+}
+
 export type JsonValue = unknown;
 
 /** A session's kernel; ``generation`` grows by one on every restart. */
@@ -736,6 +870,69 @@ export interface LockfileSelection {
   lockfile: LockfileRef | null;
 }
 
+export interface McpInventory {
+  project_id: string;
+  policy_revision: string;
+  services: McpServiceView[];
+  inspected_runs: number;
+  skipped_runs: number;
+  observation_scope: string;
+}
+
+/** The newest listing found in the bounded sample, not its present state. */
+export interface McpObservation {
+  session: string;
+  run: string;
+  at: string;
+  status: "listed" | "unavailable";
+  listed_tools: number | null;
+}
+
+export interface McpPolicyMetadata {
+  revision: string;
+  protocol: string;
+  authentication: string;
+  default_action: string;
+  listing_action: string;
+  worker_access: boolean;
+  worker_tools: string[];
+  allow: string[];
+  escalate: string[];
+  deny: string[];
+  argument_bytes: number;
+  response_bytes: number;
+}
+
+export interface McpServiceMetadata {
+  server: string;
+  observed_at: string;
+  policy: McpPolicyMetadata;
+  checked_at: string | null;
+  status: "unknown" | "listed" | "responded" | "unavailable" | "denied";
+  listing_at: string | null;
+  listing_policy: string | null;
+  tools: McpToolMetadata[];
+  truncated: boolean;
+  schema_projection: string;
+}
+
+export interface McpServiceView {
+  name: string;
+  purpose: string;
+  observation: McpObservation | null;
+  metadata: McpServiceMetadata | null;
+  proxy_checked_at: string | null;
+  proxy_status: "reachable" | "unknown" | "unavailable";
+  availability: AvailabilityCheck | null;
+}
+
+export interface McpToolMetadata {
+  name: string;
+  description: string;
+  parameters_json: string;
+  action: string;
+}
+
 /** A project's memory as the Memory page shows it: the accepted entries in order. */
 export interface Memory {
   project: string;
@@ -836,6 +1033,42 @@ export interface ModelCost {
   by_role: RoleCost[];
   model_info_last_day: number | null;
   model_info_total: number | null;
+}
+
+export interface ModelOption {
+  alias: string;
+  api: "chat" | "responses" | "messages";
+  effort_supported: boolean;
+}
+
+export interface ModelSettings {
+  project: string;
+  revision: number;
+  roles: Record<string, AgentModelSelection>;
+  defaults: Record<string, AgentModelSelection>;
+  available: ModelOption[];
+  known_efforts: string[];
+}
+
+export interface ModelUsage {
+  intent_id: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  characters: number | null;
+  cost: number | null;
+  cost_source: "gateway" | "model_info" | null;
+  gateway_version: string | null;
+  thinking_replay: string | null;
+  retried: string[];
+}
+
+export interface Origin {
+  kind: string;
+  message: string | null;
+  position: number | null;
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */
@@ -1169,6 +1402,7 @@ export interface QuoteChecks {
 /** A resume or a cancel, written for the run service. */
 export interface Requested {
   requested: boolean;
+  resume_request: string | null;
   resumed: number;
 }
 
@@ -1187,6 +1421,56 @@ export interface ResolvedFile {
   agpl: boolean;
   action: "allow" | "alert" | "escalate" | "deny";
   rule: string | null;
+}
+
+export interface ResourceDecision {
+  request: ResourceDecisionRequest;
+  parent_run: string;
+  operation: string;
+  total: number;
+  observed: number;
+  operator: string | null;
+  progress: number;
+}
+
+export interface ResourceDecisionRequest {
+  request_id: string;
+  action: "continue" | "redirect" | "report" | "pause" | "extend_turns" | "extend_time" | "extend_storage";
+  reason: string;
+}
+
+export interface ResourceRequest {
+  request_id: string;
+  work: string;
+  current: string;
+  epoch: number;
+  parent: string | null;
+  resource: "tokens" | "turns" | "elapsed_seconds" | "retained_bytes" | "retention_bytes" | "retention_revisions" | "retention_operations" | "retention_metadata_bytes";
+  grant_revision: number;
+  used: number;
+  total: number;
+  checkpoint_message_id: string | null;
+  created_at: number;
+  task: string;
+  work_state: "running" | "waiting" | "paused" | "blocked" | "completed" | "stopped";
+  superseded: boolean;
+  user_grant_revision: number | null;
+  decision: ResourceDecision | null;
+  scope: "work" | "project" | "global";
+  renewable: boolean;
+}
+
+export interface ResourceRequestPage {
+  requests: ResourceRequest[];
+  next_after: string | null;
+}
+
+export interface ResumeStatus {
+  request: string;
+  root: string;
+  status: string;
+  reason: string | null;
+  created: number;
 }
 
 /** One recorded package and its declared license, including unchanged packages. */
@@ -1385,6 +1669,97 @@ export interface Standing {
   by: string | null;
 }
 
+export interface StatusPage {
+  root: string | null;
+  unfinished: number;
+  active: boolean;
+  works: Work[];
+  resumes: ResumeStatus[];
+  next_work: string | null;
+  next_resume: string | null;
+  pending_kernel_restore_work: string | null;
+  pending_kernel_restore_identity: string | null;
+}
+
+export interface TimelineAnswer {
+  ordinal: number;
+  message: string;
+  observed_at: string;
+  role: "main" | "delegated";
+  usage: ModelUsage;
+}
+
+export interface TimelineAuxiliary {
+  identity: string;
+  kind: "reviewer" | "watcher" | "fold" | "skills" | "embedding";
+  intent_at: string;
+  usage: ModelUsage | null;
+}
+
+export interface TimelineFold {
+  seq: number;
+  at: string;
+  state: string | null;
+  fold: string | null;
+  span_start: number | null;
+  span_end: number | null;
+  freed_estimate: number | null;
+  tokens_estimate: number | null;
+}
+
+export interface TokenGrantDecision {
+  request: TokenGrantRequest;
+  revision: number;
+  previous_total: number;
+  operator: string;
+  message_id: string;
+  observed: number;
+}
+
+export interface TokenGrantRequest {
+  work: string;
+  current: string;
+  epoch: number;
+  expected_revision: number;
+  total_tokens: number;
+  reason: string;
+}
+
+export interface TokenGrantStatus {
+  work: string;
+  current: string;
+  epoch: number;
+  revision: number;
+  total_tokens: number;
+  used_tokens: number;
+  next_total_tokens: number | null;
+  blocked_reason: string | null;
+  blocked_ancestor_work: string | null;
+}
+
+/** One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing. */
+export interface ToolRecordChunk {
+  message: string;
+  offset: number;
+  total: number;
+  next_offset: number | null;
+  data_base64: string;
+}
+
+export interface ToolRecordListing {
+  after: number;
+  next_after: number;
+  has_more: boolean;
+  records: ToolRecordReference[];
+}
+
+export interface ToolRecordReference {
+  message: string;
+  position: number;
+  operation_id: string | null;
+  record_bytes: number | null;
+}
+
 /** One run of the session's tree. */
 export interface TreeRun {
   name: string;
@@ -1400,11 +1775,45 @@ export interface TreeRun {
   limits: Record<string, JsonValue> | null;
 }
 
+export interface UploadPage {
+  uploads: UserUpload[];
+  next_after: number | null;
+}
+
+export interface UserUpload {
+  upload_id: string;
+  project: string;
+  session: string;
+  filename: string;
+  media_type: string;
+  sha256: string;
+  size: number;
+  created_at: string;
+  author: string;
+  path: string;
+  number: number;
+}
+
 /** The viewer's URL for one PDF revision, and when it stops opening it. */
 export interface ViewerLink {
   url: string;
   expires_at: string;
   path: string;
+}
+
+/** One research responsibility, independent of the attempt currently carrying it. */
+export interface Work {
+  project: string;
+  session: string;
+  work: string;
+  root: string;
+  parent: string | null;
+  current: string;
+  role: "main" | "delegated";
+  kernel: string | null;
+  state: "running" | "waiting" | "paused" | "blocked" | "completed" | "stopped";
+  reason: string | null;
+  epoch: number;
 }
 
 /** An entry's work records, newest first, with where the next page begins. */

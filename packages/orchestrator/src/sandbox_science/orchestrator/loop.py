@@ -6,18 +6,33 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Generator,
+    Iterator,
+    MutableSequence,
+    Sequence,
+)
+from collections.abc import Set as AbstractSet
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
     asynccontextmanager,
     contextmanager,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
+from .history.capture import prompt_pins
+from .history.collections import Collection, Members
+from .history.limits import WorkingMemoryLimitError
+from .history.log import RunArchive
+from .history.memory import VIEW_BYTES, RunMemory
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
 from .images import IMAGE
+from .kernel_check import KernelCheck
 from .memory_prompt import MemoryGiven
 from .model import (
     GATEWAY_BUDGET,
@@ -70,7 +85,7 @@ POLLS: Final = frozenset(
 runaway guard never counts them as repeated calls, only as failed ones."""
 REPORT_SOURCE: Final = "report"
 """The report round's notice source."""
-MAIN_VERSION: Final = "sandbox-main-10"
+MAIN_VERSION: Final = "sandbox-main-13"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
     "You are a research assistant. Send research code and shell commands through the "
@@ -85,6 +100,14 @@ SYSTEM_PROMPT: Final = (
     "to handle it yourself, create or revise the session plan, or send a targeted update "
     "to a direct child with message_child. A child has not seen the user's message: "
     "include the instruction it needs and the user's archive message ID when forwarding. "
+    "Resource check-ins are not scientific completion. Read the child checkpoint, "
+    "assess progress and use resource_decide to renew soft turns, active time or retained "
+    "artifact allowance within policy, redirect, request a report or pause. When operator "
+    "policy explicitly permits root renewal, you may renew your own soft allowance only "
+    "after saving a checkpoint and new research evidence; repeated calls alone are not "
+    "progress. Hard capacity and execution deadlines cannot be extended this way. "
+    "Token extensions need explicit USER approval of "
+    "exactly 10,000,000 more cumulative tokens. Never infer it from a child request. "
     "Check the child's status and current track before changing its assignment; a plan "
     "revision can invalidate a running child's track grant. Read the relevant pinned "
     "document, artifact or ledger entry before acting on feedback about it. Messages "
@@ -105,6 +128,25 @@ SYSTEM_PROMPT: Final = (
     "validation evidence and scale-up decision there before the large run. Keep trials "
     "and larger runs within existing budgets and authorization, and reconcile unknown "
     "effects before repeating them. Trivial work needs no ceremonial pilot. "
+    "Match research depth to the user's requested scope. Bounded tasks can finish when "
+    "their requested result is supported. For explicitly extended exploratory research, "
+    "the initial checklist is a first iteration, not the completion criterion. Establish "
+    "competing hypotheses, relevant literature and reference baselines, useful evidence "
+    "standards and stopping criteria. Inspect prior art for the target's exact version, "
+    "parameters and assumptions before claiming novelty. Before promoting a toy result, "
+    "validate the relevant reference behavior and explain which observations transfer to "
+    "the target and which do not; an unbuilt or untested bridge remains an open branch. "
+    "Reassess hypotheses after results, prioritize justified feasible follow-on branches, "
+    "and run meaningful experiments with controls or known cases where applicable. Preserve "
+    "negative results with their tested scope. As a parent, assess children's baseline "
+    "evidence, coverage and limitations; a pilot or scoped child returning does not complete "
+    "the investigation. Give children finite briefs rather than making each explore "
+    "indefinitely. Revise the active plan as the evidence changes and continue while a "
+    "justified next branch serves the authorized objective. Stop when the requested evidence "
+    "standard or an evidence-based stopping criterion is met, the user stops the work, or "
+    "a real obstacle or resource limit prevents useful continuation; report partial results "
+    "and remaining branches honestly. Budgets are ceilings, not spending targets: do not "
+    "repeat low-value work, invent experiments, or pursue minimum durations or call counts. "
     "Network access follows the project's "
     "policy: the first connection to a site the project has not used before can fail with "
     "'Permission denied' while the platform admits the site, which takes up to half a minute, "
@@ -190,10 +232,10 @@ class Interruption:
 
 @dataclass
 class Transcript:
-    messages: list[Message]
+    messages: MutableSequence[Message]
     prompt_provenance: PromptPins | None = None
-    tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
-    delivered: dict[str, set[str]] = field(default_factory=dict[str, set[str]])
+    tool_records: MutableSequence[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    delivered: dict[str, set[str] | Members] = field(default_factory=dict[str, set[str] | Members])
     """Each notice source's IDs that a successful model call saw."""
     summaries: dict[str, Any] = field(default_factory=dict[str, Any])
     """What each source reports at the run's end, such as a review's outcome."""
@@ -209,7 +251,7 @@ class Transcript:
     max_input_chars: int = MAX_INPUT_CHARS
     tools_chars: int = 0
     """The size of the tool schemas, which every model call sends with the messages."""
-    usage: list[ModelUsage] = field(default_factory=list[ModelUsage])
+    usage: MutableSequence[ModelUsage] = field(default_factory=list[ModelUsage])
     """Each answered model call's usage, in order."""
     pending: str | None = field(default=None, repr=False)
     """The answer a closing round was taken for, until the next reply."""
@@ -224,7 +266,9 @@ class Transcript:
     """Why a hook stopped the run before a model call, such as a spent budget."""
     failure: FailurePhase | None = None
     phase: FailurePhase = field(default="harness", repr=False)
-    offered: dict[str, set[str]] = field(default_factory=dict[str, set[str]], repr=False)
+    offered: dict[str, set[str] | Members] = field(
+        default_factory=dict[str, set[str] | Members], repr=False
+    )
     """Each hook source's notice IDs in the messages, delivered or not."""
     log: MessageLog | None = field(default=None, repr=False)
     """Keeps each message the run adds, which then begins with its ID header."""
@@ -239,13 +283,47 @@ class Transcript:
     overflowed: bool = field(default=False, repr=False)
     """Whether the last model call was refused for the conversation's length."""
 
+    memory: RunMemory | None = field(default=None, repr=False)
+
+    def identities(self, source: str, *, delivered: bool = False) -> set[str] | Members:
+        mapping = self.delivered if delivered else self.offered
+        if source not in mapping:
+            mapping[source] = (
+                self.memory.members(("delivered:" if delivered else "offered:") + source)
+                if self.memory is not None
+                else set()
+            )
+        return mapping[source]
+
+    def working(self) -> Iterator[Message]:
+        if self.rebuilt is None:
+            yield from self.messages
+        else:
+            yield self.messages[0]
+            yield from self.rebuilt
+            yield from self.messages[self.base :]
+
     @property
     def sent(self) -> list[Message]:
         """What the next model call sends: the system message, the view a fold rebuilt,
         if one did, and the messages added since."""
-        if self.rebuilt is None:
-            return self.messages
-        return [self.messages[0], *self.rebuilt, *self.messages[self.base :]]
+        kept: list[Message] = []
+        used = 0
+        for message in self.working():
+            if isinstance(message, AssistantMessage):
+                message = message.replay()
+            used += len(dump(message).encode()) + 2
+            if isinstance(message, AssistantMessage):
+                used += len(message.native or b"")
+                used += len(dump(message.adapter_state or {}).encode())
+                used += len((message.prefix or "").encode())
+            if self.memory is not None and used > VIEW_BYTES:
+                raise WorkingMemoryLimitError(
+                    "active model payload exceeds the working-state ceiling; "
+                    "original evidence remains stored"
+                )
+            kept.append(message)
+        return kept
 
     def rebuild(self, view: Sequence[Message]) -> None:
         """Send ``view`` after the system message from now on, in place of everything
@@ -264,17 +342,17 @@ class Transcript:
     @property
     def size(self) -> int:
         """What the next model call would send, in characters."""
-        return len(dump(self.sent)) + self.tools_chars
+        return 2 + sum(len(dump(message)) + 2 for message in self.working()) + self.tools_chars
 
     def has_room(self, notices: Sequence[Notice] = ()) -> bool:
         """Whether another model call can be made, with these notices added."""
         if self.turns_left <= 0 or not self.room:
             return False
-        added = len(dump([_message(notice) for notice in notices])) if notices else 0
+        added = len(dump([notice_message(notice) for notice in notices])) if notices else 0
         return self.size + added <= self.max_input_chars
 
-    def delivered_ids(self, source: str) -> frozenset[str]:
-        return frozenset(self.delivered.get(source, ()))
+    def delivered_ids(self, source: str) -> AbstractSet[str]:
+        return self.delivered.get(source, frozenset())
 
     def fail(self, phase: FailurePhase) -> None:
         """Keep the first failure classification without retaining exception data."""
@@ -298,7 +376,7 @@ class Folds(Protocol):
         ...
 
 
-def _message(notice: Notice) -> Message:
+def notice_message(notice: Notice) -> Message:
     if notice.user:
         return {"role": "user", "content": notice.framing}
     return {"role": "user", "content": notice.framing + dump(notice.payload)}
@@ -306,16 +384,31 @@ def _message(notice: Notice) -> Message:
 
 async def _append(transcript: Transcript, message: Message, appended: Appended) -> None:
     """Add a message to the conversation, kept first by the run's log if it has one."""
+    image = message.get(IMAGE)
     if transcript.log is not None:
+        if appended.kind == "assistant":
+            appended = replace(
+                appended,
+                usage=transcript.usage[-1],
+                usage_index=len(transcript.usage),
+                consumed=transcript.offered,
+            )
         message = await transcript.log.append(message, appended)
-    transcript.messages.append(message)
+    if image is not None:
+        message = {**message, IMAGE: image}
+    if isinstance(transcript.messages, Collection) and isinstance(transcript.log, RunArchive):
+        transcript.messages.append_encoded(
+            {"archive_message": transcript.log.last_message, **({IMAGE: image} if image else {})}
+        )
+    else:
+        transcript.messages.append(message)
 
 
 async def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
     """Notices as user messages; their IDs count as delivered once a model call sees them."""
     for notice in notices:
-        await _append(transcript, _message(notice), Appended("notice", notice=notice))
-        transcript.offered.setdefault(notice.source, set()).update(notice.ids)
+        await _append(transcript, notice_message(notice), Appended("notice", notice=notice))
+        transcript.identities(notice.source).update(notice.ids)
 
 
 async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcript) -> None:
@@ -323,9 +416,16 @@ async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcri
         await _offer(transcript, await hook.notices(point, transcript))
 
 
+async def _consumption(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
+    for hook in hooks:
+        ids = await hook.consumption()
+        if ids:
+            transcript.identities(hook.name).update(ids)
+
+
 async def _model_returned(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
     for source, ids in transcript.offered.items():
-        transcript.delivered.setdefault(source, set()).update(ids)
+        transcript.identities(source, delivered=True).update(ids)
     for hook in hooks:
         await hook.model_returned(transcript)
 
@@ -381,6 +481,9 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
     match closing.action:
         case "stop":
             transcript.stopped = closing.stopped
+            if closing.retain_answer:
+                _stands(transcript, answer)
+                transcript.final_text = answer
             decision: Decision = "stop"
         case "retry" if not transcript.has_room(closing.notices):
             transcript.stopped = closing.stopped
@@ -421,8 +524,17 @@ async def _attach(
             found.extend(await hook.notices("tool", transcript))
         except Exception:
             _log.exception("the %s notices failed; they wait for a later safe point", hook.name)
+    attach_notices(transcript, outcome, limit, found)
+
+
+def attach_notices(
+    transcript: Transcript, outcome: ToolOutcome, limit: int, notices: Sequence[Notice]
+) -> None:
+    """Deterministic bounded tool attachment shared with the trusted capability handler."""
+    if outcome.whole:
+        return
     extra: dict[str, object] = {}
-    for notice in found:
+    for notice in notices:
         taken = {"tool_result", "tool", "arguments", *outcome.record}
         if notice.user:
             _log.error("a %s notice is the user's message; not attached", notice.source)
@@ -432,7 +544,7 @@ async def _attach(
             _log.warning("a %s notice is too long to attach; not attached", notice.source)
         else:
             extra[notice.framing] = notice.payload
-            transcript.offered.setdefault(notice.source, set()).update(notice.ids)
+            transcript.identities(notice.source).update(notice.ids)
     if not extra:
         return
     text, size = outcome.text, len(outcome.text)
@@ -458,7 +570,8 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     transcript.phase = "model"
     transcript.overflowed = False
     try:
-        reply = await model.complete(transcript.sent, toolbox.specs)
+        with prompt_pins(transcript.prompt_provenance):
+            reply = await model.complete(transcript.sent, toolbox.specs)
     except ContextLimitError as error:
         _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
         reply, transcript.overflowed = None, True
@@ -475,6 +588,8 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             model=reply.model,
             input_tokens=reply.input_tokens,
             output_tokens=reply.output_tokens,
+            cache_read_input_tokens=reply.cache_read_input_tokens,
+            cache_creation_input_tokens=reply.cache_creation_input_tokens,
             characters=size + answered,
             cost=reply.cost,
             cost_source=reply.cost_source,
@@ -484,6 +599,12 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
         )
     )
     return reply
+
+
+async def _turn_limit(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
+    for hook in hooks:
+        if (ceiling := await hook.turn_limit(transcript)) is not None:
+            transcript.max_turns = ceiling
 
 
 async def _halted(hooks: Sequence[TurnHook], transcript: Transcript) -> bool:
@@ -583,7 +704,7 @@ class Runaway:
             self.tripped = {"rule": rule, "detail": detail}
 
 
-def _not_run(reason: str) -> ToolOutcome:
+def not_run(reason: str) -> ToolOutcome:
     """The result of a tool call the report round does not run."""
     message = f"not_run: the run reached a limit ({reason}); this call did not run"
     return ToolOutcome(
@@ -598,7 +719,12 @@ async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple
     a conversation within ``REPORT_ROOM`` of its ``max_input_chars``."""
     for hook in hooks:
         if (reason := await hook.last_call(transcript)) is not None:
-            return reason, "the run's tokens leave room for this call and no other"
+            detail = (
+                "the parent requested a checkpoint report"
+                if reason == "resource_report"
+                else "the run's tokens leave room for this call and no other"
+            )
+            return reason, detail
     limit = transcript.max_input_chars
     if transcript.folds is None and transcript.size > limit - limit // REPORT_ROOM:
         return "context_limit", f"the conversation is near its {limit:,}-character limit"
@@ -640,10 +766,11 @@ async def _report(
         transcript.stopped = "context_limit"
         return
     notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": reason, "detail": detail})
-    if transcript.size + len(dump([_message(notice)])) > transcript.max_input_chars:
+    if transcript.size + len(dump([notice_message(notice)])) > transcript.max_input_chars:
         return  # no room for the call: the run stops as before, without a report
     await _offer(transcript, (notice,))
     transcript.turns += 1
+    await _consumption(hooks, transcript)
     reply = await _complete(model, toolbox, transcript)
     while reply is None and transcript.overflowed and folds is not None:
         if not await folds.overflow(transcript):
@@ -655,14 +782,15 @@ async def _report(
     await _append(transcript, AssistantMessage.of(reply), Appended("assistant", reply=reply))
     await _model_returned(hooks, transcript)
     for call in reply.tool_calls:
-        outcome = _not_run(reason)
+        outcome = not_run(reason)
         await _append(
             transcript,
             {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
             Appended("tool_result", call=call, outcome=outcome),
         )
+        record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
         transcript.tool_records.append(
-            {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            transcript.log.retained_tool(record) if transcript.log is not None else record
         )
     if reply.text:
         await _closing(hooks, transcript, reply.text)
@@ -685,8 +813,12 @@ async def _run_task(
     await _notices(hooks, "start", transcript)
     revision = toolbox.revision
     guard = Runaway()
-    for turn in range(transcript.max_turns):
-        if turn and await _halted(hooks, transcript):
+    while True:
+        await _turn_limit(hooks, transcript)
+        if transcript.turns >= transcript.max_turns:
+            break
+        turn = transcript.turns
+        if await _halted(hooks, transcript):
             return transcript
         if turn and (last := await _last_call(hooks, transcript)) is not None:
             await _report(model, toolbox, transcript, hooks, *last)
@@ -697,6 +829,7 @@ async def _run_task(
         if folds is not None and not await folds.before_call(transcript):
             await _out_of_room(hooks, transcript)
             return transcript
+        await _consumption(hooks, transcript)
         reply = await _complete(model, toolbox, transcript)
         # A context error folds once and tries once more; the fold engine says when not.
         while reply is None and transcript.overflowed and folds is not None:
@@ -713,6 +846,7 @@ async def _run_task(
         answer = AssistantMessage.of(reply)
         await _append(transcript, answer, Appended("assistant", reply=reply))
         await _model_returned(hooks, transcript)
+        await _turn_limit(hooks, transcript)
         if not reply.tool_calls:
             held = transcript.held
             if await _closing(hooks, transcript, reply.text):
@@ -725,32 +859,52 @@ async def _run_task(
             return transcript
         viewed: list[tuple[Notice, str]] = []
         for call in reply.tool_calls:
+            operation = operation_id(f"{run_id}-t{turn}", call)
+            if transcript.log is not None:
+                await transcript.log.start_tool(call, operation)
             transcript.phase = "tool"
-            outcome = await toolbox.call(
-                call, operation_id(f"{run_id}-t{turn}", call), model=reply.model, gates=hooks
-            )
+            outcome = await toolbox.call(call, operation, model=reply.model, gates=hooks)
             transcript.phase = "harness"
             guard.call(call, outcome)  # before any notice rides on its result
             await _attach(hooks, transcript, outcome, toolbox.output_chars)
             await _append(
                 transcript,
                 {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
-                Appended("tool_result", call=call, outcome=outcome),
+                Appended("tool_result", call=call, outcome=outcome, operation_id=operation),
             )
-            transcript.tool_records.append(
-                {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            index = len(transcript.tool_records)
+            retained = (
+                transcript.log.retained_tool(record) if transcript.log is not None else record
             )
-            for hook in hooks:
-                await hook.observe_tool(transcript, outcome.record)
-            if on_tool is not None:
-                await on_tool(call.name, call.arguments, outcome)
-            if outcome.image is not None:
-                viewed.append(outcome.image)
+            transcript.tool_records.append(retained)
+            if isinstance(transcript.tool_records, Collection):
+                transcript.tool_records.expose_current(index, record)
+            try:
+                for hook in hooks:
+                    await hook.observe_tool(
+                        transcript, record if isinstance(hook, KernelCheck) else outcome.record
+                    )
+                if on_tool is not None:
+                    await on_tool(call.name, call.arguments, outcome)
+                if outcome.image is not None:
+                    viewed.append(outcome.image)
+            finally:
+                if isinstance(transcript.tool_records, Collection):
+                    transcript.tool_records.release_current(index)
+                else:
+                    transcript.tool_records[index] = retained
+                # Coroutine locals otherwise retain the full last result across the
+                # next model call, including after observer failure or cancellation.
+                del record, outcome
         # Images go after all of the turn's results, in framed messages of their own
         # whose token each client turns into its API's image (docs/specs/figures.md, FG-37).
         for notice, token in viewed:
-            await _append(transcript, _message(notice), Appended("notice", notice=notice))
-            transcript.messages[-1] = {**transcript.messages[-1], IMAGE: token}
+            await _append(
+                transcript,
+                {**notice_message(notice), IMAGE: token},
+                Appended("notice", notice=notice),
+            )
         viewed.clear()
         if toolbox.revision != revision:
             # Connector tools loaded: every later model call carries their schemas.
@@ -836,6 +990,8 @@ async def run_task(
     role: str = "main",
     log: MessageLog | None = None,
     folds: Folds | None = None,
+    memory_store: RunMemory | None = None,
+    on_started: Callable[[Transcript], Awaitable[None]] | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -856,10 +1012,12 @@ async def run_task(
         raise ValueError("max_input_chars must be at least 1")
     transcript: Transcript | None = None
     interruption = Interruption()
+    active_hooks: tuple[TurnHook, ...] = ()
     try:
         async with AsyncExitStack() as stack:
             with interruption.protect():
                 hooks = toolbox.turn_hooks() if hooks is None else tuple(hooks)
+                active_hooks = tuple(hooks)
                 for hook in hooks:
                     await stack.enter_async_context(interruption.context(hook.lease()))
                 offered_plans = {spec.name for spec in toolbox.specs} & PLAN_NAMES
@@ -885,16 +1043,37 @@ async def run_task(
                     log=log,
                     folds=folds,
                 )
+                if memory_store is None and isinstance(log, RunArchive):
+                    memory_store = RunMemory.archived(log)
+                if memory_store is not None:
+                    transcript.messages = memory_store.messages(transcript.messages)
+                    transcript.tool_records = memory_store.tools()
+                    transcript.usage = memory_store.usage()
+                    transcript.memory = memory_store
+                    transcript.max_input_chars = min(transcript.max_input_chars, VIEW_BYTES)
+                if on_started is not None:
+                    await on_started(transcript)
                 try:
-                    await _run_task(
-                        model,
-                        toolbox,
-                        transcript,
-                        hooks,
-                        run_id=run_id,
-                        task=task,
-                        on_tool=on_tool,
-                    )
+                    try:
+                        await _run_task(
+                            model,
+                            toolbox,
+                            transcript,
+                            hooks,
+                            run_id=run_id,
+                            task=task,
+                            on_tool=on_tool,
+                        )
+                    except WorkingMemoryLimitError as error:
+                        transcript.stopped = "memory_limit"
+                        transcript.final_text = transcript.answer = None
+                        transcript.summaries["memory"] = {"blocked": str(error)}
+                    for hook in hooks:
+                        if (
+                            reason := await hook.finishing(transcript, transcript.stopped)
+                        ) is not None:
+                            transcript.stopped = reason
+                            transcript.final_text = transcript.answer = None
                 except Exception:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.
@@ -905,28 +1084,35 @@ async def run_task(
                         raise
                     transcript.stopped, transcript.final_text = "cancelled", None
                     transcript.answer = None
-                for hook in hooks:
-                    if (summary := hook.summary()) is not None:
-                        transcript.summaries[hook.name] = summary
-                if toolbox.connectors is not None:
-                    transcript.summaries["connectors"] = toolbox.connectors.summary()
-                if toolbox.image_offer is not None:
-                    transcript.summaries["view_image"] = toolbox.image_offer
-                if toolbox.skills is not None:
-                    first = transcript.usage[0].model if transcript.usage else None
-                    if (started := toolbox.skills.summary(first)) is not None:
-                        # Beside the discoveries the hook of that name keeps there.
-                        found = cast(dict[str, Any], transcript.summaries.get("skills") or {})
-                        transcript.summaries["skills"] = {**found, **started}
     except BaseException as error:
         if transcript is not None and user_cancelled(error, stop):
-            return transcript  # it came as the run closed: the run's own outcome stands
-        if interruption.error is not None:
+            pass  # it came as the run closed: the run's own outcome stands
+        elif interruption.error is not None:
             raise interruption.error from None
-        if not isinstance(error, Exception):
+        elif not isinstance(error, Exception):
             raise
-        if transcript is None:
+        elif transcript is None:
             raise  # Setup did not start a run; there is no observed transcript.
-        _log.exception("run %s failed during cleanup", run_id)
+        else:
+            _log.exception("run %s failed during cleanup", run_id)
+            transcript.fail("cleanup")
+    try:
+        # Lease cleanup settles background work before its final accounting is
+        # copied into the saved run, including cancelled and failed runs.
+        for hook in active_hooks:
+            if (summary := hook.summary()) is not None:
+                transcript.summaries[hook.name] = summary
+        if toolbox.connectors is not None:
+            transcript.summaries["connectors"] = toolbox.connectors.summary()
+        if toolbox.image_offer is not None:
+            transcript.summaries["view_image"] = toolbox.image_offer
+        if toolbox.skills is not None:
+            first = transcript.usage[0].model if transcript.usage else None
+            if (started := toolbox.skills.summary(first)) is not None:
+                # Beside the discoveries the hook of that name keeps there.
+                found = cast(dict[str, Any], transcript.summaries.get("skills") or {})
+                transcript.summaries["skills"] = {**found, **started}
+    except Exception:
+        _log.exception("run %s failed during summary", run_id)
         transcript.fail("cleanup")
     return transcript

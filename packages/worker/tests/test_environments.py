@@ -149,9 +149,14 @@ if command == ["sandbox", "create"]:
         policy = yaml.safe_load(handle)
     policy["filesystem_policy"] = enrich(policy.get("filesystem_policy"))
     sandboxes[name] = {"id": str(uuid.uuid4()), "name": name, "image": option("--from"),
-                       "providers": providers, "policy": policy, "version": 1}
+                       "providers": providers, "policy": policy, "version": 1,
+                       "phase": state.get("phase_on_create", "Ready")}
+    if state.get("fail_create_after"):
+        fail("synthetic creation response lost")
     out = "created"
 elif command == ["sandbox", "get"]:
+    if state.get("fail_get"):
+        fail("synthetic gateway unavailable")
     name = argv[2]
     if name not in sandboxes:
         fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
@@ -172,7 +177,12 @@ elif command == ["sandbox", "start"]:
         box["id"] = str(uuid.uuid4())
     out = "started"
 elif command == ["sandbox", "delete"]:
-    sandboxes.pop(argv[2], None)
+    if state.get("fail_delete"):
+        fail("synthetic deletion failed")
+    if state.get("delete_pending"):
+        sandboxes[argv[2]]["phase"] = "Deleting"
+    else:
+        sandboxes.pop(argv[2], None)
     out = "deleted"
 elif command == ["policy", "get"]:
     box = sandboxes[argv[2]]
@@ -510,14 +520,151 @@ async def test_a_sandbox_left_by_a_crash_is_replaced(setup: Setup) -> None:
     assert len(setup.fake.calls("sandbox", "delete")) == 1
 
 
-async def test_a_failed_creation_leaves_no_sandbox_or_binding(setup: Setup) -> None:
+async def test_an_unobserved_creation_keeps_its_cleanup_obligation(setup: Setup) -> None:
     setup.fake.update(fail_create=True)
     with pytest.raises(WorkerError, match="could not start") as refused:
         await setup.environments.create(setup.request())
     assert refused.value.kind is ErrorKind.UNAVAILABLE
-    assert setup.environments.get("env-1").state is EnvironmentState.DELETED
+    original = setup.environments.get("env-1")
+    assert original.state is EnvironmentState.CREATING
+    assert original.sandbox_id is None
     assert setup.environments.sandbox("env-1") is None
     assert setup.fake.read()["sandboxes"] == {}
+    setup.fake.update(fail_create=False)
+    for action in (setup.environments.create(setup.request()), setup.environments.delete("env-1")):
+        with pytest.raises(WorkerError, match="creation outcome is unknown"):
+            await action
+        assert setup.environments.get("env-1") == original
+    assert len(setup.fake.calls("sandbox", "create")) == 1
+    assert setup.fake.calls("sandbox", "delete") == []
+
+
+@pytest.mark.parametrize("problem", ["fail_delete", "delete_pending", "fail_get"])
+async def test_failed_creation_cleanup_retains_identity_across_restart(
+    setup: Setup, problem: str
+) -> None:
+    other, _ = await setup.environments.create(setup.request("env-2"))
+    setup.fake.update(fail_create_after=True, **{problem: True})
+    with pytest.raises(WorkerError, match="creation response lost"):
+        await setup.environments.create(setup.request())
+    original = setup.environments.get("env-1")
+    assert original.state is EnvironmentState.CREATING
+    assert original.sandbox in setup.fake.read()["sandboxes"]
+    if problem != "fail_get":
+        assert original.sandbox_id == setup.fake.read()["sandboxes"][original.sandbox]["id"]
+    assert original.environment_id in setup.environments.records.live(["p1"])
+
+    setup.environments.close()
+    assert setup.settings.environments is not None
+    restarted = Environments(
+        setup.settings,
+        setup.settings.environments,
+        setup.state_dir,
+        {"FAKE_OPENSHELL_STATE": str(setup.fake.path), "PATH": os.environ["PATH"]},
+    )
+    try:
+        with pytest.raises(WorkerError):
+            await restarted.create(setup.request())
+        assert restarted.get("env-1") == original
+        assert len(setup.fake.calls("sandbox", "create")) == 2
+        setup.fake.update(fail_create_after=False, **{problem: False})
+        replacement, created = await restarted.create(setup.request())
+        assert created
+        assert replacement.sandbox != original.sandbox
+        assert original.sandbox not in setup.fake.read()["sandboxes"]
+        assert other.sandbox in setup.fake.read()["sandboxes"]
+        assert all(call[2] == original.sandbox for call in setup.fake.calls("sandbox", "delete"))
+    finally:
+        restarted.close()
+
+
+async def test_an_unknown_creation_that_appears_later_is_reconciled_first(setup: Setup) -> None:
+    setup.fake.update(fail_create=True)
+    with pytest.raises(WorkerError):
+        await setup.environments.create(setup.request())
+    original = setup.environments.get("env-1")
+    # The disconnected upstream creation completes after the worker saw absence.
+    setup.fake.update(
+        fail_create=False,
+        sandboxes={original.sandbox: {"id": "original-late-id", "phase": "Ready"}},
+    )
+    replacement, created = await setup.environments.create(setup.request())
+    assert created
+    assert replacement.sandbox != original.sandbox
+    assert original.sandbox not in setup.fake.read()["sandboxes"]
+    calls = setup.fake.read()["calls"]
+    deletion = next(i for i, call in enumerate(calls) if call[:2] == ["sandbox", "delete"])
+    creation = max(i for i, call in enumerate(calls) if call[:2] == ["sandbox", "create"])
+    assert deletion < creation
+
+
+async def test_readiness_retains_identity_before_phase_failure_and_refuses_replacement(
+    setup: Setup,
+) -> None:
+    setup.fake.update(phase_on_create="Error", fail_delete=True)
+    with pytest.raises(WorkerError, match="is Error"):
+        await setup.environments.create(setup.request())
+    original = setup.environments.get("env-1")
+    assert original.sandbox_id is not None
+    state = setup.fake.read()
+    state["sandboxes"][original.sandbox]["id"] = "another-sandbox"
+    state["fail_delete"] = False
+    setup.fake.write(state)
+    before = setup.fake.calls("sandbox", "delete")
+    with pytest.raises(WorkerError, match="identity changed"):
+        await setup.environments.create(setup.request())
+    with pytest.raises(WorkerError, match="identity changed"):
+        await setup.environments.delete("env-1")
+    assert setup.environments.get("env-1") == original
+    assert setup.fake.calls("sandbox", "delete") == before
+    assert len(setup.fake.calls("sandbox", "create")) == 1
+
+
+async def test_invalid_replacement_request_does_not_mutate_pending_creation(setup: Setup) -> None:
+    setup.fake.update(fail_create_after=True, fail_delete=True)
+    with pytest.raises(WorkerError):
+        await setup.environments.create(setup.request())
+    original = setup.environments.get("env-1")
+    before = setup.fake.calls("sandbox", "delete")
+    setup.fake.update(fail_create_after=False, fail_delete=False)
+    with pytest.raises(WorkerError, match="no profile"):
+        await setup.environments.create(setup.request(profile="unknown"))
+    assert setup.environments.get("env-1") == original
+    assert setup.fake.calls("sandbox", "delete") == before
+
+
+async def test_creation_cleanup_stays_owned_through_repeat_cancellation(setup: Setup) -> None:
+    entered, free = asyncio.Event(), asyncio.Event()
+
+    async def release(environment: str) -> None:
+        entered.set()
+        await free.wait()
+
+    setup.environments.release = release
+    setup.fake.update(fail_create_after=True)
+    creation = asyncio.create_task(setup.environments.create(setup.request()))
+    await entered.wait()
+    original = setup.environments.get("env-1")
+    assert original.sandbox_id is not None
+    try:
+        for _ in range(2):
+            creation.cancel()
+            await asyncio.sleep(0)  # deliver each cancellation to the owned cleanup
+            assert not creation.done()
+        setup.fake.update(fail_create_after=False)
+        retry = asyncio.create_task(setup.environments.create(setup.request()))
+        await asyncio.sleep(0)
+        assert not retry.done()
+        assert len(setup.fake.calls("sandbox", "create")) == 1
+        assert setup.environments.get("env-1") == original
+    finally:
+        free.set()
+    with pytest.raises(asyncio.CancelledError):
+        await creation
+    replacement, created = await retry
+    assert created
+    assert replacement.sandbox != original.sandbox
+    assert original.sandbox not in setup.fake.read()["sandboxes"]
 
 
 async def test_the_backend_finds_sandboxes_the_worker_created(setup: Setup) -> None:

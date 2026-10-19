@@ -32,6 +32,8 @@ import json
 import re
 import secrets
 import sqlite3
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,8 +62,12 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.model import Contract
 
 from .control import ControlStore, store_path
+from .model_profiles import ModelProfile, ModelRole
 from .prompts import PromptPins
 from .worker_client import WorkerAPIError, WorkerClient, WorkerProtocolError
+
+RUN_READ_BYTES: Final = 8 * 1024 * 1024
+"""Default limit for materializing a legacy run; larger evidence uses streamed export."""
 
 _MAX_ID: Final = 128
 _IDENTIFIER: Final = TypeAdapter(Identifier)
@@ -151,12 +157,17 @@ _LEGACY_SUMMARIES: Final = {"review_summary": "reviews", "math_summary": "math"}
 
 
 class ModelUsage(Contract):
+    intent_id: Identifier | None = None
     """One model call's usage, as the gateway reported it; a count it left out is null."""
 
     model: str | None = None
     """The model that answered, as the gateway names it."""
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    cache_read_input_tokens: int | None = Field(default=None, ge=0)
+    cache_creation_input_tokens: int | None = Field(default=None, ge=0)
+    """Reported cache hits and writes. Null means unavailable, including for legacy calls;
+    writes are never counted as hits. Both are included in normalized input_tokens."""
     characters: int | None = Field(default=None, ge=0)
     """What the call sent and received, in characters: the spend of a call without
     token counts is a quarter of it."""
@@ -192,6 +203,9 @@ delegated run works for its parent."""
 
 
 class RunRecord(Contract):
+    model_profiles: dict[ModelRole, ModelProfile] = Field(
+        default_factory=dict[ModelRole, ModelProfile], max_length=7
+    )
     """One run of the harness: what ``run --transcript`` writes, and what a session keeps."""
 
     run_id: str
@@ -249,10 +263,13 @@ class RunRecord(Contract):
     closing rounds that followed, such as its responses to review findings, whose texts
     the messages keep (lab 42, B4). Later runs' earlier conversation shows it (RS-10).
     Records from before it have none: their ``final_text`` stands in."""
+    stored_history: dict[str, JsonValue] | None = None
+    """Explicit scoped paged history reference when historical collections are not inline."""
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""
     tools: list[dict[str, JsonValue]]
-    """One record per tool call, in order: its name, arguments and outcome."""
+    """One record per tool call, in order. Oversized archived records retain a bounded
+    preview with ``_record_storage`` naming the full immutable journal record."""
 
     @model_validator(mode="before")
     @classmethod
@@ -578,8 +595,12 @@ class ProjectStore:
                 raise ProjectError(
                     ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"
                 )
-            if record.parent is not None and not self._knows_run(
-                tx.sql, project_id, session_id, record.parent
+            if (
+                record.parent is not None
+                and not self._knows_run(tx.sql, project_id, session_id, record.parent)
+                and not self._planned_parent(
+                    tx.sql, project_id, session_id, entry.name, record.parent
+                )
             ):
                 raise ProjectError(
                     ErrorKind.INVALID_REQUEST,
@@ -608,16 +629,42 @@ class ProjectStore:
         return entry
 
     @staticmethod
+    def _planned_parent(
+        db: sqlite3.Connection, project: str, session: str, child: str, parent: str
+    ) -> bool:
+        """Leaf-first Resume reserves the exact parent before its loop starts."""
+        return (
+            db.execute(
+                "SELECT 1 FROM research_continuations c JOIN research_continuations p "
+                "USING(project,session,request) JOIN research_work w ON w.project=c.project "
+                "AND w.session=c.session AND w.work=c.work AND w.parent=p.work "
+                "JOIN research_attempts a ON a.project=w.project AND a.session=w.session "
+                "AND a.work=w.work AND a.run=w.current JOIN research_resumes r "
+                "ON r.project=c.project AND r.session=c.session AND r.request=c.request "
+                "JOIN research_sessions s ON s.project=r.project AND s.session=r.session "
+                "AND s.root=r.root AND s.epoch=a.epoch JOIN research_continuations root "
+                "ON root.project=r.project AND root.session=r.session "
+                "AND root.request=r.request AND root.work=r.root JOIN run_leases l "
+                "ON l.project_id=r.project AND l.session_id=r.session AND l.run=root.run "
+                "WHERE c.project=? AND c.session=? AND c.run=? AND p.run=? "
+                "AND a.run=c.run AND r.status='running' LIMIT 1",
+                (project, session, child, parent),
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
     def _knows_run(db: sqlite3.Connection, project_id: str, session_id: str, name: str) -> bool:
         """Whether the session has a run of that name: kept, or still running (its
-        events). A parent's record is kept after its children's, so this is no foreign
-        key."""
+        events or mandatory starting inputs). A parent's record is kept after its
+        children's, so this is no foreign key."""
         return (
             db.execute(
                 "SELECT 1 FROM runs WHERE project_id = ? AND session_id = ? AND name = ? "
                 "UNION ALL SELECT 1 FROM run_events WHERE project_id = ? AND session_id = ? "
-                "AND run = ? LIMIT 1",
-                (project_id, session_id, name, project_id, session_id, name),
+                "AND run = ? UNION ALL SELECT 1 FROM run_inputs "
+                "WHERE project = ? AND session = ? AND run = ? LIMIT 1",
+                (project_id, session_id, name) * 3,
             ).fetchone()
             is not None
         )
@@ -644,6 +691,45 @@ class ProjectStore:
                 f"the run list of {project_id}/{session_id} is damaged: {str(exc)[:300]}",
             ) from exc
 
+    def iter_runs(
+        self, project_id: str, session_id: str, *, newest_first: bool = False
+    ) -> Iterator[RunEntry]:
+        """Stable keyset pages, never a list proportional to session history."""
+        self._checked(project_id, session_id)
+        after = "" if not newest_first else "\uffff"
+        query = (
+            "SELECT name,run_id,started_at,role,parent FROM runs WHERE project_id=? "
+            "AND session_id=? AND name<? ORDER BY name DESC LIMIT 100"
+            if newest_first
+            else "SELECT name,run_id,started_at,role,parent FROM runs WHERE project_id=? "
+            "AND session_id=? AND name>? ORDER BY name ASC LIMIT 100"
+        )
+        while not self._unmade():
+            with self.control.read() as tx:
+                rows = tx.sql.execute(query, (project_id, session_id, after)).fetchall()
+            if not rows:
+                return
+            for name, run, started, role, parent in rows:
+                yield RunEntry(name=name, run_id=run, started_at=started, role=role, parent=parent)
+            after = rows[-1][0]
+
+    def unarchived_runs(self, project_id: str, session_id: str) -> list[str]:
+        """Only legacy main attempts need fallback words; current history stays on disk."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT name FROM runs r WHERE r.project_id=? AND r.session_id=? AND r.role='main' "
+                "AND NOT EXISTS (SELECT 1 FROM archive_messages m WHERE m.project=r.project_id "
+                "AND m.session=r.session_id AND m.run=r.name AND m.parent IS NULL "
+                "AND m.kind NOT IN ('state_block','spill')) ORDER BY name LIMIT 8193",
+                (project_id, session_id),
+            ).fetchall()
+        if len(rows) > 8192:
+            raise ProjectError(
+                ErrorKind.UNSUPPORTED,
+                "legacy history exceeds the bounded fallback; use stored evidence",
+            )
+        return [name for (name,) in rows]
+
     def usage(
         self, project_id: str, session_id: str, alias: str | None, *, runs: int = 10
     ) -> list[ModelUsage]:
@@ -653,24 +739,45 @@ class ProjectStore:
         self._checked(project_id, session_id)
         if self._unmade():
             return []
+        from .tokens import CALIBRATED  # bounded calibration, not full usage accounting
+
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT json_extract(record, '$.usage') FROM runs WHERE project_id = ? "
-                "AND session_id = ? AND json_extract(record, '$.alias') IS ? "
+                "SELECT name FROM runs WHERE project_id=? AND session_id=? "
+                "AND json_extract(record,'$.alias') IS ? "
                 "ORDER BY name DESC LIMIT ?",
-                (project_id, session_id, alias, runs),
+                (project_id, session_id, alias, max(0, min(runs, 100))),
             ).fetchall()
-        found: list[ModelUsage] = []
-        for (calls,) in reversed(rows):
-            for call in cast(list[object], json.loads(calls) if calls else []):
+        found: deque[ModelUsage] = deque(maxlen=CALIBRATED)
+        for (name,) in reversed(rows):
+            record = self.run(project_id, session_id, name)
+            if record.alias != alias:
+                continue
+            if record.stored_history is not None:
+                with self.control.read() as tx:
+                    calls = tx.sql.execute(
+                        "SELECT item FROM run_collections WHERE project=? AND session=? AND run=? "
+                        "AND collection='usage' ORDER BY position DESC LIMIT ?",
+                        (project_id, session_id, name, CALIBRATED),
+                    ).fetchall()
+                values = (json.loads(text) for (text,) in reversed(calls))
+            else:
+                values = (call.model_dump(mode="json") for call in record.usage)
+            for value in values:
                 try:
-                    found.append(ModelUsage.model_validate(call))
+                    call = ModelUsage.model_validate(value)
+                    if (
+                        call.characters
+                        and call.input_tokens is not None
+                        and call.output_tokens is not None
+                    ):
+                        found.append(call)
                 except ValidationError:
                     continue
-        return found
+        return list(found)
 
     def run(
-        self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = None
+        self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = RUN_READ_BYTES
     ) -> RunRecord:
         """A run the session keeps, by its name; larger than ``max_bytes`` is refused."""
         self._checked(project_id, session_id)
@@ -681,24 +788,26 @@ class ProjectStore:
         )
         if self._unmade():
             raise missing
-        with self.control.read() as tx:
+        with self.control.isolated_read() as tx:
             key = (project_id, session_id, name)
             row = tx.sql.execute(
-                "SELECT length(CAST(record AS BLOB)) FROM runs WHERE project_id = ? AND "
-                "session_id = ? AND name = ?",
+                "SELECT rowid FROM runs WHERE project_id = ? AND session_id = ? AND name = ?",
                 key,
             ).fetchone()
             if row is None:
                 raise missing
-            if max_bytes is not None and row[0] > max_bytes:
-                raise ProjectError(
-                    ErrorKind.UNSUPPORTED,
-                    f"run {name!r} has a record larger than {max_bytes} bytes",
-                )
-            (text,) = tx.sql.execute(
-                "SELECT record FROM runs WHERE project_id = ? AND session_id = ? AND name = ?",
-                key,
-            ).fetchone()
+            # SQLite's incremental handle knows the size without materializing the
+            # legacy JSON value, including in SQLite's own allocation heap.
+            with tx.sql.blobopen("runs", "record", row[0], readonly=True) as blob:
+                size = len(blob)
+                if max_bytes is not None and size > max_bytes:
+                    raise ProjectError(
+                        ErrorKind.UNSUPPORTED,
+                        f"run {name!r} has a {size}-byte record, larger than {max_bytes} bytes; "
+                        "use the streamed stored-evidence download",
+                    )
+                text = blob.read()
+
         try:
             return RunRecord.model_validate(json.loads(text))
         except (ValueError, RecursionError) as exc:  # ValidationError is a ValueError

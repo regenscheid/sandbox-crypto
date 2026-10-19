@@ -137,6 +137,30 @@ describe('a run’s skills', () => {
     expect(render(RunSkills, { props: { run: bare } }).body).not.toContain('Skills');
   });
 
+  it('marks skill details omitted from a record preview as archived', () => {
+    const archived = {
+      tools: [
+        {
+          tool: 'skills',
+          arguments: '{}',
+          _record_storage: {
+            format: 'tool-record-v1',
+            project: 'p1',
+            message: 'msg-0123456789abcdef',
+          },
+        },
+      ],
+    };
+    expect(runSkills(archived).uses).toEqual([
+      {
+        how: 'details archived',
+        skill: 'skills',
+        detail: 'Full skill-use details are in the archived tool record.',
+      },
+    ]);
+    expect(render(RunSkills, { props: { run: archived } }).body).toContain('details archived');
+  });
+
   it('renders the run’s skills as text', () => {
     const html = render(RunSkills, { props: { run } }).body;
     expect(hostileMarkup(html)).toBe(false);

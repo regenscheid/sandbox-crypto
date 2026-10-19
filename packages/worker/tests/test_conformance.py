@@ -128,7 +128,11 @@ class Target:
         await asyncio.wait_for(follow(), timeout)
 
     async def cancel(self, execution_id: str) -> None:
-        status, body = await self.post(f"/v1/executions/{execution_id}/cancel", {})
+        status, execution = await self.get(f"/v1/executions/{execution_id}")
+        assert status == 200, execution
+        status, body = await self.post(
+            f"/v1/executions/{execution_id}/cancel", {"context": execution["context"]}
+        )
         assert status == 200, body
 
     async def read(self, path: str) -> tuple[int, dict[str, Any]]:
@@ -423,6 +427,18 @@ async def test_restart_loses_state_and_says_so(worker: Target) -> None:
     assert after["result"]["error"]["name"] == "NameError"
     assert after["result"]["kernel"]["generation"] == 2
     assert after["result"]["state_lost"] is True
+
+
+async def test_conditional_recovery_restart_preserves_newly_live_kernel(worker: Target) -> None:
+    await worker.run(kind="cell", code="x = 41")
+    status, refusal = await worker.post(
+        "/v1/kernels/restart",
+        {"context": worker.context, "language": "python", "only_if_absent": True},
+    )
+    assert status == 409, refusal
+    preserved = await worker.run(kind="cell", code="x")
+    assert preserved["result"]["outputs"][0]["data"]["text/plain"] == "41"
+    assert preserved["result"]["kernel"]["generation"] == 1
 
 
 async def test_a_run_has_kernels_of_its_own(worker: Target) -> None:

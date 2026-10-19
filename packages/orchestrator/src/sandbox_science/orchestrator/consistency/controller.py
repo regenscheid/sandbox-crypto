@@ -8,7 +8,7 @@ import contextlib
 import json
 import logging
 import re
-from collections.abc import AsyncGenerator, Collection, Sequence
+from collections.abc import AsyncGenerator, Collection, MutableSequence, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -20,6 +20,8 @@ from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, Documen
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.history import Archive, body
+from sandbox_science.orchestrator.history.collections import Collection as RunCollection
+from sandbox_science.orchestrator.history.snapshot import inline
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -321,7 +323,11 @@ class ReviewController:
         self.delivered: set[str] = set()
         self.notice_store = FindingNotices(store)
         self.findings = Findings(store)
-        self.review_ids: list[str] = []
+        self.review_ids: MutableSequence[str] = (
+            RunCollection[str](store.documents.control, (*self.scope, archived_as), "reviews")
+            if archived_as is not None
+            else []
+        )
 
     @property
     def scope(self) -> tuple[str, str]:
@@ -585,21 +591,40 @@ class ReviewController:
         label["document_ingestion"] = ingestion
         label["artifact_ingestion"] = artifact_ingestion
         config, _ = self.store.config(self.context.project_id)
-        summary: Json = {"classifier": label, "reviews": self.review_ids, "counts": counts}
-        if label["label"] == "conversation" or not config.enabled or self.role != "main":
-            return summary
+        summary: Json = {
+            "classifier": label,
+            "counts": counts,
+        }
+        if not config.enabled or self.role != "main":
+            return self._review_summary(summary)
+        conversation = label["label"] == "conversation"
+        if conversation and self.task is None:
+            return self._review_summary(summary)
         if self.off:
             await self._dispatch("terminal", label)
-            return {**summary, "off": REVIEWS_OFF}
+            return self._review_summary({**summary, "off": REVIEWS_OFF})
         if self.task is not None:
+            if not config.terminal_hold:
+                return self._review_summary({**summary, "pending": True})
             message = await self._wait(self.task)
             if message is not None:
-                return {**summary, "pending": True, "user_message": message}
+                return self._review_summary({**summary, "pending": True, "user_message": message})
             self.task = None
+            if conversation:
+                # An explicit checkpoint review can still be running when the
+                # author's last words merely say it is waiting. Its findings
+                # need the ordinary response round before this run ends.
+                if self.review is not None:
+                    ended = await asyncio.to_thread(self.store.run, *self.scope, self.review)
+                    summary["outcome"] = ended["state"]
+                    if ended["state"] in ("failed", "dropped", "capped"):
+                        summary["pending"] = True
+                summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
+                return self._review_summary(summary)
         # A confirmation consumes finding groups before new feed items, so a full
-        # feed cannot starve claimed fixes. At most three windows run at this hold;
+        # feed cannot starve claimed fixes. Catch up bounded evidence windows here;
         # any remaining work is explicitly pending, never labelled as passed.
-        for _ in range(3):
+        for _ in range(config.max_terminal_windows):
             targets = await asyncio.to_thread(self.store.confirmation_targets, *self.scope)
             kind: Literal["confirmation", "terminal"] = "confirmation" if targets else "terminal"
             review = await self._dispatch(kind, label)
@@ -616,11 +641,15 @@ class ReviewController:
             assert self.task is not None  # noqa: S101
             message = await self._wait(self.task)
             if message is not None:
-                return {**summary, "pending": True, "user_message": message}
+                return self._review_summary({**summary, "pending": True, "user_message": message})
             self.task = None
             ended = await asyncio.to_thread(self.store.run, *self.scope, review)
             if ended["state"] in ("failed", "dropped"):
-                continue
+                # Another immediate dispatch would repeat the same failing call.
+                # Keep its window pending for a later, paced attempt.
+                summary["outcome"] = ended["state"]
+                summary["pending"] = True
+                break
             if (
                 ended["state"] == "capped"
                 and (await asyncio.to_thread(self.store.progress, *self.scope))["retry_end"]
@@ -643,11 +672,27 @@ class ReviewController:
         else:
             progress = await asyncio.to_thread(self.store.progress, *self.scope)
             if progress["retry_end"] is None and not progress["remaining"]:
-                summary["outcome"] = "unreviewed"
+                # The final terminal window may have finished on the last
+                # allowed iteration. Keep that result instead of replacing it.
+                if "outcome" not in summary:
+                    summary["outcome"] = "unreviewed"
             else:
                 summary["pending"] = True
+        progress = await asyncio.to_thread(self.store.progress, *self.scope)
+        if summary.get("outcome") == "passed" and progress["historical_holes"]:
+            summary["outcome"] = "inconclusive"
+            summary["coverage_gap"] = True
         summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
-        return summary
+        return self._review_summary(summary)
+
+    def _review_summary(self, summary: Json) -> Json:
+        # A terminal hold may dispatch another window after the initial metadata
+        # snapshot. Refresh the bounded preview and exact count at every return.
+        return {
+            **summary,
+            "reviews": inline(self.review_ids) or [],
+            "reviews_total": len(self.review_ids),
+        }
 
     async def author_call(
         self, name: str, args: Json, operation: str, *, model: str | None = None
@@ -858,7 +903,8 @@ class Reviews(TurnHook):
         )
         if not run.can_respond or run.response_rounds >= configuration.response_rounds:
             return Closing()
-        await controller.safe_point(run.messages)
+        # terminal() already ingested this view and settled its bounded review.
+        # A fresh dispatch here would be abandoned when this final answer exits.
         found = await self._pending()
         # Only open findings delivered to this run take a round (CR-29 as amended).
         respond = any(n.ids for n in found if n.framing == REVIEW_FINDINGS.text)

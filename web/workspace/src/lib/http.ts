@@ -27,8 +27,11 @@ export class ApiError extends Error {
 
 export interface RequestOptions {
   method?: 'GET' | 'POST';
-  /** Sent as JSON. */
+  /** Sent as JSON unless binaryBody is supplied. */
   body?: unknown;
+  binaryBody?: Blob;
+  /** Encoded, bounded upload metadata; never file bytes. */
+  uploadMetadata?: string;
   signal?: AbortSignal;
   deadlineMs?: number;
   /** The most bytes of the answer to read; a larger answer fails. */
@@ -102,11 +105,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     options.deadlineMs === undefined ? undefined : setTimeout(abort, options.deadlineMs);
   try {
     const headers: Record<string, string> = { Accept: 'application/json' };
-    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (options.binaryBody !== undefined) headers['Content-Type'] = 'application/octet-stream';
+    else if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (options.uploadMetadata !== undefined) headers['X-Upload-Metadata'] = options.uploadMetadata;
     const response = await fetch(`/api/v0${path}`, {
       method: options.method ?? 'GET',
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body:
+        options.binaryBody ??
+        (options.body === undefined ? undefined : JSON.stringify(options.body)),
       signal: controller.signal,
       redirect: 'error',
       cache: 'no-store',

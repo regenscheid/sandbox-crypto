@@ -29,13 +29,16 @@ which marks the delegation as recorded: a review window takes a batch whole or n
 from __future__ import annotations
 
 import json
-import logging
-from dataclasses import dataclass
+from collections.abc import Sequence
+from contextlib import closing
+from dataclasses import dataclass, replace
+from itertools import chain
 from typing import Any, Final, cast
 
-from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.history import Archive
-from sandbox_science.orchestrator.projects import run_id_of
+from sandbox_science.orchestrator.history.memory import RunMemory
+from sandbox_science.orchestrator.history.scratch import Scratch
+from sandbox_science.orchestrator.projects import ProjectStore, run_id_of
 
 from .actions import action_from
 from .archived import results
@@ -43,9 +46,7 @@ from .artifacts import pinned_artifact
 from .executions import execution_projection
 from .ledger import delegation_outcome
 from .numbers import distance, numbers
-from .store import Json, ReviewStore, dump
-
-_log = logging.getLogger(__name__)
+from .store import MAX_ITEM_BYTES, Json, ReviewStore, digest, dump
 
 MAX_DEPTH: Final = 3
 """How many levels of delegations below a run its review follows."""
@@ -93,28 +94,23 @@ def ended_delegations(
     name and the run's ID."""
     with store.documents.control.read() as tx:
         rows = tx.sql.execute(
-            "SELECT delegation_id,parent,run,ended FROM delegations WHERE project_id=? "
+            "SELECT delegation_id,parent,run,ended,EXISTS(SELECT 1 FROM review_feed f "
+            "WHERE f.project=d.project_id AND f.session=d.session_id "
+            "AND f.source_key='delegated:'||d.delegation_id AND f.kind='delegation') "
+            "FROM delegations d WHERE project_id=? "
             "AND session_id=? ORDER BY started_at,delegation_id LIMIT 1000",
             (project, session),
         ).fetchall()
-        held = {
-            key
-            for (key,) in tx.sql.execute(
-                "SELECT source_key FROM review_feed WHERE project=? AND session=? "
-                "AND source_key GLOB 'delegated:*' AND kind='delegation'",
-                (project, session),
-            )
-        }
     below: set[str] = set()
     found: list[tuple[str, str, str]] = []
     for _ in range(MAX_DEPTH):
-        for delegation, parent, run, ended in rows:
+        for delegation, parent, run, ended, held in rows:
             if run in below:
                 continue
             if run_id_of(parent) == run_id or parent in below:
                 below.add(run)
                 child = run_id_of(run)
-                if ended is not None and child and f"delegated:{delegation}" not in held:
+                if ended is not None and child and not held:
                     found.append((delegation, run, child))
     return found
 
@@ -132,21 +128,32 @@ def delegated_work(
     observations of the review of run ``reviewed``, in the order they are recorded: its
     outcome, then its actions, its chosen executions with the saved outputs of those cut
     short, and its result files; None while its run record is not kept yet."""
+    projects = ProjectStore(store.documents.path.parent)
+    try:
+        record = projects.run(project, session, name)
+    except Exception:
+        projects.close()
+        return None
+    projects.close()
+    tools: Sequence[Json | None]
+    if record.stored_history is not None:
+        tools = RunMemory(store.documents.control, (project, session, name)).evidence_tools()
+    else:
+        tools = record.tools
     with store.documents.control.read() as tx:
-        row = tx.sql.execute(
-            "SELECT json_extract(record,'$.tools') FROM runs WHERE project_id=? "
-            "AND session_id=? AND name=?",
-            (project, session, name),
-        ).fetchone()
         files = tx.sql.execute(
             "SELECT files FROM delegations WHERE delegation_id=? AND project_id=?",
             (delegation, project),
         ).fetchone()
-    if row is None:
-        return None
-    tools = [cast(Json, t) if isinstance(t, dict) else None for t in json.loads(row[0] or "[]")]
     located = {"run": run_id, "delegation": delegation, "for_run": reviewed}
     outcome = delegation_outcome(store, project, delegation)
+    unavailable = sum(1 for call in tools if call and "_evidence_unavailable" in call)
+    if outcome is not None and unavailable:
+        outcome = {
+            **outcome,
+            "tool_evidence_unavailable": unavailable,
+            "tool_evidence_limit_bytes": 8 * 1024 * 1024,
+        }
     executions, left_out = _chosen(store, project, tools, outcome)
     found: list[Delegated] = []
     if outcome is not None:
@@ -158,6 +165,7 @@ def delegated_work(
                 "delegation",
                 {**located, "name": name},
                 {**outcome, "executions": held},
+                complete=not unavailable,
             )
         )
     actions = 0
@@ -212,7 +220,7 @@ and the saved outputs of its streams cut short, each its locator and copy."""
 
 
 def _chosen(
-    store: ReviewStore, project: str, tools: list[Json | None], outcome: Json | None
+    store: ReviewStore, project: str, tools: Sequence[Json | None], outcome: Json | None
 ) -> tuple[dict[int, list[Chosen]], int]:
     """The executions a review holds of a delegated run's tool records ``tools``, by the
     number of the record each was read from, in the order the calls saw them, and how many
@@ -221,24 +229,33 @@ def _chosen(
     ``outcome`` states, the latest execution whose output holds it (``_decisive``), then
     the latest, so that a busy run's last, decisive ones are not the ones left out (the
     review of lab 42's B3)."""
-    every: list[tuple[int, Json]] = []
-    seen: set[str] = set()
-    for number, call in enumerate(tools):
-        for execution in _executions(call):
-            identity = f"{execution['execution_id']}:{execution.get('state')}"
-            if identity not in seen:
-                seen.add(identity)
-                every.append((number, execution))
-    first = _decisive([execution for _, execution in every], outcome)
+    with closing(Scratch[Json]()) as executions, closing(Scratch[int]()) as positions:
+        for number, call in enumerate(tools):
+            for execution in _executions(call):
+                identity = f"{execution['execution_id']}:{execution.get('state')}"
+                if executions.append(execution, identity=identity):
+                    positions.append(number)
+        return _pick(store, project, tools, outcome, executions, positions)
+
+
+def _pick(
+    store: ReviewStore,
+    project: str,
+    tools: Sequence[Json | None],
+    outcome: Json | None,
+    every: Sequence[Json],
+    positions: Sequence[int],
+) -> tuple[dict[int, list[Chosen]], int]:
+    first = _decisive(every, outcome)
     taken = set(first)
-    rest = [index for index in reversed(range(len(every))) if index not in taken]
-    order = [*first, *rest]
+    rest = (index for index in reversed(range(len(every))) if index not in taken)
+    order = chain(first, rest)
     picked: dict[int, tuple[Json, bool, dict[str, tuple[Json, Json]]]] = {}
     size = saved = 0
     for index in order:
         if len(picked) >= MAX_DELEGATED_EXECUTIONS:
             break
-        number, execution = every[index]
+        number, execution = positions[index], every[index]
         payload, complete = execution_projection(execution)
         cost = len(dump(payload).encode())
         if size + cost > MAX_DELEGATED_BYTES:
@@ -256,12 +273,12 @@ def _chosen(
         picked[index] = (payload, complete, outputs)
     chosen: dict[int, list[Chosen]] = {}
     for index in sorted(picked):
-        number, execution = every[index]
+        number, execution = positions[index], every[index]
         chosen.setdefault(number, []).append((execution, *picked[index]))
     return chosen, len(every) - len(picked)
 
 
-def _decisive(executions: list[Json], outcome: Json | None) -> list[int]:
+def _decisive(executions: Sequence[Json], outcome: Json | None) -> list[int]:
     """For each number ``outcome`` states, the latest of ``executions`` whose output
     holds it, or, when none does, the latest that holds one within the edits a number
     copied by hand is off by (``numbers.near``'s bound, its last two digits included: p
@@ -280,9 +297,9 @@ def _decisive(executions: list[Json], outcome: Json | None) -> list[int]:
     stated = [number for number in dict.fromkeys(told) if number not in given][:MAX_STATED]
     if not stated:
         return []
-    held = [_held(execution) for execution in executions]
     found: dict[str, int] = {}
-    for index, lengths in enumerate(held):
+    for index, execution in enumerate(executions):
+        lengths = _held(execution)
         for number in stated:
             if number in lengths.get(len(number), ()):
                 found[number] = index  # the latest wins
@@ -292,8 +309,9 @@ def _decisive(executions: list[Json], outcome: Json | None) -> list[int]:
             break
         bound = max(3, len(number) * 5 // 100)
         lengths = range(len(number) - bound, len(number) + bound + 1)
-        for index in reversed(range(len(held))):
-            values = [value for length in lengths for value in held[index].get(length, ())]
+        for index in reversed(range(len(executions))):
+            held = _held(executions[index])
+            values = [value for length in lengths for value in held.get(length, ())]
             compared = values[: max(near, 0)]
             near -= len(compared)
             if any(distance(number, value, bound) is not None for value in compared):
@@ -420,27 +438,64 @@ def observe_delegated(store: ReviewStore, project: str, session: str, run_id: st
     """Record the work of each ended delegation below run ``run_id`` the session's feed
     does not hold yet; how many delegations it recorded. Each delegation's observations
     are recorded in one change, its outcome first, so the feed holds its batch whole or
-    not at all; a record the feed refuses is left out, and logged."""
+    not at all. Oversized observations become explicit incomplete markers."""
     recorded = 0
     for delegation, name, child in ended_delegations(store, project, session, run_id):
         found = delegated_work(store, project, session, delegation, name, child, run_id)
         if found is None:
             continue  # its run record comes later
-        store.scope(project, session)
-        with store.documents.control.write() as tx:
-            for item in found:
-                try:
-                    store.record_observation(
-                        tx.sql,
-                        project,
-                        session,
+        bounded: list[Delegated] = []
+        omitted = 0
+        for item in found:
+            payload, locator = dump(item.payload), dump(item.locator)
+            if len(payload.encode()) > MAX_ITEM_BYTES or len(locator.encode()) > 4096:
+                omitted += 1
+                marker = {
+                    "omitted": "delegated observation exceeds review bound",
+                    "kind": item.kind,
+                    "sha256": digest(payload),
+                }
+                bounded.append(
+                    Delegated(
                         item.key,
                         item.kind,
-                        item.locator,
-                        item.payload,
-                        complete=item.complete,
+                        {"delegation": delegation, "for_run": run_id, "key": item.key},
+                        marker,
+                        complete=False,
                     )
-                except DocumentError:  # refused before it wrote anything
-                    _log.warning("left out %s for %s/%s", item.key, project, session)
+                )
+            else:
+                bounded.append(item)
+        if omitted and bounded and bounded[0].kind == "delegation":
+            bounded[0] = replace(
+                bounded[0],
+                payload={**bounded[0].payload, "review_observations_omitted": omitted},
+                complete=False,
+            )
+            if len(dump(bounded[0].payload).encode()) > MAX_ITEM_BYTES:
+                bounded[0] = Delegated(
+                    bounded[0].key,
+                    "delegation",
+                    {"delegation": delegation, "for_run": run_id},
+                    {
+                        "omitted": "delegated outcome exceeds review bound",
+                        "review_observations_omitted": omitted,
+                        "sha256": digest(dump(found[0].payload)),
+                    },
+                    complete=False,
+                )
+        store.scope(project, session)
+        with store.documents.control.write() as tx:
+            for item in bounded:
+                store.record_observation(
+                    tx.sql,
+                    project,
+                    session,
+                    item.key,
+                    item.kind,
+                    item.locator,
+                    item.payload,
+                    complete=item.complete,
+                )
         recorded += 1
     return recorded

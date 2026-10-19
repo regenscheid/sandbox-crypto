@@ -1,69 +1,26 @@
 # Status
 
-Updated 2026-10-16, main `7eb3b1f1`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
+Updated 2026-10-19. Development is local `dev` in `/home/andy/.cache/pt/dev-local`; the completion implementation is integrated through signed `5a238f10`. The primary checkout is separate. Signed local integration, disposable acceptance and deployment into personal services are distinct.
 
 ## Phase and focus
 
-- **Phase 1 (babbage).** M1's exit run passed ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)), M2's exit checkpoint was met in [lab 39](docs/agent-reports/babbage-openshell-lab-39-2026-10-15.md), and **the first milestone for real use is met** in [lab 40](docs/agent-reports/babbage-openshell-lab-40-2026-10-15.md). The owner also runs a personal instance on babbage, apart from the labs ([runbook](../docs/PERSONAL-BABBAGE.md), #510); it was updated to `52c757c1` and again after #506.
-- **Context management is built; its acceptance is not met.** The owner approved the [spec](../docs/specs/context-management.md) on 2026-10-15 (#439). Steps (a) to (g) are merged: the archive and history tools, the ledger's research state, both adapters, token accounting and the session view, the digest, folds and their enrichment, overviews and retired markers, the region within its bound, the `research_state` stop, the refit on a switch to a smaller model, fold proposals and their GUI.
-  - **Lab 44** ([report](docs/agent-reports/babbage-openshell-lab-44-2026-10-16.md), #496) was round 1, on GPT models alone (the owner's USD 500). P3 to P6, P8 and P9 pass in every valid session. P1 fails in all five: no answer cited the decision's handle, which the owner then made a prompt rule and an advisory review note rather than a bar (#509). P2 fails in two. `gpt-600` and `second-250` folded too little to count. The skeleton-only control passed as well as the enriched arms but repeated more work after folds (+2.6 calls against -0.4 and -2.0; one session each). USD 277.95 reported, at most USD 363 at listed rates. Its bugs: tiers priced (#491, #494), a 524 retried and a carried fold listed (#502), a prompt cache key per session (#501). The owner's checklist in the report is pending.
-  - **Next:** round 2 (the Claude arms, the 600,000 arms, the control repeated), measuring the state block's placement at rebuilds first (CM-25; an open design question), and the gateway: Claude thinking replay stays off until a stable LiteLLM 1.107.0 and the live check (CM-F30). It runs 1.102.1.
-- **Skills:** K1 to K7b are built. K7's allow rule is the owner's option 3 (#486), and helper staging came with it (#493, worker protocol 6). Left: K7c, K8, editing overrides in the GUI, and the generated deny-list below.
-- **Figures** ([spec](../docs/specs/figures.md), approved 2026-10-16, #436): F1 to F5 and F9 to F11 are built, so pinned references, the frame, Vega-Lite charts, the `figures` skill and `view_image` (drawing in the worker, protocol 7; the reviewer's too). The preview origin is another site by default (#506). Left: F6 (Mermaid), F7 (the check), F8, F11b, F12, F13 and the browser lab.
-- **Images** were rebuilt on 2026-10-16 for `safe.bareRepository=explicit`: minimal and crypto-base `f09b3668`, orchestrator `a6be3886`, mcp-proxy `b0978e32`, all passing `images/test.sh` (#505, #507).
-- **How work is done:** the plan's [working rules](CONVENTIONS.md#working-rules) and the [handoff](handoff.md).
+The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 
-## Real use (labs 40 to 44)
+- **Recovery:** opt-in launcher supervision restarts owned worker/control/workspace processes and replaces only the recorded agent VM. Durable bounded retry state survives launcher loss; exhausted optional components leave a degraded instance. Automatic root Resume reconciles supported original effects and honors Stop, ownership and budgets. Unknown worker/MCP effects are not blindly replayed. Three owned live probes passed worker restart, agent-VM replacement and host-process-loss recovery while a genuine Sage job retained its original operation. The real-model tree then completed after control/runtime replacement; this is not physical-host reboot qualification or arbitrary interpreter restoration.
+- **Resources:** durable parent check-ins support continue, redirect, report, pause and policy-bounded turn/time/retained-artifact extensions. Cumulative grants survive Resume, including nested ancestor accounting. Root self-renewal is opt-in, bounded by policy and newer persisted evidence; it never extends tokens. Explicitly approved paused root/child turn, time and storage allowances can enter automatic root Resume. Token approval is separate: each next 10,000,000 tokens requires explicit USER approval. New delegated defaults remain 20,000,000 tokens and 300 turns; existing explicit settings remain intact. Retained storage is logical artifact revision bytes, not VM disk capacity.
+- **Context and diagnostics:** live and saved attempts have a bounded recent timeline, provider cache counters and a separate auxiliary-call snapshot. Visible dispatch composition is captured with its admitted intent, immutable prompt/source provenance and bounded UTF-8 text reads. Oversized diagnostic omissions do not prevent model execution. Original-history indexing includes retained retrieval echoes, exact substring verification and explicit incomplete coverage; same-work continuations remain separate from children/siblings. Incremental blob reads bound large-body work. Pending-index metadata scans still grow with scoped history. Fold retries/fallbacks retain bounded diagnostic receipts without treating estimates as measured context occupancy.
+- **Workspace:** Skills, safe MCP structural schemas and applicable policy, explicit dated availability checks, Memory accepted/proposal/detail/history views, Overview and session Plan/Agents/Activity refinements are integrated. Page viewing does not execute MCP tools or probe upstream services. Drafts retain revisions and warn when browser storage cannot preserve them across reloads. Authenticated synthetic browser checks passed MCP available → unavailable → restored with **zero tool calls**, Memory draft navigation/save, captured-context chunk paging and original-history partial → complete indexing across continuations. These are browser/runtime checks, not real-model scientific acceptance.
+- **Agent profiles:** Project settings independently select trusted deployment aliases and reasoning effort for the orchestrator, delegated agents and consistency reviewer. A new tree freezes these choices; its children and ordinary Resume retain them. The reviewer defaults to Luna/medium in the qualified lab, while research roles use Sol/max. The browser cannot supply endpoints, adapters or credentials.
 
-All used the real model and crypto-research-mcp.
+## Verification boundaries
 
-- **Labs 40 to 42:** the whole path with delegation and connectors (162 skills imported), then skills in runs. Their bugs are fixed (#445 to #449 for lab 42).
-- **Lab 43** ([report](docs/agent-reports/babbage-openshell-lab-43-2026-10-16.md)): meaning search stores and scores vectors, but a paraphrase fell under the cutoff (fixed per model family, #474). Both adapters work across runs through LiteLLM 1.102.1. GPT calls had no cost, and an overloaded response ended a run (fixed, #476, #477). Reviews with no reviewer are off (#475). The digest was not in that instance.
-- **Lab 44:** above.
-- **Not yet seen live:** the figures, `view_image` and the K7 staging in real runs, and folds on Claude models.
+- Frozen web suite: **2,239 passed**; Svelte/TypeScript, Prettier, production and math builds pass.
+- Frozen Python suite at `5a238f10`: **14,524 passed, 50 skipped** in 695.18 seconds with two known malformed-fixture serializer warnings. Ruff, format and strict Pyright are clean. The isolated image is `sandbox-science/orchestrator:5a238f10`, digest `sha256:e748cdd5cc5aacea44a6de6cc96e7bf5b19c942881a9cad3a04c689a26054996`; its container/Landlock checks passed 17 cases.
+- The live Sol/max root and child recovered through one orchestrator Resume, ran concurrently, exchanged updated instructions and a final handback, and finished `completed/answered` without a replacement child or repeated reference calculation. The parent consumed the child's full history, updated the plan, ledger and eleven-revision living document, and settled two Luna/medium evidence-strength findings as `confirmed fixed`.
+- Real folds applied across child and resumed-root attempts. Two oversize records needed exactly one bounded repair call; the other applied narratives passed on their first attempt. Saved diagnostics retain the reason and sizes. Final numeric GF(16) and GF(32) grades passed every oracle check.
+- Campaign model spend was **$24.56566378 observed**, $0 reserved and no unpriced usage, within the $150 authorization. Five historical reviewer intents remain visibly unsettled rather than treated as zero. The terminal reviewer found no inconsistency in the checked GF(32) claims but remained correctly `inconclusive` because it did not independently reproduce them.
+- Evidence is preserved at `/var/tmp/ss-recovery-evidence-a4addfda`: 52 allowlisted files match their SHA-256 manifest. The private lab root, seven owned sandbox identities, all six owned units, 18 observed processes, owned ports and one driver directory were removed or verified absent. The unrelated SNOVA budget guard remained active.
 
-## What works today
+Earlier [OpenShell recovery/endurance acceptance](docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md) completed a separate 3,600-second Sage job with 249,063,436 verified batches and full owned teardown. That historical synthetic-model lab does not substitute for the current campaign's final receipts or scientific quality. Four local subprocess-death tests also cover final-record commit, mailbox ACK, work completion and child ledger/settlement handback.
 
-- **Launcher:** `sandbox-science up`, `down`, `status` and `skills update` run the worker, the run service, the workspace and the MCP proxy from one config ([quickstart](../docs/QUICKSTART.md)), including `[model] api` and `images`.
-- **Worker:** OpenShell VM sandboxes at tier 3 with persistent Python and Sage kernels, file handoff, PDF tools, drawing of figures, background jobs and provisioning. Protocol 7 ([compatibility](../docs/COMPATIBILITY.md)); the control store is at version 56.
-- **Harness:** the tool loop, the run service, MCP connectors, planning, living documents, comments, automatic consistency review (a rejected evidenced rebuttal leaves a finding `challenged`), math checks, the job watcher, recorded files, project memory, `ask_user`.
-- **Context** ([spec](../docs/specs/context-management.md)): the archive and history tools; a session view with folds, overviews and a state block with a digest; fold proposals the user accepts or dismisses. GPT (`/v1/responses`) and Claude (`/v1/messages`) clients are chosen per alias; every alias uses chat completions until the owner turns them on.
-- **Delegation, ledger, skills, cost:** as in the specs. Cost is the gateway's, or priced from its model information and marked so; with a daily limit, an unpriced call counts it as reached.
-- **Workspace GUI:** documents, comments, reviews, plans, chat, jobs, kernels, provisioning, artifacts, a PDF viewer, the ledger with its research state, figures in text, fold proposals, the Skills page, the Memory page, a session's run tree.
-- **Not built:** Mermaid and the figure check, exports of figures, helper lineage, per-pack thresholds, approvals in the GUI, execution-pinned evidence.
-- **Tests:** 13,655 Python tests are collected, 891 of them in the slow tier, and 2,173 web tests (fresh counts at this sync).
-
-## What comes next
-
-1. Context management: the owner's checklist, then round 2.
-2. Figures F6 to F8, then F11b and exports; the browser lab for the frame.
-3. A skills lab on whether skills help; K7c, K8 and the generated deny-list.
-4. Other [BACKLOG](BACKLOG.md) items: questions from delegated runs, memory proposals' basis (PM-3, PM-4), vouching for PDFs, approvals in the GUI.
-5. Phase 5, which includes moving the domain packages out of the orchestrator.
-
-## Known issues
-
-- **Not fixed, from labs 40 to 44:** `eprint_fulltext` matches single words; a citation check and a finding can disagree; the copied-number check reads decimal numbers only; a check keeps the sandbox's write tools; effect tools refuse until a run reads the plan, a finished one included; `mcp_tools` matches long queries strictly; GPT through `/responses` reasons little when a tool fits. The weaker model errs on purpose ([handoff](handoff.md#labs)).
-- **Skills:** a delegated run reads its project's skills when it starts, so a moved pin can give a child a newer set; removing a pack from a project's `skills` does not unpin it; an import's pass may derive no short description for long ones. The deny-list's tool families are listed by hand, and each security check has found tools it lacks (#503 added more).
-- **Charts:** a chart that derives values with heavy literals is not flagged until the figure check (F7).
-- **Background job slots:** a session has 4, and a delegation tree can take them all. It needs a decision.
-- **CI stalls:** `test (fast)` has run until its limit with no log. Rerun the job.
-- **Upgrades:** the orchestrator, the workspace and the worker upgrade together. Control stores before version 2 are refused.
-
-## Open questions
-
-None stops work in progress.
-
-- **Q12 to 14 of the skills spec** stay recorded as the coordinator's reversible acceptance (#421, #438); the owner has not confirmed them.
-- **The state block's placement at rebuilds (CM-25):** to be measured in round 2 before it is decided.
-- **Lab 44's checklist (the owner):** whether CM-P1's bar stands as the owner set it, and whether the two CM-P2 failures count.
-- **Models:** the `reviewer`, `watcher` and `delegated` aliases are all `sandbox-orchestrator` for now.
-- **PDF vouching:** whether the e-print server names a PDF's hash in a recorded result.
-- **Living documents:** question 15. **Math display** ([workspace](../docs/WORKSPACE.md#math-repairs)): five open points. **Images** ([images](../docs/IMAGES.md)): no registry on babbage; G6K at x86-64-v3; GPL libraries in `minimal`; crypto-base's compilers, R and OpenJDK; IACR LaTeX classes.
-- **MCP proxy:** MCP 2026-07-28 only when a server needs it; binary results withheld. **Event store:** installing the checkpoint timer from `examples/systemd` on babbage. **Upstream reports** in [`.agents/upstream/`](upstream/): whether to file them.
-- **crypto-analysis-skills:** confirm the copyright holder before merging its MIT license.
-
-## Known facts
-
-- OpenShell's VM driver is experimental at v0.1.3; babbage's tier 3 depends on it (D43), and it has worked in every lab.
-- babbage restricts unprivileged user namespaces through AppArmor. Claude Desktop's shells are exempt, so qualification checks run from a plain terminal or `systemd-run --user`.
+No current implementation is claimed pushed or deployed into the personal or preserved SNOVA services. SNOVA remains preserved; its owner-stopped monitor must not be recreated implicitly. The campaign did not perform a physical host reboot, qualify arbitrary interpreter-state restoration or turn the bounded consistency review into an independent scientific reproduction. Broader scientific continuity, cache-layout comparisons and other open work remain in [BACKLOG.md](BACKLOG.md).

@@ -544,9 +544,17 @@ class _SlowCounts(SkillStore):
     """A store slow to count each call, so that a build that published its outcome before
     counting what it paid would show partial costs to a reader of ``ready``."""
 
-    def add_embedding_call(self, project: str, model: str, texts: int, cost: float | None) -> None:
+    def add_embedding_call(
+        self,
+        project: str,
+        model: str,
+        texts: int,
+        cost: float | None,
+        *,
+        intent_id: str | None = None,
+    ) -> None:
         time.sleep(0.05)
-        super().add_embedding_call(project, model, texts, cost)
+        super().add_embedding_call(project, model, texts, cost, intent_id=intent_id)
 
 
 @pytest.mark.parametrize("outcome", ["failure", "success"])

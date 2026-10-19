@@ -162,9 +162,15 @@ class Fake:
         self.paths.append(request.path)
         self.bodies.append(cast(Json, await request.json()))
         if request.path.endswith("/responses"):
+            assert self.bodies[-1]["stream"] is True
             item = {"type": "message", "role": "assistant",
                     "content": [{"type": "output_text", "text": "ok"}]}  # fmt: skip
-            return web.json_response({"status": "completed", "output": [item], "usage": {}})
+            answer = {"status": "completed", "output": [item], "usage": {}}
+            event = json.dumps({"type": "response.completed", "response": answer})
+            return web.Response(
+                text=f"event: response.completed\ndata: {event}\n\ndata: [DONE]\n\n",
+                content_type="text/event-stream",
+            )
         return web.json_response({"choices": [{"message": {"content": "ok"}}]})
 
     async def handle(self, request: web.Request) -> web.Response:
@@ -843,6 +849,7 @@ async def test_a_message_is_read_as_a_turn_and_kept_as_the_gateway_sent_it(fake:
     finally:
         await model.close()
     assert (turn.input_tokens, turn.output_tokens) == (412_000, 345)
+    assert (turn.cache_read_input_tokens, turn.cache_creation_input_tokens) == (400_000, 10_000)
     assert (turn.text, turn.finish_reason, turn.model) == ("Partial.", "length", "claude-opus-5-5")
     assert (turn.cost, turn.gateway_version) == (0.125, VERSION)
     assert (turn.native, turn.native_format) == (text.encode(), MESSAGES)
@@ -1106,3 +1113,22 @@ def test_the_replay_setting_needs_a_claude_alias(
         with pytest.raises(SystemExit):
             cli.main([*base, *options, "task"])
         assert said in capsys.readouterr().err
+
+
+async def test_working_projection_preserves_signed_thinking_and_calibration(fake: Fake):
+    model = claude(fake, replay=SETTING)
+    fake.then(LOOKING, DONE, DONE)
+    before = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": TASK}]
+    try:
+        turn = await model.complete(before, TOOLS)
+        original = AssistantMessage.of(turn)
+        full_native = original.native
+        results = [tool(call.id, "result") for call in turn.tool_calls]
+        for answer in (original, original.replay()):
+            follow = await model.complete([*before, answer, *results], TOOLS)
+            assert follow.thinking_replay == "on"
+    finally:
+        await model.close()
+    assert fake.bodies[-2] == fake.bodies[-1]
+    assert thoughts(fake.bodies[-1])
+    assert original.native == full_native

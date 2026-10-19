@@ -13,13 +13,37 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher import parts, skills
+from sandbox_science.launcher import orchestrator, parts, skills
 from sandbox_science.launcher.config import LauncherError, load_config
 from sandbox_science.launcher.state import Layout, ensure_token, write_private
 
 
 def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.mark.parametrize("ceiling", [None, 80_000, 600_000])
+def test_context_ceiling_reaches_confined_control_and_harness(
+    make_config: Any, ceiling: int | None
+) -> None:
+    config = load_config(make_config({"run_service": {"context_ceiling": ceiling}}))
+    layout = parts.prepare(config)
+    directory, _ = orchestrator.prepare(config, layout)
+    configured = json.loads((directory / "control.json").read_text())["settings"]
+    argv = parts.harness_argv(config, layout)
+    if ceiling is None:
+        assert "ceiling" not in configured
+        assert "--context-ceiling" not in argv
+    else:
+        assert configured["ceiling"] == ceiling
+        assert argv[argv.index("--context-ceiling") + 1] == str(ceiling)
+    assert configured["cost_limits"] is True
+
+
+@pytest.mark.parametrize("ceiling", [0, -1])
+def test_nonpositive_context_ceiling_is_refused(make_config: Any, ceiling: int) -> None:
+    with pytest.raises(LauncherError, match="context_ceiling"):
+        load_config(make_config({"run_service": {"context_ceiling": ceiling}}))
 
 
 def test_prepare_makes_private_tokens_once_and_the_workers_settings(make_config: Any) -> None:
@@ -96,6 +120,14 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
         layout.token("workspace-worker")
     )
     assert "sandbox-reviewer" in workspace
+    assert [
+        workspace[index + 1] for index, value in enumerate(workspace) if value == "--agent-model"
+    ] == [
+        "main=sandbox-orchestrator",
+        "delegated=sandbox-orchestrator",
+        "reviewer=sandbox-reviewer",
+    ]
+    assert "reviewer=medium" in workspace
     granted = parts.policy_argv(config, layout)
     assert granted[-3:] == ["--project", "crypto", str(config.worker.policy)]
     projects = parts.project_argvs(config, layout, "sha256:" + "a" * 64)
@@ -110,6 +142,23 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
     assert [argv[1:3] for argv in again] == [["project", "revise"], ["session", "open"]]
     with pytest.raises(LauncherError, match="keeps the profile it was made with"):
         parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "crypto-base"})
+
+
+def test_messages_reviewer_omits_the_default_effort(make_config: Any, commands: Path) -> None:
+    config = load_config(
+        make_config(
+            {
+                "bin_dir": str(commands),
+                "model": {"reviewer": "claude", "api": {"claude": "messages"}},
+            }
+        )
+    )
+    layout = Layout(config.state_dir)
+    harness = parts.harness_argv(config, layout)
+    workspace = parts.workspace_argv(config, layout)
+    assert "reviewer=medium" not in harness
+    assert "reviewer=medium" not in workspace
+    assert "--reviewer-effort" not in workspace
 
 
 def test_the_skills_embedding_model_reaches_imports_and_runs_by_the_key_path(
@@ -285,6 +334,20 @@ def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
         "--mcp-about", "s/e-print-mcp=IACR ePrint papers", "--mcp-about", "s=the policy's server s",
         "--mcp-index", "s/e-print-mcp",
     ]  # fmt: skip
+    workspace = parts.workspace_argv(config, layout)
+    assert workspace[workspace.index("--mcp-project") :] == [
+        "--mcp-project",
+        "crypto",
+        "--mcp-proxy",
+        "http://127.0.0.1:18080",
+        "--mcp-proxy-token-file",
+        str(layout.token("mcp-orchestrator")),
+        "--mcp-service",
+        "s=the policy's server s",
+        "--mcp-service",
+        "t=",
+    ]
+    assert "IACR ePrint papers" not in workspace  # behind-service purpose is not top-level
     for wrong in (
         {"about": {"Not_A_Server": "x"}},
         {"about": {"e-print-mcp": "IACR ePrint"}},  # not behind a configured server
@@ -446,3 +509,22 @@ def test_math_checks_need_their_build_and_a_recent_node(
     assert f"no math checker build at {build}: in web/workspace, run npm run build:math" in message
     assert "the math checks need Node 22.12 or newer" in message
     assert "v20.11.1" in message
+
+
+def test_role_effort_reaches_both_confined_sides_and_native_cli(make_config: Any) -> None:
+    efforts = {"main": "max", "delegated": "low", "fold": "high", "overview": "medium"}
+    config = load_config(make_config({"model": {"reasoning_effort": efforts}}))
+    layout = parts.prepare(config)
+    directory, upload = orchestrator.prepare(config, layout)
+    assert json.loads((directory / "control.json").read_text())["reasoning_effort"] == efforts
+    assert json.loads((upload / "runtime.json").read_text())["reasoning_effort"] == efforts
+    argv = parts.harness_argv(config, layout)
+    assert [argv[i + 1] for i, arg in enumerate(argv) if arg == "--reasoning-effort"] == [
+        f"{role}={effort}" for role, effort in efforts.items()
+    ]
+
+
+@pytest.mark.parametrize("efforts", [{"embedding": "max"}, {"main": "MAX!"}])
+def test_invalid_role_effort_is_refused(make_config: Any, efforts: dict[str, str]) -> None:
+    with pytest.raises(LauncherError, match="reasoning_effort"):
+        load_config(make_config({"model": {"reasoning_effort": efforts}}))

@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.view_image import ImageViewer, Viewed, framed
 
 from .citations import record_citation
 from .findings import Findings
-from .models import ReviewConfig, ReviewerFinish
+from .models import REVIEWER_MAX_REPLAY_NATIVE_BYTES, ReviewConfig, ReviewerFinish
 from .numbers import copied_numbers
 from .prompt_bundle import assemble_reviewer
 from .rubric import RUBRIC, RUBRIC_VERSION
@@ -227,6 +227,9 @@ class ReviewerRunner:
         """Images viewed this turn, which follow its results."""
         self.findings = Findings(store)
         self.record = store.run(project, session, review)
+        self.chronological_complete = store.chronological_complete(project, session, review)
+        """Whether this snapshot reaches the feed end that existed at dispatch."""
+        self.span_complete = store.span_complete(project, session, review)
         self.config = ReviewConfig.model_validate(self.record["config"])
 
     async def tool(self, call: ToolCall) -> str:
@@ -291,14 +294,34 @@ class ReviewerRunner:
                         raw,
                     )
                 elif call.name == "review_finding":
-                    result = await asyncio.to_thread(
-                        self.findings.create,
-                        self.project,
-                        self.session,
-                        self.review,
-                        self.owner,
-                        raw,
-                    )
+                    # A partial chronological window can establish a contradiction in
+                    # evidence it contains, but it cannot establish that later work or
+                    # an outcome does not exist. The remaining feed is deliberately
+                    # reviewed in a later bounded window.
+                    finding = cast(dict[str, object], raw) if isinstance(raw, dict) else None
+                    if (
+                        finding is not None
+                        and finding.get("category") == "completion"
+                        and finding.get("assessment") != "supported"
+                        and not self.chronological_complete
+                    ):
+                        result = {
+                            "error": "incomplete_coverage",
+                            "message": (
+                                "This snapshot does not reach the end of the review feed. "
+                                "Do not infer a missing later outcome; leave it for a later "
+                                "review window."
+                            ),
+                        }
+                    else:
+                        result = await asyncio.to_thread(
+                            self.findings.create,
+                            self.project,
+                            self.session,
+                            self.review,
+                            self.owner,
+                            cast(object, raw),
+                        )
                 else:
                     result = await asyncio.to_thread(
                         self.findings.confirm,
@@ -420,7 +443,14 @@ class ReviewerRunner:
         opening: Json = {
             "review": self.review,
             "instruction": "Read review_manifest first. Check only this pinned snapshot.",
+            "chronological_coverage": ("complete" if self.chronological_complete else "partial"),
         }
+        if not self.chronological_complete:
+            opening["coverage_instruction"] = (
+                "Later review-feed records are outside this bounded snapshot. Do not infer "
+                "that a later outcome, fix, report, or action is missing. In particular, do "
+                "not create a completion finding based on its absence from this snapshot."
+            )
         if copied:
             opening["platform_findings"] = {
                 "about": (
@@ -442,6 +472,22 @@ class ReviewerRunner:
                     f"The review's context reached {len(encoded):,} characters, over its "
                     f"{self.config.max_input_chars:,}-character bound{await self._calls()}. "
                     "Recorded findings are retained.",
+                    cap=True,
+                    retry=True,
+                )
+                return
+            native_bytes = sum(
+                len(message.native)
+                for message in messages
+                if isinstance(message, AssistantMessage) and message.native is not None
+            )
+            if native_bytes > REVIEWER_MAX_REPLAY_NATIVE_BYTES:
+                await self._finish(
+                    "capped",
+                    "The review's native response replay reached "
+                    f"{native_bytes:,} bytes, over its "
+                    f"{REVIEWER_MAX_REPLAY_NATIVE_BYTES:,}-byte confined transport "
+                    f"budget{await self._calls()}. Recorded findings are retained.",
                     cap=True,
                     retry=True,
                 )
@@ -485,6 +531,7 @@ class ReviewerRunner:
                 owner=self.owner,
                 cost=reply.cost,
                 cost_source=reply.cost_source,
+                intent_id=reply.intent_id,
             )
             content = reply.text or ""
             if (
@@ -501,7 +548,7 @@ class ReviewerRunner:
                 )
                 return
             # With the gateway's answer, which GPT's adapter sends back (CM-40).
-            assistant = AssistantMessage.of(reply)
+            assistant = AssistantMessage.of(reply).replay()
             assistant["content"] = content
             messages.append(assistant)
             await asyncio.to_thread(
@@ -592,9 +639,7 @@ class ReviewerRunner:
             outcome = finish.outcome
             if count:
                 outcome = "findings"
-            elif outcome == "passed" and (
-                not checked or undecided or not self.record["coverage_complete"]
-            ):
+            elif outcome == "passed" and (not checked or undecided or not self.span_complete):
                 outcome = "inconclusive"
             await self._finish(outcome, finish.summary, cap=finish.cap_reached)
             return

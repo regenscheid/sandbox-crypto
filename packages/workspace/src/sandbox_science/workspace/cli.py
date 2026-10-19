@@ -38,9 +38,12 @@ from pathlib import Path
 from typing import Final
 
 from aiohttp import web
+from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.model_profiles import Effort, requested
+from sandbox_science.orchestrator.model_settings import AgentModelRole
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
@@ -48,14 +51,52 @@ from .app import create_app
 from .context import CONTEXT
 from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
+from .mcp_metadata import MetadataClient
+from .mcp_services import ServiceConfig
 from .preview import Capabilities, Preview, create_preview_app, own_host
+from .project_settings import ModelConfiguration
 
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
 
 
+def _agent_model(value: str) -> tuple[AgentModelRole, str]:
+    role, separator, alias = value.partition("=")
+    try:
+        checked = TypeAdapter(AgentModelRole).validate_python(role)
+    except ValidationError:
+        raise argparse.ArgumentTypeError("agent model needs main, delegated or reviewer") from None
+    if not separator or not alias or len(alias) > 200:
+        raise argparse.ArgumentTypeError("agent model needs ROLE=ALIAS")
+    return checked, alias
+
+
+def _agent_effort(value: str) -> tuple[AgentModelRole, str]:
+    role, separator, effort = value.partition("=")
+    try:
+        checked_role = TypeAdapter(AgentModelRole).validate_python(role)
+        checked_effort = TypeAdapter(Effort).validate_python(effort)
+    except ValidationError:
+        raise argparse.ArgumentTypeError("agent effort needs ROLE=EFFORT") from None
+    if not separator:
+        raise argparse.ArgumentTypeError("agent effort needs ROLE=EFFORT")
+    return checked_role, checked_effort
+
+
+def _agent_api(value: str) -> tuple[str, str]:
+    alias, separator, api = value.partition("=")
+    if not separator or not alias or api not in ("chat", "responses", "messages"):
+        raise argparse.ArgumentTypeError("agent API needs ALIAS=chat|responses|messages")
+    return alias, api
+
+
 def math_repairs(
-    model_url: str | None, reviewer: str | None, api_key_file: Path | None
+    model_url: str | None,
+    reviewer: str | None,
+    api_key_file: Path | None,
+    *,
+    api: str = "chat",
+    reasoning_effort: str | None = None,
 ) -> MathRepairService:
     """The repair service the settings describe; ValueError for incomplete settings."""
     if reviewer_alias(reviewer) is None:
@@ -82,7 +123,9 @@ def math_repairs(
             mode & 0o777,
         )
     try:
-        return gateway_service(model_url, reviewer or "", api_key)
+        return gateway_service(
+            model_url, reviewer or "", api_key, api=api, reasoning_effort=reasoning_effort
+        )
     except ValueError as exc:
         raise ValueError(f"the API key file {api_key_file}: {exc}") from None
 
@@ -244,6 +287,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="the alias of the import's pass whose topics, entry skills and short "
         "descriptions the skills page shows, as runs are given them (default: none)",
     )
+    command.add_argument(
+        "--mcp-project", help="the one project whose configured MCP service names are shown"
+    )
+    command.add_argument(
+        "--mcp-service",
+        action="append",
+        default=[],
+        metavar="NAME=PURPOSE",
+        help="a configured MCP service and its public purpose; repeat for each service",
+    )
+    command.add_argument("--mcp-proxy", help="private host proxy address for metadata")
+    command.add_argument(
+        "--mcp-proxy-token-file", type=Path, help="host-only proxy caller token path"
+    )
+    agents = command.add_argument_group(
+        "agent models", "trusted project choices for main, delegated and reviewer roles"
+    )
+    agents.add_argument("--agent-model", action="append", default=[], type=_agent_model)
+    agents.add_argument("--agent-effort", action="append", default=[], type=_agent_effort)
+    agents.add_argument("--agent-api", action="append", default=[], type=_agent_api)
     repairs = command.add_argument_group(
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
     )
@@ -259,6 +322,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     repairs.add_argument(
         "--api-key-file", type=Path, help="a file holding the workspace's key for the gateway"
     )
+    repairs.add_argument(
+        "--reviewer-api", choices=("chat", "responses", "messages"), default="chat"
+    )
+    repairs.add_argument("--reviewer-effort")
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -268,9 +335,49 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     try:
-        repair = math_repairs(args.model_url, args.reviewer_model, args.api_key_file)
+        repair = math_repairs(
+            args.model_url,
+            args.reviewer_model,
+            args.api_key_file,
+            api=args.reviewer_api,
+            reasoning_effort=args.reviewer_effort,
+        )
     except ValueError as exc:
         parser.error(str(exc))
+    role_items = dict(args.agent_model)
+    effort_items = dict(args.agent_effort)
+    api_items = dict(args.agent_api)
+    if len(role_items) != len(args.agent_model) or len(effort_items) != len(args.agent_effort):
+        parser.error("agent model and effort roles may be named only once")
+    if len(api_items) != len(args.agent_api):
+        parser.error("an agent alias may name only one API")
+    if role_items and not {"main", "delegated"}.issubset(role_items):
+        parser.error("agent models need main and delegated roles")
+    if not set(effort_items).issubset(role_items):
+        parser.error("agent effort needs a configured agent model role")
+    unknown_apis = set(api_items).difference(role_items.values())
+    if unknown_apis:
+        parser.error("agent API aliases must be in the agent model catalog")
+    if "reviewer" in role_items and api_items.get(role_items["reviewer"], "chat") != "messages":
+        effort_items.setdefault("reviewer", "medium")
+    for role, alias in role_items.items():
+        if api_items.get(alias, "chat") == "messages" and role in effort_items:
+            parser.error(f"{role} uses Messages, which does not accept agent effort")
+    model_configuration = (
+        ModelConfiguration(
+            defaults={
+                role: requested(
+                    alias,
+                    api_items.get(alias, "chat"),
+                    effort_items.get(role),
+                )
+                for role, alias in role_items.items()
+            },
+            available={alias: api_items.get(alias, "chat") for alias in set(role_items.values())},
+        )
+        if role_items
+        else None
+    )
     try:
         preview_host, preview_port = (
             parse_listen(args.preview_listen)
@@ -321,6 +428,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
     login_token = secrets.token_urlsafe(32)
     preview = Preview(Capabilities())
+    mcp_inventory: list[ServiceConfig] = []
+    if args.mcp_service and args.mcp_project is None:
+        parser.error("--mcp-service needs --mcp-project")
+    for item in args.mcp_service:
+        name, separator, purpose = item.partition("=")
+        if not separator or any(found.name == name for found in mcp_inventory):
+            parser.error("--mcp-service needs a unique NAME=PURPOSE")
+        try:
+            mcp_inventory.append(ServiceConfig(name=name, purpose=purpose))
+        except ValueError:
+            parser.error("--mcp-service needs a valid service name and purpose")
+    metadata = None
+    if args.mcp_proxy is not None or args.mcp_proxy_token_file is not None:
+        if args.mcp_proxy is None or args.mcp_proxy_token_file is None or args.mcp_project is None:
+            parser.error("MCP metadata needs proxy, token file and project together")
+        try:
+            metadata = MetadataClient(args.mcp_proxy, args.mcp_proxy_token_file.read_text().strip())
+        except (OSError, UnicodeError, ValueError):
+            parser.error("cannot configure MCP metadata source")
     try:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
@@ -332,6 +458,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_state=job_state,
             preview=preview,
             skills_metadata=args.skills_metadata_model,
+            mcp_project=args.mcp_project,
+            mcp_inventory=tuple(mcp_inventory),
+            mcp_metadata=metadata,
+            model_configuration=model_configuration,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)

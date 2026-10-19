@@ -129,9 +129,12 @@ class PassError(Exception):
     """The pass could not be had: the import stands without what it would derive.
     ``cost`` is what the gateway reported a call it answered cost, if it answered."""
 
-    def __init__(self, message: str, cost: float | None = None) -> None:
+    def __init__(
+        self, message: str, cost: float | None = None, intent_id: str | None = None
+    ) -> None:
         super().__init__(message)
         self.cost = cost
+        self.intent_id = intent_id
 
 
 @dataclass(frozen=True)
@@ -145,6 +148,7 @@ class Derived:
     tokens: tuple[int | None, int | None] = (None, None)
     cost: float | None = None
     cost_source: CostSource | None = None
+    intent_id: str | None = None
 
     def report(self, alias: str) -> dict[str, Any]:
         """The import report's ``derived``: every item marked as the pass's (SK-32)."""
@@ -215,7 +219,11 @@ async def derive(model: ChatModel, snap: Snapshot, alias: str) -> Derived:
             if attempt == 1 and again and cost is None:  # a gateway's 5xx, as lab 42's 524
                 continue
             said = str(error) or "the call timed out"
-            raise PassError(f"the pass's call failed: {said}", cost) from None
+            raise PassError(
+                f"the pass's call failed: {said}",
+                cost,
+                error.intent_id if isinstance(error, ModelError) else None,
+            ) from None
     else:  # pragma: no cover - each attempt breaks or raises
         raise AssertionError("unreachable")
     answer: object = None
@@ -233,6 +241,7 @@ async def derive(model: ChatModel, snap: Snapshot, alias: str) -> Derived:
         tokens=(turn.input_tokens, turn.output_tokens),
         cost=turn.cost,
         cost_source=turn.cost_source,
+        intent_id=turn.intent_id,
     )
 
 

@@ -13,6 +13,20 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents.project_macros import MacroContext
 
 ReviewType = Literal["checkpoint", "terminal", "confirmation"]
+REVIEWER_MAX_RESPONSE_BYTES: Final = 6 * 1024 * 1024
+"""Finite gateway envelope for a max-effort reviewer response.
+
+Responses APIs may return large encrypted reasoning metadata alongside a small visible
+answer. This matches the confined model transport ceiling and is shared by host and
+confined reviewer construction so the two runtimes fail at the same boundary.
+"""
+REVIEWER_MAX_REPLAY_NATIVE_BYTES: Final = 12 * 1024 * 1024
+"""Raw native response bytes retained in a multi-round reviewer conversation.
+
+The confined transport base64-encodes these bytes in a 24 MiB frame. Twelve MiB
+leaves roughly eight MiB after base64 expansion for the bounded visible context,
+tool schemas and request envelope. The runner checks this before paid dispatch.
+"""
 ReviewOutcome = Literal[
     "running", "passed", "findings", "inconclusive", "capped", "failed", "dropped"
 ]
@@ -64,9 +78,14 @@ class ReviewConfig(Contract):
     response_rounds: int = Field(default=2, ge=0, le=2, strict=True)
     max_reflags: int = Field(default=2, ge=1, le=2, strict=True)
     max_findings: int = Field(default=10, ge=1, le=10, strict=True)
-    # A review of a normal session's window, by a large model such as the deployment's
-    # sandbox-orchestrator, reads twenty to fifty items in eight to twenty calls, each
-    # sending the whole conversation again (lab 38): the defaults let it finish.
+    max_feed_items: int = Field(default=16, ge=1, le=256, strict=True)
+    """The most new evidence items in one review window, before derived context."""
+    max_feed_bytes: int = Field(default=256 * 1024, ge=16 * 1024, le=8 * 1024 * 1024, strict=True)
+    """The approximate new-evidence byte budget for one review window."""
+    max_terminal_windows: int = Field(default=24, ge=1, le=64, strict=True)
+    """Bounded catch-up of pending evidence when an author turn closes."""
+    # The call limits allow a bounded evidence window to finish even when the reviewer
+    # reads every item; the SNOVA audit showed that larger windows repeatedly capped.
     max_turns: int = Field(default=24, ge=1, le=30, strict=True)
     time_seconds: float = Field(default=300, ge=0.01, le=600, allow_inf_nan=False)
     max_input_chars: int = Field(default=300000, ge=4096, le=500000, strict=True)

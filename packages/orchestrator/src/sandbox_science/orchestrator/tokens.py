@@ -13,6 +13,7 @@ run's start among them, it is a fresh estimate of the whole view, until a call r
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal
 
@@ -45,11 +46,14 @@ def total_input(usage: Mapping[str, object], form: Form) -> int | None:
 
 def chars_per_token(calls: Iterable[ModelUsage]) -> float:
     """The characters per token of the last ``CALIBRATED`` calls that reported both."""
-    known = [
-        call
-        for call in calls
-        if call.characters and call.input_tokens is not None and call.output_tokens is not None
-    ][-CALIBRATED:]
+    known = deque(
+        (
+            call
+            for call in calls
+            if call.characters and call.input_tokens is not None and call.output_tokens is not None
+        ),
+        maxlen=CALIBRATED,
+    )
     tokens = sum((call.input_tokens or 0) + (call.output_tokens or 0) for call in known)
     chars = sum(call.characters or 0 for call in known)
     return chars / tokens if tokens and chars else DEFAULT_CHARS

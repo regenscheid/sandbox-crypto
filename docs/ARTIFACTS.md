@@ -13,7 +13,10 @@ without a state directory, with its existing `ArtifactRef` and behavior.
 
 `contracts/artifact_inventory.py` distinguishes worker snapshot references from
 control revision references. `ArtifactInventory` in the orchestrator owns logical
-IDs, immutable bytes/revisions and bounded event pages in `control.sqlite3`.
+IDs, immutable revisions and bounded event pages in `control.sqlite3`. New content
+lives in adjacent `control.sqlite3.artifacts/` hash-addressed files; old small SQLite
+BLOBs remain readable. The database and blob directory are one backup unit. A PVC
+can hold that directory; S3 is a future backend.
 `ArtifactPublisher` connects a trusted run/context and worker endpoint to that
 inventory. These are internal interfaces, with no scheduler or permission grant of
 their own. The workspace reads the inventory through two routes, the project's
@@ -87,11 +90,11 @@ atomic source capture or writer/producer identity.
 | Helper input / bounded reply overhead | 16 KiB / 16 KiB |
 | Durable admitted publications, global / environment | 4 / 2 |
 | Actual guest helpers per executor | 2 |
-| Operation budget, including lock waits and host I/O | 30 seconds by default |
+| Operation budget, including lock waits and host I/O | 240 seconds by default |
 | Cleanup acknowledgement attempt, including transport write | 1 second |
 
 There is no capture admission queue. The programmatic operation budget can be
-0.05–60 seconds; no deployed configuration is changed. The worker's existing
+0.05–600 seconds. The worker's existing
 1 GiB publication default remains. The helper streams hashes instead of allocating
 the whole source. A private four-thread host pool owns blob operations without
 occupying the default executor with blocked work.
@@ -125,8 +128,8 @@ cleanup. There is no lease expiry or new-incarnation reset; with the worker stop
 `sandbox-science-worker captures --clear` forgets a lease on the operator's word.
 Unknown legacy/local-backend bindings cannot borrow a managed VM's deletion proof.
 
-The bounded client publication request has a 10-second deadline; the server's
-default budget is 30 seconds. Default aiohttp handlers can continue after peer
+The bounded client publication request has a 300-second deadline; the server's
+default budget is 240 seconds. Default aiohttp handlers can continue after peer
 disconnect. A client timeout therefore means an unknown outcome, not immediate
 remote cancellation. Existing durable control publication intent handles this
 uncertainty without retrying the mutable path. The worker's unproven last-writer
@@ -225,14 +228,16 @@ durably before its bytes are fetched. A known pin can retry transfer after resta
 using that exact project/hash/size/reference even when the source path has changed.
 Endpoint changes require a new operation; old intents and pins are retained.
 
-`WorkerClient.publish_snapshot` and `verified_artifact_content` are bounded methods
-specific to this flow. The POST reply is at most 16 KiB; transfer has a 10-second
+`WorkerClient.publish_snapshot` and `stream_artifact_content` are bounded methods
+specific to this flow. The POST reply is at most 16 KiB; transfer has a 300-second
 total deadline, no redirects or decompression, capped error bodies, exact project
 query binding, strict size/digest metadata, a matching digest header and verified
 bytes before retention. Ordinary client methods and their defaults are unchanged.
 
-Bytes are verified outside the write lock. One transaction commits the BLOB,
-immutable revision/head, event and completion receipt. Failure leaves no partial
+Bytes stream through bounded chunks into a private staged file. Its exact hash/size
+are verified outside the write lock, then its file and installed hash directory are
+fsynced before one transaction commits the blob reference, immutable revision/head,
+event and completion receipt. Failure leaves no partial
 revision or head advance. A completed replay checks its canonical reference against
 the pinned worker hash/size, project and canonical path. SQLite admission uses one
 private worker thread; at most eight admitted publication tasks retain ownership
@@ -256,13 +261,15 @@ are required. Defaults are:
 
 | Resource | Default |
 | --- | ---: |
-| One retained artifact revision | 8 MiB |
-| Retained revision bytes per project / global | 2 GiB / 8 GiB |
+| One retained artifact revision | 1 GiB |
+| Retained revision bytes per project / global | 16 GiB / 64 GiB |
 | Revision count per project / global | 50,000 / 200,000 |
 | Operation count per project / global | 100,000 / 400,000 |
 | Metadata budget per project / global | 256 MiB / 1 GiB |
 | Intent / worker or receipt / event or revision metadata | 8 KiB / 16 KiB / 16 KiB |
 | Concurrent admitted publications | 8 |
+| Concurrent staged transfers, per project / global | 2 / 4 |
+| Staged bytes, per project / global | 2 GiB / 4 GiB |
 | Metadata/event page | 10 records |
 
 The defaults are sized for recording every file executions write ([research
@@ -281,7 +288,13 @@ than deleting unresolved history. The tables check metadata sizes, JSON and stat
 when they are written (schema version 7), and reads take rows as they are; only
 artifact content reads stay bounded by the caller's limit. Logical budgets do not claim to bound SQLite/WAL physical disk
 usage or total process RSS; operation retries, receipts and revision bytes consume
-their documented retention budgets. There is no purge or retention UI.
+their documented retention budgets. Durable transfer reservations count against
+retained headroom. Logical bytes charge every retained revision; a reproduction
+adds none, even when hashes deduplicate physically. Failed metadata commits after
+blob installation leave the blob and reservation charged. Crashes can leave staged
+files and reservations; there is no automatic GC, purge or retention UI. Explicit
+operator recovery must prove inactivity and lack of references before removal.
+See [durable artifact blobs](specs/durable-artifact-blobs.md).
 
 ## Revisions without bytes, tombstones and recorded files
 
@@ -318,7 +331,7 @@ before the result goes back to the model, it records the files the worker report
   artifact can have is left out with that reason.
 - It lists each directory once for the files' sizes; a directory that cannot be
   listed, or whose listing was cut short, is the reason its files are left out. A file
-  within the budget and within 8 MiB is published through the run's `ArtifactPublisher`,
+  within the budget and within 1 GiB is published through the run's `ArtifactPublisher`,
   under an operation ID made from the execution and the path (for `write_file`, the
   harness's operation ID for the call, never the model's call ID, which gateways number
   per answer), so a replay finds the first receipt; a
@@ -327,8 +340,9 @@ before the result goes back to the model, it records the files the worker report
   When the project's revision count is full, recording stops.
 - A deleted file that is a live artifact gets a tombstone.
 - One call tries at most 100 files, tombstones and failures included, and keeps at most
-  64 MiB of bytes: each transfer is bounded by what is left, so a file that grew after
-  its listing cannot carry the call past it. A file over 4 GiB, one gone before it was
+  2 GiB of bytes: each transfer is bounded by what is left, so a file that grew after
+  its listing cannot carry the call past it. A file that exceeds the remaining content
+  allowance still gets hash/size metadata. A file over 4 GiB, one gone before it was
   recorded, and one the inventory refused are counted as left out, by reason. The source is `execution_record`, with the run's role, parent run and
   delegation, the tool call, the model the gateway named, and the execution with its
   attempt's end; it says the worker reported the file, not that the call wrote it.
@@ -378,10 +392,15 @@ These are local fixtures, not OpenShell evidence.
 
 Successful tool records include `artifact_inventory` with a pinned control receipt,
 beside the original `artifact` worker snapshot. Internal `resolve`, `content`,
-`list` and `events` methods form the evidence read boundary. A consumer can request
-a smaller `content(max_bytes=...)` limit: the SQLite BLOB prefix itself is bounded
+`list` and `events` methods form the evidence read boundary. `content()` defaults
+to 8 MiB; consumers can request an explicit bounded `content(max_bytes=...)` limit.
+The legacy SQLite BLOB prefix itself is bounded
 before Python allocation, including corrupt rows whose stored size is incorrect.
 Empty BLOBs return exact empty bytes rather than SQLite's NULL substring result.
+`open_content(project, pinned_reference)` verifies content then yields a binary
+stream without a held SQL transaction. Authenticated workspace downloads use it
+independently of worker/container lifetime; existing PDF, image and model preview
+limits remain separate from the 1 GiB retention cap.
 
 ### Explicit-publication consistency consumer
 

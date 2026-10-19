@@ -36,7 +36,7 @@ const partial: RunRecord = {
 };
 
 it('shows failure and partial evidence, with an incomplete call and no final answer', () => {
-  const html = render(RunView, { props: { run: partial } }).body;
+  const html = render(RunView, { props: { run: partial, runName: 'saved-attempt' } }).body;
   expect(html).toContain('Failed run');
   expect(html).toContain('(tool)');
   expect(html).toContain('Partial transcript. No final answer was recorded.');
@@ -54,6 +54,7 @@ it('still renders older records without failure metadata', () => {
   const { failure: _failure, ...legacy } = partial;
   const html = render(RunView, {
     props: {
+      runName: 'saved-attempt',
       run: {
         ...legacy,
         stopped: 'answered',

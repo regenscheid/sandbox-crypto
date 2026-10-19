@@ -50,6 +50,8 @@ class Stager:
     ) -> None:
         self.client, self.context, self.store, self.derived = client, context, store, derived
         self.bindings: dict[str, str] = {}
+        self.inventory_digest: str | None = None
+        self.locations: dict[str, str] = {}
         """What the run's executions add to their environment: the variables set, as paths
         in the staged packs."""
         self.attempts: dict[str, int] = {}
@@ -95,15 +97,29 @@ class Stager:
                     return record
         self.checked.add(entry.snapshot)
         bound = await asyncio.to_thread(
-            self.store.bindings, self.context.project_id, self.derived, found.commands
+            self.store.bindings,
+            self.context.project_id,
+            self.derived,
+            found.commands,
+            found.inventory.reserved,
+            found.inventory.namespaces,
+            found.inventory.state == "ready",
         )
-        self.forget(entry.source)
-        given = {
-            name: found.location + (f"/{path}" if path else "")
-            for name, path in bound.set.get(entry.source, {}).items()
-        }
-        self.bindings.update(given)
-        self.bound[entry.source] = set(given)
+        self.locations[entry.source] = found.location
+        self.inventory_digest = found.inventory.digest if found.inventory.state == "ready" else None
+        # A refreshed inventory revalidates every already-loaded pack, not just the
+        # pack loaded last. Otherwise a new digest could bless another stale grant.
+        self.bindings.clear()
+        self.bound.clear()
+        for source, location in self.locations.items():
+            given = {
+                name: location + (f"/{path}" if path else "")
+                for name, path in bound.set.get(source, {}).items()
+            }
+            self.bindings.update(given)
+            self.bound[source] = set(given)
+        given = {name: self.bindings[name] for name in self.bound.get(entry.source, set())}
+        record["inventory"] = found.inventory.model_dump(mode="json")
         record["bindings"] = given
         if held := bound.held.get(entry.source):
             record["held"] = [{"variable": h["variable"], "reason": h["reason"]} for h in held]
@@ -112,6 +128,7 @@ class Stager:
     def forget(self, source: str) -> None:
         """Take ``source``'s bindings out of the run's executions, as when its staging
         failed: they would name files that are not as expected."""
+        self.locations.pop(source, None)
         for name in self.bound.pop(source, set()):
             self.bindings.pop(name, None)
 
@@ -126,6 +143,13 @@ class Stager:
     async def _check(
         self, entry: Entry, files: tuple[StagedFile, ...], commands: tuple[str, ...]
     ) -> Any:
+        bound = await asyncio.to_thread(self.store.bindings, self.context.project_id, self.derived)
+        names = {name for bindings in bound.set.values() for name in bindings}
+        names.update(item["variable"] for held in bound.held.values() for item in held)
+        pins = await asyncio.to_thread(self.store.pins, self.context.project_id)
+        names.update(allow.namespace(pin.source) for pin in pins)
+        settings = await asyncio.to_thread(self.store.settings, self.context.project_id)
+        names.update(cast(dict[str, str], settings.overrides.get("prefixes", {})).values())
         request = StageCheckRequest(
             context=self.context,
             source=entry.source,
@@ -133,6 +157,7 @@ class Stager:
             files=files,
             seal=True,
             commands=commands,
+            binding_names=tuple(sorted(names)),
         )
         return await self.client.stage_check(request)
 

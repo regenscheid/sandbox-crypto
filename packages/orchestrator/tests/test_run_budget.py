@@ -51,19 +51,19 @@ async def test_a_run_that_reaches_the_limit_stops_before_its_next_call(
     assert stopped.data["stopped"] == "budget"
 
 
-async def test_a_call_without_a_known_cost_counts_the_limit_as_reached(harness: Harness) -> None:
-    """Lab 43, B2: a call the gateway neither reported a cost for nor priced in its model
-    information counts nothing toward the limit, so it cannot keep the limit: once one
-    is in the window, the limit counts as reached, and the run stops before its next
-    call. Without a limit, the same calls run on."""
+async def test_a_call_without_a_known_cost_remains_visible_but_does_not_stop_the_run(
+    harness: Harness,
+) -> None:
+    """An unknown charge does not prove the local limit was reached; LiteLLM's
+    upstream budget remains the primary paid-call control."""
     runs(harness).set_cost_limit(PROJECT, 1000)
     post(harness, "m-1", "Read the plan, then answer.")
-    async with serving(harness, Reply(calls=[call("plan_read")]), Reply("Never sent.")):
+    async with serving(harness, Reply(calls=[call("plan_read")]), Reply("Done.", cost="0.5")):
         (record,) = await ended(harness)
-    assert record.stopped == "budget"
-    assert len(harness.gateway.main) == 1
+    assert (record.stopped, record.final_text) == ("answered", "Done.")
+    assert len(harness.gateway.main) == 2
     assert runs(harness).unpriced_calls(PROJECT, record.started_at - WINDOW) == 1
-    assert runs(harness).over_cost_limit(PROJECT, record.ended_at)
+    assert not runs(harness).over_cost_limit(PROJECT, record.ended_at)
     runs(harness).set_cost_limit(PROJECT, None)
     assert not runs(harness).over_cost_limit(PROJECT, record.ended_at)
 
@@ -85,14 +85,14 @@ async def test_a_gateway_that_refuses_for_its_budget_ends_the_run_and_the_sessio
         assert len(names(harness)) == 1  # no other run starts for the waiting message
     assert (record.stopped, record.failure, record.final_text) == ("gateway_budget", None, None)
     assert len(harness.gateway.main) == 1
-    assert states(harness) == {"m-1": "queued"}  # no model call saw it: it waits
+    assert states(harness) == {"m-1": "held"}  # original work needs explicit Resume
     stopped = runs(harness).events(PROJECT, SESSION, names(harness)[0])[-1]
     assert stopped.data["stopped"] == "gateway_budget"
 
 
 async def test_what_arrives_after_the_limit_is_reached_waits(harness: Harness) -> None:
-    """An answer stands; the message that would have continued the run waits, and the
-    run it starts is refused for the limit, as at any run's start."""
+    """An answer stands; an input already offered to this budget-stopped work remains
+    held for its explicit Resume, without a fresh root or another paid call."""
     runs(harness).set_cost_limit(PROJECT, 0.01)
 
     async def another() -> None:
@@ -102,13 +102,16 @@ async def test_what_arrives_after_the_limit_is_reached_waits(harness: Harness) -
     replies = (Reply("The answer.", before=another, cost="0.02"), Reply("Never sent."))
     async with serving(harness, *replies):
         (record,) = await ended(harness)
-        await eventually(lambda: states(harness).get("m-2") == "refused", timeout=10)
+        await eventually(lambda: states(harness).get("m-2") == "held", timeout=10)
     assert (record.stopped, record.final_text) == ("budget", "The answer.")
     assert len(harness.gateway.main) == 1
     assert record.delivered["messages"] == ["m-1"]
-    assert states(harness) == {"m-1": "delivered", "m-2": "refused"}
-    (refused,) = [m for m in runs(harness).messages(PROJECT, SESSION) if m.message_id == "m-2"]
-    assert refused.reason == "budget"
+    assert states(harness) == {"m-1": "delivered", "m-2": "held"}
+    (held,) = [m for m in runs(harness).messages(PROJECT, SESSION) if m.message_id == "m-2"]
+    assert held.reason == "interrupted"
+    assert held.offered == names(harness)[0]
+    assert held.run is None
+    assert runs(harness).over_cost_limit(PROJECT, record.ended_at)
     assert len(names(harness)) == 1
 
 

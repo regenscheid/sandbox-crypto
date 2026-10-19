@@ -66,6 +66,14 @@ from sandbox_science.contracts import (
     WriteFileResult,
 )
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES, ArtifactSnapshot
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.readiness import WorkerReadiness
+from sandbox_science.contracts.recovery import (
+    EffectControl,
+    OperationLookup,
+    OperationLookupRequest,
+    RecoveryFence,
+)
 from sandbox_science.contracts.revisions import (
     MAX_LOCKFILE_BYTES,
     MAX_REVISION_PAGE,
@@ -91,7 +99,7 @@ CALL_TIMEOUT: Final = 600.0
 """Seconds a request may go without data from the worker before it is given up."""
 STREAM_TIMEOUT: Final = 4 * EVENT_HEARTBEAT_SECONDS
 """Seconds an event stream may go without even a heartbeat before it counts as dropped."""
-TRANSFER_TIMEOUT: Final = 10.0
+TRANSFER_TIMEOUT: Final = 300.0
 """Seconds an artifact publication or content transfer may take as a whole."""
 RESULT_GRACE: Final = 300.0
 """Seconds past an execution's own limit that ``run`` waits for its result. The worker's
@@ -104,11 +112,19 @@ _Model = TypeVar("_Model", bound=BaseModel)
 class WorkerAPIError(Exception):
     """The worker answered with an error, or could not be reached (``unavailable``)."""
 
-    def __init__(self, kind: ErrorKind, message: str, status: int | None = None) -> None:
+    def __init__(
+        self,
+        kind: ErrorKind,
+        message: str,
+        status: int | None = None,
+        *,
+        uncertain: bool = False,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.status = status
+        self.uncertain = uncertain
 
 
 class WorkerProtocolError(WorkerAPIError):
@@ -242,7 +258,13 @@ class WorkerClient:
         allow_redirects: bool = True,
     ) -> tuple[_Model, int]:
         """The response as ``model``, and its status; a body over ``max_bytes`` is an error."""
-        data = body.model_dump_json() if body else None
+        if isinstance(body, WriteFileRequest) and len(body.content_b64) > 8 * 1024 * 1024:
+            data = await _selected_owned(
+                asyncio.create_task(asyncio.to_thread(body.model_dump_json)),
+                cancel_on_interrupt=False,
+            )
+        else:
+            data = body.model_dump_json() if body else None
         try:
             async with self._http().request(
                 method,
@@ -262,19 +284,62 @@ class WorkerClient:
                     payload = await _bounded_body(response.content, max_bytes)
                 if response.status >= 400 or (not allow_redirects and 300 <= response.status < 400):
                     raise _error(payload, response.status)
+        except WorkerAPIError as exc:
+            # A proxy failure or malformed successful reply cannot establish whether
+            # a submitted effect ran. A definite application refusal can be shown to
+            # the model as an ordinary error.
+            if method != "GET" and (exc.status is None or exc.status >= 500):
+                exc.uncertain = True
+            raise
         except (aiohttp.ClientError, TimeoutError) as exc:
-            raise WorkerAPIError(ErrorKind.UNAVAILABLE, f"cannot reach the worker: {exc}") from exc
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                f"cannot reach the worker: {exc}",
+                uncertain=method != "GET",
+            ) from exc
         try:
             return model.model_validate_json(payload), response.status
         except ValidationError as exc:
             raise WorkerAPIError(
-                ErrorKind.INTERNAL, f"unexpected worker response: {str(exc)[:500]}"
+                ErrorKind.INTERNAL,
+                f"unexpected worker response: {str(exc)[:500]}",
+                uncertain=method != "GET",
             ) from exc
 
     # Environments (D73): the worker creates sandboxes under stored policy revisions.
 
+    async def readiness(self) -> WorkerReadiness:
+        """Check authentication/protocol without starting any environment or executor."""
+        reply = (
+            await self._request(
+                "GET",
+                "/v1/ready",
+                WorkerReadiness,
+                max_bytes=4096,
+                total_timeout=10.0,
+                allow_redirects=False,
+            )
+        )[0]
+        if reply.protocol != PROTOCOL_VERSION:
+            raise WorkerProtocolError(ErrorKind.UNSUPPORTED, "worker readiness protocol mismatch")
+        return reply
+
     async def create_environment(self, request: EnvironmentRequest) -> EnvironmentInfo:
         return await self._call("POST", "/v1/environments", EnvironmentInfo, request)
+
+    async def claim_environment(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        """Grant, renew or release a bounded idle-retention claim."""
+        return (
+            await self._request(
+                "POST",
+                "/v1/environment-claims",
+                EnvironmentClaimResult,
+                request,
+                max_bytes=4096,
+                total_timeout=10.0,
+                allow_redirects=False,
+            )
+        )[0]
 
     async def environment(self, environment_id: str) -> EnvironmentInfo:
         return await self._call("GET", f"/v1/environments/{environment_id}", EnvironmentInfo)
@@ -290,13 +355,19 @@ class WorkerClient:
     async def delete_environment(self, environment_id: str) -> EnvironmentInfo:
         return await self._call("DELETE", f"/v1/environments/{environment_id}", EnvironmentInfo)
 
-    async def admit_hosts(self, environment_id: str, hosts: Sequence[HostPort]) -> AdmissionResult:
+    async def admit_hosts(
+        self,
+        environment_id: str,
+        hosts: Sequence[HostPort],
+        *,
+        context: ExecutionContext | None = None,
+    ) -> AdmissionResult:
         """Have the worker admit hosts before code contacts them (D69)."""
         return await self._call(
             "POST",
             f"/v1/environments/{environment_id}/admissions",
             AdmissionResult,
-            AdmissionRequest(hosts=tuple(hosts)),
+            AdmissionRequest(hosts=tuple(hosts), context=context),
         )
 
     async def revisions(
@@ -321,6 +392,34 @@ class WorkerClient:
             Lockfile,
             max_bytes=MAX_LOCKFILE_BYTES,
         )
+
+    async def fence(self, request: RecoveryFence) -> RecoveryFence:
+        """Install a session epoch; requires the host service's recovery-control credential."""
+        return (
+            await self._request(
+                "POST",
+                "/v1/recovery/fence",
+                RecoveryFence,
+                request,
+                max_bytes=4096,
+                total_timeout=10,
+                allow_redirects=False,
+            )
+        )[0]
+
+    async def lookup(self, context: ExecutionContext, operation_id: str) -> OperationLookup:
+        """Observe an original operation without resubmission, wake or executor connection."""
+        return (
+            await self._request(
+                "POST",
+                "/v1/operations/lookup",
+                OperationLookup,
+                OperationLookupRequest(context=context, operation_id=operation_id),
+                max_bytes=32 * 1024 * 1024,
+                total_timeout=10,
+                allow_redirects=False,
+            )
+        )[0]
 
     # Provisioning operations (Conda provisioning, CP-1 to CP-25).
 
@@ -351,12 +450,17 @@ class WorkerClient:
         )
 
     async def cancel_provision(
-        self, provision_id: str, *, project_id: str | None = None
+        self,
+        provision_id: str,
+        *,
+        project_id: str | None = None,
+        context: ExecutionContext | None = None,
     ) -> ProvisionOperation:
         return await self._call(
             "POST",
             f"/v1/provisioning/{provision_id}/cancel",
             ProvisionOperation,
+            EffectControl(context=context) if context is not None else None,
             params=_project(project_id),
         )
 
@@ -386,11 +490,18 @@ class WorkerClient:
             max_bytes=MAX_EVENT_BYTES,
         )
 
-    async def cancel(self, execution_id: str, *, project_id: str | None = None) -> Execution:
+    async def cancel(
+        self,
+        execution_id: str,
+        *,
+        project_id: str | None = None,
+        context: ExecutionContext | None = None,
+    ) -> Execution:
         return await self._call(
             "POST",
             f"/v1/executions/{execution_id}/cancel",
             Execution,
+            EffectControl(context=context) if context is not None else None,
             params=_project(project_id),
         )
 
@@ -434,7 +545,9 @@ class WorkerClient:
                 failures += 1
                 if failures > RECONNECT_ATTEMPTS:
                     raise WorkerAPIError(
-                        ErrorKind.UNAVAILABLE, f"lost the worker's event stream: {exc}"
+                        ErrorKind.UNAVAILABLE,
+                        f"lost the worker's event stream: {exc}",
+                        uncertain=True,
                     ) from exc
                 _log.info("event stream dropped (%s); resuming after %d", exc, after)
                 await self.clock.sleep(self.reconnect_delay * failures)
@@ -442,7 +555,11 @@ class WorkerClient:
             # The stream ended without a result: ask again from where it stopped.
             failures += 1
             if failures > RECONNECT_ATTEMPTS:
-                raise WorkerAPIError(ErrorKind.UNAVAILABLE, "the event stream kept ending early")
+                raise WorkerAPIError(
+                    ErrorKind.UNAVAILABLE,
+                    "the event stream kept ending early",
+                    uncertain=True,
+                )
 
     async def run(
         self,
@@ -484,8 +601,16 @@ class WorkerClient:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
                 f"no result from the worker {self.result_grace:g} s after the execution's limit",
+                uncertain=True,
             ) from exc
-        return await self.get(execution.execution_id, project_id=project_id)
+        except WorkerAPIError as exc:
+            exc.uncertain = True
+            raise
+        try:
+            return await self.get(execution.execution_id, project_id=project_id)
+        except WorkerAPIError as exc:
+            exc.uncertain = True
+            raise
 
     async def jobs(
         self, context: ExecutionContext, *, limit: int = 100, after: str | None = None
@@ -552,10 +677,17 @@ class WorkerClient:
         return result
 
     async def restart_kernel(
-        self, context: ExecutionContext, language: Language = "python", run: str | None = None
+        self,
+        context: ExecutionContext,
+        language: Language = "python",
+        run: str | None = None,
+        *,
+        only_if_absent: bool = False,
     ) -> KernelInfo:
         """Restart the session's kernel of ``language``, or ``run``'s own."""
-        request = KernelRestartRequest(context=context, language=language, run=run)
+        request = KernelRestartRequest(
+            context=context, language=language, run=run, only_if_absent=only_if_absent
+        )
         return await self._call("POST", "/v1/kernels/restart", KernelInfo, request)
 
     async def close_session(
@@ -620,9 +752,25 @@ class WorkerClient:
             ) from exc
 
     async def verified_artifact_content(
-        self, reference: ArtifactRef, *, max_bytes: int = MAX_ARTIFACT_BYTES
+        self, reference: ArtifactRef, *, max_bytes: int = 8 * 1024 * 1024
     ) -> bytes:
         """Fetch exact project/hash/size-bound bytes, with total deadline and hard cap."""
+        data = bytearray()
+
+        async def write(chunk: bytes) -> None:
+            data.extend(chunk)
+
+        await self.stream_artifact_content(reference, write, max_bytes=max_bytes)
+        return bytes(data)
+
+    async def stream_artifact_content(
+        self,
+        reference: ArtifactRef,
+        write: Callable[[bytes], Awaitable[None]],
+        *,
+        max_bytes: int = MAX_ARTIFACT_BYTES,
+    ) -> None:
+        """Verify a pinned download into a bounded sink; partial sinks are never committed."""
         try:
             snapshot = ArtifactSnapshot.model_validate(reference.model_dump())
         except (ValidationError, UnicodeError) as exc:
@@ -659,15 +807,17 @@ class WorkerClient:
                     raise WorkerAPIError(
                         ErrorKind.INTERNAL, "encoded artifact transfer is unsupported"
                     )
-                data = await _bounded_body(response.content, snapshot.size)
-                if (
-                    len(data) != snapshot.size
-                    or hashlib.sha256(data).hexdigest() != snapshot.sha256
-                ):
+                size, digest = 0, hashlib.sha256()
+                async for chunk in response.content.iter_chunked(512 * 1024):
+                    size += len(chunk)
+                    if size > snapshot.size:
+                        raise WorkerAPIError(ErrorKind.INTERNAL, "artifact exceeds pinned size")
+                    digest.update(chunk)
+                    await write(chunk)
+                if size != snapshot.size or digest.hexdigest() != snapshot.sha256:
                     raise WorkerAPIError(
                         ErrorKind.INTERNAL, "artifact content fails exact size/hash verification"
                     )
-                return data
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE, "artifact content transport failed"

@@ -57,10 +57,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, MutableSequence, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, replace
-from itertools import accumulate
+from dataclasses import dataclass, field, replace
+from itertools import accumulate, chain
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, KernelInfo
@@ -72,20 +72,23 @@ from sandbox_science.orchestrator.tokens import chars_per_token, estimate, view_
 from sandbox_science.orchestrator.worker_client import dump
 
 from .archive import Archive, Archived, Entry, escape
-from .enrich import Enriched, enrich
+from .collections import Collection
+from .enrich import Enriched, EnrichmentProgress, enrich
 from .geometry import Geometry, geometry
 from .log import PATIENCE, patiently
 from .markers import Judge
+from .memory import UsageCollection
 from .overview import FIRST_SHARE, MIN_PARTS, asked, merge, verify
 from .reads import Read, Register
 from .record import FORMAT, FoldRecord, stubbed
 from .skeleton import skeleton
+from .snapshot import inline
 from .view import Earlier, Unit, View, session_view, settle, spanned
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.digest import Rendered
     from sandbox_science.orchestrator.loop import Transcript
-    from sandbox_science.orchestrator.model import ChatModel, ToolSpec
+    from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
     from sandbox_science.orchestrator.projects import ModelUsage
 
 Json = dict[str, Any]
@@ -120,8 +123,8 @@ class _Running:
     done: Enriched | None = None
     saving: asyncio.Task[None] | None = None
     kept: tuple[Archived, FoldRecord] | None = None
-    asked: int = 0
-    """The tokens each enrichment call is sent, estimated: what a cancelled call counts."""
+    progress: EnrichmentProgress = field(default_factory=EnrichmentProgress)
+    """Only an actual in-flight enrichment call can need a cancellation estimate."""
     parts: tuple[tuple[str, FoldRecord], ...] = ()
     """A merge's parts, oldest first; its ``record`` is the overview as code built it."""
 
@@ -137,6 +140,7 @@ class Folder(TurnHook):
         context: ExecutionContext,
         *,
         run: str,
+        parent: str | None = None,
         view: View,
         start: Geometry,
         ceiling: int,
@@ -153,6 +157,8 @@ class Folder(TurnHook):
         switched: tuple[str, int] | None = None,
         former: ChatModel | None = None,
         carried: tuple[str, str] | None = None,
+        admit: Callable[[Sequence[Message], Sequence[ToolSpec]], Awaitable[bool]] | None = None,
+        release: Callable[[], None] | None = None,
         wait: float = WAIT,
         clock: Clock = SYSTEM_CLOCK,
         patience: float = PATIENCE,
@@ -170,8 +176,10 @@ class Folder(TurnHook):
         this run applies at its start (CM-24a): the run lists it among its folds. ``events``
         writes a ``fold`` event, ``refit`` tells the skills what a rebuilt view holds
         (CM-29b), and ``specs`` gives the tools the run sends; the harness sets them once
-        it has made them."""
+        it has made them. ``admit`` reserves allowance before each narrative call,
+        and ``release`` clears its in-flight hold after the call settles."""
         self.archive, self.context, self.run = archive, context, run
+        self.parent = parent
         self.view, self.start, self.ceiling, self.chunk = view, start, ceiling, chunk
         self.calls, self.runs, self.earlier, self.kernels = (
             tuple(calls),
@@ -180,6 +188,7 @@ class Folder(TurnHook):
             kernels,
         )
         self.model, self.exists, self.wait, self.digest = model, exists, wait, digest
+        self.admit, self.release = admit, release
         self.judge = judge
         self.consolidating = consolidating
         """A consolidation run's: every current decision in one line, never a stop for
@@ -195,9 +204,10 @@ class Folder(TurnHook):
         self.specs: Callable[[], Sequence[ToolSpec]] = tuple
         self.geometry: Geometry | None = None
         self.running: _Running | None = None
-        self.folds: list[Json] = []
-        self.rebuilds: list[Json] = []
-        self.spent: list[Json] = []
+        scope = (context.project_id, context.session_id, run)
+        self.folds: MutableSequence[Json] = Collection[Json](archive.control, scope, "folds")
+        self.rebuilds: MutableSequence[Json] = Collection[Json](archive.control, scope, "rebuilds")
+        self.spent: MutableSequence[Json] = Collection[Json](archive.control, scope, "fold_calls")
         """Each enrichment call's usage, as the run's costs count it."""
         self.weak = 0
         self.overflows = 0
@@ -243,7 +253,12 @@ class Folder(TurnHook):
         return self.weak >= BREAKER
 
     def per_token(self, run: RunView) -> float:
-        return chars_per_token([*self.calls, *run.usage])
+        return chars_per_token(
+            chain(
+                self.calls,
+                run.usage.recent() if isinstance(run.usage, UsageCollection) else run.usage,
+            )
+        )
 
     def tokens(self, run: RunView) -> int:
         """The view's tokens before the next call (CM-28)."""
@@ -258,13 +273,20 @@ class Folder(TurnHook):
         try:
             yield
         finally:
-            if (running := self.running) is not None and running.task is not None:
-                running.task.cancel()
-                with contextlib.suppress(BaseException):
-                    await running.task
-                if running.saving is not None:  # a ready fold is kept (CM-24a)
-                    with contextlib.suppress(BaseException):
-                        await running.saving
+            await self._settle_running()
+
+    async def _settle_running(self) -> None:
+        running = self.running
+        if running is None or running.task is None:
+            return
+        if not running.task.done():
+            running.task.cancel()
+        with contextlib.suppress(BaseException):
+            await running.task
+        self._count_cancelled(running)
+        if running.saving is not None:  # a ready fold is kept (CM-24a)
+            with contextlib.suppress(BaseException):
+                await running.saving
 
     async def before_call(self, transcript: Transcript) -> bool:
         if self.geometry is None:
@@ -348,19 +370,18 @@ class Folder(TurnHook):
     def _cap(self, transcript: Transcript) -> None:
         """After a context error: the ceiling no larger than the largest input the model
         took in this run, which it is known to take (CM-43)."""
-        taken = [usage.input_tokens for usage in transcript.usage if usage.input_tokens]
-        if self.learned is not None:  # what an earlier run learned the model takes
-            taken.append(self.learned)
-        if self.geometry is None or not taken or max(taken) >= self.geometry.ceiling:
+        largest = max((usage.input_tokens or 0 for usage in transcript.usage), default=0)
+        largest = max(largest, self.learned or 0)
+        if self.geometry is None or not largest or largest >= self.geometry.ceiling:
             return
-        capped = geometry(max(taken), self.geometry.prompt, self.chunk, self.start.shares)
+        capped = geometry(largest, self.geometry.prompt, self.chunk, self.start.shares)
         if capped.refused() is not None:  # a report too small to be the model's limit
             return
-        self.geometry, self.capped = capped, max(taken)
+        self.geometry, self.capped = capped, largest
         if self.on_cap is not None:
-            self.on_cap(max(taken))
+            self.on_cap(largest)
         _log.warning(
-            "run %s caps its ceiling at %d tokens after a context error", self.run, max(taken)
+            "run %s caps its ceiling at %d tokens after a context error", self.run, largest
         )
 
     async def model_returned(self, run: RunView) -> None:
@@ -425,7 +446,8 @@ class Folder(TurnHook):
         record, rows = found
         per_token = self.per_token(transcript)
         running = _Running(record, tuple(rows))
-        running.asked = before = self.tokens(transcript)
+        before = self.tokens(transcript)
+        running.progress.baseline_input_tokens = before
         running.task = asyncio.create_task(
             self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
         )
@@ -520,6 +542,13 @@ class Folder(TurnHook):
             self.spent.append(usage.model_dump(mode="json"))
 
         parts = running.parts
+        from sandbox_science.orchestrator.model import GatewayModel
+
+        if isinstance(model, GatewayModel):
+            model = model.for_role("overview" if parts else "fold")
+        running.progress.canonical_intent = (
+            isinstance(model, GatewayModel) and model.durable_intents
+        )
         framing, shown = (
             (FOLD_OVERVIEW, asked(running.record, parts)) if parts else (FOLD_ENRICH, None)
         )
@@ -535,9 +564,20 @@ class Folder(TurnHook):
                 spent=spent,
                 framing=framing,
                 shown=shown,
+                admit=self.admit,
+                release=self.release,
+                progress=running.progress,
             )
             if parts and (why := verify(running.done.record, [r for _, r in parts])) is not None:
-                running.done = Enriched(running.record, running.done.calls, why)
+                attempts = running.done.attempts
+                if attempts and attempts[-1]["outcome"] == "accepted":
+                    attempts = (
+                        *attempts[:-1],
+                        {**attempts[-1], "outcome": "overview_validation_failed"},
+                    )
+                running.done = replace(
+                    running.done, record=running.record, failed=why, attempts=attempts
+                )
         except Exception as error:  # the fold stands, skeleton-only
             _log.warning("the enrichment of run %s failed: %r", self.run, error)
             failed = f"it failed ({type(error).__name__})"
@@ -589,11 +629,11 @@ class Folder(TurnHook):
             if task is not None:
                 with contextlib.suppress(BaseException):
                     await task
+        self._count_cancelled(running)
         if running.kept is not None:
             await self._applied(transcript, before, running.kept, running.rows, running.done)
             return
         if running.done is None:
-            self.spent.append(_cancelled(running))
             done = Enriched(running.record, (), "it was not ready")
         else:
             done = replace(
@@ -619,7 +659,13 @@ class Folder(TurnHook):
             native_format=FORMAT,
         )
         row = await patiently(
-            self.archive, self.context, self.run, entry, patience=self.patience, clock=self.clock
+            self.archive,
+            self.context,
+            self.run,
+            entry,
+            parent=self.parent,
+            patience=self.patience,
+            clock=self.clock,
         )
         return row, record
 
@@ -655,6 +701,8 @@ class Folder(TurnHook):
             made["reason"] = (
                 f"{'built by code' if record.parts else 'skeleton-only'}: {done.failed}"
             )
+        if done is not None and done.attempts:
+            made["attempts"] = list(done.attempts)
         if done is not None and done.proposed is not None:
             made["proposals"] = done.proposed
         self.folds.append(made)
@@ -672,6 +720,7 @@ class Folder(TurnHook):
             judge=self.judge,
             digest=digest,
             consolidating=self.consolidating,
+            scope_run=self.run if self.parent is not None else None,
         )
 
     def _digested(self, per_token: float) -> Rendered | None:
@@ -780,9 +829,17 @@ class Folder(TurnHook):
             await self._rejected(record, why)
             return
         first, last = record.first[0], record.last[0]
-        rows = await threaded(spanned, self.archive, self.context, first, last)
+        rows = await threaded(
+            spanned,
+            self.archive,
+            self.context,
+            first,
+            last,
+            run=self.run if self.parent is not None else None,
+        )
         running = _Running(record, tuple(rows), parts=tuple(due))
-        running.asked = before = self.tokens(transcript)
+        before = self.tokens(transcript)
+        running.progress.baseline_input_tokens = before
         running.task = asyncio.create_task(
             self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
         )
@@ -816,6 +873,7 @@ class Folder(TurnHook):
             self.archive,
             self.context,
             run=self.run,
+            parent=self.parent,
             kernels=self.kernels,
             patience=self.patience,
             clock=self.clock,
@@ -854,15 +912,17 @@ class Folder(TurnHook):
         running = self.running
         if running is not None and running.task is not None and running.kept is None:
             running.task.cancel()  # the run ended: so does its fold (CM-24a)
-            if running.done is None:  # a call was in flight; those returned are counted
-                self.spent.append(_cancelled(running))
+            if running.task.done():
+                self._count_cancelled(running)
         if self.geometry is None:
             return None
         found: Json = {
             "geometry": self.geometry.summary(),
-            "folds": self.folds,
-            "rebuilds": self.rebuilds,
-            "calls": self.spent,
+            "folds": inline(self.folds) or [],
+            "folds_total": len(self.folds),
+            "rebuilds": inline(self.rebuilds) or [],
+            "calls": inline(self.spent) or [],
+            "calls_total": len(self.spent),
             "weak_folds": self.weak,
         }
         if self.capped is not None:
@@ -877,12 +937,23 @@ class Folder(TurnHook):
             found |= {"stopped": self.stopped, "detail": self.detail}
         return found
 
+    def _count_cancelled(self, running: _Running) -> None:
+        """Count a stopped dispatch once; admission and answer validation do not count."""
+        progress = running.progress
+        if (
+            progress.inflight_input_tokens is not None
+            and not progress.canonical_intent
+            and not progress.counted
+        ):
+            self.spent.append(_cancelled(progress.inflight_input_tokens))
+            progress.counted = True
 
-def _cancelled(running: _Running) -> Json:
+
+def _cancelled(input_tokens: int) -> Json:
     """The usage of an enrichment call cancelled before it returned, which the gateway
     never reported: its input estimated, as the view it was sent, and so marked (RS-6a);
     its cost unknown."""
-    return {"cancelled": True, "estimated": True, "input_tokens": running.asked, "cost": None}
+    return {"cancelled": True, "estimated": True, "input_tokens": input_tokens, "cost": None}
 
 
 def span(units: Sequence[Unit], shape: Geometry, per_token: float) -> int:

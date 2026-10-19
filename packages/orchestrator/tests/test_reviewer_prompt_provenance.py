@@ -152,6 +152,7 @@ async def test_actual_multi_turn_input_is_reserved_before_each_call(store):
             assert json.loads(messages[1]["content"]) == {
                 "review": review,
                 "instruction": "Read review_manifest first. Check only this pinned snapshot.",
+                "chronological_coverage": "complete",
             }
             with sqlite3.connect(documents.path) as db:
                 call, answered = db.execute(

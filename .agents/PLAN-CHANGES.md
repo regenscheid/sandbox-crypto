@@ -1,14 +1,72 @@
 # Plan changes
 
+## 2026-10-19
+
+- Pull-request tests now give the 14,000-test general tiers an 18-minute diagnostic deadline and run each process-heavy staging integration module in its own 10-minute, single-worker shard. Fast and general slow retain work-level balancing. Synthetic transport tests apply their deliberately short timeout only after the executor handshake, so runner scheduling cannot turn a transfer-cancellation test into an unrelated protocol failure.
+- Main/orchestrator, delegated-agent and consistency-reviewer alias and reasoning effort are now independently configurable per project from the GUI. New trees freeze the trusted deployment profiles; children and ordinary Resume retain them. The reviewer defaults to `medium`, while the acceptance lab used Sol/max for research and Luna/medium for review.
+- The completion campaign finished within the $150 authorization at $24.56566378 observed. Live recovery proved parent/child concurrency, downward correction, upward final handback, full child-history retrieval, plan/document/ledger reconciliation, narrative folding and reviewer-led fixes without duplicate child work. Frozen Python passed 14,524/50 skipped; web passed 2,239. The isolated lab was fully archived and removed.
+
+## 2026-10-18, completion campaign
+
+- Owner requests completion of all six remaining items, including real OpenShell crash recovery, narrative/diagnostic qualification, time/storage and root resource policy, captured context/indexed history, and workspace browser refinements. The new **$150 aggregate testing authorization** supersedes the earlier pending $75 proposal; preserve personal and SNOVA instances. [Acceptance checklist](docs/agent-reports/completion-campaign-2026-10-18.md).
+
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
+
+## 2026-10-18
+
+- Resource check-ins now support durable parent turn decisions and exact USER +10,000,000-token approvals, retaining new 20,000,000-token defaults and existing explicit settings. Live context inspection starts at recent activity with separate auxiliary-call provenance. The scientific evaluation is prepared and awaits its separate paid-run approval.
+- The owner requested the remaining live-timeline, adaptive-resource and scientific-quality work. Reuse existing usage/events for bounded live context views; begin resource renewal with durable parent check-ins and turn allowances, retaining explicit USER approval for each additional 10,000,000 tokens. Validate reviewer correction and folded-context recall against a reproducible scientific oracle before claiming research quality.
+
+- Context inspection now follows immutable same-agent continuation identity, with separate parent/child scopes, cursor-based automatic search, bounded per-click work and abortable requests. Sparse searches first bound their session index slice; unsaved attempts are labelled without broken links ([spec](../docs/specs/context-inspector.md)).
+- Add actual subprocess-death acceptance at final save/ACK/work-finish and child ledger/receipt boundaries, reusing public store operations and excluding model/worker calls. Keep this distinct from OpenShell/host restart qualification.
+
+- Lost-kernel recovery now has a narrow local replay path: journal complete opt-in literal Python cells, fence unresolved reconstruction across main work, and require an explicit decision for other state. After accepted loss, clear the lineage without starting an empty kernel; live worker qualification remains open (D87).
+- The owner reaffirmed that unknown model charges must not stop local run admission. The optional daily gate compares observed costs plus explicit reservations with its unchanged cap; unknown calls remain visible and the upstream LiteLLM budget is the primary spending control (D88, RS-6a).
+- **D35 reviewer effectiveness follow-up** (SNOVA audit; [consistency review](../docs/specs/consistency-review.md), CR-2 and CR-34): bounded, contiguous evidence spans replace repeated oversized windows; capped retries shrink, partial delegated spans retain provenance, and terminal holds catch up within a configured bound. Clean global certification and idle backlog draining remain separate work.
+- The reviewer audit found missed boundary contradictions and failed-span retry storms. Adjacent windows now carry bounded exact prior evidence; clean prefixes can pass their own spans, but inconclusive historical spans prevent a session-wide pass. Repeated failures defer without advancing the watermark (CR-2, CR-34 amended).
 
 ## 2026-10-17
 
 - **Research-tree steering** (the owner, D87; [PD-44](../docs/specs/plans-and-delegation.md)): the root routes user messages among its own work, a new or revised plan, child assignments, and feedback on research records. Direct parent-child messages are durable and delivered at saved-run safe points; an ended recipient causes a delivery-failure notice to the root.
+- The owner requires configurable model reasoning effort by role and normally uses `max` for research; the live trial had inherited `medium`. Requested profiles are now pinned across Resume, with explicit operator effort overrides audited without rewriting original inputs (`43889b45`); live provider verification remains pending.
+- Extended cryptanalysis must iterate beyond initial pilots/checklists. MAIN/planning/stock guidance now distinguishes bounded tasks from extended exploration; requested skill workflows also require reading applicable supporting references and applying their procedures, not just declaring Discover mode.
+- The owner clarified that the shared $400 research figure may be tracked locally as an estimate while LiteLLM enforces spending. Unknown model charges remain visible, but no longer block explicit tree Resume by themselves; ten bounded HTTP attempts no longer depend on per-attempt local admission (D88, RS-6d/e).
+
+- The owner requested streaming model requests and ten increasingly delayed attempts after SNOVA's 524 timeouts. The GPT Responses adapter now requests SSE and commits only a matching terminal response; a short live gateway probe and isolated `141ba43e` image deployment passed. At that point ten-attempt handling awaited per-attempt accounting; the clarification above supersedes that dependency. Long pre-response behavior still needs acceptance (D88, RS-6e).
+
+- The owner clarified that an unknown provider price should not indefinitely block SNOVA research when the operator has made an explicit conservative reservation. A legacy fold estimate without an intent ID now requires an exact audited USER link to that reserved intent; unrelated unknowns and known charges remain counted ([run service](../docs/specs/run-service.md), [recovery controls](../docs/specs/recovery-controls.md)).
+
+- The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; narrow USER cumulative token renewal is implemented, while broader parent policy remains planned.
+
+- Real SNOVA research reached the 8 MiB active-payload bound before token folding because provider responses echoed tool schemas and usage attribution. Preserve originals in the archive, project active native replay fields, and raise the per-agent active backstop to 64 MiB at the owner's request.
+- Local recovery acceptance exposed suspended environments at explicit Resume: prepare the recorded worker before its retention claim, without recreating missing environments or dispatching research before readiness.
+- Local Babbage acceptance may use the owner's authorized arrcodex models, with a $200 total ceiling for SNOVA planning, literature/MCP/PDF, Sage, delegation and long-context trials. Expose the existing context ceiling through the confined launcher for bounded fold/recovery tests; retain the default and provider cap ([continuity](../docs/specs/research-continuity.md)).
+
+- **Agent context inspection (D80):** the owner requested a secondary embedded debug dialog for every agent, including the orchestrator: usage/fold timeline, cache performance, current-view provenance and searchable original history ([proposal](../docs/specs/context-inspector.md)).
+
+- **Larger research files (D79/D80):** 100 MiB uploads with 2 GiB/project and 8 GiB/store retention; larger worker writes and shared upload copies, retaining ordinary read limits. Schema 67 and worker protocol 9 require coordinated upgrades.
+
+- **UI review refinements (D80):** research pane drags continuously up to 50% of the window; Documents gets a searchable/filterable library and named tabs retaining drafts. The owner accepted the ledger's list/detail and optional board direction, requested persistent session navigation, and requested broader screen refinement. A connected [workspace browsers proposal](../docs/specs/workspace-browsers.md) prioritizes Skills and MCP services; production adaptation remains pending.
+
+- **Return to the UI (D80 amended):** left project/session navigation, central chat with uploads, and an optional documents/editor/plan/agent pane. OpenScience web UI is an Apache-2.0 interaction reference; originals are immutable USER records and sandbox copies go through the worker API ([contract](../docs/specs/research-ui.md)).
+
+- Resume claims atomically admit only their selected tree's held, unconsumed inputs; the workspace no longer globally releases other trees or terminal input ([tree Resume](../docs/specs/tree-resume.md)).
+
+- Preserve consolidation context across Resume and service replacement; ledger changes clear the prerequisite but do not authorize paid continuation. Canonical receipts replace final-save-only delivery ([run service](../docs/specs/run-service.md)).
+
+- **Initial recovery is explicit:** process restart and `replace-orchestrator` preserve unfinished work but do not authorize another paid call. Resume claims a new epoch, reconciles original effects and schedules descendants before parents ([contract](../docs/specs/research-continuity.md#explicit-tree-recovery-coordinator)).
+- **Durable boundary and bounded history:** the normal launcher uses a separate agent VM with fixed scoped host capabilities; historical collections and exact paid-call links replace whole-run in-memory copies ([confinement](../docs/specs/orchestrator-confinement.md), [accounting](../docs/specs/auxiliary-usage.md)). Provider cache ordering remains unchanged pending live measurements.
+- **Observed model usage (D87 implementation refinement):** save response usage/cost atomically with the archive and use its observation time for the daily budget, so multi-day runs keep counting. Legacy fallback retains run-start time; pre-dispatch model intent and unknown charges remain recovery work ([contract](../docs/specs/research-continuity.md#observed-model-usage-increment)).
+
 
 ## 2026-10-16
 
 Decisions of the owner, later the same day (after #467):
+
+- **Research foundations before the UI redesign:** parents retain their children until the work is finished, and interrupted work must be resumable at every level (D87). The [continuity design](../docs/specs/research-continuity.md) is a draft; bounded memory and delegated folding remain unbuilt, and automatic crash resume is undecided.
+- **Additional foundation review items:** the owner asked to consider summary placement for cache reuse, trimming stored tool output, and generating the skills variable blocklist from installed tools. The continuity draft records the current implementation, proposed safeguards and acceptance measurements (RC-20 to RC-24); this is a review request, not a decision to reorder context or delete evidence.
+- **Resume through the orchestrator:** the owner clarified D87: one orchestrator action must recover the selected tree without restarting each agent separately. The [OpenShell review](docs/agent-reports/openshell-foundations-review-2026-10-16.md) adds proposed work for idle suspension and uncertain creation cleanup; automatic crash recovery is still undecided.
+- **Separate orchestrator sandbox (D47, accepted by the owner):** run the agent-facing orchestrator in its own restricted OpenShell sandbox, separate from research workloads, with trusted worker/OpenShell management outside both. Parent and child model loops may share that service. Add scoped service access, durable state and the UI/store boundary before launcher integration; verify orchestrator replacement and one-action tree resume. This is agreed architecture, not implemented normal-launcher behavior.
 
 - **The figures spec is approved as it was drafted,** with its eight questions answered as recommended (#436; [figures](../docs/specs/figures.md); [specs README](../docs/specs/README.md), question 19). The build plan is in the [BACKLOG](BACKLOG.md#repository); F1 to F5, F9 to F11 are built.
 - **The response-loop guard** (#489; [consistency review](../docs/specs/consistency-review.md), CR-16, CR-21, CR-26, CR-29 as amended). **A:** a rebuttal that cites recorded evidence and that the next review rejects leaves the finding `challenged`: "the author's rebuttal stands and carries more weight than the reviewer's", the reviewer's reason is visible context, not a block, no round follows, and the orchestrator is told once. **B:** the session's earlier findings reach a run as counts, and the orchestrator may follow one up; only the open findings its own work raised interrupt it.
@@ -19,7 +77,7 @@ Decisions of the owner, later the same day (after #467):
 
 Decisions of the coordinator, each reversible by the owner:
 
-- **Calls with no gateway cost are priced from `/model/info`** and marked `model_info`; with a daily limit set, any unpriced run call in the last 24 hours counts the limit as reached ([run service](../docs/specs/run-service.md), RS-6a as amended; #476). The same holds for the reviewer's, watcher's and import pass's calls, whose cost source is recorded (#477, migration 53); a call past a size tier is priced at that tier (#491, #494).
+- **Calls with no gateway cost are priced from `/model/info`** and marked `model_info`; a call past a size tier is priced at that tier (#491, #494). The same holds for the reviewer's, watcher's and import pass's calls, whose cost source is recorded (#477, migration 53). The earlier rule that an unpriced call alone exhausts the daily limit is superseded by the owner's 2026-10-18 decision above ([run service](../docs/specs/run-service.md), RS-6a).
 - **No reviewer configured means reviews are off,** and the run says so once ([consistency review](../docs/specs/consistency-review.md), CR-35 as amended; #475).
 - **The meaning cutoff is set by model family** (`text-embedding-3-*`: 0.34; #474; [skills](../docs/SKILLS.md)). Per-pack thresholds (SK-34) are still not built.
 - **A fold proposal the user accepts keeps its own basis,** shown as "accepted by the user"; the basis `user` is only for wording the user wrote or edited (#479, review).
@@ -62,7 +120,7 @@ Decisions of the coordinator on the ledger's research state, from #440's reviews
 
 Decision of the owner on pausing work:
 
-- **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md#open-questions)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md). The approval above lifted the pause.
+- **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md). The approval above lifted the pause.
 - **Direction for context management.** The owner uses both Claude and GPT models, so the approach must work for both. The owner prefers an existing library known to be good for long research sessions; failing that, the project follows closely how Claude Science and OpenScience manage context, rather than designing its own. A survey of libraries and a close study of those systems is under way, and the owner decides from its result. No live evaluation is planned.
 
 Decisions of the owner on the skills spec's questions 15 and 16, with the spec's approval (#373):
@@ -370,3 +428,24 @@ Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
 - **Tier 1 licenses** add PSF-2.0 (typing-extensions) and MIT-0 (cffi); CI checks installed licenses and generated protobuf code.
 - **Conventions adopted:** pyright strict for `packages/*/src`, standard mode for tests.
 - **Plan snapshots tagged:** `plan-03-pre-review` and `plan-04-reviewed`.
+
+- 2026-10-16: Delegated tasks and checks now share the fold engine with attempt-scoped archive reads and pinned briefs; initially skeleton-only to preserve token-budget accounting ([contract](../docs/specs/research-continuity.md#delegated-folding-contract)). Live role-continuity acceptance remains pending.
+
+- 2026-10-16: Measured 24 offline requests through both production adapters for three context layouts. Moving changed state after history preserves a later-run byte prefix, but folds break it; no observed provider hits, so layout stays unchanged ([report](docs/agent-reports/cache-layout-2026-10-16.md)).
+
+- 2026-10-17: The live parent-limit increment can retain the existing session/environment leases while children finish, before durable continuation identities land. Children receive their configured role turn allowance; finalization waits without model calls and Stop/interruption cleanup remains unchanged ([continuity](../docs/specs/research-continuity.md#parent-waiting-increment)).
+
+- 2026-10-17: Add a narrowly scoped USER recovery token override for paused direct children, preserving their work identity, lifetime usage and project spending cap; parent-authorized resource requests and decisions remain the target ([adaptive resources](../docs/specs/adaptive-research-resources.md)).
+
+- 2026-10-18: D89 proposes bounded automatic Resume for saved model-phase failures using the existing fenced tree path. Clean answers with an active plan still need a distinct durable new-root continuation ([tree Resume](../docs/specs/tree-resume.md)).
+- 2026-10-18: D90 proposes one new-root input per active-plan state after a settled answer; the write rechecks current plan/root and yields to user messages, cancellations and budget gates ([tree Resume](../docs/specs/tree-resume.md)).
+- 2026-10-18: Built-in scientific writing guidance now starts substantial living documents with an annotated outline, drafts by section, checks citations and claim scope, and keeps the current document self-standing; `show_outline` reads its heading hierarchy without loading the full text ([living documents](../docs/LIVING-DOCUMENTS.md)).
+- 2026-10-18: Integrate the Skills browser over the existing authenticated project-skills API: catalog/source/detail views and reviewable future-run loading choices, retaining revision checks and conflict drafts ([workspace browsers](../docs/specs/workspace-browsers.md)).
+- 2026-10-18: The first MCP service browser reads an authenticated project inventory of launcher-provided safe names and purposes and bounded historical run observations; it does not query the proxy, expose credentials/endpoints or assert current health ([workspace browsers](../docs/specs/workspace-browsers.md)).
+- 2026-10-18: Begin the production context inspector on saved attempts with provider-reported per-call usage/cache, saved fold links and exact attempt-scoped SQL search of retained original text. Missing live/current-context measures stay explicitly unavailable rather than inferred from a run preview ([context inspector](../docs/specs/context-inspector.md)).
+- 2026-10-18: Keep long-attempt inspector evidence available when inline run fields compact: page archived usage and fold summaries, bound each search scan with a progress cursor, preserve applied search filters across pages, and read large original messages in project-scoped byte chunks. Live working-context reconstruction and multi-attempt views remain separate work ([context inspector](../docs/specs/context-inspector.md)).
+- 2026-10-18: Amend CM-37 so a delegated parent can retrieve the full archived history of its descendant agents through scoped history tools; independent checks remain own-run only. `history_read` pages oversized fields and saved-file names, and range reads project only visible text so a large native payload does not force extra agent calls ([context management](../docs/specs/context-management.md#layer-5-retrieval)).
+
+- 2026-10-18: Continue child-scoped narrative folding with shared cumulative token accounting, per-attempt reporting-room admission and bounded retry diagnostics. Qualify process-loss recovery and sustained Sage computation in a fresh synthetic OpenShell lab without restarting preserved research; scientific acceptance remains separate.
+
+- 2026-10-18: Live synthetic recovery exposed cleanup overwriting saved model failures as interrupted. Preserve paused/blocked diagnoses during process-loss cleanup; explicit Stop still supersedes unfinished work. Exact-scope automatic Resume now succeeds after a streamed EOF. Fold cancellation accounting settles before saved summaries, and confined calls remain under their canonical intent identity without duplicate estimates.

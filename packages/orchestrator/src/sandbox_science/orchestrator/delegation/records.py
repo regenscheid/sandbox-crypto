@@ -31,6 +31,7 @@ from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.continuity.blueprints import Blueprint, reserve_child
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import (
     CONFLICT,
@@ -39,7 +40,7 @@ from sandbox_science.orchestrator.control.errors import (
     UNAVAILABLE,
 )
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.runstate import close_events
+from sandbox_science.orchestrator.runstate import cancel_requested, close_events
 
 Ended = Literal["returned", "failed", "cancelled", "limit_reached", "interrupted"]
 """How a delegated run ended, as the harness observed it (PD-17)."""
@@ -67,8 +68,25 @@ _OFFERED: Final = (
     "(d.parent = ? OR (? IS NULL AND NOT EXISTS (SELECT 1 FROM delegations AS p "
     "WHERE p.project_id = d.project_id AND p.session_id = d.session_id AND p.run = d.parent)))"
 )
-"""The delegations whose outcomes go to a run (PD-35): ``parent``'s, or without it those
-a main run started, which the session's main runs take; one parameter, twice."""
+"""Normal roots retain the session-wide PD-35 handback contract."""
+_WORK_OFFERED: Final = (
+    "EXISTS (SELECT 1 FROM research_work w WHERE w.project=d.project_id "
+    "AND w.session=d.session_id AND w.work=? AND (EXISTS "
+    "(SELECT 1 FROM research_attempts a WHERE a.project=w.project AND a.session=w.session "
+    "AND a.run=d.parent AND a.work=w.work) OR EXISTS "
+    "(SELECT 1 FROM research_continuations a WHERE a.project=w.project AND a.session=w.session "
+    "AND a.run=d.parent AND a.work=w.work)))"
+)
+_WORK_ACKNOWLEDGED: Final = (
+    "EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=d.project_id "
+    "AND a.session=d.session_id AND a.run=d.acknowledged AND a.work=?)"
+)
+_WORK_RECEIVED: Final = (
+    "EXISTS (SELECT 1 FROM response_receipts r JOIN research_attempts a "
+    "ON a.project=r.project AND a.session=r.session AND a.run=r.run "
+    "WHERE r.project=d.project_id AND r.session=d.session_id AND r.source='delegations' "
+    "AND r.notice=d.delegation_id AND a.work=?)"
+)
 _ON_TRACK: Final = (
     "SELECT delegation_id FROM delegations WHERE project_id = ? AND session_id = ? "
     "AND ended IS NULL AND json_extract(brief, '$.track.track_id') = ?"
@@ -77,15 +95,13 @@ _ON_TRACK: Final = (
 
 TASK_TURNS: Final = 300
 """A task's turns by default (the owner, 2026-10-16: a delegated task does real work)."""
-TASK_TOKENS: Final = 5_000_000
-"""A task's tokens by default, its calls' input and output together. A delegated run does
-not fold: each call sends its whole conversation, up to ``MAX_INPUT_CHARS`` (about 100,000
-tokens), so a task that fills it over a hundred calls uses about this many, mostly read
-from the prompt cache. Its conversation's length, not its tokens, then ends most tasks;
-the tokens bound a runaway one."""
+TASK_TOKENS: Final = 20_000_000
+"""A task's tokens by default, its calls' input and output together. Stored delegated
+runs fold their own context. Tokens still bound total model usage across calls,
+including cached input; they do not count only fresh context."""
 MAX_TURNS: Final = 10_000
 """The most turns a project may give a check or a task."""
-MAX_TOKENS: Final = 50_000_000
+MAX_TOKENS: Final = 1_000_000_000
 """The most tokens a project may give a check or a task."""
 FORMER_DEFAULTS: Final = {"task_tokens": 200_000, "task_turns": 20}
 """A task's limits by default before 2026-10-16. A setting written then holds every
@@ -107,15 +123,29 @@ class DelegationSettings(Contract):
     """How deep its runs may delegate; 0 offers no delegation."""
     cap: int = Field(default=10, ge=1, le=20)
     """Delegated runs a session's tree runs at once."""
-    check_tokens: int = Field(default=150_000, ge=50_000, le=MAX_TOKENS)
+    check_tokens: int = Field(default=TASK_TOKENS, ge=50_000, le=MAX_TOKENS)
     """A check's tokens, at most: a bound on a runaway check (PD-38)."""
-    check_turns: int = Field(default=12, ge=1, le=MAX_TURNS)
-    """A check's turns, at most, and no more than its parent has left."""
+    check_turns: int = Field(default=TASK_TURNS, ge=1, le=MAX_TURNS)
+    """A check's turns, at most, independently of its parent's remaining calls."""
     task_tokens: int = Field(default=TASK_TOKENS, ge=50_000, le=MAX_TOKENS)
     """A task's tokens, at most (PD-11, PD-38): a bound on a runaway task, not on its
     work."""
     task_turns: int = Field(default=TASK_TURNS, ge=1, le=MAX_TURNS)
-    """A task's turns, at most, and no more than its parent has left."""
+    """A task's turns, at most, independently of its parent's remaining calls."""
+    turn_ceiling: int = Field(default=MAX_TURNS, ge=1, le=MAX_TURNS)
+    """Cumulative turns a direct parent may approve; initial explicit turns remain.
+    Lowering this does not revoke an existing recorded grant.
+    """
+    max_token_grant: int = Field(default=MAX_TOKENS, ge=50_000, le=MAX_TOKENS)
+    """Hard ceiling for explicit USER token extensions, separate from initial grants."""
+    research_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
+    """Optional cumulative observed active-time allowance, independent of tool deadlines."""
+    time_ceiling_seconds: int = Field(default=604_800, ge=1, le=31_536_000)
+    storage_bytes: int | None = Field(default=None, ge=1, le=256 * 1024**3)
+    """Optional retained-artifact allowance; not research-VM disk usage."""
+    storage_ceiling_bytes: int = Field(default=64 * 1024**3, ge=1, le=256 * 1024**3)
+    root_resource_renewal: bool = False
+    """Permit audited root self-renewal of soft allowances with persisted progress."""
     models: tuple[Alias, ...] = Field(default=(), max_length=MAX_MODELS)
     """The model aliases a brief may choose (PD-28); none, the default, allows no choice,
     and a brief that names none gets the delegated role's."""
@@ -236,7 +266,14 @@ class DelegationRecords:
             return found
 
     def start(
-        self, project: str, session: str, delegation: Delegation, *, cap: int | None = None
+        self,
+        project: str,
+        session: str,
+        delegation: Delegation,
+        *,
+        cap: int | None = None,
+        blueprint: Blueprint | None = None,
+        operation: str | None = None,
     ) -> None:
         """Write a delegation as its parent starts it. The bounds are checked in the same
         statement that writes it, so that two parents starting at once cannot pass them
@@ -247,6 +284,10 @@ class DelegationRecords:
         track = cast(dict[str, object], found).get("track_id") if isinstance(found, dict) else None
         with self.control.write() as tx:
             db = tx.sql
+            if cancel_requested(db, project, session, delegation.parent):
+                raise ControlError(
+                    CONFLICT, "the parent tree has an explicit Stop; no child starts"
+                )
             try:
                 written = db.execute(
                     "INSERT INTO delegations (delegation_id, project_id, session_id, parent, "  # noqa: S608
@@ -276,6 +317,47 @@ class DelegationRecords:
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the delegation is refused: {error}") from None
             if written == 1:
+                scope = (project, session, delegation.parent)
+                db.execute(
+                    "INSERT INTO run_collections SELECT ?,?,?,?,count(*),? "
+                    "FROM run_collections WHERE project=? AND session=? AND run=? AND collection=?",
+                    (
+                        *scope,
+                        "delegations:started",
+                        _json(delegation.delegation_id),
+                        *scope,
+                        "delegations:started",
+                    ),
+                )
+                if blueprint is not None:
+                    reserve_child(
+                        db, project, session, delegation.run, delegation.parent, blueprint
+                    )
+                if operation is not None:
+                    try:
+                        db.execute(
+                            "INSERT INTO research_observations "
+                            "(project,session,work,kind,identity,observed,detail) "
+                            "SELECT project,session,work,'delegation_operation',?,?,? "
+                            "FROM research_attempts WHERE project=? AND session=? AND run=?",
+                            (
+                                operation,
+                                self.clock.now().timestamp(),
+                                _json(
+                                    {
+                                        "delegation_id": delegation.delegation_id,
+                                        "run": delegation.run,
+                                    }
+                                ),
+                                project,
+                                session,
+                                delegation.parent,
+                            ),
+                        )
+                    except sqlite3.IntegrityError:
+                        raise ControlError(
+                            CONFLICT, "this delegation operation is already admitted"
+                        ) from None
                 return
             busy = db.execute(_ON_TRACK, (project, session, track)).fetchone()
         if busy is not None:
@@ -330,14 +412,22 @@ class DelegationRecords:
             return _one(tx.sql, project, session, delegation_id)
 
     def abandon(
-        self, project: str, session: str, *, parent: str | None = None
+        self,
+        project: str,
+        session: str,
+        *,
+        parent: str | None = None,
+        resume: str | None = None,
     ) -> list[tuple[str, str]]:
         """End a dead tree, in one transaction (PD-40): the session's delegations still
         running, or only those of ``parent``'s tree, its children's and theirs, end
-        ``interrupted``, and every run of those delegations that lacks its ``stopped`` event gets
+        ``interrupted`` (or ``cancelled`` under a durable Stop), and every run lacking its
+        ``stopped`` event gets
         it (``close_events``). Called as a main run starts, when none of the session's
         delegations can be running, and when the run service ends a dead run. The IDs
-        and runs of the delegations it ended."""
+        and runs of the delegations it ended. ``resume`` preserves exactly the new
+        continuation runs that request reserved before its concurrent branches start;
+        older open records are still fenced as dead."""
         now = self.clock.now().astimezone(UTC)
         # ``parent``'s tree: its children, and theirs (PD-15), as their records name them.
         tree = (
@@ -348,18 +438,37 @@ class DelegationRecords:
         with self.control.write() as tx:
             db = tx.sql
             rows = db.execute(
-                f"{tree}UPDATE delegations SET ended = 'interrupted', stopped = 'interrupted', "  # noqa: S608
-                "ended_at = ? WHERE project_id = ? AND session_id = ? AND ended IS NULL "
-                "AND (? IS NULL OR parent IN (SELECT run FROM tree)) RETURNING delegation_id, run",
-                (*values, now.isoformat(), project, session, parent),
+                f"{tree}SELECT delegation_id, run FROM delegations "  # noqa: S608
+                "WHERE project_id = ? AND session_id = ? AND ended IS NULL "
+                "AND (? IS NULL OR parent IN (SELECT run FROM tree)) "
+                "AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM research_continuations p "
+                "WHERE p.project=delegations.project_id AND p.session=delegations.session_id "
+                "AND p.request=? AND p.run=delegations.run)) "
+                "AND NOT EXISTS (SELECT 1 FROM research_child_settlements c JOIN runs r "
+                "ON r.project_id=c.project AND r.session_id=c.session AND r.name=c.run "
+                "WHERE c.project=delegations.project_id AND c.session=delegations.session_id "
+                "AND c.run=delegations.run AND c.settled=0)",
+                (*values, project, session, parent, resume, resume),
             ).fetchall()
+            for delegation_id, run in rows:
+                reason = (
+                    "cancelled" if cancel_requested(db, project, session, run) else "interrupted"
+                )
+                db.execute(
+                    "UPDATE delegations SET ended = ?, stopped = ?, ended_at = ? "
+                    "WHERE project_id = ? AND session_id = ? AND delegation_id = ?",
+                    (reason, reason, now.isoformat(), project, session, delegation_id),
+                )
             unclosed = db.execute(
                 f"{tree}SELECT d.run FROM delegations AS d WHERE d.project_id = ? "  # noqa: S608
                 "AND d.session_id = ? AND (? IS NULL OR d.parent IN (SELECT run FROM tree)) "
+                "AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM research_continuations p "
+                "WHERE p.project=d.project_id AND p.session=d.session_id "
+                "AND p.request=? AND p.run=d.run)) "
                 "AND NOT EXISTS (SELECT 1 FROM run_events AS e "
                 "WHERE e.project_id = d.project_id AND e.session_id = d.session_id "
                 "AND e.run = d.run AND e.kind = 'stopped') ORDER BY d.run",
-                (*values, project, session, parent),
+                (*values, project, session, parent, resume, resume),
             ).fetchall()
             for (run,) in unclosed:
                 close_events(db, project, session, run, now)
@@ -388,12 +497,23 @@ class DelegationRecords:
         return [_delegation(row) for row in reversed(rows)], int(total)
 
     def handbacks(
-        self, project: str, session: str, *, parent: str | None = None
+        self, project: str, session: str, *, parent: str | None = None, work: str | None = None
     ) -> list[Delegation]:
         """The session's ended delegations that no run has acknowledged, oldest first:
         ``parent``'s, or without it those a main run started, which the session's next
-        main run takes (PD-35); a delegated run's children hand back to it alone."""
+        main run takes (PD-35); a delegated run's children hand back to it alone.
+        Explicit continuations instead select ``work``'s parent attempts and exclude
+        only that responsibility's acknowledgements or atomic response receipts."""
         with self.control.read() as tx:
+            if work is not None:
+                rows = tx.sql.execute(
+                    f"SELECT {_COLUMNS} FROM delegations AS d "  # noqa: S608 - fixed predicates
+                    "WHERE project_id=? AND session_id=? AND ended IS NOT NULL "
+                    f"AND {_WORK_OFFERED} AND NOT {_WORK_ACKNOWLEDGED} AND NOT {_WORK_RECEIVED} "
+                    "ORDER BY ended_at,delegation_id LIMIT ?",
+                    (project, session, work, work, work, PAGE),
+                ).fetchall()
+                return [_delegation(row) for row in rows]
             rows = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM delegations AS d WHERE project_id = ? AND session_id = ? "  # noqa: S608
                 f"AND acknowledged IS NULL AND ended IS NOT NULL AND {_OFFERED} "
@@ -421,11 +541,22 @@ class DelegationRecords:
         run: str,
         *,
         parent: str | None = None,
+        work: str | None = None,
     ) -> None:
         """Mark ended delegations' outcomes received by ``run``, once its record is saved:
         only those ``handbacks`` offers it, ``parent``'s or without it a main run's, so
-        that a run that read another's outcome does not take it from that run (PD-35)."""
+        that a run that read another's outcome does not take it from that run (PD-35).
+        A continuation acknowledges only children of its stable ``work``; receipt
+        rows remain authoritative even if final-save acknowledgement never executes."""
         with self.control.write() as tx:
+            if work is not None:
+                tx.sql.executemany(
+                    "UPDATE delegations AS d SET acknowledged=? WHERE d.project_id=? "  # noqa: S608
+                    "AND d.session_id=? AND d.delegation_id=? AND d.ended IS NOT NULL "
+                    f"AND d.acknowledged IS NULL AND {_WORK_OFFERED}",
+                    [(run, project, session, identity, work) for identity in ids],
+                )
+                return
             tx.sql.executemany(
                 "UPDATE delegations AS d SET acknowledged = ? WHERE d.project_id = ? "  # noqa: S608
                 "AND d.session_id = ? AND d.delegation_id = ? AND d.ended IS NOT NULL "
@@ -437,6 +568,11 @@ class DelegationRecords:
 def _settings(db: sqlite3.Connection, project: str) -> DelegationSettings:
     depth, stored = _stored(db, project)
     return DelegationSettings.model_validate({**stored, "depth": depth})
+
+
+def settings_in(db: sqlite3.Connection, project: str) -> DelegationSettings:
+    """Read the current project limits inside a caller's control transaction."""
+    return _settings(db, project)
 
 
 def _stored(db: sqlite3.Connection, project: str) -> tuple[int, dict[str, object]]:

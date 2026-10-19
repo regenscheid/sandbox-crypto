@@ -157,6 +157,9 @@ class Suspender:
 
     async def _idle(self, info: EnvironmentInfo) -> bool:
         environment_id = info.environment_id
+        if self.environments.protected(environment_id):
+            self._busy[environment_id] = self.clock.monotonic()
+            return False
         activity = await self.manager.activity(environment_id)
         now = self.clock.monotonic()
         if activity is None:
