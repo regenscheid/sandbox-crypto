@@ -61,7 +61,9 @@ def test_parent_watcher_ends_the_session_after_parent_loss_or_stop(
         else:
             os.close(write_fd)
             write_fd = -1
-        assert process.wait(timeout=10) == 70
+        # A Darwin session teardown may signal the wrapper as well. The
+        # contract is that its child cannot remain in the session.
+        assert process.wait(timeout=10) in (70, -signal.SIGTERM, -signal.SIGKILL)
         deadline = time.monotonic() + 5
         while child_pid in members(process.pid) and time.monotonic() < deadline:
             time.sleep(0.05)
