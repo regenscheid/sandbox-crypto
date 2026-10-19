@@ -21,6 +21,7 @@ from aiohttp import WSMsgType, web
 from pydantic import Field, JsonValue, TypeAdapter
 
 from sandbox_science.contracts.model import Contract, Counter
+from sandbox_science.orchestrator.aio import owned
 from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 
 _log = logging.getLogger(__name__)
@@ -117,6 +118,12 @@ class Channel:
         self._received: set[int] = set()
         self._handling: set[asyncio.Task[None]] = set()
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+
+    @property
+    def closed(self) -> bool:
+        """The peer is disconnected, even while admitted handlers still drain."""
+        return self._closed
 
     async def request(
         self, capability: Capability, payload: JsonValue, *, timeout: float | None = 60
@@ -153,6 +160,8 @@ class Channel:
 
     async def receive(self, text: str) -> None:
         """Validate a frame before dispatch; malformed frames close the connection."""
+        if self._closed:
+            raise TransportError("unavailable", "control connection closed")
         if len(text.encode()) > MAX_FRAME_BYTES:
             raise TransportError("invalid_request", "control frame exceeds its byte bound")
         frame = _FRAME.validate_json(text)
@@ -236,6 +245,11 @@ class Channel:
         for pending in self._pending.values():
             if not pending.done():
                 pending.set_exception(TransportError("unavailable", "control connection closed"))
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._drain())
+        await owned(self._close_task)
+
+    async def _drain(self) -> None:
         if self._handling:
             await asyncio.gather(*tuple(self._handling), return_exceptions=True)
 

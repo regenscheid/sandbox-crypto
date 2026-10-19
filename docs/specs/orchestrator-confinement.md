@@ -38,6 +38,16 @@ closes their owning delegation lease, so that draining does not form a lock cycl
 An in-progress child admission must settle before that lease closes. The connection
 remains occupied throughout this drain; a replacement deadline can expire while a
 long worker call is still settling, and replacement can be retried afterward.
+Mailbox observation waits are interrupted on disconnect without consuming messages;
+they do not hold cleanup until their requested timeout. Effectful operations and
+job waits that may own watcher/recording work still drain. Every entered hook lease
+is closed even when another lease's exit fails, and repeated cancellation joins
+the same cleanup instead of abandoning its handlers or resources.
+
+`/health` reports `runtime_connected=false` as soon as transport teardown starts.
+Its separate `runtime_draining=true` retains the exclusive owner until handlers,
+attempts and services have finished cleanup. Replacement waits for both flags to
+clear, and a second connection is refused while either ownership phase is active.
 
 ## Capability operations
 

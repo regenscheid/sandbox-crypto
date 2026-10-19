@@ -8,7 +8,7 @@ import copy
 import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
@@ -119,6 +119,8 @@ class Prepared:
         self._lock = asyncio.Lock()
         self._closing = False
         self._child_wait = False
+        self._passive_wait: asyncio.Task[Any] | None = None
+        self._close_task: asyncio.Task[None] | None = None
 
     def sync(self, state: LoopState) -> Transcript:
         """Apply loop metadata while retaining historical payloads at the host store."""
@@ -444,7 +446,10 @@ class Prepared:
             if self._closing:
                 raise TransportError("denied", "attempt capability is closing")
             if kind is Capability.TOOL:
-                self._child_wait = typed(ToolRequest, value).call.name == "wait_delegations"
+                name = typed(ToolRequest, value).call.name
+                self._child_wait = name == "wait_delegations"
+                if name == "wait_agent_message":
+                    self._passive_wait = asyncio.current_task()
             elif kind in (Capability.CLOSING, Capability.FINISHING):
                 slot = typed(HookRequest, value).slot
                 self._child_wait = (
@@ -454,20 +459,35 @@ class Prepared:
                 yield
             finally:
                 self._child_wait = False
+                self._passive_wait = None
 
     async def close(self) -> None:
         """Drain admitted effects before the harness releases per-attempt resources."""
         self._closing = True
-        if self._child_wait:
-            # A child wait holds _lock, but its delegation lease owns the child
-            # tasks that must settle to release that lock. An active admission
-            # cannot take this path: it must finish before the lease snapshots it.
-            for slot in reversed(tuple(self.leases)):
-                if self.hooks[slot].name == DELEGATIONS.id:
-                    await self.leases.pop(slot).__aexit__(None, None, None)
-        async with self._lock:
-            for slot in reversed(tuple(self.leases)):
-                await self.leases.pop(slot).__aexit__(None, None, None)
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close())
+        await owned(self._close_task)
+
+    async def _close(self) -> None:
+        # This wait neither consumes messages nor owns worker effects. Otherwise
+        # a disconnected runtime holds the attempt lock until its 300s timeout.
+        # Do not generalize to all reads: job waits can own watcher/recording work.
+        if self._passive_wait is not None:
+            self._passive_wait.cancel()
+        try:
+            if self._child_wait:
+                # A child wait holds _lock, but its delegation lease owns the child
+                # tasks that must settle to release that lock. An active admission
+                # cannot take this path: it must finish before the lease snapshots it.
+                for slot in reversed(tuple(self.leases)):
+                    if self.hooks[slot].name == DELEGATIONS.id:
+                        await self.leases.pop(slot).__aexit__(None, None, None)
+        finally:
+            # One failing lease must not leave the other async generators to
+            # GC finalization after their stores/resources have been closed.
+            async with self._lock, AsyncExitStack() as exits:
+                for slot in tuple(self.leases):
+                    exits.push_async_exit(self.leases.pop(slot))
 
 
 def toolbox_given(toolbox: Toolbox) -> ToolboxGiven:
@@ -699,5 +719,7 @@ class HostLoops:
             )
             raise
         finally:
-            await owned(prepared.close())
-            self.attempts.pop(identity, None)
+            try:
+                await owned(prepared.close())
+            finally:
+                self.attempts.pop(identity, None)

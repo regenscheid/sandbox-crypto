@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Authenticated production control boundary, independent of the OpenShell transport."""
 
+import asyncio
 from pathlib import Path
 
 import aiohttp
@@ -17,6 +18,7 @@ from sandbox_science.orchestrator.confinement.transport import (
     Reply,
     Request,
 )
+from sandbox_science.orchestrator.service import RunService
 
 TOKEN = "test-secret-runtime-capability-0123456789abcdef"
 WORKER = "test-secret-worker-capability-0123456789abcdef"
@@ -114,3 +116,78 @@ def test_large_tool_evidence_stays_host_side_before_its_canonical_commit() -> No
     assert not remote.saved
     assert outcome.record["execution"]["stdout"] == large
     assert outcome.saved["output"] == large
+
+
+@pytest.mark.parametrize("phase", ["handler", "service"])
+async def test_dead_runtime_health_is_distinct_from_exclusive_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def ready(request: web.Request) -> web.Response:
+        if phase == "handler":
+            entered.set()
+            await release.wait()
+        return web.json_response(
+            {"protocol": PROTOCOL_VERSION, "ready": True},
+            headers={PROTOCOL_HEADER: str(PROTOCOL_VERSION)},
+        )
+
+    original_close = RunService.close
+
+    async def close(service: RunService) -> None:
+        if phase == "service":
+            entered.set()
+            await release.wait()
+        await original_close(service)
+
+    monkeypatch.setattr(RunService, "close", close)
+    worker = web.Application()
+    worker.router.add_get("/v1/ready", ready)
+    async with TestServer(worker) as backend:
+        settings = ControlSettings(
+            state_dir=tmp_path / "state",
+            listen="127.0.0.1:8202",
+            worker=str(backend.make_url("")),
+            worker_token_file=private(tmp_path / "worker.token", WORKER),
+            runtime_token_file=private(tmp_path / "runtime.token", TOKEN),
+            generation="runtime-test",
+            projects=("p",),
+            main="main",
+            image_revision="a" * 40,
+        )
+        async with TestClient(TestServer(create_app(settings))) as client:
+            headers = {"Authorization": "Bearer " + TOKEN, CONTROL_HEADER: str(CONTROL_PROTOCOL)}
+            socket = await client.ws_connect("/control", headers=headers)
+            try:
+                assert (await (await client.get("/health")).json())["runtime_connected"]
+                if phase == "handler":
+                    await socket.send_str(
+                        Request(
+                            id=1,
+                            capability=Capability.HANDSHAKE,
+                            payload={"image_revision": "a" * 40},
+                        ).model_dump_json()
+                    )
+                    await asyncio.wait_for(entered.wait(), 2)
+                await socket.close()
+                if phase == "service":
+                    await asyncio.wait_for(entered.wait(), 2)
+                async with asyncio.timeout(2):
+                    while (status := await (await client.get("/health")).json())[
+                        "runtime_connected"
+                    ]:
+                        await asyncio.sleep(0)
+                assert status["ready"]
+                assert status["runtime_draining"]
+                with pytest.raises(aiohttp.WSServerHandshakeError) as occupied:
+                    await client.ws_connect("/control", headers=headers)
+                assert occupied.value.status == 409
+            finally:
+                release.set()
+                await socket.close()
+            async with asyncio.timeout(2):
+                while (await (await client.get("/health")).json())["runtime_draining"]:
+                    await asyncio.sleep(0)
+            async with client.ws_connect("/control", headers=headers):
+                assert (await (await client.get("/health")).json())["runtime_connected"]

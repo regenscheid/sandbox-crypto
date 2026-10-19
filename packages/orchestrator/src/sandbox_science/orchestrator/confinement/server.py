@@ -129,16 +129,23 @@ def private_token(path: Path) -> str:
 def create_app(settings: ControlSettings) -> web.Application:
     """Create a service that admits only the launcher's current scoped runtime token."""
     app = web.Application(client_max_size=MAX_FRAME_BYTES)
-    connected = False
+    occupied = False
+    runtime: Channel | None = None
 
     async def health(request: web.Request) -> web.Response:
+        connected = runtime is not None and not runtime.closed
         return web.json_response(
-            {"ready": True, "protocol": CONTROL_PROTOCOL, "runtime_connected": connected},
+            {
+                "ready": True,
+                "protocol": CONTROL_PROTOCOL,
+                "runtime_connected": connected,
+                "runtime_draining": occupied and not connected,
+            },
             headers={CONTROL_HEADER: str(CONTROL_PROTOCOL)},
         )
 
     async def control(request: web.Request) -> web.WebSocketResponse:
-        nonlocal connected
+        nonlocal occupied, runtime
         header = request.headers.get("Authorization", "")
         expected = private_token(settings.runtime_token_file)
         supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
@@ -146,9 +153,11 @@ def create_app(settings: ControlSettings) -> web.Application:
             raise web.HTTPNotFound()
         if request.headers.get(CONTROL_HEADER) != str(CONTROL_PROTOCOL):
             raise web.HTTPUnprocessableEntity(text="control protocol mismatch")
-        if connected:
+        if occupied:
             raise web.HTTPConflict(text="a runtime already owns this control connection")
-        connected = True
+        # Admission ownership outlives the socket while admitted effects drain.
+        # Health must not present that cleanup period as a connected runtime.
+        occupied = True
         token_digest = hashlib.sha256(supplied.encode()).digest()
         socket = web.WebSocketResponse(max_msg_size=MAX_FRAME_BYTES, heartbeat=15)
         projects = ProjectStore(settings.state_dir)
@@ -367,8 +376,10 @@ def create_app(settings: ControlSettings) -> web.Application:
                 )
                 service = RunService(harness, figures=figures)
                 await socket.prepare(request)
+                runtime = channel
                 await serve_socket(socket, channel)
         finally:
+            runtime = None
             if service is not None:
                 await service.close()
             if service is not None and service.harness.vectors is not None:
@@ -377,7 +388,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                 await proxy.close()
             documents.close()
             projects.close()
-            connected = False
+            occupied = False
         return socket
 
     app.router.add_get("/health", health)

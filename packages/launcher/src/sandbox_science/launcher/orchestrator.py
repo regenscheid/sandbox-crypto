@@ -270,7 +270,7 @@ async def replace(config: LauncherConfig, layout: Layout, supervisor: Supervisor
     await delete_recorded(config, layout)
     runtime = configured(config)
     deadline = asyncio.get_running_loop().time() + config.stop_timeout
-    while await asyncio.to_thread(_connected, f"http://{runtime.control_listen}/health"):
+    while await asyncio.to_thread(_occupied, f"http://{runtime.control_listen}/health"):
         if asyncio.get_running_loop().time() >= deadline:
             raise LauncherError(
                 "old runtime control connection did not settle; replacement refused"
@@ -280,15 +280,19 @@ async def replace(config: LauncherConfig, layout: Layout, supervisor: Supervisor
     await _agent(config, layout, supervisor, directory, upload)
 
 
-def _connected(url: str) -> bool:
+def _occupied(url: str) -> bool:
     with urlopen(url, timeout=2) as response:  # noqa: S310 - fixed loopback configuration
         body = response.read(4097)
     if len(body) > 4096:
         raise LauncherError("control readiness exceeded its byte bound")
     value = cast(dict[str, Any], json.loads(body))
-    if value.get("ready") is not True or not isinstance(value.get("runtime_connected"), bool):
+    if (
+        value.get("ready") is not True
+        or not isinstance(value.get("runtime_connected"), bool)
+        or not isinstance(value.get("runtime_draining", False), bool)
+    ):
         raise LauncherError("control readiness is incompatible with runtime replacement")
-    return value["runtime_connected"]
+    return value["runtime_connected"] or value.get("runtime_draining", False)
 
 
 async def _agent(

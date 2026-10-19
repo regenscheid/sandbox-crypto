@@ -63,6 +63,41 @@ async def test_cancelled_waiter_does_not_abandon_admitted_effect() -> None:
     await left.close()
 
 
+async def test_disconnect_is_visible_before_cancel_resistant_handler_drain() -> None:
+    entered, release, committed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def send(frame: str) -> None:
+        pass
+
+    async def handler(kind: Capability, value: JsonValue) -> JsonValue:
+        entered.set()
+        await release.wait()
+        committed.set()
+        return value
+
+    channel = Channel(send, handler)
+    await channel.receive(Request(id=1, capability=Capability.TOOL, payload=None).model_dump_json())
+    await entered.wait()
+    closing = asyncio.create_task(channel.close())
+    await asyncio.sleep(0)
+    assert channel.closed
+    assert not committed.is_set()
+    closing.cancel()
+    await asyncio.sleep(0)
+    closing.cancel()
+    await asyncio.sleep(0)
+    assert not closing.done()
+    with pytest.raises(TransportError, match="connection closed"):
+        await channel.receive(
+            Request(id=2, capability=Capability.TOOL, payload=None).model_dump_json()
+        )
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    await channel.close()
+    assert committed.is_set()
+
+
 async def test_unknown_duplicate_and_oversized_control_frames_are_refused() -> None:
     async def send(frame: str) -> None:
         pass
