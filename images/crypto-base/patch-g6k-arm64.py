@@ -24,3 +24,12 @@ replace_once(
     "#ifdef HAVE_AVX2\n#include <immintrin.h>\n#endif\n",
 )
 replace_once(root / "kernel/bdgl_sieve.cpp", "#include <immintrin.h>\n", "")
+
+# GCC 15's AArch64 argument ABI rejects user-aligned vector typedefs when the
+# generic SIMD functions pass them by value. Their natural vector alignment is
+# sufficient for this architecture, and all G6K objects are rebuilt together.
+header = root / "kernel/simd.h"
+source = header.read_text()
+if source.count(", aligned(16)") != 10:
+    raise SystemExit(f"unexpected G6K vector typedefs at {header}")
+header.write_text(source.replace(", aligned(16)", ""))

@@ -277,7 +277,7 @@ The native Linux ARM64 [qualification run](https://github.com/regenscheid/sandbo
 - the micromamba release and its SHA-256 for linux-aarch64;
 - lockfiles that cover linux-aarch64: the same packages and versions as linux-64, apart from the compilers' architecture-named packages and two minor version differences (charset-normalizer, libglib) where a build was missing;
 - pdf_oxide's aarch64 wheel hash;
-- a G6K build for the target, compiled natively per architecture (D63) and aimed at `armv8.2-a`, the Raspberry Pi 5's Cortex-A76. Pinned G6K includes the x86-only `immintrin.h` unconditionally even though it has a generic SIMD path. The ARM64 build applies the exact-match `patch-g6k-arm64.py` adjustment before configure; the AMD64 source is unchanged.
+- a G6K build for the target, compiled natively per architecture (D63) and aimed at `armv8.2-a`, the Raspberry Pi 5's Cortex-A76. Pinned G6K includes the x86-only `immintrin.h` unconditionally even though it has a generic SIMD path, and gives its generic vectors explicit alignment that GCC 15's AArch64 argument ABI rejects. The ARM64 build applies the exact-match `patch-g6k-arm64.py` adjustment before configure; the AMD64 source is unchanged.
 
 What arm64 still needs:
 
