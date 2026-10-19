@@ -285,6 +285,159 @@ async def test_large_feed_is_reviewed_in_complete_bounded_windows(store) -> None
 
 
 @pytest.mark.asyncio
+async def test_partial_window_cannot_claim_a_missing_later_completion(store) -> None:
+    """An early bounded window cannot turn unseen later history into a finding."""
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=2)
+    for n in range(3):
+        claim(reviews, f"Chronological record {n}.", key=f"record-{n}")
+    review = dispatch(reviews)
+    assert not reviews.run("p", "s", review)["coverage_complete"]
+    evidence = reviews.manifest("p", "s", review)["evidence"][0]["evidence"]
+    runner = ReviewerRunner(reviews, "p", "s", review, "owner", None)
+    result = json.loads(
+        await runner.tool(
+            ToolCall(
+                "premature-completion",
+                "review_finding",
+                json.dumps(
+                    {
+                        "severity": "warn",
+                        "category": "completion",
+                        "statement": "No later completion was recorded.",
+                        "anchors": [{"evidence": evidence}],
+                        "assessment": "missing_evidence",
+                        "operation_id": "premature-completion",
+                    }
+                ),
+            )
+        )
+    )
+    assert result["error"] == "incomplete_coverage"
+    assert reviews.finding_states("p", "s") == {}
+
+
+@pytest.mark.asyncio
+async def test_partial_window_tells_reviewer_once_then_finishes_without_finding(store) -> None:
+    reviews, documents, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=2)
+    for n in range(3):
+        claim(reviews, f"Chronological record {n}.", key=f"record-{n}")
+    review = dispatch(reviews)
+    evidence = reviews.manifest("p", "s", review)["evidence"][0]["evidence"]
+    model = ScriptedModel.from_json(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "name": "review_finding",
+                        "arguments": {
+                            "severity": "warn",
+                            "category": "completion",
+                            "statement": "No later completion was recorded.",
+                            "anchors": [{"evidence": evidence}],
+                            "operation_id": "premature-completion",
+                        },
+                    }
+                ]
+            },
+            {
+                "text": json.dumps(
+                    {
+                        "outcome": "inconclusive",
+                        "summary": "Later history is outside this window.",
+                        "cap_reached": False,
+                    }
+                )
+            },
+        ]
+    )
+    await ReviewerRunner(reviews, "p", "s", review, "owner", model).run()
+    assert len(model.requests) == 2
+    opening = json.loads(model.requests[0][1]["content"])
+    assert opening["chronological_coverage"] == "partial"
+    assert "do not create a completion finding" in opening["coverage_instruction"]
+    assert reviews.run("p", "s", review)["state"] == "inconclusive"
+    assert reviews.finding_states("p", "s") == {}
+    with documents.control.read() as tx:
+        (result,) = tx.sql.execute(
+            "SELECT json_extract(payload,'$.result') FROM review_records "
+            "WHERE review_id=? AND kind='tool'",
+            (review,),
+        ).fetchone()
+    assert json.loads(result)["error"] == "incomplete_coverage"
+
+
+@pytest.mark.asyncio
+async def test_partial_window_keeps_evidence_supported_completion_finding(store) -> None:
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(max_feed_items=2)
+    for n in range(3):
+        claim(reviews, f"Chronological record {n}.", key=f"record-{n}")
+    review = dispatch(reviews)
+    evidence = reviews.manifest("p", "s", review)["evidence"][0]["evidence"]
+    runner = ReviewerRunner(reviews, "p", "s", review, "owner", None)
+    result = json.loads(
+        await runner.tool(
+            ToolCall(
+                "supported-completion",
+                "review_finding",
+                json.dumps(
+                    {
+                        "severity": "fail",
+                        "category": "completion",
+                        "statement": "The pinned record contradicts the completion claim.",
+                        "anchors": [{"evidence": evidence}],
+                        "assessment": "supported",
+                        "operation_id": "supported-completion",
+                    }
+                ),
+            )
+        )
+    )
+    assert result["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_feed_end_is_chronologically_complete_even_with_partial_evidence(store) -> None:
+    reviews, _, _ = store
+    claim(reviews, "The terminal record.")
+    review = reviews.dispatch(
+        "p",
+        "s",
+        "terminal",
+        author_run="author-1",
+        owner="owner",
+        alias="reviewer",
+        coverage_complete=False,
+    )
+    assert review is not None
+    assert not reviews.run("p", "s", review)["coverage_complete"]
+    assert reviews.chronological_complete("p", "s", review)
+    evidence = reviews.manifest("p", "s", review)["evidence"][0]["evidence"]
+    runner = ReviewerRunner(reviews, "p", "s", review, "owner", None)
+    result = json.loads(
+        await runner.tool(
+            ToolCall(
+                "end-completion",
+                "review_finding",
+                json.dumps(
+                    {
+                        "severity": "warn",
+                        "category": "completion",
+                        "statement": "Completion evidence remains unavailable.",
+                        "anchors": [{"evidence": evidence}],
+                        "assessment": "missing_evidence",
+                        "operation_id": "end-completion",
+                    }
+                ),
+            )
+        )
+    )
+    assert result["status"] == "inconclusive"
+
+
+@pytest.mark.asyncio
 async def test_capped_window_shrinks_before_retry_without_skipping_feed(store) -> None:
     reviews, _, _ = store
     reviews.defaults = ReviewConfig(max_feed_items=16, max_turns=1)

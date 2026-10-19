@@ -227,6 +227,8 @@ class ReviewerRunner:
         """Images viewed this turn, which follow its results."""
         self.findings = Findings(store)
         self.record = store.run(project, session, review)
+        self.chronological_complete = store.chronological_complete(project, session, review)
+        """Whether this snapshot reaches the feed end that existed at dispatch."""
         self.span_complete = store.span_complete(project, session, review)
         self.config = ReviewConfig.model_validate(self.record["config"])
 
@@ -292,14 +294,33 @@ class ReviewerRunner:
                         raw,
                     )
                 elif call.name == "review_finding":
-                    result = await asyncio.to_thread(
-                        self.findings.create,
-                        self.project,
-                        self.session,
-                        self.review,
-                        self.owner,
-                        raw,
-                    )
+                    # A partial chronological window can establish a contradiction in
+                    # evidence it contains, but it cannot establish that later work or
+                    # an outcome does not exist. The remaining feed is deliberately
+                    # reviewed in a later bounded window.
+                    if (
+                        isinstance(raw, dict)
+                        and raw.get("category") == "completion"
+                        and raw.get("assessment") != "supported"
+                        and not self.chronological_complete
+                    ):
+                        result = {
+                            "error": "incomplete_coverage",
+                            "message": (
+                                "This snapshot does not reach the end of the review feed. "
+                                "Do not infer a missing later outcome; leave it for a later "
+                                "review window."
+                            ),
+                        }
+                    else:
+                        result = await asyncio.to_thread(
+                            self.findings.create,
+                            self.project,
+                            self.session,
+                            self.review,
+                            self.owner,
+                            raw,
+                        )
                 else:
                     result = await asyncio.to_thread(
                         self.findings.confirm,
@@ -421,7 +442,14 @@ class ReviewerRunner:
         opening: Json = {
             "review": self.review,
             "instruction": "Read review_manifest first. Check only this pinned snapshot.",
+            "chronological_coverage": ("complete" if self.chronological_complete else "partial"),
         }
+        if not self.chronological_complete:
+            opening["coverage_instruction"] = (
+                "Later review-feed records are outside this bounded snapshot. Do not infer "
+                "that a later outcome, fix, report, or action is missing. In particular, do "
+                "not create a completion finding based on its absence from this snapshot."
+            )
         if copied:
             opening["platform_findings"] = {
                 "about": (

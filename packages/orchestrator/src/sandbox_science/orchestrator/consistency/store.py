@@ -1532,6 +1532,9 @@ class ReviewStore:
                 "start": window.watermark + 1,
                 "end": plan.selected_end,
                 "span_complete": plan.span_complete,
+                "chronological_complete": (
+                    plan.kind == "confirmation" or plan.selected_end == window.end
+                ),
                 **_archived(plan.items),
             },
         )
@@ -1650,6 +1653,32 @@ class ReviewStore:
         self.scope(project, session)
         with self.documents.control.read() as tx:
             return self._span_complete(tx.sql, project, session, review)
+
+    def chronological_complete(self, project: str, session: str, review: str) -> bool:
+        """Whether dispatch reached its then-current chronological feed end.
+
+        This is narrower than ``coverage_complete``: clipped evidence or an incomplete
+        document scan may make evidence coverage partial even at the feed's end.
+        """
+        self.scope(project, session)
+        with self.documents.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT json_extract(payload,'$.chronological_complete') FROM "
+                "control_events WHERE project=? AND session=? AND "
+                "kind='review.dispatched' AND subject_type='review' AND subject_id=? "
+                "ORDER BY seq DESC LIMIT 1",
+                (project, session, review),
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                return row[0] == 1
+            # Legacy dispatch records predate the dedicated bit. Full aggregate
+            # coverage proves chronological coverage; partial legacy coverage cannot.
+            found = tx.sql.execute(
+                "SELECT coverage_complete FROM review_runs WHERE project=? AND session=? "
+                "AND review_id=?",
+                (project, session, review),
+            ).fetchone()
+            return bool(found and found[0] == 1)
 
     def renew(self, project: str, session: str, review: str, owner: str) -> None:
         with self.documents.control.write() as tx:
