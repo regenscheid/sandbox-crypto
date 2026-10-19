@@ -22,7 +22,7 @@ pytestmark = pytest.mark.slow
 
 
 def test_parent_pipe_watcher_ends_the_session_after_parent_loss(tmp_path: Path) -> None:
-    """Exercise the Darwin watcher protocol on Linux without claiming a Mac run."""
+    """The part must leave the session after the launcher's pipe closes."""
     read_fd, write_fd = os.pipe()
     marker = tmp_path / "child.pid"
     process = subprocess.Popen(
@@ -53,7 +53,9 @@ def test_parent_pipe_watcher_ends_the_session_after_parent_loss(tmp_path: Path) 
         assert child_pid in members(process.pid)
         os.close(write_fd)
         write_fd = -1
-        assert process.wait(timeout=10) == 70
+        # Darwin can terminate the watcher with its session while the watcher
+        # is stopping the child. Either exit is acceptable if the part is gone.
+        assert process.wait(timeout=10) in (70, -signal.SIGTERM)
         assert child_pid not in members(process.pid)
     finally:
         if write_fd >= 0:
