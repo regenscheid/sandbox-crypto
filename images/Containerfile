@@ -3,7 +3,7 @@
 # Recipes for the two standard base profiles (D46) and the images of two platform services;
 # docs/IMAGES.md is the contract they follow.
 #   minimal       the thin, permissive image the project could publish
-#   crypto-base   the pinned cryptography environment; it contains GPL tools and is never published
+#   crypto-base   the pinned cryptography environment; it contains GPL tools and stays private
 #   orchestrator  the harness, for the orchestrator's own sandbox; permissive like minimal
 #   mcp-proxy     the MCP proxy, for its own sandbox, with a launcher as its command; permissive
 # Build with images/build.sh (context: images/, target: the profile). Every download is pinned:
@@ -191,8 +191,7 @@ RUN --mount=type=bind,from=binding-inventory,source=binding_inventory.py,target=
     python -I -B /tmp/binding_inventory.py /usr/share/sandbox-science/binding-inventory.json
 USER 1000:1000
 LABEL org.opencontainers.image.title="Sandbox Science crypto-base" \
-      org.opencontainers.image.description="Base profile: SageMath, fpylll, PARI, FLINT, G6K, lattice-estimator, TeX and PDF tools. Contains GPL software; never publish this image" \
-      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.description="Base profile: SageMath, fpylll, PARI, FLINT, G6K, lattice-estimator, TeX and PDF tools. Contains GPL software; private registry only" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="${LICENSES}" \

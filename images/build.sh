@@ -6,7 +6,8 @@
 # Tags sandbox-science/<profile>:<short SHA of the last commit that changed the build's inputs>
 # (with -dirty when they have uncommitted changes; revision.sh) and prints the tag, the image
 # digest, its size and the build time. It loads the image into the local image store and never
-# pushes: crypto-base contains GPL tools and is never published (D46). For orchestrator and
+# pushes: crypto-base contains GPL tools and can only be copied to a verified private registry
+# under D46. For orchestrator and
 # mcp-proxy it first builds the wheels of the repository's packages they install from this
 # checkout with uv. PLATFORM selects the platform (default: the host's Linux architecture);
 # BUILDER selects a buildx builder.

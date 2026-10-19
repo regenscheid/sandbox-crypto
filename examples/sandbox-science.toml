@@ -14,7 +14,8 @@ sessions = ["main", { id = "scratch", dedicated = true }]
 # skills = ["crypto"]
 
 [model]
-url = "https://litellm-api.npages.org/v1"
+# Replace this reserved example endpoint in your private config; do not commit your gateway URL.
+url = "https://gateway.example.invalid/v1"
 name = "sandbox-orchestrator"
 # Reviews and the workspace's math repairs, the job watcher's check-ins on long jobs, and
 # delegated runs; one alias may serve the main agent and these. A gateway that serves

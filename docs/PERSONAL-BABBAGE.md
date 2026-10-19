@@ -1,5 +1,8 @@
 # The personal instance on babbage
 
+The gateway URL shown below is a reserved example placeholder. Keep the real endpoint and key
+path in the private configuration outside the repository.
+
 The owner's own Sandbox Science on babbage: a [`sandbox-science up`](QUICKSTART.md) instance that runs for research, apart from the labs. It has its own OpenShell gateway, policy middleware and package cache, its own units, ports and state, and its own config outside the repository. The labs' scripts (`.agents/labs/lab_up.sh`, `lab_down.sh`, the `cm_lab` kit) never start, stop or remove any of it.
 
 Like the labs' scripts, this is babbage's setup: it assumes OpenShell 0.1.3 at `~/.local/opt/openshell-0.1.3/bin`, the images in the local Docker store, and the repository's `.venv`.
@@ -47,7 +50,7 @@ sessions = ["main"]
 skills = ["crypto"]
 
 [model]
-url = "https://litellm-api.npages.org/v1"
+url = "https://gateway.example.invalid/v1"
 name = "arrcodex-gpt-6-sol"          # every role: the main agent, the reviewer, the watcher, delegated runs
 reviewer = "arrcodex-gpt-6-sol"
 watcher = "arrcodex-gpt-6-sol"

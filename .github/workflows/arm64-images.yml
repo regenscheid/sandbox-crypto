@@ -39,7 +39,15 @@ jobs:
       - run: NETWORK=0 images/test.sh orchestrator
       - run: images/build.sh mcp-proxy
       - run: NETWORK=0 images/test.sh mcp-proxy
-      - if: ${{ inputs.crypto_base }}
-        run: df -h / /var/lib/docker && docker system df && images/build.sh crypto-base
-      - if: ${{ inputs.crypto_base }}
-        run: NETWORK=0 images/test.sh crypto-base
+
+  crypto-base:
+    if: ${{ inputs.crypto_base }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker version && docker buildx version && test "$(uname -m)" = aarch64
+      - run: df -h / /var/lib/docker && docker system df && images/build.sh crypto-base
+      - run: NETWORK=0 images/test.sh crypto-base

@@ -11,7 +11,8 @@ sessions = ["main"]
 skills = ["crypto"]
 
 [model]
-url = "https://litellm-api.npages.org/v1"
+# Example only: put the real endpoint in a private config outside the checkout.
+url = "https://gateway.example.invalid/v1"
 name = "sandbox-orchestrator"
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 
