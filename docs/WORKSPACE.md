@@ -149,6 +149,8 @@ All routes need the session and answer JSON, except original upload downloads. E
 | POST | `/api/v0/projects/{project}/macros` | Changes the setting: exact `expected` revision, bounded `macros` and `operation_id`, attributed to the USER on the server |
 | GET | `/api/v0/projects/{project}/files/settings` | The project's file settings ([projects and sessions](PROJECTS-AND-SESSIONS.md#files-executions-write)): `revision`, `recording` (`all` or `results`) and `ignore` patterns, with the `defaults` to start from |
 | POST | `/api/v0/projects/{project}/files/settings` | Changes them: exact `expected` revision, `recording`, at most 200 `ignore` patterns and `operation_id`, attributed to the USER on the server |
+| GET | `/api/v0/projects/{project}/models/settings` | The project's main, delegated and consistency-reviewer aliases and efforts, their deployment defaults, and the trusted alias/API catalog; no endpoints or credentials |
+| POST | `/api/v0/projects/{project}/models/settings` | Changes all configured agent roles with an exact `expected` revision and `operation_id`; aliases must come from the deployment catalog and Messages aliases cannot receive an effort |
 | GET | `/api/v0/projects/{project}/sessions/{session}` | The `session` and its `runs`, oldest first: each run's `name`, `run_id` and `started_at` |
 | GET | `/api/v0/projects/{project}/sessions/{session}/runs/{run}` | The run's record ([run records](#run-records)), at most 64 MiB |
 | GET | `/api/v0/projects/{project}/sessions/{session}/runs/{run}/events` | The run's events after `after`, at most `limit` (200), and its state: `active`, `ended` or `interrupted` ([chat](#chat)); a delegated run is `active` while its root holds the session |
@@ -602,7 +604,9 @@ unavailable.
 ### Workspace browser state and MCP inspection
 
 Overview leads with sessions, recent documents, a bounded review inbox and research
-shortcuts; policy/environment/math/file-capture operations remain in Project settings.
+shortcuts; policy/environment/math/file-capture and per-role agent model operations
+remain in Project settings. The model editor applies changes to the next root tree;
+active trees, their children and ordinary Resume retain their pinned profiles.
 Memory separates the accepted receive order from its proposal inbox, with selected
 exact text/differences and revision history. Filtering never reorders agent memory.
 Entry edits, new-entry text, Skills loading choices and browser selections survive

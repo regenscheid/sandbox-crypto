@@ -153,11 +153,9 @@ def test_paid_model_response_ceiling_cannot_exceed_transport_envelope() -> None:
 
 
 def test_the_confined_reviewer_keeps_the_host_reviewers_finite_allowance() -> None:
-    from sandbox_science.orchestrator.confinement.server import (
-        REVIEWER_MAX_OUTPUT,
-        REVIEWER_MAX_RESPONSE_BYTES,
-    )
+    from sandbox_science.orchestrator.confinement.server import REVIEWER_MAX_OUTPUT
     from sandbox_science.orchestrator.confinement.wire import MAX_MODEL_RESPONSE_BYTES
+    from sandbox_science.orchestrator.consistency.models import REVIEWER_MAX_RESPONSE_BYTES
 
     assert REVIEWER_MAX_OUTPUT == 4096
     assert REVIEWER_MAX_RESPONSE_BYTES == MAX_MODEL_RESPONSE_BYTES == 6 * 1024 * 1024

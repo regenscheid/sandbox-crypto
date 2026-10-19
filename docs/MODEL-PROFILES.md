@@ -6,12 +6,16 @@ The launcher selects effort by caller role, independently of model alias:
 [model.reasoning_effort]
 main = "max"
 delegated = "max"
-reviewer = "high"
+reviewer = "medium"
 watcher = "low"
 fold = "medium"
 overview = "medium"
 skills_metadata = "low"
 ```
+
+When `reviewer` is omitted, the launcher and native run service request `medium` for
+the consistency reviewer. Main and delegated roles retain provider defaults when
+omitted. An explicit deployment value still wins.
 
 These are requested values, not a declaration that a gateway or model supports every
 example value. Names are bounded lowercase wire values; the configured value is sent
@@ -32,6 +36,15 @@ Gateway-returned reasoning settings remain provider observations, distinct from 
 requested pins. A normal Resume preserves saved profiles; legacy work preserves omitted
 effort. An explicit authenticated [Resume effort decision](specs/resume-effort-override.md)
 may change effort for the new attempt without rewriting its original blueprint.
+
+The workspace's **Project settings → Agent models and reasoning effort** editor lets
+the user choose the main/orchestrator, delegated-agent and consistency-reviewer alias
+and effort independently. Model choices are limited to the deployment's trusted agent
+catalog (the aliases configured for those three roles). The browser cannot choose an
+adapter, endpoint or credential. A save applies to the next root research tree. That
+tree's children and reviews inherit its immutable profile snapshot, and ordinary
+Resume keeps it; an edit never changes a running tree. The separate math-repair caller
+continues to use its deployment reviewer setting.
 
 Fold narratives and overview narratives use independent profiles. Native model-switch
 refitting preserves the former alias while selecting the narrative effort. The confined

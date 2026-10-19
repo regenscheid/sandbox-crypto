@@ -39,6 +39,7 @@ from sandbox_science.orchestrator.continuity.resources import ResourceRequestPag
 from sandbox_science.orchestrator.continuity.status import StatusPage
 from sandbox_science.orchestrator.history.captured import CapturedCalls, ContextParts, ContextText
 from sandbox_science.orchestrator.memory import MemoryChange
+from sandbox_science.orchestrator.model_settings import ModelSettings
 from sandbox_science.orchestrator.runtree import RunTree
 from sandbox_science.orchestrator.uploads import UploadPage
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
@@ -146,6 +147,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     MemoryProposals,
     MemoryHistory,
     MemoryChange,
+    ModelSettings,
 )
 HEADER = (
     "// SPDX-License-Identifier: MIT\n"

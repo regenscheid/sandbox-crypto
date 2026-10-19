@@ -3,18 +3,30 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
 
+from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.confinement.models import CallbackGateway
+from sandbox_science.orchestrator.confinement.transport import Channel
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.delegation.hook import Child
+from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
+from sandbox_science.orchestrator.harness import Admitted, Harness, Role, RunRequest, Stores
+from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.messages import MessagesModel
-from sandbox_science.orchestrator.model import ModelError, ModelGateway
+from sandbox_science.orchestrator.model import Limits, ModelError, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole, profiles
+from sandbox_science.orchestrator.model_settings import AgentModelRole, ProjectModels
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .test_responses_model import KEY, Fake, response, said
 from .test_responses_model import fake as fake
@@ -78,6 +90,109 @@ def test_cli_role_validation() -> None:
         cli.effort_setting("embedding=max")
     with pytest.raises(ValidationError):
         ModelProfile(alias="x", reasoning_effort="MAX is not a wire value")
+
+
+async def test_project_agent_models_are_snapshotted_for_a_new_tree(tmp_path: Path) -> None:
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    documents = DocumentStore(store_path(tmp_path), producer="harness")
+    gateway = ModelGateway(
+        "http://gateway.invalid",
+        KEY,
+        apis={"sol": "responses", "luna": "responses"},
+        reasoning_effort={"main": "max", "delegated": "max", "reviewer": "medium"},
+    )
+    harness = Harness(
+        cast(WorkerClient, object()),
+        Role(gateway.model("sol", role="main"), "sol"),
+        delegated=Role(gateway.model("sol", role="delegated"), "sol"),
+        reviewer=Role(gateway.model("luna", role="reviewer"), "luna"),
+        gateway=gateway,
+        stores=Stores(projects, documents, JobState(tmp_path), RunState(projects.control)),
+    )
+    defaults: dict[AgentModelRole, ModelProfile] = {
+        "main": gateway.profile("sol", role="main"),
+        "delegated": gateway.profile("sol", role="delegated"),
+        "reviewer": gateway.profile("luna", role="reviewer"),
+    }
+    roles = {
+        "main": {"alias": "luna", "reasoning_effort": "high"},
+        "delegated": {"alias": "luna", "reasoning_effort": "medium"},
+        "reviewer": {"alias": "luna", "reasoning_effort": "low"},
+    }
+    try:
+        ProjectModels(documents).change(
+            "p",
+            {"expected": 0, "roles": roles, "operation_id": "settings-1"},
+            USER,
+            defaults=defaults,
+            available={"sol": "responses", "luna": "responses"},
+        )
+        request = RunRequest("p", "s", "research")
+        pinned = harness.model_profiles(request)
+        assert (pinned["main"].alias, pinned["main"].reasoning_effort) == ("luna", "high")
+        assert (pinned["delegated"].alias, pinned["delegated"].reasoning_effort) == (
+            "luna",
+            "medium",
+        )
+        assert (pinned["reviewer"].alias, pinned["reviewer"].reasoning_effort) == (
+            "luna",
+            "low",
+        )
+        assert pinned["fold"].alias == pinned["overview"].alias == "luna"
+        frozen = RunRequest("p", "s", "resume", model_profiles=pinned)
+        assert harness.model_profiles(frozen) == pinned
+        assert harness.role(frozen).alias == "luna"
+        reviewer = harness.reviewer_role(frozen)
+        assert reviewer is not None
+        assert reviewer.alias == "luna"
+        harness._limits_seen = {
+            "sol": Limits(200_000, 10_000, "openai"),
+            "luna": Limits(32_000, 8_000, "openai"),
+        }
+        assert await harness._ceiling(harness.role(frozen)) == 32_000
+
+        legacy = harness.model_profiles(RunRequest("p", "s", "resume", alias="sol"), legacy=True)
+        assert legacy["main"].alias == legacy["fold"].alias == "sol"
+        assert all(profile.reasoning_effort is None for profile in legacy.values())
+        legacy_child = harness.model_profiles(
+            RunRequest("p", "s", "resume", parent="root", delegation="delegation", alias="luna"),
+            legacy=True,
+        )
+        assert legacy_child["delegated"].alias == "luna"
+        assert legacy_child["fold"].alias == legacy_child["overview"].alias == "luna"
+        assert all(profile.reasoning_effort is None for profile in legacy_child.values())
+
+        parent = Admitted(
+            frozen,
+            "root",
+            ExecutionContext(project_id="p", session_id="s", environment_id="e"),
+            (),
+            (),
+            True,
+            datetime.now(UTC),
+        )
+        child = Child("d", "child", datetime.now(UTC), "brief", 30, 10_000, None, "sol")
+        admitted_child = harness._child_admitted(parent, None, child)
+        child_profiles = admitted_child.request.model_profiles or {}
+        assert child_profiles["delegated"].alias == "sol"
+        assert child_profiles["delegated"].reasoning_effort == "medium"
+        assert child_profiles["fold"].alias == child_profiles["overview"].alias == "sol"
+    finally:
+        documents.close()
+        await gateway.close()
+
+
+def test_callback_gateway_preserves_the_paid_kind_for_each_role() -> None:
+    async def send(_: str) -> None:
+        pass
+
+    async def handle(_: object, __: object) -> None:
+        pass
+
+    gateway = CallbackGateway(Channel(send, handle))
+    assert gateway.model("other", role="reviewer").kind == "reviewer"
+    assert gateway.model("other", role="overview").kind == "fold"
 
 
 def test_paid_intent_profile_is_atomic_and_remains_when_usage_unknown(

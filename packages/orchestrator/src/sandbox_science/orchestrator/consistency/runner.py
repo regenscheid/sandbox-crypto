@@ -298,10 +298,11 @@ class ReviewerRunner:
                     # evidence it contains, but it cannot establish that later work or
                     # an outcome does not exist. The remaining feed is deliberately
                     # reviewed in a later bounded window.
+                    finding = cast(dict[str, object], raw) if isinstance(raw, dict) else None
                     if (
-                        isinstance(raw, dict)
-                        and raw.get("category") == "completion"
-                        and raw.get("assessment") != "supported"
+                        finding is not None
+                        and finding.get("category") == "completion"
+                        and finding.get("assessment") != "supported"
                         and not self.chronological_complete
                     ):
                         result = {
@@ -319,7 +320,7 @@ class ReviewerRunner:
                             self.session,
                             self.review,
                             self.owner,
-                            raw,
+                            cast(object, raw),
                         )
                 else:
                     result = await asyncio.to_thread(

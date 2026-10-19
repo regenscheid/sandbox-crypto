@@ -176,10 +176,13 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         "projects": [project.id for project in config.projects],
         "main": model.name,
         "apis": model.api,
-        "reasoning_effort": model.reasoning_effort,
+        "reasoning_effort": model.effective_efforts(),
         "reviewer": model.reviewer,
         "watcher": model.watcher,
         "delegated": model.delegated,
+        "agent_models": list(
+            dict.fromkeys(alias for alias in (model.name, model.delegated, model.reviewer) if alias)
+        ),
         "settings": settings,
         "embedding": config.skills.embedding_model,
         "metadata": config.skills.metadata_model,
@@ -224,7 +227,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         "model_key_file": REMOTE + "/model.key",
         "models": aliases,
         "apis": model.api,
-        "reasoning_effort": model.reasoning_effort,
+        "reasoning_effort": model.effective_efforts(),
         "embedding": config.skills.embedding_model,
         "thinking_replay": model.thinking_replay.model_dump(mode="json")
         if model.thinking_replay

@@ -101,6 +101,7 @@ class ControlSettings(Contract):
     reviewer: ModelAlias | None = None
     watcher: ModelAlias | None = None
     delegated: ModelAlias | None = None
+    agent_models: tuple[ModelAlias, ...] = Field(default_factory=tuple, max_length=64)
     settings: Settings = Field(default_factory=Settings)
     proxy: ProxySettings | None = None
     embedding: ModelAlias | None = None
@@ -231,19 +232,16 @@ def create_app(settings: ControlSettings) -> web.Application:
                     return await loops.capability(kind, value)
 
                 channel = Channel(socket.send_str, handle)
+                agent_models = frozenset(settings.agent_models)
+                fold_models = agent_models or frozenset(
+                    alias for alias in (settings.main, settings.delegated) if alias
+                )
+                if settings.settings.fold_alias:
+                    fold_models |= frozenset((settings.settings.fold_alias,))
                 roles: dict[str, frozenset[str]] = {
-                    "fold": frozenset(
-                        alias
-                        for alias in (
-                            settings.main,
-                            settings.delegated,
-                            settings.settings.fold_alias,
-                        )
-                        if alias
-                    ),
-                    "reviewer": frozenset((settings.reviewer,))
-                    if settings.reviewer
-                    else frozenset(),
+                    "fold": fold_models,
+                    "reviewer": agent_models
+                    or (frozenset((settings.reviewer,)) if settings.reviewer else frozenset()),
                     "watcher": frozenset((settings.watcher,)) if settings.watcher else frozenset(),
                     "skills": frozenset((settings.metadata,)) if settings.metadata else frozenset(),
                     "embedding": frozenset((settings.embedding,))

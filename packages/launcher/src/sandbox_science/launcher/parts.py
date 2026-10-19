@@ -262,7 +262,7 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     # Each alias's gateway API (CM-41); an alias left out takes chat completions.
     efforts = [
         option
-        for role, effort in model.reasoning_effort.items()
+        for role, effort in model.effective_efforts().items()
         for option in ("--reasoning-effort", f"{role}={effort}")
     ]
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
@@ -314,8 +314,29 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     if model.reviewer:
         if model.reviewer in model.api:
             repairs += ["--reviewer-api", model.api[model.reviewer]]
-        if (effort := model.reasoning_effort.get("reviewer")) is not None:
+        if (effort := model.effective_efforts().get("reviewer")) is not None:
             repairs += ["--reviewer-effort", effort]
+    role_aliases = {
+        "main": model.name,
+        "delegated": model.delegated or model.name,
+        **({"reviewer": model.reviewer} if model.reviewer else {}),
+    }
+    agent_models = [
+        option
+        for role, alias in role_aliases.items()
+        for option in ("--agent-model", f"{role}={alias}")
+    ]
+    agent_models += [
+        option
+        for role, effort in model.effective_efforts().items()
+        if role in role_aliases
+        for option in ("--agent-effort", f"{role}={effort}")
+    ]
+    agent_models += [
+        option
+        for alias in dict.fromkeys(role_aliases.values())
+        for option in ("--agent-api", f"{alias}={model.api.get(alias, 'chat')}")
+    ]
     # The skills page shows what the pass runs are given derived.
     derived = config.skills.metadata_model
     page = [] if derived is None else ["--skills-metadata-model", derived]
@@ -339,6 +360,7 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--static", str(workspace.static),
         "--listen", workspace.listen, "--preview-listen", workspace.preview(), *viewer,
         "--worker", worker_url(config),
-        "--worker-token-file", str(layout.token("workspace-worker")), *repairs, *page,
+        "--worker-token-file", str(layout.token("workspace-worker")),
+        *repairs, *agent_models, *page,
         *services,
     ]  # fmt: skip

@@ -3144,6 +3144,16 @@ def _context_captures(schema: Schema) -> None:
     create(schema)
 
 
+def _project_model_settings(schema: Schema) -> None:
+    """Version 73: project-selected aliases and efforts from a trusted catalog."""
+    schema.execute("""CREATE TABLE project_model_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    selections TEXT NOT NULL,
+    author TEXT NOT NULL
+) STRICT""")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3216,6 +3226,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _kernel_cell_lookup,
     _context_auxiliary_window,
     _context_captures,
+    _project_model_settings,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

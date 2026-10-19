@@ -10,6 +10,11 @@ export interface AdmissionSummary {
   recorded: boolean;
 }
 
+export interface AgentModelSelection {
+  alias: string;
+  reasoning_effort: string | null;
+}
+
 /** A place a revision or work record comes from (CM-9), besides the change's own tool call: an archive message by its ID (``message``, with ``quote`` for words of the user's), or a tool result by its call (``call``), whole or the characters ``start`` to ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally its ``sha256``); a document block at a revision (``document``, ``revision``, ``block``); or an entry revision (``entry``, ``revision`` defaulting to its current one). A PDF passage is anchored as a quote evidence link (LG-8). */
 export interface AnchorInput {
   message: string | null;
@@ -1028,6 +1033,21 @@ export interface ModelCost {
   by_role: RoleCost[];
   model_info_last_day: number | null;
   model_info_total: number | null;
+}
+
+export interface ModelOption {
+  alias: string;
+  api: "chat" | "responses" | "messages";
+  effort_supported: boolean;
+}
+
+export interface ModelSettings {
+  project: string;
+  revision: number;
+  roles: Record<string, AgentModelSelection>;
+  defaults: Record<string, AgentModelSelection>;
+  available: ModelOption[];
+  known_efforts: string[];
 }
 
 export interface ModelUsage {

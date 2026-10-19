@@ -145,7 +145,11 @@ def _gateway(
 
 
 def _efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
-    return dict(getattr(args, "reasoning_effort", None) or [])
+    result = dict(getattr(args, "reasoning_effort", None) or [])
+    reviewer = getattr(args, "reviewer_model", None)
+    if reviewer is not None and _apis(args).get(reviewer, "chat") != "messages":
+        result.setdefault("reviewer", "medium")
+    return result
 
 
 def effort_setting(value: str) -> tuple[ModelRole, str]:

@@ -191,7 +191,14 @@ class ModelConfig(_Strict):
     notes, CM-38). An alias it leaves out takes ``chat``, as every alias does by default,
     until the labs confirm the others."""
     reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=7)
-    """Requested effort by caller role. Omitted roles retain provider defaults."""
+    """Requested effort by caller role. Omitted roles retain provider defaults; the
+    launcher's effective profile defaults a non-Messages reviewer to ``medium``."""
+
+    def effective_efforts(self) -> dict[str, str]:
+        result = dict(self.reasoning_effort)
+        if self.reviewer and self.api.get(self.reviewer, "chat") != "messages":
+            result.setdefault("reviewer", "medium")
+        return result
 
     @field_validator("reasoning_effort")
     @classmethod

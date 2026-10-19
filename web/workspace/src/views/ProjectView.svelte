@@ -16,6 +16,7 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectReviewInbox from './ProjectReviewInbox.svelte';
   import ProjectFiles from './ProjectFiles.svelte';
+  import ProjectModels from './ProjectModels.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
   import EnvironmentPanel from './EnvironmentPanel.svelte';
   import ArtifactList from './ArtifactList.svelte';
@@ -193,6 +194,7 @@
       observations.
     </p>
     <ProjectFiles {projectId} />
+    <ProjectModels {projectId} />
 
     <EnvironmentPanel {projectId} {project} />
   </details>

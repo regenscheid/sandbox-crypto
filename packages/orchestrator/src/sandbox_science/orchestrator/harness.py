@@ -50,7 +50,7 @@ from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
 from .consistency.findings import Findings
-from .consistency.models import ReviewConfig
+from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .consistency.store import ReviewStore
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
@@ -132,6 +132,7 @@ from .model import (
     cached_for,
 )
 from .model_profiles import PROFILES, ModelProfile, ModelRole, profiles
+from .model_settings import AgentModelRole, AgentModelSelection, ProjectModels
 from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
@@ -654,11 +655,26 @@ class Harness:
             ):
                 if role is not None and isinstance(role.model, GatewayModel):
                     result[cast(ModelRole, name)] = role.model.requested_profile
+            if not legacy and self.stores is not None and request.parent is None:
+                _, selected = ProjectModels(self.stores.documents).selections(request.project)
+                for role, choice in selected.items():
+                    result[role] = self._selected_profile(role, choice)
+            if legacy and request.alias is not None and self.gateway is not None:
+                # A legacy blueprint has no profile snapshot, but its immutable alias was
+                # saved. Reconstruct that caller instead of adopting later project settings.
+                active: AgentModelRole = "main" if request.parent is None else "delegated"
+                result[active] = self.gateway.profile(request.alias, role=active)
             for name in ("fold", "overview", "skills_metadata"):
+                summary_role: AgentModelRole = "delegated" if request.parent is not None else "main"
                 alias = (
                     (self.derived[0] if self.derived else None)
                     if name == "skills_metadata"
-                    else self.settings.fold_alias or self.main.alias
+                    else self.settings.fold_alias
+                    or (
+                        result[summary_role].alias
+                        if summary_role in result
+                        else (self.delegated if request.parent is not None else self.main).alias
+                    )
                 )
                 if alias is not None and self.gateway is not None:
                     result[cast(ModelRole, name)] = self.gateway.profile(
@@ -675,9 +691,14 @@ class Harness:
                 }
             )
         if request.parent is not None and self.gateway is not None:
-            # A newly admitted child's summaries follow its own selected model.
-            # Explicit saved profiles returned above remain immutable on Resume.
-            alias = self.settings.fold_alias or request.alias or self.delegated.alias
+            # A newly constructed child's summaries follow its recorded selection.
+            # An explicit saved profile returned above remains immutable on Resume.
+            delegated = result.get("delegated")
+            alias = (
+                self.settings.fold_alias
+                or request.alias
+                or (delegated.alias if delegated is not None else self.delegated.alias)
+            )
             for role in ("fold", "overview"):
                 key = cast(ModelRole, role)
                 previous = result.get(key)
@@ -691,16 +712,59 @@ class Harness:
             }
         return result
 
+    def _agent_catalog(self) -> frozenset[str]:
+        return frozenset(
+            role.alias for role in (self.main, self.delegated, self.reviewer) if role is not None
+        )
+
+    def _selected_profile(
+        self, role: AgentModelRole, selection: AgentModelSelection
+    ) -> ModelProfile:
+        if selection.alias not in self._agent_catalog():
+            raise ModelError(f"project {role} model is outside the deployment catalog")
+        configured = {
+            "main": self.main,
+            "delegated": self.delegated,
+            "reviewer": self.reviewer,
+        }[role]
+        if configured is None:
+            raise ModelError(f"project selected an unavailable {role} model")
+        if self.gateway is None:
+            raise ModelError(f"project cannot change {role} model without a gateway")
+        profile = self.gateway.profile(selection.alias, role=role)
+        return profile.model_copy(update={"reasoning_effort": selection.reasoning_effort})
+
     def role(self, request: RunRequest) -> Role:
         """The model a run calls: the delegated role's for a delegated run, or the one
         its delegation chose (PD-28, PD-30)."""
-        if request.parent is None:
-            return self.main
-        if request.alias is None or request.alias == self.delegated.alias:
-            return self.delegated
+        name: AgentModelRole = "main" if request.parent is None else "delegated"
+        configured = self.main if name == "main" else self.delegated
+        selected = (request.model_profiles or {}).get(name)
+        alias = request.alias if request.parent is not None and request.alias is not None else None
+        alias = alias or (selected.alias if selected is not None else configured.alias)
+        if alias == configured.alias:
+            return configured
         if self.gateway is None:
-            raise ModelError(f"no model gateway serves {request.alias!r}")
-        return Role(self.gateway.model(request.alias, role="delegated"), request.alias)
+            raise ModelError(f"no model gateway serves {alias!r}")
+        return Role(self.gateway.model(alias, role=name), alias)
+
+    def reviewer_role(self, request: RunRequest) -> Role | None:
+        """The consistency reviewer pinned for this tree, with reviewer response bounds."""
+        configured = self.reviewer
+        if configured is None:
+            return None
+        selected = (request.model_profiles or {}).get("reviewer")
+        alias = selected.alias if selected is not None else configured.alias
+        if alias == configured.alias:
+            return configured
+        if self.gateway is None:
+            raise ModelError(f"no model gateway serves reviewer {alias!r}")
+        return Role(
+            self.gateway.model(alias, role="reviewer").limited(
+                max_output=4096, max_response_bytes=REVIEWER_MAX_RESPONSE_BYTES
+            ),
+            alias,
+        )
 
     def _model(self, admitted: Admitted) -> ChatModel:
         """The model a run calls (``role``), calling as its session, so that all of the
@@ -1036,13 +1100,14 @@ class Harness:
                 allowance=allowance or self._fold_allowance(admitted),
             )
         project, session = context.project_id, context.session_id
+        main = self.role(request)
         archive = Archive(stores.projects.control, clock=self.clock)
         name = run_name(admitted.started_at, admitted.run_id)
-        calls = await threaded(stores.projects.usage, project, session, self.main.alias)
+        calls = await threaded(stores.projects.usage, project, session, main.alias)
         runs = await threaded(stores.projects.unarchived_runs, project, session)
         earlier = functools.partial(recorded_words, stores.projects, stores.runs, project, session)
         settings = self.settings
-        top = await self._ceiling()
+        top = await self._ceiling(main)
         start = geometry(top, 0, settings.chunk, settings.shares)  # no system message yet
         per_token = chars_per_token(calls)
         ledger = Ledger(stores.documents)
@@ -1084,7 +1149,7 @@ class Harness:
 
         # The session's last main run on another model: this one refits to its own
         # geometry first, that model writing the refit's narratives (CM-31).
-        switched = await threaded(_switched, stores.projects, project, session, self.main.alias)
+        switched = await threaded(_switched, stores.projects, project, session, main.alias)
         former = None
         if switched is not None and self.gateway is not None and not settings.skeleton_only:
             former = cached_for(
@@ -1103,7 +1168,7 @@ class Harness:
             earlier=earlier,
             kernels=kernels,
             digest=digest,
-            model=self._narrator(project, session),
+            model=self._narrator(project, session, request),
             exists=exists,
             judge=judge,
             consolidating=request.consolidate,
@@ -1114,7 +1179,7 @@ class Harness:
         )
         # The ceiling a context error capped, carried to later runs: this service's, or
         # the session's last main run's on the alias, as its record keeps it (CM-43).
-        alias = self.main.alias
+        alias = main.alias
         made.learned = self._learned.get(alias)
         if made.learned is None:
             made.learned = await threaded(_learned, stores.projects, project, session, alias)
@@ -1164,7 +1229,7 @@ class Harness:
             ).for_role("fold")
         return cached_for(model, context.project_id, context.session_id)
 
-    def _narrator(self, project: str, session: str) -> ChatModel | None:
+    def _narrator(self, project: str, session: str, request: RunRequest) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
         the gateway, or MAIN's own; none for skeleton-only folds, or for a model that is
         not the gateway's, as a scripted one, whose answers are the run's (CM-19). It
@@ -1172,14 +1237,13 @@ class Harness:
         cache (CM-32)."""
         if self.settings.skeleton_only:
             return None
-        if self.settings.fold_alias is not None and self.gateway is not None:
-            return cached_for(
-                self.gateway.model(self.settings.fold_alias, role="fold"), project, session
-            )
-        if isinstance(self.main.model, GatewayModel):
-            return cast(GatewayModel, cached_for(self.main.model, project, session)).for_role(
-                "fold"
-            )
+        profile = (request.model_profiles or {}).get("fold")
+        alias = profile.alias if profile is not None else self.settings.fold_alias
+        if alias is not None and self.gateway is not None:
+            return cached_for(self.gateway.model(alias, role="fold"), project, session)
+        main = self.role(request)
+        if isinstance(main.model, GatewayModel):
+            return cast(GatewayModel, cached_for(main.model, project, session)).for_role("fold")
         return None
 
     def _input_chars(self, *, folding: bool) -> int:
@@ -1339,7 +1403,11 @@ class Harness:
             limits=limits,
             refresh_settings=lambda: threaded(records.settings, context.project_id),
             models=ModelChoice(
-                self.delegated.alias,
+                (
+                    (request.model_profiles or {})["delegated"].alias
+                    if "delegated" in (request.model_profiles or {})
+                    else self.delegated.alias
+                ),
                 limits,
                 self.gateway.aliases if self.gateway is not None else None,
                 self.gateway.tool_calling if self.gateway is not None else None,
@@ -1389,8 +1457,33 @@ class Harness:
             root=parent.request.root or parent.request.parent,
             may_delegate=child.delegate,
             stop_by=child.deadline,
+            model_profiles=dict(parent.request.model_profiles or {}),
         )
-        request = dataclasses.replace(request, model_profiles=self.model_profiles(request))
+        profiles_for_child = dict(request.model_profiles or {})
+        if child.alias is not None:
+            previous = profiles_for_child.get("delegated")
+            if self.gateway is None and child.alias != self.delegated.alias:
+                raise ModelError(f"no model gateway serves {child.alias!r}")
+            if self.gateway is not None:
+                profiles_for_child["delegated"] = self.gateway.profile(
+                    child.alias, role="delegated"
+                ).model_copy(
+                    update={"reasoning_effort": previous.reasoning_effort if previous else None}
+                )
+        if self.gateway is not None:
+            # A child's narrative summaries use its selected model unless the deployment
+            # names a dedicated folding model. The parent's effort pins remain immutable.
+            delegated = profiles_for_child.get("delegated")
+            alias = self.settings.fold_alias or (
+                delegated.alias if delegated is not None else self.delegated.alias
+            )
+            for role in ("fold", "overview"):
+                key = cast(ModelRole, role)
+                previous = profiles_for_child.get(key)
+                profiles_for_child[key] = self.gateway.profile(alias, role=key).model_copy(
+                    update={"reasoning_effort": previous.reasoning_effort if previous else None}
+                )
+        request = dataclasses.replace(request, model_profiles=profiles_for_child)
         return dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
         )
@@ -1563,7 +1656,7 @@ class Harness:
         not end its job waits (PD-34)."""
         stores, settings = self.stores, self.settings
         alias = self.role(admitted.request).alias
-        watcher, reviewer = self.watcher, self.reviewer
+        watcher, reviewer = self.watcher, self.reviewer_role(admitted.request)
         context, run_id = admitted.context, admitted.run_id
         languages, features = admitted.languages, admitted.features
         role = admitted.request.role
@@ -1675,7 +1768,7 @@ class Harness:
                 connectors=connectors.servers if connectors is not None else (),
                 earlier=len(admitted.request.history),
                 archived_as=chat.run if chat is not None else None,
-                images=await self._reviewer_images(inventory, context),
+                images=await self._reviewer_images(inventory, context, reviewer),
             )
             on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
@@ -1808,11 +1901,11 @@ class Harness:
         )
 
     async def _reviewer_images(
-        self, inventory: ArtifactInventory, context: ExecutionContext
+        self, inventory: ArtifactInventory, context: ExecutionContext, reviewer: Role | None
     ) -> ImageViewer | None:
         """The reviewer's viewer, when its alias accepts images (FG-39). What it draws
         is the platform's execution, never the reviewer's (CR-2, CR-F8)."""
-        if self.reviewer is None or not (await self._images(self.reviewer.alias))[0]:
+        if reviewer is None or not (await self._images(reviewer.alias))[0]:
             return None
         return ImageViewer(inventory, context.model_copy(update={"actor": "platform"}), self.client)
 

@@ -38,9 +38,12 @@ from pathlib import Path
 from typing import Final
 
 from aiohttp import web
+from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.model_profiles import Effort, requested
+from sandbox_science.orchestrator.model_settings import AgentModelRole
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
@@ -51,9 +54,40 @@ from .mathrepair import MathRepairService, gateway_service, reviewer_alias
 from .mcp_metadata import MetadataClient
 from .mcp_services import ServiceConfig
 from .preview import Capabilities, Preview, create_preview_app, own_host
+from .project_settings import ModelConfiguration
 
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
+
+
+def _agent_model(value: str) -> tuple[AgentModelRole, str]:
+    role, separator, alias = value.partition("=")
+    try:
+        checked = TypeAdapter(AgentModelRole).validate_python(role)
+    except ValidationError:
+        raise argparse.ArgumentTypeError("agent model needs main, delegated or reviewer") from None
+    if not separator or not alias or len(alias) > 200:
+        raise argparse.ArgumentTypeError("agent model needs ROLE=ALIAS")
+    return checked, alias
+
+
+def _agent_effort(value: str) -> tuple[AgentModelRole, str]:
+    role, separator, effort = value.partition("=")
+    try:
+        checked_role = TypeAdapter(AgentModelRole).validate_python(role)
+        checked_effort = TypeAdapter(Effort).validate_python(effort)
+    except ValidationError:
+        raise argparse.ArgumentTypeError("agent effort needs ROLE=EFFORT") from None
+    if not separator:
+        raise argparse.ArgumentTypeError("agent effort needs ROLE=EFFORT")
+    return checked_role, checked_effort
+
+
+def _agent_api(value: str) -> tuple[str, str]:
+    alias, separator, api = value.partition("=")
+    if not separator or not alias or api not in ("chat", "responses", "messages"):
+        raise argparse.ArgumentTypeError("agent API needs ALIAS=chat|responses|messages")
+    return alias, api
 
 
 def math_repairs(
@@ -267,6 +301,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.add_argument(
         "--mcp-proxy-token-file", type=Path, help="host-only proxy caller token path"
     )
+    agents = command.add_argument_group(
+        "agent models", "trusted project choices for main, delegated and reviewer roles"
+    )
+    agents.add_argument("--agent-model", action="append", default=[], type=_agent_model)
+    agents.add_argument("--agent-effort", action="append", default=[], type=_agent_effort)
+    agents.add_argument("--agent-api", action="append", default=[], type=_agent_api)
     repairs = command.add_argument_group(
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
     )
@@ -304,6 +344,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
+    role_items = dict(args.agent_model)
+    effort_items = dict(args.agent_effort)
+    api_items = dict(args.agent_api)
+    if len(role_items) != len(args.agent_model) or len(effort_items) != len(args.agent_effort):
+        parser.error("agent model and effort roles may be named only once")
+    if len(api_items) != len(args.agent_api):
+        parser.error("an agent alias may name only one API")
+    if role_items and not {"main", "delegated"}.issubset(role_items):
+        parser.error("agent models need main and delegated roles")
+    if not set(effort_items).issubset(role_items):
+        parser.error("agent effort needs a configured agent model role")
+    unknown_apis = set(api_items).difference(role_items.values())
+    if unknown_apis:
+        parser.error("agent API aliases must be in the agent model catalog")
+    if "reviewer" in role_items and api_items.get(role_items["reviewer"], "chat") != "messages":
+        effort_items.setdefault("reviewer", "medium")
+    for role, alias in role_items.items():
+        if api_items.get(alias, "chat") == "messages" and role in effort_items:
+            parser.error(f"{role} uses Messages, which does not accept agent effort")
+    model_configuration = (
+        ModelConfiguration(
+            defaults={
+                role: requested(
+                    alias,
+                    api_items.get(alias, "chat"),
+                    effort_items.get(role),
+                )
+                for role, alias in role_items.items()
+            },
+            available={alias: api_items.get(alias, "chat") for alias in set(role_items.values())},
+        )
+        if role_items
+        else None
+    )
     try:
         preview_host, preview_port = (
             parse_listen(args.preview_listen)
@@ -387,6 +461,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_project=args.mcp_project,
             mcp_inventory=tuple(mcp_inventory),
             mcp_metadata=metadata,
+            model_configuration=model_configuration,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)

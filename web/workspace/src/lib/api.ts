@@ -37,6 +37,7 @@ import type {
   MemoryHistory,
   MemoryProposals,
   McpInventory,
+  ModelSettings,
   ProjectAnswer,
   ProjectListing,
   ProjectSkills,
@@ -709,6 +710,11 @@ export const api = {
   fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),
   changeFileSettings: (project: string, value: Record<string, unknown>) =>
     post<FileSettings>(`/projects/${part(project)}/files/settings`, value),
+  /** Model aliases and reasoning effort for newly admitted agent trees. */
+  modelSettings: (project: string) =>
+    get<ModelSettings>(`/projects/${part(project)}/models/settings`),
+  changeModelSettings: (project: string, value: Record<string, unknown>) =>
+    post<ModelSettings>(`/projects/${part(project)}/models/settings`, value),
   /** The figure frame's URL for a chart, and a capability for each data file it pins, in
    * order, for 10 minutes (FG-15). */
   chartLink: (project: string, data: { artifact: string; revision: number; sha256: string }[]) =>

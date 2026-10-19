@@ -120,6 +120,14 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
         layout.token("workspace-worker")
     )
     assert "sandbox-reviewer" in workspace
+    assert [
+        workspace[index + 1] for index, value in enumerate(workspace) if value == "--agent-model"
+    ] == [
+        "main=sandbox-orchestrator",
+        "delegated=sandbox-orchestrator",
+        "reviewer=sandbox-reviewer",
+    ]
+    assert "reviewer=medium" in workspace
     granted = parts.policy_argv(config, layout)
     assert granted[-3:] == ["--project", "crypto", str(config.worker.policy)]
     projects = parts.project_argvs(config, layout, "sha256:" + "a" * 64)
@@ -134,6 +142,23 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
     assert [argv[1:3] for argv in again] == [["project", "revise"], ["session", "open"]]
     with pytest.raises(LauncherError, match="keeps the profile it was made with"):
         parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "crypto-base"})
+
+
+def test_messages_reviewer_omits_the_default_effort(make_config: Any, commands: Path) -> None:
+    config = load_config(
+        make_config(
+            {
+                "bin_dir": str(commands),
+                "model": {"reviewer": "claude", "api": {"claude": "messages"}},
+            }
+        )
+    )
+    layout = Layout(config.state_dir)
+    harness = parts.harness_argv(config, layout)
+    workspace = parts.workspace_argv(config, layout)
+    assert "reviewer=medium" not in harness
+    assert "reviewer=medium" not in workspace
+    assert "--reviewer-effort" not in workspace
 
 
 def test_the_skills_embedding_model_reaches_imports_and_runs_by_the_key_path(

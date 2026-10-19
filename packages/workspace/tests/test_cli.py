@@ -133,6 +133,34 @@ def test_serve_warns_only_when_the_preview_origin_shares_the_site(
     assert warned is None or warned in caplog.text
 
 
+def test_messages_agent_reviewer_starts_without_an_effort_default(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    served: list[bool] = []
+
+    async def serve(*_: object) -> None:
+        served.append(True)
+
+    monkeypatch.setattr(cli, "serve", serve)
+    args = [
+        "serve",
+        "--state-dir",
+        str(state_dir),
+        "--static",
+        str(static_dir),
+        "--agent-model",
+        "main=sol",
+        "--agent-model",
+        "delegated=sol",
+        "--agent-model",
+        "reviewer=claude",
+        "--agent-api",
+        "claude=messages",
+    ]
+    assert cli.main(args) == 0
+    assert served == [True]
+
+
 def test_another_address_needs_allow_remote(tmp_path: Path, static_dir: Path) -> None:
     with pytest.raises(SystemExit) as refused:
         cli.main(

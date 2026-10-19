@@ -148,10 +148,23 @@ class CallbackGateway(ModelGateway):
         self.apis, self.reasoning_effort = apis or {}, reasoning_effort or {}
 
     def model(self, alias: str, *, role: ModelRole = "delegated") -> CallbackModel:
+        kind = cast(
+            ModelKind,
+            {
+                "main": "main",
+                "delegated": "delegated",
+                "reviewer": "reviewer",
+                "watcher": "watcher",
+                "fold": "fold",
+                "overview": "fold",
+                "skills_metadata": "skills",
+            }[role],
+        )
         return CallbackModel(
             self.channel,
             alias,
             scope=self.scope,
+            kind=kind,
             role=role,
             profile=requested(
                 alias=alias,
