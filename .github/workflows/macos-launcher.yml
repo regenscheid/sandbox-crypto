@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+name: macOS ARM64 launcher
+
+on:
+  pull_request:
+    paths:
+      - packages/launcher/**
+      - .github/workflows/macos-launcher.yml
+      - pyproject.toml
+      - uv.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launcher:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: test "$(uname -m)" = arm64
+      - run: uv sync --locked
+      - run: uv run pytest -q packages/launcher/tests
