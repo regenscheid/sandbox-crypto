@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -48,3 +49,71 @@ def test_index_must_match_exact_architecture_digests() -> None:
             },
             sources,
         )
+
+
+def test_publication_checks_both_inputs_then_verifies_the_written_index(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = "registry.example/ss/crypto-base"
+    amd = "sha256:" + "a" * 64
+    arm = "sha256:" + "b" * 64
+    index = "sha256:" + "c" * 64
+    calls: list[tuple[str, ...]] = []
+
+    def fake_docker(*args: str) -> str:
+        calls.append(args)
+        if args[0] == "inspect" and args[-1].endswith("@" + amd):
+            return json.dumps(
+                {
+                    "os": "linux",
+                    "architecture": "amd64",
+                    "config": {
+                        "Labels": {
+                            "io.github.regenscheid.sandbox-science.profile": "crypto-base",
+                            "org.opencontainers.image.revision": "rev",
+                        }
+                    },
+                }
+            )
+        if args[0] == "inspect" and args[-1].endswith("@" + arm):
+            return json.dumps(
+                {
+                    "os": "linux",
+                    "architecture": "arm64",
+                    "config": {
+                        "Labels": {
+                            "io.github.regenscheid.sandbox-science.profile": "crypto-base",
+                            "org.opencontainers.image.revision": "rev",
+                        }
+                    },
+                }
+            )
+        if args[0] == "inspect":
+            return json.dumps(
+                {
+                    "digest": index,
+                    "manifests": [
+                        {"platform": {"os": "linux", "architecture": "amd64"}, "digest": amd},
+                        {"platform": {"os": "linux", "architecture": "arm64"}, "digest": arm},
+                    ],
+                }
+            )
+        return ""
+
+    monkeypatch.setattr(publish, "docker", fake_docker)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "publish_index.py",
+            "crypto-base",
+            repo + ":rev",
+            repo + "@" + amd,
+            repo + "@" + arm,
+            "--private-registry-confirmed",
+        ],
+    )
+    assert publish.main() == 0
+    assert calls[2][0] == "create"
+    assert capsys.readouterr().out.strip() == repo + "@" + index
