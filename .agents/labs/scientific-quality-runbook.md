@@ -58,9 +58,9 @@ alone consumes the referenced key and prepares the confined runtime.
 .venv/bin/python -I .agents/labs/scientific_quality.py inspect "$QUALITY_LAB"
 ```
 
-The live configuration pins Sol research/delegation/narration and Luna review to
-Responses/max. A gateway listing and local validation do not prove accepted
-runtime effort; inspect the actual saved profiles and call records. No watcher
+The live configuration pins Sol research/delegation/narration to Responses/max and
+Luna review to Responses/medium. A gateway listing and local validation do not prove
+accepted runtime effort; inspect the actual saved profiles and call records. No watcher
 or skills-generation model is enabled. Startup never sends a research message.
 
 The lab's owned `-model.service` unit is repurposed as a five-second lifetime

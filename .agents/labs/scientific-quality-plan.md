@@ -60,12 +60,12 @@ inference failure. The new lab must explicitly set both aliases to `responses`.
 | Role | Alias and effort | Advertised input/cache/output USD per million tokens |
 | --- | --- | --- |
 | Main, delegated, fold, overview | `arrcodex-gpt-6-sol`, `max` | 2 / 0.20 / 10 |
-| Built-in consistency reviewer | `arrcodex-gpt-6-luna`, `max` | 0.10 / 0.01 / 0.50 |
+| Built-in consistency reviewer | `arrcodex-gpt-6-luna`, `medium` | 0.10 / 0.01 / 0.50 |
 
 Both advertised a 922,000-token input window. Their listed prices above 272,000
 input tokens are respectively 4/0.40/15 and 0.20/0.02/0.75. This experiment proposes
 a 160,000-token working ceiling and checks the serialized request stays below
-the long-context threshold. The listing does not prove max-effort transport or
+the long-context threshold. The listing does not prove selected-effort transport or
 review quality; record actual requests and outcomes when the lab runs.
 
 Authorized allowance: **USD 150 total estimated spend across this new test campaign**.

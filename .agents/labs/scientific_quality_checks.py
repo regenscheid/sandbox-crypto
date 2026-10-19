@@ -317,7 +317,9 @@ async def selftest() -> dict:
     return {
         "offline_arithmetic": measured["offline_selftest"],
         "numeric_grading": "accepts correct outputs, rejects changed claims and binary bytes",
-        "profile_config": "validated without reading a key; runtime max effort remains unverified",
+        "profile_config": (
+            "validated without reading a key; selected runtime role efforts remain unverified"
+        ),
         "review_fixture": outcomes,
         "temporary_state_removed": True,
         "paid_calls": 0,

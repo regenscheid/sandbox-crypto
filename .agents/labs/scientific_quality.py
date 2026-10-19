@@ -96,9 +96,13 @@ def live_model(key_file: Path) -> dict:
         "reviewer": LUNA,
         "api_key_file": str(key_file),
         "api": {SOL: "responses", LUNA: "responses"},
-        "reasoning_effort": dict.fromkeys(
-            ("main", "delegated", "reviewer", "fold", "overview"), "max"
-        ),
+        "reasoning_effort": {
+            "main": "max",
+            "delegated": "max",
+            "reviewer": "medium",
+            "fold": "max",
+            "overview": "max",
+        },
         "review_token_budget": 400000,
         "review_calls_per_hour": 120,
     }
