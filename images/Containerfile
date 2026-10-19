@@ -54,8 +54,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 # What every profile shares: the sandbox account, micromamba and an empty Conda prefix.
 FROM ${UBUNTU_IMAGE} AS base
 ARG UBUNTU_SNAPSHOT
+ARG TARGETARCH
 ARG DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# Noble's ARM64 source names ports.ubuntu.com, whose snapshot route currently returns 401.
+# The same signed ARM64 package index is available under snapshot.ubuntu.com/ubuntu.
+RUN if [ "${TARGETARCH}" = arm64 ]; then \
+        sed -i 's|http://ports.ubuntu.com/ubuntu-ports|http://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
 RUN --mount=type=bind,from=bootstrap-ca,source=/etc/ssl/certs/ca-certificates.crt,target=/run/bootstrap-ca.crt \
     apt-get -o Acquire::https::CaInfo=/run/bootstrap-ca.crt -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
     apt-get -o Acquire::https::CaInfo=/run/bootstrap-ca.crt -o APT::Snapshot="${UBUNTU_SNAPSHOT}" \

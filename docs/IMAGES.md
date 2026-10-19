@@ -277,7 +277,7 @@ The recipe builds for `linux/arm64` too, but no arm64 image has been built or te
 What arm64 still needs:
 
 - **A build.** On an arm64 host, such as a Raspberry Pi 5 node or the Mac, or under QEMU emulation, where compiling G6K and unpacking about 400 packages is slow.
-- **Ubuntu's ports archive.** Ubuntu serves arm64 packages from `ports.ubuntu.com`. On 2026-10-11 the snapshot service answered `https://snapshot.ubuntu.com/ubuntu-ports/…` with 401, so arm64 may need another way to pin Ubuntu packages, such as exact versions in `apt-packages.txt`.
+- **Ubuntu's pinned archive.** Noble's ARM64 base image names `ports.ubuntu.com`, but its `ubuntu-ports` snapshot route returns 401. The recipe maps that source to `archive.ubuntu.com` on ARM64 so APT's snapshot setting uses the signed ARM64 index at `snapshot.ubuntu.com/ubuntu`. The native ARM64 build must verify that package installation and the resulting image work; a 200 response for the index alone is insufficient.
 - **A multi-platform image.** It needs a registry or an OCI layout to hold both architectures under one tag; `build.sh` loads one platform into the local store.
 - **The tests**, run on an arm64 host.
 

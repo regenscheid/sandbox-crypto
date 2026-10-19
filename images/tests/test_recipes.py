@@ -138,6 +138,13 @@ def test_every_download_in_the_containerfile_is_pinned() -> None:
         assert re.fullmatch(r"[0-9a-f]{40}", args[name])
 
 
+def test_arm64_apt_uses_the_pinned_archive_snapshot() -> None:
+    recipe = (IMAGES / "Containerfile").read_text()
+    assert 'if [ "${TARGETARCH}" = arm64 ]; then' in recipe
+    assert "s|http://ports.ubuntu.com/ubuntu-ports|http://archive.ubuntu.com/ubuntu|g" in recipe
+    assert 'APT::Snapshot="${UBUNTU_SNAPSHOT}"' in recipe
+
+
 def test_python_requirements_are_hashed() -> None:
     text = (IMAGES / "crypto-base" / "requirements.txt").read_text()
     requirements = [line for line in text.splitlines() if re.match(r"^[A-Za-z]", line)]
