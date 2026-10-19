@@ -70,8 +70,8 @@ class ModelTurn:
     the gateway's model information)."""
     retried: tuple[str, ...] = ()
     """What the attempts before this answer's came to, in order: ``HTTP`` and a status,
-    or ``failed response``. Only this answer's cost is the turn's: an attempt that was
-    tried again was never answered, so nothing of it is recorded but this."""
+    ``failed response``, or ``incomplete response``. Only this answer's cost is the turn's:
+    a retried attempt has no complete answer, so its usage and charge remain unknown."""
     native: bytes | None = None
     """The gateway's answer as it sent it, which the session's archive keeps
     (docs/specs/context-management.md, CM-5); ``native_format`` says what it is."""
@@ -522,7 +522,7 @@ class GatewayModel(ABC):
                 delay = retry.after if retry.after is not None else min(wait, MAX_RETRY_WAIT)
                 # The status only: the error, with the gateway's text, is the caller's to
                 # report once if the retries end.
-                failed = (
+                failed = retry.outcome or (
                     "failed response"
                     if retry.error.status is None
                     else f"HTTP {retry.error.status}"
@@ -558,6 +558,21 @@ class GatewayModel(ABC):
                         if body.get("stream") is True and 200 <= response.status < 300
                         else read_limited(response, self._max_response_bytes)
                     )
+                except aiohttp.ClientPayloadError:
+                    # A truncated 2xx body is an unknown model outcome, not a
+                    # usable partial turn. Keep the same bounded retry policy.
+                    # Never retry an incomplete error body: it may hide a budget
+                    # refusal (including 429), authentication or request failure.
+                    if not 200 <= response.status < 300:
+                        raise
+                    raise _RetryableError(
+                        ModelError(
+                            "the model gateway's response body was incomplete; "
+                            "its charge is unknown"
+                        ),
+                        None,
+                        outcome="incomplete response",
+                    ) from None
                 except ModelError as error:
                     if 200 <= response.status < 300:  # charged, though too long to read
                         error.cost = reported_cost(response.headers.get(COST_HEADER))
@@ -878,8 +893,11 @@ class ModelGateway:
 
 
 class _RetryableError(Exception):
-    def __init__(self, error: ModelError, after: float | None) -> None:
+    def __init__(
+        self, error: ModelError, after: float | None, *, outcome: str | None = None
+    ) -> None:
         self.error, self.after = error, after
+        self.outcome = outcome
 
 
 def _retry_after(value: str | None) -> float | None:
