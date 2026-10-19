@@ -357,7 +357,7 @@ class Lab:
         with self.opener.open(request, timeout=timeout) as response:
             return json.load(response)
 
-    def worker(self, method, path, body=None, *, operator=False):
+    def worker(self, method, path, body=None, *, operator=False, timeout=60):
         client = "workspace" if operator else "harness"
         token = (self.path / f"instance/tokens/{client}-worker.token").read_text().strip()
         request = urllib.request.Request(
@@ -370,7 +370,7 @@ class Lab:
                 PROTOCOL_HEADER: str(PROTOCOL_VERSION),
             },
         )
-        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - fixed owned loopback URL
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed owned loopback URL
             return json.load(response)
 
     def up(self):

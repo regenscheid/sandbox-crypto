@@ -15,6 +15,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import secrets
 import shlex
 import sys
@@ -39,6 +40,9 @@ from scientific_quality_checks import (
     selftest,
 )
 
+from sandbox_science.contracts.environments import EnvironmentInfo, EnvironmentRequest
+from sandbox_science.contracts.recovery import OperationLookupRequest
+from sandbox_science.contracts.worker import ShellRequest
 from sandbox_science.launcher import toml
 from sandbox_science.launcher.config import ModelConfig
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
@@ -304,33 +308,137 @@ class Lab(recovery.Lab):
             "actor": "user",
         }
 
-    def calibrate(self, session: str):
-        """Generate worker evidence; let the real reviewer and author decide next."""
+    def http_failure(self, method: str, path: str, error: HTTPError):
+        """Keep only bounded structured diagnostics, never request headers or credentials."""
+        body = error.read(4096)
+        detail = {"status": error.code, "method": method, "path": path.split("?", 1)[0]}
+        try:
+            problem = json.loads(body).get("error", {})
+            if isinstance(problem, dict):
+                message = str(problem.get("message", ""))[:512]
+                message = re.sub(r"(?i)bearer\s+\S+", "Bearer <redacted>", message)
+                message = message.replace(str(self.path), "<owned-lab>")
+                message = message.replace(str(Path.home()), "<home>")
+                detail["error"] = {"kind": str(problem.get("kind", ""))[:64], "message": message}
+        except (ValueError, AttributeError):
+            detail["unparsed_body_bytes"] = len(body)
+        self.evidence("quality-http-error-" + secrets.token_hex(4), detail)
+
+    def worker(self, method, path, body=None, *, operator=False, timeout=60):
+        try:
+            return super().worker(method, path, body, operator=operator, timeout=timeout)
+        except HTTPError as error:
+            self.http_failure(method, path, error)
+            raise
+
+    def post(self, session, action, body, *, timeout=30):
+        try:
+            return super().post(session, action, body, timeout=timeout)
+        except HTTPError as error:
+            self.http_failure("POST", f"/sessions/{session}/{action}", error)
+            raise
+
+    def ensure_environment(self, session: str):
+        """Establish only this recorded project's environment through the public worker API."""
+        projects = ProjectStore(self.path / "instance/control", readonly=True)
+        try:
+            project = projects.get(recovery.PROJECT)
+        finally:
+            projects.close()
+        expected = EnvironmentRequest(
+            environment_id=self.context(session)["environment_id"],
+            project_id=project.project_id,
+            profile=project.profile,
+            policy=project.policy,
+        )
+        path = "/v1/environments/" + expected.environment_id
+        try:
+            found = self.worker("GET", path, operator=True)
+        except HTTPError as error:
+            if error.code != 404:
+                raise
+            found = self.worker(
+                "POST",
+                "/v1/environments",
+                expected.model_dump(mode="json"),
+                operator=True,
+                timeout=180,
+            )
+        info = EnvironmentInfo.model_validate(found)
+        assert (info.environment_id, info.project_id, info.profile, info.policy) == (
+            expected.environment_id,
+            expected.project_id,
+            expected.profile,
+            expected.policy,
+        ), "recorded environment does not match; do not adopt or revise it"
+        assert info.state == "ready", "environment is not ready; reconcile its original creation"
+        self.evidence(session + "-environment", info.model_dump(mode="json"))
+        self.remember_sandboxes()
+
+    def calibration_reference(self, session: str, *, resume=False):
+        """Recover only the original reference effect before any later calibration stage."""
         assert session in CASES
+        marker = self.path / (session + "-seed-intent.json")
+        operation = "reference-" + session
+        identity = {"operation_id": operation, "session": session}
+        if resume:
+            assert json.loads(marker.read_text()) == identity, "original calibration marker changed"
+            assert not self.read(
+                "SELECT document_id FROM documents WHERE project_id=? AND session_id=?",
+                (recovery.PROJECT, session),
+            ), "document seeding already began; reconcile that original effect separately"
+            assert not self.read(
+                "SELECT message_id FROM session_messages WHERE project_id=? AND session_id=?",
+                (recovery.PROJECT, session),
+            ), "calibration message already exists; do not replay later stages"
+            assert not (self.path / ("message-intent-" + session + ".json")).exists()
+            assert not (self.path / (session + "-document-intent.json")).exists(), (
+                "document/reviewer stages may have started; inspect their original receipts"
+            )
+        else:
+            assert not marker.exists(), "inspect the original outcome, then use resume-calibration"
+            private_json(marker, identity)
+        body = {
+            "kind": "shell",
+            "context": self.context(session),
+            "operation_id": operation,
+            "script": "python3 -c " + shlex.quote(REFERENCE),
+            "timeout_seconds": 60,
+            "output_limit_bytes": 16384,
+        }
+        ShellRequest.model_validate(body)
+        pinned = self.path / (session + "-reference-request.json")
+        if pinned.exists():
+            assert json.loads(pinned.read_text()) == body, "original reference request changed"
+        else:
+            private_json(pinned, body)
+        lookup = OperationLookupRequest(context=body["context"], operation_id=operation)
+        found = self.worker(
+            "POST", "/v1/operations/lookup", lookup.model_dump(mode="json"), operator=True
+        )
+        assert found["provision"] is None, "reference operation has an unexpected effect"
+        admitted = found["execution"]
+        self.evidence(session + "-reference-lookup", found)
+        self.ensure_environment(session)
+        if admitted is None:
+            # Same pinned body and operation ID: the worker's atomic admission
+            # handles a concurrent original request without creating another effect.
+            admitted = self.worker("POST", "/v1/executions", body, operator=True)
+        assert admitted["operation_id"] == operation
+        assert all(
+            admitted["context"][key] == body["context"][key]
+            for key in ("project_id", "session_id", "environment_id")
+        ), "reference receipt is outside the original context"
+        self.evidence(session + "-reference-admitted", admitted)
+        return admitted
+
+    def calibrate(self, session: str, *, resume=False):
+        """Generate worker evidence; let the real reviewer and author decide next."""
         self.ensure_live()
         assert not self.read("SELECT run FROM run_leases"), (
             "settle the preceding calibration or study first"
         )
-        marker = self.path / (session + "-seed-intent.json")
-        assert not marker.exists(), (
-            "inspect original execution and document receipts before retrying"
-        )
-        operation = "reference-" + session
-        private_json(marker, {"operation_id": operation, "session": session})
-        admitted = self.worker(
-            "POST",
-            "/v1/executions",
-            {
-                "kind": "shell",
-                "context": self.context(session),
-                "operation_id": operation,
-                "script": "python3 -c " + shlex.quote(REFERENCE),
-                "timeout_seconds": 60,
-                "output_limit_bytes": 16384,
-            },
-            operator=True,
-        )
-        self.evidence(session + "-reference-admitted", admitted)
+        admitted = self.calibration_reference(session, resume=resume)
         execution = admitted["execution_id"]
 
         def terminal():
@@ -353,6 +461,7 @@ class Lab(recovery.Lab):
         assert observed["differential_uniformity"] == expected["differential_uniformity"]
         assert observed["witness"]["inputs"] == expected["witness"]["solutions"]
         self.evidence(session + "-reference", receipt)
+        private_json(self.path / (session + "-document-intent.json"), {"execution": execution})
         documents = DocumentStore(
             store_path(self.path / "instance/control"), producer="quality-calibration"
         )
@@ -422,6 +531,7 @@ class Lab(recovery.Lab):
 
     def materials(self):
         self.ensure_live()
+        self.ensure_environment(SESSION)
         mark = self.path / "materials-attempt.json"
         assert not mark.exists(), "inspect original file-write receipts before retrying"
         private_json(mark, {"attempted": time.time()})
@@ -640,6 +750,7 @@ def main():
             "guard",
             "materials",
             "calibrate",
+            "resume-calibration",
             "initial",
             "child",
             "changed",
@@ -662,6 +773,8 @@ def main():
     parser.add_argument("--case", choices=CASES)
     args = parser.parse_args()
     if args.action == "selftest":
+        from scientific_quality_recovery_checks import recovery_selftest
+
         assert all(prompt(stage).strip() for stage in PROMPTS)
         # This nonexistent file proves config validation never reads the key.
         live_model(Path("/nonexistent-quality-selftest/no-key"))
@@ -677,7 +790,9 @@ def main():
         assert stopped == ["synthetic-first", "synthetic-second"]
         assert attempted["synthetic-first"]["error_type"] == "TimeoutError"
         assert attempted["synthetic-second"]["exit_code"] == 0
-        print(json.dumps(asyncio.run(selftest()), indent=2))
+        result = asyncio.run(selftest())
+        result["calibration_recovery"] = recovery_selftest(Lab)
+        print(json.dumps(result, indent=2))
     elif args.action == "prepare":
         print(prepare(args.static))
     else:
@@ -696,10 +811,10 @@ def main():
             if args.appendix is None:
                 parser.error("pressure needs --appendix 1..8")
             lab.pressure(args.appendix)
-        elif args.action == "calibrate":
+        elif args.action in {"calibrate", "resume-calibration"}:
             if args.case is None:
                 parser.error("calibrate needs --case")
-            lab.calibrate(args.case)
+            lab.calibrate(args.case, resume=args.action == "resume-calibration")
         else:
             result = getattr(lab, args.action)()
             if result is not None:

@@ -87,6 +87,10 @@ Run the two neutral cases sequentially, waiting for settlement between them:
 ```
 
 Repeat for `calibration-b` only after the first has no live lease. Each case runs
+an environment GET and, only when absent, the public idempotent create request
+using the recorded project profile and policy. Creation has a 180-second client
+timeout. Existing environment identity, profile and policy must match exactly;
+the helper does not adopt another environment or revise its policy. It then runs
 the independent reference calculation in the real worker, validates its exact
 receipt, then seeds a neutral fixture-authored document and that actual execution
 as immutable reviewer evidence. The script queues a normal review and sends a
@@ -94,6 +98,32 @@ Sol message asking it to await the reviewer. It never inserts a live finding,
 patches the document, or confirms a correction. Real Luna must find the wrong
 claim; real Sol must correct it; real Luna must confirm it. In the correct case,
 a positive checked-evidence record and no false scientific failure are required.
+
+If calibration failed before document seeding, keep its original intent marker.
+The explicit recovery command checks that no document, session message or later
+stage marker exists, pins the full reference request, and queries the original
+operation ID before submitting anything. An existing reference execution is
+observed; an absent one is submitted with the same operation ID and pinned body.
+This also recovers the first-run missing-environment refusal from the earlier
+helper, whose identity marker exists but whose execution was never admitted:
+
+```sh
+.venv/bin/python -I .agents/labs/scientific_quality.py resume-calibration "$QUALITY_LAB" --case calibration-a
+```
+
+If environment creation times out, inspect its public GET and original receipt
+before proceeding. Do not delete intent markers. After document or reviewer
+stages might have begun, this recovery command refuses continuation: reconcile
+those original receipts and message status separately rather than repeat an
+unknown paid admission. Worker and workspace HTTP failures save a bounded,
+sanitized `quality-http-error-*.json` diagnostic, including structured error kind
+and message, without request headers or credentials.
+
+The offline selftest covers environment creation/reuse and mismatch refusal,
+reference lookup/reuse, the legacy known-missing reference, later-stage replay
+refusal, and diagnostic sanitization. Public environment, shell execution,
+operation lookup, file and review payloads were checked against current contracts
+and routes. These checks do not establish provider or scientific performance.
 
 Check finding anchors, review outcome and coverage, document revision authors,
 and ordering. A model fixing the document before the reviewer detects the issue
