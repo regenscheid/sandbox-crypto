@@ -153,7 +153,9 @@ ARG G6K_MARCH_AMD64
 ARG G6K_MARCH_ARM64
 RUN --mount=type=bind,from=g6k-src,target=/tmp/g6k-src \
     --mount=type=bind,source=crypto-base/build-g6k.sh,target=/tmp/build-g6k.sh \
+    --mount=type=bind,source=crypto-base/patch-g6k-arm64.py,target=/tmp/patch-g6k-arm64.py \
     cp -r /tmp/g6k-src /tmp/g6k && \
+    G6K_TARGET_ARCH="${TARGETARCH}" \
     G6K_MARCH=$([ "${TARGETARCH}" = arm64 ] && echo "${G6K_MARCH_ARM64}" || echo "${G6K_MARCH_AMD64}") \
         micromamba run -n base bash /tmp/build-g6k.sh /tmp/g6k && \
     rm -rf /tmp/g6k

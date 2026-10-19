@@ -2,6 +2,8 @@
 
 ## 2026-10-19
 
+- Native `macos-15` ARM64 CI now exercises the launcher suite before claiming process-supervision support; a real OpenShell MicroVM run on the owner's Mac remains required. The first opt-in ARM64 `crypto-base` build reached G6K and failed on its unconditional x86 `immintrin.h` include, not on disk capacity. An ARM-only exact-match source adjustment is being qualified; no crypto-base ARM64 image or shared manifest is published yet.
+
 - The ARM64 workflow can opt into native `crypto-base` build and sandbox-mode checks. A publication command joins verified immutable AMD64/ARM64 digests under one shared tag only after the operator confirms private registry access for GPL-bearing `crypto-base`; real image publication remains contingent on those gates ([images](../docs/IMAGES.md#arm64)).
 - The host launcher has a Darwin identity/session path and a parent-pipe watcher for launcher death; Linux process tests cover its protocol. Mac runtime support still requires native OpenShell, process-lifecycle and Resume acceptance ([D63](../docs/DECISIONS.md), [Mac qualification](../docs/MAC-ARM64.md)).
 - Cold skill inventory scans now have a dedicated bounded executor reply deadline, and the scanner reuses resolved installation roots; both staging CI modules passed locally after the fix.

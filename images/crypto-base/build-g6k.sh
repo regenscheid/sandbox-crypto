@@ -12,6 +12,9 @@ src=$1
 : "${G6K_MARCH:?G6K_MARCH names the target CPU, for example x86-64-v3}"
 
 cd "$src"
+if [ "${G6K_TARGET_ARCH:-}" = arm64 ]; then
+  python /tmp/patch-g6k-arm64.py "$src"
+fi
 autoreconf -i
 ./configure --disable-native --with-max-sieving-dim=128 \
   CXXFLAGS="${CXXFLAGS:-} -Ofast -ftree-vectorize -funroll-loops -march=${G6K_MARCH}"
