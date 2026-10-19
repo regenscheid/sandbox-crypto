@@ -1,5 +1,10 @@
 # Plan changes
 
+## 2026-10-19
+
+- Main/orchestrator, delegated-agent and consistency-reviewer alias and reasoning effort are now independently configurable per project from the GUI. New trees freeze the trusted deployment profiles; children and ordinary Resume retain them. The reviewer defaults to `medium`, while the acceptance lab used Sol/max for research and Luna/medium for review.
+- The completion campaign finished within the $150 authorization at $24.56566378 observed. Live recovery proved parent/child concurrency, downward correction, upward final handback, full child-history retrieval, plan/document/ledger reconciliation, narrative folding and reviewer-led fixes without duplicate child work. Frozen Python passed 14,524/50 skipped; web passed 2,239. The isolated lab was fully archived and removed.
+
 ## 2026-10-18, completion campaign
 
 - Owner requests completion of all six remaining items, including real OpenShell crash recovery, narrative/diagnostic qualification, time/storage and root resource policy, captured context/indexed history, and workspace browser refinements. The new **$150 aggregate testing authorization** supersedes the earlier pending $75 proposal; preserve personal and SNOVA instances. [Acceptance checklist](docs/agent-reports/completion-campaign-2026-10-18.md).

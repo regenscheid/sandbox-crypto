@@ -1,6 +1,6 @@
 # Handoff
 
-Updated 2026-10-18. Use local `dev` in `/home/andy/.cache/pt/dev-local`; implementation and the synthetic browser helper are integrated through `c2f8ebf8`. `/home/andy/Git_Projects/sandbox-crypto` is a separate checkout whose unrelated state must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-19. Use local `dev` in `/home/andy/.cache/pt/dev-local`; implementation is integrated through signed `5a238f10`. `/home/andy/Git_Projects/sandbox-crypto` is a separate checkout whose unrelated state must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Accepted scope and current evidence
 
@@ -8,16 +8,16 @@ The owner authorized **$150 total for new campaign model tests**, superseding th
 
 All six implementation areas are integrated: owned infrastructure recovery, adaptive time/turn/storage allowances, actual dispatch capture and original-history indexing, fold/usage diagnostics, safe MCP metadata/current checks, and Overview/Memory/session refinements. Independent reviews covered storage, authority, recovery and read bounds. Reported fixes include huge schema integers, partial HTTP reads, draft durability warnings, capture omissions, incremental SQLite blob reads and approved resource receipts.
 
-Actual authenticated synthetic browser checks passed MCP available → unavailable → restored with zero tool calls, Memory draft retention/navigation/save, captured-context chunk paging and original-history incomplete → complete indexing across same-work continuations. Web tests: **2,239 passed**. Final full Python suite is still pending; do not reuse the historical 14,413/50-skip baseline as current validation.
+Actual authenticated synthetic browser checks passed MCP available → unavailable → restored with zero tool calls, Memory draft retention/navigation/save, captured-context chunk paging and original-history incomplete → complete indexing across same-work continuations. Web tests: **2,239 passed**. The frozen Python suite at `5a238f10` passed **14,524 tests with 50 skips**; Ruff, format and strict Pyright are clean. The exact isolated image digest and container checks are recorded in [STATUS.md](STATUS.md).
 
-Three owned infrastructure probes passed worker restart, agent-VM replacement and host-process-loss root Resume while the same genuine Sage operation continued. **The new hour-long final result, real-model scientific/calibration results, final spend and owned teardown are pending root receipts.** Earlier one-hour Sage/teardown evidence belongs to a different completed [lab](docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md); no physical reboot, arbitrary kernel snapshot or broad scientific qualification is implied.
+Three owned infrastructure probes passed worker restart, agent-VM replacement and host-process-loss root Resume while the same genuine Sage operation continued. The final real-model tree then proved concurrent root/child recovery, durable bidirectional steering, full child-history retrieval, final handback integration and no duplicate child/reference computation. Numeric GF(16)/GF(32) grades passed; two real Luna/medium reviewer findings led to fixes and were confirmed fixed. Observed campaign spend was **$24.56566378** with no unpriced usage. The 52-file evidence archive verifies complete owned teardown. No physical reboot, arbitrary kernel snapshot or broad scientific qualification is implied.
 
-## Finish the campaign
+## Campaign closure
 
-1. Root fills the pending STATUS/report entries with the final frozen Python revision, totals, skips and required checks. Keep product and generated source frozen during the broad suite; documentation changes do not establish a test pass.
-2. Finish the current Sage job by its recorded operation/execution identity, verify its terminal digest and one-start evidence, and retain the three recovery probe receipts. Do not repost a job to repair a polling or fixture failure.
-3. Complete only explicitly admitted calibration/research stages within the aggregate budget. A failed or uncertain stage must reconcile its original environment/operation/message identity before any retry. Record actual charges and unknown outcomes separately; root owns the scientific grades and final report.
-4. Export the sanitized evidence manifest and verify complete owned teardown. If VM deletion cannot be proved, stop exact owned host units, preserve the private root/VM identity and report incomplete cleanup. Preserve unrelated services and archives.
+1. Preserve `/var/tmp/ss-recovery-evidence-a4addfda` while the campaign evidence is useful; its `SHA256.json` covers all 52 allowlisted files.
+2. Do not reuse the five unsettled reviewer intents as permission to replay them. They remain visible while all observed usage is priced.
+3. Treat role-profile edits as next-tree settings. Main/orchestrator, delegated and reviewer aliases and effort are independently configurable in Project settings; ordinary Resume retains the active tree's pins.
+4. Remaining work is the open backlog, especially physical-host reboot qualification, broader lost-kernel provenance and residual transient-failure classes. It is not part of this completed disposable lab.
 
 ## Runtime and UI boundaries
 

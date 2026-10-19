@@ -1,10 +1,11 @@
 # Completion campaign, 2026-10-18
 
-Status: implementation and acceptance in progress. Baseline local `dev` is
-`8ef121bd`. The owner authorized $150 aggregate new model-testing spend. This
+Status: implementation and disposable acceptance complete on 2026-10-19. Baseline local `dev` was
+`8ef121bd`; the frozen product/runtime revision is signed `5a238f10`. The owner authorized $150 aggregate new model-testing spend. This
 does not restart SNOVA or authorize new token-grant increments. Observed test
-spend at campaign start: $0. The real-model calibration started on 2026-10-19;
-final costs and qualification are recorded below after settlement.
+spend at campaign start: $0. Final observed campaign spend was $24.56566378,
+with no reservation or unpriced usage; five historical reviewer intents remain
+visibly unsettled.
 
 ## Acceptance checklist
 
@@ -63,14 +64,15 @@ Resume (four public-API regressions; combined 39 tests pass). Original committed
 resource-decision receipts reconcile by exact identity and request without replay.
 Its author suite has 86 passing focused tests and independent review is clear.
 
-The frozen infrastructure runtime at `9de21637`, image `9b957d6f`, has passed
+The intermediate infrastructure runtime at `9de21637`, image `9b957d6f`, passed
 automatic worker restart, agent-VM replacement and host-process-loss root Resume
-while one genuine 3600-second Sage job continues under its original operation.
+while one genuine 3600-second Sage job continued under its original operation.
 The host probe exposed a fixture race: systemd had not unloaded the killed
 transient unit when the new start was requested. That start was explicitly refused,
 then admitted once after verified `LoadState=not-found`; no research request was
-reposted. Helper `5da1a6c6` waits for collection. Final Sage verification, evidence
-manifest and complete owned teardown remain required.
+reposted. The later real-model run retained the same research sandbox across
+control/runtime replacement and finished the original root/child tree through one
+Resume. No replacement child or repeated reference calculation was created.
 
 ## Integrated browser and broad checks
 
@@ -91,14 +93,15 @@ Evidence is in the private `completion-campaign-20261018` cache directory:
 and both public fixture ports are gone; all peer/proxy runners closed normally.
 
 Web validation: 2,239 tests in 120 files passed without unhandled errors.
-Svelte/TypeScript, Prettier, production and math builds pass. Python's frozen
-integrated run reached 14,476 passes and 50 opt-in/prerequisite skips, but was
-**not green**: three failures identified missing context-table/API documentation
-and workspace access to a control-store implementation detail. Final corrections
-and verification are pending below. Two malformed-fixture serializer warnings
-and one IPython temporary-location warning were reported.
+Svelte/TypeScript, Prettier, production and math builds pass. After correcting the
+three earlier failures, the frozen `5a238f10` Python run passed **14,524 tests with
+50 opt-in/prerequisite skips** in 695.18 seconds. Ruff, format and strict Pyright
+are clean. Two known malformed-fixture serializer warnings remain. The exact
+orchestrator image digest is
+`sha256:e748cdd5cc5aacea44a6de6cc96e7bf5b19c942881a9cad3a04c689a26054996`;
+17 container/Landlock checks passed.
 
-## Real-model calibration findings in progress
+## Real-model calibration and recovery result
 
 The first calibration reference was refused before dispatch because its worker
 environment was absent. Signed helper `1996258c` creates the recorded environment
@@ -112,6 +115,43 @@ The real Luna review then encountered a truncated HTTP payload. Its failed revie
 retained the original window (`watermark=0`, `retry_end=3`, `requested=1`), so a
 complete evidence snapshot was not mistaken for a completed judgment. The main
 agent nevertheless ended while the retry remained live, leaving that review
-dropped. Transport retry classification and terminal review waiting are being
-repaired before treating calibration as passed. No injected finding or operator
-correction is used to manufacture a model-quality result.
+dropped. Transport retry classification and terminal review waiting were repaired;
+the correct control passed, and the deliberately wrong fixture was found by real
+Luna/medium, corrected by real Sol, and confirmed by review. No injected finding
+or operator correction manufactured that outcome.
+
+The final study resumed the original Sol/max root and delegated child concurrently.
+The parent sent updated instructions to the existing child; the child returned its
+durable report and the parent read the child's complete history, incorporated the
+handback, finished the plan, updated the ledger, published the result and brought
+the living document to revision 11. Both works ended `completed/answered`, the
+Resume ended `finished`, and no lease remained. GF(16) and GF(32) passed every
+numeric oracle check. Three child narrative folds applied; one needed a single
+bounded size-repair call. The resumed root applied four more folds; one likewise
+needed one bounded size repair. All reasons, limits and outcomes are retained.
+
+The consistency reviewer ran as `arrcodex-gpt-6-luna` at `medium`; main and
+delegated calls ran as `arrcodex-gpt-6-sol` at `max`. Two bounded
+`evidence_strength` findings correctly objected that an earlier checkpoint did
+not prove the claimed complete appendix read. The parent supplied the later child
+history and pinned output, updated the document/plan/ledger and both findings ended
+`confirmed fixed`. Terminal review found no inconsistency in the checked GF(32)
+claims while remaining honestly `inconclusive` because it was not an independent
+reproduction.
+
+Observed costs by role were approximately $13.797680 main, $9.225217 delegated,
+$1.170328 fold and $0.372438 reviewer. Main cache-read share was 67.28%, delegated
+37.82%, fold 63.30% and reviewer 15.56% by observed input tokens. These figures
+make the reviewer materially cheaper while preserving its ability to find issues;
+they are measurements of this campaign, not provider guarantees.
+
+## Evidence and teardown
+
+The allowlisted evidence archive is `/var/tmp/ss-recovery-evidence-a4addfda`.
+All 52 files match `SHA256.json`. Cleanup removed the private lab root, deleted
+the one remaining owned sandbox, verified all seven recorded sandbox identities
+absent, stopped all six owned units, and verified 18 observed processes, every
+owned listener and one driver directory absent. The
+separate SNOVA budget guard remained active. This campaign did not perform a
+physical host reboot, qualify arbitrary interpreter-state restoration or claim
+that consistency review independently proves the science.

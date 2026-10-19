@@ -4,10 +4,10 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## Research continuity after the SNOVA acceptance run
 
-- [ ] Qualify the integrated bounded automatic Resume of a saved model-phase failure against a live OpenShell interruption; combined local recovery and continuation tests pass, but live acceptance and deployment remain.
-- [ ] Qualify clean `answered`-root continuation against live OpenShell interruption. Its plan-state-keyed, transaction-checked synthetic input is integrated locally and passes combined deterministic tests; live acceptance and deployment remain.
+- [x] Qualify the integrated bounded automatic Resume of a saved model-phase failure against a live OpenShell interruption. The isolated real-model campaign recovered the same root/child tree, preserved the research sandbox and work identities, exchanged correction/final messages, consumed the handback and finished without replacement child work; evidence is archived in `/var/tmp/ss-recovery-evidence-a4addfda`. Personal deployment remains separate.
+- [ ] Qualify clean `answered`-root continuation against live OpenShell interruption. The campaign proved an interrupted running root can Resume and later finish `answered`; it did not start from an already-answered root, so this narrower continuation case remains.
 - [ ] Qualify lost-kernel recovery against a real worker and broaden verifiable provenance beyond bounded, opt-in literal Python assignments. A local implementation journals cell identity and safe code, conditionally reconstructs a complete lineage, and retains an explicit decision for other state; live OpenShell acceptance and deployment remain.
-- [ ] Classify transient worker/model failures at the source and exercise process-loss windows, so automatic recovery covers more than saved model-phase errors without replaying unknown effects.
+- [ ] Classify remaining transient worker/model failures at the source. The campaign exercised worker, control/workspace and agent-VM process-loss windows plus incomplete/truncated model responses without replaying known tool effects, but five historical reviewer intents remain unsettled and physical-host reboot was not exercised.
 
 ## Track P: infrastructure
 
