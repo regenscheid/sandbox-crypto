@@ -391,6 +391,9 @@ class Recovery:
             stop_by=None,
             work=work.work,
             predecessor=plan.predecessor,
+            resume_source=await threaded(
+                self.records.resume_source, self.project, self.session, self.request
+            ),
             epoch=self.epoch,
             parent=parent,
             delegation=delegation,

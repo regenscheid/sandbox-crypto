@@ -72,6 +72,7 @@ def test_saved_model_failure_queues_one_resume_across_service_restart(projects: 
     assert recovery.candidates() == (("p", "s", RUN),)
     request = recovery.queue("p", "s", RUN)
     assert request is not None
+    assert WorkRecords(projects.control).resume_source("p", "s", request) == "automatic"
     projects.control.close()
     assert AutoRecovery(projects.control, clock=clock).queue("p", "s", RUN) is None
     assert WorkRecords(projects.control).queued() == [("p", "s", request, RUN)]

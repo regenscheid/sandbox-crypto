@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from datetime import UTC, datetime
+from typing import Literal
 
 import pytest
 
@@ -58,6 +59,7 @@ def test_attempts_and_pending_resume_survive_reopen_and_are_idempotent(projects:
     assert works.get("p", "s", RUN).reason == "unfinished_children"
     request = works.request("p", "s")
     assert request is not None
+    assert works.resume_source("p", "s", request) == "operator"
     assert works.request("p", "s") == request
     projects.control.close()
     assert works.queued() == [("p", "s", request, RUN)]
@@ -238,6 +240,47 @@ async def test_first_model_call_checks_ownership_after_start_notices(projects: P
     )
     assert not calls
     assert result.stopped == "error"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected", "excluded"),
+    [
+        ("operator", "operator explicitly requested", "Automatic recovery created"),
+        ("automatic", "Automatic recovery created", "operator explicitly requested"),
+    ],
+)
+async def test_resume_attempt_source_is_explicitly_shown_once(
+    projects: ProjectStore,
+    source: Literal["operator", "automatic"],
+    expected: str,
+    excluded: str,
+):
+    from types import SimpleNamespace
+    from typing import cast
+
+    from sandbox_science.orchestrator.continuity.hook import WorkHook
+    from sandbox_science.orchestrator.hooks import RunView
+
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    hook = WorkHook(works, owner, predecessor="previous-attempt", resume_source=source)
+    view = cast(RunView, SimpleNamespace(offered={}))
+
+    (notice,) = await hook.notices("turn", view)
+    assert notice.source == "continuity"
+    assert notice.ids == ("previous-attempt",)
+    assert "new attempt continuing the same durable research work" in notice.framing
+    assert expected in notice.framing
+    assert excluded not in notice.framing
+    assert notice.payload == {
+        "work": owner.work,
+        "attempt": owner.run,
+        "predecessor": "previous-attempt",
+        "epoch": owner.epoch,
+        "resume_source": source,
+    }
+    already_shown = cast(RunView, SimpleNamespace(offered={"continuity": notice.ids}))
+    assert await hook.notices("turn", already_shown) == ()
 
 
 def test_completed_child_outcome_must_be_consumed_before_parent_completion(projects: ProjectStore):

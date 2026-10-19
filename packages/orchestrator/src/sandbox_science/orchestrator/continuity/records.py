@@ -557,6 +557,22 @@ class WorkRecords:
                 (PAGE,),
             ).fetchall()
 
+    def resume_source(
+        self, project: str, session: str, request: str
+    ) -> Literal["operator", "automatic"]:
+        """Return trusted provenance for a persisted Resume request."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT EXISTS (SELECT 1 FROM research_observations o WHERE "
+                "o.project=r.project AND o.session=r.session AND o.work=r.root "
+                "AND o.kind='auto_resume' AND o.identity=r.request) "
+                "FROM research_resumes r WHERE r.project=? AND r.session=? AND r.request=?",
+                (project, session, request),
+            ).fetchone()
+        if row is None:
+            raise ControlError(NOT_FOUND, "Resume request does not exist")
+        return "automatic" if row[0] else "operator"
+
     def claim(self, project: str, session: str, request: str, *, lease_run: str) -> tuple[str, int]:
         """Advance the session fence while its caller holds the session run lease."""
         refusal: str | None = None

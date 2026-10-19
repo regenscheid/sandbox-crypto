@@ -24,7 +24,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -347,6 +347,9 @@ class RunRequest:
     work: str | None = None
     """A continuation's durable work identity; set only by explicit recovery."""
     predecessor: str | None = None
+    resume_source: Literal["operator", "automatic"] | None = None
+    """Trusted provenance for a continuation created by Recovery. It distinguishes an
+    operator-requested Resume from bounded automatic recovery; ordinary runs leave it unset."""
     epoch: int | None = None
     stop_by: Deadline | None = None
     """For a delegated run, when its end must have stopped its own children, which its
@@ -852,7 +855,17 @@ class Harness:
         admitted = dataclasses.replace(admitted, request=request)
         with authority(owner):
             try:
-                return await self._start(admitted, sink, stop=stop, work=WorkHook(records, owner))
+                return await self._start(
+                    admitted,
+                    sink,
+                    stop=stop,
+                    work=WorkHook(
+                        records,
+                        owner,
+                        predecessor=request.predecessor,
+                        resume_source=request.resume_source,
+                    ),
+                )
             except BaseException:
                 await threaded(
                     records.block, owner.project, owner.session, owner.work, "interrupted"
