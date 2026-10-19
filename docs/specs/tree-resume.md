@@ -13,6 +13,13 @@ stable child-kernel scope never change. An attempt's archive and outcome are imm
 New roots and children register before agent/model effects; child admission records
 its recovery blueprint before scheduling its coroutine.
 
+Queued parent/child messages follow the same immutable work identity across Resume.
+Their original delegation address and sender remain unchanged for audit. A prepared
+parent continuation can receive a child report before its own model loop starts;
+new assignments never inherit an interrupted child's mailbox. Delivery status
+recognizes the actual resumed attempt, and saved acknowledgment prevents another
+attempt from receiving that message again.
+
 The root owns a monotonically increasing tree epoch. One session lease admits a tree
 owner; an explicit Resume atomically claims its durable request and advances the
 epoch before any branch is dispatched. Every attempt carries the epoch. Trusted
