@@ -36,6 +36,7 @@ import os
 import re
 import signal
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -55,6 +56,16 @@ LOGIN_TOKEN = "fake-login-token-0123456789abcdef"
 
 name, args = sys.argv[1], sys.argv[2:]
 behaviour = json.loads(os.environ.get("FAKE_PARTS", "{}")).get(name, "")
+
+
+class NoDNSHTTPServer(ThreadingHTTPServer):
+    """A local test server must not wait for a runner's reverse DNS lookup."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
 
 
 def note(text: str) -> None:
@@ -177,7 +188,7 @@ def serve(
     listener = None
     if address is not None and api is not None:
         host, port = address.rsplit(":", 1)
-        server = ThreadingHTTPServer((host, int(port)), api)
+        server = NoDNSHTTPServer((host, int(port)), api)
         threading.Thread(target=server.serve_forever, daemon=True).start()
     elif address is not None:
         host, port = address.rsplit(":", 1)
