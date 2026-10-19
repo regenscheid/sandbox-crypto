@@ -926,6 +926,11 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         original = names(harness)[0]
         assert works.request(PROJECT, SESSION, original) is not None
         await ended(harness, 3)
+        await eventually(
+            lambda: not runs(harness).leased(PROJECT, SESSION),
+            timeout=20,
+            describe="the completed run to release its session lease",
+        )
         assert states(harness)["m-1"] == "held"
         assert works.get(PROJECT, SESSION, original).current != original
         assert runs(harness).messages(PROJECT, SESSION)[0].reason == "research_state"

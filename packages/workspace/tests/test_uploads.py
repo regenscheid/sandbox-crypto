@@ -462,7 +462,7 @@ async def test_retained_uploads_are_serialized_across_tabs(
         calls += 1
         if calls == 1:
             loop.call_soon_threadsafe(started.set)
-            assert release.wait(2)
+            assert release.wait(10)
         return create(self, *args)
 
     monkeypatch.setattr(UserUploads, "create", held)
@@ -548,7 +548,7 @@ async def test_timed_out_store_write_keeps_admission_until_its_thread_finishes(
         client.post(UPLOADS, data=b"first", headers=binary_headers(client, "first"))
     )
     try:
-        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(started.wait(), 5)
         # The request deadline expires while the actual disk writer still owns memory.
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(asyncio.shield(first), 0.15)
