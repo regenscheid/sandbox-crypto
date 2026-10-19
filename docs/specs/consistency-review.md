@@ -121,6 +121,13 @@ Terms:
 - CR-29. After a terminal review with `fail` findings, the author is resumed for a response round, followed by confirmation of claimed fixes; at most 2 rounds per turn (new defaults; CScience bounds its loop, and Claude Code caps consecutive stop-hook continuations). *Amended 2026-10-11: open `math` findings for the turn's work also start a response round, which hands them over together with the terminal review's findings (CR-37).*
 
   *Amended 2026-10-16 by the owner (the response-loop guard):* only the open `fail` findings delivered to the run take it into a response round; a challenged finding (CR-26) and the session's earlier findings (CR-16) take none.
+
+  With `terminal_hold` enabled, an already active checkpoint review settles before
+  the main run ends even when the final answer is conversational, such as saying
+  that the requested review is pending. Its findings can use the same bounded
+  response rounds. A failed or capped review remains pending without an immediate
+  replacement dispatch at closing. User input and cancellation can still interrupt
+  the wait; disabling `terminal_hold` reports pending without waiting.
 - CR-30. A finding is re-flagged to the author at most twice; then it becomes `unaddressed` instead of being injected again (CScience keeps a re-flag count).
 - CR-31. Each review has a turn, time and cost budget. A review that reaches it ends `capped` and keeps the findings it recorded.
 - CR-32. When the bound is reached, `open` findings become `unaddressed`, `claimed fixed` findings stay unconfirmed, and the turn completes with a summary of findings by status and severity.

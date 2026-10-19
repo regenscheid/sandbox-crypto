@@ -595,16 +595,32 @@ class ReviewController:
             "classifier": label,
             "counts": counts,
         }
-        if label["label"] == "conversation" or not config.enabled or self.role != "main":
+        if not config.enabled or self.role != "main":
+            return self._review_summary(summary)
+        conversation = label["label"] == "conversation"
+        if conversation and self.task is None:
             return self._review_summary(summary)
         if self.off:
             await self._dispatch("terminal", label)
             return self._review_summary({**summary, "off": REVIEWS_OFF})
         if self.task is not None:
+            if not config.terminal_hold:
+                return self._review_summary({**summary, "pending": True})
             message = await self._wait(self.task)
             if message is not None:
                 return self._review_summary({**summary, "pending": True, "user_message": message})
             self.task = None
+            if conversation:
+                # An explicit checkpoint review can still be running when the
+                # author's last words merely say it is waiting. Its findings
+                # need the ordinary response round before this run ends.
+                if self.review is not None:
+                    ended = await asyncio.to_thread(self.store.run, *self.scope, self.review)
+                    summary["outcome"] = ended["state"]
+                    if ended["state"] in ("failed", "dropped", "capped"):
+                        summary["pending"] = True
+                summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
+                return self._review_summary(summary)
         # A confirmation consumes finding groups before new feed items, so a full
         # feed cannot starve claimed fixes. Catch up bounded evidence windows here;
         # any remaining work is explicitly pending, never labelled as passed.
@@ -887,7 +903,8 @@ class Reviews(TurnHook):
         )
         if not run.can_respond or run.response_rounds >= configuration.response_rounds:
             return Closing()
-        await controller.safe_point(run.messages)
+        # terminal() already ingested this view and settled its bounded review.
+        # A fresh dispatch here would be abandoned when this final answer exits.
         found = await self._pending()
         # Only open findings delivered to this run take a round (CR-29 as amended).
         respond = any(n.ids for n in found if n.framing == REVIEW_FINDINGS.text)
