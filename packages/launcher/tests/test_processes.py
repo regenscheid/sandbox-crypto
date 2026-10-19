@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import psutil
 import pytest
@@ -14,7 +15,7 @@ from sandbox_science.launcher import processes
 def test_darwin_path_checks_creation_session_and_command(monkeypatch: pytest.MonkeyPatch) -> None:
     # psutil is imported before patching the dispatch flag; its Linux backend
     # exercises our Darwin branch's API contract on this CI host.
-    monkeypatch.setattr(processes.sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "platform", "darwin")
     pid = os.getpid()
     assert processes.boot_id().startswith("darwin-")
     assert processes.start_time(pid) is not None
