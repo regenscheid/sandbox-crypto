@@ -100,6 +100,10 @@ def generate(
         "ELF getenv users: underscore strings are candidates; bare/computed names need fallback",
         "program files only; documentation, translations and build headers excluded",
     }
+    # Resolving a root for every owned file repeats filesystem walks tens of
+    # thousands of times on a fresh executor. The root itself cannot change
+    # during this scan; the package fingerprint is checked again before publish.
+    roots: dict[Path, Path] = {}
 
     def add(package: str, root: Path, relative: str) -> None:
         if len(relative) > 4096 or len(package) > 512 or any(ord(c) < 32 for c in package):
@@ -114,17 +118,20 @@ def generate(
             for part in ("/share/doc/", "/share/man/", "/share/locale/", "/src/", "/include/")
         ):
             return
+        relative_path = Path(relative)
         if (
-            Path(relative).suffix not in SOURCES
-            and ".so" not in Path(relative).name
+            relative_path.suffix not in SOURCES
+            and ".so" not in relative_path.name
             and "/bin/" not in "/" + relative
             and "/sbin/" not in "/" + relative
         ):
             return
-        candidate = root / relative
+        candidate = root / relative_path
         try:
+            if root not in roots:
+                roots[root] = root.resolve()
             resolved = candidate.resolve()
-            resolved.relative_to(root.resolve())
+            resolved.relative_to(roots[root])
         except (ValueError, OSError, RuntimeError):
             notes.add(f"{package}: external/symlink target outside package root")
             return
