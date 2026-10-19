@@ -85,7 +85,7 @@ def ours(state: Path, *, but: tuple[str, ...] = ()) -> str:
 
 def test_up_makes_the_proxys_sandbox_and_deletes_it_when_it_stops(mcp: dict[str, Any]) -> None:
     launcher = mcp["launch"]()
-    launcher.expect("Stop:", timeout=90)
+    launcher.expect("Stop:")
     remote = "/sandbox/mcp-proxy"
     sandbox = ours(mcp["state"])
     (runtime,) = [name for name in sandboxes(mcp["state"]) if name.startswith("ss-orch-")]

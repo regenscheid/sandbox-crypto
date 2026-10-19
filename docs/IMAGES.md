@@ -272,7 +272,7 @@ What the checks show about the paths:
 
 ## arm64
 
-The native Linux ARM64 [qualification run](https://github.com/regenscheid/sandbox-crypto/actions/runs/39309274461) built and tested `minimal`, `orchestrator` and `mcp-proxy` in both container and Landlock modes with network disabled. This validates those images on that runner, not the Mac OpenShell runtime. `crypto-base` has not yet passed an ARM64 build or test. Its recipe already has:
+Native Linux ARM64 [qualification runs](https://github.com/regenscheid/sandbox-crypto/actions/runs/39331529252) built and tested all four profiles, including `crypto-base` with Sage and G6K, in container and Landlock modes with network disabled. This validates those images on that runner, not the Mac OpenShell runtime. The recipe has:
 
 - the micromamba release and its SHA-256 for linux-aarch64;
 - lockfiles that cover linux-aarch64: the same packages and versions as linux-64, apart from the compilers' architecture-named packages and two minor version differences (charset-normalizer, libglib) where a build was missing;
@@ -281,10 +281,7 @@ The native Linux ARM64 [qualification run](https://github.com/regenscheid/sandbo
 
 What arm64 still needs:
 
-- **A crypto-base build.** The manual ARM64 workflow can opt into this large build. The standard runner has limited disk; a larger native builder may be required for Sage and G6K.
-- **Ubuntu's pinned archive.** Noble's ARM64 base image names `ports.ubuntu.com`, but its `ubuntu-ports` snapshot route returns 401. The recipe points its ARM64 source directly at the dated signed archive under `snapshot.ubuntu.com/ubuntu` and disables a second snapshot lookup for that source. The native ARM64 build must verify that package installation and the resulting image work; a 200 response for the index alone is insufficient.
 - **A multi-platform image.** It needs a registry or an OCI layout to hold both architectures under one tag; `build.sh` loads one platform into the local store.
-- **The crypto-base tests**, run on an arm64 host, including Sage, G6K and the declared filesystem checks.
 
 The selected destination is GHCR under this repository's namespace:
 `ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual ARM64 workflow can publish
@@ -313,8 +310,12 @@ then verifies the published index contains exactly those two digests. It refuses
 `crypto-base` without an explicit confirmation that the destination package is
 private. The operator must verify the registry's access setting; Docker cannot
 infer it from a name. `images/build.sh` never pushes. The publication script is
-ready, but no remote multi-platform image has been published yet while the
-ARM64 crypto-base build and registry access checks remain open.
+ready, but no remote multi-platform image has been published yet. All four
+AMD64 variants are in private GHCR packages. The same packages grant this
+repository Actions write access and deny anonymous manifest reads, but the
+ARM64 publication workflow still fails at GHCR manifest finalization after
+its build, tests and layer uploads succeed. The isolated minimal-image retry
+returned HTTP 500 at finalization, so no ARM64 architecture tag is yet verified.
 
 ## In OpenShell
 
@@ -327,8 +328,7 @@ Every image has run in OpenShell VM sandboxes on babbage, under the compiled pol
 
 ## Not yet done
 
-- **arm64 images** (above).
-- **A private registry** for crypto-base, and for multi-platform images. OpenShell's VM driver can create sandboxes from images in the local Docker store, so babbage needs none yet.
+- **Shared multi-platform tags** (above). The native ARM64 image tests passed; registry publication and Mac OpenShell acceptance remain open.
 - **An SBOM** in a standard format (SPDX or CycloneDX) before `minimal` is published. The image record lists every package and license, but in its own format.
 - **Restore and rebuild.** The record and lockfile are there; capturing an environment's changes and rebuilding it from the lockfile belong to the environment manager (W3, D48).
 

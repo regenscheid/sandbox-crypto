@@ -114,7 +114,6 @@ def fake_parts(tmp_path: Path) -> Path:
         command.write_text(
             f"#!{sys.executable}\n"
             "import runpy, sys\n"
-            "print('fake part shim started', file=sys.stderr, flush=True)\n"
             f"sys.argv = [{str(script)!r}, {name!r}, *sys.argv[1:]]\n"
             f"runpy.run_path({str(script)!r}, run_name='__main__')\n"
         )
@@ -284,7 +283,7 @@ def site(
             {
                 "bin_dir": str(fake_parts),
                 "openshell": {"cli": str(fake_openshell)},
-                "start_timeout": 60 if sys.platform == "darwin" else 20,
+                "start_timeout": 20,
                 "stop_timeout": changes.pop("stop_timeout", 5),
                 "worker": {
                     "listen": f"127.0.0.1:{worker}",

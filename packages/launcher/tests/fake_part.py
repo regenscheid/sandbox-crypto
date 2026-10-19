@@ -46,11 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, TextIO
 
-print("fake part standard imports complete", flush=True)
-
-from sandbox_science.contracts.worker import PROTOCOL_VERSION  # noqa: E402 - startup diagnostic
-
-print("fake part module imports complete", flush=True)
+from sandbox_science.contracts.worker import PROTOCOL_VERSION
 
 LOGIN_TOKEN = "fake-login-token-0123456789abcdef"
 
@@ -228,11 +224,7 @@ match (name, args[:2]):
             sys.exit(2)
         print(f"stored {args[-1]} as sha256:{'ab' * 32}", flush=True)
     case ("sandbox-science-worker", ["serve", *_]):
-        print("fake worker reading settings", flush=True)
-        source = Path(option("--settings")).read_text()
-        print(f"fake worker read {len(source)} setting bytes", flush=True)
-        settings = tomllib.loads(source)
-        print("fake worker settings loaded", flush=True)
+        settings = tomllib.loads(Path(option("--settings")).read_text())
         serve(settings["listen"], ["worker API on " + settings["listen"]], api=worker_api(settings))
     case ("sandbox-science-harness", ["project", "show"]):
         # The projects made so far, beside the journal: a project not made is not there.
