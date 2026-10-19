@@ -243,7 +243,8 @@ class Supervisor:
                 + tail(running.log)
             )
         raise LauncherError(
-            f"the {part.title} was not ready within {timeout:g} s; its log: {running.log}"
+            f"the {part.title} was not ready within {timeout:g} s; "
+            f"the end of its log, {running.log}:\n" + tail(running.log)
         )
 
     async def run(
