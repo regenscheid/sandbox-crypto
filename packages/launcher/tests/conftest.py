@@ -114,6 +114,7 @@ def fake_parts(tmp_path: Path) -> Path:
         command.write_text(
             f"#!{sys.executable}\n"
             "import runpy, sys\n"
+            "print('fake part shim started', file=sys.stderr, flush=True)\n"
             f"sys.argv = [{str(script)!r}, {name!r}, *sys.argv[1:]]\n"
             f"runpy.run_path({str(script)!r}, run_name='__main__')\n"
         )
