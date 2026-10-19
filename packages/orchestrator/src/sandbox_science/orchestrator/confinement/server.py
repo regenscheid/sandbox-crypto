@@ -17,6 +17,7 @@ from pydantic import Field, JsonValue
 
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.connectors import ProxyClient
+from sandbox_science.orchestrator.consistency.models import REVIEWER_MAX_RESPONSE_BYTES
 from sandbox_science.orchestrator.control.migrations import VERSION
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.figurecheck import FigureChecker
@@ -66,15 +67,6 @@ from .wire import (
 
 REVIEWER_MAX_OUTPUT = 4096
 """Reviewer output tokens, kept in sync with the host-mode reviewer."""
-
-REVIEWER_MAX_RESPONSE_BYTES = 256 * 1024
-"""Reviewer wire bytes, including provider reasoning and metadata.
-
-Responses can carry substantially more wire data than visible output tokens (for
-example encrypted reasoning metadata). Keep the bound explicit and finite, while
-using the host-mode reviewer's allowance so confinement does not add a smaller,
-deployment-dependent failure boundary.
-"""
 
 
 class ProxySettings(Contract):

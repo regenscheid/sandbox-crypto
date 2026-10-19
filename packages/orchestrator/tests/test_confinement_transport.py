@@ -160,8 +160,7 @@ def test_the_confined_reviewer_keeps_the_host_reviewers_finite_allowance() -> No
     from sandbox_science.orchestrator.confinement.wire import MAX_MODEL_RESPONSE_BYTES
 
     assert REVIEWER_MAX_OUTPUT == 4096
-    assert REVIEWER_MAX_RESPONSE_BYTES == 256 * 1024
-    assert REVIEWER_MAX_RESPONSE_BYTES < MAX_MODEL_RESPONSE_BYTES
+    assert REVIEWER_MAX_RESPONSE_BYTES == MAX_MODEL_RESPONSE_BYTES == 6 * 1024 * 1024
 
 
 async def test_near_response_cap_assistant_append_sends_native_once() -> None:

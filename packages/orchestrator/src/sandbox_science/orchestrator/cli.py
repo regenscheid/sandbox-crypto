@@ -63,7 +63,7 @@ from .cli_documents import add_parsers, document, ledger, project, read_secret, 
 from .cli_skills import add_parser as add_skills_parser
 from .cli_skills import embedding_alias, skills
 from .connectors import ProxyClient, check_proxy
-from .consistency.models import ReviewConfig
+from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .control import ControlError
 from .documents import DocumentError, DocumentStore, store_path
 from .figurecheck import FigureChecker
@@ -328,7 +328,7 @@ def _harness(
                 args.reviewer_model,
                 role="reviewer",
                 max_tokens=4096,
-                max_response_bytes=262144,
+                max_response_bytes=REVIEWER_MAX_RESPONSE_BYTES,
             ),
         )
         closing(stack, interruption, lambda: _close(reviewer.model))

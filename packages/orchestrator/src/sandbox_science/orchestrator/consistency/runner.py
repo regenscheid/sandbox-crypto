@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.view_image import ImageViewer, Viewed, framed
 
 from .citations import record_citation
 from .findings import Findings
-from .models import ReviewConfig, ReviewerFinish
+from .models import REVIEWER_MAX_REPLAY_NATIVE_BYTES, ReviewConfig, ReviewerFinish
 from .numbers import copied_numbers
 from .prompt_bundle import assemble_reviewer
 from .rubric import RUBRIC, RUBRIC_VERSION
@@ -475,6 +475,22 @@ class ReviewerRunner:
                     retry=True,
                 )
                 return
+            native_bytes = sum(
+                len(message.native)
+                for message in messages
+                if isinstance(message, AssistantMessage) and message.native is not None
+            )
+            if native_bytes > REVIEWER_MAX_REPLAY_NATIVE_BYTES:
+                await self._finish(
+                    "capped",
+                    "The review's native response replay reached "
+                    f"{native_bytes:,} bytes, over its "
+                    f"{REVIEWER_MAX_REPLAY_NATIVE_BYTES:,}-byte confined transport "
+                    f"budget{await self._calls()}. Recorded findings are retained.",
+                    cap=True,
+                    retry=True,
+                )
+                return
             # This is a soft estimate; provider usage is recorded separately and
             # used when higher. Only the gateway's spend cap is a monetary cap.
             # The images the call carries count by their pixels, as providers count them.
@@ -531,7 +547,7 @@ class ReviewerRunner:
                 )
                 return
             # With the gateway's answer, which GPT's adapter sends back (CM-40).
-            assistant = AssistantMessage.of(reply)
+            assistant = AssistantMessage.of(reply).replay()
             assistant["content"] = content
             messages.append(assistant)
             await asyncio.to_thread(

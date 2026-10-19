@@ -13,6 +13,20 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents.project_macros import MacroContext
 
 ReviewType = Literal["checkpoint", "terminal", "confirmation"]
+REVIEWER_MAX_RESPONSE_BYTES: Final = 6 * 1024 * 1024
+"""Finite gateway envelope for a max-effort reviewer response.
+
+Responses APIs may return large encrypted reasoning metadata alongside a small visible
+answer. This matches the confined model transport ceiling and is shared by host and
+confined reviewer construction so the two runtimes fail at the same boundary.
+"""
+REVIEWER_MAX_REPLAY_NATIVE_BYTES: Final = 12 * 1024 * 1024
+"""Raw native response bytes retained in a multi-round reviewer conversation.
+
+The confined transport base64-encodes these bytes in a 24 MiB frame. Twelve MiB
+leaves roughly eight MiB after base64 expansion for the bounded visible context,
+tool schemas and request envelope. The runner checks this before paid dispatch.
+"""
 ReviewOutcome = Literal[
     "running", "passed", "findings", "inconclusive", "capped", "failed", "dropped"
 ]

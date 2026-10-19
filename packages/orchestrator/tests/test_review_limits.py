@@ -201,6 +201,44 @@ async def test_a_review_the_call_limit_ends_says_so(store) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_native_replay_caps_before_a_confined_frame_can_overflow(store) -> None:
+    """Large valid responses stop before their base64 replay exceeds the wire frame."""
+    from sandbox_science.orchestrator.consistency.models import (
+        REVIEWER_MAX_REPLAY_NATIVE_BYTES,
+    )
+
+    reviews, _, _ = store
+    review = window(reviews, 1)
+    native = json.dumps(
+        {"output": [{"type": "reasoning", "encrypted_content": "x" * (5 * 1024 * 1024)}]}
+    ).encode()
+
+    class LargeNative:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
+            self.calls += 1
+            return ModelTurn(
+                None,
+                (ToolCall(f"manifest-{self.calls}", "review_manifest", "{}"),),
+                native=native,
+                native_format="responses",
+                input_tokens=100,
+                output_tokens=100,
+            )
+
+    model = LargeNative()
+    await ReviewerRunner(reviews, "p", "s", review, "owner", model).run()
+    run = reviews.run("p", "s", review)
+    assert model.calls == run["calls"] == 3
+    assert run["state"] == "capped"
+    assert run["summary"].startswith("The review's native response replay reached ")
+    assert f"{REVIEWER_MAX_REPLAY_NATIVE_BYTES:,}-byte" in run["summary"]
+    assert reviews.progress("p", "s")["retry_end"] == run["end_seq"]
+
+
 def test_the_run_service_sets_the_review_limits_a_project_has_not() -> None:
     from sandbox_science.orchestrator.harness import Settings
 
