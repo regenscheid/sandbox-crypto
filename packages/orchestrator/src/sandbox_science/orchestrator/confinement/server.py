@@ -64,6 +64,18 @@ from .wire import (
     typed,
 )
 
+REVIEWER_MAX_OUTPUT = 4096
+"""Reviewer output tokens, kept in sync with the host-mode reviewer."""
+
+REVIEWER_MAX_RESPONSE_BYTES = 256 * 1024
+"""Reviewer wire bytes, including provider reasoning and metadata.
+
+Responses can carry substantially more wire data than visible output tokens (for
+example encrypted reasoning metadata). Keep the bound explicit and finite, while
+using the host-mode reviewer's allowance so confinement does not add a smaller,
+deployment-dependent failure boundary.
+"""
+
 
 class ProxySettings(Contract):
     url: str = Field(min_length=1, max_length=2048)
@@ -343,8 +355,8 @@ def create_app(settings: ControlSettings) -> web.Application:
                             profile=gateway.model(
                                 settings.reviewer, role="reviewer"
                             ).requested_profile,
-                            max_output=2048,
-                            max_response_bytes=65536,
+                            max_output=REVIEWER_MAX_OUTPUT,
+                            max_response_bytes=REVIEWER_MAX_RESPONSE_BYTES,
                         ),
                         settings.reviewer,
                     )

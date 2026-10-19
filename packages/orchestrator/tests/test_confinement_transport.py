@@ -152,6 +152,18 @@ def test_paid_model_response_ceiling_cannot_exceed_transport_envelope() -> None:
         ModelRequest.model_validate({**given, "max_response_bytes": MAX_MODEL_RESPONSE_BYTES + 1})
 
 
+def test_the_confined_reviewer_keeps_the_host_reviewers_finite_allowance() -> None:
+    from sandbox_science.orchestrator.confinement.server import (
+        REVIEWER_MAX_OUTPUT,
+        REVIEWER_MAX_RESPONSE_BYTES,
+    )
+    from sandbox_science.orchestrator.confinement.wire import MAX_MODEL_RESPONSE_BYTES
+
+    assert REVIEWER_MAX_OUTPUT == 4096
+    assert REVIEWER_MAX_RESPONSE_BYTES == 256 * 1024
+    assert REVIEWER_MAX_RESPONSE_BYTES < MAX_MODEL_RESPONSE_BYTES
+
+
 async def test_near_response_cap_assistant_append_sends_native_once() -> None:
     from sandbox_science.orchestrator.confinement.runtime_loop import RemoteLog
     from sandbox_science.orchestrator.confinement.wire import (
