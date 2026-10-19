@@ -14,12 +14,17 @@ on:
         description: Build and test the large crypto-base image on native ARM64
         type: boolean
         default: false
+      publish:
+        description: After qualification, push all four ARM64 variants to GHCR (requires crypto_base)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   images:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.publish }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
@@ -41,7 +46,7 @@ jobs:
       - run: NETWORK=0 images/test.sh mcp-proxy
 
   crypto-base:
-    if: ${{ inputs.crypto_base }}
+    if: ${{ inputs.crypto_base && !inputs.publish }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     steps:
@@ -51,3 +56,45 @@ jobs:
       - run: docker version && docker buildx version && test "$(uname -m)" = aarch64
       - run: df -h / /var/lib/docker && docker system df && images/build.sh crypto-base
       - run: NETWORK=0 images/test.sh crypto-base
+
+  publish-arm64:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.crypto_base && inputs.publish }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [minimal, orchestrator, mcp-proxy, crypto-base]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: docker version && docker buildx version && test "$(uname -m)" = aarch64
+      - run: images/build.sh "${{ matrix.profile }}"
+      - run: NETWORK=0 images/test.sh "${{ matrix.profile }}"
+      - name: Push qualified ARM64 variant
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          . images/revision.sh
+          recipe_revision "$PROFILE"
+          case "$revision" in *-dirty) echo 'refusing a dirty recipe' >&2; exit 1;; esac
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          export DOCKER_CONFIG="$config"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          remote="ghcr.io/$REPOSITORY/$PROFILE:$short-arm64"
+          docker tag "sandbox-science/$PROFILE:$short" "$remote"
+          docker push "$remote"
+          docker buildx imagetools inspect "$remote"

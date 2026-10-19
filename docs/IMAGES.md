@@ -152,7 +152,8 @@ G6K has no conda-forge package. The build compiles it with the environment's com
   Its OCI metadata deliberately omits `org.opencontainers.image.source` so a new private GHCR
   package does not automatically inherit read permissions from this public source repository.
   The image's provenance report still records the source URL and revision. Verify package
-  visibility and an unauthenticated pull denial before copying a crypto-base manifest.
+  visibility and an unauthenticated pull denial after its first architecture upload and
+  before adding further manifests or the shared index.
 - **orchestrator** is checked like minimal, including the harness's two packages, which pip installs. Its only packages that are not permissive are the same runtime libraries of conda-forge's Python: the GCC runtime, `readline` and `ld_impl` (no `keyutils`, since it has no ZeroMQ). The harness's contracts are MIT and its orchestrator package `MIT AND Apache-2.0`, as their `pyproject.toml` declare them and the `record` check expects, and aiohttp, pydantic, the Markdown parser (markdown-it-py, mdit-py-plugins, mdurl), PyYAML and their dependencies are under Apache-2.0, MIT, BSD-3-Clause and PSF-2.0 (tier 1 in [licensing](LICENSING.md)).
 - **mcp-proxy** is checked the same way, including its four packages from this repository, all MIT. Its packages are the orchestrator image's but for the Markdown parser, all MIT, so its licenses are the orchestrator image's: the same runtime libraries are its only packages that are not permissive.
 - **The license label.** `images/<profile>/licenses.txt` lists the license expressions in the image: its Conda packages, the Python packages pip installed, the trees built from source, and `LicenseRef-Ubuntu-archive` for the Ubuntu packages. `build.sh` joins them into the `org.opencontainers.image.licenses` label. When a new lockfile changes them, the build fails and prints the new lines for the file. License names that are not SPDX identifiers become `LicenseRef-…` values.
@@ -285,16 +286,21 @@ What arm64 still needs:
 - **A multi-platform image.** It needs a registry or an OCI layout to hold both architectures under one tag; `build.sh` loads one platform into the local store.
 - **The crypto-base tests**, run on an arm64 host, including Sage, G6K and the declared filesystem checks.
 
-After both native builds pass `images/test.sh`, tag and push each local image to the
-**same private repository** as immutable architecture-specific manifests. Keep the
-digests printed by `docker push`, for example
-`registry.example/ss/crypto-base@sha256:...`; do not use mutable arch tags as
-inputs. With registry access already configured, first inspect the proposed index:
+The selected destination is GHCR under this repository's namespace:
+`ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual ARM64 workflow can publish
+all four profiles after building and testing them when both `crypto_base` and `publish`
+are true. It runs publication in jobs with `packages: write`; pull-request jobs remain
+read-only. Build and test the matching AMD64 variants locally, then tag and push each
+one to the same GHCR repository as its ARM64 variant. Keep the immutable digests from
+`docker push`; do not use mutable architecture tags as index inputs. New GHCR packages
+default to private. Verify the crypto-base package's actual `visibility` through GitHub
+and check that an unauthenticated registry request cannot pull it before assembling
+its shared index. With registry access configured, first inspect the proposed index:
 
 ```bash
-python3 images/publish_index.py crypto-base registry.example/ss/crypto-base:REVISION \
-  registry.example/ss/crypto-base@sha256:AMD64_DIGEST \
-  registry.example/ss/crypto-base@sha256:ARM64_DIGEST \
+python3 images/publish_index.py crypto-base ghcr.io/regenscheid/sandbox-crypto/crypto-base:REVISION \
+  ghcr.io/regenscheid/sandbox-crypto/crypto-base@sha256:AMD64_DIGEST \
+  ghcr.io/regenscheid/sandbox-crypto/crypto-base@sha256:ARM64_DIGEST \
   --private-registry-confirmed --dry-run
 ```
 
@@ -304,8 +310,8 @@ then verifies the published index contains exactly those two digests. It refuses
 `crypto-base` without an explicit confirmation that the destination package is
 private. The operator must verify the registry's access setting; Docker cannot
 infer it from a name. `images/build.sh` never pushes. The publication script is
-ready, but no remote multi-platform image has been published yet because no
-private destination has been selected and the ARM64 crypto-base build remains open.
+ready, but no remote multi-platform image has been published yet while the
+ARM64 crypto-base build and registry access checks remain open.
 
 ## In OpenShell
 

@@ -2,6 +2,7 @@
 
 ## 2026-10-19
 
+- The owner selected GHCR under `regenscheid/sandbox-crypto` for shared image tags. A manual native ARM64 publish matrix builds and tests each profile before pushing its architecture tag; PR qualification retains read-only permissions. The GPL-bearing `crypto-base` package remains private pending explicit visibility and anonymous-pull checks before its shared index is created.
 - Native `macos-15` ARM64 CI now exercises the launcher suite before claiming process-supervision support; a real OpenShell MicroVM run on the owner's Mac remains required. The first opt-in ARM64 `crypto-base` build reached G6K and failed on its unconditional x86 `immintrin.h` include, not on disk capacity. An ARM-only exact-match source adjustment is being qualified; no crypto-base ARM64 image or shared manifest is published yet.
 
 - The ARM64 workflow can opt into native `crypto-base` build and sandbox-mode checks. A publication command joins verified immutable AMD64/ARM64 digests under one shared tag only after the operator confirms private registry access for GPL-bearing `crypto-base`; real image publication remains contingent on those gates ([images](../docs/IMAGES.md#arm64)).
