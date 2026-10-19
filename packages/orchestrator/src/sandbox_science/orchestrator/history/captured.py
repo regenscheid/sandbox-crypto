@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from sandbox_science.contracts import Contract
 from sandbox_science.orchestrator.control import ControlStore
-from sandbox_science.orchestrator.documents import DocumentError
+from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 
 from .capture import Origin
 from .inspector import attempt_scope
@@ -63,8 +63,10 @@ class ContextText(Contract):
 
 
 class CapturedContexts:
-    def __init__(self, control: ControlStore) -> None:
-        self.control = control
+    """Public repository reads for immutable captured model inputs."""
+
+    def __init__(self, store: ControlStore | DocumentStore) -> None:
+        self.control = store if isinstance(store, ControlStore) else store.control
 
     def calls(
         self,

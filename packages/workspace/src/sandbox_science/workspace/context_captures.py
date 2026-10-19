@@ -71,7 +71,7 @@ async def calls(request: web.Request) -> web.Response:
     return await documents.answer(
         request,
         lambda store: (
-            CapturedContexts(store.control)
+            CapturedContexts(store)
             .calls(
                 *scope(request),
                 before=given.before,
@@ -87,7 +87,7 @@ async def parts(request: web.Request) -> web.Response:
     return await documents.answer(
         request,
         lambda store: (
-            CapturedContexts(store.control)
+            CapturedContexts(store)
             .parts(
                 *scope(request),
                 identifier(request, "identity"),
@@ -106,7 +106,7 @@ async def text(request: web.Request) -> web.Response:
     return await documents.answer(
         request,
         lambda store: (
-            CapturedContexts(store.control)
+            CapturedContexts(store)
             .text(
                 *scope(request),
                 identifier(request, "identity"),
@@ -122,7 +122,7 @@ async def backfill(request: web.Request) -> web.Response:
     given = query(request, IndexQuery)
 
     def write(store: DocumentStore) -> dict[str, object]:
-        progress = InspectorIndex(store.control).backfill(
+        progress = InspectorIndex(store).backfill(
             *scope(request), continuations=given.scope == "agent"
         )
         return IndexStatus(chunks=progress.chunks, pending=progress.pending).model_dump(mode="json")

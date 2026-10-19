@@ -151,7 +151,7 @@ async def history(request: web.Request) -> web.Response:
     def read(store: DocumentStore) -> dict[str, object]:
         session_record(context.projects, project, session)
         search = (
-            InspectorIndex(store.control)
+            InspectorIndex(store)
             if query.indexed == "1" and len(query.contains) >= 3 and "\x00" not in query.contains
             else OriginalHistory(store)
         )

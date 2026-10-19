@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.documents import DocumentStore
 
 from .inspector import OriginalMessage, OriginalPage, attempt_scope
 
@@ -81,8 +82,10 @@ class IndexProgress:
 
 
 class InspectorIndex:
-    def __init__(self, control: ControlStore) -> None:
-        self.control = control
+    """Public repository search and bounded maintenance of derived history indexes."""
+
+    def __init__(self, store: ControlStore | DocumentStore) -> None:
+        self.control = store if isinstance(store, ControlStore) else store.control
 
     def _pending(
         self,
