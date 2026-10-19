@@ -217,7 +217,10 @@ match (name, args[:2]):
             sys.exit(2)
         print(f"stored {args[-1]} as sha256:{'ab' * 32}", flush=True)
     case ("sandbox-science-worker", ["serve", *_]):
-        settings = tomllib.loads(Path(option("--settings")).read_text())
+        print("fake worker reading settings", flush=True)
+        source = Path(option("--settings")).read_text()
+        print(f"fake worker read {len(source)} setting bytes", flush=True)
+        settings = tomllib.loads(source)
         print("fake worker settings loaded", flush=True)
         serve(settings["listen"], ["worker API on " + settings["listen"]], api=worker_api(settings))
     case ("sandbox-science-harness", ["project", "show"]):

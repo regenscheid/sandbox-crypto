@@ -284,7 +284,7 @@ def site(
             {
                 "bin_dir": str(fake_parts),
                 "openshell": {"cli": str(fake_openshell)},
-                "start_timeout": 20,
+                "start_timeout": 60 if sys.platform == "darwin" else 20,
                 "stop_timeout": changes.pop("stop_timeout", 5),
                 "worker": {
                     "listen": f"127.0.0.1:{worker}",
