@@ -141,7 +141,11 @@ def test_every_download_in_the_containerfile_is_pinned() -> None:
 def test_arm64_apt_uses_the_pinned_archive_snapshot() -> None:
     recipe = (IMAGES / "Containerfile").read_text()
     assert 'if [ "${TARGETARCH}" = arm64 ]; then' in recipe
-    assert "s|http://ports.ubuntu.com/ubuntu-ports|http://archive.ubuntu.com/ubuntu|g" in recipe
+    assert (
+        "s|http://ports.ubuntu.com/ubuntu-ports|"
+        "https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}|g"
+    ) in recipe
+    assert "Snapshot: no" in recipe
     assert 'APT::Snapshot="${UBUNTU_SNAPSHOT}"' in recipe
 
 
