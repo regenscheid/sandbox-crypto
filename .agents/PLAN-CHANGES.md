@@ -2,7 +2,7 @@
 
 ## 2026-10-19
 
-- Pull-request tests now give the 14,000-test general tiers an 18-minute diagnostic deadline and run the two staging integration modules in their own 10-minute slow shard. The shard keeps each module on one xdist worker; fast and general slow retain work-level balancing.
+- Pull-request tests now give the 14,000-test general tiers an 18-minute diagnostic deadline and run each process-heavy staging integration module in its own 10-minute, single-worker shard. Fast and general slow retain work-level balancing. Synthetic transport tests apply their deliberately short timeout only after the executor handshake, so runner scheduling cannot turn a transfer-cancellation test into an unrelated protocol failure.
 - Main/orchestrator, delegated-agent and consistency-reviewer alias and reasoning effort are now independently configurable per project from the GUI. New trees freeze the trusted deployment profiles; children and ordinary Resume retain them. The reviewer defaults to `medium`, while the acceptance lab used Sol/max for research and Luna/medium for review.
 - The completion campaign finished within the $150 authorization at $24.56566378 observed. Live recovery proved parent/child concurrency, downward correction, upward final handback, full child-history retrieval, plan/document/ledger reconciliation, narrative folding and reviewer-led fixes without duplicate child work. Frozen Python passed 14,524/50 skipped; web passed 2,239. The isolated lab was fully archived and removed.
 

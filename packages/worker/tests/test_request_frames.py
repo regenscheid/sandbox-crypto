@@ -279,9 +279,15 @@ async def peer_channel(
         on_event or event,
         on_closed or closed,
         framed=True,
-        timeouts=ChannelTimeouts(write=0.2 if mode == "stall" else 2, close_grace=0.1),
+        timeouts=ChannelTimeouts(write=2, close_grace=0.1),
     )
     await channel.start()
+    # ``stall`` delays requests after the handshake. Give the synthetic peer a
+    # normal startup allowance, then narrow only the transfer under test; on a
+    # busy runner, applying the 0.2 s deadline to hello can cancel its first ACK
+    # and turn a write-timeout test into an unrelated protocol failure.
+    if mode == "stall":
+        channel.timeouts = ChannelTimeouts(write=0.2, close_grace=0.1)
     return channel, record
 
 

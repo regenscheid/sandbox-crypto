@@ -54,6 +54,7 @@ jobs:
           - name: fast
             tier: fast
             deadline: 1080
+            workers: auto
             distribution: load
             selection: ""
             test_timeout: 120
@@ -61,19 +62,27 @@ jobs:
           - name: slow
             tier: slow
             deadline: 1080
+            workers: auto
             distribution: load
             selection: >-
               --ignore=packages/orchestrator/tests/test_skills_staging.py
               --ignore=packages/worker/tests/test_skill_staging.py
             test_timeout: 300
             stack_dump: 280
-          - name: staging
+          - name: staging-orchestrator
             tier: slow
             deadline: 600
-            distribution: loadscope
-            selection: >-
-              packages/orchestrator/tests/test_skills_staging.py
-              packages/worker/tests/test_skill_staging.py
+            workers: 1
+            distribution: load
+            selection: packages/orchestrator/tests/test_skills_staging.py
+            test_timeout: 300
+            stack_dump: 280
+          - name: staging-worker
+            tier: slow
+            deadline: 600
+            workers: 1
+            distribution: load
+            selection: packages/worker/tests/test_skill_staging.py
             test_timeout: 300
             stack_dump: 280
     name: test (${{ matrix.name }})
@@ -91,7 +100,7 @@ jobs:
       # stuck); xdist names the test. The run stops at 18 minutes, before the job's limit,
       # so its output is printed either way.
       - run: >-
-          scripts/ci_pytest.sh ${{ matrix.deadline }} ${{ matrix.tier }} -n auto
+          scripts/ci_pytest.sh ${{ matrix.deadline }} ${{ matrix.tier }} -n ${{ matrix.workers }}
           --dist=${{ matrix.distribution }} --durations=25
           --timeout=${{ matrix.test_timeout }} --timeout-method=thread
           -o faulthandler_timeout=${{ matrix.stack_dump }} ${{ matrix.selection }}
