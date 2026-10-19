@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MIT
+name: arm64 image qualification
+
+# Native Linux ARM64 validates the image recipe before trying the Mac's OpenShell runtime.
+# The large crypto-base image needs a machine with more disk and memory than this runner.
+on:
+  pull_request:
+    paths:
+      - images/**
+      - .github/workflows/arm64-images.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest -q images/tests/test_recipes.py
+      - run: docker version && docker buildx version && test "$(uname -m)" = aarch64
+      - run: images/build.sh minimal
+      - run: NETWORK=0 images/test.sh minimal
+      - run: images/build.sh orchestrator
+      - run: NETWORK=0 images/test.sh orchestrator
+      - run: images/build.sh mcp-proxy
+      - run: NETWORK=0 images/test.sh mcp-proxy

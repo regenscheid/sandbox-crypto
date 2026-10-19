@@ -169,7 +169,7 @@ images/build.sh mcp-proxy
 
   `recipe_packages` in `revision.sh` lists each profile's packages, for the tag and for `build.sh`. Changes to the scripts, the tests, another profile or anything else leave the tag alone. The script prints the tag, the image digest, its size and the build time. It never pushes.
 - **orchestrator and mcp-proxy** need `uv`: `build.sh` first builds their wheels into a temporary directory, which it removes afterwards.
-- **Options.** Further arguments go to `docker buildx build`, such as `--no-cache` or `--build-arg G6K_MARCH_AMD64=x86-64-v2`. `PLATFORM` sets the platform (default `linux/amd64`) and `BUILDER` a buildx builder.
+- **Options.** Further arguments go to `docker buildx build`, such as `--no-cache` or `--build-arg G6K_MARCH_AMD64=x86-64-v2`. `PLATFORM` selects `linux/amd64` or `linux/arm64` (by default the host architecture), and `BUILDER` selects a buildx builder. The Mac builds Linux ARM64 images, not native macOS images.
 - **Rebuilds** install the same packages; they are not bit-for-bit identical.
 
 Sizes, as built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver):

@@ -8,7 +8,8 @@
 # digest, its size and the build time. It loads the image into the local image store and never
 # pushes: crypto-base contains GPL tools and is never published (D46). For orchestrator and
 # mcp-proxy it first builds the wheels of the repository's packages they install from this
-# checkout with uv. PLATFORM selects the platform (default linux/amd64); BUILDER a buildx builder.
+# checkout with uv. PLATFORM selects the platform (default: the host's Linux architecture);
+# BUILDER selects a buildx builder.
 set -euo pipefail
 
 profile=${1:-}
@@ -40,6 +41,19 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 builder=()
 [ -z "${BUILDER:-}" ] || builder=(--builder "$BUILDER")
+if [ -n "${PLATFORM:-}" ]; then
+  platform=$PLATFORM
+else
+  case $(uname -m) in
+    x86_64 | amd64) platform=linux/amd64 ;;
+    aarch64 | arm64) platform=linux/arm64 ;;
+    *) echo "build.sh: unsupported host architecture; set PLATFORM explicitly" >&2; exit 2 ;;
+  esac
+fi
+case $platform in
+  linux/amd64 | linux/arm64) ;;
+  *) echo "build.sh: PLATFORM must be linux/amd64 or linux/arm64" >&2; exit 2 ;;
+esac
 
 started=$(date +%s)
 contexts=(--build-context "binding-inventory=$here/../packages/worker/src/sandbox_science/worker")
@@ -53,7 +67,7 @@ if [ ${#packages[@]} -gt 0 ]; then
   contexts+=(--build-context "wheels=$work/wheels")
 fi
 docker buildx build "${builder[@]}" \
-  --platform "${PLATFORM:-linux/amd64}" \
+  --platform "$platform" \
   --file "$here/Containerfile" \
   --target "$profile" \
   "${contexts[@]}" \
