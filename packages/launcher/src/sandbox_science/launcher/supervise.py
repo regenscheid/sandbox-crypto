@@ -318,6 +318,9 @@ class Supervisor:
             if running.parent_pipe is not None:
                 os.close(running.parent_pipe)
                 running.parent_pipe = None
+            # A Darwin watcher can be killed while its child still owns the
+            # output pipe. Drain the session before waiting for that pipe's EOF.
+            await asyncio.to_thread(end_session, running.process.pid)
             if running.pump is not None:
                 await running.pump
             if not running.part.required and not running.part.restart:
@@ -358,7 +361,6 @@ class Supervisor:
             )
             if await wait_or_sleep(self.clock, self.stop_requested, delay):
                 return None
-            await asyncio.to_thread(end_session, running.process.pid)
             address = running.part.address
             if address is not None and not free(address):
                 reason = (
