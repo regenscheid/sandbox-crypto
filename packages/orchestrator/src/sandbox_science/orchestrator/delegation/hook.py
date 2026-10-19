@@ -249,6 +249,7 @@ class Delegations(TurnHook):
         auxiliary_tokens: Callable[[], Awaitable[int]] | None = None,
         stop_by: Deadline | None = None,
         stop: asyncio.Event | None = None,
+        recovering: bool = False,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
@@ -287,6 +288,9 @@ class Delegations(TurnHook):
         self.stop = stop
         """When the run's end must have stopped its children, once its parent cancels
         it; without it, ``STOP_SECONDS``."""
+        self.recovering = recovering
+        """The recovery holder already fenced dead records while preserving this
+        Resume's pre-reserved delegation identities."""
         choices = self.limits.models if models is not None else ()
         self.specs: tuple[ToolSpec, ...] = offered(choices) if offer else ()
         self.turns_left = max_turns
@@ -776,9 +780,12 @@ class Delegations(TurnHook):
             await ChildSettlement(self.records.control, self.ledger).drain(
                 context.project_id, context.session_id
             )
-            abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
-            for delegation_id, _ in abandoned:
-                _log.warning("delegation %s lost its process: interrupted", delegation_id)
+            if not self.recovering:
+                abandoned = await threaded(
+                    self.records.abandon, context.project_id, context.session_id
+                )
+                for delegation_id, _ in abandoned:
+                    _log.warning("delegation %s lost its process: interrupted", delegation_id)
         try:
             yield
         finally:

@@ -16,7 +16,7 @@ from sandbox_science.orchestrator.control.errors import CONFLICT
 from sandbox_science.orchestrator.control.guard import guarded
 from sandbox_science.orchestrator.projects import RunName, run_name
 
-from .records import Work, WorkRecords
+from .records import ChildProgress, Work, WorkRecords
 from .token_usage import spent_tokens as spent_tokens
 
 
@@ -102,31 +102,84 @@ class Plans:
             after = page[-1].work
 
     def ready(self) -> tuple[str, ...]:
-        """Only leaves whose children have settled this Resume; never resurrect a stop."""
+        """Ready continuations, with coordinators before descendants.
+
+        Recovery reserves every continuation delegation before admission, so a parent
+        can address children that have not started yet. Starting ancestors first keeps
+        one of the four runtime branch slots available for coordination; their work hook
+        still prevents completion before direct children settle and are consumed.
+        """
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT p.work FROM research_continuations p JOIN research_work w "
+                "WITH RECURSIVE ranked(work,path) AS ("
+                "SELECT p.work,'/'||p.work FROM research_continuations p JOIN research_work w "
                 "ON w.project=p.project AND w.session=p.session AND w.work=p.work "
-                "WHERE p.project=? AND p.session=? AND p.request=? AND w.state='waiting' "
-                "AND w.current=p.predecessor AND NOT EXISTS (SELECT 1 FROM research_work c "
-                "JOIN research_continuations cp ON cp.project=c.project AND cp.session=c.session "
-                "AND cp.work=c.work AND cp.request=p.request WHERE c.project=w.project "
-                "AND c.session=w.session AND c.parent=w.work AND c.state IN ('waiting','running') "
-                "AND (c.current=cp.predecessor OR c.state='running')) "
-                "AND NOT EXISTS (SELECT 1 FROM research_work c JOIN delegations d "
-                "ON d.project_id=c.project AND d.session_id=c.session AND d.run=c.current "
-                "WHERE c.project=w.project AND c.session=w.session AND c.parent=w.work "
-                "AND d.ended IS NULL) AND NOT EXISTS (SELECT 1 FROM research_child_settlements cs "
+                "WHERE p.project=? AND p.session=? AND p.request=? AND w.parent IS NULL "
+                "UNION ALL SELECT child.work,parent.path||'/'||child.work FROM ranked parent "
+                "JOIN research_work child ON child.project=? AND child.session=? "
+                "AND child.parent=parent.work JOIN research_continuations cp "
+                "ON cp.project=child.project AND cp.session=child.session AND cp.work=child.work "
+                "AND cp.request=?) SELECT p.work FROM ranked r "
+                "JOIN research_continuations p ON p.project=? AND p.session=? "
+                "AND p.request=? AND p.work=r.work JOIN research_work w "
+                "ON w.project=p.project AND w.session=p.session AND w.work=p.work "
+                "WHERE w.state='waiting' AND w.current=p.predecessor "
+                "AND NOT EXISTS (SELECT 1 FROM research_child_settlements cs "
                 "JOIN research_attempts ca ON ca.project=cs.project AND ca.session=cs.session "
                 "AND ca.run=cs.run JOIN research_work cw ON cw.project=ca.project "
                 "AND cw.session=ca.session AND cw.work=ca.work WHERE cw.project=w.project "
                 "AND cw.session=w.session AND cw.parent=w.work AND cs.settled=0 "
                 "AND EXISTS (SELECT 1 FROM runs rr WHERE rr.project_id=cs.project "
                 "AND rr.session_id=cs.session AND rr.name=cs.run)) "
-                "ORDER BY p.work LIMIT 4",
-                (self.project, self.session, self.request),
+                "ORDER BY r.path LIMIT 4",
+                (
+                    self.project,
+                    self.session,
+                    self.request,
+                    self.project,
+                    self.session,
+                    self.request,
+                    self.project,
+                    self.session,
+                    self.request,
+                ),
             ).fetchall()
         return tuple(row[0] for row in rows)
+
+    def children(self, work: str) -> tuple[str, ...]:
+        """Direct child responsibilities selected by this Resume."""
+        with self.control.read() as tx:
+            return tuple(
+                row[0]
+                for row in tx.sql.execute(
+                    "SELECT c.work FROM research_work c JOIN research_continuations p "
+                    "ON p.project=c.project AND p.session=c.session AND p.work=c.work "
+                    "WHERE c.project=? AND c.session=? AND c.parent=? AND p.request=? "
+                    "ORDER BY c.work",
+                    (self.project, self.session, work, self.request),
+                )
+            )
+
+    def child_progress(self, work: str) -> ChildProgress:
+        """Execution state of this Resume's direct child continuations."""
+        children = self.children(work)
+        if not children:
+            return "settled"
+        marks = ",".join("?" for _ in children)
+        with self.control.read() as tx:
+            states = {
+                row[0]
+                for row in tx.sql.execute(
+                    f"SELECT state FROM research_work WHERE project=? AND session=? "  # noqa: S608
+                    f"AND work IN ({marks})",
+                    (self.project, self.session, *children),
+                )
+            }
+        if states & {"running", "waiting"}:
+            return "active"
+        if states & {"paused", "blocked"}:
+            return "blocked"
+        return "settled"
 
     def spent_tokens(self, work: str) -> int:
         with self.control.read() as tx:

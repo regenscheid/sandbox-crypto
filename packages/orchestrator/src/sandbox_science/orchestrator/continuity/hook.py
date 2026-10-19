@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from sandbox_science.orchestrator.aio import threaded
@@ -32,9 +34,16 @@ class WorkHook(TurnHook):
         *,
         predecessor: str | None = None,
         resume_source: Literal["operator", "automatic"] | None = None,
+        wait_children: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self.records, self.owner = records, owner
         self.predecessor, self.resume_source = predecessor, resume_source
+        self.wait_children = wait_children
+        self.wake: Callable[[], Awaitable[str]] | None = None
+        # Recovery-owned children live outside this attempt's Delegations hook. Ask
+        # this guard first at closing so their durable handbacks are present when the
+        # Delegations hook runs later in the same closing pass.
+        self.veto = wait_children is not None
 
     async def notices(self, point: Point, run: RunView) -> tuple[Notice, ...]:
         """Make trusted continuation provenance observable before its first call."""
@@ -96,14 +105,54 @@ class WorkHook(TurnHook):
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         owner = self.owner
-        if await threaded(self.records.unfinished, owner.project, owner.session, owner.work):
+        unfinished = await threaded(
+            self.records.unfinished, owner.project, owner.session, owner.work
+        )
+        if unfinished and self.wait_children is not None and run.can_respond and run.halted is None:
+            settled = await self._recovery_progress()
+            if settled is None:
+                # The parent or user sent new input while a recovered child still ran.
+                # Retry reaches the next turn safe point, where AgentMailbox offers it.
+                return Closing("retry", stopped="unfinished_children")
+            if settled:
+                # Terminal child work can still be unfinished until this response
+                # consumes its delegation handback. Let Delegations offer it below.
+                return Closing()
+        if unfinished:
             return Closing("stop", stopped="unfinished_children")
         return Closing()
 
     async def finishing(self, run: RunView, stopped: str) -> str | None:
         owner = self.owner
-        if stopped == "answered" and await threaded(
-            self.records.unfinished, owner.project, owner.session, owner.work
-        ):
-            return "unfinished_children"
+        if stopped == "answered":
+            unfinished = await threaded(
+                self.records.unfinished, owner.project, owner.session, owner.work
+            )
+            if unfinished and self.wait_children is not None:
+                await self.wait_children()
+                unfinished = await threaded(
+                    self.records.unfinished, owner.project, owner.session, owner.work
+                )
+            if unfinished:
+                return "unfinished_children"
         return None
+
+    async def _recovery_progress(self) -> bool | None:
+        """Recovered children settled/blocked, or ``None`` when a message wakes them."""
+        if self.wait_children is None:
+            return False
+        children = asyncio.ensure_future(self.wait_children())
+        if self.wake is None:
+            return await children
+        message = asyncio.ensure_future(self.wake())
+        waits = (children, message)
+        try:
+            done, _ = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            if children in done:
+                return children.result()
+            return None
+        finally:
+            for wait in waits:
+                if not wait.done():
+                    wait.cancel()
+            await asyncio.gather(*waits, return_exceptions=True)

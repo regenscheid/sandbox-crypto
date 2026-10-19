@@ -412,7 +412,12 @@ class DelegationRecords:
             return _one(tx.sql, project, session, delegation_id)
 
     def abandon(
-        self, project: str, session: str, *, parent: str | None = None
+        self,
+        project: str,
+        session: str,
+        *,
+        parent: str | None = None,
+        resume: str | None = None,
     ) -> list[tuple[str, str]]:
         """End a dead tree, in one transaction (PD-40): the session's delegations still
         running, or only those of ``parent``'s tree, its children's and theirs, end
@@ -420,7 +425,9 @@ class DelegationRecords:
         ``stopped`` event gets
         it (``close_events``). Called as a main run starts, when none of the session's
         delegations can be running, and when the run service ends a dead run. The IDs
-        and runs of the delegations it ended."""
+        and runs of the delegations it ended. ``resume`` preserves exactly the new
+        continuation runs that request reserved before its concurrent branches start;
+        older open records are still fenced as dead."""
         now = self.clock.now().astimezone(UTC)
         # ``parent``'s tree: its children, and theirs (PD-15), as their records name them.
         tree = (
@@ -434,11 +441,14 @@ class DelegationRecords:
                 f"{tree}SELECT delegation_id, run FROM delegations "  # noqa: S608
                 "WHERE project_id = ? AND session_id = ? AND ended IS NULL "
                 "AND (? IS NULL OR parent IN (SELECT run FROM tree)) "
+                "AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM research_continuations p "
+                "WHERE p.project=delegations.project_id AND p.session=delegations.session_id "
+                "AND p.request=? AND p.run=delegations.run)) "
                 "AND NOT EXISTS (SELECT 1 FROM research_child_settlements c JOIN runs r "
                 "ON r.project_id=c.project AND r.session_id=c.session AND r.name=c.run "
                 "WHERE c.project=delegations.project_id AND c.session=delegations.session_id "
                 "AND c.run=delegations.run AND c.settled=0)",
-                (*values, project, session, parent),
+                (*values, project, session, parent, resume, resume),
             ).fetchall()
             for delegation_id, run in rows:
                 reason = (
@@ -452,10 +462,13 @@ class DelegationRecords:
             unclosed = db.execute(
                 f"{tree}SELECT d.run FROM delegations AS d WHERE d.project_id = ? "  # noqa: S608
                 "AND d.session_id = ? AND (? IS NULL OR d.parent IN (SELECT run FROM tree)) "
+                "AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM research_continuations p "
+                "WHERE p.project=d.project_id AND p.session=d.session_id "
+                "AND p.request=? AND p.run=d.run)) "
                 "AND NOT EXISTS (SELECT 1 FROM run_events AS e "
                 "WHERE e.project_id = d.project_id AND e.session_id = d.session_id "
                 "AND e.run = d.run AND e.kind = 'stopped') ORDER BY d.run",
-                (*values, project, session, parent),
+                (*values, project, session, parent, resume, resume),
             ).fetchall()
             for (run,) in unclosed:
                 close_events(db, project, session, run, now)

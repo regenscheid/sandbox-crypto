@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.projects import RunName, RunRecord, run_id_of,
 from .effort import EffortAudit, ResumeEffort, read_override
 
 State = Literal["running", "waiting", "paused", "blocked", "completed", "stopped"]
+ChildProgress = Literal["active", "blocked", "settled"]
 PAGE = 100
 
 

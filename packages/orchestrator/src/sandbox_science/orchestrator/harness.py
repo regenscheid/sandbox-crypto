@@ -806,7 +806,12 @@ class Harness:
         return await self.start(admitted, sink)
 
     async def start(
-        self, admitted: Admitted, sink: RunSink, *, stop: asyncio.Event | None = None
+        self,
+        admitted: Admitted,
+        sink: RunSink,
+        *,
+        stop: asyncio.Event | None = None,
+        wait_children: Callable[[], Awaitable[bool]] | None = None,
     ) -> Finished:
         """Run an admitted task to its end.
 
@@ -859,11 +864,13 @@ class Harness:
                     admitted,
                     sink,
                     stop=stop,
+                    recovering=wait_children is not None,
                     work=WorkHook(
                         records,
                         owner,
                         predecessor=request.predecessor,
                         resume_source=request.resume_source,
+                        wait_children=wait_children,
                     ),
                 )
             except BaseException:
@@ -878,6 +885,7 @@ class Harness:
         sink: RunSink,
         *,
         stop: asyncio.Event | None = None,
+        recovering: bool = False,
         work: WorkHook | None = None,
     ) -> Finished:
         if admitted.stateful != (self.stores is not None):
@@ -916,7 +924,12 @@ class Harness:
                     if chat is not None and view is not None:
                         chat.shown = view.shown
                     delegations = await self._delegations(
-                        admitted, chat, memory, stop, allowance=allowance
+                        admitted,
+                        chat,
+                        memory,
+                        stop,
+                        allowance=allowance,
+                        recovering=recovering,
                     )
                     toolbox = await self._toolbox(
                         admitted,
@@ -926,12 +939,16 @@ class Harness:
                         delegations,
                         stop,
                     )
-                    if delegations is not None and toolbox.mailbox is not None:
-                        delegations.wake = (
+                    if toolbox.mailbox is not None:
+                        child_wake = (
                             functools.partial(toolbox.resources.wake, toolbox.mailbox.wake)
                             if toolbox.resources is not None
                             else toolbox.mailbox.wake
                         )
+                        if delegations is not None:
+                            delegations.wake = child_wake
+                        if work is not None:
+                            work.wake = child_wake
                     hooks = toolbox.turn_hooks()
                     if work is not None:
                         owner = work.owner
@@ -1330,6 +1347,7 @@ class Harness:
         discovery: SkillDiscovery | None = None,
         *,
         allowance: FoldAllowance | None = None,
+        recovering: bool = False,
     ) -> tuple[TurnHook, ...]:
         """A run's budget, the user's messages, which reach the model last, and its
         events, which come last. A delegated run keeps its token limit, and its calls that
@@ -1377,6 +1395,7 @@ class Harness:
         stop: asyncio.Event | None,
         *,
         allowance: FoldAllowance | None = None,
+        recovering: bool = False,
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
         its project lets its runs delegate (PD-33, PD-35); and a delegated task's own, when
@@ -1435,6 +1454,7 @@ class Harness:
             auxiliary_tokens=allowance.additional if allowance else None,
             stop_by=request.stop_by,
             stop=stop,
+            recovering=recovering,
             clock=clock,
         )
 

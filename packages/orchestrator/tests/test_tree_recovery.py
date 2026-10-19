@@ -141,6 +141,29 @@ async def drive(recovery, sink, stop):
             await asyncio.gather(running, return_exceptions=True)
 
 
+async def drive_concurrent(recovery, sink, stop):
+    """Model the confined runtime's independent branch polling."""
+    holder = asyncio.create_task(recovery.run(sink, stop))
+    branches: set[asyncio.Task[bool]] = set()
+    try:
+        await eventually(lambda: recovery.started or holder.done())
+        while not holder.done():
+            branches = {branch for branch in branches if not branch.done()}
+            for work in await recovery.next():
+                if work not in recovery.active:
+                    branches.add(asyncio.create_task(recovery.branch(work)))
+            await asyncio.sleep(0)
+        await asyncio.gather(*branches)
+        return await holder
+    finally:
+        if not holder.done():
+            holder.cancel()
+            await asyncio.gather(holder, return_exceptions=True)
+        for branch in branches:
+            branch.cancel()
+        await asyncio.gather(*branches, return_exceptions=True)
+
+
 async def test_one_resume_recovers_three_levels_and_preserves_stopped_branch(tmp_path: Path):
     state, documents, works = prepare_tree(tmp_path)
     worker = RecoveryWorker()
@@ -173,6 +196,433 @@ async def test_one_resume_recovers_three_levels_and_preserves_stopped_branch(tmp
         assert worker.claims
         assert worker.claims[0].context.authority.work == RUN
         assert works.request("p", "s") is None
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+async def test_four_child_resume_keeps_parent_live_and_consumes_every_handback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pydantic import TypeAdapter
+
+    from sandbox_science.contracts import ExecutionContext
+
+    state, documents = stores(tmp_path)
+    session = state.projects.open_session("p", "s", dedicated=False)
+    context = ExecutionContext(
+        project_id="p",
+        session_id="s",
+        environment_id=session.environment_id,
+        policy_revision=state.projects.get("p").policy,
+    )
+    works = WorkRecords(state.projects.control)
+    blueprints = Blueprints(state.projects.control)
+    records = DelegationRecords(state.projects.control)
+    owner = works.admit("p", "s", RUN)
+    blueprints.save(
+        owner,
+        Blueprint(
+            context=context,
+            request=TypeAdapter(RunRequest).dump_python(
+                RunRequest("p", "s", "Coordinate four checks", alias="scripted"),
+                mode="json",
+                exclude={"history", "stop_by"},
+            ),
+        ),
+    )
+    children = tuple(f"20261019T04000{index}000000Z-child-{index}" for index in range(4))
+    for index, child in enumerate(children):
+        child_owner = works.admit("p", "s", child, parent=RUN)
+        delegation = new_id("dlg")
+        blueprints.save(
+            child_owner,
+            Blueprint(
+                context=context,
+                request=TypeAdapter(RunRequest).dump_python(
+                    RunRequest(
+                        "p",
+                        "s",
+                        f"Check branch {index}",
+                        parent=RUN,
+                        delegation=delegation,
+                        tokens=100000,
+                        alias="scripted",
+                        root=RUN,
+                    ),
+                    mode="json",
+                    exclude={"history", "stop_by"},
+                ),
+            ),
+        )
+        records.start(
+            "p",
+            "s",
+            Delegation(
+                delegation_id=delegation,
+                parent=RUN,
+                run=child,
+                kind="task",
+                brief={"task": f"Check branch {index}"},
+                started_at=datetime.now(UTC),
+            ),
+        )
+        records.end("p", "s", delegation, Ending("interrupted", "interrupted"))
+    records.configure("p", depth=1)
+    works.interrupt("p", "s", RUN)
+    root_started = asyncio.Event()
+
+    class RootModel(ScriptedModel):
+        async def complete(self, messages, tools):
+            root_started.set()
+            return await super().complete(messages, tools)
+
+    class ChildModel(ScriptedModel):
+        def __init__(self):
+            super().__init__([])
+            self.started = 0
+
+        async def complete(self, messages, tools):
+            self.requests.append(list(messages))
+            self.started += 1
+            await root_started.wait()
+            return ModelTurn(
+                json.dumps({"status": "complete", "summary": f"child {self.started}"}),
+                model="scripted",
+            )
+
+    root_model = RootModel([ModelTurn("Too early"), ModelTurn("Integrated all handbacks")])
+    child_model = ChildModel()
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        Role(root_model, "scripted"),
+        delegated=Role(child_model, "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    recovery = Recovery(harness, "p", "s", request)
+    from sandbox_science.orchestrator.continuity.child_settlement import ChildSettlement
+
+    settling = asyncio.Event()
+    release = asyncio.Event()
+    original_settle = ChildSettlement.settle
+
+    async def held_settle(self, project, session, run):
+        settling.set()
+        await release.wait()
+        return await original_settle(self, project, session, run)
+
+    monkeypatch.setattr(ChildSettlement, "settle", held_settle)
+    running: asyncio.Task[bool] | None = None
+    try:
+        sink = Sink()
+        running = asyncio.create_task(drive_concurrent(recovery, sink, asyncio.Event()))
+        await settling.wait()
+        assert any(works.get("p", "s", child).state == "completed" for child in children)
+        assert len(root_model.requests) == 1
+        assert not running.done()
+        release.set()
+        assert not await running, sink.errors
+        assert child_model.started == 4
+        assert len(root_model.requests) == 2
+        final_input = json.dumps(root_model.requests[-1])
+        for index in range(4):
+            assert f"Check branch {index}" in final_input
+        root = state.projects.run("p", "s", works.get("p", "s", RUN).current)
+        assert root.final_text == "Integrated all handbacks"
+        assert all(works.get("p", "s", child).state == "completed" for child in children)
+        assert all(
+            delegation.ended == "returned"
+            for delegation in records.listed("p", "s")[0]
+            if delegation.run in {works.get("p", "s", child).current for child in children}
+        )
+    finally:
+        if running is not None and not running.done():
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+        documents.close()
+        state.projects.close()
+
+
+async def test_nested_resume_keeps_a_leaf_runnable_with_four_branch_cap(tmp_path: Path) -> None:
+    from pydantic import TypeAdapter
+
+    state, documents, works = prepare_tree(tmp_path)
+    context = Blueprints(state.projects.control).get("p", "s", RUN).context
+    records = DelegationRecords(state.projects.control)
+    blueprints = Blueprints(state.projects.control)
+    with state.projects.control.write() as tx:
+        tx.sql.execute(
+            "UPDATE research_work SET state='running',reason=NULL "
+            "WHERE project='p' AND session='s' AND work=?",
+            (RUN,),
+        )
+    added: list[str] = []
+    for index in (2, 3):
+        child = f"20261019T04100{index}000000Z-child-{index}"
+        grandchild = f"20261019T04110{index}000000Z-grandchild-{index}"
+        for work, parent, may_delegate in (
+            (child, RUN, True),
+            (grandchild, child, False),
+        ):
+            owner = works.admit("p", "s", work, parent=parent)
+            delegation = new_id("dlg")
+            blueprints.save(
+                owner,
+                Blueprint(
+                    context=context,
+                    request=TypeAdapter(RunRequest).dump_python(
+                        RunRequest(
+                            "p",
+                            "s",
+                            f"Continue {work}",
+                            parent=parent,
+                            delegation=delegation,
+                            tokens=100000,
+                            alias="scripted",
+                            root=RUN,
+                            may_delegate=may_delegate,
+                        ),
+                        mode="json",
+                        exclude={"history", "stop_by"},
+                    ),
+                ),
+            )
+            records.start(
+                "p",
+                "s",
+                Delegation(
+                    delegation_id=delegation,
+                    parent=parent,
+                    run=work,
+                    kind="task",
+                    brief={"task": f"Continue {work}"},
+                    started_at=datetime.now(UTC),
+                ),
+            )
+            records.end("p", "s", delegation, Ending("interrupted", "interrupted"))
+            added.append(work)
+    records.configure("p", depth=2)
+    works.interrupt("p", "s", RUN)
+    model = ScriptedModel(
+        [ModelTurn(json.dumps({"status": "complete", "summary": "Recovered"}))] * 24
+    )
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        main("Integrated", "Integrated", "Integrated", "Integrated"),
+        delegated=Role(model, "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    try:
+        sink = Sink()
+        assert not await drive_concurrent(
+            Recovery(harness, "p", "s", request), sink, asyncio.Event()
+        ), sink.errors
+        for work in (RUN, CHILD, GRANDCHILD, *added):
+            assert works.get("p", "s", work).state == "completed"
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+async def test_child_message_wakes_recovered_parent_closing_wait(tmp_path: Path) -> None:
+    from sandbox_science.orchestrator.model import ToolCall
+
+    state, documents, works = prepare_tree(tmp_path)
+    works.stop("p", "s", GRANDCHILD)
+    records = DelegationRecords(state.projects.control)
+    records.configure("p", depth=1)
+    works.interrupt("p", "s", RUN)
+
+    class RootModel:
+        def __init__(self):
+            self.requests = []
+            self.sent = False
+
+        async def complete(self, messages, tools):
+            self.requests.append(list(messages))
+            visible = json.dumps(messages)
+            if "Need direction before finishing" in visible and not self.sent:
+                child_run = works.get("p", "s", CHILD).current
+                with state.projects.control.read() as tx:
+                    (delegation,) = tx.sql.execute(
+                        "SELECT delegation_id FROM delegations WHERE project_id='p' "
+                        "AND session_id='s' AND run=? AND ended IS NULL",
+                        (child_run,),
+                    ).fetchone()
+                self.sent = True
+                return ModelTurn(
+                    None,
+                    (
+                        ToolCall(
+                            "reply-child",
+                            "message_child",
+                            json.dumps(
+                                {
+                                    "delegation_id": delegation,
+                                    "text": "Use the durable checkpoint and finish.",
+                                }
+                            ),
+                        ),
+                    ),
+                    model="scripted",
+                )
+            if "Child completed after correction" in visible:
+                return ModelTurn("Integrated child result", model="scripted")
+            return ModelTurn("Waiting for child", model="scripted")
+
+    child_model = ScriptedModel.from_json(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "name": "message_parent",
+                        "arguments": {"text": "Need direction before finishing"},
+                    }
+                ]
+            },
+            {"tool_calls": [{"name": "wait_agent_message", "arguments": {"timeout_seconds": 30}}]},
+            {
+                "text": json.dumps(
+                    {"status": "complete", "summary": "Child completed after correction"}
+                )
+            },
+        ]
+    )
+    root_model = RootModel()
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        Role(root_model, "scripted"),
+        delegated=Role(child_model, "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    try:
+        sink = Sink()
+        assert not await drive_concurrent(
+            Recovery(harness, "p", "s", request), sink, asyncio.Event()
+        ), sink.errors
+        assert root_model.sent
+        assert any(
+            "Need direction before finishing" in json.dumps(turn) for turn in root_model.requests
+        )
+        assert "Use the durable checkpoint and finish" in json.dumps(child_model.requests)
+        root = state.projects.run("p", "s", works.get("p", "s", RUN).current)
+        assert root.final_text == "Integrated child result"
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+async def test_child_resource_request_wakes_recovered_parent_closing_wait(
+    tmp_path: Path,
+) -> None:
+    from sandbox_science.orchestrator.continuity.resources import ResourceRequests
+    from sandbox_science.orchestrator.model import ToolCall
+
+    state, documents, works = prepare_tree(tmp_path)
+    works.stop("p", "s", GRANDCHILD)
+    DelegationRecords(state.projects.control).configure("p", depth=1)
+    works.interrupt("p", "s", RUN)
+    requests = ResourceRequests(state.projects.control)
+
+    class RootModel:
+        def __init__(self):
+            self.requests = []
+            self.decided = False
+
+        async def complete(self, messages, tools):
+            self.requests.append(list(messages))
+            root = works.get("p", "s", RUN)
+            owner = works.owner("p", "s", root.current)
+            assert owner is not None
+            pending = requests.pending(owner, children_only=True)
+            if pending and not self.decided:
+                self.decided = True
+                return ModelTurn(
+                    None,
+                    (
+                        ToolCall(
+                            "decide-resource",
+                            "resource_decide",
+                            json.dumps(
+                                {
+                                    "request_id": pending[0].request_id,
+                                    "action": "continue",
+                                    "reason": "The saved checkpoint shows useful progress.",
+                                }
+                            ),
+                        ),
+                    ),
+                    model="scripted",
+                )
+            if "Child completed after resource decision" in json.dumps(messages):
+                return ModelTurn("Integrated resource-limited child", model="scripted")
+            return ModelTurn("Waiting for child resources", model="scripted")
+
+    class ChildModel:
+        def __init__(self):
+            self.requests = []
+            self.warning = None
+
+        async def complete(self, messages, tools):
+            self.requests.append(list(messages))
+            child = works.get("p", "s", CHILD)
+            owner = works.owner("p", "s", child.current)
+            assert owner is not None
+            if self.warning is None:
+                self.warning = requests.observe(
+                    owner,
+                    "turns",
+                    used=4,
+                    total=5,
+                    revision=0,
+                )
+                assert self.warning is not None
+            while not requests.decisions(owner):
+                await asyncio.sleep(0.01)
+            return ModelTurn(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "summary": "Child completed after resource decision",
+                    }
+                ),
+                model="scripted",
+            )
+
+    root_model = RootModel()
+    child_model = ChildModel()
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        Role(root_model, "scripted"),
+        delegated=Role(child_model, "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    try:
+        sink = Sink()
+        assert not await asyncio.wait_for(
+            drive_concurrent(Recovery(harness, "p", "s", request), sink, asyncio.Event()),
+            10,
+        ), sink.errors
+        assert root_model.decided
+        assert child_model.warning is not None
+        assert any(
+            child_model.warning.request_id in json.dumps(turn) for turn in root_model.requests
+        )
+        assert requests.page("p", "s").requests[0].decision is not None
+        root = state.projects.run("p", "s", works.get("p", "s", RUN).current)
+        assert root.final_text == "Integrated resource-limited child"
     finally:
         documents.close()
         state.projects.close()
@@ -218,6 +668,46 @@ def test_leaf_first_resume_reserves_parent_mailbox_before_parent_runs(tmp_path: 
             assert [item.message_id for item in mailbox.pending("p", "s", parent_delegation)] == [
                 message.message_id
             ]
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+def test_resume_prioritizes_parent_after_reserving_bidirectional_mailboxes(
+    tmp_path: Path,
+) -> None:
+    state, documents, works = prepare_tree(tmp_path)
+    harness = Harness(
+        cast(WorkerClient, RecoveryWorker()),
+        main("Recovered root"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    recovery = Recovery(harness, "p", "s", request)
+    lease = recovery.run_name
+    try:
+        RunState(state.projects.control).acquire("p", "s", lease, "fixture")
+        _, epoch = works.claim("p", "s", request, lease_run=lease)
+        with recovery.plans.authority(epoch, lease):
+            recovery.plans.prepare(RUN, run=lease, started=recovery.started_at)
+            recovery._reserve_delegations(RUN)
+            assert recovery.plans.ready() == (RUN, CHILD, GRANDCHILD)
+            with state.projects.control.read() as tx:
+                reserved = tx.sql.execute(
+                    "SELECT d.run,d.parent FROM delegations d "
+                    "JOIN research_continuations p ON p.project=d.project_id "
+                    "AND p.session=d.session_id AND p.run=d.run "
+                    "WHERE p.request=? AND d.ended IS NULL ORDER BY d.run",
+                    (request,),
+                ).fetchall()
+            assert reserved == sorted(
+                [
+                    (recovery.plans.get(CHILD).run, lease),
+                    (recovery.plans.get(GRANDCHILD).run, recovery.plans.get(CHILD).run),
+                ]
+            )
     finally:
         documents.close()
         state.projects.close()
@@ -398,8 +888,12 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
     running = asyncio.create_task(drive(first, Sink(), asyncio.Event()))
     try:
         await eventually(lambda: RUN in first.active)
-        assert works.get("p", "s", CHILD).state == "completed"
-        assert works.get("p", "s", GRANDCHILD).state == "completed"
+        await eventually(
+            lambda: (
+                works.get("p", "s", CHILD).state == "completed"
+                and works.get("p", "s", GRANDCHILD).state == "completed"
+            )
+        )
         assert works.attempts("p", "s", RUN) == [RUN]
         running.cancel()
         with pytest.raises(asyncio.CancelledError):

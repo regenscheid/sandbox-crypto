@@ -55,6 +55,7 @@ class Recovery:
         self.started = False
         self.active: dict[str, asyncio.Task[object]] = {}
         self._delegation_lock = asyncio.Lock()
+        self.changed = asyncio.Condition()
         self.wake = asyncio.Event()
         self.stop: asyncio.Event | None = None
         self.sink: RunSink | None = None
@@ -118,6 +119,7 @@ class Recovery:
                     ).drain(self.project, self.session, root=root)
                     await self.harness.release_completed_children(owned_context, root)
                     await threaded(self.plans.prepare, root, run=name, started=started)
+                    await threaded(self._reserve_delegations, root)
                 self.started = True
                 while True:
                     self.wake.clear()
@@ -175,6 +177,8 @@ class Recovery:
         finally:
             self.active.pop(work_id, None)
             self.wake.set()
+            async with self.changed:
+                self.changed.notify_all()
 
     async def _branch(self, work_id: str) -> bool:
         try:
@@ -182,7 +186,12 @@ class Recovery:
             admitted = await self.prepare(work)
             if self.sink is None:
                 raise RuntimeError("Resume has no sink")
-            finished = await self.harness.start(admitted, self.sink, stop=self.stop)
+            finished = await self.harness.start(
+                admitted,
+                self.sink,
+                stop=self.stop,
+                wait_children=lambda: self.wait_children(work_id),
+            )
             settlement = (
                 await self.harness.checkpoint_child(finished)
                 if admitted.request.delegation is not None
@@ -219,11 +228,53 @@ class Recovery:
             )
             return False
 
+    def _reserve_delegations(self, root: str) -> None:
+        """Reserve every mailbox identity, then fence only stale open delegations."""
+        after = ""
+        while page := self.records.page(self.project, self.session, root, after=after):
+            for work in page:
+                if work.parent is not None and work.state not in ("completed", "stopped"):
+                    try:
+                        self._delegation_for(work)
+                    except ControlError as exc:
+                        if exc.kind != NOT_FOUND:
+                            raise
+                        # A malformed historical branch is reported when its own
+                        # preparation runs. It must not prevent the recovery holder
+                        # from releasing already-terminal kernels first.
+            after = page[-1].work
+        DelegationRecords(self.stores.projects.control, clock=self.harness.clock).abandon(
+            self.project, self.session, resume=self.request
+        )
+
+    async def wait_children(self, work: str) -> bool:
+        """Wait for this continuation's direct children to settle or block.
+
+        The condition belongs to Recovery because its branch tasks, rather than the
+        resumed parent's Delegations hook, own those child processes. The boolean says
+        whether all direct child work reached a terminal state with evidence available.
+        """
+        while True:
+            children = await threaded(self.plans.children, work)
+            progress = await threaded(self.plans.child_progress, work)
+            if any(child in self.active for child in children):
+                progress = "active"
+            if progress != "active":
+                return progress == "settled"
+            async with self.changed:
+                children = await threaded(self.plans.children, work)
+                progress = await threaded(self.plans.child_progress, work)
+                if any(child in self.active for child in children):
+                    progress = "active"
+                if progress != "active":
+                    return progress == "settled"
+                await self.changed.wait()
+
     def _delegation_for(self, work: Work) -> str | None:
         """Reserve a continuation's parent chain before a leaf can send messages.
 
-        Ready branches run leaves first. A grandchild's parent therefore needs its
-        delegation identity even while that parent's continuation is still waiting.
+        A grandchild's parent needs its delegation identity even while that parent's
+        continuation is still waiting.
         The caller serializes this method across sibling branches, and the saved run
         identity lets an interrupted preparation reuse the same record.
         """
