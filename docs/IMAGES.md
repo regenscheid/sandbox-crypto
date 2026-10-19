@@ -4,7 +4,7 @@ Research sandboxes start from one of two standard base profiles (D46, D22). The 
 
 | Profile | Contents | Licensing |
 | --- | --- | --- |
-| `minimal` | Ubuntu 24.04; Python 3.14 with ipykernel and jupyter_client; micromamba for runtime installs | Permissive, apart from the base distribution's runtime libraries; the project could publish it (tier 2 in [licensing](LICENSING.md)). It is not published yet |
+| `minimal` | Ubuntu 24.04; Python 3.14 with ipykernel and jupyter_client; micromamba for runtime installs | Permissive, apart from the base distribution's runtime libraries; its AMD64 variant is currently in a private GHCR package (tier 2 in [licensing](LICENSING.md)) |
 | `crypto-base` | The same, plus SageMath 10.9 with its `sagemath` kernel, fpylll, fplll, PARI, FLINT, G6K, lattice-estimator, conda-forge's C and C++ compilers, TeX Live 2023 (`latexmk`, `pdflatex`), poppler-utils, qpdf, pdf_oxide and git | Contains GPL tools. The recipe is MIT; the image is built privately and may be copied only to a verified private registry (D46) |
 | `orchestrator` | Ubuntu 24.04; Python 3.14 with aiohttp, pydantic, PyYAML and the Markdown parser of living documents (markdown-it-py, mdit-py-plugins); the harness (`sandbox-science-harness`) and its contracts, built from this repository. No kernels ([below](#the-orchestrator-image)) | Permissive like `minimal`, which the build checks the same way; the harness is MIT |
 | `mcp-proxy` | Ubuntu 24.04; Python 3.14 with aiohttp, pydantic and PyYAML; the MCP proxy (`sandbox-science-mcp-proxy`) with the contracts, the policy library and the event store, built from this repository; a launcher, `mcp-proxy-run`, as the sandbox's command. No kernels ([below](#the-mcp-proxy-image)) | Permissive like `minimal`, which the build checks the same way; the proxy is MIT |
@@ -31,7 +31,7 @@ Every profile follows it; the orchestrator and MCP proxy images differ where [th
 - **No image policy.** The images carry no `/etc/openshell/policy.yaml`; the worker always supplies the policy.
 - **Record.** `/usr/share/sandbox-science/image.json` names the profile, the recipe's revision, the base image, the Ubuntu snapshot, the micromamba release, the lockfile's SHA-256 and the trees built from source. It lists every Conda, pip and Ubuntu package with its version and license. The Conda lockfile is beside it. Restoring and rebuilding environments (D22, D48) can start from these.
 - **Labels.**
-  - `org.opencontainers.image.source`: the repository;
+- `org.opencontainers.image.source`: the repository, except on `crypto-base` to prevent automatic access inheritance for its private GHCR package;
   - `org.opencontainers.image.revision`: the recipe's commit, the last to change what the build reads, with `-dirty` for uncommitted changes there;
   - `org.opencontainers.image.version`: its short form, also the tag;
   - `org.opencontainers.image.licenses`: the licenses in `images/<profile>/licenses.txt`, joined into one SPDX expression;
@@ -295,7 +295,10 @@ one to the same GHCR repository as its ARM64 variant. Keep the immutable digests
 `docker push`; do not use mutable architecture tags as index inputs. New GHCR packages
 default to private. Verify the crypto-base package's actual `visibility` through GitHub
 and check that an unauthenticated registry request cannot pull it before assembling
-its shared index. With registry access configured, first inspect the proposed index:
+its shared index. A pushed architecture digest may name an OCI index containing one
+image plus a provenance attestation. `publish_index.py` resolves the matching image
+leaf and accepts only attestations bound to it, then assembles exactly two image
+leaves. With registry access configured, first inspect the proposed index:
 
 ```bash
 python3 images/publish_index.py crypto-base ghcr.io/regenscheid/sandbox-crypto/crypto-base:REVISION \

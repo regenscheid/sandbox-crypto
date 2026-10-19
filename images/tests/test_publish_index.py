@@ -51,6 +51,33 @@ def test_index_must_match_exact_architecture_digests() -> None:
         )
 
 
+def test_pushed_architecture_index_selects_image_not_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = "registry.example/ss/minimal"
+    pushed = "sha256:" + "a" * 64
+    leaf = "sha256:" + "b" * 64
+    attestation = "sha256:" + "c" * 64
+    manifest = {
+        "manifests": [
+            {"platform": {"os": "linux", "architecture": "amd64"}, "digest": leaf},
+            {
+                "platform": {"os": "unknown", "architecture": "unknown"},
+                "digest": attestation,
+                "annotations": {
+                    "vnd.docker.reference.type": "attestation-manifest",
+                    "vnd.docker.reference.digest": leaf,
+                },
+            },
+        ]
+    }
+    monkeypatch.setattr(publish, "docker", lambda *args: json.dumps(manifest))
+    assert publish.platform_manifest(repo + "@" + pushed, "linux/amd64") == repo + "@" + leaf
+    manifest["manifests"][1]["annotations"]["vnd.docker.reference.digest"] = pushed
+    with pytest.raises(ValueError, match="unrelated"):
+        publish.platform_manifest(repo + "@" + pushed, "linux/amd64")
+
+
 def test_publication_checks_both_inputs_then_verifies_the_written_index(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -63,6 +90,12 @@ def test_publication_checks_both_inputs_then_verifies_the_written_index(
 
     def fake_docker(*args: str) -> str:
         calls.append(args)
+        if (
+            args[0] == "inspect"
+            and args[2] == "{{json .Manifest}}"
+            and args[-1].endswith(("@" + amd, "@" + arm))
+        ):
+            return json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json"})
         if args[0] == "inspect" and args[-1].endswith("@" + amd):
             return json.dumps(
                 {
@@ -115,5 +148,5 @@ def test_publication_checks_both_inputs_then_verifies_the_written_index(
         ],
     )
     assert publish.main() == 0
-    assert calls[2][0] == "create"
+    assert calls[4][0] == "create"
     assert capsys.readouterr().out.strip() == repo + "@" + index

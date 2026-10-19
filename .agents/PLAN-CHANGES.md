@@ -2,6 +2,7 @@
 
 ## 2026-10-19
 
+- The first GHCR uploads of `minimal`, `orchestrator` and `mcp-proxy` AMD64 variants are private and deny anonymous manifest reads. Docker pushed each as a one-platform OCI index plus an attestation; the shared-index tool now resolves only the architecture image leaf and rejects unrelated descriptors before combining AMD64 and ARM64.
 - The owner selected GHCR under `regenscheid/sandbox-crypto` for shared image tags. A manual native ARM64 publish matrix builds and tests each profile before pushing its architecture tag; PR qualification retains read-only permissions. The GPL-bearing `crypto-base` package remains private pending explicit visibility and anonymous-pull checks before its shared index is created.
 - Native `macos-15` ARM64 CI now exercises the launcher suite before claiming process-supervision support; a real OpenShell MicroVM run on the owner's Mac remains required. The first opt-in ARM64 `crypto-base` build reached G6K and failed on its unconditional x86 `immintrin.h` include; the second reached a GCC 15 AArch64 ABI internal compiler error on G6K's user-aligned vector typedefs. An ARM-only exact-match source adjustment is being qualified; neither failure was a disk limit, and no crypto-base ARM64 image or shared manifest is published yet.
 

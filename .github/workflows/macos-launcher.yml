@@ -27,4 +27,4 @@ jobs:
           enable-cache: true
       - run: test "$(uname -m)" = arm64
       - run: uv sync --locked
-      - run: uv run pytest -q packages/launcher/tests
+      - run: uv run pytest -vv -x --timeout=120 --timeout-method=thread packages/launcher/tests
