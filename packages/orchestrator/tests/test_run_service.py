@@ -939,6 +939,9 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         assert await service.waiting_work() == ()
         post(harness, "m-3", "Help consolidate again.")
         await service.tick()
+        active = service.active[(PROJECT, SESSION)]
+        assert active.task is not None
+        await asyncio.wait_for(asyncio.shield(active.task), timeout=20)
         await ended(harness, 4)
         assert any(CONSOLIDATION.text in str(m["content"]) for m in harness.gateway.main[-1])
         assert states(harness) == {"m-1": "held", "m-2": "delivered", "m-3": "delivered"}
