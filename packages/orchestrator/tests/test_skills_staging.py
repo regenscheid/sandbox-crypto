@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any, cast
 
+import pytest
+
 from sandbox_science.contracts import (
     ExecutionContext,
     StageCheck,
@@ -31,6 +33,8 @@ from .loop_harness import PROJECT, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+
+pytestmark = pytest.mark.slow
 
 FILES = {
     "tool/SKILL.md": "---\nname: tool\ndescription: Runs the tool.\n---\nRun run.sh.\n",

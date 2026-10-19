@@ -66,6 +66,22 @@ def require_run_kernels(channel: ExecutorChannel) -> None:
         )
 
 
+def require_conditional_kernel_restart(channel: ExecutorChannel) -> None:
+    """Refuse a recovery restart when the attached executor cannot make it atomic.
+
+    A worker can reattach to an executor from an older image. Sending that executor
+    ``only_if_absent`` would be unsafe because it would ignore the unknown field and
+    restart a kernel that became live after recovery observed it as absent.
+    """
+    supported = channel.hello.get("conditional_kernel_restart")
+    if type(supported) is not int or supported != 1:
+        raise WorkerError(
+            ErrorKind.UNSUPPORTED,
+            "this environment's executor predates conditional kernel restart; "
+            "recycle the environment",
+        )
+
+
 def require_skill_bindings(channel: ExecutorChannel) -> None:
     """Refuse skill bindings for an executor from before them (its protocol under 2): a
     reattached daemon keeps its old executor, which would run the execution without them,
@@ -285,6 +301,7 @@ class KernelRegistry:
                 require_run_kernels(channel)
                 fields["run"] = request.run
             if request.only_if_absent:
+                require_conditional_kernel_restart(channel)
                 fields["only_if_absent"] = True
             reply = await channel.request("restart", **fields, reply_timeout=180)
             kernel, _ = self.kernel(

@@ -1054,6 +1054,7 @@ async def test_an_idle_kernel_is_stopped_once_it_has_been_unused_long_enough(
 
     hello = await ask({"id": -2, "op": "hello"})
     assert hello["run_kernels"] == 1  # kernels per run (worker protocol 4)
+    assert hello["conditional_kernel_restart"] == 1
     gate = {"incarnation": hello["package_gate"], "generation": 0, "mode": "ready"}
     ready = await ask({"id": -1, "op": "package_gate", **gate, "operation": "", "revision": None})
     assert ready["ok"]

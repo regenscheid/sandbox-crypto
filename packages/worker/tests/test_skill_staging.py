@@ -25,7 +25,7 @@ import pytest_asyncio
 
 from .harness import CONTEXT, Harness, HostileBackend
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
 SNAPSHOT = "ab" * 32
 FILES = {
@@ -137,7 +137,6 @@ async def test_bindings_and_staged_paths_are_checked(worker: Harness) -> None:
     assert not os.path.exists(worker.root / "out")
 
 
-@pytest.mark.slow
 async def test_a_kernel_takes_the_whole_set_when_it_starts_and_says_when_it_holds_others(
     worker: Harness,
 ) -> None:

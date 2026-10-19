@@ -1236,6 +1236,7 @@ class Executor:
             output_observation_protocol=1,
             kernel_revision_protocol=1,
             run_kernels=1,
+            conditional_kernel_restart=1,
             environment=await self.baseline(),
             package_epoch=self.package_epoch,
         )

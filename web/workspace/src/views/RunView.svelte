@@ -74,7 +74,10 @@
   {#if steps.length === 0 && (run.answer ?? run.final_text)}
     <section class="message assistant final">
       <h3>Answer preview</h3>
-      <Markdown source={run.answer ?? run.final_text ?? ''} />
+      <Markdown source={run.answer ?? run.final_text ?? ''} /><HiddenBanner
+        text={run.answer ?? run.final_text ?? ''}
+        links
+      />
     </section>
   {/if}
 {/if}
