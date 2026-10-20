@@ -104,10 +104,11 @@ Complete archive/restore remains required before releasing a research PVC.
 | Data | Initial placement | Retention |
 | --- | --- | --- |
 | Control metadata, plans, documents, ownership, recovery records | Small block-backed PVC with a single SQLite writer | Durable, backed up together with its blob configuration; no automatic expiry |
-| Retained immutable artifact bytes | S3-compatible object store, hash-named and verified | Durable independently of agent and worker pods; remote deletion is a separate policy |
+| Retained immutable artifact bytes and new uploaded originals | S3-compatible object store, hash-named and verified | Durable independently of agent and worker pods; remote deletion is a separate policy |
 | Artifact local cache | Bounded local/PVC space | Explicit eviction only after a verified remote copy; normal reads can fetch archived content |
 | Active research workspace and checkpoints | Per-environment PVC | Keep while running, paused or recoverable; checkpoint/export and verify before release |
-| Worker capture blobs and uploaded source originals | Worker/control storage today | Separate follow-up: acknowledge durable capture, then expire replicas without breaking replay |
+| Worker capture blobs | Worker storage today | Acknowledge durable control retention, then expire replicas without breaking replay |
+| Legacy inline uploaded originals | Existing control SQLite BLOBs | Preserve unchanged; moving old rows is a separate migration |
 | Build/download scratch | Bounded ephemeral storage where reconstructible | Remove when the owning operation is settled; do not treat it as a recovery checkpoint |
 
 PVC capacity is a deployment cost choice, not scientific result retention. Moving
@@ -116,8 +117,9 @@ quota usage. Conversely, deleting a PVC must never be the mechanism for deciding
 whether research is finished. Idle or paused environments remain recoverable.
 
 The first storage increment implements optional [S3 backing](ARTIFACT-S3.md) for
-the existing artifact store and explicit archive/evict commands. It does not delete sandbox PVCs, worker
-copies, old SQLite BLOBs, uploads, orphan transfers or unresolved reservations.
+the existing artifact store, new uploaded originals and explicit archive/evict
+commands. It does not delete sandbox PVCs, worker copies, old inline SQLite content,
+orphan transfers or unresolved reservations.
 Object-store credentials stay with trusted storage services; agents receive scoped
 artifact references and content, not bucket credentials. Endpoint and addressing
 settings support S3-compatible services now and the AWS credential chain later.
