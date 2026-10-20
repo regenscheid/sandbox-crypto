@@ -3,7 +3,8 @@
 Owner-approved 2026-10-17; implemented locally. Artifacts belong
 to the durable control application, independently of agent containers. New retained
 content uses a local content-addressed filesystem store adjacent to the control
-database; the same directory can live on a PVC. S3 is a future backend, not implemented.
+database; the same directory can live on a PVC. Optional S3-compatible backing and
+explicit verified local eviction are implemented on `k8s` (see below).
 Existing SQLite content remains readable without copying or rewriting old revisions.
 
 Limits are 1 GiB per artifact, 2 GiB retained per recording call, 16 GiB per project
@@ -45,7 +46,7 @@ Worker capture allows 240 seconds and HTTP publication/content transfer 300 seco
 
 ## Kubernetes object-store increment (2026-10-20)
 
-Implementation starts on `k8s`. An optional private
+Implemented on `k8s`. An optional private
 `<database-name>.artifacts/storage.toml` selects S3 backing for the existing
 hash-named store. It holds endpoint, bucket, prefix, region and addressing style;
 credentials use the SDK's standard credential chain, never artifact metadata or
@@ -61,7 +62,9 @@ ETags and user-supplied object metadata are not integrity evidence.
 
 Archived full reads stream into a private temporary file, verify size/hash, rewind
 and yield a seekable stream; exit/failure removes that temporary file. Prefix reads
-remain bounded and have finite network deadlines. Remote outage or corruption
+remain bounded, with finite socket inactivity timeouts and elapsed checks between
+chunks. Blocking SDK calls are not strictly preempted at a wall-clock deadline;
+the configured object-store endpoint is trusted. Remote outage or corruption
 reports unavailable content, never empty or substituted bytes. S3-compatible
 endpoints may need path addressing and no optional checksum-extension headers.
 
@@ -77,3 +80,9 @@ This first increment has no automatic age-based deletion. Later retention work
 must bound local cache/PVC usage while preserving active/paused research,
 incomplete transfers and original-operation recovery. See
 [Kubernetes delivery work](../KUBERNETES.md).
+
+Install the optional SDK and configure/archive/evict content with the
+[S3 operator commands](../ARTIFACT-S3.md). Cold-read scratch uses Python's
+temporary directory (`TMPDIR`); cluster manifests must put it on bounded ephemeral
+storage or an explicitly selected volume. Successful reads remove that scratch
+on close; a killed process can leave filesystem-level cleanup to its owning pod.

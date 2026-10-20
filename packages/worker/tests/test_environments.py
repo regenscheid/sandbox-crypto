@@ -432,7 +432,7 @@ async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_alloca
     requests = KubernetesResources(cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256)
     limits = KubernetesResources(cpu_millicores=4000, memory_mib=4096, ephemeral_storage_mib=1024)
     placement = KubernetesProfile(
-        node_selector={"example.org/capacity": "large"},
+        node_selector={"kubernetes.io/arch": "amd64", "example.org/capacity": "large"},
         requests=requests,
         limits=limits,
     )
@@ -444,7 +444,8 @@ async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_alloca
     [call] = setup.fake.calls("sandbox", "create")
     pinned = call[call.index("--driver-config-json") + 1]
     assert json.loads(pinned)["kubernetes"]["pod"]["node_selector"] == {
-        "example.org/capacity": "large"
+        "kubernetes.io/arch": "amd64",
+        "example.org/capacity": "large",
     }
     assert setup.environments.records.driver_config(info.sandbox) == pinned
     setup.environments.close()
@@ -474,7 +475,15 @@ async def test_kubernetes_existing_allocation_cannot_claim_tighter_resource_caps
     requests = KubernetesResources(cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256)
     limits = KubernetesResources(cpu_millicores=4000, memory_mib=4096, ephemeral_storage_mib=1024)
     configured = setup.environments.settings.model_copy(
-        update={"kubernetes": {"minimal": KubernetesProfile(requests=requests, limits=limits)}}
+        update={
+            "kubernetes": {
+                "minimal": KubernetesProfile(
+                    node_selector={"kubernetes.io/arch": "amd64"},
+                    requests=requests,
+                    limits=limits,
+                )
+            }
+        }
     )
     setup.environments.settings = configured
     info, _ = await setup.environments.create(setup.request())

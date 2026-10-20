@@ -33,7 +33,7 @@ def profile() -> KubernetesProfile:
 def test_private_example_is_a_valid_worker_environment_fragment() -> None:
     raw = tomllib.loads((ROOT / "examples/kubernetes/worker-placement.toml").read_text())
     settings = EnvironmentSettings.model_validate(raw["openshell"]["environments"])
-    assert set(settings.kubernetes) == {"crypto-base"}
+    assert set(settings.kubernetes) == set(settings.profiles) == {"minimal", "crypto-base"}
 
 
 def test_rendering_narrows_limits_to_project_and_pool_cpu_memory() -> None:
@@ -55,6 +55,9 @@ def test_requests_above_effective_policy_are_refused() -> None:
 @pytest.mark.parametrize(
     "update",
     [
+        {"node_selector": {}},
+        {"node_selector": {"example.org/capacity": "large"}},
+        {"node_selector": {"kubernetes.io/arch": "ppc64le"}},
         {"node_selector": {"bad key": "value"}},
         {"node_selector": {"invalid..example.org/key": "value"}},
         {"runtime_class_name": "Bad/Class"},
@@ -68,6 +71,12 @@ def test_invalid_or_arbitrary_pod_fields_are_refused(update: dict[str, object]) 
         KubernetesProfile.model_validate({**profile().model_dump(), **update})
 
 
+def test_missing_selector_cannot_bypass_architecture_pin() -> None:
+    values = profile().model_dump(exclude={"node_selector"})
+    with pytest.raises(ValidationError, match=r"must pin kubernetes\.io/arch"):
+        KubernetesProfile.model_validate(values)
+
+
 def test_a_placement_cannot_name_an_unoffered_profile(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="unknown profiles"):
         EnvironmentSettings(
@@ -76,4 +85,18 @@ def test_a_placement_cannot_name_an_unoffered_profile(tmp_path: Path) -> None:
             ceiling=tmp_path / "ceiling",
             profiles={"minimal": "example.invalid/minimal:pinned"},
             kubernetes={"unknown": profile()},
+        )
+
+
+def test_partial_placement_cannot_leave_an_offered_profile_unpinned(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="must cover all offered profiles: minimal"):
+        EnvironmentSettings(
+            policy_store=tmp_path,
+            targets=tmp_path / "targets",
+            ceiling=tmp_path / "ceiling",
+            profiles={
+                "minimal": "example.invalid/minimal:pinned",
+                "crypto-base": "example.invalid/crypto-base:pinned",
+            },
+            kubernetes={"crypto-base": profile()},
         )

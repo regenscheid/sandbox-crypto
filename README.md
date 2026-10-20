@@ -61,6 +61,8 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
 | [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images, and the `orchestrator` and `mcp-proxy` images of the harness and the MCP proxy: contract, pinned sources, building and tests |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
+| [Kubernetes work](docs/KUBERNETES.md) | Mixed-architecture placement, object-store/PVC lifecycle and remaining cluster acceptance gates |
+| [S3 artifact backing](docs/ARTIFACT-S3.md) | Optional verified artifact retention and explicit local archive/eviction |
 | [Run request](examples/run-request.json) | Illustrative batch contract; not an OpenShell request |
 
 The earlier project was located at [regenscheid/open-science-crypto](https://github.com/regenscheid/open-science-crypto). Its execution contracts, lifecycle work, and persistent-environment proposal are relevant references; its end-to-end agent execution remains unproven. The existing [crypto-analysis-skills](https://github.com/regenscheid/crypto-analysis-skills) pack stays external. Its workflows inform platform capabilities and compatibility tests; its content is not embedded here.

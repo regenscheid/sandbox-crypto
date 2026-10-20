@@ -12,8 +12,13 @@ the platform must not add a competing Job controller or replay an interrupted
 research operation merely because a pod restarted. Pin CLI, gateway, drivers and
 runtime images to the same OpenShell release (currently v0.1.3).
 
-Use resource requests and trusted pool configuration to select capacity, with
-`kubernetes.io/arch` only when an image or native dependency requires it. An ARM64
+Use resource requests and trusted pool configuration to select capacity. Each
+Kubernetes profile must pin `kubernetes.io/arch` to `amd64` or `arm64`: OpenShell
+v0.1.3 retains the multiarchitecture image reference, without recording the selected
+platform. The pin keeps retained native packages compatible across pod replacement.
+Separate approved profiles can share the same multiarchitecture image reference.
+Automatic placement across architectures needs platform discovery and durable
+pinning before it can safely support recovery. An ARM64
 node is not necessarily small, and an AMD64 node is not necessarily large. Expose
 CPU, memory, ephemeral storage, runtime class and node selectors per profile.
 Agents choose an approved profile; they cannot supply Kubernetes JSON, PVC names,
@@ -21,7 +26,8 @@ host mounts or scheduling authority. Sandbox creation/recovery must retain the
 original selected settings.
 
 The worker accepts `[openshell.environments.kubernetes.PROFILE]` in private
-configuration. The [example fragment](../examples/kubernetes/worker-placement.toml)
+configuration. Kubernetes pools must configure every offered profile; a nonempty
+map with missing profiles is refused. The [example fragment](../examples/kubernetes/worker-placement.toml)
 sets a node selector and runtime class plus explicit CPU millicores, memory MiB
 and ephemeral-storage MiB requests/limits. CPU and memory limits narrow to the
 effective project/pool policy; requests that no longer fit are refused before
@@ -32,7 +38,8 @@ start/Resume. Changes to deployment settings apply to new allocations. Profiles
 with pinned limits that exceed a tightened policy or pool ceiling are refused
 on use or policy revision; a network-policy update cannot resize an existing pod.
 Create a new allocation with smaller limits after preserving its research state.
-Profiles without this table retain their gateway defaults, including existing local runs.
+An entirely absent table retains gateway defaults for existing local runs; that
+configuration is outside the Kubernetes placement/recovery guarantee.
 The gateway must permit approved Kubernetes driver configuration. These settings
 target OpenShell v0.1.3's workload pod; they do not place its separately managed
 supervisor pod. A runtime class name is configuration, not isolation proof.
@@ -47,9 +54,12 @@ addresses; placing it unchanged in a Deployment does not establish cluster suppo
 Service addresses, authenticated runtime callbacks, probe endpoints, signal/drain
 behavior and owned sandbox replacement need explicit cluster wiring first.
 
-Shared images already contain both Linux architectures. Native helper libraries
-must also match the sandbox architecture; the worker currently builds its scheduler
-shim on the worker host. Kubernetes pod replacement preserves mounted data, not
+Shared image tags contain both Linux architectures. Research image recipes now
+include their target-native scheduler shim; the worker verifies source identity,
+ELF architecture and loadability before use. A checked host-compiler fallback is
+available only on a matching Linux architecture. These image changes still need
+publication and native ARM64 qualification. Kubernetes pod replacement preserves
+mounted data, not
 interpreter memory or changes to the image's writable layer. In particular,
 research packages installed under `/opt/sandbox-science` need persistence or a
 verified rebuild before a saved environment can claim the same revision.
@@ -70,8 +80,8 @@ an artifact to object storage does not delete its record or reduce logical artif
 quota usage. Conversely, deleting a PVC must never be the mechanism for deciding
 whether research is finished. Idle or paused environments remain recoverable.
 
-The first storage increment adds optional S3 backing to the existing artifact store
-and an explicit archive/evict command. It does not delete sandbox PVCs, worker
+The first storage increment implements optional [S3 backing](ARTIFACT-S3.md) for
+the existing artifact store and explicit archive/evict commands. It does not delete sandbox PVCs, worker
 copies, old SQLite BLOBs, uploads, orphan transfers or unresolved reservations.
 Object-store credentials stay with trusted storage services; agents receive scoped
 artifact references and content, not bucket credentials. Endpoint and addressing

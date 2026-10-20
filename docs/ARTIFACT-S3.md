@@ -54,8 +54,11 @@ content or environment PVCs. Logical artifact quota usage is unchanged.
 
 After eviction, full reads use a private temporary file, verify the remote bytes,
 rewind it and remove it when the consumer closes. This supports existing pinned
-downloads and byte ranges. Remote reads do not populate a persistent local cache.
-Provenance prefixes use bounded range requests with exact range/size checks, as
+downloads and byte ranges.
+Temporary files honor `TMPDIR`; cluster manifests must provide bounded ephemeral
+scratch or an explicitly selected volume for cold downloads. These files are
+removed on close; they do not populate a persistent cache. Provenance prefixes
+use bounded range requests with exact range/size checks, as
 local prefixes rely on verification at ingestion. Back up the metadata database,
 configuration, still-local blobs and object store together. Do not expire referenced
 objects through a bucket lifecycle rule.

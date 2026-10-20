@@ -94,6 +94,10 @@ class KubernetesProfile(BaseModel):
 
     @model_validator(mode="after")
     def _capacity(self) -> Self:
+        # OpenShell keeps the image reference, not the selected platform. Retained
+        # native packages must not silently move architectures after pod replacement.
+        if self.node_selector.get("kubernetes.io/arch") not in {"amd64", "arm64"}:
+            raise ValueError("node_selector must pin kubernetes.io/arch to amd64 or arm64")
         for field in KubernetesResources.model_fields:
             if getattr(self.requests, field) > getattr(self.limits, field):
                 raise ValueError(f"{field} request exceeds its limit")

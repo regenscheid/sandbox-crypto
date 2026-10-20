@@ -153,9 +153,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## Kubernetes deployment (D91)
 
 - [x] Record generic mixed-architecture placement and PVC/object-store lifecycle requirements; no cluster-specific values in Git ([Kubernetes work](../docs/KUBERNETES.md)).
-- [x] Trusted profile-level CPU/memory/ephemeral-storage and Kubernetes placement settings carried into sandbox creation; agents cannot supply driver JSON. Original settings are saved atomically with ownership; incompatible tighter caps refuse reuse/revision. Native Kubernetes acceptance remains open.
-- [ ] Native scheduler helper compatibility for a worker serving another sandbox architecture.
-- [ ] Optional S3 artifact backing with verified writes, bounded archived reads and explicit verified local eviction.
+- [x] Trusted profile-level CPU/memory/ephemeral-storage and Kubernetes placement settings carried into sandbox creation; agents cannot supply driver JSON. Every offered Kubernetes profile pins its architecture. Original settings are saved atomically with ownership; incompatible tighter caps refuse reuse/revision. Native Kubernetes acceptance remains open.
+- [x] Native scheduler helper compatibility: research images ship a source-pinned native shim; target ELF/source/loadability checks and checked same-Linux-architecture fallback are implemented. Local AMD64 minimal build/container/Landlock checks passed; publication, ARM64 and native cluster acceptance remain.
+- [x] Optional S3 artifact backing with verified writes, bounded archived reads and explicit verified local eviction; disposable S3-compatible tests include 128 MiB cold retrieval and immutable retry. Cluster identity/availability acceptance remains.
 - [ ] Move uploaded source originals out of SQLite and release worker capture replicas after durable control acknowledgement.
 - [ ] Persist or rebuild modified package prefixes on pod replacement; complete workspace checkpoint/restore before PVC release.
 - [ ] Trusted service images and deployment manifests, service DNS/callbacks, one-writer control PVC, secrets/RBAC and enforcing network policy.

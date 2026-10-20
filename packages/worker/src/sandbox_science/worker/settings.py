@@ -131,6 +131,10 @@ class EnvironmentSettings(_Model):
             raise ValueError(
                 f"Kubernetes settings name unknown profiles: {', '.join(sorted(unknown))}"
             )
+        if self.kubernetes and (missing := self.profiles.keys() - self.kubernetes.keys()):
+            raise ValueError(
+                f"Kubernetes settings must cover all offered profiles: {', '.join(sorted(missing))}"
+            )
         return self
 
 

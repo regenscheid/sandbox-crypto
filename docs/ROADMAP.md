@@ -57,7 +57,7 @@ The user needs the whole initial feature set before the system is useful, so pha
 | Phase | Target | Milestones | Usable when |
 | --- | --- | --- | --- |
 | 1 | babbage (amd64, Ubuntu 26.04), all-local, tier 3 via OpenShell MicroVM (KVM) | M0–M2, **local gates only** | The complete research workspace works on babbage: chat and workbooks, Python and Sage kernels, Conda provisioning, PDF navigation, Markdown+LaTeX living documents, ledger/board/frontier, automatic review, external skill pack, and crypto-research-mcp, under the permissive policy file |
-| 2 | Kubernetes test cluster (Raspberry Pi 5 arm64 + amd64 nodes), small scale | M3 (hosted certification of M1–M2 fixtures), M4 (partial) | The same workflow runs with workers on the cluster; multi-arch images; heavy math pinned to capable nodes |
+| 2 | Heterogeneous Linux ARM64/AMD64 Kubernetes cluster, small scale | M3 (hosted certification of M1–M2 fixtures), M4 (partial) | The same workflow runs with workers on the cluster; multi-arch images; heavy math pinned to capable nodes |
 | 3 | Mac (M3 Max), further MCP servers, remote access/exposure decisions, remaining placements | M4, M5 | Placement and access choices made from phase 1–2 experience |
 
 ## First end-to-end fixture

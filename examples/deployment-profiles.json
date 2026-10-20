@@ -90,7 +90,7 @@
   ],
   "initial_deployment_targets": {
     "phase_1": "babbage (amd64, Ubuntu 26.04), all-local, OpenShell MicroVM driver over KVM (tier 3)",
-    "phase_2": "user's Kubernetes test cluster: Raspberry Pi 5 (arm64) and amd64 nodes; gVisor RuntimeClass (tier 2), tier 3 where nodes support it",
+    "phase_2": "mixed Linux arm64/amd64 Kubernetes nodes of varying capacity; isolation tier qualified per runtime and pool",
     "phase_3": "Mac M3 Max (arm64); remote access/exposure decisions; remaining placements",
     "images": [
       "linux/amd64",

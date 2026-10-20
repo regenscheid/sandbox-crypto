@@ -1,6 +1,12 @@
 # Status
 
-Updated 2026-10-19. Development is on `dev` in `/home/andy/.cache/pt/dev-local`; the primary checkout is separate. The completion campaign is integrated, and the portability work is pushed to `origin/dev` with shared images in GHCR. Signed local integration, registry publication and deployment into personal services are distinct.
+Updated 2026-10-20. Kubernetes foundations are on `k8s`, branched from `dev` at `af0fa0d5`; the primary checkout is separate. No cluster was accessed or deployed. Mac runtime qualification remains open. Signed integration, image publication and actual deployment are distinct.
+
+## Kubernetes work
+
+Trusted profile-level workload placement/resource settings are pinned atomically with sandbox ownership; every offered Kubernetes profile pins its architecture to keep retained native packages compatible across pod replacement. Tighter policy/ceiling changes cannot pretend to resize an existing allocation. Research image recipes ship a native, source-pinned scheduler shim, with target architecture/source/loadability checks and a same-Linux-architecture fallback. Local AMD64 minimal build/container/Landlock checks passed; publication and native ARM64 qualification remain.
+
+Optional S3 backing supports verified immutable artifact upload, cold seekable reads, bounded prefixes and explicit local archive/eviction. A disposable S3-compatible service passed 128 MiB transfer/eviction/retrieval, a 4 MiB prefix and identical-write retry, with about 20 MiB peak Python allocations; its owned container is stopped and absent. Remote object retention is independent of PVC cache retention. Worker copies, uploads, whole-workspace archive/PVC release, trusted cluster service packaging and live recovery remain in the [Kubernetes work](../docs/KUBERNETES.md). Site details and credentials stay outside Git.
 
 ## Phase and focus
 
@@ -15,6 +21,7 @@ The owner authorized **$150 aggregate new model-testing spend** for the six-item
 
 ## Verification boundaries
 
+- `k8s` integrated Python suite: **14,608 passed, 51 skipped**; the final architecture/profile-coverage guards then passed **177 affected tests**. Required static/web/build checks pass. Independent review and disposable storage/native-image evidence are in the [foundations report](docs/agent-reports/k8s-foundations-2026-10-20.md).
 - Frozen web suite: **2,239 passed**; Svelte/TypeScript, Prettier, production and math builds pass.
 - Frozen Python suite at `5a238f10`: **14,524 passed, 50 skipped** in 695.18 seconds with two known malformed-fixture serializer warnings. Ruff, format and strict Pyright are clean. The isolated image is `sandbox-science/orchestrator:5a238f10`, digest `sha256:e748cdd5cc5aacea44a6de6cc96e7bf5b19c942881a9cad3a04c689a26054996`; its container/Landlock checks passed 17 cases.
 - Native image [publication run 39348347538](https://github.com/regenscheid/sandbox-crypto/actions/runs/39348347538) passed eight architecture build/pull/runtime-check jobs and four merges; independent registry inspection confirmed exactly `linux/amd64` and `linux/arm64` on every shared tag. All four GHCR packages are currently private.

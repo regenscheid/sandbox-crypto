@@ -1,6 +1,14 @@
 # Handoff
 
-Updated 2026-10-19. Use local `dev` in `/home/andy/.cache/pt/dev-local`; implementation is integrated through signed `5a238f10`. `/home/andy/Git_Projects/sandbox-crypto` is a separate checkout whose unrelated state must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-20. Active work is `k8s`, branched from `dev` at `af0fa0d5`, in the existing implementation worktree. The primary checkout has unrelated state and must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md) and [Kubernetes work](../docs/KUBERNETES.md).
+
+## Kubernetes continuation
+
+The initial branch implements trusted/pinned profile scheduling and resource bounds, target-native scheduler-shim recipes and checks, and optional verified S3 artifact retention with operator archive/eviction. Every offered Kubernetes profile pins architecture across pod replacement; capacity is independent. Local AMD64 minimal image/container/Landlock checks passed; ARM64 and new image publication remain. Current published images are the previous release set. Generic examples contain no site endpoints, storage class, bucket credentials or real node names. No cluster was accessed. The disposable S3-compatible service passed 128 MiB cold retrieval and identical retry, then was stopped and verified absent; its evidence remains outside Git.
+
+Next: package-prefix persistence/rebuild, uploaded originals behind the durable blob seam, durable worker-capture acknowledgement/release, complete workspace archive/restore before PVC deletion, then trusted-service images and manifests with reachable authenticated callbacks. Separate OpenShell supervisor placement and actual runtime/network isolation need target verification; a different node boot ID alone is not VM proof. The Mac test remains unrun on the owner's machine. Do not deploy to a real cluster implicitly.
+
+Current validation and remaining qualification gates are in the [foundations report](docs/agent-reports/k8s-foundations-2026-10-20.md).
 
 ## Accepted scope and current evidence
 

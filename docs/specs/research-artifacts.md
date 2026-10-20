@@ -211,7 +211,8 @@ The owner decided these on 2026-10-14 for [files from executions and delegated r
 
 The owner requested artifacts independent of agent containers. New retained content
 uses the control application's adjacent content-addressed filesystem store; a PVC
-can mount the same directory. S3 is future work. Limits are now 1 GiB/file, 2 GiB
+can mount the same directory. Optional [S3 backing](../ARTIFACT-S3.md) on `k8s`
+adds verified remote retention, archived reads and explicit local eviction. Limits are now 1 GiB/file, 2 GiB
 retained/call, 16 GiB/project and 64 GiB/store. Earlier 8 MiB/64 MiB limits above
 describe the prior increment. Existing SQLite content is still readable. Per-call
 exhaustion records hash/size metadata rather than dropping the file entirely.

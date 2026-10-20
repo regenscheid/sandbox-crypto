@@ -23,6 +23,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Worker](WORKER.md) | The worker service: API, executor, sandboxes, provisioning, PDFs, shared data, daemon and recovery |
 | [Background jobs](BACKGROUND-JOBS.md) | Job tools, waits, watcher check-ins, notices and limits |
 | [Artifacts](ARTIFACTS.md) | The artifact inventory, bounded capture and output observations |
+| [S3 artifact backing](ARTIFACT-S3.md) | Optional object-store retention, verified cold reads and explicit local archive/eviction commands |
 | [Kernel revisions](KERNEL-REVISIONS.md) | A kernel's start revision compared with its environment's package revision |
 | [Provisioning observations](PROVISIONING-OBSERVATIONS.md) | The worker's read-only provisioning observation routes |
 | [Explicit Conda upgrades](PROVISIONING-UPGRADES.md) | The `upgrade` provisioning action |

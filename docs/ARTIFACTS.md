@@ -16,7 +16,8 @@ control revision references. `ArtifactInventory` in the orchestrator owns logica
 IDs, immutable revisions and bounded event pages in `control.sqlite3`. New content
 lives in adjacent `control.sqlite3.artifacts/` hash-addressed files; old small SQLite
 BLOBs remain readable. The database and blob directory are one backup unit. A PVC
-can hold that directory; S3 is a future backend.
+can hold that directory. Optional [S3 backing](ARTIFACT-S3.md) on `k8s` verifies
+remote content before allowing explicit local eviction and supports cold reads.
 `ArtifactPublisher` connects a trusted run/context and worker endpoint to that
 inventory. These are internal interfaces, with no scheduler or permission grant of
 their own. The workspace reads the inventory through two routes, the project's
