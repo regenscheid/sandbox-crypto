@@ -243,6 +243,42 @@ def test_nonregular_or_wrong_size_blob_preserves_bytes(
     assert path.exists()
 
 
+@pytest.mark.parametrize("corruption", ["oversize", "id", "artifact", "digest", "record_id"])
+def test_invalid_prior_ack_conflicts_on_retry_and_preserves_replica(state, corruption: str) -> None:
+    store, blobs = state
+    value = snapshot()
+    retain = store.artifact_retention
+    store.insert_artifact(value)
+    ack = acknowledgement(value)
+    retain.acknowledge(ack)
+    table = "artifact_retention_acknowledgements"
+    if corruption == "oversize":
+        retain.db.execute("PRAGMA ignore_check_constraints=ON")
+        try:
+            retain.db.execute(
+                f"UPDATE {table} SET record=?", (" " * (MAX_RETENTION_ACK_BYTES + 1),)
+            )
+        finally:
+            retain.db.execute("PRAGMA ignore_check_constraints=OFF")
+    elif corruption == "record_id":
+        changed = ack.model_copy(update={"acknowledgement_id": "different"})
+        retain.db.execute(f"UPDATE {table} SET record=?", (changed.model_dump_json(),))
+    else:
+        field, replacement = {
+            "id": ("acknowledgement_id", "a" * 129),
+            "artifact": ("artifact_id", "wrong-artifact"),
+            "digest": ("snapshot_digest", "b" * 64),
+        }[corruption]
+        retain.db.execute(f"UPDATE {table} SET {field}=?", (replacement,))
+    path = install(blobs)
+    replay = ack.model_copy(update={"acknowledgement_id": "a" * 129}) if corruption == "id" else ack
+    with pytest.raises(WorkerError, match="invalid recorded acknowledgement"):
+        retain.acknowledge(replay)
+    assert retain.release_page(blobs, apply=True).entries[0].status == "kept"
+    assert path.exists()
+    assert retain.db.execute("SELECT count(*) FROM artifact_release_intents").fetchone() == (0,)
+
+
 @pytest.mark.parametrize("failure", ["unlink", "fsync", "settle"])
 def test_release_intent_survives_each_crash_boundary_and_reconciles(
     state, monkeypatch, tmp_path: Path, failure: str

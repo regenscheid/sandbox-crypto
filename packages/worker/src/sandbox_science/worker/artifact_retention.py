@@ -35,6 +35,15 @@ ARTIFACT_HASH = f"""CASE WHEN typeof(record)='text'
  AND instr(json_extract(record,'$.sha256'),char(0))=0
  AND json_extract(record,'$.sha256') NOT GLOB '*[^0-9a-f]*'
  THEN json_extract(record,'$.sha256') END END END"""
+_ACK_COLUMNS = f"""typeof(record),length(CAST(record AS BLOB)),
+ substr(CAST(record AS BLOB),1,{MAX_RETENTION_ACK_BYTES + 1}),
+ CASE WHEN typeof(acknowledgement_id)='text'
+ AND length(CAST(acknowledgement_id AS BLOB)) BETWEEN 1 AND 128
+ THEN acknowledgement_id END,
+ CASE WHEN typeof(artifact_id)='text' AND length(CAST(artifact_id AS BLOB)) BETWEEN 1 AND 128
+ THEN artifact_id END,
+ CASE WHEN typeof(snapshot_digest)='text' AND length(CAST(snapshot_digest AS BLOB))=64
+ THEN snapshot_digest END"""
 
 
 def create_schema(db: sqlite3.Connection) -> None:
@@ -76,6 +85,27 @@ def _snapshot_digest(snapshot: ArtifactSnapshot) -> str:
 def _snapshot(record: str | bytes) -> ArtifactSnapshot:
     strict_loads(record)
     return ArtifactSnapshot.model_validate_json(record, strict=True)
+
+
+def _recorded_ack(row: tuple[object, ...]) -> ArtifactRetentionAcknowledgement:
+    kind, length, encoded, acknowledgement_id, artifact_id, snapshot_digest = row
+    if (
+        kind != "text"
+        or type(length) is not int
+        or not 0 < length <= MAX_RETENTION_ACK_BYTES
+        or type(encoded) is not bytes
+        or len(encoded) != length
+    ):
+        raise ValueError("invalid acknowledgement bounds")
+    strict_loads(encoded)
+    acknowledgement = ArtifactRetentionAcknowledgement.model_validate_json(encoded, strict=True)
+    if (
+        acknowledgement.acknowledgement_id != acknowledgement_id
+        or acknowledgement.snapshot.artifact_id != artifact_id
+        or _snapshot_digest(acknowledgement.snapshot) != snapshot_digest
+    ):
+        raise ValueError("invalid acknowledgement identity")
+    return acknowledgement
 
 
 @dataclass(frozen=True)
@@ -139,14 +169,18 @@ class ArtifactRetention:
             if self.original(snapshot.artifact_id) != snapshot:
                 raise WorkerError(ErrorKind.CONFLICT, "retention snapshot differs from original")
             existing = self.db.execute(
-                "SELECT record FROM artifact_retention_acknowledgements WHERE acknowledgement_id=?",
+                f"SELECT {_ACK_COLUMNS} FROM artifact_retention_acknowledgements"  # noqa: S608 - fixed bounded columns
+                " WHERE acknowledgement_id=?",
                 (acknowledgement.acknowledgement_id,),
             ).fetchone()
             if existing is not None:
-                if (
-                    ArtifactRetentionAcknowledgement.model_validate_json(existing[0])
-                    != acknowledgement
-                ):
+                try:
+                    recorded = _recorded_ack(existing)
+                except (ValueError, TypeError, RecursionError):
+                    raise WorkerError(
+                        ErrorKind.CONFLICT, "invalid recorded acknowledgement"
+                    ) from None
+                if recorded != acknowledgement:
                     raise WorkerError(ErrorKind.CONFLICT, "acknowledgement identity already used")
                 return acknowledgement
             self.db.execute(
@@ -185,17 +219,13 @@ class ArtifactRetention:
                     return None, "reference sizes disagree"
                 size = snapshot.size
                 ack = self.db.execute(
-                    "SELECT record FROM artifact_retention_acknowledgements"
+                    f"SELECT {_ACK_COLUMNS} FROM artifact_retention_acknowledgements"  # noqa: S608 - fixed bounded columns
                     " WHERE artifact_id=? AND snapshot_digest=? LIMIT 1",
                     (artifact_id, _snapshot_digest(snapshot)),
                 ).fetchone()
                 if ack is None:
                     return size, "reference has no exact acknowledgement"
-                strict_loads(ack[0])
-                if (
-                    ArtifactRetentionAcknowledgement.model_validate_json(ack[0]).snapshot
-                    != snapshot
-                ):
+                if _recorded_ack(ack).snapshot != snapshot:
                     return None, "invalid acknowledgement snapshot"
             except (ValueError, TypeError, RecursionError):
                 return None, "invalid reference or acknowledgement"
