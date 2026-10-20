@@ -121,3 +121,55 @@ scratch before yielding. Small JSON uploads and bounded document/worker-delivery
 consumers may retain the existing convenience byte API. Archive/evict enumeration
 includes external upload references, never rewrites or deletes legacy rows, and
 never deletes the originals from object storage.
+
+## Worker capture replica retention (2026-10-20)
+
+This increment separates durable control retention from executor capture cleanup.
+Only newly committed, fully retained publication receipts generate acknowledgements;
+metadata-only, held, failed or unknown publications never do. Legacy records are
+not implicitly backfilled. The control receipt and one pending acknowledgement
+intent commit in the same transaction, after exact blob verification. The pending
+record names the original worker endpoint digest and an immutable receipt; it is
+not authority to publish a mutable workspace path again.
+
+Worker protocol 11 adds `POST /v1/artifacts/{artifact_id}/retention`, with a bounded
+`ArtifactRetentionAcknowledgement`: `acknowledgement_id`, the exact `snapshot`
+(`ArtifactSnapshot`) and control `revision` (`ArtifactRevisionRef`). Project, hash,
+size and media type must agree. The response echoes that exact model. A strict
+client permission `artifact_retention` defaults false; the pool token has it.
+Scope checks precede accepting an acknowledgement. Ordinary execution clients
+cannot assert durable storage merely because they can read an artifact. The worker
+compares the complete supplied snapshot with its original immutable metadata and
+keeps an acknowledgement ID immutable: identical replay succeeds, different reuse
+conflicts. Installer-log artifacts are excluded from replica release.
+
+An acknowledgement ID is deterministic from the complete canonical snapshot and
+revision, independent of a retry's current run. Control dispatch binds the current
+configured worker endpoint to the original digest, validates the echoed response,
+then marks delivery. Lost responses retry the same identity. A failed delivery
+never downgrades a successful publication, repeats its mutable capture or releases
+control content. Completed-operation replay retries delivery without downloading
+again. A bounded run-start/manual drain uses the same component and original
+receipt; errors remain visible and pending without automatic tight retry loops.
+
+Physical release is an explicit offline operator command under the worker's
+existing exclusive `StateLock`, dry-run by default, bounded by a page/limit cursor.
+It examines only hash-named blobs referenced by retained worker artifact metadata.
+Every reference sharing a hash must have an exact durable acknowledgement; one
+unacknowledged, invalid or installer reference preserves the file, including
+cross-project duplicates. No metadata, source workspace, capture helper, staging,
+or orphan file is deleted. This is not remote-object deletion or PVC release.
+
+Before unlinking, the worker records a durable release intent for the exact hash
+and size, then fsyncs the containing directory and records settlement. A crash at
+any step can reconcile the same identity on the next offline run. Artifact
+metadata and the release audit remain readable; missing content is explicit and
+is never reconstructed by recapturing a mutable path. A new later capture may
+install identical bytes again; release must recheck all then-current references
+before deleting them. Existing installer-log references pin their shared bytes.
+
+Online cleanup, automatic age policies, control-store GC, whole-workspace/PVC
+archive and release, and image publication are outside this increment. Direct
+library users are responsible for the same one-worker state lease; production
+worker and cleanup CLIs enforce it. Live downloads and blob installation need
+descriptor/writer fences before online deletion can be supported.
