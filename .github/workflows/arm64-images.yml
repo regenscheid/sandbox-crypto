@@ -15,7 +15,7 @@ on:
         type: boolean
         default: false
       publish:
-        description: After qualification, push all four ARM64 variants to GHCR (requires crypto_base)
+        description: Build, test, and publish shared AMD64/ARM64 tags (requires crypto_base)
         type: boolean
         default: false
 
@@ -59,14 +59,16 @@ jobs:
       - run: df -h / /var/lib/docker && docker system df && images/build.sh crypto-base
       - run: NETWORK=0 images/test.sh crypto-base
 
-  publish-arm64:
+  publish-platform:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.crypto_base && inputs.publish }}
-    runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         profile: [minimal, orchestrator, mcp-proxy, crypto-base]
+        arch: [amd64, arm64]
     permissions:
       contents: read
       packages: write
@@ -80,10 +82,49 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      - run: docker version && docker buildx version && test "$(uname -m)" = aarch64
-      - run: images/build.sh "${{ matrix.profile }}"
-      - run: NETWORK=0 images/test.sh "${{ matrix.profile }}"
-      - name: Push qualified ARM64 variant
+      - run: |
+          docker version && docker buildx version
+          case "${{ matrix.arch }}:$(uname -m)" in
+            amd64:x86_64 | arm64:aarch64) ;;
+            *) echo 'image job is not on its native architecture' >&2; exit 1 ;;
+          esac
+      - name: Publish and test architecture digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          if [ "$PROFILE" = crypto-base ]; then
+            package="${REPOSITORY#*/}%2Fcrypto-base"
+            visibility=$(gh api "/users/${REPOSITORY%%/*}/packages/container/$package" --jq .visibility)
+            test "$visibility" = private || { echo 'crypto-base package is not private' >&2; exit 1; }
+            export PRIVATE_REGISTRY_CONFIRMED=1
+          fi
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          export DOCKER_CONFIG="$config"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          images/publish_arch.sh "$PROFILE" "ghcr.io/$REPOSITORY/$PROFILE" "$GITHUB_RUN_ID"
+
+  merge-platforms:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.crypto_base && inputs.publish }}
+    needs: publish-platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [minimal, orchestrator, mcp-proxy, crypto-base]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Join tested platform digests
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -93,11 +134,25 @@ jobs:
           . images/revision.sh
           recipe_revision "$PROFILE"
           case "$revision" in *-dirty) echo 'refusing a dirty recipe' >&2; exit 1;; esac
+          private=()
+          if [ "$PROFILE" = crypto-base ]; then
+            package="${REPOSITORY#*/}%2Fcrypto-base"
+            visibility=$(gh api "/users/${REPOSITORY%%/*}/packages/container/$package" --jq .visibility)
+            test "$visibility" = private || { echo 'crypto-base package is not private' >&2; exit 1; }
+            private=(--private-registry-confirmed)
+          fi
           config=$(mktemp -d)
           trap 'rm -rf "$config"' EXIT
           export DOCKER_CONFIG="$config"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
-          remote="ghcr.io/$REPOSITORY/$PROFILE:$short-arm64"
-          docker tag "sandbox-science/$PROFILE:$short" "$remote"
-          docker push "$remote"
-          docker buildx imagetools inspect "$remote"
+          repository="ghcr.io/$REPOSITORY/$PROFILE"
+          digest_for() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' |
+              python3 -c 'import json, re, sys; digest=json.load(sys.stdin).get("digest", ""); assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest); print(digest)'
+          }
+          amd64=$(digest_for "$repository:$short-amd64-run$GITHUB_RUN_ID")
+          arm64=$(digest_for "$repository:$short-arm64-run$GITHUB_RUN_ID")
+          python3 images/publish_index.py "$PROFILE" "$repository:$short" \
+            "$repository@$amd64" "$repository@$arm64" "${private[@]}" --dry-run
+          python3 images/publish_index.py "$PROFILE" "$repository:$short" \
+            "$repository@$amd64" "$repository@$arm64" "${private[@]}"

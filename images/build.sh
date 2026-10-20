@@ -32,57 +32,20 @@ for option in "$@"; do
 done
 
 here=$(cd "$(dirname "$0")" && pwd)
-# shellcheck source=revision.sh
-. "$here/revision.sh"
-recipe_revision "$profile"
+# shellcheck source=common/build_recipe.sh
+. "$here/common/build_recipe.sh"
+prepare_image_build "$profile"
 tag="sandbox-science/$profile:$short"
-licenses=$(python3 "$here/common/image_report.py" label "$here/$profile/licenses.txt")
-
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
-builder=()
-[ -z "${BUILDER:-}" ] || builder=(--builder "$BUILDER")
-if [ -n "${PLATFORM:-}" ]; then
-  platform=$PLATFORM
-else
-  case $(uname -m) in
-    x86_64 | amd64) platform=linux/amd64 ;;
-    aarch64 | arm64) platform=linux/arm64 ;;
-    *) echo "build.sh: unsupported host architecture; set PLATFORM explicitly" >&2; exit 2 ;;
-  esac
-fi
-case $platform in
-  linux/amd64 | linux/arm64) ;;
-  *) echo "build.sh: PLATFORM must be linux/amd64 or linux/arm64" >&2; exit 2 ;;
-esac
-
 started=$(date +%s)
-contexts=(--build-context "binding-inventory=$here/../packages/worker/src/sandbox_science/worker")
-recipe_packages "$profile"
-if [ ${#packages[@]} -gt 0 ]; then
-  # The packages the image installs, as wheels, from the same files the revision covers.
-  for package in "${packages[@]}"; do
-    uv --directory "$here/.." build --package "sandbox-science-$package" --wheel \
-      --no-create-gitignore --out-dir "$work/wheels"
-  done
-  contexts+=(--build-context "wheels=$work/wheels")
-fi
-docker buildx build "${builder[@]}" \
-  --platform "$platform" \
-  --file "$here/Containerfile" \
-  --target "$profile" \
-  "${contexts[@]}" \
-  --build-arg REVISION="$revision" \
-  --build-arg VERSION="$short" \
-  --build-arg LICENSES="$licenses" \
+docker buildx build "${image_args[@]}" \
   --tag "$tag" \
   --load \
-  --metadata-file "$work/metadata.json" \
+  --metadata-file "$image_work/metadata.json" \
   "$@" \
   "$here"
 elapsed=$(($(date +%s) - started))
 
-digest=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("containerimage.digest", "unknown"))' "$work/metadata.json")
+digest=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("containerimage.digest", "unknown"))' "$image_work/metadata.json")
 size=$(docker image inspect --format '{{.Size}}' "$tag")
 echo "image:  $tag"
 echo "digest: $digest"

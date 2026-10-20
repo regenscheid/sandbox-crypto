@@ -139,13 +139,14 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] Run the unchanged suite and probe against real OpenShell sandboxes on babbage: [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) passed all 23 external cases on each of minimal and crypto-base (linux/amd64), with effective/declared tier 3; 23 local variants per run intentionally skipped; complete teardown independently verified
 - [ ] Multi-arch base images: `minimal` and the `crypto-base` recipe (D46); babbage MicroVM gateway configuration (D63)
   - [x] Recipes for both profiles in `images/` (D77, [images](../docs/IMAGES.md)): pinned sources, Conda lockfiles for linux-64 and linux-aarch64, build and test scripts. Built for linux/amd64 on babbage and checked as plain containers: read-only root, uid 1000, and under a Landlock ruleset like OpenShell's
-  - [ ] arm64 images: build and test on an arm64 host; check that the Ubuntu snapshot service covers the ports archive; a registry for multi-platform images (D63)
-    - [x] Native ARM64 build and container/Landlock checks for minimal, orchestrator and mcp-proxy; crypto-base is available as an opt-in ARM64 workflow job and remains unqualified.
+  - [ ] arm64 images: build and test on an arm64 host; check that the Ubuntu snapshot service covers the ports archive; publish verified two-platform GHCR tags (D63)
+    - [x] Native ARM64 build and container/Landlock checks for all four profiles, including crypto-base with Sage and G6K.
+    - [ ] Verify the Actions native AMD64/ARM64 publication and merge workflow against GHCR; the prior ARM64 Docker-daemon push failed at manifest finalization.
   - [ ] Mac deployment: require owner-selected Sandbox Science, OpenShell VM/cache, gateway and Docker image-store paths before first run; verify restart/recovery uses the same stores and no large state lands at an unintended default ([Mac qualification](../docs/MAC-ARM64.md#choose-storage-locations), D63)
     - [x] Implement Darwin launcher process identity, session cleanup and parent-death watcher; Linux protocol and launcher tests pass. Native Mac start/crash/down/replacement/Resume acceptance remains open.
   - [x] Run the linux/amd64 images in OpenShell: worker profiles and compiled `sandbox.filesystem` settings ([images](../docs/IMAGES.md#openshell-filesystem-paths)) passed the unchanged external conformance suite in [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md); both Python 3.14.8, with no new Sage assertion; arm64/multi-platform acceptance remains open
-  - [ ] A private registry for crypto-base (open question), and a standard-format SBOM before `minimal` is published
-    - [x] Add digest- and platform-checked image-index publication command; real publication awaits a selected private registry and qualified ARM64 crypto-base image.
+  - [ ] A standard-format SBOM before `minimal` is published; the selected GHCR crypto-base package is private
+    - [x] Add digest- and platform-checked image-index publication command; GHCR crypto-base is verified private, and native ARM64 crypto-base qualification passed.
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 
 ## W0: behavior specification and harness foundation

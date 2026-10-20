@@ -270,7 +270,10 @@ def test_the_service_builds_stop_without_the_wheels() -> None:
     for profile in SERVICE_PROFILES:
         assert list(stages).index("wheels") < list(stages).index(profile)
         assert "--mount=type=bind,from=wheels," in stages[profile]
-    assert '--build-context "wheels=' in (IMAGES / "build.sh").read_text()
+    build = (IMAGES / "build.sh").read_text()
+    shared = (IMAGES / "common/build_recipe.sh").read_text()
+    assert "common/build_recipe.sh" in build
+    assert '--build-context "wheels=' in shared
 
 
 # The OpenShell view.
@@ -507,6 +510,8 @@ def test_binding_inventory_generator_is_shared_by_build_and_executor() -> None:
     assert "from=binding-inventory,source=binding_inventory.py" in recipe
     assert "python -I -B /tmp/binding_inventory.py" in recipe
     build = (IMAGES / "build.sh").read_text()
+    shared = (IMAGES / "common/build_recipe.sh").read_text()
     revision = (IMAGES / "revision.sh").read_text()
-    assert "binding-inventory=$here/../packages/worker/src/sandbox_science/worker" in build
+    assert "common/build_recipe.sh" in build
+    assert "binding-inventory=$image_here/../packages/worker/src/sandbox_science/worker" in shared
     assert "../packages/worker/src/sandbox_science/worker/binding_inventory.py" in revision

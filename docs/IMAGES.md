@@ -279,23 +279,26 @@ Native Linux ARM64 [qualification runs](https://github.com/regenscheid/sandbox-c
 - pdf_oxide's aarch64 wheel hash;
 - a G6K build for the target, compiled natively per architecture (D63) and aimed at `armv8.2-a`, the Raspberry Pi 5's Cortex-A76. Pinned G6K includes the x86-only `immintrin.h` unconditionally even though it has a generic SIMD path, and gives its generic vectors explicit alignment that GCC 15's AArch64 argument ABI rejects. The ARM64 build applies the exact-match `patch-g6k-arm64.py` adjustment before configure; the AMD64 source is unchanged.
 
-What arm64 still needs:
-
-- **A multi-platform image.** It needs a registry or an OCI layout to hold both architectures under one tag; `build.sh` loads one platform into the local store.
+What arm64 still needs is a published two-platform tag. `build.sh` loads one
+platform into the local store for development and never pushes it.
 
 The selected destination is GHCR under this repository's namespace:
-`ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual ARM64 workflow can publish
-all four profiles after building and testing them when both `crypto_base` and `publish`
-are true. It runs publication in jobs with `packages: write`; pull-request jobs remain
-read-only. Build and test the matching AMD64 variants locally, then tag and push each
-one to the same GHCR repository as its ARM64 variant. Keep the immutable digests from
-`docker push`; do not use mutable architecture tags as index inputs. New GHCR packages
-default to private. Verify the crypto-base package's actual `visibility` through GitHub
-and check that an unauthenticated registry request cannot pull it before assembling
-its shared index. A pushed architecture digest may name an OCI index containing one
-image plus a provenance attestation. `publish_index.py` resolves the matching image
-leaf and accepts only attestations bound to it, then assembles exactly two image
-leaves. With registry access configured, first inspect the proposed index:
+`ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual image workflow's
+`publish` mode uses native Linux AMD64 and ARM64 runners for every profile. Each
+runner builds directly to a run-specific GHCR architecture tag using BuildKit's
+registry exporter, pulls the resulting immutable digest, and checks that exact
+image in container and Landlock modes. The merge job starts only after all eight
+build-and-check jobs pass. It resolves the run-specific tags to immutable digests,
+checks platform, profile and recipe revision, and creates one two-platform tag per
+profile in GitHub Actions. Pull-request jobs remain read-only and cannot publish.
+
+New GHCR packages default to private. Before pushing or merging `crypto-base`,
+the workflow checks that the package's GitHub visibility is private. An architecture
+digest may name an OCI index containing one image plus a provenance attestation.
+`publish_index.py` resolves only its image leaf, accepts attestations bound to that
+leaf, and verifies that the shared tag contains exactly the AMD64 and ARM64 images.
+For manual recovery, with registry access configured, inspect a proposed index from
+already-pushed digests:
 
 ```bash
 python3 images/publish_index.py crypto-base ghcr.io/regenscheid/sandbox-crypto/crypto-base:REVISION \
@@ -308,14 +311,14 @@ Run the same command without `--dry-run` to create the shared tag. The script
 checks both source architectures, the profile and matching recipe revision labels,
 then verifies the published index contains exactly those two digests. It refuses
 `crypto-base` without an explicit confirmation that the destination package is
-private. The operator must verify the registry's access setting; Docker cannot
-infer it from a name. `images/build.sh` never pushes. The publication script is
-ready, but no remote multi-platform image has been published yet. All four
-AMD64 variants are in private GHCR packages. The same packages grant this
-repository Actions write access and deny anonymous manifest reads, but the
-ARM64 publication workflow still fails at GHCR manifest finalization after
-its build, tests and layer uploads succeed. The isolated minimal-image retry
-returned HTTP 500 at finalization, so no ARM64 architecture tag is yet verified.
+private. The operator must verify registry access before using this manual command;
+Docker cannot infer privacy from a name. The prior `--load` then `docker push`
+ARM64 path uploaded its layers but received `unknown blob` or HTTP 500 while
+finalizing the manifest, even for an isolated minimal-image retry. The revised
+Actions workflow uses BuildKit's direct registry exporter and has not yet been
+verified by a publish run. All four earlier AMD64 variants are in private GHCR
+packages with Actions write access and anonymous manifest reads denied. No shared
+multi-platform tag is claimed until the merge job verifies it.
 
 ## In OpenShell
 
