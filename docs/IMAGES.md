@@ -279,8 +279,9 @@ Native Linux ARM64 [qualification runs](https://github.com/regenscheid/sandbox-c
 - pdf_oxide's aarch64 wheel hash;
 - a G6K build for the target, compiled natively per architecture (D63) and aimed at `armv8.2-a`, the Raspberry Pi 5's Cortex-A76. Pinned G6K includes the x86-only `immintrin.h` unconditionally even though it has a generic SIMD path, and gives its generic vectors explicit alignment that GCC 15's AArch64 argument ABI rejects. The ARM64 build applies the exact-match `patch-g6k-arm64.py` adjustment before configure; the AMD64 source is unchanged.
 
-What arm64 still needs is a published two-platform tag. `build.sh` loads one
-platform into the local store for development and never pushes it.
+The `minimal` profile now has a published two-platform tag. The other profiles
+still need their full publication run to finish. `build.sh` loads one platform
+into the local store for development and never pushes it.
 
 The selected destination is GHCR under this repository's namespace:
 `ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual image workflow's
@@ -320,11 +321,13 @@ ARM64 path uploaded its layers but received `unknown blob` or HTTP 500 while
 finalizing the manifest, even for an isolated minimal-image retry. The first
 Actions publication attempt also returned HTTP 500 on both native architectures:
 the default Buildx `docker` driver still used Docker's daemon push path. The
-workflow now requires the `docker-container` driver for publication; its direct
-registry export still needs live verification. All four earlier AMD64 variants
+workflow now requires the `docker-container` driver for publication. The
+[minimal smoke run](https://github.com/regenscheid/sandbox-crypto/actions/runs/39348114450)
+verified its direct registry export, pulled-digest runtime checks, and exactly
+two platform entries in the shared OCI index. All four earlier AMD64 variants
 are in private GHCR packages with Actions write access and anonymous manifest
-reads denied. No shared
-multi-platform tag is claimed until the merge job verifies it.
+reads denied. Only the `minimal` shared tag has been verified so far; the other
+profiles require their own successful merge jobs.
 
 ## In OpenShell
 
@@ -337,8 +340,8 @@ Every image has run in OpenShell VM sandboxes on babbage, under the compiled pol
 
 ## Not yet done
 
-- **Shared multi-platform tags** (above). The native ARM64 image tests passed; registry publication and Mac OpenShell acceptance remain open.
-- **An SBOM** in a standard format (SPDX or CycloneDX) before `minimal` is published. The image record lists every package and license, but in its own format.
+- **Shared multi-platform tags** (above). `minimal` is published and verified; full profile publication and Mac OpenShell acceptance remain open.
+- **An SBOM** in a standard format (SPDX or CycloneDX) before a general release. The published `minimal` tag does not yet include one; the image record lists every package and license, but in its own format.
 - **Restore and rebuild.** The record and lockfile are there; capturing an environment's changes and rebuilding it from the lockfile belong to the environment manager (W3, D48).
 
 Research images also contain `/usr/share/sandbox-science/binding-inventory.json`, a

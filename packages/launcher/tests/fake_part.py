@@ -74,6 +74,9 @@ def option(flag: str) -> str:
 
 
 def stopped(*_: object) -> None:
+    # A Darwin watcher and its supervisor can deliver TERM during the same
+    # shutdown. A second signal must not re-enter the journal write.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     note("stop")
     sys.exit(0)
 

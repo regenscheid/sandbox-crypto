@@ -141,11 +141,12 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] Recipes for both profiles in `images/` (D77, [images](../docs/IMAGES.md)): pinned sources, Conda lockfiles for linux-64 and linux-aarch64, build and test scripts. Built for linux/amd64 on babbage and checked as plain containers: read-only root, uid 1000, and under a Landlock ruleset like OpenShell's
   - [ ] arm64 images: build and test on an arm64 host; check that the Ubuntu snapshot service covers the ports archive; publish verified two-platform GHCR tags (D63)
     - [x] Native ARM64 build and container/Landlock checks for all four profiles, including crypto-base with Sage and G6K.
-    - [ ] Verify the Actions native AMD64/ARM64 publication and merge workflow against GHCR; the prior ARM64 Docker-daemon push failed at manifest finalization.
+    - [x] Publish `minimal` on native AMD64/ARM64 runners with direct BuildKit registry export, check both pulled digests, and verify the two-platform shared tag.
+    - [ ] Verify the remaining three profiles through the full Actions publication and merge workflow against GHCR.
   - [ ] Mac deployment: require owner-selected Sandbox Science, OpenShell VM/cache, gateway and Docker image-store paths before first run; verify restart/recovery uses the same stores and no large state lands at an unintended default ([Mac qualification](../docs/MAC-ARM64.md#choose-storage-locations), D63)
     - [x] Implement Darwin launcher process identity, session cleanup and parent-death watcher; Linux protocol and launcher tests pass. Native Mac start/crash/down/replacement/Resume acceptance remains open.
   - [x] Run the linux/amd64 images in OpenShell: worker profiles and compiled `sandbox.filesystem` settings ([images](../docs/IMAGES.md#openshell-filesystem-paths)) passed the unchanged external conformance suite in [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md); both Python 3.14.8, with no new Sage assertion; arm64/multi-platform acceptance remains open
-  - [ ] A standard-format SBOM before `minimal` is published; the selected GHCR crypto-base package is private
+  - [ ] Add a standard-format SBOM to the published images before general release; the `minimal` tag currently lacks one, and the selected GHCR crypto-base package is private
     - [x] Add digest- and platform-checked image-index publication command; GHCR crypto-base is verified private, and native ARM64 crypto-base qualification passed.
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 
