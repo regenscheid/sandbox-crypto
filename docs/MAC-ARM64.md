@@ -36,17 +36,40 @@ This is a path example, not a ready-to-run gateway configuration: retain the rel
 
 For example, set `XDG_STATE_HOME=/Volumes/Research/ss-gateway` and `OPENSHELL_LOCAL_TLS_DIR=/Volumes/Research/ss-gateway/tls` in that gateway service's environment, then verify its database appears under the chosen root. Alternatively, set `OPENSHELL_DB_URL=sqlite:/Volumes/Research/ss-gateway/openshell.db?mode=rwc` for the database alone. These are gateway-service settings, not `[openshell.env]` entries in the Sandbox Science config; the latter affect CLI calls from the launcher and worker. Docker Desktop's disk-image location is selected in Docker Desktop itself. [OpenShell's VM driver](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/README.md#gateway-and-driver-configuration) and [Docker Desktop settings](https://docs.docker.com/desktop/settings-and-maintenance/settings/#advanced) document these separate stores.
 
+## Try a published image on the Mac
+
+The current tested tag is `6bb73871`. All four GHCR packages are private, so
+authenticate Docker with a GitHub classic personal access token that can read
+packages, then pull the ARM64 image:
+
+```sh
+docker login ghcr.io -u regenscheid
+docker pull --platform linux/arm64 ghcr.io/regenscheid/sandbox-crypto/minimal:6bb73871
+docker run --rm --platform linux/arm64 --entrypoint /usr/bin/uname \
+  ghcr.io/regenscheid/sandbox-crypto/minimal:6bb73871 -m
+```
+
+The login command prompts for the token as its password. The last command
+should print `aarch64`. Replace `minimal` with `orchestrator`, `mcp-proxy` or
+`crypto-base` to pull another profile; `crypto-base` is much larger. This tests
+Docker's image selection and execution, not the application's OpenShell
+MicroVM path. The VM driver keeps its own prepared-image cache, and its access
+to these private GHCR packages still needs a real Mac probe. The
+[single-machine quickstart](QUICKSTART.md) currently describes the babbage lab;
+copy its example config into a private Mac config and replace the babbage-only
+paths and services before attempting `sandbox-science up`.
+
 ## Sequence and evidence
 
-1. **Native ARM64 image gate.** The `arm64 image qualification` workflow has built and checked all four profiles, including the large Sage/G6K `crypto-base` image, on a Linux ARM64 runner. `images/build.sh` selects the host architecture by default; `PLATFORM=linux/arm64` states it explicitly. This gate does not test OpenShell or macOS. Shared GHCR tags remain pending registry publication.
+1. **Native ARM64 image gate.** The `arm64 image qualification` workflow has built and checked all four profiles, including the large Sage/G6K `crypto-base` image, on a Linux ARM64 runner. The [full publication run](https://github.com/regenscheid/sandbox-crypto/actions/runs/39348347538) passed both architectures' pulled-digest tests and merged every profile into a two-platform GHCR tag. `images/build.sh` selects the host architecture by default; `PLATFORM=linux/arm64` states it explicitly. This gate does not test OpenShell or macOS.
 2. **Portable host supervision.** The Darwin path uses the process creation time and boot time from the kernel (through psutil), enumerates session members, and runs each part under a wrapper watching a pipe held only by the launcher. The wrapper ends its session when the pipe closes after a launcher crash or when it receives SIGTERM, including children that ignore SIGTERM. If the wrapper itself dies, the supervisor drains its session before waiting for output or restarting the part; `down` rechecks boot, creation time, session and command identity before cleanup. Exercise start, crash, `down`, replacement and Resume on the Mac before claiming local support. The trusted worker, control store and GUI then run as host processes; research code remains in OpenShell sandboxes.
-3. **Mac gateway and policy gate.** Install a pinned OpenShell release, choose the MicroVM driver explicitly, and validate gateway, middleware registration, policy compilation, provider binding, file confinement, outbound network decisions, SSH worker transport and worker lifecycle against actual ARM64 sandboxes. Build or transfer the ARM64 profile images without publishing `crypto-base` publicly. Confirm the browser login and PDF viewer's loopback origins.
+3. **Mac gateway and policy gate.** Install a pinned OpenShell release, choose the MicroVM driver explicitly, and validate gateway, middleware registration, policy compilation, provider binding, file confinement, outbound network decisions, SSH worker transport and worker lifecycle against actual ARM64 sandboxes. Pull the published ARM64 profile images with authorized GHCR access, or transfer them without making `crypto-base` public; Docker's successful private-registry pull does not itself prove the OpenShell VM driver can resolve the same image. Confirm the browser login and PDF viewer's loopback origins.
 4. **Recovery gate.** Interrupt long Sage work, the agent runtime and the worker separately. Confirm that one orchestrator Resume reconciles children and original effects without duplication and that durable artifacts survive sandbox replacement.
 
 Keep the Mac's state directories separate from babbage. Use the same immutable `linux/arm64` image variant as the ARM64 Kubernetes nodes when qualified; no Mac-specific tag is needed. Record the host OS, OpenShell and Docker versions, image digests, actual isolation tier and each probe's result. A recipe test or Linux ARM64 job is preparation, not Mac acceptance.
 
 ## Kubernetes follow-on
 
-The existing architecture keeps the worker pool distinct from the GUI and control store. For the mixed ARM64/AMD64 cluster, qualify native images on each architecture, then use a private registry for `crypto-base` and a multi-platform manifest for shared tags. Deploy an OpenShell Kubernetes gateway through its supported chart and controller, with the policy middleware and cache reachable from sandbox pods. Put trusted services and durable stores on protected nodes/storage; run research pods in separate node pools under a sandboxed RuntimeClass where available. Check node affinity and resource requests so Sage and large artifacts avoid small Raspberry Pi nodes. Validate PVC or object-store artifact retention, gateway restart, pod eviction, policy and credential boundaries, and tree Resume before calling it supported. The host launcher cannot simply be copied into a pod: its process/session supervision and loopback addresses assume one machine.
+The existing architecture keeps the worker pool distinct from the GUI and control store. For the mixed ARM64/AMD64 cluster, the four published tags provide native images for both architectures; `crypto-base` remains private. Deploy an OpenShell Kubernetes gateway through its supported chart and controller, with the policy middleware and cache reachable from sandbox pods. Put trusted services and durable stores on protected nodes/storage; run research pods in separate node pools under a sandboxed RuntimeClass where available. Check node affinity and resource requests so Sage and large artifacts avoid small Raspberry Pi nodes. Validate PVC or object-store artifact retention, gateway restart, pod eviction, policy and credential boundaries, and tree Resume before calling it supported. The host launcher cannot simply be copied into a pod: its process/session supervision and loopback addresses assume one machine.
 
 See [architecture](ARCHITECTURE.md#local-remote-and-kubernetes-placement), [images](IMAGES.md#arm64), [OpenShell's installation guide](https://docs.nvidia.com/openshell/v0.1.3/about/installation/), and [the OpenShell sandbox runtimes](https://docs.nvidia.com/openshell/v0.1.3/how-it-works/sandboxes/runtimes).
