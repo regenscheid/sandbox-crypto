@@ -292,8 +292,9 @@ Landlock modes. The merge job starts only after all eight
 build-and-check jobs pass. It resolves the run-specific tags to immutable digests,
 checks platform, profile and recipe revision, and creates one two-platform tag per
 profile in GitHub Actions. The manual `publish_scope=minimal` mode runs only the
-two native minimal builds and their merge as a registry smoke test. Pull-request
-jobs remain read-only and cannot publish.
+two native minimal builds and their merge as a registry smoke test. Selecting
+all profiles without confirming `crypto_base=true` fails input validation before
+any publication job starts. Pull-request jobs remain read-only and cannot publish.
 
 New GHCR packages default to private. Before pushing or merging `crypto-base`,
 the workflow checks that the package's GitHub visibility is private. An architecture

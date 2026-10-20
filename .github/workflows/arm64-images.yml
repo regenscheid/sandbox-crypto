@@ -64,8 +64,23 @@ jobs:
       - run: df -h / /var/lib/docker && docker system df && images/build.sh crypto-base
       - run: NETWORK=0 images/test.sh crypto-base
 
+  publish-inputs:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate publication scope
+        env:
+          PUBLISH_SCOPE: ${{ inputs.publish_scope }}
+          CRYPTO_BASE: ${{ inputs.crypto_base }}
+        run: |
+          if [ "$PUBLISH_SCOPE" = all ] && [ "$CRYPTO_BASE" != true ]; then
+            echo 'Publishing all profiles requires crypto_base=true; choose minimal for a smoke test.' >&2
+            exit 1
+          fi
+
   publish-platform:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && (inputs.publish_scope == 'minimal' || inputs.crypto_base) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    needs: publish-inputs
     runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 120
     strategy:
@@ -116,7 +131,7 @@ jobs:
           images/publish_arch.sh "$PROFILE" "ghcr.io/$REPOSITORY/$PROFILE" "$GITHUB_RUN_ID"
 
   merge-platforms:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && (inputs.publish_scope == 'minimal' || inputs.crypto_base) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
     needs: publish-platform
     runs-on: ubuntu-24.04
     timeout-minutes: 20
