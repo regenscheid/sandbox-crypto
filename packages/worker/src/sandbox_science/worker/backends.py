@@ -33,9 +33,10 @@ from . import (
     sandbox_files,
     sandbox_processes,
     sandbox_setup,
+    workspace_prefix,
 )
 from .channel import EventHandler, ExecutorChannel
-from .errors import WorkerError
+from .errors import PrefixRecoveryError, WorkerError
 from .package_clients import ClientConfiguration, render
 from .settings import LocalBackendSettings, OpenShellBackendSettings
 
@@ -58,6 +59,7 @@ SANDBOX_FILES: tuple[Path, ...] = (
     Path(sandbox_files.__file__),
     Path(sandbox_processes.__file__),
     Path(sandbox_setup.__file__),
+    Path(workspace_prefix.__file__),
 )
 """Every file the executor runs from inside a sandbox, uploaded side by side into the
 executor's directory. They use only the standard library and each other (the executor
@@ -243,6 +245,7 @@ class OpenShellBackend:
         executor_args: Sequence[str] = (),
         prepare: Callable[[str], Awaitable[None]] | None = None,
         manages: Callable[[str], bool] | None = None,
+        requires_workspace_prefix: Callable[[str], bool] | None = None,
     ) -> None:
         if (resolve is None) != (manages is None):
             # Without ``manages``, a deleted environment would fall back to the static map.
@@ -255,6 +258,7 @@ class OpenShellBackend:
         """Tells environments the worker created, which never fall back to the static map."""
         self.executor_args = tuple(executor_args)
         self._prepare = prepare
+        self.requires_workspace_prefix = requires_workspace_prefix
         """Starts a stopped sandbox the worker created before an executor runs there."""
         self._shim_lock = asyncio.Lock()
         self._clients = None if settings.package_cache is None else render(settings.package_cache)
@@ -389,6 +393,39 @@ class OpenShellBackend:
             raise WorkerError(ErrorKind.UNSUPPORTED, "OpenShell streaming requires daemon=true")
         sandbox = self._sandbox(environment_id)
         settings = self.settings
+        required = self.requires_workspace_prefix is not None and self.requires_workspace_prefix(
+            environment_id
+        )
+        if required:
+            # The required Python may itself be gone. Use the fixed system shell, and
+            # classify only a positive target reply, never a gateway/transport error.
+            code, output = await _command(
+                settings.cli,
+                "sandbox",
+                "exec",
+                "-n",
+                sandbox,
+                "--no-tty",
+                "--no-login-shell",
+                "--",
+                "/bin/sh",
+                "-c",
+                "if [ -d /sandbox/.sandbox-science-prefix ] && "
+                "[ ! -L /sandbox/.sandbox-science-prefix ] && "
+                "[ -L /opt/sandbox-science ] && "
+                '[ "$(readlink -f /opt/sandbox-science)" = /sandbox/.sandbox-science-prefix ] && '
+                "[ -x /opt/sandbox-science/bin/python ]; then "
+                "printf 'SS_PREFIX_OK\\n'; else printf 'SS_PREFIX_MISSING\\n'; fi",
+                env=self._env(),
+            )
+            if code == 0 and output.strip() == b"SS_PREFIX_MISSING":
+                raise PrefixRecoveryError(
+                    ErrorKind.UNAVAILABLE,
+                    "required workspace prefix is missing or incompatible; preserve the workspace "
+                    "and recover its known package prefix before resuming",
+                )
+            if code != 0 or output.strip() != b"SS_PREFIX_OK":
+                raise WorkerError(ErrorKind.UNAVAILABLE, "workspace prefix preflight unavailable")
         await self._run(
             "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--",
             "mkdir", "-p", settings.executor_dir, settings.project_root,
@@ -408,6 +445,8 @@ class OpenShellBackend:
             settings.project_root,
             *self.executor_args,
         ]
+        if required:
+            remote.append("--require-workspace-prefix")
         if shim is not None:
             remote = ["env", f"LD_PRELOAD={shim}", *remote]
         code, config = await _command(

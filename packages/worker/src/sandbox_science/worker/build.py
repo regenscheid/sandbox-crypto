@@ -95,6 +95,9 @@ def build_backend(settings: Settings, environments: Environments | None) -> Back
             executor_args=executor_args(settings),
             prepare=environments.resume if environments is not None else None,
             manages=environments.manages if environments is not None else None,
+            requires_workspace_prefix=(
+                environments.requires_workspace_prefix if environments is not None else None
+            ),
         )
     if settings.local is None:
         raise SettingsError("no backend is configured")
@@ -128,6 +131,7 @@ def build_lifecycle(
         recycle_daemon=environments.recycle_executor,
         notices=environments.notices,
         job_resources=environments.job_resources,
+        requires_workspace_prefix=environments.requires_workspace_prefix,
     )
 
 

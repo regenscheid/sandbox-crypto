@@ -246,11 +246,24 @@ def _recovery_fences(db: sqlite3.Connection) -> None:
     )
 
 
+def _workspace_prefixes(db: sqlite3.Connection) -> None:
+    db.execute(
+        f"""CREATE TABLE workspace_prefixes (
+    environment_id TEXT PRIMARY KEY CHECK {_identifier("environment_id", nul=True)},
+    identity TEXT NOT NULL CHECK (length(identity)=39 AND identity GLOB 'prefix-*'
+        AND substr(identity,8) NOT GLOB '*[^0-9a-f]*'),
+    incarnation TEXT NOT NULL CHECK {_prefixed("incarnation", "inc", nul=True)},
+    restore_revision INTEGER CHECK (restore_revision IS NULL OR restore_revision {_COUNT})
+) STRICT"""
+    )
+
+
 MIGRATIONS: list[Migration] = [
     _admission_checks,
     _nul_checks_and_clears,
     _run_kernels,
     _recovery_fences,
+    _workspace_prefixes,
 ]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 

@@ -81,7 +81,14 @@ class History:
 
 
 class Daemon:
-    def __init__(self, root: Path, token: str, kernel_idle: float | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        token: str,
+        kernel_idle: float | None = None,
+        *,
+        require_workspace_prefix: bool = False,
+    ) -> None:
         self.root, self.token = root, token
         self.incarnation = "inc-" + secrets.token_hex(12)
         self.writer: asyncio.StreamWriter | None = None
@@ -101,6 +108,7 @@ class Daemon:
             subreaper=executor.sandbox_processes.enable_subreaper(),
             protected=executor.sandbox_processes.protect_process(),
             kernel_idle=kernel_idle,
+            require_workspace_prefix=require_workspace_prefix,
         )
         self.owner_scope = "ss-daemon-" + address(token, root)[13:] + "-"
         self.executor.owner_prefix = self.owner_scope + self.incarnation + "-"
@@ -563,7 +571,13 @@ async def connect(token: str, root: Path) -> tuple[asyncio.StreamReader, asyncio
     return reader, writer
 
 
-async def bridge(root: Path, kernel_idle: float | None, *, framed: bool = False) -> None:
+async def bridge(
+    root: Path,
+    kernel_idle: float | None,
+    *,
+    framed: bool = False,
+    require_workspace_prefix: bool = False,
+) -> None:
     loop = asyncio.get_running_loop()
     incoming = asyncio.StreamReader(
         limit=request_frames.MAX_FRAME if framed else executor.MAX_REQUEST
@@ -598,6 +612,8 @@ async def bridge(root: Path, kernel_idle: float | None, *, framed: bool = False)
         argv = [sys.executable, "-I", str(Path(__file__)), "--serve", "--root", str(root)]
         if kernel_idle is not None:
             argv += ["--kernel-idle", str(kernel_idle)]
+        if require_workspace_prefix:
+            argv += ["--require-workspace-prefix"]
         process = subprocess.Popen(  # noqa: S603 - fixed sandbox-local Python bridge
             argv,
             stdin=subprocess.PIPE,
@@ -654,6 +670,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--framed", action="store_true")
+    parser.add_argument("--require-workspace-prefix", action="store_true")
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--kernel-idle", type=float)
     args = parser.parse_args()
@@ -669,9 +686,23 @@ def main() -> None:
         (root / "shared").mkdir(exist_ok=True)
         os.environ.setdefault("JUPYTER_RUNTIME_DIR", str(state / "runtime"))
         os.environ.setdefault("IPYTHONDIR", str(state / "ipython"))
-        asyncio.run(Daemon(root, token, args.kernel_idle).serve())
+        asyncio.run(
+            Daemon(
+                root,
+                token,
+                args.kernel_idle,
+                require_workspace_prefix=args.require_workspace_prefix,
+            ).serve()
+        )
     else:
-        asyncio.run(bridge(root, args.kernel_idle, framed=args.framed))
+        asyncio.run(
+            bridge(
+                root,
+                args.kernel_idle,
+                framed=args.framed,
+                require_workspace_prefix=args.require_workspace_prefix,
+            )
+        )
 
 
 if __name__ == "__main__":

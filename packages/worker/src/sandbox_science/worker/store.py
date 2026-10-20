@@ -925,6 +925,104 @@ class Store:
         ).fetchone()
         return row is not None
 
+    def workspace_prefix(self, environment_id: str) -> tuple[str, str] | None:
+        """The accepted prefix identity and the daemon whose journal may still replay."""
+        row = self._db.execute(
+            "SELECT identity,incarnation FROM workspace_prefixes WHERE environment_id=?",
+            (environment_id,),
+        ).fetchone()
+        return None if row is None else (str(row[0]), str(row[1]))
+
+    def remember_workspace_prefix(
+        self, environment_id: str, identity: str, incarnation: str
+    ) -> None:
+        """Accept only after the continuity check, independently of bridge release."""
+        self._db.execute(
+            "INSERT INTO workspace_prefixes (environment_id,identity,incarnation) VALUES (?,?,?)"
+            " ON CONFLICT(environment_id)"
+            " DO UPDATE SET identity=excluded.identity,incarnation=excluded.incarnation",
+            (environment_id, identity, incarnation),
+        )
+
+    def workspace_prefix_restore_pending(self, environment_id: str) -> int | None:
+        """An exact restored baseline awaits the guest's gate/epoch acknowledgement."""
+        row = self._db.execute(
+            "SELECT restore_revision FROM workspace_prefixes WHERE environment_id=?",
+            (environment_id,),
+        ).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    def acknowledge_workspace_prefix(
+        self, environment_id: str, identity: str, fingerprint: str, incarnation: str
+    ) -> None:
+        """Complete only the exact baseline ACK; a crash before this keeps retry authority."""
+        with self._transaction():
+            revision = self.revision(environment_id)
+            retained = self.workspace_prefix(environment_id)
+            if (
+                revision is None
+                or retained is None
+                or retained[0] != identity
+                or revision.fingerprint != fingerprint
+                or self.workspace_prefix_restore_pending(environment_id) != revision.revision
+            ):
+                raise WorkerError(ErrorKind.UNAVAILABLE, "restored prefix acknowledgement changed")
+            self._db.execute(
+                "UPDATE workspace_prefixes SET incarnation=?,restore_revision=NULL"
+                " WHERE environment_id=?",
+                (incarnation, environment_id),
+            )
+
+    def restore_workspace_prefix(
+        self, environment_id: str, identity: str, fingerprint: str
+    ) -> bool:
+        """Clear only an exact prefix-loss hold after positive restoration evidence.
+
+        Provisioning recovery is separate authority. Its earlier mark, unfinished
+        operation, or canonical unknown-effects outcome must survive this check.
+        """
+        with self._transaction():
+            marked = self.package_status(environment_id)
+            revision = self.revision(environment_id)
+            retained = self.workspace_prefix(environment_id)
+            pending = self.workspace_prefix_restore_pending(environment_id)
+            if marked is not None and marked[1] != "workspace-prefix":
+                return False
+            if marked is None and pending is None:
+                return False
+            expected_revision = marked[2] if marked is not None else pending
+            if (
+                retained is None
+                or retained[0] != identity
+                or revision is None
+                or revision.fingerprint != fingerprint
+                or expected_revision != revision.revision
+                or not self.provisioning_finished(environment_id)
+                or self._db.execute(
+                    "SELECT 1 FROM provisions WHERE environment_id=? AND"
+                    " CASE WHEN json_valid(record) THEN"
+                    " coalesce(json_extract(record,'$.outcome') NOT IN"
+                    " ('already_satisfied','completed','denied','failed','rolled_back'),1)"
+                    " ELSE 1 END LIMIT 1",
+                    (environment_id,),
+                ).fetchone()
+                is not None
+            ):
+                return False
+            gate = self.package_gate(environment_id)
+            self._db.execute(
+                "DELETE FROM package_status WHERE environment_id=?"
+                " AND provision_id='workspace-prefix'",
+                (environment_id,),
+            )
+            if marked is not None:
+                self._gate_write(environment_id, PackageGate(gate.generation + 1))
+            self._db.execute(
+                "UPDATE workspace_prefixes SET restore_revision=? WHERE environment_id=?",
+                (revision.revision, environment_id),
+            )
+            return True
+
     def forget_revisions(self, environment_id: str) -> list[str]:
         """Forget an environment's revisions, the current one too; return the lockfiles
         they referenced."""
@@ -949,6 +1047,9 @@ class Store:
                 raise WorkerError(ErrorKind.UNAVAILABLE, "old provisioning is not durably finished")
             self._guard_package_binding(environment_id, binding)
             self._db.execute("DELETE FROM package_status WHERE environment_id=?", (environment_id,))
+            self._db.execute(
+                "DELETE FROM workspace_prefixes WHERE environment_id=?", (environment_id,)
+            )
             self._db.execute(
                 "DELETE FROM package_execution_gates WHERE environment_id=?", (environment_id,)
             )

@@ -259,6 +259,14 @@ class EnvironmentRecords:
             "CREATE TABLE IF NOT EXISTS sandbox_launch_settings ("
             " sandbox TEXT PRIMARY KEY, driver_config TEXT NOT NULL)"
         )
+        # Old allocations retain their original behavior; current config never upgrades
+        # a recovered sandbox's storage promise.
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(sandbox_launch_settings)")}
+        if "require_workspace_prefix" not in columns:
+            self._db.execute(
+                "ALTER TABLE sandbox_launch_settings ADD COLUMN require_workspace_prefix"
+                " INTEGER NOT NULL DEFAULT 0 CHECK (require_workspace_prefix IN (0,1))"
+            )
         self._lock = threading.Lock()
 
     def confirm_deletion(self, info: EnvironmentInfo) -> None:
@@ -289,21 +297,28 @@ class EnvironmentRecords:
             ).fetchone()
         return None if row is None else EnvironmentInfo.model_validate_json(row[0])
 
-    def save(self, info: EnvironmentInfo, *, driver_config: str | None = None) -> None:
+    def save(
+        self,
+        info: EnvironmentInfo,
+        *,
+        driver_config: str | None = None,
+        require_workspace_prefix: bool = False,
+    ) -> None:
         """Save ownership and, at initial allocation, immutable trusted launch settings."""
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 if driver_config is not None:
                     self._db.execute(
-                        "INSERT OR IGNORE INTO sandbox_launch_settings VALUES (?,?)",
-                        (info.sandbox, driver_config),
+                        "INSERT OR IGNORE INTO sandbox_launch_settings VALUES (?,?,?)",
+                        (info.sandbox, driver_config, int(require_workspace_prefix)),
                     )
                     row = self._db.execute(
-                        "SELECT driver_config FROM sandbox_launch_settings WHERE sandbox=?",
+                        "SELECT driver_config,require_workspace_prefix FROM sandbox_launch_settings"
+                        " WHERE sandbox=?",
                         (info.sandbox,),
                     ).fetchone()
-                    if row != (driver_config,):
+                    if row != (driver_config, int(require_workspace_prefix)):
                         raise WorkerError(ErrorKind.CONFLICT, "sandbox launch settings changed")
                 self._db.execute(
                     "INSERT INTO environments (environment_id, sandbox, document) VALUES (?, ?, ?)"
@@ -323,6 +338,15 @@ class EnvironmentRecords:
                 "SELECT driver_config FROM sandbox_launch_settings WHERE sandbox=?", (sandbox,)
             ).fetchone()
         return None if row is None else str(row[0])
+
+    def requires_workspace_prefix(self, sandbox: str) -> bool:
+        """The original storage requirement, false for allocations predating the pin."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT require_workspace_prefix FROM sandbox_launch_settings WHERE sandbox=?",
+                (sandbox,),
+            ).fetchone()
+        return row == (1,)
 
     def live(self, projects: Iterable[str]) -> list[str]:
         """The IDs of the projects' environments that are not deleted."""
@@ -576,6 +600,12 @@ class Environments:
         info = self.get(environment_id)
         return (info.sandbox, info.sandbox_id) if info.sandbox_id else None
 
+    def requires_workspace_prefix(self, environment_id: str) -> bool:
+        """Required storage is pinned at allocation, never inferred from today's profile."""
+        return self.manages(environment_id) and self.records.requires_workspace_prefix(
+            self.get(environment_id).sandbox
+        )
+
     def job_resources(self, environment_id: str) -> Resources:
         """The job limits of the environment's policy, within the pool's ceiling."""
         if self.busy(environment_id):
@@ -694,7 +724,11 @@ class Environments:
             )
             # Recorded first, so that a sandbox left by a crash is known to be ours. Only
             # this record's own leftover is ever deleted: a name is never another's.
-            self.records.save(info, driver_config=launch)
+            self.records.save(
+                info,
+                driver_config=launch,
+                require_workspace_prefix=placement.require_workspace_prefix if placement else False,
+            )
             try:
                 sandbox_id = await self._create_sandbox(info, compiled)
                 self.store.bind(sandbox_id, request.policy)

@@ -549,6 +549,44 @@ The [sandbox daemon](#sandbox-daemon-and-recovery) adds `replay`, `latest`, `act
 - **Hygiene.** The executor keeps the protocol on its own file descriptor and sends anything else that writes to stdout to stderr. Where the sandbox allows it, the executor is not dumpable, so research code cannot open that descriptor through `/proc` (not under OpenShell v0.1.3; see "Running under OpenShell").
 - **Shutdown.** A stdio executor stops its commands and kernels on stdin EOF. A daemon bridge instead detaches on EOF; environment deletion or idle suspension requests explicit `daemon_shutdown`, which reaps commands and kernels before acknowledging. Cancellation has its own 30-second deadline; a daemon that cannot confirm it is shut down and affected outcomes become `lost`. A new daemon reaps marked processes belonging to its endpoint's old incarnation, checking process start times against PID reuse. Research code that deliberately disguises its process ownership remains within the sandbox and outside the process hygiene guarantee above.
 
+### Persistent research prefix continuity
+
+Trusted Kubernetes profiles default `require_workspace_prefix` to true. The strict
+boolean is pinned with sandbox ownership on initial allocation; later deployment
+settings do not change an existing allocation. Explicit false is an escape for old
+or custom images outside this guarantee; non-Kubernetes and migrated allocations
+retain their prior behavior.
+
+Required executors report prefix protocol 1, canonical path
+`/sandbox/.sandbox-science-prefix`, a nonsecret `prefix-` identity stored inside
+that real prefix, its current metadata fingerprint and a pending-journal boolean.
+Marker creation is opt-in and follows fixed-layout validation; ordinary/local
+executors never write a marker into the developer's Python prefix. Images never
+ship a marker. The provisioning mirror under `.executor/provisioning/prefix` is a
+collection of symlinks/wrappers, not retained package bytes.
+
+Before the ready package gate is acknowledged, a replacement daemon must match
+the retained identity and latest known revision, with no unconsumed package
+journal, active turn or interrupted holder. Completed reported changes remove
+their journal entries; surviving daemons preserve pending records and reconcile
+through their ordinary event replay. No equality-based journal trimming occurs.
+Missing, malformed or changed prefix evidence keeps a durable `workspace-prefix`
+recovery hold and the last good revision; there is no automatic reinstall or
+unmanaged revision masking package loss. A positive shell preflight distinguishes
+a missing layout from an uncertain transport failure when the prefix Python cannot
+start. Metadata fingerprints detect continuity, not every installed byte's integrity.
+
+After the operator restores the original prefix, an explicit capabilities/files
+reconnect can recheck even a surviving held daemon. Only exact original identity,
+the held/current known revision and a clean journal clear the prefix-specific
+hold, transactionally advancing the package gate. The executor revalidates those
+facts before aligning its settled baseline and acknowledging ready. The exact
+restored revision remains durably pending until the worker validates that ACK and
+its post-alignment epoch, so worker loss cannot lose retry authority. Unrelated
+provisioning recovery, unfinished operations and unknown-effects outcomes remain
+held. An environment without any accepted original identity/revision cannot use
+this restoration path. No revision, journal or operation is deleted to clear it.
+
 ### Sandbox daemon and recovery
 
 The uploaded `daemon.py` uses only the standard library and runs inside the sandbox;

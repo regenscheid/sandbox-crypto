@@ -15,15 +15,15 @@ Every profile follows it; the orchestrator and MCP proxy images differ where [th
 
 - **Base.** Ubuntu 24.04, from Docker Hub's `ubuntu:24.04`, pinned by digest.
 - **Account.** The image's `sandbox` account has uid and gid 1000 and home `/sandbox`. Ubuntu's own uid 1000 account (`ubuntu`) is removed, since it would shadow it. The image runs as uid 1000 with `HOME=/sandbox`, as OpenShell's VM driver runs workloads: as the image's `sandbox` account, or uid 1000 when there is none. Nothing needs root at runtime.
-- **`/sandbox`** is the home directory and the workdir, and holds the project (`/sandbox/project`). It is empty in the image, so a runtime may mount a volume over it; the build empties it and checks.
+- **`/sandbox`** is the home directory and workdir, holding the project (`/sandbox/project`) and the real research package prefix (`/sandbox/.sandbox-science-prefix`). Research build cleanup preserves that prefix and removes other home files. Trusted service images keep an empty home and their separate read-only `/opt` prefix.
 - **Interpreter.** `/opt/sandbox-science/bin/python` runs the executor, so the worker's `python` setting is the same for every profile. It has ipykernel and jupyter_client.
 - **Kernels.** Every kernelspec the worker offers is in the prefix's `share/jupyter/kernels`, where that interpreter's Jupyter installation finds it: `python3`, and `sagemath` in crypto-base. The build fails if one is missing.
-- **Conda prefix.** `/opt/sandbox-science`, owned by uid 1000, is micromamba's root prefix and its base environment:
+- **Conda prefix.** `/opt/sandbox-science`, owned by uid 1000, is micromamba's root prefix and base environment. In both shared research images it is a compatibility symlink to the real `/sandbox/.sandbox-science-prefix`, retaining interpreter paths, shebangs and kernelspecs across local, Mac and Kubernetes drivers:
   - `bin/` holds the interpreter and every program of the environment, so the executor's `PATH` finds them;
   - `share/jupyter/kernels/` the kernelspecs;
   - `pkgs/` micromamba's package cache, empty in the image. After a lockfile install micromamba keeps the extracted packages there, partly as hard links into the environment, and `micromamba clean -a` leaves them. The build removes them, which saves 96 MB in minimal and 1.1 GB in crypto-base;
   - `envs/` environments created at runtime.
-- **Runtime installs** go into the prefix: `micromamba install …` and `pip install …` install into the base environment, so kernels see them at once. The prefix is therefore a declared writable volume (D48).
+- **Runtime installs** go into the prefix: `micromamba install …` and `pip install …` install into the base environment, so kernels see them at once. The real prefix is retained with the writable workspace (D48). An active workspace volume contains all base package bytes as well as runtime installs and research data.
   - `/usr/local/bin/micromamba` sets `MAMBA_ROOT_PREFIX` and `CONDA_PREFIX` to the prefix when they are unset. OpenShell's VM driver does not apply an image's environment variables, and without them micromamba would cache packages under `/sandbox`.
   - The worker's package-client configuration points micromamba, pip and the other clients at the package cache ([package cache](PACKAGE-CACHE.md)). The image sets none of the variables it uses (`CONDARC`, `PIP_CONFIG_FILE`, `CARGO_HOME`, …) and ships no Conda configuration.
 - **Environment variables**, for runtimes that apply them: `PATH` starting with `/opt/sandbox-science/bin`, `HOME=/sandbox`, `MAMBA_ROOT_PREFIX` and `CONDA_PREFIX` naming the prefix, `LANG=C.UTF-8`. Under OpenShell the executor sets `PATH` and `CONDA_PREFIX` itself.
@@ -108,6 +108,17 @@ The MCP proxy runs in its own OpenShell sandbox, under the policy `compile_mcp_p
 - **Its directory.** `/sandbox/mcp-proxy/` holds the settings, with the pool ceiling and the project policies beside them, and `state/` (`state_dir = "state"` in the settings): the policy store and the event store. The VM driver keeps a sandbox's disk across `sandbox stop` and `start` ([lab 11](../.agents/docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)), so they survive a restart.
 - **Binary.** The process that connects to the servers is the prefix's interpreter, `/opt/sandbox-science/bin/python3.14`, which the targets file's `mcp_proxy.binaries` names ([above](#openshell-filesystem-paths)). The launcher opens no connections.
 - **Running it.** The operator creates the sandbox from the image with the launcher as its command (`openshell sandbox create … -- /opt/sandbox-science/bin/mcp-proxy-run`), uploads the pool ceiling, the project policies and then the settings into `/sandbox/mcp-proxy/`, binds each project to its policy with `sandbox-science-mcp-proxy bind` through `openshell sandbox exec`, and exposes the proxy on the pool host with `openshell forward service`. [MCP connectors](MCP-CONNECTORS.md#running-it) has the commands. As for the harness, run every command in the sandbox by its full path.
+
+Research runtimes must seed the image's `/sandbox` tree before mounting a fresh
+workspace over it. An empty bind mount or tmpfs hides the interpreter prefix and
+cannot run these shared research images. Docker initializes a new empty named or
+anonymous volume from image contents; `images/test.sh` uses that behavior. Pinned
+OpenShell Kubernetes uses an explicit init-container copy into its workspace PVC
+([details and capacity configuration](KUBERNETES.md#persistent-research-prefix-increment)).
+An existing workspace must retain its original prefix; do not delete or reseed it
+to disguise a failed initialization or recovery. The first PVC copy includes the
+full native base packages and may be slow; interrupted upstream seed and native
+ARM64 execution remain live qualification gates.
 
 ## Pinned sources
 
@@ -216,7 +227,7 @@ After locking, review the diff, build, and update `licenses.txt` if the build as
 
 ## Tests
 
-`images/test.sh <profile> [image]` runs `images/checks/check_image.py` in the image twice. Each time it runs as uid 1000, with no capabilities, `no-new-privileges`, a read-only root filesystem, tmpfs at `/sandbox` and `/tmp`, and for the research profiles a volume for the Conda prefix:
+`images/test.sh <profile> [image]` runs `images/checks/check_image.py` in the image twice. Each time it runs as uid 1000, with no capabilities, `no-new-privileges`, a read-only root filesystem, a populated workspace volume at `/sandbox` and tmpfs at `/tmp`, and for the research profiles a volume for the Conda prefix:
 
 - **container**: as a container driver would run the image;
 - **landlock**: the same, under a Landlock ruleset like OpenShell's: its baseline, the devices the compiler adds (none for `orchestrator`), and the paths above. A check confirms that the ruleset is in effect.

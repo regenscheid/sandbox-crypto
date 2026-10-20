@@ -1032,6 +1032,25 @@ class State:
             with contextlib.suppress(OSError):
                 (self.journal / name).unlink()
 
+    def pending(self) -> bool:
+        """Unresolved package evidence, without consuming or interpreting any record."""
+        try:
+            descriptor = self.try_lock(exclusive=False)
+            if descriptor is None:
+                return True
+            try:
+                if self.holder.exists() or self.holder.is_symlink():
+                    return True
+                try:
+                    with os.scandir(self.journal) as scan:
+                        return next(scan, None) is not None
+                except FileNotFoundError:
+                    return False
+            finally:
+                os.close(descriptor)
+        except OSError:
+            return True
+
     def clear_journal(self) -> None:
         with contextlib.suppress(OSError), os.scandir(self.journal) as scan:
             for entry in list(scan):

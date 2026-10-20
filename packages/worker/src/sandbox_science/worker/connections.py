@@ -29,9 +29,10 @@ from sandbox_science.contracts.worker import FEATURES, LANGUAGES
 from . import capture
 from .backends import Backend
 from .channel import ExecutorChannel, Message
-from .errors import WorkerError
+from .errors import PrefixRecoveryError, WorkerError
 from .isolation import probe
 from .lifecycle import EnvironmentLifecycle
+from .prefix_continuity import hold as hold_prefix
 from .store import Store
 from .usability import Usability
 
@@ -185,13 +186,40 @@ class EnvironmentConnections:
     async def _open(self, environment_id: str, environment: Connection) -> None:
         """Start the environment's executor unless one runs. Hold its lock."""
         if environment.channel is not None and not environment.channel.closed:
+            marked = self.store.package_status(environment_id)
+            required = self.lifecycle.requires_workspace_prefix
+            if (
+                (
+                    (marked is not None and marked[1] == "workspace-prefix")
+                    or self.store.workspace_prefix_restore_pending(environment_id) is not None
+                )
+                and required is not None
+                and required(environment_id)
+            ):
+                # Capabilities/files can explicitly reconnect while execution admission
+                # is held. Recheck the surviving daemon; ordinary jobs never clear it.
+                channel = environment.channel
+                reply = await channel.request("hello")
+                if reply.get("daemon_incarnation") != channel.incarnation:
+                    raise WorkerError(ErrorKind.UNAVAILABLE, "prefix recheck daemon changed")
+                channel.hello = reply
+                self.hooks.hello(environment_id, channel)
+                try:
+                    await self.hooks.sync_package_gate(environment_id, channel)
+                except WorkerError:
+                    hold_prefix(self.store, environment_id)
+                    raise
             return
         identity = self._identity(environment_id)
-        channel = await self.backend.open(
-            environment_id,
-            partial(self.hooks.on_event, environment_id),
-            partial(self.hooks.on_closed, environment_id),
-        )
+        try:
+            channel = await self.backend.open(
+                environment_id,
+                partial(self.hooks.on_event, environment_id),
+                partial(self.hooks.on_closed, environment_id),
+            )
+        except PrefixRecoveryError:
+            hold_prefix(self.store, environment_id)
+            raise
         self.channels.add(channel)
         if self._identity(environment_id) != identity:
             await channel.shutdown()
@@ -212,9 +240,10 @@ class EnvironmentConnections:
             self.hooks.incarnation_lost(environment_id, previous)
             raise DaemonIncarnationError()
         try:
+            # Continuity must be checked before a fresh executor can ACK ready.
+            self.hooks.hello(environment_id, channel)
             await self.hooks.sync_package_gate(environment_id, channel)
             hostname, languages, features = describe(environment_id, channel.hello)
-            self.hooks.hello(environment_id, channel)
             declared = self.backend.isolation_tier
             isolation = await probe(channel, declared, self.state_dir)
         except BaseException:

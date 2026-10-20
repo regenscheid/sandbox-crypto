@@ -87,6 +87,7 @@ if TYPE_CHECKING:
         sandbox_files,
         sandbox_processes,
         sandbox_setup,
+        workspace_prefix,
     )
     from .sandbox_files import MAX_PATH_BYTES as MAX_PATH_BYTES
     from .sandbox_files import SHARED as SHARED
@@ -99,6 +100,7 @@ else:
     sandbox_files = _sibling("sandbox_files")
     sandbox_processes = _sibling("sandbox_processes")
     sandbox_setup = _sibling("sandbox_setup")
+    workspace_prefix = _sibling("workspace_prefix")
     ToolError = sandbox_files.ToolError
     encode_line = sandbox_files.encode_line
     SHARED = sandbox_files.SHARED
@@ -670,9 +672,12 @@ class Executor:
         subreaper: bool = False,
         protected: bool = False,
         kernel_idle: float | None = None,
+        require_workspace_prefix: bool = False,
         clock: Clock | None = None,
     ) -> None:
         self.root = root
+        self.require_workspace_prefix = require_workspace_prefix
+        # Opt-in only: a local executor must never mark the developer's Python prefix.
         self.clock: Clock = clock or _SystemClock()
         self.captures = capture.Pool(root)
         self.owner_prefix = ""
@@ -721,7 +726,11 @@ class Executor:
         try:
             config = provisioning.Config(sys.executable, str(PROVISIONING), sys.prefix, self.places)
             self.wrapped = provisioning.refresh(self.packages, config, self.tool_path())
-            self.reported = provisioning.baseline(self.packages, self.places)
+            self.reported = (
+                provisioning.fingerprint(self.places)
+                if require_workspace_prefix
+                else provisioning.baseline(self.packages, self.places)
+            )
             self.provisioning = config
         except OSError as exc:
             print(f"executor: package commands run without turns: {exc}", file=sys.stderr)
@@ -1014,6 +1023,10 @@ class Executor:
     async def baseline(self) -> str:
         """The packages' fingerprint as this executor starts, which ``hello`` reports."""
         async with self.observing:
+            if self.require_workspace_prefix:
+                # The daemon owns the settled baseline. Reconnecting must not discard
+                # pending package journals or report changes before their replay.
+                return self.reported
             previous = self.reported
             if self.provisioning is None:
                 self.reported = await asyncio.to_thread(provisioning.fingerprint, self.places)
@@ -1239,6 +1252,19 @@ class Executor:
             conditional_kernel_restart=1,
             environment=await self.baseline(),
             package_epoch=self.package_epoch,
+            **(
+                {
+                    "workspace_prefix": {
+                        **workspace_prefix.report(sys.prefix),
+                        "fingerprint": await asyncio.to_thread(
+                            provisioning.fingerprint, self.places
+                        ),
+                        "journal_pending": await asyncio.to_thread(self.packages.pending),
+                    }
+                }
+                if self.require_workspace_prefix
+                else {}
+            ),
         )
 
     async def op_package_gate(self, request: Message) -> None:
@@ -1271,6 +1297,39 @@ class Executor:
                 generation == self.package_generation and incoming != existing
             ):
                 raise ToolError("conflict", "stale package admission generation")
+            restore = request.get("workspace_prefix_restore")
+            if restore is not None:
+                if (
+                    not self.require_workspace_prefix
+                    or mode != "ready"
+                    or not isinstance(restore, dict)
+                ):
+                    raise ToolError("invalid_request", "unexpected prefix restoration baseline")
+                restore = cast(Message, restore)
+                async with self.observing:
+                    descriptor = self.packages.try_lock(exclusive=False)
+                    if descriptor is None:
+                        raise ToolError(
+                            "unavailable", "prefix restoration has an active package turn"
+                        )
+                    try:
+                        prefix = await asyncio.to_thread(workspace_prefix.report, sys.prefix)
+                        actual = await asyncio.to_thread(provisioning.fingerprint, self.places)
+                        if (
+                            set(restore) != {"identity", "fingerprint"}
+                            or "error" in prefix
+                            or prefix.get("identity") != restore.get("identity")
+                            or actual != restore.get("fingerprint")
+                            or await asyncio.to_thread(self.packages.pending)
+                        ):
+                            raise ToolError("unavailable", "prefix restoration evidence changed")
+                        self.controller_present(request)
+                        if self.reported != actual:
+                            self.package_epoch += 1
+                            self.reported = actual
+                    finally:
+                        os.close(descriptor)
+            self.controller_present(request)
             self.package_generation, self.package_mode = generation, mode
             self.package_operation, self.package_revision = operation, revision
         await self.reply(
@@ -1280,6 +1339,11 @@ class Executor:
             mode=mode,
             operation=operation,
             revision=revision,
+            **(
+                {"package_epoch": self.package_epoch, "environment": self.reported}
+                if restore is not None
+                else {}
+            ),
         )
 
     def controller_present(self, request: Message) -> None:

@@ -5,8 +5,8 @@
 #
 # Runs images/checks/check_image.py in the image as uid 1000, with no capabilities, a read-only
 # root filesystem and only the declared paths writable (docs/IMAGES.md, "Tests"):
-#   container  tmpfs at /sandbox and /tmp, and for the research profiles a volume for the Conda
-#              prefix (D48), as a container driver would run it;
+#   container  a populated workspace volume at /sandbox for research, tmpfs at /tmp;
+#              services use an empty tmpfs home and their read-only image prefix;
 #   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices the
 #              policy compiler adds to research sandboxes, and the image's filesystem section
 #              (images/common/sandbox-filesystem.yml, or images/<profile>/filesystem.yml for the
@@ -41,8 +41,8 @@ devices_ro=(/dev/random)
 devices_rw=(/dev/full /dev/ptmx /dev/pts /dev/shm /dev/tty /dev/zero)
 # The image's own paths, as the targets file lists them.
 filesystem=${FILESYSTEM:-$here/common/sandbox-filesystem.yml}
-# Runtime installs go into the Conda prefix, a writable volume (D48).
-prefix=(--mount type=volume,target=/opt/sandbox-science)
+# Empty Docker volumes copy the image workspace, matching OpenShell workspace seeding.
+workspace=(--mount type=volume,target=/sandbox)
 case $profile in
   orchestrator | mcp-proxy)
     # compile_orchestrator() and compile_mcp_proxy() add no devices, and the services' prefixes
@@ -50,7 +50,7 @@ case $profile in
     devices_ro=()
     devices_rw=()
     filesystem=${FILESYSTEM:-$here/$profile/filesystem.yml}
-    prefix=()
+    workspace=(--tmpfs /sandbox:rw,exec,uid=1000,gid=1000,mode=0755,size=8g)
     ;;
 esac
 list() { sed -n "s/^$1: \[\(.*\)\]\$/\1/p" "$filesystem" | tr -d ' ' | tr ',' ' '; }
@@ -61,7 +61,7 @@ checks=$(mktemp -d)
 trap 'rm -rf "$checks"' EXIT
 # The worker's in-sandbox files (SANDBOX_FILES in backends.py; a worker test keeps this in step).
 cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$checks/"
-for name in binding_inventory executor provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_setup; do
+for name in binding_inventory executor provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_setup workspace_prefix; do
   cp "$worker/$name.py" "$checks/"
 done
 cp "$worker/shim/sched_self.c" "$checks/"
@@ -90,10 +90,9 @@ for mode in ${MODES:-container landlock}; do
   docker run --rm --name "ss-image-test-$profile-$mode-$$" \
     --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
     --read-only \
-    --tmpfs /sandbox:rw,exec,uid=1000,gid=1000,mode=0755,size=8g \
     --tmpfs /tmp:rw,exec,mode=1777,size=4g \
     --shm-size 1g \
-    "${prefix[@]}" \
+    "${workspace[@]}" \
     --mount "type=bind,source=$checks,target=/checks,readonly" \
     "${network[@]}" \
     "$image" \

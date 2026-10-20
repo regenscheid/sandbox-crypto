@@ -31,6 +31,7 @@ LOADS: dict[str, frozenset[str]] = {
             "sandbox_files",
             "sandbox_processes",
             "sandbox_setup",
+            "workspace_prefix",
             "pdfhelper",
         }
     ),

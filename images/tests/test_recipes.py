@@ -535,3 +535,19 @@ def test_research_images_ship_a_target_native_versioned_scheduler_shim() -> None
         assert "scheduler-shim" in checks.planned(profile, landlock=True, network=False)
     for profile in SERVICE_PROFILES:
         assert "COPY --from=scheduler-shim" not in stages[profile]
+
+
+def test_shared_research_prefix_is_seeded_into_workspace_without_changing_services() -> None:
+    stages = _stages()
+    assert "mv /opt/sandbox-science /sandbox/.sandbox-science-prefix" in stages["research-base"]
+    assert "ln -s /sandbox/.sandbox-science-prefix /opt/sandbox-science" in stages["research-base"]
+    recipe = (IMAGES / "Containerfile").read_text()
+    for profile in RESEARCH_PROFILES:
+        assert f"FROM research-base AS {profile}" in recipe
+        assert "! -name .sandbox-science-prefix -exec rm -rf -- {} +" in stages[profile]
+        assert "find /sandbox -mindepth 1 -delete" not in stages[profile]
+    for profile in SERVICE_PROFILES:
+        assert f"FROM base AS {profile}" in recipe
+    script = (IMAGES / "test.sh").read_text()
+    assert "type=volume,target=/sandbox" in script
+    assert "type=volume,target=/opt/sandbox-science" not in script

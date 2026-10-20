@@ -69,6 +69,7 @@ WORKER_FILES = (
     "sandbox_files.py",
     "sandbox_processes.py",
     "sandbox_setup.py",
+    "workspace_prefix.py",
 )
 """The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
 PROJECT = Path("/sandbox/project")
@@ -585,7 +586,10 @@ class Checks:
     def python_kernel(self) -> str:
         stdout, result = self.ex().cell("import sys\nprint(sys.executable)\n6 * 7")
         expect(result == "42", f"result {result!r}")
-        expect(stdout.strip() == f"{PREFIX}/bin/python", f"kernel interpreter {stdout.strip()}")
+        expect(
+            Path(stdout.strip()).resolve() == (Path(PREFIX) / "bin/python").resolve(),
+            f"kernel interpreter {stdout.strip()}",
+        )
         return f"6 * 7 = {result} in {stdout.strip()}"
 
     def tools_on_path(self) -> str:
@@ -604,7 +608,10 @@ class Checks:
         missing = [tool for tool in tools if not found.get(tool, "").strip()]
         expect(not missing, f"not on PATH: {missing}")
         prefix = found.get("prefix", "").strip()
-        expect(prefix == PREFIX, f"python ({found['python'].strip()}) runs in {prefix}")
+        expect(
+            Path(prefix).resolve() == Path(PREFIX).resolve(),
+            f"python ({found['python'].strip()}) runs in {prefix}",
+        )
         return ", ".join(f"{tool}={found[tool].strip()}" for tool in tools[:4]) + ", ..."
 
     def multiprocessing(self) -> str:
@@ -760,7 +767,11 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
             limit=600,
         )
         paths = out.split()
-        expect(len(paths) == 2 and all(path.startswith(PREFIX) for path in paths), f"{out!r}")
+        expect(
+            len(paths) == 2
+            and all(Path(path).resolve().is_relative_to(Path(PREFIX).resolve()) for path in paths),
+            f"{out!r}",
+        )
         return "micromamba and pip installed into the Conda prefix"
 
     # The services' images (orchestrator, mcp-proxy).

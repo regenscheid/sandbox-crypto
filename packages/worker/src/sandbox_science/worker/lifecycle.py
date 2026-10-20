@@ -44,6 +44,8 @@ class EnvironmentLifecycle:
     """Without it, an environment whose daemon was replaced stays fenced."""
     notices: Notices | None = None
     """Without it, results carry no admission notices."""
+    requires_workspace_prefix: Callable[[str], bool] | None = None
+    """Whether the original allocation requires the durable research prefix layout."""
     job_resources: JobResources | None = None
     """Without it, jobs get the default limits."""
 

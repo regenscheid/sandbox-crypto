@@ -100,3 +100,18 @@ def test_partial_placement_cannot_leave_an_offered_profile_unpinned(tmp_path: Pa
             },
             kubernetes={"crypto-base": profile()},
         )
+
+
+def test_workspace_prefix_requirement_defaults_safe_and_never_enters_driver_json() -> None:
+    assert profile().require_workspace_prefix is True
+    assert "require_workspace_prefix" not in profile().driver_json(Resources())
+    values = profile().model_dump()
+    assert (
+        KubernetesProfile.model_validate(
+            {**values, "require_workspace_prefix": False}
+        ).require_workspace_prefix
+        is False
+    )
+    for invalid in (0, 1, "true", None):
+        with pytest.raises(ValidationError):
+            KubernetesProfile.model_validate({**values, "require_workspace_prefix": invalid})

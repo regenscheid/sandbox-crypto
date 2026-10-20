@@ -66,7 +66,7 @@ verified rebuild before a saved environment can claim the same revision.
 
 ### Persistent research prefix increment
 
-The shared `minimal` and `crypto-base` image layout will place real package bytes
+The shared `minimal` and `crypto-base` image layout places real package bytes
 under `/sandbox/.sandbox-science-prefix`, retaining `/opt/sandbox-science` as a
 compatibility symlink. The same image is used locally, on Mac and in Kubernetes;
 trusted service images keep their separate layout. Build cleanup must preserve
@@ -80,7 +80,7 @@ initial sandbox ownership and is retained across start/reconnect, independently
 of later deployment settings. No raw volume or claim authority is added to agents.
 
 Executor hello reports a bounded prefix protocol, canonical path and nonsecret
-identity stored within the real package prefix. Before accepting a new executor
+identity stored within the real package prefix. Marker creation is required-mode only, follows fixed-layout validation, and never touches a developer/local Python prefix. Before accepting a new executor
 as the same environment, the worker checks the original required layout, retained
 prefix identity and package fingerprint against its known revision. Missing or
 changed required identity/layout/packages become a durable recovery hold,
@@ -98,6 +98,29 @@ both native architectures need live qualification. Upstream interrupted seeding
 does not currently resume a partial copy: preserve that PVC and report the exact
 initialization failure, never delete/reseed it to manufacture successful recovery.
 Complete archive/restore remains required before releasing a research PVC.
+
+Configure default workspace claims in trusted gateway configuration, independently
+of worker pod resources:
+
+```toml
+[openshell.drivers.kubernetes]
+workspace_default_storage_size = "10Gi"  # illustrative; budget prefix + data + headroom
+# workspace_storage_class = "example-storage"  # omit to use the cluster default
+```
+
+Pinned Helm values `server.workspaceDefaultStorageSize` and
+`server.workspaceStorageClass` render those same runtime fields. This is a gateway
+creation default, not a live resize of existing PVCs. The [v0.1.3 driver config](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-driver-kubernetes/src/config.rs#L255)
+and [chart mapping](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/deploy/helm/openshell/templates/_helpers.tpl#L543)
+are the exact capacity/class seams; no agent volume or claim authority is added.
+
+The seed init container mounts the claim at `/mnt/openshell-workspace`, leaving
+image `/sandbox` visible as the source. The [pinned seed algorithm](https://github.com/NVIDIA/OpenShell/blob/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/crates/openshell-sandbox/src/main.rs#L1669)
+copies file bytes, preserves symlinks without following them, normalizes ownership
+permissions and fsyncs, then writes its initialized sentinel. It does not resume
+partial copies. The agent later mounts that claim over `/sandbox`; the real prefix
+there survives pod replacement, while the image's `/opt` compatibility symlink
+still resolves into it.
 
 ## Storage lifecycle
 

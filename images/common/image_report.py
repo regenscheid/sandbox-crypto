@@ -320,8 +320,23 @@ def command_record(args: argparse.Namespace) -> None:
         "packages": {"conda": conda, "pip": pip, "apt": apt},
     }
     problems: list[str] = []
-    # The workdir may be mounted over, and a copy of the prefix would duplicate a package cache.
-    for directory in (Path("/sandbox"), PREFIX / "pkgs"):
+    research = args.profile in ("minimal", "crypto-base")
+    workspace_prefix = Path("/sandbox/.sandbox-science-prefix")
+    home = Path("/sandbox")
+    if research:
+        if (
+            PREFIX.resolve() != workspace_prefix
+            or workspace_prefix.is_symlink()
+            or not Path("/opt/sandbox-science").is_symlink()
+        ):
+            problems.append("research prefix must live under /sandbox with its /opt symlink")
+        if set(home.iterdir()) != {workspace_prefix}:
+            problems.append("research home contains files outside its package prefix")
+        if (workspace_prefix / ".sandbox-science-prefix-id").exists():
+            problems.append("image must not seed a workspace prefix identity")
+        record["workspace_prefix_protocol"] = 1
+    # An extracted package cache would duplicate the retained base package bytes.
+    for directory in (PREFIX / "pkgs",) if research else (home, PREFIX / "pkgs"):
         if directory.is_dir() and any(directory.iterdir()):
             problems.append(f"{directory} is not empty")
     if args.policy == "permissive":

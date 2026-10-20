@@ -64,6 +64,7 @@ class KubernetesProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     node_selector: dict[str, str] = Field(default_factory=dict[str, str], max_length=32)
+    require_workspace_prefix: bool = Field(default=True, strict=True)
     runtime_class_name: str | None = None
     requests: KubernetesResources
     limits: KubernetesResources

@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts import Location
 
+from . import prefix_continuity
 from .channel import ExecutorChannel, Message
 from .connections import Connection, EnvironmentConnections
 from .errors import WorkerError
@@ -69,6 +70,35 @@ class PackageChanges:
 
     def hello(self, environment_id: str, channel: ExecutorChannel) -> None:
         """Note the package state a new executor reports."""
+        marked = self.store.package_status(environment_id)
+        restoring = (
+            marked is not None and marked[1] == "workspace-prefix"
+        ) or self.store.workspace_prefix_restore_pending(environment_id) is not None
+        channel.hello.pop("workspace_prefix_restore", None)
+        required = self.connections.lifecycle.requires_workspace_prefix
+        if (
+            required is not None
+            and required(environment_id)
+            and not prefix_continuity.accept(
+                self.store,
+                environment_id,
+                channel.incarnation,
+                channel.hello.get("workspace_prefix"),
+                channel.hello.get("environment"),
+            )
+        ):
+            return
+        if restoring and required is not None and required(environment_id):
+            retained = self.store.workspace_prefix(environment_id)
+            revision = self.store.revision(environment_id)
+            if retained is None or revision is None:
+                return
+            # This is a worker-derived gate instruction, never accepted from hello.
+            channel.hello["workspace_prefix_restore"] = {
+                "identity": retained[0],
+                "fingerprint": revision.fingerprint,
+            }
+            channel.hello["environment"] = revision.fingerprint
         self.observe(environment_id, channel.hello.get("environment"), "")
         self.store.kernel_starts.epoch(
             environment_id,

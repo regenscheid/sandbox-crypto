@@ -448,6 +448,7 @@ async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_alloca
         "example.org/capacity": "large",
     }
     assert setup.environments.records.driver_config(info.sandbox) == pinned
+    assert setup.environments.requires_workspace_prefix(info.environment_id)
     setup.environments.close()
     restarted = Environments(
         setup.settings,
@@ -459,6 +460,7 @@ async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_alloca
         same, created = await restarted.create(setup.request())
         assert (same.sandbox, created) == (info.sandbox, False)
         assert restarted.records.driver_config(info.sandbox) == pinned
+        assert restarted.requires_workspace_prefix(info.environment_id)
         assert len(setup.fake.calls("sandbox", "create")) == 1
         with pytest.raises(WorkerError, match="launch settings changed"):
             restarted.records.save(same, driver_config="{}")
