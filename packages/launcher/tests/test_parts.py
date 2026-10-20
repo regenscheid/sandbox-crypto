@@ -66,9 +66,9 @@ def test_prepare_makes_private_tokens_once_and_the_workers_settings(make_config:
         for name in ("harness", "workspace", "launcher")
     }
     assert all(client["projects"] == ["crypto"] for client in settings["clients"])
-    assert {
-        client["name"] for client in settings["clients"] if client["artifact_retention"]
-    } == {"harness"}
+    assert {client["name"] for client in settings["clients"] if client["artifact_retention"]} == {
+        "harness"
+    }
     openshell = settings["openshell"]
     assert openshell["isolation_tier"] == 3
     assert Path(openshell["cli"]).is_absolute()
