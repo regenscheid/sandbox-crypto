@@ -49,8 +49,34 @@ uv run --extra s3 sandbox-science-artifacts evict --database /srv/sandbox-scienc
 Each command reports JSON lines with the SHA-256, size and outcome. Eviction is a
 dry-run unless `--apply` is present. It verifies both local and remote content first;
 a failed copy or verification preserves the local file. It never deletes remote
-objects, staging, orphans, reservations, worker copies, uploads, inline SQLite
-content or environment PVCs. Logical artifact quota usage is unchanged.
+objects, staging, orphans, reservations, worker copies, upload records, legacy
+inline SQLite content or environment PVCs. Logical retention quota usage is unchanged.
+
+New user-upload originals also use this store and its verified S3 backing. Their
+immutable metadata and references live in schema 74; existing inline originals are
+read without rewriting their rows. Archive/evict includes the new upload references,
+so removing a verified local cache copy preserves the original in object storage.
+Upload IDs, names, media types, USER attribution, hashes, sequence numbers and
+the existing 2 GiB/project and 8 GiB/overall quotas span both representations.
+
+Upload ingestion admits at most four transfers overall and two per project, each
+up to 100 MiB. An unknown-length body reserves that maximum before reading.
+Received bytes stream to private scratch, then copy into the hash store after the
+digest is known; receive scratch closes before remote I/O. The transient copy can
+use twice the admitted bytes (800 MiB overall). Configure `TMPDIR` accordingly.
+These are upload-ingestion bounds; cold-download scratch has separate consumer
+admission. Small document and existing worker-delivery consumers may still use a
+bounded convenience read, up to the existing 100 MiB worker protocol limit.
+
+An interrupted installed upload keeps its exact digest and reservation. Retrying
+the same ID and bytes reuses that reservation after the old owner drains, then
+reconciles its immutable receipt. Changed bytes or metadata conflict. Storage
+failures report a retryable unavailable result; quota and identity errors retain
+their own kinds. No cleanup drops an installed or prior unknown hold implicitly.
+Process-safe ownership uses 4,096 stable advisory lock stripes under
+`upload-locks/`; collisions with another live owner are retryable. Keep lock files
+in place, on the same local/block-backed filesystem as the control database;
+NFS-style shared filesystems are outside this ownership guarantee.
 
 After eviction, full reads use a private temporary file, verify the remote bytes,
 rewind it and remove it when the consumer closes. This supports existing pinned

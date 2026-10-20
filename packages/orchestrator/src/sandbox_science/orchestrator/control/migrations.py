@@ -3154,6 +3154,13 @@ def _project_model_settings(schema: Schema) -> None:
 ) STRICT""")
 
 
+def _external_user_uploads(schema: Schema) -> None:
+    """Version 74: verified external originals and resumable transfer admission."""
+    from sandbox_science.orchestrator.upload_schema import install
+
+    install(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3227,6 +3234,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _context_auxiliary_window,
     _context_captures,
     _project_model_settings,
+    _external_user_uploads,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

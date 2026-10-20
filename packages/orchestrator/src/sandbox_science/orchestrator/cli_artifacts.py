@@ -23,7 +23,9 @@ def references(database: Path) -> Generator[Blob]:
         while True:
             with documents.control.read() as tx:
                 rows = tx.sql.execute(
-                    "SELECT sha256,min(size),max(size) FROM artifact_revision_blobs "
+                    "SELECT sha256,min(size),max(size) FROM ("
+                    "SELECT sha256,size FROM artifact_revision_blobs UNION ALL "
+                    "SELECT sha256,size FROM user_upload_blobs) "
                     "WHERE sha256>? GROUP BY sha256 ORDER BY sha256 LIMIT 100",
                     (after,),
                 ).fetchall()
