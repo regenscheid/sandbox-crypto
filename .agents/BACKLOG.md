@@ -158,7 +158,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Optional S3 artifact backing with verified writes, bounded archived reads and explicit verified local eviction; disposable S3-compatible tests include 128 MiB cold retrieval and immutable retry. Cluster identity/availability acceptance remains.
 - [x] New uploaded originals use verified durable blobs/S3 with bounded HTTP streaming, charged transfer ownership and exact-ID recovery; legacy inline originals remain intact. Archive/evict includes external upload references.
 - [ ] Release worker capture replicas after durable control acknowledgement, with exact-snapshot outbox recovery and an exclusive offline sweep before considering online deletion.
-- [ ] Persist or rebuild modified package prefixes on pod replacement; complete workspace checkpoint/restore before PVC release.
+- [x] Implement shared retained research-prefix image layout and pinned Kubernetes continuity checks, with durable restoration ACK, journal preservation and admission fencing. Local AMD64 minimal/container/Landlock and retained-volume recreation pass; publication, native ARM64/crypto-base and OpenShell Kubernetes replacement remain unqualified.
+- [ ] Complete workspace checkpoint/restore before PVC release, including retained package bytes, paused work and interrupted upstream initialization; qualify on both cluster architectures.
 - [ ] Trusted service images and deployment manifests, service DNS/callbacks, one-writer control PVC, secrets/RBAC and enforcing network policy.
 - [ ] Kubernetes isolation evidence: verify admitted runtime and network enforcement; different controller/sandbox node boot IDs alone cannot establish a VM boundary. Account for separately scheduled OpenShell supervisor pods.
 - [ ] Mixed-architecture live acceptance, Sage/MCP/PDF, interruption/root Resume, cold object-store retrieval and verified cleanup.

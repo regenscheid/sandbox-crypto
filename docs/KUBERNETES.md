@@ -59,10 +59,9 @@ include their target-native scheduler shim; the worker verifies source identity,
 ELF architecture and loadability before use. A checked host-compiler fallback is
 available only on a matching Linux architecture. These image changes still need
 publication and native ARM64 qualification. Kubernetes pod replacement preserves
-mounted data, not
-interpreter memory or changes to the image's writable layer. In particular,
-research packages installed under `/opt/sandbox-science` need persistence or a
-verified rebuild before a saved environment can claim the same revision.
+mounted data, not interpreter memory or changes to the image's writable layer.
+The research image layout below keeps installed packages in that mounted data;
+older images need migration or a verified rebuild before claiming the same revision.
 
 ### Persistent research prefix increment
 
@@ -80,7 +79,9 @@ initial sandbox ownership and is retained across start/reconnect, independently
 of later deployment settings. No raw volume or claim authority is added to agents.
 
 Executor hello reports a bounded prefix protocol, canonical path and nonsecret
-identity stored within the real package prefix. Marker creation is required-mode only, follows fixed-layout validation, and never touches a developer/local Python prefix. Before accepting a new executor
+identity stored within the real package prefix. Marker creation is required-mode
+only, follows fixed-layout validation, and never touches a developer/local Python
+prefix. Before accepting a new executor
 as the same environment, the worker checks the original required layout, retained
 prefix identity and package fingerprint against its known revision. Missing or
 changed required identity/layout/packages become a durable recovery hold,
@@ -89,6 +90,14 @@ become a fresh unmanaged package revision or trigger automatic reinstallation.
 Ordinary surviving-daemon reconnect and journal reconciliation retain their
 existing semantics. This is continuity detection, not a snapshot of live kernels
 or independent integrity verification of every installed file.
+
+Restoring the original prefix and known package fingerprint can release that
+specific hold. A durable pending acknowledgement survives a worker restart; the
+executor revalidates the restored state before aligning its cached baseline, and
+the worker records the acknowledged package epoch before admitting execution or
+new package changes. Unfinished package journals and unrelated recovery holds
+remain intact. Neither restoring a prefix nor its identity marker restores live
+interpreter memory.
 
 An active workspace PVC must fit its full native base prefix, installed packages
 and research data. Upstream's 2 GiB workspace default is too small for `crypto-base`
