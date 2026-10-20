@@ -23,6 +23,15 @@ if [ "$profile" = crypto-base ] && [ "${PRIVATE_REGISTRY_CONFIRMED:-}" != 1 ]; t
   echo "publish_arch.sh: confirm that the crypto-base package is private" >&2
   exit 2
 fi
+if [ -z "${BUILDER:-}" ]; then
+  echo "publish_arch.sh: set BUILDER to a docker-container Buildx builder" >&2
+  exit 2
+fi
+builder_driver=$(docker buildx inspect "$BUILDER" | awk '/^Driver:/ { print $2; exit }')
+if [ "$builder_driver" != docker-container ]; then
+  echo "publish_arch.sh: BUILDER must use the docker-container driver (got $builder_driver)" >&2
+  exit 2
+fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=common/build_recipe.sh

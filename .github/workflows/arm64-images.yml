@@ -15,9 +15,14 @@ on:
         type: boolean
         default: false
       publish:
-        description: Build, test, and publish shared AMD64/ARM64 tags (requires crypto_base)
+        description: Build, test, and publish shared AMD64/ARM64 tags (all profiles require crypto_base)
         type: boolean
         default: false
+      publish_scope:
+        description: Publish all profiles or only minimal for a registry smoke test
+        type: choice
+        options: [all, minimal]
+        default: all
 
 permissions:
   contents: read
@@ -60,14 +65,14 @@ jobs:
       - run: NETWORK=0 images/test.sh crypto-base
 
   publish-platform:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.crypto_base && inputs.publish }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && (inputs.publish_scope == 'minimal' || inputs.crypto_base) }}
     runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        profile: [minimal, orchestrator, mcp-proxy, crypto-base]
+        profile: ${{ fromJSON(inputs.publish_scope == 'minimal' && '["minimal"]' || '["minimal","orchestrator","mcp-proxy","crypto-base"]') }}
         arch: [amd64, arm64]
     permissions:
       contents: read
@@ -88,8 +93,13 @@ jobs:
             amd64:x86_64 | arm64:aarch64) ;;
             *) echo 'image job is not on its native architecture' >&2; exit 1 ;;
           esac
+      - name: Start direct registry builder
+        run: |
+          docker buildx create --name ss-native-publish --driver docker-container --use
+          docker buildx inspect ss-native-publish --bootstrap
       - name: Publish and test architecture digest
         env:
+          BUILDER: ss-native-publish
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
@@ -108,14 +118,14 @@ jobs:
           images/publish_arch.sh "$PROFILE" "ghcr.io/$REPOSITORY/$PROFILE" "$GITHUB_RUN_ID"
 
   merge-platforms:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.crypto_base && inputs.publish }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && (inputs.publish_scope == 'minimal' || inputs.crypto_base) }}
     needs: publish-platform
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        profile: [minimal, orchestrator, mcp-proxy, crypto-base]
+        profile: ${{ fromJSON(inputs.publish_scope == 'minimal' && '["minimal"]' || '["minimal","orchestrator","mcp-proxy","crypto-base"]') }}
     permissions:
       contents: read
       packages: write

@@ -285,12 +285,15 @@ platform into the local store for development and never pushes it.
 The selected destination is GHCR under this repository's namespace:
 `ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual image workflow's
 `publish` mode uses native Linux AMD64 and ARM64 runners for every profile. Each
-runner builds directly to a run-specific GHCR architecture tag using BuildKit's
-registry exporter, pulls the resulting immutable digest, and checks that exact
-image in container and Landlock modes. The merge job starts only after all eight
+runner creates a `docker-container` Buildx builder and builds directly to a
+run-specific GHCR architecture tag using BuildKit's registry exporter. It pulls
+the resulting immutable digest and checks that exact image in container and
+Landlock modes. The merge job starts only after all eight
 build-and-check jobs pass. It resolves the run-specific tags to immutable digests,
 checks platform, profile and recipe revision, and creates one two-platform tag per
-profile in GitHub Actions. Pull-request jobs remain read-only and cannot publish.
+profile in GitHub Actions. The manual `publish_scope=minimal` mode runs only the
+two native minimal builds and their merge as a registry smoke test. Pull-request
+jobs remain read-only and cannot publish.
 
 New GHCR packages default to private. Before pushing or merging `crypto-base`,
 the workflow checks that the package's GitHub visibility is private. An architecture
@@ -314,10 +317,13 @@ then verifies the published index contains exactly those two digests. It refuses
 private. The operator must verify registry access before using this manual command;
 Docker cannot infer privacy from a name. The prior `--load` then `docker push`
 ARM64 path uploaded its layers but received `unknown blob` or HTTP 500 while
-finalizing the manifest, even for an isolated minimal-image retry. The revised
-Actions workflow uses BuildKit's direct registry exporter and has not yet been
-verified by a publish run. All four earlier AMD64 variants are in private GHCR
-packages with Actions write access and anonymous manifest reads denied. No shared
+finalizing the manifest, even for an isolated minimal-image retry. The first
+Actions publication attempt also returned HTTP 500 on both native architectures:
+the default Buildx `docker` driver still used Docker's daemon push path. The
+workflow now requires the `docker-container` driver for publication; its direct
+registry export still needs live verification. All four earlier AMD64 variants
+are in private GHCR packages with Actions write access and anonymous manifest
+reads denied. No shared
 multi-platform tag is claimed until the merge job verifies it.
 
 ## In OpenShell
