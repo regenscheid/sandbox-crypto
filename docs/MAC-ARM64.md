@@ -1,10 +1,10 @@
 # Apple Silicon qualification
 
-This is the path toward a local ARM64 Mac deployment. The project has not yet passed a Mac run. The launcher now has a Darwin process-identity implementation and a parent-pipe watcher for abrupt launcher death. A native `macos-15` ARM64 CI job runs the launcher tests; its result must be checked before treating even launcher behavior as qualified. Process discovery, `down`, replacement and Resume with a real OpenShell gateway still need acceptance on the owner's Mac. An ARM64 image build alone does not make the application Mac-ready.
+This is the path toward a local ARM64 Mac deployment. **The intended Mac test runs research in OpenShell MicroVMs, not in Docker containers.** The project has not yet passed a Mac MicroVM run. The launcher now has a Darwin process-identity implementation and a parent-pipe watcher for abrupt launcher death. A native `macos-15` ARM64 CI job runs the launcher tests; its result must be checked before treating even launcher behavior as qualified. Process discovery, `down`, replacement and Resume with a real OpenShell gateway still need acceptance on the owner's Mac. An ARM64 image build alone does not make the application Mac-ready.
 
 ## Initial runtime choice
 
-Use Docker Desktop to build and store the Linux ARM64 profile images. For sandbox execution, first qualify OpenShell's local MicroVM driver on the Mac, with the same policy, worker conformance and recovery probes used on babbage. This gives each research sandbox its own VM boundary if the pinned OpenShell release and Mac host pass those probes. The Docker driver is a possible fallback to investigate, but containers in Docker Desktop share its Linux VM kernel and have a weaker isolation tier than the intended MicroVM path. Do not silently switch drivers when a policy or isolation probe fails.
+Use OpenShell's local MicroVM driver for sandbox execution on the Mac, with the same policy, worker conformance and recovery probes used on babbage. This gives each research sandbox its own VM boundary if the pinned OpenShell release and Mac host pass those probes. Docker Desktop is optional for pulling a private published image into a local image store; the VM driver can then use that image as input while still executing the workload in a MicroVM. `docker run` only tests Docker and is not the Mac acceptance test. The OpenShell Docker driver is a possible fallback to investigate, but containers in Docker Desktop share its Linux VM kernel and have a weaker isolation tier than the intended MicroVM path. Do not silently switch drivers when a policy or isolation probe fails.
 
 A single-node Kubernetes cluster adds scheduling, networking and storage setup without resolving the current host launcher's Linux assumptions. Apple `container` runs OCI images in lightweight VMs on macOS 26, but it is not one of OpenShell's documented compute drivers. Neither is the first integration target.
 
@@ -17,7 +17,7 @@ The Mac setup must let the owner choose paths **before the first gateway or rese
 | Sandbox Science | `state_dir = "/Volumes/Research/ss-app"` in `sandbox-science.toml` | Project/control records, managed documents and artifact records, worker records, tokens and logs. The launcher already accepts this path and requires its directory to be owned by the user with mode 700. Large files still present only in a sandbox live in its VM overlay until explicitly exported or archived. |
 | OpenShell MicroVMs | `state_dir = "/Volumes/Research/ss-vm"` under `[openshell.drivers.vm]` in the gateway TOML | Prepared image cache, each sandbox's writable overlay disk, VM logs and driver socket. This is one OpenShell setting; image cache and overlays cannot currently be placed separately. |
 | OpenShell gateway | Set `XDG_STATE_HOME` and `OPENSHELL_LOCAL_TLS_DIR` in the **gateway service's** environment, or set `OPENSHELL_DB_URL` for its SQLite database | Gateway database and local TLS credentials. Changing the invoking shell's environment alone does not reconfigure an already running Homebrew service. Keep the database and its WAL files together on local storage. |
-| Docker Desktop build store | Docker Desktop **Settings → Resources → Advanced → Disk image location** | Locally built OCI images and Docker's build/container data. This does not move OpenShell's prepared-image cache. Registry-sourced images still occupy the OpenShell VM state directory after preparation. |
+| Optional Docker Desktop image store | Docker Desktop **Settings → Resources → Advanced → Disk image location** | Images pulled into Docker for staging or smoke tests, and Docker's build/container data. This does not move OpenShell's prepared-image cache. The VM driver also stores prepared images in its own state directory. |
 
 For the pinned OpenShell release, the gateway TOML should select the VM driver and set its state directory explicitly:
 
@@ -36,25 +36,43 @@ This is a path example, not a ready-to-run gateway configuration: retain the rel
 
 For example, set `XDG_STATE_HOME=/Volumes/Research/ss-gateway` and `OPENSHELL_LOCAL_TLS_DIR=/Volumes/Research/ss-gateway/tls` in that gateway service's environment, then verify its database appears under the chosen root. Alternatively, set `OPENSHELL_DB_URL=sqlite:/Volumes/Research/ss-gateway/openshell.db?mode=rwc` for the database alone. These are gateway-service settings, not `[openshell.env]` entries in the Sandbox Science config; the latter affect CLI calls from the launcher and worker. Docker Desktop's disk-image location is selected in Docker Desktop itself. [OpenShell's VM driver](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/README.md#gateway-and-driver-configuration) and [Docker Desktop settings](https://docs.docker.com/desktop/settings-and-maintenance/settings/#advanced) document these separate stores.
 
-## Try a published image on the Mac
+## Mac MicroVM image test
 
-The current tested tag is `6bb73871`. All four GHCR packages are private, so
-authenticate Docker with a GitHub classic personal access token that can read
-packages, then pull the ARM64 image:
+Install the pinned OpenShell release, configure its gateway with
+`compute_driver = "vm"` and the chosen VM `state_dir` above, then verify the
+gateway is available with `openshell status`. With a published image accessible
+to the gateway, create a **MicroVM** sandbox and run a small command inside it:
+
+```sh
+openshell sandbox create --name ss-mac-smoke \
+  --from ghcr.io/regenscheid/sandbox-crypto/minimal:6bb73871 \
+  --detach -- /usr/bin/sleep infinity
+openshell sandbox exec -n ss-mac-smoke --no-tty --no-login-shell -- /usr/bin/uname -m
+openshell sandbox delete ss-mac-smoke
+```
+
+The command should print `aarch64`. This exercises the OpenShell VM path;
+confirm the gateway selected the VM driver rather than relying on `uname` as
+proof of isolation. This smoke test still does not qualify the full
+application's worker, policy and recovery flows.
+
+### Optional Docker staging for the private image
+
+All four GHCR packages are private. If the OpenShell gateway cannot fetch the
+image directly, authenticate Docker with a GitHub classic personal access token
+that can read packages, then pull the ARM64 image into Docker's local store:
 
 ```sh
 docker login ghcr.io -u regenscheid
 docker pull --platform linux/arm64 ghcr.io/regenscheid/sandbox-crypto/minimal:6bb73871
-docker run --rm --platform linux/arm64 --entrypoint /usr/bin/uname \
-  ghcr.io/regenscheid/sandbox-crypto/minimal:6bb73871 -m
 ```
 
-The login command prompts for the token as its password. The last command
-should print `aarch64`. Replace `minimal` with `orchestrator`, `mcp-proxy` or
-`crypto-base` to pull another profile; `crypto-base` is much larger. This tests
-Docker's image selection and execution, not the application's OpenShell
-MicroVM path. The VM driver keeps its own prepared-image cache, and its access
-to these private GHCR packages still needs a real Mac probe. The
+The login command prompts for the token as its password. OpenShell v0.1.3
+looks for local Docker images before fetching from a registry; rerun the
+OpenShell MicroVM test above after this staging step. Docker is the image source
+in this case, not the sandbox runtime. Replace `minimal` with `orchestrator`,
+`mcp-proxy` or `crypto-base` to stage another profile; `crypto-base` is much
+larger. The VM driver keeps its own prepared-image cache. The
 [single-machine quickstart](QUICKSTART.md) currently describes the babbage lab;
 copy its example config into a private Mac config and replace the babbage-only
 paths and services before attempting `sandbox-science up`.
