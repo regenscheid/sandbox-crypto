@@ -139,7 +139,7 @@ still resolves into it.
 | Retained immutable artifact bytes and new uploaded originals | S3-compatible object store, hash-named and verified | Durable independently of agent and worker pods; remote deletion is a separate policy |
 | Artifact local cache | Bounded local/PVC space | Explicit eviction only after a verified remote copy; normal reads can fetch archived content |
 | Active research workspace and checkpoints | Per-environment PVC | Keep while running, paused or recoverable; checkpoint/export and verify before release |
-| Worker capture blobs | Worker storage today | Acknowledge durable control retention, then expire replicas without breaking replay |
+| Worker capture blobs | Worker CAS with immutable snapshot metadata | Exact durable control ACK, then explicit offline release under the worker state lease; shared/installer references pin bytes |
 | Legacy inline uploaded originals | Existing control SQLite BLOBs | Preserve unchanged; moving old rows is a separate migration |
 | Build/download scratch | Bounded ephemeral storage where reconstructible | Remove when the owning operation is settled; do not treat it as a recovery checkpoint |
 
@@ -155,6 +155,16 @@ orphan transfers or unresolved reservations.
 Object-store credentials stay with trusted storage services; agents receive scoped
 artifact references and content, not bucket credentials. Endpoint and addressing
 settings support S3-compatible services now and the AWS credential chain later.
+
+New fully retained publications also commit a bounded, endpoint-bound acknowledgement
+outbox. Delivery failure preserves the successful receipt and original snapshot;
+run-start, completed-operation replay and a manual command retry the same identity.
+The [offline worker release command](WORKER.md#offline-capture-replica-retention)
+requires every shared-hash reference to be acknowledged and holds the worker's
+exclusive state lease. A disposable local process test verifies lost-reply recovery,
+dry-run/apply, restart and unchanged control content without recapture. Automatic
+online cleanup and whole-workspace/PVC archive/release remain separate work.
+The owner has deferred new image publication; no image changes were published.
 
 For hosted clusters, prefer small metadata PVCs and short-lived reconstructible
 scratch. Set cache and inactive-workspace retention policy explicitly before
