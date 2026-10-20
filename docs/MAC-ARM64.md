@@ -1,5 +1,8 @@
 # Apple Silicon qualification
 
+For step-by-step installation and the first `crypto-base` Sage MicroVM test,
+start with the [Mac setup guide](MAC-SETUP.md).
+
 This is the path toward a local ARM64 Mac deployment. **The intended Mac test runs research in OpenShell MicroVMs, not in Docker containers.** The project has not yet passed a Mac MicroVM run. The launcher now has a Darwin process-identity implementation and a parent-pipe watcher for abrupt launcher death. A native `macos-15` ARM64 CI job runs the launcher tests; its result must be checked before treating even launcher behavior as qualified. Process discovery, `down`, replacement and Resume with a real OpenShell gateway still need acceptance on the owner's Mac. An ARM64 image build alone does not make the application Mac-ready.
 
 ## Initial runtime choice
