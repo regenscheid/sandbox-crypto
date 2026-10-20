@@ -6,6 +6,7 @@
 - Implement pinned profile placement/resource bounds, target-native scheduler-shim recipes and optional S3 artifact retention/eviction. Disposable compatibility checks passed 128 MiB cold retrieval and identical-write retry; cluster deployment, native ARM64 runtime and workspace/PVC archival remain unqualified ([report](docs/agent-reports/k8s-foundations-2026-10-20.md)).
 - Require architecture pins for every offered Kubernetes profile: OpenShell v0.1.3 does not record the platform resolved from a multiarchitecture tag, so pod replacement must preserve native package compatibility. Capacity remains independent of CPU architecture (D91).
 - Continue Kubernetes storage work with bounded streamed upload originals in the durable blob store, preserving legacy inline rows and exact-ID recovery; package-prefix persistence and worker-replica acknowledgement are the next recovery seams ([spec](../docs/specs/durable-artifact-blobs.md#uploaded-originals-2026-10-20)).
+- Specify one shared persistent-prefix layout for research images and a pinned Kubernetes continuity requirement. Prefix loss must preserve the known revision under a recovery hold; active PVC capacity and interrupted upstream seeding remain explicit qualification gates ([contract](../docs/KUBERNETES.md#persistent-research-prefix-increment)).
 
 ## 2026-10-19
 

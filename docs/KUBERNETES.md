@@ -64,6 +64,41 @@ interpreter memory or changes to the image's writable layer. In particular,
 research packages installed under `/opt/sandbox-science` need persistence or a
 verified rebuild before a saved environment can claim the same revision.
 
+### Persistent research prefix increment
+
+The shared `minimal` and `crypto-base` image layout will place real package bytes
+under `/sandbox/.sandbox-science-prefix`, retaining `/opt/sandbox-science` as a
+compatibility symlink. The same image is used locally, on Mac and in Kubernetes;
+trusted service images keep their separate layout. Build cleanup must preserve
+the real prefix. OpenShell v0.1.3's init container copies the image's `/sandbox`
+tree into its workspace PVC before the agent mounts it at `/sandbox`.
+
+Trusted Kubernetes profiles require this layout through `require_workspace_prefix`
+(default true). An explicit false retains old/custom image behavior outside the
+persistent-prefix recovery guarantee. The selected requirement is stored with
+initial sandbox ownership and is retained across start/reconnect, independently
+of later deployment settings. No raw volume or claim authority is added to agents.
+
+Executor hello reports a bounded prefix protocol, canonical path and nonsecret
+identity stored within the real package prefix. Before accepting a new executor
+as the same environment, the worker checks the original required layout, retained
+prefix identity and package fingerprint against its known revision. Missing or
+changed required identity/layout/packages become a durable recovery hold,
+preserving the last known revision and interrupted work; they cannot silently
+become a fresh unmanaged package revision or trigger automatic reinstallation.
+Ordinary surviving-daemon reconnect and journal reconciliation retain their
+existing semantics. This is continuity detection, not a snapshot of live kernels
+or independent integrity verification of every installed file.
+
+An active workspace PVC must fit its full native base prefix, installed packages
+and research data. Upstream's 2 GiB workspace default is too small for `crypto-base`
+(the earlier package measurement was about 5.2 GB before headroom). Storage size,
+class and retention are private operator choices. Initial copy/fsync latency and
+both native architectures need live qualification. Upstream interrupted seeding
+does not currently resume a partial copy: preserve that PVC and report the exact
+initialization failure, never delete/reseed it to manufacture successful recovery.
+Complete archive/restore remains required before releasing a research PVC.
+
 ## Storage lifecycle
 
 | Data | Initial placement | Retention |
@@ -105,6 +140,13 @@ StorageClass reclaim policy.
    and opt-in local eviction, with compatibility tests against an S3 endpoint.
 3. Package-prefix persistence/rebuild and durable capture acknowledgement, then
    a policy-driven cache/workspace retention controller with dry-run reporting.
+   Worker retention acknowledgement must be separate from capture-helper cleanup:
+   commit an exact-snapshot ACK intent with the successful control receipt, retry
+   through a bounded outbox, and preserve successful publication when delivery
+   fails. Physical replica release starts offline under the worker's exclusive
+   state lease and requires every reference sharing a hash to be acknowledged.
+   Installer-log references retain their bytes. Online deletion additionally needs
+   writer fences and pinned download descriptors; it is not a plain file unlink.
 4. Trusted service images and manifests/chart: Service DNS, mTLS/Secrets,
    readiness/draining, one-writer PVC placement, RBAC and NetworkPolicy. Keep
    release values separate from private site values. Do not grant agents cluster
