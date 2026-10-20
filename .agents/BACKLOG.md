@@ -153,12 +153,13 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## Kubernetes deployment (D91)
 
 - [x] Record generic mixed-architecture placement and PVC/object-store lifecycle requirements; no cluster-specific values in Git ([Kubernetes work](../docs/KUBERNETES.md)).
-- [ ] Trusted profile-level CPU/memory/ephemeral-storage and Kubernetes placement settings carried into sandbox creation; agents cannot supply driver JSON.
+- [x] Trusted profile-level CPU/memory/ephemeral-storage and Kubernetes placement settings carried into sandbox creation; agents cannot supply driver JSON. Original settings are saved atomically with ownership; incompatible tighter caps refuse reuse/revision. Native Kubernetes acceptance remains open.
 - [ ] Native scheduler helper compatibility for a worker serving another sandbox architecture.
 - [ ] Optional S3 artifact backing with verified writes, bounded archived reads and explicit verified local eviction.
 - [ ] Move uploaded source originals out of SQLite and release worker capture replicas after durable control acknowledgement.
 - [ ] Persist or rebuild modified package prefixes on pod replacement; complete workspace checkpoint/restore before PVC release.
 - [ ] Trusted service images and deployment manifests, service DNS/callbacks, one-writer control PVC, secrets/RBAC and enforcing network policy.
+- [ ] Kubernetes isolation evidence: verify admitted runtime and network enforcement; different controller/sandbox node boot IDs alone cannot establish a VM boundary. Account for separately scheduled OpenShell supervisor pods.
 - [ ] Mixed-architecture live acceptance, Sage/MCP/PDF, interruption/root Resume, cold object-store retrieval and verified cleanup.
 
 ## W0: behavior specification and harness foundation

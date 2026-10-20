@@ -59,6 +59,7 @@ from pydantic import (
 from sandbox_science.contracts import Identifier
 
 from .documents_catalog import CatalogLimits
+from .kubernetes import KubernetesProfile
 from .package_clients import check_cache_url
 
 MIN_TOKEN: Final = 32
@@ -97,6 +98,8 @@ class EnvironmentSettings(_Model):
     """The pool ceiling, the same file the policy middleware applies."""
     profiles: dict[Identifier, str] = Field(min_length=1)
     """Base profile (D46) to image reference. The orchestrator picks a profile, not an image."""
+    kubernetes: dict[Identifier, KubernetesProfile] = Field(default_factory=dict)
+    """Trusted placement and resource settings by profile; only Kubernetes gateways accept these."""
     create_timeout: Annotated[float, Field(gt=0, le=3600)] = 600.0
     """How long a sandbox may take to become ready."""
     admission: bool = True
@@ -121,6 +124,14 @@ class EnvironmentSettings(_Model):
     @property
     def event_store_path(self) -> Path:
         return self.event_store if self.event_store is not None else self.policy_store / "events.db"
+
+    @model_validator(mode="after")
+    def _placement_profiles(self) -> Self:
+        if unknown := self.kubernetes.keys() - self.profiles.keys():
+            raise ValueError(
+                f"Kubernetes settings name unknown profiles: {', '.join(sorted(unknown))}"
+            )
+        return self
 
 
 class OpenShellBackendSettings(_Model):

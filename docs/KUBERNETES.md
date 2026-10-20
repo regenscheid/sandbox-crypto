@@ -20,6 +20,26 @@ Agents choose an approved profile; they cannot supply Kubernetes JSON, PVC names
 host mounts or scheduling authority. Sandbox creation/recovery must retain the
 original selected settings.
 
+The worker accepts `[openshell.environments.kubernetes.PROFILE]` in private
+configuration. The [example fragment](../examples/kubernetes/worker-placement.toml)
+sets a node selector and runtime class plus explicit CPU millicores, memory MiB
+and ephemeral-storage MiB requests/limits. CPU and memory limits narrow to the
+effective project/pool policy; requests that no longer fit are refused before
+allocation. Arbitrary pod JSON and volumes are not exposed. The selected JSON is
+stored atomically with initial sandbox ownership, passed via
+`--driver-config-json`, and kept across worker restart and ordinary sandbox
+start/Resume. Changes to deployment settings apply to new allocations. Profiles
+with pinned limits that exceed a tightened policy or pool ceiling are refused
+on use or policy revision; a network-policy update cannot resize an existing pod.
+Create a new allocation with smaller limits after preserving its research state.
+Profiles without this table retain their gateway defaults, including existing local runs.
+The gateway must permit approved Kubernetes driver configuration. These settings
+target OpenShell v0.1.3's workload pod; they do not place its separately managed
+supervisor pod. A runtime class name is configuration, not isolation proof.
+The current kernel-identity probe also cannot distinguish an isolated guest from
+an ordinary container on a different cluster node. Acceptance must check the
+admitted runtime and actual ingress/egress NetworkPolicy enforcement independently.
+
 The first deployment should use one replica of the trusted control/store services
 with a block-backed PVC, distinct trusted workers and separate OpenShell sandbox
 pools. The current host launcher supervises local processes and assumes loopback
@@ -62,6 +82,10 @@ scratch. Set cache and inactive-workspace retention policy explicitly before
 production: size, age, minimum checkpoint coverage and a hold for active/paused
 work. Object-store lifecycle rules must not expire referenced artifacts; bucket
 versioning, encryption, backup and storage-class choices remain operator settings.
+Agent Sandbox can own and garbage-collect workspace PVCs when its Sandbox is
+deleted. Do not use sandbox deletion as idle cleanup: verified complete archival
+and explicit lifecycle ownership must precede that action, regardless of the
+StorageClass reclaim policy.
 
 ## Delivery sequence
 

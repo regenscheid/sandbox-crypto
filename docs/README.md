@@ -79,6 +79,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Implementation plan](IMPLEMENTATION-PLAN.md) | Work packages W0 to W6, shared contracts and component ownership |
 | [Architecture](ARCHITECTURE.md) | Component architecture and placement |
 | [Apple Silicon qualification](MAC-ARM64.md) | Native ARM64 images, Mac supervision and OpenShell gates, and the mixed Kubernetes follow-on |
+| [Kubernetes work](KUBERNETES.md) | Mixed-architecture placement, S3-backed artifact retention, PVC lifecycle and cluster qualification gates |
 | [Execution plan](EXECUTION-PLAN.md) | Execution and deployment requirements and first decisions |
 | [Projects and sessions](PROJECTS-AND-SESSIONS.md) | Project, session and environment ownership |
 | [Product](PRODUCT.md) | Product requirements and acceptance criteria |

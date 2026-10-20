@@ -79,6 +79,7 @@ from sandbox_science.policy.store import PolicyStore, StoreError
 
 from .claims import EnvironmentClaims
 from .errors import WorkerError
+from .kubernetes import check_pinned_policy
 from .provisioner import Governing
 from .recovery_fence import check_dispatch
 from .settings import EnvironmentSettings, OpenShellBackendSettings
@@ -254,6 +255,10 @@ class EnvironmentRecords:
             "CREATE TABLE IF NOT EXISTS confirmed_deletions ("
             " environment_id TEXT PRIMARY KEY, sandbox TEXT NOT NULL, sandbox_id TEXT)"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS sandbox_launch_settings ("
+            " sandbox TEXT PRIMARY KEY, driver_config TEXT NOT NULL)"
+        )
         self._lock = threading.Lock()
 
     def confirm_deletion(self, info: EnvironmentInfo) -> None:
@@ -284,14 +289,40 @@ class EnvironmentRecords:
             ).fetchone()
         return None if row is None else EnvironmentInfo.model_validate_json(row[0])
 
-    def save(self, info: EnvironmentInfo) -> None:
+    def save(self, info: EnvironmentInfo, *, driver_config: str | None = None) -> None:
+        """Save ownership and, at initial allocation, immutable trusted launch settings."""
         with self._lock:
-            self._db.execute(
-                "INSERT INTO environments (environment_id, sandbox, document) VALUES (?, ?, ?)"
-                " ON CONFLICT (environment_id) DO UPDATE SET"
-                " sandbox = excluded.sandbox, document = excluded.document",
-                (info.environment_id, info.sandbox, info.model_dump_json()),
-            )
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                if driver_config is not None:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO sandbox_launch_settings VALUES (?,?)",
+                        (info.sandbox, driver_config),
+                    )
+                    row = self._db.execute(
+                        "SELECT driver_config FROM sandbox_launch_settings WHERE sandbox=?",
+                        (info.sandbox,),
+                    ).fetchone()
+                    if row != (driver_config,):
+                        raise WorkerError(ErrorKind.CONFLICT, "sandbox launch settings changed")
+                self._db.execute(
+                    "INSERT INTO environments (environment_id, sandbox, document) VALUES (?, ?, ?)"
+                    " ON CONFLICT (environment_id) DO UPDATE SET"
+                    " sandbox = excluded.sandbox, document = excluded.document",
+                    (info.environment_id, info.sandbox, info.model_dump_json()),
+                )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def driver_config(self, sandbox: str) -> str | None:
+        """Original allocation settings; legacy allocations inherit gateway defaults."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT driver_config FROM sandbox_launch_settings WHERE sandbox=?", (sandbox,)
+            ).fetchone()
+        return None if row is None else str(row[0])
 
     def live(self, projects: Iterable[str]) -> list[str]:
         """The IDs of the projects' environments that are not deleted."""
@@ -629,6 +660,15 @@ class Environments:
                 )
             policy = self._policy(request.policy)
             compiled = self._compile(policy)
+            placement = self.settings.kubernetes.get(request.profile)
+            try:
+                launch = (
+                    placement.driver_json(effective_resources(policy.policy, self.ceiling)[0])
+                    if placement is not None
+                    else "{}"
+                )
+            except ValueError as exc:
+                raise WorkerError(ErrorKind.POLICY_DENIED, str(exc)) from exc
             providers = await self._check_providers(policy)
             if existing is not None and existing.state is EnvironmentState.CREATING:
                 # Validate the replacement request before changing the old allocation.
@@ -654,7 +694,7 @@ class Environments:
             )
             # Recorded first, so that a sandbox left by a crash is known to be ours. Only
             # this record's own leftover is ever deleted: a name is never another's.
-            self.records.save(info)
+            self.records.save(info, driver_config=launch)
             try:
                 sandbox_id = await self._create_sandbox(info, compiled)
                 self.store.bind(sandbox_id, request.policy)
@@ -686,6 +726,7 @@ class Environments:
             if info.policy == revision:
                 return info
             policy = self._policy(revision)
+            self._check_launch_policy(info, policy)
             # Hosts decided under the old revision are decided again under the new one.
             recorded = [(old.host, old.port) for old in self.records.admissions(environment_id)]
             decisions = await asyncio.to_thread(self._decide, policy, recorded)
@@ -1028,12 +1069,23 @@ class Environments:
 
     # Steps.
 
+    def _check_launch_policy(self, info: EnvironmentInfo, policy: LoadedPolicy) -> None:
+        try:
+            check_pinned_policy(
+                self.records.driver_config(info.sandbox),
+                effective_resources(policy.policy, self.ceiling)[0],
+            )
+        except ValueError as exc:
+            raise WorkerError(ErrorKind.POLICY_DENIED, str(exc)) from exc
+
     async def _start(self, info: EnvironmentInfo, *, pinned: bool = False) -> EnvironmentInfo:
         """Start a stopped environment's sandbox; return any other environment unchanged.
 
         The sandbox's actual phase decides: a stop that failed left it ready. A start
         that fails is not tried again for a while, so that queued requests fail fast.
         """
+        if info.state in (EnvironmentState.READY, EnvironmentState.STOPPED):
+            self._check_launch_policy(info, self._policy(info.policy))
         if info.state is EnvironmentState.READY:
             # Its sandbox must still be the one the worker created, not another under its name.
             document = await self.cli.sandbox(info.sandbox)
@@ -1257,6 +1309,9 @@ class Environments:
         name, image = info.sandbox, info.image
         path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
         args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
+        launch = self.records.driver_config(name)
+        if launch not in (None, "{}"):
+            args += ["--driver-config-json", launch]
         for provider in info.providers:
             args += ["--provider", provider]
         args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]

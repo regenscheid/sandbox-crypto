@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: MIT
+# Merge this illustrative fragment into a PRIVATE worker/launcher config.
+# Requires a Kubernetes OpenShell gateway permitting approved driver configuration.
+# Replace paths/images/runtime class/labels with your deployment's values.
+[openshell.environments]
+policy_store = "/var/lib/sandbox-science/policy"
+targets = "/etc/sandbox-science/targets.yaml"
+ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
+profiles = { minimal = "registry.example.invalid/research/minimal:pinned", crypto-base = "registry.example.invalid/research/crypto-base:pinned" }
+
+# Select capacity rather than assuming every ARM64 node is small.
+[openshell.environments.kubernetes.crypto-base]
+node_selector = { "research.example.org/capacity" = "large" }
+runtime_class_name = "example-sandboxed"
+
+[openshell.environments.kubernetes.crypto-base.requests]
+cpu_millicores = 2000
+memory_mib = 4096
+ephemeral_storage_mib = 1024
+
+[openshell.environments.kubernetes.crypto-base.limits]
+cpu_millicores = 8000
+memory_mib = 16384
+ephemeral_storage_mib = 4096

@@ -68,6 +68,7 @@ from sandbox_science.worker.environments import (
     new_sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.kubernetes import KubernetesProfile, KubernetesResources
 from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.provisioner import Provisioner, _Op
@@ -423,6 +424,91 @@ async def test_create_is_idempotent_and_refuses_another_request(setup: Setup) ->
     with pytest.raises(WorkerError) as refused:
         await setup.environments.create(setup.request(policy=other))
     assert refused.value.kind is ErrorKind.CONFLICT
+
+
+async def test_kubernetes_creation_pins_trusted_settings_and_resume_keeps_allocation(
+    setup: Setup,
+) -> None:
+    requests = KubernetesResources(cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256)
+    limits = KubernetesResources(cpu_millicores=4000, memory_mib=4096, ephemeral_storage_mib=1024)
+    placement = KubernetesProfile(
+        node_selector={"example.org/capacity": "large"},
+        requests=requests,
+        limits=limits,
+    )
+    original_settings = setup.environments.settings
+    setup.environments.settings = original_settings.model_copy(
+        update={"kubernetes": {"minimal": placement}}
+    )
+    info, _ = await setup.environments.create(setup.request())
+    [call] = setup.fake.calls("sandbox", "create")
+    pinned = call[call.index("--driver-config-json") + 1]
+    assert json.loads(pinned)["kubernetes"]["pod"]["node_selector"] == {
+        "example.org/capacity": "large"
+    }
+    assert setup.environments.records.driver_config(info.sandbox) == pinned
+    setup.environments.close()
+    restarted = Environments(
+        setup.settings,
+        original_settings,
+        setup.state_dir,
+        {"FAKE_OPENSHELL_STATE": str(setup.fake.path), "PATH": os.environ["PATH"]},
+    )
+    try:
+        same, created = await restarted.create(setup.request())
+        assert (same.sandbox, created) == (info.sandbox, False)
+        assert restarted.records.driver_config(info.sandbox) == pinned
+        assert len(setup.fake.calls("sandbox", "create")) == 1
+        with pytest.raises(WorkerError, match="launch settings changed"):
+            restarted.records.save(same, driver_config="{}")
+        assert restarted.records.driver_config(info.sandbox) == pinned
+    finally:
+        restarted.close()
+
+
+@pytest.mark.parametrize("change", ["revision", "ceiling"])
+async def test_kubernetes_existing_allocation_cannot_claim_tighter_resource_caps(
+    setup: Setup,
+    change: str,
+) -> None:
+    requests = KubernetesResources(cpu_millicores=1000, memory_mib=512, ephemeral_storage_mib=256)
+    limits = KubernetesResources(cpu_millicores=4000, memory_mib=4096, ephemeral_storage_mib=1024)
+    configured = setup.environments.settings.model_copy(
+        update={"kubernetes": {"minimal": KubernetesProfile(requests=requests, limits=limits)}}
+    )
+    setup.environments.settings = configured
+    info, _ = await setup.environments.create(setup.request())
+    if change == "revision":
+        policy = setup.tmp / "smaller.yaml"
+        policy.write_text(
+            EXAMPLE.read_text()
+            .replace("cpu: 16", "cpu: 0.5")
+            .replace("memory: 64Gi", "memory: 256Mi")
+        )
+        revision = setup.add(policy)
+        with pytest.raises(WorkerError, match="saved Kubernetes allocation exceeds"):
+            await setup.environments.revise(info.environment_id, revision)
+        assert setup.environments.get(info.environment_id).policy == info.policy
+        assert not setup.fake.calls("policy", "set")
+    else:
+        setup.environments.close()
+        configured.ceiling.write_text(
+            "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
+            "resources: {cpu: 0.5, memory: 256Mi}\n"
+        )
+        restarted = Environments(
+            setup.settings,
+            configured,
+            setup.state_dir,
+            {"FAKE_OPENSHELL_STATE": str(setup.fake.path), "PATH": os.environ["PATH"]},
+        )
+        try:
+            with pytest.raises(WorkerError, match="saved Kubernetes allocation exceeds"):
+                await restarted.create(setup.request())
+            assert restarted.get(info.environment_id).sandbox == info.sandbox
+        finally:
+            restarted.close()
+    assert len(setup.fake.calls("sandbox", "create")) == 1
 
 
 @pytest.mark.parametrize(
