@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-20
+
+- Start Kubernetes work on `k8s`: generic heterogeneous AMD64/ARM64 pool configuration, S3-compatible artifact backing and verified local eviction before packaging trusted cluster services. Preserve active/paused PVCs; workspace archive/restore, worker-copy release and hosted retention remain separate gates ([Kubernetes work](../docs/KUBERNETES.md), D91). Site configuration stays outside Git.
+
 ## 2026-10-19
 
 - Replace the multi-terminal Mac `crypto-base` instructions with a TOML-driven helper for install, direct-GHCR MicroVM Sage smoke, and later foreground application launch. The helper checks that the chosen volume is mounted before writing large state and leaves Docker's current store untouched; native Mac acceptance is still open ([Mac qualification](../docs/MAC-ARM64.md#mac-microvm-crypto-base-test), D63).

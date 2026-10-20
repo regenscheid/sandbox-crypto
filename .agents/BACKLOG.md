@@ -150,6 +150,17 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
     - [x] Add digest- and platform-checked image-index publication command; GHCR crypto-base is verified private, and native ARM64 crypto-base qualification passed.
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 
+## Kubernetes deployment (D91)
+
+- [x] Record generic mixed-architecture placement and PVC/object-store lifecycle requirements; no cluster-specific values in Git ([Kubernetes work](../docs/KUBERNETES.md)).
+- [ ] Trusted profile-level CPU/memory/ephemeral-storage and Kubernetes placement settings carried into sandbox creation; agents cannot supply driver JSON.
+- [ ] Native scheduler helper compatibility for a worker serving another sandbox architecture.
+- [ ] Optional S3 artifact backing with verified writes, bounded archived reads and explicit verified local eviction.
+- [ ] Move uploaded source originals out of SQLite and release worker capture replicas after durable control acknowledgement.
+- [ ] Persist or rebuild modified package prefixes on pod replacement; complete workspace checkpoint/restore before PVC release.
+- [ ] Trusted service images and deployment manifests, service DNS/callbacks, one-writer control PVC, secrets/RBAC and enforcing network policy.
+- [ ] Mixed-architecture live acceptance, Sage/MCP/PDF, interruption/root Resume, cold object-store retrieval and verified cleanup.
+
 ## W0: behavior specification and harness foundation
 
 - [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools, plans and delegation, PDF sources, the PDF viewer, the run service and the project ledger, board and frontier approved (2026-10-14); [skills](../docs/specs/skills.md) approved (2026-10-15); [living documents](../docs/specs/living-documents.md) is a draft to review with the user, and record the user's decisions on its main questions

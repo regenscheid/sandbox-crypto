@@ -42,3 +42,38 @@ reproduction adds no retained revision. Physical storage can additionally includ
 legacy mirror bytes and bounded charged orphan/staging transfers. An installed
 blob whose metadata commit fails retains its reservation for explicit recovery.
 Worker capture allows 240 seconds and HTTP publication/content transfer 300 seconds.
+
+## Kubernetes object-store increment (2026-10-20)
+
+Implementation starts on `k8s`. An optional private
+`<database-name>.artifacts/storage.toml` selects S3 backing for the existing
+hash-named store. It holds endpoint, bucket, prefix, region and addressing style;
+credentials use the SDK's standard credential chain, never artifact metadata or
+agent-visible config. No config keeps the existing local-only behavior. All
+constructors, including provenance prefix reads, use this same configuration.
+
+New content is installed locally first, then uploaded and independently read back
+to verify exact SHA-256 and length before publication succeeds. Mark installation
+before remote I/O: a failed/unknown PUT retains its local file and transfer
+reservation, so uncertainty cannot silently release capacity. Content keys derive
+from the exact hash. Repeating that transfer reconciles identical immutable bytes;
+ETags and user-supplied object metadata are not integrity evidence.
+
+Archived full reads stream into a private temporary file, verify size/hash, rewind
+and yield a seekable stream; exit/failure removes that temporary file. Prefix reads
+remain bounded and have finite network deadlines. Remote outage or corruption
+reports unavailable content, never empty or substituted bytes. S3-compatible
+endpoints may need path addressing and no optional checksum-extension headers.
+
+An operator CLI installs backing configuration and archives only database-referenced
+external blobs. Dry-run is the default for local eviction; an explicit eviction
+option requires successful remote verification first. It never deletes remote
+objects, old inline SQLite content, staging, orphan content, worker replicas or
+live environment PVCs. The metadata database and backing configuration remain
+durable. Prefix/bucket changes after eviction require an explicit migration;
+reconfiguration cannot silently point existing references at an empty bucket.
+
+This first increment has no automatic age-based deletion. Later retention work
+must bound local cache/PVC usage while preserving active/paused research,
+incomplete transfers and original-operation recovery. See
+[Kubernetes delivery work](../KUBERNETES.md).
