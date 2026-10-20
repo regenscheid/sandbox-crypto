@@ -168,6 +168,7 @@ def worker_settings(
                 "token_sha256": digests[name],
                 "projects": projects,
                 "recovery_control": name == "harness",
+                "artifact_retention": name == "harness",
                 "operator": name in {"workspace", "launcher"},
             }
             for name in CLIENTS

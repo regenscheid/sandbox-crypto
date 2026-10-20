@@ -52,6 +52,10 @@ Delivery audit records remain in `artifact_retention_outbox`; credentials and ra
 network errors are not stored there. Ordinary execution credentials cannot assert
 that control storage retained content.
 
+The local launcher grants this permission only to its trusted `harness` client;
+workspace, launcher-maintenance and ordinary execution clients do not receive it.
+Other deployments must set the control client's permission explicitly.
+
 Acknowledgement alone does not unlink anything. The worker's
 [`artifact-retention` command](WORKER.md#offline-capture-replica-retention) previews or applies
 physical release only while that worker is stopped, under its exclusive state
