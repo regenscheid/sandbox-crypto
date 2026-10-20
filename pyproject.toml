@@ -18,6 +18,9 @@ dependencies = [
     "sandbox-science-workspace",
 ]
 
+[project.optional-dependencies]
+s3 = ["sandbox-science-orchestrator[s3]"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",

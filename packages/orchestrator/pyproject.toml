@@ -17,6 +17,12 @@ dependencies = [
 sandbox-science-harness = "sandbox_science.orchestrator.cli:main"
 sandbox-science-control = "sandbox_science.orchestrator.confinement.server:main"
 sandbox-science-agent-runtime = "sandbox_science.orchestrator.confinement.runtime:main"
+sandbox-science-artifacts = "sandbox_science.orchestrator.cli_artifacts:main"
+
+[project.optional-dependencies]
+s3 = [
+    "boto3>=1.36,<2",
+]
 
 [tool.uv.sources]
 sandbox-science-contracts = { workspace = true }
