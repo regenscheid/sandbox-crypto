@@ -640,8 +640,11 @@ async def test_a_killed_service_leaves_a_run_the_next_one_ends_interrupted(
         process.kill()
         await process.wait()
         gate.release.set()
-    # The next service reads leases as expired after half a second without renewal.
-    async with serving(harness, Reply("Yes."), lease_seconds=0.5):
+    # Advance the replacement's wall clock past the dead lease. Fresh runs keep
+    # the normal lease instead of depending on sub-second scheduling under load.
+    clock = Suspended()
+    clock.offset = 120.0
+    async with serving(harness, Reply("Yes."), clock=clock):
         await eventually(lambda: runs(harness).ended(PROJECT, SESSION, lease.run), timeout=10)
         await eventually(lambda: states(harness) == {"m-1": "held"})
         runs(harness).post(PROJECT, SESSION, "m-2", "Hello again.", author="user")
