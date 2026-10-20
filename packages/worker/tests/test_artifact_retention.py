@@ -400,7 +400,7 @@ def test_upgrade_keeps_legacy_metadata_and_never_backfills_acknowledgements(
 ) -> None:
     path = tmp_path / "worker.sqlite3"
     with monkeypatch.context() as patch:
-        patch.setattr(schema, "MIGRATIONS", schema.MIGRATIONS[:-1])
+        patch.setattr(schema, "MIGRATIONS", schema.MIGRATIONS[: 6 - schema.BASELINE])
         old = Store(path)
         try:
             old.insert_artifact(snapshot())

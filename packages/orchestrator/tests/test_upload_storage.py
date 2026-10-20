@@ -56,7 +56,7 @@ def test_v73_migration_does_not_rewrite_inline_rows_and_shares_sequence_and_cons
     tmp_path, monkeypatch
 ):
     with monkeypatch.context() as old:
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:-1])
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[: 73 - migrations.BASELINE + 1])
         old.setattr(migrations, "VERSION", 73)
         documents = prepared(tmp_path)
         original = legacy_original(documents)
