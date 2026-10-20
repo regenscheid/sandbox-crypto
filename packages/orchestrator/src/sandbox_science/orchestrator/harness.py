@@ -1806,6 +1806,7 @@ class Harness:
             on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
         on_close(artifacts.aclose)
+        await artifacts.drain_retention()
         recorder = FileRecorder(
             artifacts,
             ProjectFiles(stores.documents),

@@ -3161,6 +3161,13 @@ def _external_user_uploads(schema: Schema) -> None:
     install(schema)
 
 
+def _artifact_retention(schema: Schema) -> None:
+    """Version 75: exact worker retention intents share the successful receipt commit."""
+    from sandbox_science.orchestrator.artifact_retention_schema import install
+
+    install(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3235,6 +3242,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _context_captures,
     _project_model_settings,
     _external_user_uploads,
+    _artifact_retention,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

@@ -66,6 +66,10 @@ from sandbox_science.contracts import (
     WriteFileResult,
 )
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES, ArtifactSnapshot
+from sandbox_science.contracts.artifact_retention import (
+    MAX_RETENTION_ACK_BYTES,
+    ArtifactRetentionAcknowledgement,
+)
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import (
@@ -716,6 +720,45 @@ class WorkerClient:
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         return await self._call("POST", "/v1/artifacts", ArtifactRef, request)
+
+    async def acknowledge_artifact_retention(
+        self, acknowledgement: ArtifactRetentionAcknowledgement, *, timeout: float = 5.0
+    ) -> ArtifactRetentionAcknowledgement:
+        """Idempotent trusted control ACK; it never recaptures a workspace path."""
+        body = acknowledgement.model_dump_json()
+        if len(body.encode()) > MAX_RETENTION_ACK_BYTES or not 0 < timeout <= 5:
+            raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "artifact retention request too large")
+        try:
+            async with self._http().post(
+                f"{self.base_url}/v1/artifacts/{acknowledgement.snapshot.artifact_id}/retention",
+                params={"project_id": acknowledgement.snapshot.project_id},
+                data=body,
+                headers={**self._headers, **PROTOCOL, "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+                allow_redirects=False,
+                auto_decompress=False,
+            ) as response:
+                await check_protocol(response)
+                if response.headers.get("Content-Encoding", "identity") != "identity" or (
+                    response.content_length is not None
+                    and response.content_length > MAX_RETENTION_ACK_BYTES
+                ):
+                    raise WorkerAPIError(ErrorKind.INTERNAL, "invalid retention response bound")
+                payload = await _bounded_body(response.content, MAX_RETENTION_ACK_BYTES)
+                if response.status >= 400:
+                    raise _error(payload, response.status)
+                if response.status != 200:
+                    raise WorkerAPIError(ErrorKind.INTERNAL, "unexpected retention status")
+                echoed = ArtifactRetentionAcknowledgement.model_validate_json(payload)
+                if echoed != acknowledgement:
+                    raise WorkerAPIError(ErrorKind.CONFLICT, "retention acknowledgement differs")
+                return echoed
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE, "retention transport failed; acknowledgement remains pending"
+            ) from error
+        except (ValidationError, RecursionError, UnicodeError) as error:
+            raise WorkerAPIError(ErrorKind.INTERNAL, "invalid retention acknowledgement") from error
 
     async def publish_snapshot(self, request: PublishRequest) -> ArtifactRef:
         """Bounded metadata publication for durable control ingestion; never redirect."""

@@ -40,6 +40,7 @@ from sandbox_science.contracts.artifact_inventory import (
 from sandbox_science.contracts.model import MAX_COUNTER, Contract
 
 from .artifact_blobs import INLINE_BYTES, ArtifactBlobs, Blob
+from .artifact_retention import enqueue
 from .documents.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND, DocumentError
 from .documents.store import DocumentStore
 
@@ -272,7 +273,7 @@ class ArtifactInventory:
         limits = self.limits
         with self.documents.control.read() as tx:
             db = tx.sql
-            reserve = 2 * _MAX_RECORD + _MAX_REQUEST
+            reserve = 3 * _MAX_RECORD + _MAX_REQUEST + 1024
             spare = (
                 self._usage(db, None)[3] + reserve <= limits.metadata_bytes
                 and self._usage(db, project)[3] + reserve <= limits.project_metadata_bytes
@@ -630,6 +631,7 @@ class ArtifactInventory:
                 "WHERE project=? AND actor=? AND operation=?",
                 (_json(receipt), project, session, operation),
             )
+            enqueue(db, source, receipt)
             self._budget(db, project)
             return receipt
 

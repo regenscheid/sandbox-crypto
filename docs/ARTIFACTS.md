@@ -24,6 +24,43 @@ their own. The workspace reads the inventory through two routes, the project's
 artifact list and a link that opens a published PDF in the
 [PDF viewer](WORKSPACE.md#the-pdf-viewers-origin).
 
+## Acknowledging durable worker copies
+
+New fully retained publications commit an endpoint-bound worker acknowledgement
+intent in the same transaction as their immutable control receipt. Delivery is
+best effort: an unavailable worker leaves cleanup pending without downgrading a
+successful artifact or repeating a mutable capture. Each run starts with at most
+eight pending deliveries sharing a five-second HTTP budget, stopping at the first
+failure. Replaying a completed explicit or automatic execution capture retries
+its original acknowledgement without downloading or publishing again. Existing
+historical receipts are not automatically treated as acknowledged.
+
+The operator can drain a bounded page independently of any agent run:
+
+```bash
+sandbox-science-artifacts acknowledge --database /srv/research/control.sqlite3 \
+  --worker https://worker.example.invalid --token-file /secure/worker.token \
+  --project example-project --limit 8 --after 0
+```
+
+The token needs the project's explicit `artifact_retention` permission (the pool
+token also has it). The endpoint must match the original publication's saved
+digest. Output reports delivered/failed counts and an `after` cursor scoped to
+that configured worker. A failed row remains pending; omit `--after` to retry from
+the beginning, or use its cursor to process later rows without clearing the failure.
+Delivery audit records remain in `artifact_retention_outbox`; credentials and raw
+network errors are not stored there. Ordinary execution credentials cannot assert
+that control storage retained content.
+
+Acknowledgement alone does not unlink anything. The worker's
+[`artifact-retention` command](WORKER.md#offline-capture-replica-retention) previews or applies
+physical release only while that worker is stopped, under its exclusive state
+lease. Every reference sharing a hash must have an exact acknowledgement; installer
+references or invalid/unknown metadata preserve the bytes. Metadata and release
+audit survive cleanup and restart. This does not archive or delete research
+workspaces/PVCs, remote objects or control-owned content. Worker protocol 11 is a
+lockstep application update; new container images have not been published.
+
 ## Identity, bytes and provenance
 
 A logical artifact belongs to a project and canonical workspace path. Shared files
