@@ -9,20 +9,25 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, cast
 
 import pytest
 
 from sandbox_science.contracts import EnvironmentInfo, EnvironmentState
 from sandbox_science.worker import provisioning, workspace_prefix
 from sandbox_science.worker.artifacts import Blobs
+from sandbox_science.worker.backends import Backend as BackendProtocol
+from sandbox_science.worker.channel import ExecutorChannel, Message
+from sandbox_science.worker.connections import Connection, EnvironmentConnections
 from sandbox_science.worker.environments import EnvironmentRecords
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.journal import ExecutionJournal
 from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.package_changes import PackageChanges
 from sandbox_science.worker.revisions import Revisions
-from sandbox_science.worker.store import Store
+from sandbox_science.worker.store import RevisionRecord, Store
 from sandbox_science.worker.timeouts import MANAGER_TIMEOUTS
+from sandbox_science.worker.usability import Usability
 
 IDENTITY = "prefix-" + "1" * 32
 INCARNATION = "inc-" + "1" * 24
@@ -48,10 +53,14 @@ class Worker:
         self.packages = PackageChanges(
             self.store,
             self.revisions,
-            SimpleNamespace(
-                lifecycle=EnvironmentLifecycle(requires_workspace_prefix=lambda _: required)
+            # Hello uses only lifecycle; unexpected journal work must fail in this fixture.
+            cast(
+                EnvironmentConnections,
+                SimpleNamespace(
+                    lifecycle=EnvironmentLifecycle(requires_workspace_prefix=lambda _: required)
+                ),
             ),
-            None,
+            cast(ExecutionJournal, SimpleNamespace()),
             spawn=asyncio.create_task,
             timeouts=MANAGER_TIMEOUTS,
         )
@@ -59,11 +68,27 @@ class Worker:
     def hello(self, raw: object, fingerprint: str = A, incarnation: str = INCARNATION) -> None:
         self.packages.hello(
             "env",
-            SimpleNamespace(
-                incarnation=incarnation,
-                hello={"workspace_prefix": raw, "environment": fingerprint, "package_epoch": 0},
+            cast(
+                ExecutorChannel,
+                SimpleNamespace(
+                    incarnation=incarnation,
+                    hello={"workspace_prefix": raw, "environment": fingerprint, "package_epoch": 0},
+                ),
             ),
         )
+
+    def revision(self) -> RevisionRecord:
+        record = self.store.revision("env")
+        assert record is not None
+        return record
+
+
+async def unused_connection(environment_id: str) -> Connection:
+    raise AssertionError("this fixture must not reconnect through its hook")
+
+
+def unused_recycle(environment_id: str) -> asyncio.Task[None]:
+    raise AssertionError("this fixture must not recycle its sandbox")
 
 
 def test_clean_replacement_uses_latest_managed_revision_and_survives_store_restart(tmp_path: Path):
@@ -74,7 +99,7 @@ def test_clean_replacement_uses_latest_managed_revision_and_survives_store_resta
     worker = Worker(tmp_path)
     try:
         worker.hello(description(B), B, NEXT)
-        assert worker.store.revision("env").revision == 1
+        assert worker.revision().revision == 1
         assert worker.store.package_status("env") is None
         assert worker.store.workspace_prefix("env") == (IDENTITY, NEXT)
     finally:
@@ -105,7 +130,7 @@ def test_replacement_loss_or_unresolved_journal_holds_original_revision(
     try:
         worker.hello(description())
         worker.hello(raw, B if raw == description(B) else A, NEXT)
-        assert worker.store.revision("env").fingerprint == A
+        assert worker.revision().fingerprint == A
         assert worker.store.package_status("env") == ("needs_recovery", "workspace-prefix", 0)
         assert worker.store.package_gate("env").mode == "needs_recovery"
         assert worker.store.workspace_prefix("env") == (IDENTITY, INCARNATION)
@@ -119,12 +144,12 @@ def test_surviving_daemon_hello_never_races_ahead_of_or_rewinds_revision_replay(
         worker.hello(description())
         # The daemon may be ahead while its managed events wait in replay.
         worker.hello(description(B, journal_pending=True), B)
-        assert worker.store.revision("env").revision == 0
+        assert worker.revision().revision == 0
         assert worker.store.package_status("env") is None
         worker.revisions.observe("env", B, "attempt", managed=True)
         # It may report an older settled baseline; current durable revision still wins.
         worker.hello(description(A, journal_pending=True), A)
-        assert worker.store.revision("env").revision == 1
+        assert worker.revision().revision == 1
         assert worker.store.package_status("env") is None
     finally:
         worker.store.close()
@@ -137,7 +162,7 @@ def test_existing_interrupted_operation_hold_and_known_revision_are_preserved(tm
         worker.store.set_package_status("env", "needs_recovery", "interrupted-install", 0)
         worker.hello(description(B, journal_pending=True), B, NEXT)
         assert worker.store.package_status("env") == ("needs_recovery", "interrupted-install", 0)
-        assert worker.store.revision("env").fingerprint == A
+        assert worker.revision().fingerprint == A
     finally:
         worker.store.close()
 
@@ -147,7 +172,7 @@ def test_legacy_and_explicit_escape_keep_previous_baseline_behavior(tmp_path: Pa
     try:
         worker.hello(None)
         worker.hello(None, B, NEXT)
-        assert worker.store.revision("env").revision == 1
+        assert worker.revision().revision == 1
         assert worker.store.workspace_prefix("env") is None
         assert worker.store.package_status("env") is None
     finally:
@@ -292,11 +317,13 @@ async def test_real_managed_revision_consumes_its_journal_before_clean_replaceme
         "exe-" + "1" * 24, provisioning.Observation(records, B, complete=complete), None
     )
     assert not executor.packages.pending()
-    assert worker.store.revision("env").fingerprint == B
-    assert worker.store.revision_entry("env", 1).managed is True
+    assert worker.revision().fingerprint == B
+    entry = worker.store.revision_entry("env", 1)
+    assert entry is not None
+    assert entry.managed is True
     worker.hello(description(B), B, NEXT)
     assert worker.store.package_status("env") is None
-    assert worker.store.revision("env").revision == 1
+    assert worker.revision().revision == 1
     worker.store.close()
 
 
@@ -350,14 +377,16 @@ async def test_connection_checks_loss_before_ready_and_rechecks_exact_restoratio
         closed = False
         daemon_token = "test-secret-daemon-token"
         incarnation = NEXT
-        hello: ClassVar[dict] = {
-            "environment": B,
-            "workspace_prefix": description(B),
-            "package_epoch": 0,
-            "location": {"hostname": "synthetic"},
-            "languages": ["python"],
-            "features": [],
-        }
+
+        def __init__(self) -> None:
+            self.hello: Message = {
+                "environment": B,
+                "workspace_prefix": description(B),
+                "package_epoch": 0,
+                "location": {"hostname": "synthetic"},
+                "languages": ["python"],
+                "features": [],
+            }
 
         async def request(self, operation):
             assert operation == "hello"
@@ -399,17 +428,17 @@ async def test_connection_checks_loss_before_ready_and_rechecks_exact_restoratio
         worker.packages.hello(environment_id, opened)
 
     hooks = ConnectionHooks(
-        connect=noop,
+        connect=unused_connection,
         on_event=noop,
         on_closed=noop,
         incarnation_lost=lambda *_: None,
-        recycle=lambda _: None,
+        recycle=unused_recycle,
         sync_package_gate=sync,
         hello=hello,
         connected=noop,
     )
     connections = EnvironmentConnections(
-        Backend(),
+        cast(BackendProtocol, Backend()),
         worker.store,
         Usability(worker.store),
         hooks,
@@ -426,7 +455,7 @@ async def test_connection_checks_loss_before_ready_and_rechecks_exact_restoratio
     assert order[-3:] == ["recheck", "hello", "ready"]
     assert worker.store.package_gate("env").generation > held_generation
     assert worker.store.package_status("env") is None
-    assert worker.store.revision("env").fingerprint == A
+    assert worker.revision().fingerprint == A
     worker.store.close()
 
 
@@ -475,7 +504,7 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
         lambda _: {"protocol": 1, "path": "/sandbox/.sandbox-science-prefix", "identity": IDENTITY},
     )
     await executor.op_hello({"id": 1})
-    channel = SimpleNamespace(incarnation=NEXT, hello=sent[-1])
+    channel = cast(ExecutorChannel, SimpleNamespace(incarnation=NEXT, hello=sent[-1]))
     worker.packages.hello("env", channel)
     assert worker.store.package_status("env") is not None
     package.write_text('{"version":"original"}')
@@ -528,7 +557,7 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
     await executor.op_package_gate(request)
     assert executor.package_mode == "ready"
     assert executor.reported == before
-    assert worker.store.revision("env").fingerprint == before
+    assert worker.revision().fingerprint == before
     from sandbox_science.worker.lifecycle import UNMANAGED
     from sandbox_science.worker.package_admission import PackageAdmission
 
@@ -547,14 +576,14 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
 
     admission = PackageAdmission(
         worker.store,
-        SimpleNamespace(binding_key=lambda _: "synthetic"),
-        None,
-        connect=noop,
+        cast(BackendProtocol, SimpleNamespace(binding_key=lambda _: "synthetic")),
+        Usability(worker.store),
+        connect=unused_connection,
         spawn=asyncio.create_task,
         sync=noop,
         lifecycle=UNMANAGED,
     )
-    assert await admission.sync("env", RestoredChannel())
+    assert await admission.sync("env", cast(ExecutorChannel, RestoredChannel()))
     # The first new kernel's epoch has a known revision without another package event.
     assert worker.store.kernel_starts.epoch("env", NEXT, executor.package_epoch, before) == 0
     assert worker.store.workspace_prefix_restore_pending("env") is None
@@ -601,9 +630,9 @@ async def test_restore_directive_survives_cancelled_ack_and_is_consumed_once(tmp
 
     admission = PackageAdmission(
         worker.store,
-        SimpleNamespace(binding_key=lambda _: "synthetic"),
-        None,
-        connect=noop,
+        cast(BackendProtocol, SimpleNamespace(binding_key=lambda _: "synthetic")),
+        Usability(worker.store),
+        connect=unused_connection,
         spawn=asyncio.create_task,
         sync=noop,
         lifecycle=UNMANAGED,
@@ -612,16 +641,16 @@ async def test_restore_directive_survives_cancelled_ack_and_is_consumed_once(tmp
         admission.admission("env")
     missing = channel.hello.pop("workspace_prefix_restore")
     with pytest.raises(WorkerError, match="lacks evidence"):
-        await admission.sync("env", channel)
+        await admission.sync("env", cast(ExecutorChannel, channel))
     assert channel.requests == []
     channel.hello["workspace_prefix_restore"] = missing
     with pytest.raises(asyncio.CancelledError):
-        await admission.sync("env", channel)
+        await admission.sync("env", cast(ExecutorChannel, channel))
     assert channel.hello["workspace_prefix_restore"] is instruction
     channel.cancel = False
-    assert await admission.sync("env", channel)
+    assert await admission.sync("env", cast(ExecutorChannel, channel))
     assert "workspace_prefix_restore" not in channel.hello
-    assert await admission.sync("env", channel)
+    assert await admission.sync("env", cast(ExecutorChannel, channel))
     assert len(channel.requests) == 2
     assert admission.admission("env").mode == "ready"
     worker.store.close()
