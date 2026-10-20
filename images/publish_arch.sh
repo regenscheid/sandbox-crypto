@@ -27,7 +27,7 @@ if [ -z "${BUILDER:-}" ]; then
   echo "publish_arch.sh: set BUILDER to a docker-container Buildx builder" >&2
   exit 2
 fi
-builder_driver=$(docker buildx inspect "$BUILDER" | awk '/^Driver:/ { print $2; exit }')
+builder_driver=$(docker buildx inspect "$BUILDER" | awk '/^Driver:/ { print $2 }')
 if [ "$builder_driver" != docker-container ]; then
   echo "publish_arch.sh: BUILDER must use the docker-container driver (got $builder_driver)" >&2
   exit 2
