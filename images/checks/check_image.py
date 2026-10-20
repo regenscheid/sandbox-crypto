@@ -27,6 +27,8 @@ Usage: check_image.py --profile minimal|crypto-base|orchestrator|mcp-proxy --wor
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import fnmatch
 import hashlib
 import http.client
@@ -457,6 +459,43 @@ class Checks:
         print(json.dumps({**line, "detail": detail}), flush=True)
 
     # The sandbox as the executor sees it.
+
+    def scheduler_shim(self) -> str:
+        revision = hashlib.sha256((self.worker_files / "sched_self.c").read_bytes()).hexdigest()
+        path = (
+            Path("/usr/local/lib/sandbox-science/shim") / revision / "libsandbox-science-sched.so"
+        )
+        shim = ctypes.CDLL(str(path))
+        source = shim.sandbox_science_sched_source_sha256
+        source.restype = ctypes.c_char_p
+        expect(source() == revision.encode(), "scheduler shim source revision differs")
+        libc = ctypes.CDLL(None)
+        libc.pthread_self.restype = ctypes.c_ulong
+        thread = libc.pthread_self()
+        policy, priority = ctypes.c_int(), ctypes.c_int()
+        libc.pthread_getschedparam.argtypes = (
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+        )
+        expect(
+            libc.pthread_getschedparam(thread, ctypes.byref(policy), ctypes.byref(priority)) == 0,
+            "cannot read the calling thread's scheduler",
+        )
+        shim.pthread_setschedparam.argtypes = (
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int),
+        )
+        expect(
+            shim.pthread_setschedparam(thread, policy, ctypes.byref(priority)) == 0,
+            "scheduler shim refused the calling thread",
+        )
+        expect(
+            shim.pthread_setschedparam(thread + 1, policy, ctypes.byref(priority)) == errno.EPERM,
+            "scheduler shim admitted another thread",
+        )
+        return f"native scheduler shim, source {revision}"
 
     def identity(self) -> str:
         entry = pwd.getpwuid(os.getuid())
@@ -982,7 +1021,7 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         proxy = ["proxy-cli", "proxy-imports", "no-kernels"]
         proxy += ["launcher", "proxy-serve", "proxy-restart"]
         return names + proxy
-    names += ["executor", "python-kernel", "tools-on-path", "multiprocessing"]
+    names += ["scheduler-shim", "executor", "python-kernel", "tools-on-path", "multiprocessing"]
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "fpylll", "g6k", "lattice-estimator"]
         names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]

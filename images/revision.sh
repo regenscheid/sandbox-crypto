@@ -20,7 +20,10 @@ recipe_inputs() {
   local package
   inputs=(Containerfile .dockerignore common "$1")
   case $1 in
-    minimal|crypto-base) inputs+=(../packages/worker/src/sandbox_science/worker/binding_inventory.py) ;;
+    minimal|crypto-base)
+      inputs+=(../packages/worker/src/sandbox_science/worker/binding_inventory.py
+        ../packages/worker/src/sandbox_science/worker/shim/sched_self.c)
+      ;;
   esac
   recipe_packages "$1"
   for package in "${packages[@]}"; do

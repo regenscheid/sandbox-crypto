@@ -92,8 +92,21 @@ ENV HOME=/sandbox \
     GIT_CONFIG_SYSTEM=/etc/gitconfig
 WORKDIR /sandbox
 
+# Compile for the image's target platform, independently of the worker host.
+# Only the library reaches research images; the compiler stays in this stage.
+FROM base AS scheduler-shim
+ARG UBUNTU_SNAPSHOT
+RUN apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
+    apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" install -y --no-install-recommends gcc libc6-dev
+RUN --mount=type=bind,from=binding-inventory,source=shim/sched_self.c,target=/tmp/sched_self.c \
+    revision=$(sha256sum /tmp/sched_self.c | cut -d ' ' -f 1) && \
+    install -d "/output/$revision" && \
+    cc -shared -fPIC -O2 "-DSANDBOX_SCIENCE_SCHED_SOURCE_SHA256=\"$revision\"" \
+        -o "/output/$revision/libsandbox-science-sched.so" /tmp/sched_self.c
+
 # ---------------------------------------------------------------------------------------------
 FROM base AS minimal
+COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/
 USER 1000:1000
 # micromamba keeps the extracted packages of a lockfile install (hard links into the environment)
 # under pkgs/, which `clean -a` leaves; a copy of the prefix would duplicate them.
@@ -135,6 +148,7 @@ LABEL org.opencontainers.image.title="Sandbox Science minimal" \
 
 # ---------------------------------------------------------------------------------------------
 FROM base AS crypto-base
+COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/
 ARG UBUNTU_SNAPSHOT
 ARG DEBIAN_FRONTEND=noninteractive
 RUN --mount=type=bind,source=crypto-base/apt-packages.txt,target=/tmp/apt-packages.txt \

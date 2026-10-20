@@ -64,6 +64,7 @@ cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$checks/"
 for name in binding_inventory executor provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_setup; do
   cp "$worker/$name.py" "$checks/"
 done
+cp "$worker/shim/sched_self.c" "$checks/"
 chmod -R a+rX "$checks"
 
 check_args=(--profile "$profile" --worker-files /checks)

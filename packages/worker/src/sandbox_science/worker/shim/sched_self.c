@@ -21,6 +21,15 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#ifndef SANDBOX_SCIENCE_SCHED_SOURCE_SHA256
+#error "build the scheduler shim with its source SHA-256"
+#endif
+
+const char *sandbox_science_sched_source_sha256(void)
+{
+    return SANDBOX_SCIENCE_SCHED_SOURCE_SHA256;
+}
+
 int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param)
 {
     if (!pthread_equal(thread, pthread_self())) {

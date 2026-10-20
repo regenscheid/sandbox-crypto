@@ -515,3 +515,23 @@ def test_binding_inventory_generator_is_shared_by_build_and_executor() -> None:
     assert "common/build_recipe.sh" in build
     assert "binding-inventory=$image_here/../packages/worker/src/sandbox_science/worker" in shared
     assert "../packages/worker/src/sandbox_science/worker/binding_inventory.py" in revision
+
+
+def test_research_images_ship_a_target_native_versioned_scheduler_shim() -> None:
+    stages = _stages()
+    build = stages["scheduler-shim"]
+    assert 'APT::Snapshot="${UBUNTU_SNAPSHOT}"' in build
+    assert "from=binding-inventory,source=shim/sched_self.c" in build
+    assert "sha256sum /tmp/sched_self.c" in build
+    assert "SANDBOX_SCIENCE_SCHED_SOURCE_SHA256" in build
+    assert "cc -shared -fPIC -O2" in build
+    source = "../packages/worker/src/sandbox_science/worker/shim/sched_self.c"
+    for profile in RESEARCH_PROFILES:
+        assert source in _recipe_inputs(profile)
+        assert (
+            "COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/"
+            in stages[profile]
+        )
+        assert "scheduler-shim" in checks.planned(profile, landlock=True, network=False)
+    for profile in SERVICE_PROFILES:
+        assert "COPY --from=scheduler-shim" not in stages[profile]
