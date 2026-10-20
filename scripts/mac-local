@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Use a Python with tomllib without requiring the owner to manage Python first.
+set -eu
+
+if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
+    echo 'mac-local requires an Apple Silicon Mac with a native arm64 terminal' >&2
+    exit 1
+fi
+
+if command -v python3 >/dev/null 2>&1 && \
+    python3 -c 'import sys, tomllib; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    exec python3 "$(dirname "$0")/mac_local.py" "$@"
+fi
+
+if ! command -v brew >/dev/null 2>&1; then
+    echo 'Install Homebrew from https://brew.sh/ first' >&2
+    exit 1
+fi
+if ! brew list --versions python@3.13 >/dev/null 2>&1; then
+    brew install python@3.13
+fi
+exec "$(brew --prefix python@3.13)/bin/python3.13" "$(dirname "$0")/mac_local.py" "$@"

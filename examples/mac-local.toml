@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT
+# Copy this file outside the repository and change volume to your mounted Mac volume.
+# The large image cache, VM overlays, gateway database, and application state go there.
+volume = "/Volumes/Research"
+directory = "SandboxScience"
+
+# Defaults shown for clarity. The image is the published multiarchitecture crypto-base tag.
+gateway_port = 18081
+image = "ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871"
+github_user = "regenscheid"
+keychain_service = "sandbox-science-ghcr"
+
+# Add this later to use `launch`; it must be a private Sandbox Science config
+# whose state_dir is <volume>/<directory>/app.
+# application_config = "/Volumes/Research/SandboxScience/sandbox-science.toml"

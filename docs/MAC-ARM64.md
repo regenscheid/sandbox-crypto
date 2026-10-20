@@ -10,177 +10,89 @@ A single-node Kubernetes cluster adds scheduling, networking and storage setup w
 
 ## Choose storage locations
 
-The Mac setup must let the owner choose paths **before the first gateway or research run**. There are separate stores; setting only the application's `state_dir` does not move OpenShell VM disks or Docker's build cache. Use an absolute path on a local filesystem for each store. A short path for VM state, such as `/Volumes/Research/ss-vm`, also avoids macOS's Unix-socket path limit. Keep the selected volume mounted whenever the gateway or a sandbox is running; never switch a configured path to a fresh empty directory to recover an interrupted run.
+Set `volume` in the [sample Mac config](../examples/mac-local.toml) before the first run. With the default `directory = "SandboxScience"`, the helper puts application records in `<volume>/SandboxScience/app`, prepared VM images and overlays in `vm`, and the dedicated gateway database, log and CLI state in `gateway`. It refuses an unmounted volume rather than silently writing to the system disk. Keep that volume mounted whenever the gateway or a sandbox is running; do not switch to an empty path to recover an interrupted run. The helper checks the VM socket path against macOS's limit.
 
-| Store | Set it with | What it contains |
-| --- | --- | --- |
-| Sandbox Science | `state_dir = "/Volumes/Research/ss-app"` in `sandbox-science.toml` | Project/control records, managed documents and artifact records, worker records, tokens and logs. The launcher already accepts this path and requires its directory to be owned by the user with mode 700. Large files still present only in a sandbox live in its VM overlay until explicitly exported or archived. |
-| OpenShell MicroVMs | `state_dir = "/Volumes/Research/ss-vm"` under `[openshell.drivers.vm]` in the gateway TOML | Prepared image cache, each sandbox's writable overlay disk, VM logs and driver socket. This is one OpenShell setting; image cache and overlays cannot currently be placed separately. |
-| OpenShell gateway | Set `XDG_STATE_HOME` and `OPENSHELL_LOCAL_TLS_DIR` in the **gateway service's** environment, or set `OPENSHELL_DB_URL` for its SQLite database | Gateway database and local TLS credentials. Changing the invoking shell's environment alone does not reconfigure an already running Homebrew service. Keep the database and its WAL files together on local storage. |
-| Existing Docker Desktop image store | Leave its current location unchanged for this test | Docker's other images, builds and containers stay where they are. OpenShell downloads and prepares `crypto-base` in its own VM state directory. |
-
-For the pinned OpenShell release, the gateway TOML should select the VM driver and set its state directory explicitly:
-
-```toml
-[openshell]
-version = 2
-
-[openshell.gateway]
-compute_driver = "vm"
-
-[openshell.drivers.vm]
-state_dir = "/Volumes/Research/ss-vm"
-```
-
-This is a path example, not a ready-to-run gateway configuration: retain the release's existing TLS, endpoint and image settings. The OpenShell `driver_dir` setting selects the driver **executable**, not image storage. For a private Mac installation, do not edit the owner's existing gateway or move its live data in place; use a dedicated gateway configuration and verify its effective paths before starting research. The Mac acceptance gate must confirm that gateway restart reuses the chosen database, image cache and original sandbox overlays, and that the application's managed documents and artifact records remain under its selected `state_dir`. Back up or migrate existing state while the service is stopped, preserving ownership and permissions.
-
-For example, set `XDG_STATE_HOME=/Volumes/Research/ss-gateway` and `OPENSHELL_LOCAL_TLS_DIR=/Volumes/Research/ss-gateway/tls` in that gateway service's environment, then verify its database appears under the chosen root. Alternatively, set `OPENSHELL_DB_URL=sqlite:/Volumes/Research/ss-gateway/openshell.db?mode=rwc` for the database alone. These are gateway-service settings, not `[openshell.env]` entries in the Sandbox Science config; the latter affect CLI calls from the launcher and worker. Docker Desktop's disk-image location is selected in Docker Desktop itself. [OpenShell's VM driver](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/README.md#gateway-and-driver-configuration) and [Docker Desktop settings](https://docs.docker.com/desktop/settings-and-maintenance/settings/#advanced) document these separate stores.
+OpenShell's [VM driver](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/README.md) keeps its image cache and overlays under one `state_dir`. The helper generates the gateway config and sets its data and cache environment to paths on the selected volume. Docker Desktop's existing image store stays where it is. Homebrew program files and its normal cache still use their usual locations. Large research files that exist only inside a sandbox remain in its overlay until exported or archived.
 
 ## Mac MicroVM `crypto-base` test
 
-This is the first Mac runtime test; the smaller `minimal` image is optional.
-It tests a private ARM64 `crypto-base` image with actual Sage arithmetic in a
-MicroVM. It does **not** yet qualify the worker, application UI or automatic
-recovery on the Mac. No Docker pull or change to Docker Desktop's shared disk
-image is required. OpenShell v0.1.3's VM driver reads
-`OPENSHELL_REGISTRY_TOKEN` (and optional `OPENSHELL_REGISTRY_USERNAME`) from its
-own process environment and downloads registry layers under its `state_dir`.
-The [pinned driver source](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/src/driver.rs)
-implements this path; it has not yet been exercised on the owner's Mac.
+The first Mac runtime test uses the published private ARM64 `crypto-base` image
+and checks Sage arithmetic inside an OpenShell MicroVM. It does **not** yet
+qualify the worker, UI or recovery on the Mac. The helper keeps the image cache,
+VM overlays, gateway database and application state under one selected mounted
+volume. It does not pull the image into Docker or move Docker Desktop's store.
+OpenShell's pinned [VM driver](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/README.md)
+supports this layout; the owner's Mac has not yet run the test.
 
-Install [Homebrew](https://brew.sh/) if it is not installed, then install the pinned OpenShell
-release and the VM driver's filesystem tools. The installer starts a normal
-Homebrew gateway; leave that gateway and its state alone. The commands below
-start a **separate, temporary gateway** on port 18081 for this test.
-
-```sh
-brew install e2fsprogs
-curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION=v0.1.3 sh
-openshell --version
-```
-
-Choose an **existing, mounted local volume** and replace the example path in
-the next command. The mount check prevents a missing external volume from
-silently creating a directory on the Mac's normal disk. Keep at least 40 GiB
-free there for the first preparation, cached image and experiment: the previous AMD64 build measured 2.34 GB
-compressed and 6.2 GB unpacked, and the ARM64 size may differ. The 16 GiB
-overlay below is sparse, but the VM driver says it must accommodate compressed
-payload, unpacked rootfs and writes during preparation; its 4 GiB default is
-insufficient for this image. These directories remain separate from Docker's
-existing store.
+On the Mac, install [Homebrew](https://brew.sh/) if needed and clone the `dev`
+branch (or update an existing clone). Copy the sample config to a private file
+and change its **one required value**, `volume`, to an existing mounted local
+volume. About 40 GiB free is recommended for the first image preparation. The
+`directory` setting names a new folder on that volume; the helper refuses the
+system root or an unmounted volume and checks that OpenShell's VM socket path
+fits macOS's limit. The image tag, port, GitHub user and
+Keychain service already have test defaults.
 
 ```sh
-SS_VOLUME="/Volumes/Research"
-mount | grep -Fq " on $SS_VOLUME (" || { echo "Volume is not mounted: $SS_VOLUME"; exit 1; }
-SS_ROOT="$SS_VOLUME/SandboxScience"
-mkdir -p "$SS_ROOT/gateway/state" "$SS_ROOT/gateway/data" \
-  "$SS_ROOT/gateway/cache" "$SS_ROOT/gateway/config" "$SS_ROOT/gateway/tls" \
-  "$SS_ROOT/vm" "$SS_ROOT/app" "$SS_ROOT/cli-config"
-chmod 700 "$SS_ROOT" "$SS_ROOT/gateway" "$SS_ROOT/gateway/state" \
-  "$SS_ROOT/gateway/data" "$SS_ROOT/gateway/cache" \
-  "$SS_ROOT/gateway/config" "$SS_ROOT/gateway/tls" \
-  "$SS_ROOT/vm" "$SS_ROOT/app" "$SS_ROOT/cli-config"
-df -h "$SS_ROOT"
-cat > "$SS_ROOT/gateway/gateway.toml" <<EOF
-[openshell]
-version = 2
-
-[openshell.gateway]
-compute_driver = "vm"
-disable_tls = true
-bind_address = "127.0.0.1:18081"
-image_preparation_timeout_seconds = 3600
-
-[openshell.gateway.auth]
-allow_unauthenticated_users = true
-
-[openshell.drivers.vm]
-state_dir = "$SS_ROOT/vm"
-grpc_endpoint = "http://127.0.0.1:18081"
-default_image = "nvcr.io/nvidia/base/ubuntu:24.04"
-vcpus = 4
-mem_mib = 8192
-overlay_disk_mib = 16384
-EOF
-chmod 600 "$SS_ROOT/gateway/gateway.toml"
+git clone --branch dev https://github.com/regenscheid/sandbox-crypto.git
+cd sandbox-crypto
+cp examples/mac-local.toml "$HOME/sandbox-science-mac.toml"
+${EDITOR:-vi} "$HOME/sandbox-science-mac.toml"
+./scripts/mac-local install
+./scripts/mac-local smoke
 ```
 
-The package is private. Store a GitHub classic personal access token with
-`read:packages` in the macOS Keychain; the following `security` command prompts
-for its value without putting it in shell history. Use the existing item if one
-is already stored under this service name. Do not put the token in the TOML,
-the repository, or the command line as a literal.
+For an existing clone, use `git switch dev && git pull` in place of the clone
+command. Keep the terminal in the repository directory for all three helper
+actions.
+
+`install` installs the pinned OpenShell release through its
+[official installer](https://docs.nvidia.com/openshell/v0.1.3/about/installation/)
+after checking the installer SHA-256, plus Homebrew's `e2fsprogs` and `uv`
+when needed. It writes a dedicated gateway
+configuration on the selected volume, and prompts privately in the terminal
+for a GitHub **classic** token with `read:packages` if none is stored under
+the configured Keychain service name. The
+installer may start OpenShell's normal Homebrew gateway; the helper does not
+reconfigure it. Program files and ordinary Homebrew caches still use their
+normal locations. The entrypoint installs Homebrew Python 3.13 only if the
+available `python3` cannot run the helper. The token never goes into the TOML
+or repository.
+
+`smoke` starts a separate loopback gateway in the foreground, registers it in
+a temporary CLI profile, pulls the private image directly into the VM cache,
+checks `aarch64` and a Sage computation, deletes its uniquely named test
+sandbox, and stops its gateway. It leaves the prepared image cache in place for
+later use. Its gateway log is under the chosen volume at
+`<volume>/<directory>/gateway/gateway.log`. The VM driver uses its own cache
+even if Docker Desktop already has the image.
+The first image preparation can take a while. If it fails, the log and VM cache
+remain for diagnosis; the helper does not remove existing OpenShell state.
+
+Later, after a private application config has been prepared and the full Mac
+gates below are ready, set `application_config` in your private
+`sandbox-science-mac.toml` and run:
 
 ```sh
-security add-generic-password -U -a regenscheid -s sandbox-science-ghcr -w
+./scripts/mac-local launch
 ```
 
-In **terminal 1**, start the dedicated gateway in the foreground. The
-Keychain lookup may ask for permission. The credential is passed only in the
-gateway process environment; its VM driver inherits it. The gateway database,
-SQLite WAL files and image preparation all stay under `SS_ROOT`. Leave this
-terminal open during the test.
-
-```sh
-PATH="$(brew --prefix e2fsprogs)/sbin:$PATH" \
-XDG_CONFIG_HOME="$SS_ROOT/gateway/config" \
-XDG_STATE_HOME="$SS_ROOT/gateway/state" \
-XDG_DATA_HOME="$SS_ROOT/gateway/data" \
-XDG_CACHE_HOME="$SS_ROOT/gateway/cache" \
-OPENSHELL_LOCAL_TLS_DIR="$SS_ROOT/gateway/tls" \
-OPENSHELL_DB_URL="sqlite:$SS_ROOT/gateway/openshell.db?mode=rwc" \
-OPENSHELL_REGISTRY_USERNAME=regenscheid \
-OPENSHELL_REGISTRY_TOKEN="$(security find-generic-password -a regenscheid -s sandbox-science-ghcr -w)" \
-openshell-gateway --config "$SS_ROOT/gateway/gateway.toml"
-```
-
-In **terminal 2**, set the same `SS_ROOT`. A private CLI config directory keeps
-this test's gateway registration from changing any existing OpenShell CLI
-default. The first create can take a while to pull and prepare the large image.
-Use the published multiarchitecture tag; the VM driver selects its Linux ARM64
-variant. Successful `uname` plus Sage arithmetic establishes that the image
-runs, and the gateway's VM driver events establish that it ran in a MicroVM.
-
-```sh
-SS_ROOT="/Volumes/Research/SandboxScience"
-export XDG_CONFIG_HOME="$SS_ROOT/cli-config"
-openshell gateway add http://127.0.0.1:18081 --local --name ss-mac-crypto-test
-openshell status
-if command -v docker >/dev/null && docker image inspect ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871 >/dev/null 2>&1; then
-  echo 'This exact image is already in Docker; the VM driver would use that copy.'
-  exit 1
-fi
-openshell sandbox create --name ss-mac-crypto \
-  --from ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871 \
-  --detach -- /usr/bin/sleep infinity
-openshell sandbox exec -n ss-mac-crypto --no-tty --no-login-shell -- /usr/bin/uname -m
-openshell sandbox exec -n ss-mac-crypto --no-tty --no-login-shell -- \
-  /opt/sandbox-science/bin/sage -c 'print(GF(17)(3)^16)'
-openshell sandbox delete ss-mac-crypto
-du -sh "$SS_ROOT/vm" "$SS_ROOT/gateway" "$SS_ROOT/app"
-```
-
-If the preflight finds this exact image in Docker, decide separately whether
-it is still needed there before removing *that image alone*; changing Docker
-Desktop's shared disk location is unnecessary. Expect `aarch64` and `1`.
-Delete only the sandbox this test created, and stop
-terminal 1 with Ctrl-C afterward. Preserve `SS_ROOT/vm` if you want the
-prepared image cache for later tests; preserve `SS_ROOT/gateway` if a sandbox
-or gateway record might need recovery. The Homebrew gateway remains separate.
-For the later full application test, set `state_dir` in its private
-`sandbox-science.toml` to `"/Volumes/Research/SandboxScience/app"` (or the
-equivalent path you chose); the MicroVM image test itself does not launch the
-application. Homebrew's program files and normal package-manager caches still
-use their ordinary locations, but the large prepared research image and VM
-disks use `SS_ROOT/vm`.
-If image authentication fails, verify the token's package read permission and
-that terminal 1 launched the *same* v0.1.3 driver; do not pull `crypto-base`
-through Docker as an automatic workaround. If preparation reports insufficient
-space, inspect free bytes on `SS_ROOT` and the VM preparation log before
-changing paths or deleting state. The
-[single-machine quickstart](QUICKSTART.md) currently describes the babbage lab;
-copy its example config into a private Mac config and replace the babbage-only
-paths and services before attempting `sandbox-science up`.
+`launch` starts that same dedicated gateway and runs `sandbox-science up`
+in the foreground. It requires the application's `state_dir` to be
+`<volume>/<directory>/app`, writes a temporary private copy of the application
+config beside the original with its isolated OpenShell CLI paths for the
+launcher and workers, and puts
+uv's cache, managed Python installs and project environment on the selected
+volume. Remove
+`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and
+`OPENSHELL_LOCAL_TLS_DIR` and `OPENSHELL_GATEWAY` overrides from the
+application's `[openshell.env]`;
+the helper owns those for this launch and removes the temporary copy when it
+stops. The application still needs its normal
+private model, policy, image and build settings: the
+[single-machine quickstart](QUICKSTART.md) describes those, but its example is
+for babbage. Ctrl-C stops the foreground application and this helper's gateway.
+Do not treat a passing image-only `smoke` as full application acceptance.
 
 ## Sequence and evidence
 
