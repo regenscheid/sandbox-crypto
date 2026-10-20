@@ -22,6 +22,7 @@ from sandbox_science.contracts import (
     WriteFileRequest,
 )
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.aio import held
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.projects import ProjectError, ensure_environment
 from sandbox_science.orchestrator.uploads import MAX_UPLOAD_BYTES, UserUpload, UserUploads
@@ -34,12 +35,13 @@ from .context import (
     json_answer,
     json_body,
     no_query,
-    read_body,
     session_record,
 )
+from .errors import TooLargeError
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/uploads"
 _IDS: Final = TypeAdapter[list[Identifier]](list[Identifier])
+_CHUNK: Final = 512 * 1024
 
 
 class UploadMetadata(Contract):
@@ -84,14 +86,13 @@ async def _uploaded(request: web.Request) -> web.Response:
                 if len(metadata) > 2048:
                     raise ValueError("upload metadata too large")
                 body = UploadMetadata.model_validate_json(unquote(metadata, errors="strict"))
-                data = await read_body(request, "upload", limit=MAX_UPLOAD_BYTES)
-            else:
-                raw = await json_body(request, "upload", limit=12 * 1024 * 1024)
-                legacy = UploadBody.model_validate(raw)
-                body = legacy
-                data = base64.b64decode(legacy.content_b64, validate=True)
-                if len(data) > 8 * 1024 * 1024:
-                    raise ValueError("legacy JSON upload exceeds 8 MiB; use binary upload")
+                return await _binary_upload(request, body, project, session)
+            raw = await json_body(request, "upload", limit=12 * 1024 * 1024)
+            legacy = UploadBody.model_validate(raw)
+            body = legacy
+            data = base64.b64decode(legacy.content_b64, validate=True)
+            if len(data) > 8 * 1024 * 1024:
+                raise ValueError("legacy JSON upload exceeds 8 MiB; use binary upload")
     except (ValidationError, ValueError):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid upload body") from None
     except TimeoutError:
@@ -106,6 +107,41 @@ async def _uploaded(request: web.Request) -> web.Response:
         data,
     )
     return json_answer(result.model_dump_json())
+
+
+async def _binary_upload(
+    request: web.Request, metadata: UploadMetadata, project: str, session: str
+) -> web.Response:
+    """Admit before reading, and own staged bytes through cancellation and commit."""
+    if request.headers.get(hdrs.CONTENT_ENCODING, "identity") != "identity":
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "encoded upload bodies are unsupported")
+    if request.content_length is not None and request.content_length > MAX_UPLOAD_BYTES:
+        raise TooLargeError("upload exceeds its byte limit")
+    store = UserUploads(request.app[CONTEXT].writer)
+    writer, cancelled = await held(
+        asyncio.to_thread(
+            store.begin,
+            project,
+            session,
+            metadata.upload_id,
+            metadata.filename,
+            metadata.media_type,
+            expected_size=request.content_length,
+        )
+    )
+    try:
+        if cancelled:
+            raise asyncio.CancelledError
+        size = 0
+        async for chunk in request.content.iter_chunked(_CHUNK):
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                raise TooLargeError("upload exceeds its byte limit")
+            await _offload(writer.write, chunk)
+        result = await _offload(writer.commit)
+        return json_answer(result.model_dump_json())
+    finally:
+        await _offload(writer.discard)
 
 
 async def listed(request: web.Request) -> web.Response:
@@ -133,26 +169,38 @@ async def downloaded(request: web.Request) -> web.StreamResponse:
         async with asyncio.timeout(context.timeouts.upload), context.uploads:
             store = UserUploads(context.documents)
             found = await _offload(store.get, project, session, upload)
-            data = await _offload(store.content, project, session, upload)
-            response = web.StreamResponse(
-                headers={
-                    hdrs.CONTENT_TYPE: "application/octet-stream",
-                    hdrs.CONTENT_LENGTH: str(found.size),
-                    hdrs.CONTENT_DISPOSITION: "attachment; filename*=UTF-8''"
-                    + quote(found.filename, safe=""),
-                    hdrs.CACHE_CONTROL: "no-store",
-                }
-            )
-            await response.prepare(request)
-            # Keep transfer admission until the socket has drained, not just until a
-            # Response object holding 100 MiB has been returned to aiohttp.
-            view = memoryview(data)
-            for offset in range(0, len(data), 1024 * 1024):
-                await response.write(view[offset : offset + 1024 * 1024])
-            await response.write_eof()
+            manager = store.open_content(project, session, upload)
+            stream, cancelled = await held(asyncio.to_thread(manager.__enter__))
+            try:
+                if cancelled:
+                    raise asyncio.CancelledError
+                response = web.StreamResponse(
+                    headers={
+                        hdrs.CONTENT_TYPE: "application/octet-stream",
+                        hdrs.CONTENT_LENGTH: str(found.size),
+                        hdrs.CONTENT_DISPOSITION: "attachment; filename*=UTF-8''"
+                        + quote(found.filename, safe=""),
+                        hdrs.CACHE_CONTROL: "no-store",
+                        "X-Content-SHA256": found.sha256,
+                    }
+                )
+                await response.prepare(request)
+                if request.method != hdrs.METH_HEAD:
+                    remaining = found.size
+                    while remaining:
+                        chunk = await _offload(stream.read, min(_CHUNK, remaining))
+                        if not chunk:
+                            raise OSError("upload was truncated while streaming")
+                        await response.write(chunk)
+                        remaining -= len(chunk)
+                await response.write_eof()
+            finally:
+                await _offload(manager.__exit__, None, None, None)
             return response
-    except (ConnectionError, TimeoutError):
+    except (OSError, TimeoutError, asyncio.CancelledError) as error:
         if response is None or not response.prepared:
+            if isinstance(error, asyncio.CancelledError):
+                raise
             raise ProjectError(
                 ErrorKind.UNAVAILABLE, "download timed out; retry the file"
             ) from None
@@ -161,6 +209,8 @@ async def downloaded(request: web.Request) -> web.StreamResponse:
         response.force_close()
         if request.transport is not None:
             request.transport.close()
+        if isinstance(error, asyncio.CancelledError):
+            raise
         return response
 
 

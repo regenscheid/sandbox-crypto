@@ -343,23 +343,49 @@ def binary_headers(
 async def test_binary_upload_accepts_exactly_100_mib_and_retains_immutable_original(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
+    import tracemalloc
+    from collections.abc import AsyncIterator
+
     from sandbox_science.orchestrator.uploads import MAX_UPLOAD_BYTES
 
     client = await workspace(aiohttp_client, state_dir, static_dir)
-    raw = b"x" * MAX_UPLOAD_BYTES
-    response = await client.post(UPLOADS, data=raw, headers=binary_headers(client))
-    assert response.status == 200, await response.text()
-    found = await response.json()
+    block = bytes(range(256)) * 2048
+    expected = hashlib.sha256()
+    for _ in range(MAX_UPLOAD_BYTES // len(block)):
+        expected.update(block)
+
+    async def chunks(*, extra: bool = False) -> AsyncIterator[bytes]:
+        for _ in range(MAX_UPLOAD_BYTES // len(block)):
+            yield block
+        if extra:
+            yield b"!"
+
+    tracemalloc.start()
+    try:
+        response = await client.post(UPLOADS, data=chunks(), headers=binary_headers(client))
+        assert response.status == 200, await response.text()
+        found = await response.json()
+        content = await client.get(UPLOADS + "/binary/content")
+        digest, received = hashlib.sha256(), 0
+        async for part in content.content.iter_chunked(192 * 1024):
+            digest.update(part)
+            received += len(part)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
     assert found["size"] == 100 * 1024 * 1024
     assert found["filename"] == "équation-\U0001d6fc.pdf"
-    assert found["sha256"] == hashlib.sha256(raw).hexdigest()
-    content = await client.get(UPLOADS + "/binary/content")
-    assert hashlib.sha256(await content.read()).hexdigest() == found["sha256"]
-    replay = await client.post(UPLOADS, data=raw, headers=binary_headers(client))
+    assert found["sha256"] == digest.hexdigest() == expected.hexdigest()
+    assert received == MAX_UPLOAD_BYTES
+    # Both ends of a real HTTP transfer, scratch and hashing share this process.
+    assert peak < 32 * 1024 * 1024
+    replay = await client.post(UPLOADS, data=chunks(), headers=binary_headers(client))
     assert await replay.json() == found
     conflict = await client.post(UPLOADS, data=b"changed", headers=binary_headers(client))
     assert conflict.status == 409
-    too_big = await client.post(UPLOADS, data=raw + b"!", headers=binary_headers(client, "too-big"))
+    too_big = await client.post(
+        UPLOADS, data=chunks(extra=True), headers=binary_headers(client, "too-big")
+    )
     assert too_big.status == 413
     assert len((await (await client.get(UPLOADS)).json())["uploads"]) == 1
 
@@ -454,18 +480,18 @@ async def test_retained_uploads_are_serialized_across_tabs(
     client = await workspace(aiohttp_client, state_dir, static_dir)
     started, release = asyncio.Event(), threading.Event()
     loop = asyncio.get_running_loop()
-    create = UserUploads.create
+    begin = UserUploads.begin
     calls = 0
 
-    def held(self: UserUploads, *args: Any) -> UserUpload:
+    def held(self: UserUploads, *args: Any, **kwargs: Any) -> Any:
         nonlocal calls
         calls += 1
         if calls == 1:
             loop.call_soon_threadsafe(started.set)
             assert release.wait(10)
-        return create(self, *args)
+        return begin(self, *args, **kwargs)
 
-    monkeypatch.setattr(UserUploads, "create", held)
+    monkeypatch.setattr(UserUploads, "begin", held)
     first = asyncio.create_task(
         client.post(UPLOADS, data=b"first", headers=binary_headers(client, "first"))
     )
@@ -545,7 +571,7 @@ async def test_timed_out_store_write_keeps_admission_until_its_thread_finishes(
 
     monkeypatch.setattr(UserUploads, "create", held)
     first = asyncio.create_task(
-        client.post(UPLOADS, data=b"first", headers=binary_headers(client, "first"))
+        client.post(UPLOADS, json=body(b"first", identity="first"), headers=origin(client))
     )
     try:
         await asyncio.wait_for(started.wait(), 5)
@@ -553,16 +579,205 @@ async def test_timed_out_store_write_keeps_admission_until_its_thread_finishes(
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(asyncio.shield(first), 0.15)
         second = await client.post(
-            UPLOADS, data=b"second", headers=binary_headers(client, "second")
+            UPLOADS, json=body(b"second", identity="second"), headers=origin(client)
         )
         assert second.status == 503
         assert calls == 1
         release.set()
         assert (await first).status == 503
         # The committed original can be recovered by the same retry identity.
-        replay = await client.post(UPLOADS, data=b"first", headers=binary_headers(client, "first"))
+        replay = await client.post(
+            UPLOADS, json=body(b"first", identity="first"), headers=origin(client)
+        )
         assert replay.status == 200
         assert len((await (await client.get(UPLOADS)).json())["uploads"]) == 1
     finally:
         release.set()
         await first
+
+
+async def test_cancelled_binary_admission_disposes_returned_writer(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+
+    from sandbox_science.orchestrator.uploads import UserUploads
+    from sandbox_science.workspace import uploads
+    from sandbox_science.workspace.api import Timeouts
+
+    route = uploads.uploaded
+    first_request = True
+
+    async def timed_admission(request: web.Request) -> web.Response:
+        nonlocal first_request
+        if first_request:
+            first_request = False
+            async with asyncio.timeout(0.05):
+                return await route(request)
+        return await route(request)
+
+    monkeypatch.setattr(uploads, "uploaded", timed_admission)
+    client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=5))
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    begin = UserUploads.begin
+
+    def delayed(self: UserUploads, *args: Any, **kwargs: Any) -> Any:
+        writer = begin(self, *args, **kwargs)
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(5)
+        return writer
+
+    monkeypatch.setattr(UserUploads, "begin", delayed)
+    first = asyncio.create_task(
+        client.post(UPLOADS, data=b"first", headers=binary_headers(client, "cancelled"))
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        # The deadline cannot detach the acquired scratch/lock/admission owner.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(first), 0.15)
+        release.set()
+        assert (await first).status == 503
+    finally:
+        release.set()
+        await first
+    monkeypatch.setattr(UserUploads, "begin", begin)
+    # The exact same ID and bytes can be retried; no leaked live transfer owns it.
+    retried = await client.post(UPLOADS, data=b"first", headers=binary_headers(client, "cancelled"))
+    assert retried.status == 200, await retried.text()
+
+
+async def test_original_download_streams_without_convenience_body_read(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sandbox_science.orchestrator.uploads import UserUploads
+
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    raw = b"original" * (256 * 1024)
+    uploaded = await client.post(UPLOADS, data=raw, headers=binary_headers(client))
+    assert uploaded.status == 200
+
+    def materialize(*args: Any, **kwargs: Any) -> bytes:
+        raise AssertionError("HTTP download must not materialize a full upload")
+
+    monkeypatch.setattr(UserUploads, "content", materialize)
+    response = await client.get(UPLOADS + "/binary/content")
+    assert response.status == 200
+    digest = hashlib.sha256()
+    async for chunk in response.content.iter_chunked(192 * 1024):
+        digest.update(chunk)
+    assert digest.hexdigest() == hashlib.sha256(raw).hexdigest()
+    assert response.headers["X-Content-SHA256"] == digest.hexdigest()
+    head = await client.head(UPLOADS + "/binary/content")
+    assert head.status == 200
+    assert head.content_length == len(raw)
+    assert await head.read() == b""
+
+
+async def test_cancelled_download_acquisition_closes_returned_spool(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import tempfile
+    import threading
+    from collections.abc import Generator
+    from contextlib import contextmanager
+    from typing import BinaryIO
+
+    from aiohttp import ClientConnectionError
+
+    from sandbox_science.orchestrator.uploads import UserUploads
+    from sandbox_science.workspace import uploads
+    from sandbox_science.workspace.api import Timeouts
+
+    task: asyncio.Task[Any] | None = None
+    route = uploads.downloaded
+
+    async def tracked(request: web.Request) -> web.StreamResponse:
+        nonlocal task
+        if task is None:
+            task = asyncio.current_task()
+            async with asyncio.timeout(0.05):
+                return await route(request)
+        return await route(request)
+
+    monkeypatch.setattr(uploads, "downloaded", tracked)
+    client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=5))
+    assert (await client.post(UPLOADS, json=body(), headers=origin(client))).status == 200
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    original = UserUploads.open_content
+    opened: list[BinaryIO] = []
+
+    @contextmanager
+    def delayed(self: UserUploads, *args: Any) -> Generator[BinaryIO]:
+        with original(self, *args) as source, tempfile.TemporaryFile(mode="w+b") as stream:
+            stream.write(source.read())
+            stream.seek(0)
+            opened.append(stream)
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(5)
+            yield stream
+
+    monkeypatch.setattr(UserUploads, "open_content", delayed)
+    first = asyncio.create_task(client.get(UPLOADS + "/upload-test/content"))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        # Deadline cancellation must wait for the actual acquired resource.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(first), 0.15)
+        assert not opened[0].closed
+        assert task is not None
+        task.cancel()  # repeated cancellation still cannot detach acquisition
+        release.set()
+        try:
+            response = await first
+        except ClientConnectionError:
+            pass
+        else:
+            # aiohttp may retry the disconnected idempotent GET once.
+            assert response.status == 200
+            assert await response.read() == b"# Notes\n\n$E = mc^2$"
+    finally:
+        release.set()
+        await asyncio.gather(first, return_exceptions=True)
+    assert opened[0].closed
+    monkeypatch.setattr(UserUploads, "open_content", original)
+    second = await client.get(UPLOADS + "/upload-test/content")
+    assert second.status == 200
+    assert await second.read() == b"# Notes\n\n$E = mc^2$"
+
+
+async def test_chunked_upload_enforces_limit_without_content_length(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections.abc import AsyncIterator
+
+    from sandbox_science.workspace import uploads
+
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    monkeypatch.setattr(uploads, "MAX_UPLOAD_BYTES", 4096)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        for _ in range(5):
+            yield b"x" * 1024
+
+    response = await client.post(UPLOADS, data=chunks(), headers=binary_headers(client))
+    assert response.status == 413
+    assert (await (await client.get(UPLOADS)).json())["uploads"] == []
+    retry = await client.post(UPLOADS, data=b"complete", headers=binary_headers(client))
+    assert retry.status == 200, await retry.text()

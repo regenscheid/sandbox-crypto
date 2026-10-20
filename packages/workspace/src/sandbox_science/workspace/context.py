@@ -41,7 +41,7 @@ class WorkspaceContext:
     job_state: JobState | None
     timeouts: Timeouts
     uploads: asyncio.Lock = field(default_factory=asyncio.Lock)
-    """One upload, original download or delivery is materialized at a time across tabs."""
+    """One original upload/download or full-body sandbox delivery at a time across tabs."""
 
 
 CONTEXT: Final = web.AppKey("workspace_context", WorkspaceContext)
