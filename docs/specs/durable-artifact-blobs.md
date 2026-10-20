@@ -86,3 +86,38 @@ Install the optional SDK and configure/archive/evict content with the
 temporary directory (`TMPDIR`); cluster manifests must put it on bounded ephemeral
 storage or an explicitly selected volume. Successful reads remove that scratch
 on close; a killed process can leave filesystem-level cleanup to its owning pod.
+
+## Uploaded originals (2026-10-20)
+
+New immutable user uploads use the same verified control-owned blob store and
+optional S3 backing. Existing inline uploads remain unchanged and readable; an
+append-only schema migration adds external upload metadata/references and durable
+transfer reservations without rewriting the legacy BLOB table. Session/project
+ownership, upload IDs, names, media types, hashes, sequence numbers and quotas
+remain shared across both representations. A retry of an ID with different
+metadata or bytes is a conflict, including an interrupted attempt whose bytes
+have already been installed but whose metadata commit is incomplete.
+
+Upload transfer admission allows four overall and two per project, each reserving
+at most 100 MiB before reading its body. These reservations count against the
+existing 2 GiB/project and 8 GiB/overall original-upload retention quotas, with
+1,024 and 4,096 retained-upload count limits. Replays of committed IDs do not
+charge retained bytes/count twice, but still require transfer admission. Unknown
+or installed-but-uncommitted transfers retain their charge; retries must reconcile
+the original identity and exact bytes rather than clear a hold or replay mutable
+research operations. A live transfer owner cannot be replaced by another request.
+
+Binary HTTP bodies are read in bounded chunks into admitted private scratch, then
+copied into the hash-named blob store after the digest is known. Scratch can peak
+at twice admitted bytes during that copy (800 MiB overall); close the initial
+scratch before remote upload/readback. Only a verified blob followed by a committed
+immutable reference completes an upload. Cancellation retains admission until the
+actual I/O drains. Quota checks/metadata changes are short transactions, never held
+across object-store or body I/O. An exact-ID retry reconciles a retained outcome.
+
+Full downloads use a verified seekable stream and fixed-size network writes,
+outside SQL transactions. Legacy inline originals are copied/verified into private
+scratch before yielding. Small JSON uploads and bounded document/worker-delivery
+consumers may retain the existing convenience byte API. Archive/evict enumeration
+includes external upload references, never rewrites or deletes legacy rows, and
+never deletes the originals from object storage.
