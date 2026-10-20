@@ -58,6 +58,10 @@ from sandbox_science.contracts import (
     WorkerErrorResponse,
     WriteFileRequest,
 )
+from sandbox_science.contracts.artifact_retention import (
+    MAX_RETENTION_ACK_BYTES,
+    ArtifactRetentionAcknowledgement,
+)
 from sandbox_science.contracts.documents import (
     MAX_CATALOG_PAGE_BYTES,
     MAX_CONTENT_BODY,
@@ -133,6 +137,7 @@ class Client:
     document_catalog: bool = False
     recovery_control: bool = False
     operator: bool = False
+    artifact_retention: bool = False
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -181,7 +186,14 @@ def create_app(
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
-    pool = Client("pool", None, document_catalog=True, recovery_control=True, operator=True)
+    pool = Client(
+        "pool",
+        None,
+        document_catalog=True,
+        recovery_control=True,
+        operator=True,
+        artifact_retention=True,
+    )
     by_digest = {
         c.token_sha256: Client(
             c.name,
@@ -190,6 +202,7 @@ def create_app(
             c.document_catalog,
             c.recovery_control,
             c.operator,
+            c.artifact_retention,
         )
         for c in clients
     }
@@ -349,6 +362,7 @@ def create_app(
             web.post("/v1/artifacts", publish),
             web.get("/v1/artifacts/{artifact_id}", get_artifact),
             web.get("/v1/artifacts/{artifact_id}/content", get_artifact_content),
+            web.post("/v1/artifacts/{artifact_id}/retention", acknowledge_artifact_retention),
         ]
     )
 
@@ -410,7 +424,7 @@ async def _catalog_body[T: BaseModel](request: web.Request, model: type[T], limi
     while part := await request.content.read(min(16_384, limit + 1 - len(data))):
         data.extend(part)
         if len(data) > limit:
-            raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog request exceeds byte limit")
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "request exceeds byte limit")
     return model.model_validate_json(bytes(data))
 
 
@@ -1261,6 +1275,24 @@ def _artifact(request: web.Request) -> ArtifactRef:
 
 async def get_artifact(request: web.Request) -> web.Response:
     return _json(_artifact(request))
+
+
+async def acknowledge_artifact_retention(request: web.Request) -> web.Response:
+    """Authenticate and scope before accepting the exact durable control receipt."""
+    if not _client(request).artifact_retention:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "artifact retention needs control permission")
+    artifact_id = _identifier(request.match_info["artifact_id"], "artifact_id")
+    retention = request.app[MANAGER].store.artifact_retention
+    artifact = retention.original(artifact_id)
+    _visible(request, artifact.project_id, "artifact")
+    project = _project(request)
+    if project is not None and project != artifact.project_id:
+        raise WorkerError(ErrorKind.NOT_FOUND, "no artifact")
+    body = await _catalog_body(request, ArtifactRetentionAcknowledgement, MAX_RETENTION_ACK_BYTES)
+    if body.snapshot.artifact_id != artifact.artifact_id:
+        raise WorkerError(ErrorKind.CONFLICT, "retention snapshot differs from route artifact")
+    _visible(request, body.snapshot.project_id, "artifact")
+    return _json(retention.acknowledge(body))
 
 
 async def get_artifact_content(request: web.Request) -> web.StreamResponse:

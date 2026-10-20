@@ -21,6 +21,7 @@ import logging
 import os
 import secrets
 import signal
+import sqlite3
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -34,6 +35,8 @@ from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy.store import StoreError
 
 from .admission import DraftWatcher
+from .artifact_retention import MAX_RELEASE_PAGE
+from .artifacts import Blobs
 from .build import build_worker
 from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
@@ -196,6 +199,29 @@ def show_captures(settings: Settings, clear: Sequence[str]) -> int:
 _IDENTIFIER = TypeAdapter[str](Identifier)
 
 
+def release_artifacts(settings: Settings, *, apply: bool, limit: int, after: str | None) -> int:
+    """Inspect or release one offline page under the worker's exclusive state lease."""
+    try:
+        with StateLock(settings.state_dir):
+            path = settings.state_dir / "worker.sqlite3"
+            if not path.is_file():
+                raise SettingsError(f"no worker store at {path}; check state_dir")
+            store = Store(path)
+            try:
+                page = store.artifact_retention.release_page(
+                    Blobs(settings.state_dir / "artifacts"), apply=apply, limit=limit, after=after
+                )
+                for entry in page.entries:
+                    print(f"{entry.sha256} {entry.size} {entry.status} {entry.reason}".rstrip())
+                print(f"next_after={page.next_after or 'none'}")
+            finally:
+                store.close()
+    except (SettingsError, WorkerError, OSError, ValueError, sqlite3.Error) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _project(value: str) -> str:
     try:
         return _IDENTIFIER.validate_python(value)
@@ -249,6 +275,15 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="forget this lease, once its sandbox cleaned up or is gone (repeatable)",
     )
+    retention_parser = commands.add_parser(
+        "artifact-retention", help="offline capture replica release; dry-run by default"
+    )
+    retention_parser.add_argument("--settings", type=Path, required=True)
+    retention_parser.add_argument("--apply", action="store_true", help="unlink eligible CAS blobs")
+    retention_parser.add_argument(
+        "--limit", type=int, choices=range(1, MAX_RELEASE_PAGE + 1), default=10
+    )
+    retention_parser.add_argument("--after", help="continue after this SHA-256 cursor")
     args = parser.parse_args(argv)
     if args.command == "token":
         if args.out is not None:
@@ -271,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         # The line a [[clients]] entry takes; the digest names the token without revealing it.
         print(f'token_sha256 = "{token_digest(token)}"')
         return 0
-    if args.command in ("policy", "admissions", "captures"):
+    if args.command in ("policy", "admissions", "captures", "artifact-retention"):
         try:
             settings = load_settings(args.settings)
         except SettingsError as exc:
@@ -281,6 +316,8 @@ def main(argv: list[str] | None = None) -> int:
             return add_policies(settings, args.policies, args.projects)
         if args.command == "captures":
             return show_captures(settings, args.clear)
+        if args.command == "artifact-retention":
+            return release_artifacts(settings, apply=args.apply, limit=args.limit, after=args.after)
         return show_admissions(settings, args.environment)
     logging.basicConfig(
         level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"

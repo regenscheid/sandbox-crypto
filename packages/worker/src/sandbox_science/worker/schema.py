@@ -37,6 +37,7 @@ from typing import Final
 
 from sandbox_science.contracts import ErrorKind
 
+from .artifact_retention import create_schema as _artifact_retention
 from .errors import WorkerError
 
 BASELINE: Final = 1
@@ -264,6 +265,7 @@ MIGRATIONS: list[Migration] = [
     _run_kernels,
     _recovery_fences,
     _workspace_prefixes,
+    _artifact_retention,
 ]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 

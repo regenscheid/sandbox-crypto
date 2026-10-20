@@ -185,6 +185,8 @@ class ClientSettings(_Model):
     """Trusted host control service may install recovery epochs for its projects."""
     operator: bool = Field(default=False, strict=True)
     """Authenticated maintenance may mutate fenced sessions without agent authority."""
+    artifact_retention: bool = Field(default=False, strict=True)
+    """Control service may acknowledge durable artifact retention for its projects."""
 
 
 class Settings(_Model):

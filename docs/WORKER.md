@@ -28,7 +28,7 @@ flowchart LR
 - **Backends** (`backends.py`) start executors:
   - **`openshell`** copies the executor and its helpers into a configured sandbox with `openshell sandbox upload`, and runs its daemon bridge through isolated OpenShell-generated SSH configuration, without a PTY or login shell. Its [bounded stop-and-wait request transport](specs/worker-stream-transport.md) avoids OpenShell 0.1.3's cumulative stdin cap; OpenShell requires `daemon=true`. Its required `isolation_tier` setting declares the tier the gateway's driver gives: 3 for the VM driver on babbage (D43).
   - **`local`** runs the executor as a plain subprocess of the worker. It has **no isolation**: it declares tier 0, and its probe shows why. It exists for development and tests, and the harness refuses it unless told otherwise (`--allow-unisolated`).
-- **Other worker modules**: `cli.py` (the `sandbox-science-worker` commands), `settings.py` (the settings file), `state_lock.py` (one worker per state directory), `build.py` (`build_worker`, which builds the worker from its settings for `serve`), `lifecycle.py` (what the manager needs from the sandboxes the worker manages, given when it is built), `store.py` (the SQLite state) with `schema.py` and `baseline.sql` (its version and migrations), `identity.py` (the request digests that bind operation IDs), `channel.py` (one executor connection), `timeouts.py` (the manager's grace periods, deadlines and polling intervals, as constructor parameters), `environments.py`, `admission.py` and `suspend.py` (sandboxes the worker manages), `isolation.py` (the tier probe), `shared_sync.py` (shared data), `revisions.py` and `package_gate.py` (package revisions and the recovery fence), `artifacts.py` (artifact blobs), `package_clients.py` (package-cache configuration), the read-only views `provision_observations.py`, `lockfile_diffs.py`, `kernel_revisions.py` and `output_observations.py`, the provisioning records `installer_records.py` and `provision_events.py`, and the parked `documents_catalog.py`.
+- **Other worker modules**: `cli.py` (the `sandbox-science-worker` commands), `settings.py` (the settings file), `state_lock.py` (one worker per state directory), `build.py` (`build_worker`, which builds the worker from its settings for `serve`), `lifecycle.py` (what the manager needs from the sandboxes the worker manages, given when it is built), `store.py` (the SQLite state) with `schema.py` and `baseline.sql` (its version and migrations), `identity.py` (the request digests that bind operation IDs), `channel.py` (one executor connection), `timeouts.py` (the manager's grace periods, deadlines and polling intervals, as constructor parameters), `environments.py`, `admission.py` and `suspend.py` (sandboxes the worker manages), `isolation.py` (the tier probe), `shared_sync.py` (shared data), `revisions.py` and `package_gate.py` (package revisions and the recovery fence), `artifacts.py` (artifact blobs), `artifact_retention.py` (durable capture acknowledgements and offline replica release), `package_clients.py` (package-cache configuration), the read-only views `provision_observations.py`, `lockfile_diffs.py`, `kernel_revisions.py` and `output_observations.py`, the provisioning records `installer_records.py` and `provision_events.py`, and the parked `documents_catalog.py`.
 
 Environment lifecycle commands run through `OpenShellCli`. On timeout or caller
 cancellation, cleanup tolerates a CLI process that has already exited and retains
@@ -62,6 +62,7 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `POST /v1/skills/put` | `StagePutRequest` → `StagePutResult`: a batch of a pack's files where its snapshot is staged; with `reset`, after removing what is there |
 | `POST /v1/artifacts` | `PublishRequest` → `ArtifactRef` (201). A `media_type` must be `type/subtype`, with optional `; name=value` parameters |
 | `GET /v1/artifacts/{id}` | → `ArtifactRef` |
+| `POST /v1/artifacts/{id}/retention` | `ArtifactRetentionAcknowledgement` → exact echo (protocol 11); explicit `artifact_retention` control permission, project scoped, body at most 16 KiB |
 | `GET /v1/artifacts/{id}/content` | → the bytes, with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
 | `GET /v1/ready` | Authenticated passive protocol readiness; creates no environment or executor |
 | `POST /v1/environments` | `EnvironmentRequest` → `EnvironmentInfo`: 201 when created, 200 when the same environment exists, 409 when it exists with another project, profile or policy ([environments](#environments)) |
@@ -491,6 +492,45 @@ The command takes the same lock, so it refuses while a worker runs. Run it as th
 for exact bounds and client-disconnect semantics. Checked on OpenShell in
 [Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md); lost
 transport, blocked host work and corrupt state are covered by local tests only.
+
+## Offline capture replica retention
+
+An authenticated control service with `artifact_retention = true` in its `[[clients]]`
+entry may acknowledge that it durably retained an exact worker snapshot and matching
+control revision. The pool token has this permission; ordinary clients default to
+false. Every original metadata field must match. The worker retains the complete ACK
+and timestamp: identical retry succeeds, changed reuse of its ID conflicts. This ACK
+is separate from capture-helper cleanup and does not itself delete bytes.
+
+With the worker stopped, the operator may inspect or apply a bounded page:
+
+```bash
+sandbox-science-worker artifact-retention --settings worker.toml --limit 10
+sandbox-science-worker artifact-retention --settings worker.toml --apply --limit 10
+sandbox-science-worker artifact-retention --settings worker.toml --apply --after HASH
+```
+
+The default is dry-run; `--apply` releases eligible CAS replicas. The command holds
+the same exclusive `StateLock` as `serve`, and refuses an active worker. `--limit`
+is 1–100 distinct hashes (default 10); `next_after` names the next page's `--after`
+cursor, or `none` at the end. Start again without `--after` for another full sweep.
+Opening the store applies pending worker schema migrations, as `serve` does.
+
+Every reference sharing a hash, including other projects, needs an exact ACK.
+Installer-log references always pin their shared bytes. Invalid references pin their
+hash; an unreadable, oversized or unclassifiable hash reference conservatively pins
+all candidates. More than 1,000 references for one hash also retains it. The command
+examines only hash-named blobs referenced by worker metadata. It preserves metadata,
+workspaces, capture helpers, staging, orphan files and PVCs.
+
+Release commits a FULL-synchronous intent before unlink, fsyncs the blob directory,
+then records settlement. A crash leaves the same intent available to reconcile on
+the next offline run. New identical captures may install the bytes again: every
+release rechecks all current references and starts a new intent after a previously
+settled release. Artifact metadata remains available; a missing content download
+returns 404 and never recaptures a mutable source path. Direct library callers must
+provide the same exclusive state lease. Online deletion still needs reader and
+writer fences and is outside this command.
 
 ## Worker-local output observations
 
