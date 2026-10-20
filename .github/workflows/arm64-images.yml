@@ -93,10 +93,6 @@ jobs:
             amd64:x86_64 | arm64:aarch64) ;;
             *) echo 'image job is not on its native architecture' >&2; exit 1 ;;
           esac
-      - name: Start direct registry builder
-        run: |
-          docker buildx create --name ss-native-publish --driver docker-container --use
-          docker buildx inspect ss-native-publish --bootstrap
       - name: Publish and test architecture digest
         env:
           BUILDER: ss-native-publish
@@ -115,6 +111,8 @@ jobs:
           trap 'rm -rf "$config"' EXIT
           export DOCKER_CONFIG="$config"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker buildx create --name "$BUILDER" --driver docker-container --use
+          docker buildx inspect "$BUILDER" --bootstrap
           images/publish_arch.sh "$PROFILE" "ghcr.io/$REPOSITORY/$PROFILE" "$GITHUB_RUN_ID"
 
   merge-platforms:
