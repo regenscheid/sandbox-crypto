@@ -237,11 +237,16 @@ The rest of the application config also needs these Mac-specific corrections:
    settings into a temporary private copy of the config for each launch.
 4. Point the OpenShell service settings at the ones `launch` runs, under
    `<volume>/<directory>/services`; the helper checks them and prints the exact
-   values when one differs:
+   values when one differs. `cc` is the compiler the worker builds its
+   scheduler shim with: the shim is preloaded in the Linux guest, so on a Mac
+   it is cross-compiled with `zig cc` (which `install` installs through
+   Homebrew), through a wrapper `launch` writes; the host's own `cc` cannot
+   build it, and Jupyter kernels would not start without it:
 
    ```toml
    [openshell]
    package_cache = "http://host.openshell.internal:18083"
+   cc = "/Volumes/Research/SandboxScience/cache/bin/cc-linux-aarch64"
 
    [openshell.environments]
    policy_store = "/Volumes/Research/SandboxScience/services/middleware/state"

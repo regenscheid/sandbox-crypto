@@ -497,6 +497,8 @@ def install(settings: Settings) -> None:
         run([brew, "install", "e2fsprogs"])
     if shutil.which("uv") is None:
         run([brew, "install", "uv"])
+    if shutil.which("zig") is None:
+        run([brew, "install", "zig"])
     installed = shutil.which("openshell")
     version = run([installed, "--version"], capture=True) if installed else ""
     if installed and not pinned_version(version):
@@ -733,6 +735,40 @@ PLACEHOLDER_PROFILES: Final = {"github-token": "examples/openshell/profiles/gith
 for github-readonly: public repositories work without a real token."""
 
 
+SHIM_TARGET: Final = "aarch64-linux-gnu.2.28"
+"""What the worker's scheduler shim is built for: the Linux ARM64 guest, glibc 2.28 or
+newer, not the macOS host (packages/worker/src/sandbox_science/worker/shim)."""
+
+
+def cross_compiler(settings: Settings) -> Path:
+    """The C compiler the worker builds its scheduler shim with, for the Linux guest."""
+    return settings.root / "cache/bin/cc-linux-aarch64"
+
+
+def write_cross_compiler(settings: Settings) -> None:
+    """Write the worker's shim compiler: zig's C compiler, targeting the Linux guest.
+
+    The worker builds the shim with the host's ``cc`` and preloads it in the sandbox, so
+    on a Mac host that ``cc`` must cross-compile. zig carries the glibc headers and stubs
+    a Linux target needs; its caches stay on the selected volume.
+    """
+    zig = require_command("zig")
+    path = cross_compiler(settings)
+    if path.parent.is_symlink():
+        raise SetupError(f"State directory must not be a symlink: {path.parent}")
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    cache = settings.root / "cache/zig"
+    write_private(
+        path,
+        "#!/bin/sh\n"
+        "# Written by scripts/mac_local.py: the worker's scheduler shim, for the Linux guest.\n"
+        f"export ZIG_GLOBAL_CACHE_DIR={json.dumps(str(cache))}\n"
+        f"export ZIG_LOCAL_CACHE_DIR={json.dumps(str(cache))}\n"
+        f'exec {json.dumps(zig)} cc -target {SHIM_TARGET} "$@"\n',
+    )
+    path.chmod(0o700)
+
+
 def services_dir(settings: Settings) -> Path:
     """The services' state: certificates, policy store, ceiling, cache and settings."""
     return settings.root / "services"
@@ -752,6 +788,7 @@ def expected_app_values(settings: Settings) -> dict[str, str]:
     return {
         "state_dir": str(settings.root / "app"),
         "openshell.package_cache": f"http://host.openshell.internal:{settings.package_cache_port}",
+        "openshell.cc": str(cross_compiler(settings)),
         "openshell.environments.policy_store": str(services / "middleware/state"),
         "openshell.environments.targets": str(services / "targets.yaml"),
         "openshell.environments.ceiling": str(services / "middleware/pool-ceiling.yaml"),
@@ -1129,6 +1166,7 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
     services: list[subprocess.Popen[bytes]] = []
     try:
         if app_settings is not None:
+            write_cross_compiler(settings)
             gateway_file = write_service_settings(settings, app_settings, driver_dir)
             start_services(settings, app_settings, services)
         log_path = settings.root / "gateway/gateway.log"

@@ -519,6 +519,7 @@ def app_config(chosen: Any, **changes: str) -> dict[str, Any]:
         "worker": {"policy": "policy.yaml"},
         "openshell": {
             "package_cache": values["openshell.package_cache"],
+            "cc": values["openshell.cc"],
             "environments": environments,
         },
     }
@@ -597,3 +598,25 @@ def test_service_ports_must_differ(tmp_path: Path) -> None:
     config.write_text(f'volume = "{tmp_path}"\nmiddleware_port = 18081\n')
     with pytest.raises(mac.SetupError, match="must differ"):
         mac.read_settings(config)
+
+
+def test_the_worker_cross_compiles_its_shim_for_the_linux_guest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    monkeypatch.setattr(mac, "require_command", lambda name: f"/opt/homebrew/bin/{name}")
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+    mac.write_cross_compiler(chosen)
+    wrapper = mac.cross_compiler(chosen)
+    text = wrapper.read_text()
+    assert wrapper.stat().st_mode & 0o777 == 0o700
+    assert 'exec "/opt/homebrew/bin/zig" cc -target aarch64-linux-gnu.2.28 "$@"' in text
+    assert f'ZIG_GLOBAL_CACHE_DIR="{chosen.root / "cache/zig"}"' in text
+    source = tmp_path / "private/sandbox-science.toml"
+    source.parent.mkdir()
+    (source.parent / "policy.yaml").write_text("kind: ProjectPolicy\n")
+    config = app_config(chosen)
+    config["openshell"]["cc"] = "cc"
+    with pytest.raises(mac.SetupError, match=re.escape(f'openshell.cc = "{wrapper}"')):
+        mac.check_app_config(chosen, source, config)
