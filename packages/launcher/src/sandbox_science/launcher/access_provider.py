@@ -15,6 +15,7 @@ It:
    (``FAKE_*``), or one that loads code into a program (``LD_*``);
 2. refuses an OpenShell CLI that is not an absolute path to a regular file the user or
    root owns, which its group and others may not write, outside every git checkout
+   but in an installed Homebrew package (Homebrew's prefix is its own checkout)
    (this repository and its worktrees among them);
 3. refuses ENV_FILE unless it is a regular file, not a symbolic link, with one link,
    that the user owns and its group and others may neither read nor write, in a
@@ -93,10 +94,16 @@ def check_environment(environment: Mapping[str, str]) -> None:
 
 
 def _in_checkout(path: Path) -> Path | None:
-    """The git checkout that holds ``path``, if one does."""
+    """The git checkout that holds ``path``, if one does.
+
+    Homebrew's prefix on Apple Silicon, ``/opt/homebrew``, is Homebrew's own git
+    checkout, and its installed packages are in its ``Cellar``, which that checkout
+    ignores: a program there is installed, not checked out.
+    """
     for folder in path.parents:
         if (folder / ".git").exists():
-            return folder
+            homebrew = (folder / "Library/Homebrew/brew.sh").is_file()
+            return None if homebrew and path.is_relative_to(folder / "Cellar") else folder
     return None
 
 
