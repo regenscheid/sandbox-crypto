@@ -9,7 +9,7 @@ import contextlib
 from pathlib import Path
 
 import aiohttp
-from pydantic import Field, JsonValue, TypeAdapter
+from pydantic import Field, JsonValue, TypeAdapter, field_validator, model_validator
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.model import Contract, Identifier
@@ -20,6 +20,7 @@ from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
 from sandbox_science.orchestrator.skills.embeddings import Embedder
 
 from .embeddings import RuntimeEmbeddings
+from .endpoints import client_tls, control_endpoint, control_trace
 from .models import RuntimeModels
 from .runtime_loop import RuntimeLoops
 from .scheduling import Scheduling
@@ -36,7 +37,8 @@ from .wire import MAX_MODEL_RESPONSE_BYTES, Hello, ModelAlias, Ready, payload, t
 
 
 class RuntimeSettings(Contract):
-    control_url: str = Field(pattern=r"^http://[A-Za-z0-9.-]+:[0-9]{1,5}/control$")
+    control_url: str = Field(min_length=1, max_length=2048)
+    control_ca_file: Path | None = None
     token_file: Path
     model_url: str = Field(min_length=1, max_length=2048)
     model_key_file: Path
@@ -51,6 +53,17 @@ class RuntimeSettings(Contract):
     embedding: ModelAlias | None = None
     thinking_replay: ThinkingReplay | None = None
     generation: Identifier
+
+    @field_validator("control_url")
+    @classmethod
+    def valid_control_url(cls, value: str) -> str:
+        return control_endpoint(value)
+
+    @model_validator(mode="after")
+    def ca_requires_tls(self) -> RuntimeSettings:
+        if self.control_ca_file is not None and not self.control_url.startswith("https://"):
+            raise ValueError("a control CA requires an HTTPS control endpoint")
+        return self
 
 
 async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> None:
@@ -86,7 +99,9 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
             ),
         },
     )
-    session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(sock_connect=10))
+    session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(sock_connect=10), trace_configs=[control_trace()]
+    )
     loops: RuntimeLoops | None = None
     try:
         # The endpoint and egress are fixed by trusted launcher configuration;
@@ -98,6 +113,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 CONTROL_HEADER: str(CONTROL_PROTOCOL),
             },
             max_msg_size=MAX_FRAME_BYTES,
+            ssl=client_tls(settings.control_ca_file),
             heartbeat=15,
             autoping=True,
         ) as socket:

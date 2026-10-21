@@ -222,3 +222,38 @@ for role-specific reasoning effort. Older control/runtime peers are refused.
 Unexpected capability failures retain a local diagnostic with capability name, exception
 class and stack locations, never request payloads, exception text or local variables.
 Prepared host callbacks restore both captured ownership and model-profile context.
+
+### Verified cluster callback
+
+The control command remains `sandbox-science-control --settings control.json`.
+`listen` defaults to `127.0.0.1:8202`; any non-loopback IP bind requires an explicit
+`tls` object with `certificate` and `private_key` file paths. IPv6 bind addresses
+are bracketed. The key must be a private regular file, as capability tokens are;
+projected Kubernetes Secret files must be copied into private regular mode-600
+files before use. A missing or unusable TLS identity prevents startup.
+
+The separate runtime command remains
+`sandbox-science-agent-runtime --settings runtime.json`. Its `control_url` accepts
+an explicit HTTPS `/control` endpoint; `control_ca_file` optionally adds a private
+CA to system trust. Certificate and hostname verification are always enabled,
+redirects are refused before following them, and userinfo, query strings, fragments
+and other paths are invalid. Existing HTTP callbacks for the local OpenShell path
+remain supported. A CA file cannot be paired with HTTP. These are trusted
+deployment settings, unavailable to agent tools. TLS does not replace runtime
+capability, protocol, image, generation or exclusive-connection checks.
+
+`GET /live` reports process availability. `GET /ready` reports whether the service
+accepts admission (200, or 503 during shutdown), independently of runtime presence.
+`GET /health` retains `ready`, `protocol`, `runtime_connected` and
+`runtime_draining`, and adds `process_alive`, `service_ready`, `draining` and
+`runtime_ready` (a connected runtime whose image/worker handshake succeeded).
+These passive probes create no stores, sandboxes, model calls or recovery intent.
+Readiness must not depend on runtime connection: the runtime needs the Service
+before connecting. Probes expose no project, credential or prompt data.
+
+SIGTERM stops admission and closes the active WebSocket while owned admitted
+effects and service cleanup drain. Successful retained effects keep their original
+identities; socket shutdown does not stop research sandboxes, submit a replacement
+operation or create Resume intent. The deployment must allow sufficient termination
+grace for receipt cleanup; a forced process kill still follows durable interruption
+and explicit recovery semantics, not an exactly-once process-memory guarantee.

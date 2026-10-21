@@ -9,11 +9,11 @@ import hashlib
 import hmac
 import stat
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from aiohttp import web
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.connectors import ProxyClient
@@ -41,7 +41,9 @@ from sandbox_science.orchestrator.skills.store import SkillStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .embeddings import CallbackEmbedder
+from .endpoints import ServerTLS, bind_address, loopback
 from .host import HostLoops
+from .lifecycle import ControlLifecycle
 from .metadata import Metadata
 from .models import CallbackGateway, CallbackModel
 from .transport import (
@@ -88,7 +90,8 @@ class CheckSettings(Contract):
 
 class ControlSettings(Contract):
     state_dir: Path
-    listen: str = Field(pattern=r"^127\.0\.0\.1:[0-9]{1,5}$")
+    listen: str = "127.0.0.1:8202"
+    tls: ServerTLS | None = None
     worker: str = Field(min_length=1, max_length=2048)
     worker_token_file: Path
     runtime_token_file: Path
@@ -108,6 +111,18 @@ class ControlSettings(Contract):
     metadata: ModelAlias | None = None
     checks: CheckSettings | None = None
     image_revision: str = Field(min_length=1, max_length=128)
+
+    @field_validator("listen")
+    @classmethod
+    def valid_listen(cls, value: str) -> str:
+        bind_address(value)
+        return value
+
+    @model_validator(mode="after")
+    def remote_tls(self) -> ControlSettings:
+        if not loopback(self.listen) and self.tls is None:
+            raise ValueError("a non-loopback control bind requires TLS")
+        return self
 
 
 def private_credential(path: Path, *, minimum: int = 1, maximum: int = 4096) -> str:
@@ -129,23 +144,23 @@ def private_token(path: Path) -> str:
 def create_app(settings: ControlSettings) -> web.Application:
     """Create a service that admits only the launcher's current scoped runtime token."""
     app = web.Application(client_max_size=MAX_FRAME_BYTES)
-    occupied = False
-    runtime: Channel | None = None
+    lifecycle = ControlLifecycle()
 
     async def health(request: web.Request) -> web.Response:
-        connected = runtime is not None and not runtime.closed
         return web.json_response(
-            {
-                "ready": True,
-                "protocol": CONTROL_PROTOCOL,
-                "runtime_connected": connected,
-                "runtime_draining": occupied and not connected,
-            },
+            lifecycle.health(),
             headers={CONTROL_HEADER: str(CONTROL_PROTOCOL)},
         )
 
+    async def ready(request: web.Request) -> web.Response:
+        response = await health(request)
+        response.set_status(503 if lifecycle.draining else 200)
+        return response
+
+    async def live(request: web.Request) -> web.Response:
+        return web.json_response({"process_alive": True, "draining": lifecycle.draining})
+
     async def control(request: web.Request) -> web.WebSocketResponse:
-        nonlocal occupied, runtime
         header = request.headers.get("Authorization", "")
         expected = private_token(settings.runtime_token_file)
         supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
@@ -153,20 +168,24 @@ def create_app(settings: ControlSettings) -> web.Application:
             raise web.HTTPNotFound()
         if request.headers.get(CONTROL_HEADER) != str(CONTROL_PROTOCOL):
             raise web.HTTPUnprocessableEntity(text="control protocol mismatch")
-        if occupied:
+        if lifecycle.draining:
+            raise web.HTTPServiceUnavailable(text="control service is draining")
+        if lifecycle.occupied:
             raise web.HTTPConflict(text="a runtime already owns this control connection")
         # Admission ownership outlives the socket while admitted effects drain.
         # Health must not present that cleanup period as a connected runtime.
-        occupied = True
         token_digest = hashlib.sha256(supplied.encode()).digest()
         socket = web.WebSocketResponse(max_msg_size=MAX_FRAME_BYTES, heartbeat=15)
-        projects = ProjectStore(settings.state_dir)
-        documents = DocumentStore(store_path(settings.state_dir), producer="harness")
+        lifecycle.claim(socket)
+        projects: ProjectStore | None = None
+        documents: DocumentStore | None = None
         proxy: ProxyClient | None = None
         loops: HostLoops | None = None
         service: RunService | None = None
         hello = False
         try:
+            projects = ProjectStore(settings.state_dir)
+            documents = DocumentStore(store_path(settings.state_dir), producer="harness")
             documents.initialize()
             async with WorkerClient(
                 settings.worker, private_token(settings.worker_token_file)
@@ -186,6 +205,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                             raise TransportError("conflict", "runtime image or handshake mismatch")
                         await worker.readiness()
                         hello = True
+                        lifecycle.handshaken = True
                         return payload(
                             Ready(
                                 generation=private_credential(settings.generation_file, maximum=128)
@@ -375,24 +395,32 @@ def create_app(settings: ControlSettings) -> web.Application:
                     else None,
                 )
                 service = RunService(harness, figures=figures)
+                if lifecycle.draining:
+                    raise web.HTTPServiceUnavailable(text="control service is draining")
                 await socket.prepare(request)
-                runtime = channel
+                lifecycle.channel = channel
                 await serve_socket(socket, channel)
         finally:
-            runtime = None
-            if service is not None:
-                await service.close()
-            if service is not None and service.harness.vectors is not None:
-                await service.harness.vectors.close()
-            if proxy is not None:
-                await proxy.close()
-            documents.close()
-            projects.close()
-            occupied = False
+            lifecycle.channel = None
+            async with AsyncExitStack() as cleanup:
+                cleanup.callback(lifecycle.release)
+                if projects is not None:
+                    cleanup.callback(projects.close)
+                if documents is not None:
+                    cleanup.callback(documents.close)
+                if proxy is not None:
+                    cleanup.push_async_callback(proxy.close)
+                if service is not None and service.harness.vectors is not None:
+                    cleanup.push_async_callback(service.harness.vectors.close)
+                if service is not None:
+                    cleanup.push_async_callback(service.close)
         return socket
 
     app.router.add_get("/health", health)
+    app.router.add_get("/live", live)
+    app.router.add_get("/ready", ready)
     app.router.add_get("/control", control)
+    app.on_shutdown.append(lifecycle.shutdown)
     return app
 
 
@@ -405,11 +433,12 @@ def main() -> None:
     parser.add_argument("--settings", type=Path, required=True)
     args = parser.parse_args()
     settings = ControlSettings.model_validate_json(args.settings.read_text(encoding="utf-8"))
-    host, port = settings.listen.rsplit(":", 1)
+    host, port = bind_address(settings.listen)
     web.run_app(
         create_app(settings),
         host=host,
-        port=int(port),
+        port=port,
+        ssl_context=settings.tls.context() if settings.tls is not None else None,
         print=_ready,
     )
 
