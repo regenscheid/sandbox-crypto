@@ -28,6 +28,13 @@ OPEN_SHELL_VERSION = "0.1.3"
 INSTALLER = "https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.1.3/install.sh"
 INSTALLER_SHA256 = "b8daa915e766564f0473b76ed4e012fff9723c1ac98007b3f85ba20f59442d28"
 DEFAULT_IMAGE = "ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871"
+# OpenShell's VM driver sends its one registry credential to every pull, so the
+# bootstrap image is NVIDIA's index mirrored beside crypto-base with its digest kept.
+DEFAULT_BOOTSTRAP_IMAGE = (
+    "ghcr.io/regenscheid/sandbox-crypto/vm-bootstrap"
+    "@sha256:7e0f726d635d440d28a7f18e6498d3bdb76c7038bd4c90a090c21eb7c9f40686"
+)
+LEGACY_BOOTSTRAP_IMAGE = "nvcr.io/nvidia/base/ubuntu:24.04"
 GATEWAY_NAME = "ss-mac-crypto-test"
 ISOLATED_CLI_KEYS = (
     "XDG_CONFIG_HOME",
@@ -54,6 +61,7 @@ class Settings:
     github_user: str
     keychain_service: str
     application_config: Path | None
+    bootstrap_image: str = DEFAULT_BOOTSTRAP_IMAGE
 
     @property
     def gateway_url(self) -> str:
@@ -75,6 +83,7 @@ def read_settings(path: Path) -> Settings:
         "github_user",
         "keychain_service",
         "application_config",
+        "bootstrap_image",
     }
     unknown = set(raw) - allowed
     if unknown:
@@ -94,9 +103,22 @@ def read_settings(path: Path) -> Settings:
     image = raw.get("image", DEFAULT_IMAGE)
     user = raw.get("github_user", "regenscheid")
     service = raw.get("keychain_service", "sandbox-science-ghcr")
-    for name, value in (("image", image), ("github_user", user), ("keychain_service", service)):
+    bootstrap = raw.get("bootstrap_image", DEFAULT_BOOTSTRAP_IMAGE)
+    for name, value in (
+        ("image", image),
+        ("github_user", user),
+        ("keychain_service", service),
+        ("bootstrap_image", bootstrap),
+    ):
         if not isinstance(value, str) or not value or any(c.isspace() for c in value):
             raise SetupError(f"{name} must be a nonempty string without spaces")
+    if not re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", bootstrap):
+        raise SetupError("bootstrap_image must be pinned by @sha256 digest")
+    if bootstrap.split("/", 1)[0] != image.split("/", 1)[0]:
+        raise SetupError(
+            "bootstrap_image must use the same registry as image; "
+            "OpenShell sends one registry credential to both pulls"
+        )
     app_text = raw.get("application_config")
     if app_text is not None and (not isinstance(app_text, str) or not app_text.startswith("/")):
         raise SetupError("application_config must be an absolute path")
@@ -108,6 +130,7 @@ def read_settings(path: Path) -> Settings:
         github_user=user,
         keychain_service=service,
         application_config=Path(app_text) if app_text else None,
+        bootstrap_image=bootstrap,
     )
 
 
@@ -220,10 +243,17 @@ def check_vm_socket_storage(settings: Settings) -> None:
             socket_path.unlink()
 
 
-def gateway_config(settings: Settings, driver_dir: Path | None = None) -> str:
-    """Render the VM config; None reproduces only the former generated config."""
+def gateway_config(
+    settings: Settings, driver_dir: Path | None = None, bootstrap: str | None = None
+) -> str:
+    """Render the VM config; None arguments reproduce only former generated configs."""
     driver_location = (
         f"driver_dir = {json.dumps(str(driver_dir))}\n" if driver_dir is not None else ""
+    )
+    images = (
+        f"bootstrap_image = {json.dumps(bootstrap)}\ndefault_image = {json.dumps(bootstrap)}\n"
+        if bootstrap is not None
+        else f"default_image = {json.dumps(LEGACY_BOOTSTRAP_IMAGE)}\n"
     )
     return f'''[openshell]
 version = 2
@@ -240,8 +270,7 @@ allow_unauthenticated_users = true
 [openshell.drivers.vm]
 {driver_location}state_dir = {json.dumps(str(settings.root / "vm"))}
 grpc_endpoint = "{settings.gateway_url}"
-default_image = "nvcr.io/nvidia/base/ubuntu:24.04"
-vcpus = 4
+{images}vcpus = 4
 mem_mib = 8192
 overlay_disk_mib = 16384
 '''
@@ -269,7 +298,7 @@ def vm_driver_dir(gateway: str) -> Path:
 def write_gateway_config(settings: Settings, driver_dir: Path) -> None:
     """Write the pinned config, migrating only our exact previous generated text."""
     target = config_path(settings)
-    content = gateway_config(settings, driver_dir)
+    content = gateway_config(settings, driver_dir, settings.bootstrap_image)
     if target.parent.is_symlink():
         raise SetupError(f"Gateway directory must not be a symlink: {target.parent}")
     if target.is_symlink():
@@ -278,12 +307,12 @@ def write_gateway_config(settings: Settings, driver_dir: Path) -> None:
         previous = target.read_text()
         if previous == content:
             return
-        if previous != gateway_config(settings):
+        if previous not in {gateway_config(settings), gateway_config(settings, driver_dir)}:
             raise SetupError(
                 f"Gateway config differs from this setup: {target}; inspect it before changing it"
             )
-        # Preserve an existing exact helper-generated config while adding the
-        # driver's explicit Homebrew location. A crash cannot leave half a TOML.
+        # Replace only an exact earlier helper-generated config, which lacked the
+        # driver's Homebrew location or the GHCR bootstrap. A crash cannot leave half a TOML.
         with tempfile.NamedTemporaryFile(
             mode="w", prefix=".gateway-", suffix=".toml", dir=target.parent, delete=False
         ) as stream:

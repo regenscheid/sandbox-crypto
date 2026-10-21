@@ -12,8 +12,11 @@ UI. Mac launch, restart and Resume have not yet passed native acceptance; see
 - An Apple Silicon Mac and a native ARM64 terminal. OpenShell v0.1.3's MicroVM
   runtime uses macOS Hypervisor.framework; this path does not use Docker Desktop
   for research sandboxes. `uname -m` must print `arm64`, not `x86_64` under Rosetta.
-- Homebrew, Git and internet access to GitHub Releases, GHCR and the registry
-  used for OpenShell's bootstrap image. The helper uses `curl`; macOS normally
+- Homebrew, Git and internet access to GitHub Releases and GHCR. OpenShell's
+  VM bootstrap image is a digest-pinned GHCR mirror of NVIDIA's
+  `nvcr.io/nvidia/base/ubuntu:24.04`, because the VM driver sends its single
+  registry credential to every pull and nvcr.io rejects a GitHub token. The
+  same Keychain token pulls both images. The helper uses `curl`; macOS normally
   supplies it. You do **not** need to install Python, `uv`, `e2fsprogs` or
   OpenShell by hand: `install` installs missing prerequisites through Homebrew
   and OpenShell's pinned installer. If another OpenShell version is already on
@@ -142,8 +145,9 @@ The large files are organized as follows, with the default `directory`:
 Do not move or delete these directories while a sandbox is in use. Re-run
 `install` with the same settings if it was interrupted; it does not erase the
 existing state. If you used an earlier version of this helper, `install` or
-`smoke` adds the VM driver directory to an unchanged helper-generated gateway
-config. It refuses to overwrite a config you edited yourself.
+`smoke` adds the VM driver directory and the GHCR bootstrap image to an
+unchanged helper-generated gateway config. It refuses to overwrite a config you
+edited yourself.
 
 ## 4. Run the `crypto-base` MicroVM test
 
@@ -283,6 +287,7 @@ testing restart and Resume.
 | Installed OpenShell version differs | The helper requires v0.1.3. Inspect the existing installation before changing it; it will not replace another version automatically. |
 | `vm compute driver binary not found` | Update the checkout with `git pull --ff-only`, then run `./scripts/mac-local install` and `./scripts/mac-local smoke` again. The helper now locates the driver in the gateway's Homebrew installation and pins its directory. If `install` says the executable is missing, inspect `brew list nvidia/openshell/openshell`; the pinned installation is incomplete and needs repair before a smoke retry. Preserve the selected-volume state. |
 | `name exceeds maximum length (22 > 19)` during `smoke` | Update `dev` with `git pull --ff-only` and rerun `./scripts/mac-local smoke`. Older helper versions generated a test sandbox name longer than OpenShell v0.1.3 accepts. The corrected name stays below 19 characters. |
+| `failed to authenticate registry access for vm sandbox image 'nvcr.io/nvidia/base/ubuntu:24.04'` | The gateway config predates the GHCR bootstrap mirror. Run `git pull --ff-only`, then `./scripts/mac-local smoke`; the helper rewrites an unchanged generated config to the mirrored digest. |
 | GHCR pull fails or returns access denied | Confirm the Keychain token is a classic PAT with `read:packages` and access to the private package; inspect `gateway.log` without sharing its credentials. |
 | Gateway or Sage test fails | Read the printed gateway log path, keep the volume mounted and retry only after identifying the failure. The test cleans up its named sandbox when it can. |
 | Full `launch` reports missing files | Recheck the private application TOML's paths, current image/revision, policy and targets; the babbage example is not a Mac-ready config. |

@@ -329,6 +329,17 @@ Each shared OCI index was independently inspected and contains exactly
 `linux/amd64` and `linux/arm64`. All four GHCR packages are currently private;
 `crypto-base` remains private as required by D46.
 
+The `VM bootstrap mirror` workflow copies NVIDIA's
+`nvcr.io/nvidia/base/ubuntu:24.04` index, pinned by digest, to
+`ghcr.io/regenscheid/sandbox-crypto/vm-bootstrap:ubuntu-24.04` with
+`skopeo copy --all --preserve-digests`, then checks that GHCR serves the same
+digest and that the package is private. It runs when its workflow file changes on
+`dev` or `main`, or by manual dispatch. OpenShell v0.1.3's VM driver sends one
+registry credential to both the bootstrap and sandbox pulls, and nvcr.io rejects
+the GitHub token needed for `crypto-base`, so the Mac helper boots from this
+mirror. To move to a newer NVIDIA image, change the digest in the workflow and in
+`DEFAULT_BOOTSTRAP_IMAGE` in `scripts/mac_local.py`; a test keeps them equal.
+
 ## In OpenShell
 
 Every image has run in OpenShell VM sandboxes on babbage, under the compiled policies:

@@ -185,9 +185,49 @@ def test_exact_legacy_gateway_config_migrates_without_touching_other_content(
     target.write_text(mac.gateway_config(chosen))
     target.chmod(0o600)
     mac.write_gateway_config(chosen, driver_dir)
-    assert target.read_text() == mac.gateway_config(chosen, driver_dir)
+    assert target.read_text() == mac.gateway_config(chosen, driver_dir, mac.DEFAULT_BOOTSTRAP_IMAGE)
     assert target.stat().st_mode & 0o777 == 0o600
     mac.write_gateway_config(chosen, driver_dir)
+
+
+def test_nvcr_bootstrap_config_migrates_to_the_ghcr_mirror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    driver_dir = tmp_path / "homebrew/libexec"
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+    target = mac.config_path(chosen)
+    target.write_text(mac.gateway_config(chosen, driver_dir))
+    mac.write_gateway_config(chosen, driver_dir)
+    vm = tomllib.loads(target.read_text())["openshell"]["drivers"]["vm"]
+    assert vm["bootstrap_image"] == vm["default_image"] == mac.DEFAULT_BOOTSTRAP_IMAGE
+    assert "nvcr.io" not in target.read_text()
+
+
+def test_bootstrap_mirror_workflow_copies_the_digest_the_helper_boots() -> None:
+    workflow = SCRIPT.parents[1] / ".github/workflows/vm-bootstrap-mirror.yml"
+    text = workflow.read_text()
+    digest = mac.DEFAULT_BOOTSTRAP_IMAGE.split("@", 1)[1]
+    assert f"DIGEST: {digest}\n" in text
+    assert "--preserve-digests" in text
+    assert mac.DEFAULT_BOOTSTRAP_IMAGE.startswith("ghcr.io/regenscheid/sandbox-crypto/")
+
+
+@pytest.mark.parametrize(
+    ("bootstrap", "message"),
+    [
+        ("ghcr.io/regenscheid/sandbox-crypto/vm-bootstrap:ubuntu-24.04", "pinned by @sha256"),
+        (f"nvcr.io/nvidia/base/ubuntu@sha256:{'0' * 64}", "same registry"),
+    ],
+)
+def test_bootstrap_must_be_digest_pinned_on_the_image_registry(
+    tmp_path: Path, bootstrap: str, message: str
+) -> None:
+    config = tmp_path / "mac.toml"
+    config.write_text(f'volume = "{tmp_path}"\nbootstrap_image = "{bootstrap}"\n')
+    with pytest.raises(mac.SetupError, match=message):
+        mac.read_settings(config)
 
 
 def test_cli_is_pinned_to_the_dedicated_gateway(tmp_path: Path) -> None:
