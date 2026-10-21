@@ -437,6 +437,16 @@ def test_shared_alias_has_one_adapter_and_messages_have_no_effort():
 
 
 @pytest.mark.parametrize(
+    "alias", ["research=main", "-research-main", "research\0main", "research\nmain"]
+)
+def test_catalog_alias_must_roundtrip_through_workspace_cli_arguments(alias):
+    data = values()
+    data["models"]["main"]["alias"] = alias
+    with pytest.raises(ValidationError, match="CLI delimiters"):
+        configured(data)
+
+
+@pytest.mark.parametrize(
     "models",
     [
         None,

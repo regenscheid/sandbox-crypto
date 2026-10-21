@@ -5,7 +5,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 Effort = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_-]{0,31}$")]
 
@@ -16,6 +23,19 @@ class RoleModel(BaseModel):
     alias: Annotated[str, Field(min_length=1, max_length=200)]
     api: Literal["chat", "responses", "messages"] = "responses"
     effort: Effort | None = None
+
+    @field_validator("alias")
+    @classmethod
+    def cli_alias(cls, value: str) -> str:
+        if (
+            value.startswith("-")
+            or "=" in value
+            or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        ):
+            raise ValueError(
+                "model alias cannot contain CLI delimiters, options or control characters"
+            )
+        return value
 
     @model_validator(mode="after")
     def messages_effort(self) -> Self:

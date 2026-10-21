@@ -50,7 +50,7 @@ async def test_workspace_cli_cold_volume_starts_without_connected_runtime(tmp_pa
     token.chmod(0o600)
     models = ModelCatalog.model_validate(
         {
-            "main": {"alias": "test-research-main"},
+            "main": {"alias": "test/research-main:v1.0"},
             "delegated": {"alias": "test-research-delegated"},
             "reviewer": {"alias": "test-research-reviewer"},
         }
@@ -101,6 +101,7 @@ async def test_workspace_cli_cold_volume_starts_without_connected_runtime(tmp_pa
             ) as response:
                 assert response.status == 200
                 settings = await response.json()
+                assert settings["roles"]["main"]["alias"] == "test/research-main:v1.0"
                 assert settings["roles"]["main"]["reasoning_effort"] == "max"
                 assert settings["roles"]["delegated"]["reasoning_effort"] == "max"
                 assert settings["roles"]["reviewer"]["reasoning_effort"] == "medium"
