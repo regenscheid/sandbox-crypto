@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts/mac_local.py"
 SPEC = importlib.util.spec_from_file_location("mac_local_helper", SCRIPT)
@@ -405,6 +406,30 @@ def test_failed_sandbox_create_still_attempts_cleanup(
     assert calls[1][1:3] == ["sandbox", "delete"]
     assert calls[0][calls[0].index("--name") + 1] == calls[1][-1]
     assert len(calls[1][-1]) <= 19
+
+
+def test_smoke_sandbox_policy_adds_the_image_prefix_to_the_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chosen = settings(tmp_path)
+    policies: list[str] = []
+
+    def fake_run(args: list[str], **_kwargs: object) -> str:
+        if args[1:3] == ["sandbox", "create"]:
+            policies.append(Path(args[args.index("--policy") + 1]).read_text())
+        if args[-2:] == ["/usr/bin/uname", "-m"]:
+            return "aarch64"
+        if "/opt/sandbox-science/bin/sage" in args:
+            return "1"
+        return ""
+
+    monkeypatch.setattr(mac, "run", fake_run)
+    mac.smoke("openshell", chosen, {})
+    assert policies == [mac.SMOKE_POLICY]
+    filesystem = yaml.safe_load(mac.SMOKE_POLICY)["filesystem_policy"]
+    assert {"/usr", "/lib", "/etc", "/opt/sandbox-science"} <= set(filesystem["read_only"])
+    assert "/opt/sandbox-science" not in filesystem["read_write"]
 
 
 def test_successful_sage_check_requires_sandbox_cleanup(

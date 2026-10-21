@@ -156,7 +156,8 @@ edited yourself.
 ```
 
 The helper starts its isolated loopback gateway, pulls the published ARM64
-`crypto-base` image into `vm/`, creates a uniquely named sandbox, checks that
+`crypto-base` image into `vm/`, creates a uniquely named sandbox whose filesystem policy is OpenShell's default
+plus read-only `/opt/sandbox-science` and which has no network access, checks that
 the guest reports `aarch64`, and runs `print(GF(17)(3)^16)` with Sage. It then
 deletes that sandbox and stops the dedicated gateway. The image cache remains
 for a later run. Success includes a line beginning `PASS:`. The first image
@@ -287,6 +288,7 @@ testing restart and Resume.
 | Installed OpenShell version differs | The helper requires v0.1.3. Inspect the existing installation before changing it; it will not replace another version automatically. |
 | `vm compute driver binary not found` | Update the checkout with `git pull --ff-only`, then run `./scripts/mac-local install` and `./scripts/mac-local smoke` again. The helper now locates the driver in the gateway's Homebrew installation and pins its directory. If `install` says the executable is missing, inspect `brew list nvidia/openshell/openshell`; the pinned installation is incomplete and needs repair before a smoke retry. Preserve the selected-volume state. |
 | `name exceeds maximum length (22 > 19)` during `smoke` | Update `dev` with `git pull --ff-only` and rerun `./scripts/mac-local smoke`. Older helper versions generated a test sandbox name longer than OpenShell v0.1.3 accepts. The corrected name stays below 19 characters. |
+| Sage exits with status 126 or `Permission denied` for `/opt/sandbox-science/bin/sage` | The helper predates its smoke sandbox policy; OpenShell's default policy does not include the image's Conda prefix. Update with `git pull --ff-only` and rerun `smoke`. |
 | `failed to authenticate registry access for vm sandbox image 'nvcr.io/nvidia/base/ubuntu:24.04'` | The gateway config predates the GHCR bootstrap mirror. Run `git pull --ff-only`, then `./scripts/mac-local smoke`; the helper rewrites an unchanged generated config to the mirrored digest. |
 | GHCR pull fails or returns access denied | Confirm the Keychain token is a classic PAT with `read:packages` and access to the private package; inspect `gateway.log` without sharing its credentials. |
 | Gateway or Sage test fails | Read the printed gateway log path, keep the volume mounted and retry only after identifying the failure. The test cleans up its named sandbox when it can. |

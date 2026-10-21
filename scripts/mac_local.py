@@ -36,6 +36,27 @@ DEFAULT_BOOTSTRAP_IMAGE = (
 )
 LEGACY_BOOTSTRAP_IMAGE = "nvcr.io/nvidia/base/ubuntu:24.04"
 GATEWAY_NAME = "ss-mac-crypto-test"
+# A sandbox's own filesystem policy replaces OpenShell v0.1.3's default rather than
+# extending it, so this repeats that default (as `policy get --full` reports it) and
+# adds the image's Conda prefix read-only. The smoke sandbox has no network policy.
+SMOKE_POLICY = """version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+  - /bin
+  - /usr
+  - /lib
+  - /proc
+  - /dev/urandom
+  - /etc
+  - /var/log
+  - /opt/sandbox-science
+  read_write:
+  - /tmp
+  - /dev/null
+landlock:
+  compatibility: best_effort
+"""
 ISOLATED_CLI_KEYS = (
     "XDG_CONFIG_HOME",
     "XDG_STATE_HOME",
@@ -742,25 +763,30 @@ def smoke(shell: str, settings: Settings, env: dict[str, str]) -> None:
     created = False
     passed = False
     try:
-        # Record the intent before dispatch so an uncertain create is cleaned up.
-        created = True
-        run(
-            [
-                shell,
-                "sandbox",
-                "create",
-                "--name",
-                name,
-                "--from",
-                settings.image,
-                "--detach",
-                "--",
-                "/usr/bin/sleep",
-                "infinity",
-            ],
-            env=env,
-            timeout=3900,
-        )
+        with tempfile.TemporaryDirectory() as policy_dir:
+            policy = Path(policy_dir) / "smoke-policy.yaml"
+            policy.write_text(SMOKE_POLICY)
+            # Record the intent before dispatch so an uncertain create is cleaned up.
+            created = True
+            run(
+                [
+                    shell,
+                    "sandbox",
+                    "create",
+                    "--name",
+                    name,
+                    "--from",
+                    settings.image,
+                    "--policy",
+                    str(policy),
+                    "--detach",
+                    "--",
+                    "/usr/bin/sleep",
+                    "infinity",
+                ],
+                env=env,
+                timeout=3900,
+            )
         arch = run(
             [
                 shell,

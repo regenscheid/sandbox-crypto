@@ -333,7 +333,10 @@ The `VM bootstrap mirror` workflow copies NVIDIA's
 `nvcr.io/nvidia/base/ubuntu:24.04` index, pinned by digest, to
 `ghcr.io/regenscheid/sandbox-crypto/vm-bootstrap:ubuntu-24.04` with
 `skopeo copy --all --preserve-digests`, then checks that GHCR serves the same
-digest and that the package is private. It runs when its workflow file changes on
+digest and that the package is private. Its first run created the package as
+public, inheriting this public repository's visibility, so the check failed after
+the copy; set the package to private in its GitHub package settings before
+relying on a rerun. It runs when its workflow file changes on
 `dev` or `main`, or by manual dispatch. OpenShell v0.1.3's VM driver sends one
 registry credential to both the bootstrap and sandbox pulls, and nvcr.io rejects
 the GitHub token needed for `crypto-base`, so the Mac helper boots from this

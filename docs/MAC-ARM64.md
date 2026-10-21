@@ -3,7 +3,7 @@
 For step-by-step installation and the first `crypto-base` Sage MicroVM test,
 start with the [Mac setup guide](MAC-SETUP.md).
 
-This is the path toward a local ARM64 Mac deployment. **The intended Mac test runs research in OpenShell MicroVMs, not in Docker containers.** The project has not yet passed a Mac MicroVM run. The launcher now has a Darwin process-identity implementation and a parent-pipe watcher for abrupt launcher death. A native `macos-15` ARM64 CI job runs the launcher tests; its result must be checked before treating even launcher behavior as qualified. Process discovery, `down`, replacement and Resume with a real OpenShell gateway still need acceptance on the owner's Mac. An ARM64 image build alone does not make the application Mac-ready.
+This is the path toward a local ARM64 Mac deployment. **The intended Mac test runs research in OpenShell MicroVMs, not in Docker containers.** The image-only `crypto-base` Sage smoke passed in an OpenShell MicroVM on the owner's Apple Silicon Mac on 2026-10-21 (helper `./scripts/mac-local smoke`, OpenShell v0.1.3); the full application has not yet passed a Mac MicroVM run. The launcher now has a Darwin process-identity implementation and a parent-pipe watcher for abrupt launcher death. A native `macos-15` ARM64 CI job runs the launcher tests; its result must be checked before treating even launcher behavior as qualified. Process discovery, `down`, replacement and Resume with a real OpenShell gateway still need acceptance on the owner's Mac. An ARM64 image build alone does not make the application Mac-ready.
 
 ## Initial runtime choice
 
@@ -25,7 +25,7 @@ qualify the worker, UI or recovery on the Mac. The helper keeps the image cache,
 VM overlays, gateway database and application state under one selected mounted
 volume. It does not pull the image into Docker or move Docker Desktop's store.
 OpenShell's pinned [VM driver](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/README.md)
-supports this layout; the owner's Mac has not yet run the test.
+supports this layout; the owner's Mac passed the image-only test with it on 2026-10-21.
 
 On the Mac, install [Homebrew](https://brew.sh/) if needed and clone the `dev`
 branch (or update an existing clone). Copy the sample config to a private file
@@ -66,7 +66,13 @@ or repository.
 a temporary CLI profile, pulls the private image directly into the VM cache,
 checks `aarch64` and a Sage computation, deletes its uniquely named test
 sandbox, and stops its gateway. It leaves the prepared image cache in place for
-later use. Its gateway log is under the chosen volume at
+later use. The test sandbox gets an explicit policy: OpenShell v0.1.3's default
+filesystem section plus read-only `/opt/sandbox-science`. On the Mac VM driver, a
+sandbox's own filesystem section replaced that default rather than extending it:
+a policy listing only `/opt/sandbox-science` could not start `/usr/bin/sleep`,
+and the default alone denied reading the Sage launcher. The policy compiler's
+assumption that OpenShell adds its baseline paths still needs checking against
+this behavior before `launch`. Its gateway log is under the chosen volume at
 `<volume>/<directory>/gateway/gateway.log`. The VM driver uses its own cache
 even if Docker Desktop already has the image.
 The first image preparation can take a while. If it fails, the log and VM cache
