@@ -13,6 +13,13 @@ verification. A shared build helper uses five apt transport retries and makes an
 index failure fatal before installation. This prevents an unavailable snapshot from
 being misreported as nonexistent packages; a persistent archive outage still stops
 the build. It never falls back to current packages or changes the snapshot date.
+Only the worker target installs apt tools: git and OpenSSH support its OpenShell
+bridges. The application and its web builder need neither; pinned Node extraction
+uses the existing Python lzma/tarfile support with the data extraction filter, so
+they do not depend on external xz or worker-only apt downloads. Built-in and already
+imported skills work without git. Importing a new skill pack from git remains a
+separate operator preparation command that requires git; the application image
+does not claim that optional import capability.
 
 `trusted-app` installs contracts, orchestrator and workspace, including the wheel's
 built-in skills. Its immutable web files are at `/usr/share/sandbox-science/workspace`

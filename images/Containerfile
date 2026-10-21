@@ -364,10 +364,6 @@ ADD --checksum=sha256:${OPENSHELL_SHA256_ARM64} \
 FROM trusted-openshell-${TARGETARCH} AS trusted-openshell
 
 FROM base AS trusted-python
-ARG UBUNTU_SNAPSHOT
-RUN --mount=type=bind,source=common/apt_install.sh,target=/run/ss-build/apt_install.sh \
-    bash /run/ss-build/apt_install.sh "${UBUNTU_SNAPSHOT}" git openssh-client xz-utils && \
-    rm -rf /var/lib/apt/lists/*
 USER 1000:1000
 RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.yml \
     micromamba install -y -n base -f /tmp/conda-lock.yml && \
@@ -376,7 +372,8 @@ RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.
 FROM trusted-python AS trusted-node-unpack
 USER root
 RUN --mount=type=bind,from=trusted-node,source=/node.tar.xz,target=/tmp/node.tar.xz \
-    mkdir /node && tar -xJf /tmp/node.tar.xz -C /node --strip-components=1
+    --mount=type=bind,source=trusted/unpack_node.py,target=/run/ss-build/unpack_node.py \
+    python -B /run/ss-build/unpack_node.py /tmp/node.tar.xz /node
 
 FROM trusted-python AS trusted-openshell-unpack
 USER root
@@ -413,6 +410,7 @@ RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss
     python -m pip check && sandbox-science-control --help && sandbox-science-workspace --help
 USER root
 COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
+COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
 COPY --from=trusted-node-unpack /node/bin/node /usr/local/bin/node
 COPY --from=trusted-node-unpack /node/LICENSE /usr/share/licenses/node/LICENSE
 COPY --from=trusted-web-build /build/web/dist /usr/share/sandbox-science/workspace
@@ -448,6 +446,11 @@ LABEL org.opencontainers.image.title="Sandbox Science trusted application" \
 CMD ["sandbox-science-control", "--help"]
 
 FROM trusted-python AS trusted-worker
+USER root
+ARG UBUNTU_SNAPSHOT
+RUN --mount=type=bind,source=common/apt_install.sh,target=/run/ss-build/apt_install.sh \
+    bash /run/ss-build/apt_install.sh "${UBUNTU_SNAPSHOT}" git openssh-client && \
+    rm -rf /var/lib/apt/lists/*
 USER 1000:1000
 RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
     --mount=type=bind,from=wheels,target=/tmp/wheels \
@@ -460,6 +463,7 @@ RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss
     sandbox-science-policy-middleware --help && sandbox-science-package-cache --help
 USER root
 COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
+COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
 COPY --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
 COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
 ARG UBUNTU_IMAGE

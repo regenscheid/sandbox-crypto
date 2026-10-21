@@ -145,14 +145,20 @@ def test_trusted_native_pins_and_build_contexts_are_explicit() -> None:
         assert "--only-binary=:all: --require-hashes" in stage
         assert "python -m pip check" in stage
         assert "services/copy_credentials.py" in stage
+        assert "services/initialize_state.py" in stage
         assert "io.github.regenscheid.sandbox-science.profile" in stage
     assert "npm ci --ignore-scripts" in stages["trusted-web-build"]
     assert "--installed" in stages["trusted-web-build"]
     assert "npm run build:math" in stages["trusted-web-build"]
     assert "/usr/share/sandbox-science/math" in stages["trusted-app"]
     assert "/usr/share/sandbox-science/workspace" in stages["trusted-app"]
-    assert "openssh-client" in stages["trusted-python"]
-    assert "git" in stages["trusted-python"]
+    assert "apt_install.sh" not in stages["trusted-python"]
+    assert "apt_install.sh" in stages["trusted-worker"]
+    assert "openssh-client" in stages["trusted-worker"]
+    assert "git" in stages["trusted-worker"]
+    assert "xz-utils" not in stages["trusted-worker"]
+    assert "unpack_node.py" in stages["trusted-node-unpack"]
+    assert "tar -xJ" not in stages["trusted-node-unpack"]
 
 
 def test_trusted_smoke_uses_only_a_local_hardened_container() -> None:

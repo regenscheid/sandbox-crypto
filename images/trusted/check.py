@@ -76,6 +76,9 @@ def main() -> None:
     record = json.loads(Path("/usr/share/sandbox-science/image.json").read_text())
     if record["profile"] != profile or record["revision"] == "unknown":
         raise ValueError("trusted service image has the wrong build identity")
+    for helper in ("copy-credentials.py", "initialize-state.py"):
+        if not (Path("/usr/local/libexec/sandbox-science") / helper).is_file():
+            raise ValueError(f"trusted service image lacks its init helper: {helper}")
     installed = {
         dist.metadata["Name"].lower().replace("_", "-")
         for dist in importlib.metadata.distributions()
