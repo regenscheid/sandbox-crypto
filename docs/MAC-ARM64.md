@@ -62,7 +62,8 @@ normal locations. The entrypoint installs Homebrew Python 3.13 only if the
 available `python3` cannot run the helper. The token never goes into the TOML
 or repository.
 
-`smoke` starts a separate loopback gateway in the foreground, registers it in
+`smoke` starts a separate loopback gateway in the foreground, on TLS with client
+certificates (mTLS) from its own CA, registers it in
 a temporary CLI profile, pulls the private image directly into the VM cache,
 checks `aarch64` and a Sage computation, deletes its uniquely named test
 sandbox, and stops its gateway. It leaves the prepared image cache in place for

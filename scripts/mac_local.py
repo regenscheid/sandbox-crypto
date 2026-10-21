@@ -23,7 +23,7 @@ import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 OPEN_SHELL_VERSION = "0.1.5"
 INSTALLER = f"https://raw.githubusercontent.com/NVIDIA/OpenShell/v{OPEN_SHELL_VERSION}/install.sh"
@@ -85,11 +85,13 @@ class Settings:
     keychain_service: str
     application_config: Path | None
     bootstrap_image: str = DEFAULT_BOOTSTRAP_IMAGE
+    middleware_port: int = 18082
+    package_cache_port: int = 18083
 
     @property
     def gateway_url(self) -> str:
         """The dedicated loopback endpoint for this test."""
-        return f"http://127.0.0.1:{self.gateway_port}"
+        return f"https://127.0.0.1:{self.gateway_port}"
 
 
 def read_settings(path: Path) -> Settings:
@@ -107,6 +109,8 @@ def read_settings(path: Path) -> Settings:
         "keychain_service",
         "application_config",
         "bootstrap_image",
+        "middleware_port",
+        "package_cache_port",
     }
     unknown = set(raw) - allowed
     if unknown:
@@ -121,8 +125,17 @@ def read_settings(path: Path) -> Settings:
     if volume_text != str(volume):
         raise SetupError("volume must use a normalized absolute path")
     port = raw.get("gateway_port", 18081)
-    if type(port) is not int or not 1024 <= port <= 65535:
-        raise SetupError("gateway_port must be an integer from 1024 to 65535")
+    middleware_port = raw.get("middleware_port", 18082)
+    package_cache_port = raw.get("package_cache_port", 18083)
+    for name, value in (
+        ("gateway_port", port),
+        ("middleware_port", middleware_port),
+        ("package_cache_port", package_cache_port),
+    ):
+        if type(value) is not int or not 1024 <= value <= 65535:
+            raise SetupError(f"{name} must be an integer from 1024 to 65535")
+    if len({port, middleware_port, package_cache_port}) != 3:
+        raise SetupError("gateway_port, middleware_port and package_cache_port must differ")
     image = raw.get("image", DEFAULT_IMAGE)
     user = raw.get("github_user", "regenscheid")
     service = raw.get("keychain_service", "sandbox-science-ghcr")
@@ -154,6 +167,8 @@ def read_settings(path: Path) -> Settings:
         keychain_service=service,
         application_config=Path(app_text) if app_text else None,
         bootstrap_image=bootstrap,
+        middleware_port=middleware_port,
+        package_cache_port=package_cache_port,
     )
 
 
@@ -268,9 +283,19 @@ def check_vm_socket_storage(settings: Settings) -> None:
 
 
 def gateway_config(
-    settings: Settings, driver_dir: Path | None = None, bootstrap: str | None = None
+    settings: Settings,
+    driver_dir: Path | None = None,
+    bootstrap: str | None = None,
+    *,
+    tls: bool = False,
 ) -> str:
-    """Render the VM config; None arguments reproduce only former generated configs."""
+    """Render the VM config; None and False reproduce only former generated configs.
+
+    With ``tls``, the listener uses the gateway's own certificate and admits only
+    clients with a certificate from its CA (the CLI's, which `gateway add --local`
+    copies), and the host supervisors reach it over TLS as well.
+    """
+    tls_dir = settings.root / "gateway/tls"
     driver_location = (
         f"driver_dir = {json.dumps(str(driver_dir))}\n" if driver_dir is not None else ""
     )
@@ -279,25 +304,40 @@ def gateway_config(
         if bootstrap is not None
         else f"default_image = {json.dumps(LEGACY_BOOTSTRAP_IMAGE)}\n"
     )
-    return f'''[openshell]
+    if tls:
+        listener = f"""
+[openshell.gateway.tls]
+cert_path = {json.dumps(str(tls_dir / "server/tls.crt"))}
+key_path = {json.dumps(str(tls_dir / "server/tls.key"))}
+client_ca_path = {json.dumps(str(tls_dir / "ca.crt"))}
+
+[openshell.gateway.mtls_auth]
+enabled = true
+"""
+        endpoint = f'grpc_endpoint = "{settings.gateway_url}"\n'
+        # The host supervisors' CA for the gateway; v0.1.5 reads it here, not in the driver.
+        plaintext = f"guest_tls_ca = {json.dumps(str(tls_dir / 'ca.crt'))}\n"
+    else:
+        listener = """
+[openshell.gateway.auth]
+allow_unauthenticated_users = true
+"""
+        endpoint = f'grpc_endpoint = "http://127.0.0.1:{settings.gateway_port}"\n'
+        plaintext = "disable_tls = true\n"
+    return f"""[openshell]
 version = 2
 
 [openshell.gateway]
 compute_driver = "vm"
-disable_tls = true
-bind_address = "127.0.0.1:{settings.gateway_port}"
+{plaintext}bind_address = "127.0.0.1:{settings.gateway_port}"
 image_preparation_timeout_seconds = 3600
-
-[openshell.gateway.auth]
-allow_unauthenticated_users = true
-
+{listener}
 [openshell.drivers.vm]
 {driver_location}state_dir = {json.dumps(str(settings.root / "vm"))}
-grpc_endpoint = "{settings.gateway_url}"
-{images}vcpus = 4
+{endpoint}{images}vcpus = 4
 mem_mib = 8192
 overlay_disk_mib = 16384
-'''
+"""
 
 
 def config_path(settings: Settings) -> Path:
@@ -336,17 +376,18 @@ def earlier_gateway_configs(settings: Settings, driver_dir: Path, previous: str)
     if isinstance(named, str) and HOMEBREW_DRIVER_RE.fullmatch(named):
         drivers.append(Path(named))
     return {
-        gateway_config(settings, driver, bootstrap)
+        gateway_config(settings, driver, bootstrap, tls=tls)
         for driver in drivers
         for bootstrap in (None, settings.bootstrap_image)
-        if not (driver is None and bootstrap is not None)
+        for tls in (False, True)
+        if not (driver is None and bootstrap is not None) and not (bootstrap is None and tls)
     }
 
 
 def write_gateway_config(settings: Settings, driver_dir: Path) -> None:
     """Write the pinned config, migrating only our exact previous generated text."""
     target = config_path(settings)
-    content = gateway_config(settings, driver_dir, settings.bootstrap_image)
+    content = gateway_config(settings, driver_dir, settings.bootstrap_image, tls=True)
     if target.parent.is_symlink():
         raise SetupError(f"Gateway directory must not be a symlink: {target.parent}")
     if target.is_symlink():
@@ -360,8 +401,8 @@ def write_gateway_config(settings: Settings, driver_dir: Path) -> None:
                 f"Gateway config differs from this setup: {target}; inspect it before changing it"
             )
         # Replace only an exact earlier helper-generated config, which lacked the
-        # driver's Homebrew location or the GHCR bootstrap, or named an earlier Homebrew
-        # OpenShell's driver. A crash cannot leave half a TOML.
+        # driver's Homebrew location, the GHCR bootstrap or listener TLS, or named an
+        # earlier Homebrew OpenShell's driver. A crash cannot leave half a TOML.
         with tempfile.NamedTemporaryFile(
             mode="w", prefix=".gateway-", suffix=".toml", dir=target.parent, delete=False
         ) as stream:
@@ -617,12 +658,19 @@ def wait_for_gateway(process: subprocess.Popen[bytes], settings: Settings) -> No
     raise SetupError("Gateway did not open its loopback port within 90 seconds; see its log")
 
 
-def stop_gateway(process: subprocess.Popen[bytes]) -> None:
-    """Stop only the process group created for this invocation."""
+def stop_gateway(process: subprocess.Popen[bytes], *, group: bool = True) -> None:
+    """Stop only the process group created for this invocation.
+
+    Without ``group``, the first signal goes to the leader alone: ``uv run`` forwards it to
+    its command, which would otherwise receive it twice. The group is killed if it stays.
+    """
     if process.poll() is not None:
         return
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        if group:
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.send_signal(signal.SIGTERM)
     except ProcessLookupError:
         return
     try:
@@ -675,10 +723,387 @@ def effective_app_config(source: Path, contents: str, env: dict[str, str]) -> Pa
         return Path(stream.name)
 
 
+# The launch's own platform services: the policy middleware and the package cache, which
+# run beside the gateway on the host, as on babbage (scripts/personal_up.sh).
+
+MIDDLEWARE: Final = "sandbox-science-policy"
+MIDDLEWARE_TLS: Final = ("ca.pem", "middleware.pem", "middleware-key.pem")
+PLACEHOLDER_PROFILES: Final = {"github-token": "examples/openshell/profiles/github-token.yaml"}
+"""Provider profiles a launch may register with a placeholder credential, as babbage does
+for github-readonly: public repositories work without a real token."""
+
+
+def services_dir(settings: Settings) -> Path:
+    """The services' state: certificates, policy store, ceiling, cache and settings."""
+    return settings.root / "services"
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    """What a launch needs from the private application config."""
+
+    policy: Path
+    mcp_proxy_port: int
+
+
+def expected_app_values(settings: Settings) -> dict[str, str]:
+    """The application config values that must name this helper's services."""
+    services = services_dir(settings)
+    return {
+        "state_dir": str(settings.root / "app"),
+        "openshell.package_cache": f"http://host.openshell.internal:{settings.package_cache_port}",
+        "openshell.environments.policy_store": str(services / "middleware/state"),
+        "openshell.environments.targets": str(services / "targets.yaml"),
+        "openshell.environments.ceiling": str(services / "middleware/pool-ceiling.yaml"),
+    }
+
+
+def check_app_config(settings: Settings, source: Path, config: dict[str, object]) -> AppSettings:
+    """Refuse an application config that does not use this helper's state and services."""
+
+    def value(dotted: str) -> object:
+        node: object = config
+        for key in dotted.split("."):
+            node = node.get(key) if isinstance(node, dict) else None
+        return node
+
+    def resolved(text: object) -> Path | None:
+        if not isinstance(text, str):
+            return None
+        path = Path(text).expanduser()
+        return (path if path.is_absolute() else source.parent / path).resolve()
+
+    wrong = []
+    for dotted, wanted in expected_app_values(settings).items():
+        found = value(dotted)
+        same = (
+            found == wanted
+            if dotted == "openshell.package_cache"
+            else resolved(found) == Path(wanted).resolve()
+        )
+        if not same:
+            wrong.append(f"  {dotted} = {json.dumps(wanted)}")
+    if wrong:
+        raise SetupError(
+            "Application config must use this helper's state and services; set:\n"
+            + "\n".join(wrong)
+        )
+    policy = resolved(value("worker.policy"))
+    if policy is None or not policy.is_file():
+        raise SetupError("Application config [worker] policy must name an existing policy file")
+    listen = value("mcp_proxy.listen")
+    port = 18080
+    if isinstance(listen, str):
+        match = re.fullmatch(r"127\.0\.0\.1:(\d{4,5})", listen)
+        if match is None:
+            raise SetupError("Application config [mcp_proxy] listen must be 127.0.0.1:<port>")
+        port = int(match.group(1))
+    return AppSettings(policy=policy, mcp_proxy_port=port)
+
+
+def ensure_middleware_tls(settings: Settings) -> None:
+    """Make the middleware's own CA and loopback certificate once, and keep them."""
+    tls = services_dir(settings) / "middleware/tls"
+    present = [name for name in MIDDLEWARE_TLS if (tls / name).exists()]
+    if len(present) == len(MIDDLEWARE_TLS):
+        return
+    if present or (tls.exists() and any(tls.iterdir())):
+        raise SetupError(
+            f"Partial middleware certificates in {tls}; inspect them before changing files"
+        )
+    openssl = require_command("openssl")
+    staged = Path(tempfile.mkdtemp(prefix=".middleware-tls-", dir=tls.parent))
+    try:
+        key, ca, csr = staged / "ca-key.pem", staged / "ca.pem", staged / "middleware.csr"
+        extensions = staged / "server-ext.cnf"
+        extensions.write_text(
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature\n"
+            "extendedKeyUsage=serverAuth\n"
+            "subjectAltName=IP:127.0.0.1,DNS:localhost\n"
+        )
+        curve = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes"]
+        ca_subject = ["-subj", "/CN=sandbox-science Mac middleware CA"]
+        ca_extensions = [
+            *("-addext", "basicConstraints=critical,CA:TRUE,pathlen:0"),
+            *("-addext", "keyUsage=critical,keyCertSign,cRLSign"),
+        ]
+        run(
+            [
+                openssl,
+                "req",
+                "-x509",
+                *curve,
+                "-days",
+                "3650",
+                *ca_subject,
+                *ca_extensions,
+                "-keyout",
+                str(key),
+                "-out",
+                str(ca),
+            ],
+            capture=True,
+        )
+        run(
+            [
+                openssl,
+                "req",
+                "-new",
+                *curve,
+                "-subj",
+                f"/CN={MIDDLEWARE}",
+                "-keyout",
+                str(staged / "middleware-key.pem"),
+                "-out",
+                str(csr),
+            ],
+            capture=True,
+        )
+        signing = ["-CA", str(ca), "-CAkey", str(key), "-CAcreateserial", "-days", "3650"]
+        run(
+            [
+                openssl,
+                "x509",
+                "-req",
+                "-in",
+                str(csr),
+                *signing,
+                "-sha256",
+                "-extfile",
+                str(extensions),
+                "-out",
+                str(staged / "middleware.pem"),
+            ],
+            capture=True,
+        )
+        for path in staged.iterdir():
+            path.chmod(0o600 if path.name.endswith("key.pem") else 0o644)
+        staged.chmod(0o700)
+        if tls.exists():
+            tls.rmdir()
+        staged.replace(tls)
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged)
+
+
+def write_private(path: Path, text: str) -> None:
+    """Replace a helper-owned settings file atomically, readable by the owner only."""
+    if path.is_symlink():
+        raise SetupError(f"Settings file must not be a symlink: {path}")
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix=f".{path.name}-", dir=path.parent, delete=False
+    ) as stream:
+        stream.write(text)
+        staged = Path(stream.name)
+    try:
+        staged.chmod(0o600)
+        staged.replace(path)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def launch_gateway_config(settings: Settings, driver_dir: Path) -> str:
+    """The gateway config with the policy middleware registered, for launches only.
+
+    The gateway calls the middleware when it starts and refuses to start without it, so
+    smoke keeps the config without this registration.
+    """
+    ca = services_dir(settings) / "middleware/tls/ca.pem"
+    return (
+        gateway_config(settings, driver_dir, settings.bootstrap_image, tls=True)
+        + f"""
+[[openshell.supervisor.middleware]]
+name = "{MIDDLEWARE}"
+grpc_endpoint = "https://127.0.0.1:{settings.middleware_port}"
+tls_ca_cert_path = {json.dumps(str(ca))}
+max_payload_bytes = 4194304
+timeout = "500ms"
+"""
+    )
+
+
+def write_service_settings(settings: Settings, app: AppSettings, driver_dir: Path) -> Path:
+    """Write the services' settings and targets; return the launch gateway config."""
+    services = services_dir(settings)
+    middleware = services / "middleware"
+    for path in (services, middleware, middleware / "state", services / "package-cache"):
+        if path.is_symlink():
+            raise SetupError(f"State directory must not be a symlink: {path}")
+        path.mkdir(mode=0o700, exist_ok=True)
+    ensure_middleware_tls(settings)
+    ceiling = middleware / "pool-ceiling.yaml"
+    if not ceiling.exists():
+        write_private(ceiling, "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n")
+    jwt = settings.root / "gateway/tls/jwt/public.pem"
+    write_private(
+        middleware / "middleware.toml",
+        f"""registration = "{MIDDLEWARE}"
+listen = "127.0.0.1:{settings.middleware_port}"
+state_dir = {json.dumps(str(middleware / "state"))}
+ceiling = {json.dumps(str(ceiling))}
+
+[tls]
+certificate = {json.dumps(str(middleware / "tls/middleware.pem"))}
+private_key = {json.dumps(str(middleware / "tls/middleware-key.pem"))}
+
+[tokens]
+gateway_id = "openshell"
+public_key = {json.dumps(str(jwt))}
+""",
+    )
+    write_private(
+        services / "package-cache.toml",
+        f"""listen = "127.0.0.1:{settings.package_cache_port}"
+public_url = "http://host.openshell.internal:{settings.package_cache_port}"
+cache_dir = {json.dumps(str(services / "package-cache"))}
+max_size = "20Gi"
+
+[pypi]
+[conda]
+[cargo]
+[go]
+[npm]
+""",
+    )
+    write_private(
+        services / "targets.yaml",
+        f"""apiVersion: sandbox-science/v0alpha1
+kind: OpenShellTargets
+sandbox:
+  middleware: {MIDDLEWARE}
+  package_cache: {{host: host.openshell.internal, port: {settings.package_cache_port}}}
+  mcp_proxy: {{host: host.openshell.internal, port: {app.mcp_proxy_port}}}
+  binaries: [/**]
+  filesystem: {{read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}}
+mcp_proxy:
+  binaries: [/opt/sandbox-science/bin/python*]
+  versions: ["2025-11-25"]
+  filesystem: {{read_only: [/opt/sandbox-science]}}
+""",
+    )
+    launch = settings.root / "gateway/gateway-launch.toml"
+    write_private(launch, launch_gateway_config(settings, driver_dir))
+    return launch
+
+
+def start_service(args: list[str], log: Path, env: dict[str, str]) -> subprocess.Popen[bytes]:
+    """Start one service in its own process group, its output appended to its log."""
+    with log.open("ab") as stream:
+        return subprocess.Popen(  # noqa: S603 - the repository's own service commands.
+            args,
+            env=env,
+            cwd=Path(__file__).resolve().parent.parent,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+
+def wait_for_port(process: subprocess.Popen[bytes], port: int, name: str, log: Path) -> None:
+    """Wait until a service started here listens on its loopback port."""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise SetupError(f"The {name} exited with status {process.returncode}; see {log}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return
+        except OSError:
+            time.sleep(0.5)
+    raise SetupError(f"The {name} did not listen on 127.0.0.1:{port} within 60 s; see {log}")
+
+
+def policy_providers(policy: Path, env: dict[str, str]) -> list[tuple[str, str]]:
+    """The providers the project policy binds, as (name, profile), read by its library."""
+    code = (
+        "import json, sys\n"
+        "from sandbox_science.policy import load_policy\n"
+        "loaded = load_policy(sys.argv[1])\n"
+        "print(json.dumps([[p.name, p.profile] for p in loaded.policy.credentials.providers]))\n"
+    )
+    text = run(
+        ["uv", "run", "python", "-I", "-c", code, str(policy)],
+        env=env,
+        capture=True,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+    return [(str(name), str(profile)) for name, profile in json.loads(text)]
+
+
+def ensure_providers(shell: str, policy: Path, env: dict[str, str]) -> None:
+    """Register placeholder providers the policy needs; ask for any other."""
+    wanted = policy_providers(policy, env)
+    if not wanted:
+        return
+    listing = json.loads(run([shell, "provider", "list", "-o", "json"], env=env, capture=True))
+    entries = listing.get("providers", listing) if isinstance(listing, dict) else listing
+    registered = {str(entry.get("name")) for entry in entries if isinstance(entry, dict)}
+    missing = [(name, profile) for name, profile in wanted if name not in registered]
+    other = [name for name, profile in missing if profile not in PLACEHOLDER_PROFILES]
+    if other:
+        raise SetupError(
+            "Register these providers with this gateway first (docs/MCP-CONNECTORS.md): "
+            + ", ".join(other)
+        )
+    repository = Path(__file__).resolve().parent.parent
+    for name, profile in missing:
+        profiles = run([shell, "provider", "profile", "list", "-o", "json"], env=env, capture=True)
+        if f'"{profile}"' not in profiles:
+            source = str(repository / PLACEHOLDER_PROFILES[profile])
+            run([shell, "provider", "profile", "import", "-f", source], env=env)
+        placeholder = dict(env, GITHUB_TOKEN=f"placeholder-not-a-token-{secrets.token_hex(8)}")
+        create = ["provider", "create", "--name", name, "--type", profile]
+        run([shell, *create, "--credential", "GITHUB_TOKEN"], env=placeholder)
+        print(f"Registered {name} with a placeholder credential; see docs/PERSONAL-BABBAGE.md")
+
+
+def uv_env(settings: Settings, env: dict[str, str]) -> dict[str, str]:
+    """Keep the application's Python, packages and uv cache on the selected volume."""
+    env = dict(env)
+    env["UV_CACHE_DIR"] = str(settings.root / "cache/uv")
+    env["UV_PROJECT_ENVIRONMENT"] = str(settings.root / "cache/venv")
+    env["UV_PYTHON_INSTALL_DIR"] = str(settings.root / "cache/python")
+    # uv trusts its bundled roots by default; a managed Mac whose network inspects TLS adds
+    # its CA to the system store instead. The owner's own uv TLS setting takes precedence.
+    if not any(name in env for name in ("UV_SYSTEM_CERTS", "UV_NATIVE_TLS", "SSL_CERT_FILE")):
+        env["UV_SYSTEM_CERTS"] = "1"
+    return env
+
+
+def read_app_config(settings: Settings) -> tuple[str, AppSettings]:
+    """Read and check the private application config a launch runs."""
+    if settings.application_config is None or not settings.application_config.is_file():
+        raise SetupError("Set application_config to an existing private TOML file before launch")
+    try:
+        contents = settings.application_config.read_text()
+        config = tomllib.loads(contents)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SetupError(f"Cannot read application config: {exc}") from exc
+    openshell_config = config.get("openshell", {})
+    if not isinstance(openshell_config, dict):
+        raise SetupError("Application config [openshell] must be a table")
+    configured_env = cast(dict[str, object], openshell_config).get("env", {})
+    if not isinstance(configured_env, dict):
+        raise SetupError("Application config [openshell.env] must be a table")
+    if any(name in configured_env for name in ISOLATED_CLI_KEYS) or any(
+        str(name).startswith("OPENSHELL_") for name in configured_env
+    ):
+        raise SetupError(
+            "Remove OpenShell XDG/TLS path overrides from the application config; "
+            "this helper supplies isolated paths"
+        )
+    return contents, check_app_config(settings, settings.application_config, config)
+
+
 def run_with_gateway(settings: Settings, *, app: bool) -> None:
-    """Run one foreground gateway and either a Sage probe or the application."""
+    """Run one foreground gateway and either a Sage probe or the application.
+
+    A launch also runs the policy middleware and the package cache, which the gateway
+    and the research sandboxes use, and stops them after the gateway.
+    """
     require_mac(settings, space=not app)
-    app_contents = ""
     if not config_path(settings).is_file():
         raise SetupError("Gateway config missing; run install first")
     if config_path(settings).is_symlink():
@@ -686,51 +1111,35 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
     gateway = require_command("openshell-gateway")
     driver_dir = vm_driver_dir(gateway)
     write_gateway_config(settings, driver_dir)
+    app_contents, app_settings = read_app_config(settings) if app else ("", None)
     if app:
-        if settings.application_config is None or not settings.application_config.is_file():
-            raise SetupError(
-                "Set application_config to an existing private TOML file before launch"
-            )
-        try:
-            app_contents = settings.application_config.read_text()
-            config = tomllib.loads(app_contents)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise SetupError(f"Cannot read application config: {exc}") from exc
-        app_state = config.get("state_dir")
-        if not isinstance(app_state, str):
-            raise SetupError("Application config must set an absolute state_dir")
-        if Path(app_state).expanduser().resolve() != (settings.root / "app").resolve():
-            raise SetupError(f"Application state_dir must be {settings.root / 'app'}")
-        openshell_config = config.get("openshell", {})
-        if not isinstance(openshell_config, dict):
-            raise SetupError("Application config [openshell] must be a table")
-        configured_env = openshell_config.get("env", {})
-        if not isinstance(configured_env, dict):
-            raise SetupError("Application config [openshell.env] must be a table")
-        if any(name in configured_env for name in ISOLATED_CLI_KEYS) or any(
-            name.startswith("OPENSHELL_") for name in configured_env
-        ):
-            raise SetupError(
-                "Remove OpenShell XDG/TLS path overrides from the application config; "
-                "this helper supplies isolated paths"
-            )
         require_command("uv")
     require_command("openshell")
     prepare_dirs(settings)
     check_vm_socket_storage(settings)
     ensure_gateway_signing(settings, gateway)
-    with socket.socket() as probe:
-        if probe.connect_ex(("127.0.0.1", settings.gateway_port)) == 0:
-            raise SetupError(f"Port {settings.gateway_port} is already in use; choose another port")
-    log_path = settings.root / "gateway/gateway.log"
-    with log_path.open("ab") as log:
-        process = subprocess.Popen(  # noqa: S603 - pinned local gateway executable.
-            [gateway, "--config", str(config_path(settings))],
-            env=gateway_env(settings),
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    ports = [settings.gateway_port]
+    if app:
+        ports += [settings.middleware_port, settings.package_cache_port]
+    for port in ports:
+        with socket.socket() as probe:
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                raise SetupError(f"Port {port} is already in use; choose another port")
+    gateway_file = config_path(settings)
+    services: list[subprocess.Popen[bytes]] = []
+    try:
+        if app_settings is not None:
+            gateway_file = write_service_settings(settings, app_settings, driver_dir)
+            start_services(settings, app_settings, services)
+        log_path = settings.root / "gateway/gateway.log"
+        with log_path.open("ab") as log:
+            process = subprocess.Popen(  # noqa: S603 - pinned local gateway executable.
+                [gateway, "--config", str(gateway_file)],
+                env=gateway_env(settings),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         try:
             wait_for_gateway(process, settings)
             # A new CLI profile each run avoids changing the user's existing default.
@@ -761,15 +1170,10 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
                                 f"Gateway did not become ready; inspect {log_path}"
                             ) from None
                         time.sleep(0.5)
-                if app:
-                    env["UV_CACHE_DIR"] = str(settings.root / "cache/uv")
-                    env["UV_PROJECT_ENVIRONMENT"] = str(settings.root / "cache/venv")
-                    env["UV_PYTHON_INSTALL_DIR"] = str(settings.root / "cache/python")
-                    print(
-                        "Starting Sandbox Science. Ctrl-C stops this launch and its test gateway."
-                    )
-                    if settings.application_config is None:
-                        raise SetupError("Application config missing")
+                if app_settings is not None and settings.application_config is not None:
+                    env = uv_env(settings, env)
+                    ensure_providers(shell, app_settings.policy, env)
+                    print("Starting Sandbox Science. Ctrl-C stops this launch and its services.")
                     effective = effective_app_config(settings.application_config, app_contents, env)
                     try:
                         run(
@@ -786,6 +1190,53 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
                 stop_gateway(process)
             finally:
                 print(f"Gateway log: {log_path}")
+    finally:
+        for service in reversed(services):
+            stop_gateway(service, group=False)
+
+
+def start_services(
+    settings: Settings, app: AppSettings, started: list[subprocess.Popen[bytes]]
+) -> None:
+    """Store the project policy, then start the package cache and the policy middleware."""
+    services = services_dir(settings)
+    env = uv_env(settings, clean_openshell_env())
+    middleware = services / "middleware"
+    run(
+        [
+            "uv",
+            "run",
+            "sandbox-science-policy-middleware",
+            "store",
+            "--state-dir",
+            str(middleware / "state"),
+            "--policy",
+            str(app.policy),
+        ],
+        env=env,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+    for name, command, settings_file, port in (
+        (
+            "package cache",
+            ["sandbox-science-package-cache", "serve", "--log-level", "info"],
+            services / "package-cache.toml",
+            settings.package_cache_port,
+        ),
+        (
+            "policy middleware",
+            ["sandbox-science-policy-middleware", "serve", "--log-level", "INFO"],
+            middleware / "middleware.toml",
+            settings.middleware_port,
+        ),
+    ):
+        log = services / f"{name.replace(' ', '-')}.log"
+        process = start_service(
+            ["uv", "run", *command[:2], "--settings", str(settings_file), *command[2:]], log, env
+        )
+        started.append(process)
+        wait_for_port(process, port, name, log)
+        print(f"The {name} listens on 127.0.0.1:{port}; its log is {log}")
 
 
 def smoke(shell: str, settings: Settings, env: dict[str, str]) -> None:

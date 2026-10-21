@@ -120,8 +120,10 @@ installation as the gateway. It records that executable's directory in the
 generated gateway config. It also creates the gateway's sandbox launch-signing
 bundle under `gateway/tls/` with OpenShell's `generate-certs` command. That
 command receives isolated XDG paths, so its CLI certificate copy stays on the
-selected volume. Listener TLS remains disabled on the loopback test gateway;
-VM sandbox launch signing is a separate requirement. Generation happens in a
+selected volume. The same bundle gives the gateway's listener its certificate:
+the gateway listens on loopback over TLS and admits only clients with a
+certificate from its CA, which `gateway add --local` copies into each run's
+temporary CLI profile. Generation happens in a
 temporary directory on that volume so interruption cannot leave a partial live
 bundle. Existing complete signing files are reused, and previously partial
 files are left for inspection rather than overwritten. A direct `smoke` run
@@ -139,6 +141,7 @@ The large files are organized as follows, with the default `directory`:
 | --- | --- |
 | `vm/` | OpenShell's prepared images, sandbox overlays, VM logs and driver socket |
 | `gateway/` | The dedicated gateway's database, config, cache, TLS state and `gateway.log` |
+| `services/` | The policy middleware's certificates, policy store, pool ceiling and settings, the package cache, the targets file and the services' logs, once `launch` runs |
 | `app/` | The full application's state, once `launch` is configured |
 | `cache/` | Helper download cache and, later, the application's uv cache and Python environment |
 
@@ -232,11 +235,26 @@ The rest of the application config also needs these Mac-specific corrections:
    isolation tier to the qualified MicroVM tier. Remove the example's
    babbage-only `[openshell.env]` paths: the helper writes the isolated CLI
    settings into a temporary private copy of the config for each launch.
-4. Set `[openshell.environments]` policy store, targets and ceiling paths to
-   actual Mac-accessible files and set its profiles to images available to
-   this gateway. The example's `sandbox-science/...` tags are not the published
-   GHCR tags. Provide a matching orchestrator image and its **full embedded
-   source revision** in `[orchestrator]`; the launcher rejects a mismatch.
+4. Point the OpenShell service settings at the ones `launch` runs, under
+   `<volume>/<directory>/services`; the helper checks them and prints the exact
+   values when one differs:
+
+   ```toml
+   [openshell]
+   package_cache = "http://host.openshell.internal:18083"
+
+   [openshell.environments]
+   policy_store = "/Volumes/Research/SandboxScience/services/middleware/state"
+   targets = "/Volumes/Research/SandboxScience/services/targets.yaml"
+   ceiling = "/Volumes/Research/SandboxScience/services/middleware/pool-ceiling.yaml"
+   ```
+
+   Set its profiles to images this gateway can pull: the published two-platform
+   tags, such as `ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871`, not
+   the example's local `sandbox-science/...` tags. Set `[orchestrator]` to the
+   matching orchestrator image and its **full embedded source revision**
+   (`ghcr.io/regenscheid/sandbox-crypto/orchestrator:6bb73871` and
+   `6bb738718cdde53199aacfd580eae005e983e3f9`); the launcher rejects a mismatch.
 5. Build the web application and math checker in this checkout. They need
    Node.js 22.12 or newer; use 22.13 or newer for figure checks:
 
@@ -248,12 +266,13 @@ The rest of the application config also needs these Mac-specific corrections:
    cd ../..
    ```
 
-6. Make the trusted policy middleware and package cache available to the
-   gateway and set any optional MCP provider and skill-pack settings you
-   intend to use. The Mac helper **does not install or configure those
-   services**, publish a matching orchestrator image, or generate targets and
-   policy files. The full Mac lifecycle and recovery path still needs native
-   qualification; see [Mac qualification](MAC-ARM64.md#sequence-and-evidence).
+6. Set any optional MCP proxy and skill-pack settings you intend to use. An
+   MCP server's provider must be registered with this gateway first
+   ([MCP connectors](MCP-CONNECTORS.md)); `launch` registers only a placeholder
+   for a policy provider with the `github-token` profile, as babbage does
+   ([babbage](PERSONAL-BABBAGE.md)). The full Mac lifecycle and recovery path
+   still needs native qualification; see
+   [Mac qualification](MAC-ARM64.md#sequence-and-evidence).
 
 When all those prerequisites exist, set `application_config` in
 `$HOME/sandbox-science-mac.toml` to the **absolute** path of your private
@@ -269,10 +288,27 @@ Then, from the repository checkout:
 ./scripts/mac-local launch
 ```
 
-`launch` starts the dedicated gateway and runs `sandbox-science up` in the
-foreground. Ctrl-C stops this launch and its dedicated gateway. A successful
-`smoke` does **not** imply that `launch` will work with an unfinished
-application config; the launcher reports missing files, images and services.
+`launch` runs, in the foreground and in this order:
+
+1. It adds `[worker] policy` to the policy store and writes the services'
+   settings under `<volume>/<directory>/services`: the policy middleware's
+   own CA and loopback certificate (made once and kept), its settings and pool
+   ceiling, the package cache's settings, and the OpenShell targets file.
+2. It starts the package cache on `127.0.0.1:18083` and the policy middleware
+   on `127.0.0.1:18082` (TLS), with their logs in the `services` directory.
+3. It starts the dedicated gateway with the middleware registered
+   (`gateway/gateway-launch.toml`); the gateway refuses to start if it cannot
+   reach the middleware.
+4. It registers the policy's placeholder providers, then runs
+   `sandbox-science up`.
+
+Ctrl-C stops the launch, the gateway and then the services. The ports are
+`gateway_port`, `middleware_port` and `package_cache_port` in the Mac TOML
+(18081, 18082 and 18083 by default). The helper runs uv with the macOS system
+trust store (`UV_SYSTEM_CERTS=1`) unless you set uv's TLS options yourself,
+since a managed Mac that inspects TLS adds its CA there. A successful `smoke`
+does **not** imply that `launch` will work with an unfinished application
+config; the launcher reports missing files, images and services.
 Preserve the selected volume and existing state when troubleshooting or
 testing restart and Resume.
 

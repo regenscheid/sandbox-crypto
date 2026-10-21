@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import importlib.util
+import re
 import sys
 import tomllib
 from dataclasses import replace
@@ -160,6 +161,35 @@ def test_gateway_config_keeps_image_state_on_volume_and_refuses_overwrite(
     assert mac.config_path(chosen).read_text() == "local modification\n"
 
 
+def test_gateway_admits_only_clients_with_its_certificates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    driver_dir = tmp_path / "homebrew/libexec"
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+    target = mac.config_path(chosen)
+    # A plaintext config from before listener TLS migrates.
+    target.write_text(mac.gateway_config(chosen, driver_dir, mac.DEFAULT_BOOTSTRAP_IMAGE))
+    mac.write_gateway_config(chosen, driver_dir)
+    data = tomllib.loads(target.read_text())
+    gateway = data["openshell"]["gateway"]
+    tls = chosen.root / "gateway/tls"
+    assert "disable_tls" not in gateway
+    assert "auth" not in gateway
+    assert gateway["tls"] == {
+        "cert_path": str(tls / "server/tls.crt"),
+        "key_path": str(tls / "server/tls.key"),
+        "client_ca_path": str(tls / "ca.crt"),
+    }
+    assert gateway["mtls_auth"] == {"enabled": True}
+    vm = data["openshell"]["drivers"]["vm"]
+    assert vm["grpc_endpoint"] == "https://127.0.0.1:18081"
+    assert gateway["guest_tls_ca"] == str(tls / "ca.crt")
+    assert "guest_tls_ca" not in vm
+    assert chosen.gateway_url == "https://127.0.0.1:18081"
+
+
 def test_vm_driver_is_resolved_beside_the_pinned_homebrew_gateway(tmp_path: Path) -> None:
     prefix = tmp_path / "Cellar/openshell/0.1.5"
     gateway = prefix / "bin/openshell-gateway"
@@ -190,7 +220,9 @@ def test_exact_legacy_gateway_config_migrates_without_touching_other_content(
     target.write_text(mac.gateway_config(chosen))
     target.chmod(0o600)
     mac.write_gateway_config(chosen, driver_dir)
-    assert target.read_text() == mac.gateway_config(chosen, driver_dir, mac.DEFAULT_BOOTSTRAP_IMAGE)
+    assert target.read_text() == mac.gateway_config(
+        chosen, driver_dir, mac.DEFAULT_BOOTSTRAP_IMAGE, tls=True
+    )
     assert target.stat().st_mode & 0o777 == 0o600
     mac.write_gateway_config(chosen, driver_dir)
 
@@ -473,3 +505,95 @@ def test_successful_sage_check_requires_sandbox_cleanup(
     monkeypatch.setattr(mac, "run", fake_run)
     with pytest.raises(mac.SetupError, match="Could not delete"):
         mac.smoke("openshell", chosen, {})
+
+
+def app_config(chosen: Any, **changes: str) -> dict[str, Any]:
+    values = mac.expected_app_values(chosen)
+    values.update(changes)
+    environments = {
+        key: values[f"openshell.environments.{key}"]
+        for key in ("policy_store", "targets", "ceiling")
+    }
+    return {
+        "state_dir": values["state_dir"],
+        "worker": {"policy": "policy.yaml"},
+        "openshell": {
+            "package_cache": values["openshell.package_cache"],
+            "environments": environments,
+        },
+    }
+
+
+def test_launch_requires_the_helpers_state_and_services(tmp_path: Path) -> None:
+    chosen = settings(tmp_path)
+    source = tmp_path / "private/sandbox-science.toml"
+    source.parent.mkdir()
+    (source.parent / "policy.yaml").write_text("kind: ProjectPolicy\n")
+    app = mac.check_app_config(chosen, source, app_config(chosen))
+    assert app.policy == (source.parent / "policy.yaml").resolve()
+    assert app.mcp_proxy_port == 18080
+    wrong = app_config(chosen, **{"openshell.package_cache": "http://host.openshell.internal:8090"})
+    with pytest.raises(
+        mac.SetupError, match=re.escape('package_cache = "http://host.openshell.internal:18083"')
+    ):
+        mac.check_app_config(chosen, source, wrong)
+    proxied = app_config(chosen)
+    proxied["mcp_proxy"] = {"listen": "0.0.0.0:18080"}
+    with pytest.raises(mac.SetupError, match=re.escape("listen must be 127.0.0.1")):
+        mac.check_app_config(chosen, source, proxied)
+
+
+def test_only_a_launch_registers_the_middleware(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    driver_dir = tmp_path / "homebrew/libexec"
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+    app = mac.AppSettings(policy=tmp_path / "policy.yaml", mcp_proxy_port=18090)
+    launch = mac.write_service_settings(chosen, app, driver_dir)
+    registered = tomllib.loads(launch.read_text())["openshell"]["supervisor"]["middleware"]
+    services = mac.services_dir(chosen)
+    assert registered == [
+        {
+            "name": "sandbox-science-policy",
+            "grpc_endpoint": "https://127.0.0.1:18082",
+            "tls_ca_cert_path": str(services / "middleware/tls/ca.pem"),
+            "max_payload_bytes": 4194304,
+            "timeout": "500ms",
+        }
+    ]
+    mac.write_gateway_config(chosen, driver_dir)
+    assert "supervisor" not in tomllib.loads(mac.config_path(chosen).read_text())["openshell"]
+    targets = yaml.safe_load((services / "targets.yaml").read_text())
+    assert targets["sandbox"]["package_cache"] == {"host": "host.openshell.internal", "port": 18083}
+    assert targets["sandbox"]["mcp_proxy"]["port"] == 18090
+    middleware = tomllib.loads((services / "middleware/middleware.toml").read_text())
+    assert middleware["listen"] == "127.0.0.1:18082"
+    assert middleware["tokens"]["public_key"] == str(chosen.root / "gateway/tls/jwt/public.pem")
+    for path in (launch, services / "targets.yaml", services / "middleware/middleware.toml"):
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert (services / "middleware/tls/middleware-key.pem").stat().st_mode & 0o777 == 0o600
+    # The certificates are made once and kept.
+    certificate = (services / "middleware/tls/middleware.pem").read_bytes()
+    mac.write_service_settings(chosen, app, driver_dir)
+    assert (services / "middleware/tls/middleware.pem").read_bytes() == certificate
+
+
+def test_partial_middleware_certificates_are_left_for_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    tls = mac.services_dir(chosen) / "middleware/tls"
+    tls.mkdir(parents=True)
+    (tls / "ca.pem").write_text("an earlier CA\n")
+    with pytest.raises(mac.SetupError, match="Partial middleware certificates"):
+        mac.ensure_middleware_tls(chosen)
+    assert (tls / "ca.pem").read_text() == "an earlier CA\n"
+
+
+def test_service_ports_must_differ(tmp_path: Path) -> None:
+    config = tmp_path / "mac.toml"
+    config.write_text(f'volume = "{tmp_path}"\nmiddleware_port = 18081\n')
+    with pytest.raises(mac.SetupError, match="must differ"):
+        mac.read_settings(config)
