@@ -140,8 +140,8 @@ it('keeps document drafts across switching, closing and reopening tabs even with
   root.querySelector<HTMLButtonElement>('.document-card')!.click();
   await settle();
   const firstId = root.querySelector('.document-tabs [role="tab"][aria-selected="true"]')!.id;
-  [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((el) => el.textContent === 'Edit Markdown source')!
+  [...root.querySelectorAll<HTMLButtonElement>('.document-actions button')]
+    .find((el) => el.textContent === 'Edit')!
     .click();
   await settle();
   const draft = root.querySelector<HTMLTextAreaElement>('[aria-label="Markdown draft"]')!;
@@ -180,26 +180,23 @@ it('gives source editing the full document view and restores reading without los
   await settle();
   expect(root.querySelector('.document-reading')?.textContent).toContain('Notebook text');
 
-  const edit = [
-    ...root.querySelectorAll<HTMLButtonElement>('.document-heading-actions button'),
-  ].find((button) => button.textContent === 'Edit')!;
+  const edit = [...root.querySelectorAll<HTMLButtonElement>('.document-actions button')].find(
+    (button) => button.textContent === 'Edit',
+  )!;
   edit.click();
   await settle();
   expect(root.querySelector('.document-reading')).toBeNull();
   expect(root.querySelector('.document-workspace')?.classList.contains('editing')).toBe(true);
-
-  [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((button) => button.textContent === 'Edit Markdown source')!
-    .click();
-  await settle();
+  // Edit opens the whole source at once, with its preview beside it.
+  expect(root.querySelector('.preview-pane')?.textContent).toContain('Notebook text');
   const draft = root.querySelector<HTMLTextAreaElement>('[aria-label="Markdown draft"]')!;
   draft.value = 'Unsaved source';
   draft.dispatchEvent(new Event('input', { bubbles: true }));
   await settle();
 
-  const comments = [
-    ...root.querySelectorAll<HTMLButtonElement>('.document-heading-actions button'),
-  ].find((button) => button.textContent === 'Comments')!;
+  const comments = [...root.querySelectorAll<HTMLButtonElement>('.document-actions button')].find(
+    (button) => button.textContent === 'Done editing',
+  )!;
   comments.click();
   await settle();
   expect(root.querySelector('.document-reading')?.textContent).toContain('Notebook text');

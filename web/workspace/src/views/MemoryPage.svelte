@@ -16,11 +16,9 @@
     overflowText,
     textProblem,
   } from '../lib/memory';
-  import { projectHref } from '../lib/router';
   import { visible } from '../lib/text';
   import { idle } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
-  import PaneResizer from './PaneResizer.svelte';
   import MemoryEntryItem from './MemoryEntryItem.svelte';
   import MemoryProposalCard from './MemoryProposalCard.svelte';
 
@@ -37,14 +35,15 @@
   let search = $state(kept.search ?? '');
   let selected = $state(kept.selected ?? '');
   let section = $state(kept.section ?? 'accepted');
-  let viewportWidth = $state(window.innerWidth);
-  const maxWidth = $derived(Math.max(320, Math.floor(viewportWidth / 2)));
-  let width = $state(
-    Math.min(Number(kept.width) || 460, Math.max(320, Math.floor(window.innerWidth / 2))),
-  );
   $effect(() => {
-    stored = browserState.save(scope, { adding, search, selected, section, width: String(width) });
+    stored = browserState.save(scope, { adding, search, selected, section });
   });
+  const matches = (text: string) => text.toLocaleLowerCase().includes(search.toLocaleLowerCase());
+  /** The first line of an entry, for its row; the whole text shows when it is opened. */
+  const firstLine = (text: string) => {
+    const line = text.trim().split('\n')[0] ?? '';
+    return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+  };
   const problem = $derived(adding.trim() === '' ? null : textProblem(adding));
   const overflow = $derived(shown === null ? null : overflowText(shown.memory, shown.bound));
 
@@ -75,106 +74,106 @@
   }
 </script>
 
-<svelte:window
-  onresize={() => {
-    viewportWidth = window.innerWidth;
-    width = Math.min(width, maxWidth);
-  }}
-/>
-
-<nav class="trail">
-  <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
-</nav>
-<h1>Project memory</h1>
+<div class="page-head">
+  <div>
+    <h1>Memory</h1>
+    <p class="muted">
+      Notes every agent in this project receives when it starts: conventions and notation, settled
+      facts about the environment and the tools, your preferences, and pitfalls to avoid. Agents
+      propose; nothing changes until you decide.
+    </p>
+  </div>
+  <label class="sr-only" for="memory-search">Search memory</label>
+  <input id="memory-search" type="search" placeholder="Search memory" bind:value={search} />
+</div>
 {#if restored.damaged}
   <p role="alert">
     Saved memory browser data could not be restored. Check any new entry before continuing.
   </p>
 {/if}
-<p>
-  Notes on how to work in this project, which every agent of the project receives when it starts:
-  conventions and notation, settled facts about the environment and the tools, your preferences, and
-  pitfalls to avoid. Agents propose; nothing changes until you decide.
-</p>
 {#if saving.error}<ErrorMessage error={saving.error} />{/if}
 {#if failure}
   <ErrorMessage error={failure} />
 {:else if shown === null}
   <p class="muted">Loading…</p>
 {:else}
-  <p class="muted">
-    Agent budget: {shown.bound.toLocaleString()} characters. Accepted entries retain their receive order
-    when filtered. Version {shown.memory.version}; {shown.memory.characters.toLocaleString()} characters.
-  </p>
+  {@const used = shown.memory.characters}
+  <div class="budget">
+    <p class="muted">
+      {used.toLocaleString()} of {shown.bound.toLocaleString()} characters given to agents · version
+      {shown.memory.version}
+    </p>
+    <div
+      class="bar"
+      role="meter"
+      aria-label="Memory given to agents"
+      aria-valuemin="0"
+      aria-valuemax={shown.bound}
+      aria-valuenow={Math.min(used, shown.bound)}
+    >
+      <span
+        class:over={used > shown.bound}
+        style:width={`${Math.min(100, (100 * used) / shown.bound)}%`}
+      ></span>
+    </div>
+  </div>
   {#if overflow}<p role="alert">{overflow}</p>{/if}
   <div class="memory-tools">
-    <button aria-pressed={section === 'accepted'} onclick={() => (section = 'accepted')}
-      >Accepted ({shown.memory.entries.length})</button
-    >
-    <button aria-pressed={section === 'proposals'} onclick={() => (section = 'proposals')}
-      >Proposal inbox ({proposals.length})</button
-    >
-    <label>Search memory <input type="search" bind:value={search} /></label>
-    <button onclick={() => void load()}>Refresh memory</button>
+    <div class="segmented" role="tablist" aria-label="Memory">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={section === 'accepted'}
+        onclick={() => (section = 'accepted')}>Entries {shown.memory.entries.length}</button
+      ><button
+        type="button"
+        role="tab"
+        aria-selected={section === 'proposals'}
+        onclick={() => (section = 'proposals')}
+        >Proposals <span class:waiting={proposals.length > 0}>{proposals.length}</span></button
+      >
+    </div>
+    <button type="button" class="link-button" onclick={() => void load()}>Refresh</button>
   </div>
-  <div class="memory-columns" style:--detail-width={`${width}px`}>
-    <nav aria-label="Memory records">
-      {#if section === 'accepted'}
-        {#each shown.memory.entries as entry, index (entry.entry_id)}
-          {#if `${entry.entry_id} ${entry.text}`
-            .toLocaleLowerCase()
-            .includes(search.toLocaleLowerCase())}
-            <button
-              class="memory-row"
-              aria-pressed={selected === entry.entry_id}
-              onclick={() => (selected = entry.entry_id)}
-            >
-              <strong>{index + 1}. {entry.entry_id}</strong><span
-                >{visible(entry.text.slice(0, 160))}</span
-              ><small
-                >{index < shown.memory.given ? 'Given to agents' : 'Past agent budget'} · revision {entry.revision}</small
-              >
-            </button>
+
+  {#if section === 'accepted'}
+    <ol class="memory-list" aria-label="Accepted entries, in the order agents receive them">
+      {#each shown.memory.entries as entry, index (entry.entry_id)}
+        <li hidden={!matches(`${entry.entry_id} ${entry.text}`)}>
+          <button
+            type="button"
+            class="memory-row"
+            aria-expanded={selected === entry.entry_id}
+            onclick={() => (selected = selected === entry.entry_id ? '' : entry.entry_id)}
+          >
+            <span class="entry-number">{index + 1}</span>
+            <span class="entry-text">{visible(firstLine(entry.text))}</span>
+            {#if index >= shown.memory.given}<span class="pill over">Past agent budget</span>{/if}
+            <span class="chevron" aria-hidden="true">›</span>
+          </button>
+          {#if selected === entry.entry_id}
+            <ol class="entry-detail">
+              <MemoryEntryItem
+                {projectId}
+                {entry}
+                first={index === 0}
+                last={index === shown.memory.entries.length - 1}
+                given={index < shown.memory.given}
+                busy={saving.busy}
+                onchange={change}
+              />
+            </ol>
           {/if}
-        {/each}
-        {#if shown.memory.entries.length === 0}<p>No accepted entries.</p>{/if}
-      {:else}
-        {#each proposals as proposal (proposal.proposal_id)}
-          {#if `${proposal.proposal_id} ${proposal.text ?? ''} ${proposal.reason}`
-            .toLocaleLowerCase()
-            .includes(search.toLocaleLowerCase())}
-            <button
-              class="memory-row"
-              aria-pressed={selected === proposal.proposal_id}
-              onclick={() => (selected = proposal.proposal_id)}
-              ><strong>{proposal.action} · {proposal.proposal_id}</strong><span
-                >{visible(proposal.text?.slice(0, 160) ?? proposal.reason)}</span
-              ></button
-            >
-          {/if}
-        {/each}
-        {#if proposals.length === 0}<p>No proposals wait.</p>{/if}
-      {/if}
-    </nav>
-    <PaneResizer bind:width {maxWidth} label="Resize memory details" />
-    <section aria-label="Selected memory record">
-      <div class="entries">
-        {#each shown.memory.entries as entry, index (entry.entry_id)}
-          <ol hidden={section !== 'accepted' || selected !== entry.entry_id}>
-            <MemoryEntryItem
-              {projectId}
-              {entry}
-              first={index === 0}
-              last={index === shown.memory.entries.length - 1}
-              given={index < shown.memory.given}
-              busy={saving.busy}
-              onchange={change}
-            />
-          </ol>
-        {/each}
-      </div>
+        </li>
+      {/each}
+    </ol>
+    {#if shown.memory.entries.length === 0}<p class="empty-note">
+        No entries yet. Add the first one below, or accept one an agent proposes.
+      </p>{/if}
+  {:else}
+    <div class="proposals">
       {#each proposals as proposal (proposal.proposal_id)}
-        <div hidden={section !== 'proposals' || selected !== proposal.proposal_id}>
+        <div hidden={!matches(`${proposal.proposal_id} ${proposal.text ?? ''} ${proposal.reason}`)}>
           <MemoryProposalCard
             {proposal}
             busy={saving.busy}
@@ -182,75 +181,146 @@
           />
         </div>
       {/each}
-      {#if !selected}<p>
-          Select an accepted entry or proposal to review its exact text, differences and history.
-        </p>{/if}
-    </section>
-  </div>
-
-  <h3>Add an entry</h3>
-  <textarea aria-label="A new entry" rows="4" bind:value={adding}></textarea>
-  {#if adding !== '' && !stored}
-    <p role="alert">
-      This new memory entry is kept only in this tab. Copy it before reloading or closing the tab.
-    </p>
+      {#if proposals.length === 0}<p class="empty-note">No proposals wait for you.</p>{/if}
+    </div>
   {/if}
-  {#if problem}<p role="alert">{problem}</p>{/if}
-  <button
-    type="button"
-    disabled={saving.busy || adding.trim() === '' || problem !== null}
-    onclick={add}>Add</button
-  >
+
+  <section class="add" aria-label="Add an entry">
+    <h2>Add an entry</h2>
+    <textarea
+      aria-label="A new entry"
+      rows="3"
+      placeholder="A convention, a settled fact about the tools, a preference, or a pitfall to avoid"
+      bind:value={adding}></textarea>
+    {#if adding !== '' && !stored}
+      <p role="alert">
+        This new memory entry is kept only in this tab. Copy it before reloading or closing the tab.
+      </p>
+    {/if}
+    {#if problem}<p role="alert">{problem}</p>{/if}
+    <button
+      type="button"
+      class="primary-button"
+      disabled={saving.busy || adding.trim() === '' || problem !== null}
+      onclick={add}>Add</button
+    >
+  </section>
 {/if}
 
 <style>
+  .budget {
+    max-width: 32rem;
+    margin: 4px 0 16px;
+  }
+  .budget p {
+    margin: 0 0 6px;
+    font-size: 12px;
+  }
+  .bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--subtle);
+    overflow: hidden;
+  }
+  .bar span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+  .bar span.over {
+    background: var(--warn-dot);
+  }
   .memory-tools {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: end;
-    margin: 1rem 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
   }
-  .memory-columns {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 8px minmax(320px, var(--detail-width));
-    border: 1px solid var(--border);
+  .segmented {
+    flex: 0 0 auto;
   }
-  .memory-columns > nav,
-  .memory-columns > section {
-    padding: 0.75rem;
-    min-width: 0;
-    max-height: 70vh;
-    overflow: auto;
+  .segmented button {
+    padding: 0 12px;
   }
-  .memory-row {
-    display: grid;
-    gap: 0.35rem;
-    width: 100%;
-    text-align: left;
-    padding: 0.75rem;
-    overflow-wrap: anywhere;
-    border: 0;
+  .segmented span.waiting {
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--warn-soft);
+    color: var(--warn-text);
+  }
+  .memory-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-top: 1px solid var(--border);
+  }
+  .memory-list > li {
     border-bottom: 1px solid var(--border);
   }
-  .memory-row[aria-pressed='true'] {
-    background: var(--surface-raised);
+  .memory-row {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    width: 100%;
+    min-height: 0;
+    padding: 12px 8px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
   }
-  .entries {
-    padding: 0;
+  .memory-row:hover {
+    background: var(--subtle);
+  }
+  .entry-number {
+    flex: none;
+    width: 1.5rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .entry-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .chevron {
+    flex: none;
+    color: var(--muted);
+    transition: transform 0.15s;
+  }
+  .memory-row[aria-expanded='true'] .chevron {
+    transform: rotate(90deg);
+  }
+  .pill {
+    flex: none;
+    padding: 0 8px;
+    border-radius: 9px;
+    font-size: 12px;
+  }
+  .pill.over {
+    background: var(--warn-soft);
+    color: var(--warn-text);
+  }
+  .entry-detail {
     list-style: none;
+    margin: 0;
+    padding: 0 8px 14px 44px;
   }
-  @media (max-width: 800px) {
-    .memory-columns {
-      display: block;
-    }
-    .memory-columns :global(.pane-resizer) {
-      display: none;
-    }
+  .add {
+    margin-top: 28px;
+    max-width: 48rem;
   }
-
+  .add h2 {
+    font-size: 14px;
+    margin: 0 0 8px;
+  }
   textarea {
     width: 100%;
     box-sizing: border-box;
+    margin-bottom: 8px;
   }
 </style>

@@ -818,6 +818,12 @@ div.math-skipped {
   --danger-dot: #ef4444;
   --danger-soft: #fef2f2;
   --danger-line: #fecaca;
+  /* Code in the artifact viewer: keywords, strings, numbers, function names, comments. */
+  --code-keyword: #b42318;
+  --code-string: #0a3d6e;
+  --code-number: #0550ae;
+  --code-function: #6e3fbf;
+  --code-comment: #6b7280;
   --shadow: 0 12px 32px rgb(23 52 72 / 12%);
   font-family:
     Inter,
@@ -862,6 +868,11 @@ div.math-skipped {
     --danger-dot: #ef4444;
     --danger-soft: #2c1515;
     --danger-line: #5a2323;
+    --code-keyword: #ff8b7f;
+    --code-string: #a5d6ff;
+    --code-number: #79c0ff;
+    --code-function: #d2a8ff;
+    --code-comment: #8b97a5;
     --shadow: 0 12px 32px rgb(0 0 0 / 40%);
   }
 }
@@ -2320,4 +2331,28 @@ a.button-link:hover {
 .new-session p {
   margin: 0;
   font-size: 12px;
+}
+
+/* Comment threads beside a document, as cards. */
+.document-inspector article.thread {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  font-size: 13px;
+  background: var(--surface);
+}
+.document-inspector article.thread h3 {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+.document-inspector article.thread blockquote,
+.document-inspector .anchor-quote {
+  margin: 4px 0;
+  padding-left: 8px;
+  border-left: 3px solid var(--warn-line);
 }

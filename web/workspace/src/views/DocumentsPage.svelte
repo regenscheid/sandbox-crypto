@@ -19,11 +19,17 @@
   const kept = untrack(() => browserState.load(scope).draft ?? {});
   let selected = $state<string | null>(kept.selected || null);
   let query = $state(kept.query ?? '');
+  let listOpen = $state(kept.list !== 'closed');
   let where = $state<'all' | 'project' | 'session'>(
     (['all', 'project', 'session'] as const).find((value) => value === kept.where) ?? 'all',
   );
   $effect(() => {
-    browserState.save(scope, { selected: selected ?? '', query, where });
+    browserState.save(scope, {
+      selected: selected ?? '',
+      query,
+      where,
+      list: listOpen ? 'open' : 'closed',
+    });
   });
   let view = $state<PollState<DocumentInfo[]>>(initialPoll());
   $effect(() => {
@@ -66,17 +72,35 @@
     bind:value={query}
   />
 </div>
-<div class="split">
-  <section class="library" aria-label="Library">
-    <div class="segmented" role="tablist" aria-label="Scope">
-      {#each [['all', 'All'], ['session', 'Workbooks'], ['project', 'Project']] as const as [value, label] (value)}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={where === value}
-          onclick={() => (where = value)}>{label}</button
-        >
-      {/each}
+<div class="split" class:list-closed={!listOpen}>
+  {#if !listOpen}
+    <button
+      type="button"
+      class="library-rail"
+      aria-label="Show the document list"
+      title="Show the document list"
+      onclick={() => (listOpen = true)}>Documents »</button
+    >
+  {/if}
+  <section class="library" aria-label="Library" hidden={!listOpen}>
+    <div class="library-head">
+      <div class="segmented" role="tablist" aria-label="Scope">
+        {#each [['all', 'All'], ['session', 'Workbooks'], ['project', 'Project']] as const as [value, label] (value)}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={where === value}
+            onclick={() => (where = value)}>{label}</button
+          >
+        {/each}
+      </div>
+      <button
+        type="button"
+        class="icon-button"
+        aria-label="Hide the document list"
+        title="Hide the document list"
+        onclick={() => (listOpen = false)}>«</button
+      >
     </div>
     <PollStatus phase={view.phase} hasData={view.data !== null} what="Documents" />
     {#each shown as item (item.document_id)}
@@ -102,8 +126,6 @@
   <article class="reader" aria-label="Document">
     {#if chosen}
       <div class="reader-bar">
-        <span class="muted">{where_(chosen)} · {visible(chosen.name)} · revision {chosen.head}</span
-        >
         <a href={documentHref(projectId, chosen.document_id)}>Open the full page ↗</a>
       </div>
       {#key chosen.document_id}
@@ -125,6 +147,24 @@
     min-height: 0;
     border-top: 1px solid var(--border);
     margin: 0 -32px;
+  }
+  .library-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 4px;
+  }
+  .library-head .segmented {
+    flex: 1;
+  }
+  .library-rail {
+    writing-mode: vertical-rl;
+    align-self: flex-start;
+    min-height: 140px;
+    margin: 12px 0 12px 12px;
+    padding: 12px 6px;
+    font-size: 12px;
+    color: var(--muted);
   }
   .library {
     flex: 1 1 300px;
@@ -169,10 +209,8 @@
     flex-wrap: wrap;
     gap: 8px 16px;
     align-items: center;
-    justify-content: space-between;
-    padding: 12px 0;
-    margin-bottom: 8px;
-    border-bottom: 1px solid var(--subtle);
+    justify-content: flex-end;
+    padding: 8px 0 0;
     font-size: 13px;
   }
   @media (max-width: 760px) {

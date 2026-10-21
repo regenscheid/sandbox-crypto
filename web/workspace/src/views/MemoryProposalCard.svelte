@@ -50,17 +50,24 @@
     {/if}
   {/if}
   {#if standing.note}<p role="note">{standing.note}</p>{/if}
-  <button type="button" disabled={busy || !standing.acceptable} onclick={() => ondecide(true)}
-    >Accept</button
+  <button
+    type="button"
+    class="primary-button"
+    disabled={busy || !standing.acceptable}
+    onclick={() => ondecide(true)}>Accept</button
   >
   <button type="button" disabled={busy} onclick={() => ondecide(false)}>Decline</button>
 </article>
 
 <style>
   .proposal {
-    border: 1px solid var(--border, #ccc);
-    padding: 0.5em 1em;
-    margin-bottom: 1em;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
     overflow-wrap: anywhere;
+  }
+  .proposal > button {
+    margin: 8px 6px 0 0;
   }
 </style>

@@ -67,20 +67,24 @@ describe('a patch the user applies', () => {
 
   it('shows reasons in the history as code points too', async () => {
     const source = (await import('../views/HistoryView.svelte?raw')).default;
-    expect(source).toContain('{visible(revision.reason)}');
+    expect(source).toContain('{visible(item.reason)}');
     expect(source).toContain('{visible(patch.reason)}');
   });
 
   it('renders no text as HTML', () => {
     const views = import.meta.glob(
-      ['../views/PatchPreviewView.svelte', '../views/PatchReview.svelte'],
+      [
+        '../views/PatchPreviewView.svelte',
+        '../views/PatchReview.svelte',
+        '../views/HistoryView.svelte',
+      ],
       {
         query: '?raw',
         import: 'default',
         eager: true,
       },
     );
-    expect(Object.keys(views)).toHaveLength(2);
+    expect(Object.keys(views)).toHaveLength(3);
     for (const source of Object.values(views)) expect(String(source)).not.toContain('{@html');
   });
 });

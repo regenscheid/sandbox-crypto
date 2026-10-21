@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import { describeAuthor, describeChanges } from './authors';
+import { authorName, describeAuthor } from './authors';
 
 describe('authors and changes in words', () => {
   it.each([
@@ -27,10 +27,11 @@ describe('authors and changes in words', () => {
     expect(describeAuthor(author)).toBe(words);
   });
 
-  it('lists the blocks a revision changed, by how', () => {
-    expect(
-      describeChanges({ changed: ['b3'], added: ['b9', 'b10'], moved: [], removed: ['b2'] }),
-    ).toBe('changed b3; added b9, b10; removed b2');
-    expect(describeChanges({ changed: [], added: [], moved: [], removed: [] })).toBe('no blocks');
+  it('names who wrote a revision briefly, for a list', () => {
+    expect(authorName({ kind: 'user', user: 'user' })).toBe('You');
+    expect(authorName({ kind: 'agent', session_id: 'main', role: 'main', run_id: 'r' })).toBe(
+      'Research agent · session main',
+    );
+    expect(authorName({ kind: 'agent', role: 'reviewer' })).toBe('Reviewer agent');
   });
 });

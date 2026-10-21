@@ -72,9 +72,8 @@
       A saved memory edit could not be restored. Check your text before continuing.
     </p>
   {/if}
-  <p class="head">
-    <code>{entry.entry_id}</code>
-    <span class="muted">revision {entry.revision}, {formatTime(entry.changed_at)}</span>
+  <p class="head muted">
+    <code>{entry.entry_id}</code> · revision {entry.revision} · {formatTime(entry.changed_at)}
     {#if !given}<strong>not given to agents: past the bound</strong>{/if}
   </p>
   {#if draft === null}
@@ -115,8 +114,14 @@
 
 <style>
   .entry {
-    margin-bottom: 1em;
     overflow-wrap: anywhere;
+  }
+  .head {
+    margin: 0 0 8px;
+    font-size: 12px;
+  }
+  .entry > button {
+    margin: 8px 6px 0 0;
   }
   .left {
     opacity: 0.7;

@@ -4,6 +4,8 @@ import type { RunEvent } from './api-types';
 import { chatEntries } from './chat';
 import {
   callSummary,
+  clock,
+  dayAndTime,
   foldTranscript,
   stepText,
   workedFor,
@@ -168,5 +170,16 @@ describe('attached files in a message', () => {
       'Look:\n\nAttached files (sandbox copies; original bytes retained):\n```json\n[{}]\n```';
     expect(splitAttachments(text)).toEqual({ text, files: [] });
     expect(splitAttachments('plain')).toEqual({ text: 'plain', files: [] });
+  });
+});
+
+describe('times in lists', () => {
+  it('gives the clock time today and the day before then', () => {
+    const now = new Date(2026, 9, 21, 15, 0).getTime();
+    const today = new Date(2026, 9, 21, 9, 30).toISOString();
+    const earlier = new Date(2026, 9, 17, 17, 26).toISOString();
+    expect(dayAndTime(today, now)).toBe(clock(today));
+    expect(dayAndTime(earlier, now)).toMatch(/Oct 17, /);
+    expect(dayAndTime(new Date(2025, 0, 2).toISOString(), now)).toMatch(/2025/);
   });
 });

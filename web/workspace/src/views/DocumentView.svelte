@@ -16,8 +16,10 @@
   import Markdown from '../lib/Markdown.svelte';
   import { documentHref, historyHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
-  import DocumentEditor from './DocumentEditor.svelte';
+  import DocumentEditor, { type EditRequest } from './DocumentEditor.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
+  import PatchReview from './PatchReview.svelte';
+  import { dayAndTime } from '../lib/conversation';
   const commentComponent = import('./DocumentComments.svelte');
 
   let {
@@ -72,12 +74,56 @@
   let inspector = $state<'comments' | 'edit'>('comments');
   let selectedAnchor = $state<ReaderAnchor | null>(null);
   let requestedAnchor = $state<ReaderAnchor | null>(null);
-  let requestedEdit = $state<{ block: string } | null>(null);
+  let requestedSession = $state<string | null>(null);
+  /** Where the selection toolbar shows, inside the document; null hides it. */
+  let toolbarAt = $state<{ top: number; left: number } | null>(null);
+  let copied = $state(false);
+  let exportMenu = $state(false);
+  let reviewing = $state(false);
+  /** The comments column, open or hidden; kept for the next visit where storage allows. */
+  let commentsOpen = $state(readOpen());
+  function readOpen(): boolean {
+    try {
+      return localStorage.getItem('document-comments-open') !== 'no';
+    } catch {
+      return true;
+    }
+  }
+  function setCommentsOpen(open: boolean) {
+    commentsOpen = open;
+    try {
+      localStorage.setItem('document-comments-open', open ? 'yes' : 'no');
+    } catch {
+      // The choice lasts for this page only.
+    }
+  }
+  // The agents' suggestions that wait for the user (LD-20), from the document's history.
+  const suggestions = $derived.by(() => {
+    refresh;
+    return api
+      .history(projectId, documentId)
+      .then((history) => history.patches.filter((patch) => patch.state === 'suggested'))
+      .catch(() => []);
+  });
+  let editRequest = $state<EditRequest | null>(null);
+  let moreMenu = $state(false);
 
   function watchSelection(node: HTMLElement, found: DocumentRevision) {
     let current = found;
     const handle = () => {
-      selectedAnchor = anchorFromSelection(window.getSelection(), node, current);
+      const selection = window.getSelection();
+      selectedAnchor = anchorFromSelection(selection, node, current);
+      copied = false;
+      if (!selectedAnchor || !selection || selection.rangeCount === 0) {
+        toolbarAt = null;
+        return;
+      }
+      const box = selection.getRangeAt(0).getBoundingClientRect();
+      const frame = node.getBoundingClientRect();
+      toolbarAt = {
+        top: box.bottom - frame.top + 6,
+        left: Math.max(0, Math.min(box.left - frame.left, frame.width - 260)),
+      };
     };
     node.addEventListener('mouseup', handle);
     node.addEventListener('keyup', handle);
@@ -97,16 +143,51 @@
     };
   }
 
-  function commentOnSelection() {
+  function commentOnSelection(session: string | null = null) {
     if (!selectedAnchor) return;
+    requestedSession = session;
     requestedAnchor = { ...selectedAnchor };
     inspector = 'comments';
+    setCommentsOpen(true);
+    toolbarAt = null;
+  }
+
+  /** The session a document's agent works in: a workbook's own, or the open one. */
+  async function agentSession(found: DocumentRevision): Promise<string | null> {
+    if (found.document.session_id) return found.document.session_id;
+    try {
+      const project = await api.project(projectId);
+      return project.sessions.find((item) => item.closed_at === null)?.session_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function askTheAgent(found: DocumentRevision) {
+    commentOnSelection(await agentSession(found));
+  }
+
+  async function copySelection() {
+    const text = window.getSelection()?.toString() ?? '';
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  /** Open the editor for an edit, a move into the project or a restore. */
+  function edit(request: EditRequest) {
+    editRequest = request;
+    inspector = 'edit';
+    toolbarAt = null;
+    exportMenu = false;
+    moreMenu = false;
   }
 
   function editSelectedBlock() {
-    if (!selectedAnchor) return;
-    requestedEdit = { block: selectedAnchor.block };
-    inspector = 'edit';
+    if (selectedAnchor) edit({ kind: 'block', block: selectedAnchor.block });
   }
 
   /** Move a reference's pin to a newer revision of its file (figures, FG-8): a patch of
@@ -153,32 +234,110 @@
       ? found.blocks.map((block) => ({ ...block, status: 'kept' }))
       : found.blocks}
   {@const input = { blocks, macros }}
-  <div class="document-heading">
-    <div>
-      <span class="document-eyebrow"
-        >{info.scope === 'project' ? 'Project document' : 'Session document'} · Revision {shown.number}</span
-      >
-      <h1>{found.title ?? info.title}</h1>
-    </div>
-    <div class="document-heading-actions">
+  {@const editable = !shown.tombstone && found.matched && shown.number === info.head}
+  <div class="document-bar">
+    <span class="muted document-meta"
+      >{info.scope === 'project' ? 'Project document' : `Session ${info.session_id} · workbook`} · revision
+      {shown.number}{shown.number < info.head ? ` of ${info.head}` : ''} · {describeAuthor(
+        shown.author,
+      )} at {dayAndTime(shown.created_at)}</span
+    >
+    <div class="document-actions">
       <button
-        class:active={inspector === 'comments'}
-        aria-pressed={inspector === 'comments'}
-        onclick={() => (inspector = 'comments')}>Comments</button
+        type="button"
+        aria-pressed={inspector === 'comments' && commentsOpen}
+        onclick={() => {
+          inspector = 'comments';
+          setCommentsOpen(true);
+          if (selectedAnchor) commentOnSelection();
+        }}>Comment</button
       >
-      <button
-        class:active={inspector === 'edit'}
-        aria-pressed={inspector === 'edit'}
-        onclick={() => (inspector = 'edit')}>Edit</button
-      >
-      <a href={historyHref(projectId, info.document_id)}>History</a>
-      <a
-        href={`/api/v0/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(info.document_id)}/source?revision=${shown.number}`}
-        download
-        title="The revision's Markdown source, as stored">Export Markdown</a
-      >
+      {#if inspector === 'edit'}<button
+          type="button"
+          aria-pressed="true"
+          onclick={() => (inspector = 'comments')}>Done editing</button
+        >{:else if editable}<button
+          type="button"
+          onclick={() => {
+            if (selectedAnchor) editSelectedBlock();
+            else edit({ kind: 'source' });
+          }}>Edit</button
+        >{:else if !shown.tombstone && shown.number < info.head}<button
+          type="button"
+          onclick={() => edit({ kind: 'revert' })}>Restore…</button
+        >{/if}
+      <a class="button-link" href={historyHref(projectId, info.document_id)}>History</a>
+      <div class="export">
+        <button
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={exportMenu}
+          onclick={() => (exportMenu = !exportMenu)}>Export ▾</button
+        >
+        {#if exportMenu}
+          <div class="export-menu" role="menu">
+            <a
+              role="menuitem"
+              href={`/api/v0/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(info.document_id)}/source?revision=${shown.number}`}
+              download
+              onclick={() => (exportMenu = false)}>Markdown <small>the stored source</small></a
+            >
+            <span role="menuitem" aria-disabled="true" class="muted"
+              >PDF or LaTeX <small>not built yet</small></span
+            >
+          </div>
+        {/if}
+      </div>
+      {#if editable && info.scope === 'session'}
+        <div class="export">
+          <button
+            type="button"
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={moreMenu}
+            onclick={() => (moreMenu = !moreMenu)}>⋯</button
+          >
+          {#if moreMenu}
+            <div class="export-menu" role="menu">
+              <button type="button" role="menuitem" onclick={() => edit({ kind: 'promote' })}
+                >Move to project… <small>share it beyond this session</small></button
+              >
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </div>
+  <h1 class="document-title">{found.title ?? info.title}</h1>
+  {#await suggestions then waiting}
+    {#if waiting.length && shown.number === info.head}
+      <div class="suggestion-banner" role="status">
+        <span
+          >The research agent suggests {waiting.length}
+          {waiting.length === 1 ? 'change' : 'changes'} to this document.</span
+        >
+        <button type="button" onclick={() => (reviewing = !reviewing)}
+          >{reviewing ? 'Hide' : 'Review'}</button
+        >
+      </div>
+      {#if reviewing}
+        <div class="suggestion-review">
+          {#each waiting as patch (patch.patch_id)}
+            <div class="suggestion">
+              <p class="muted">{describeAuthor(patch.author)}: {patch.reason}</p>
+              <PatchReview
+                {projectId}
+                documentId={info.document_id}
+                patchId={patch.patch_id}
+                suggested
+                refreshed={() => (refresh += 1)}
+              />
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {/if}
+  {/await}
   {#if revision === null && observedHead !== null && observedHead > shown.number}
     <p role="status">
       A newer revision is available. Your unsaved draft will be kept. <button
@@ -230,7 +389,12 @@
   </details>
 
   <div class="document-shell">
-    <div class="document-workspace" class:compact class:editing={inspector === 'edit'}>
+    <div
+      class="document-workspace"
+      class:compact
+      class:editing={inspector === 'edit'}
+      class:collapsed={inspector === 'comments' && !commentsOpen}
+    >
       {#if inspector === 'comments'}
         <div class="document-reading">
           {#if shown.warnings.length > 0}
@@ -286,59 +450,67 @@
               </p>{/if}
             <!-- Only when the document hides something from its rendering (threat model, A3). -->
             <HiddenBanner text={found.text} quiet />
-            <div class="selection-action" role="status">
-              <span
-                >{selectedAnchor
-                  ? selectedAnchor.kind === 'range'
-                    ? `Selected: “${selectedAnchor.quote.slice(0, 90)}${selectedAnchor.quote.length > 90 ? '…' : ''}”`
-                    : selectedAnchor.kind === 'math'
-                      ? `Selected formula ${selectedAnchor.math}`
-                      : `Selected block ${selectedAnchor.block}`
-                  : 'Select a passage or formula to work on it.'}</span
+            <div class="document-frame">
+              {#if toolbarAt && selectedAnchor}
+                <div
+                  class="selection-toolbar"
+                  role="toolbar"
+                  aria-label="Selected text"
+                  style:top={`${toolbarAt.top}px`}
+                  style:left={`${toolbarAt.left}px`}
+                >
+                  <button type="button" class="primary" onclick={() => commentOnSelection()}
+                    >Comment</button
+                  ><button type="button" onclick={() => void askTheAgent(found)}
+                    >Ask the agent</button
+                  ><button type="button" onclick={editSelectedBlock}>Edit</button><button
+                    type="button"
+                    onclick={() => void copySelection()}>{copied ? 'Copied' : 'Copy'}</button
+                  >
+                </div>
+              {/if}
+              <article
+                class="document"
+                use:focusBlock={known ? block : null}
+                use:watchSelection={found}
               >
-              <div class="selection-buttons">
-                <button disabled={!selectedAnchor} onclick={commentOnSelection}>Comment</button>
-                <button disabled={!selectedAnchor} onclick={editSelectedBlock}>Edit block</button>
-              </div>
+                <Markdown
+                  source={found.text}
+                  document={input}
+                  bind:mismatches
+                  pins={found.pins ?? []}
+                  checks={found.figure_checks ?? []}
+                  {projectId}
+                  repin={shown.number === info.head ? (b, p, r) => repin(found, b, p, r) : null}
+                />
+              </article>
             </div>
-            <article
-              class="document"
-              use:focusBlock={known ? block : null}
-              use:watchSelection={found}
-            >
-              <Markdown
-                source={found.text}
-                document={input}
-                bind:mismatches
-                pins={found.pins ?? []}
-                checks={found.figure_checks ?? []}
-                {projectId}
-                repin={shown.number === info.head ? (b, p, r) => repin(found, b, p, r) : null}
-              />
-            </article>
           {/if}
         </div>
+      {/if}
+      {#if inspector === 'comments' && !commentsOpen}
+        <button
+          type="button"
+          class="comments-rail"
+          aria-label="Show comments"
+          title="Show comments"
+          onclick={() => setCommentsOpen(true)}>« Comments</button
+        >
       {/if}
       <aside
         class="document-inspector"
         class:editing={inspector === 'edit'}
+        hidden={inspector === 'comments' && !commentsOpen}
         aria-label="Document tools"
       >
-        <div class="document-inspector-tabs" role="group" aria-label="Document tools">
-          <button aria-pressed={inspector === 'comments'} onclick={() => (inspector = 'comments')}
-            >Comments</button
-          >
-          <button aria-pressed={inspector === 'edit'} onclick={() => (inspector = 'edit')}
-            >Edit source</button
-          >
-        </div>
         <div hidden={inspector !== 'edit'}>
           {#key `${info.document_id}:${shown.number}`}
             <DocumentEditor
               {projectId}
               {found}
-              {compact}
-              {requestedEdit}
+              request={editRequest}
+              consumeRequest={() => (editRequest = null)}
+              close={() => (inspector = 'comments')}
               refreshed={() => (refresh += 1)}
             />
           {/key}
@@ -351,7 +523,12 @@
                 {projectId}
                 {found}
                 {requestedAnchor}
-                consumeAnchor={() => (requestedAnchor = null)}
+                {requestedSession}
+                consumeAnchor={() => {
+                  requestedAnchor = null;
+                  requestedSession = null;
+                }}
+                collapse={() => setCommentsOpen(false)}
               />
             {:catch error}<ErrorMessage {error} />{/await}
           {/key}
@@ -364,37 +541,148 @@
 {/await}
 
 <style>
-  .document-heading {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 1rem;
-    margin: 0.75rem 0;
-  }
-  .document-heading h1 {
-    margin: 0.1rem 0;
-    font-size: 1.3rem;
-  }
-  .document-eyebrow {
-    color: var(--muted);
-    font-size: 0.78rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .document-heading-actions {
+  .document-bar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
+    justify-content: space-between;
+    gap: 8px 12px;
+    padding: 4px 0 10px;
+    border-bottom: 1px solid var(--subtle);
   }
-  .document-heading-actions a {
-    margin-left: 0.4rem;
-    font-size: 0.9rem;
+  .document-meta {
+    font-size: 12px;
+    flex: 1 1 260px;
+    min-width: 0;
   }
-  .document-heading-actions button.active {
-    border-color: var(--link);
-    color: var(--link);
+  .document-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
   }
+  .document-actions button[aria-pressed='true'] {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+  }
+  .export {
+    position: relative;
+  }
+  .export-menu {
+    position: absolute;
+    right: 0;
+    top: 38px;
+    min-width: 220px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    z-index: 8;
+  }
+  .export-menu > * {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    color: var(--text);
+  }
+  .export-menu button {
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font: inherit;
+    min-height: 0;
+  }
+  .export-menu a:hover,
+  .export-menu button:hover {
+    background: var(--subtle);
+    text-decoration: none;
+  }
+  .export-menu small {
+    color: var(--muted);
+  }
+  .document-title {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 16px 0 12px;
+  }
+  .suggestion-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    margin: 0 0 12px;
+    border: 1px solid var(--accent-line);
+    border-radius: 10px;
+    background: var(--accent-soft);
+  }
+  .suggestion-banner span {
+    flex: 1 1 260px;
+  }
+  .suggestion-review {
+    margin: -4px 0 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .suggestion {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .suggestion p {
+    margin: 0 0 6px;
+    font-size: 13px;
+  }
+  .document-frame {
+    position: relative;
+  }
+  .selection-toolbar {
+    position: absolute;
+    z-index: 6;
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    border-radius: 8px;
+    background: var(--primary);
+    box-shadow: 0 4px 12px rgb(23 52 72 / 25%);
+  }
+  .selection-toolbar button {
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--on-primary);
+    font-size: 13px;
+  }
+  .selection-toolbar button:hover:not(:disabled) {
+    background: rgb(255 255 255 / 15%);
+  }
+  .selection-toolbar button.primary {
+    background: var(--accent);
+    color: var(--on-primary);
+  }
+  .comments-rail {
+    writing-mode: vertical-rl;
+    min-height: 120px;
+    padding: 12px 6px;
+    align-self: start;
+    position: sticky;
+    top: 0.5rem;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .document-workspace.collapsed {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .document-details {
     margin-bottom: 1rem;
     color: var(--muted);
@@ -406,7 +694,7 @@
   }
   .document-workspace {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(19rem, 36%);
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, 30%);
     gap: 1rem;
     align-items: start;
   }
@@ -418,10 +706,8 @@
   }
   .document-inspector {
     min-width: 0;
-    padding: 1rem;
-    border: 1px solid var(--border);
-    border-radius: 0.6rem;
-    background: var(--panel);
+    padding: 0 0 0 1rem;
+    border-left: 1px solid var(--subtle);
     position: sticky;
     top: 0.5rem;
     max-height: calc(100vh - 5rem);
@@ -431,47 +717,7 @@
     position: static;
     max-height: none;
   }
-  .document-inspector-tabs {
-    display: flex;
-    gap: 0.25rem;
-    margin-bottom: 1rem;
-    border-bottom: 1px solid var(--border);
-  }
-  .document-inspector-tabs button {
-    border: 0;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
-    background: transparent;
-    padding: 0.5rem 0.75rem;
-  }
-  .document-inspector-tabs button[aria-pressed='true'] {
-    border-bottom-color: var(--link);
-    color: var(--link);
-    font-weight: 600;
-  }
-  .selection-action {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.6rem 0.75rem;
-    border: 1px solid var(--link);
-    border-radius: 0.5rem;
-    background: var(--panel);
-    font-size: 0.85rem;
-  }
-  .selection-action span {
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  .selection-action button {
-    flex: none;
-  }
-  .selection-buttons {
-    display: flex;
-    gap: 0.3rem;
-  }
+
   @container document-shell (max-width: 790px) {
     .document-workspace {
       grid-template-columns: minmax(0, 1fr);
@@ -479,11 +725,6 @@
     .document-inspector {
       position: static;
       max-height: none;
-    }
-  }
-  @media (max-width: 700px) {
-    .document-heading {
-      flex-direction: column;
     }
   }
 </style>

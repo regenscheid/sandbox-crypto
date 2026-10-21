@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One artifact revision, opened in the Artifacts page: an image or a figure from the
      preview origin (figures, FG-12, FG-14), a PDF through the page viewer, Markdown
-     rendered, and other text as text, read from its kept bytes up to a limit. The file's
-     text is the agents' and is never rendered as HTML outside the Markdown component. -->
+     rendered, and other text as text with line numbers, its code highlighted and its JSON
+     laid out, read from its kept bytes up to a limit. The file's text is the agents' and is
+     never rendered as HTML outside the Markdown component. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { ArtifactEntry } from '../lib/api-types';
@@ -11,6 +12,7 @@
   import { keptText, whoText } from '../lib/artifactFiles';
   import { shownAsImage, shownInFrame } from '../lib/figures';
   import { formatTime } from '../lib/format';
+  import { formatJson, highlight, languageOf } from '../lib/highlight';
   import Markdown from '../lib/Markdown.svelte';
   import { sizeText, viewable } from '../lib/pdfAnchors';
   import { pdfHref, sessionHref } from '../lib/router';
@@ -59,6 +61,20 @@
   const markdown = $derived(/\.(md|markdown)$/i.test(entry.path));
   let source = $state(false);
   let text = $state<string | null>(null);
+  const language = $derived(languageOf(entry.path));
+  /** JSON laid out for reading, when it is one value not already so; null otherwise. */
+  const formatted = $derived.by(() => {
+    if (language !== 'json' || text === null) return null;
+    const laid = formatJson(text);
+    return laid === null || laid.trimEnd() === text.trimEnd() ? null : laid;
+  });
+  let asSaved = $state(false);
+  const shown = $derived(formatted !== null && !asSaved ? formatted : (text ?? ''));
+  const tokens = $derived(highlight(shown, language));
+  const lines = $derived.by(() => {
+    const count = shown.split('\n').length - (shown.endsWith('\n') ? 1 : 0);
+    return Array.from({ length: Math.max(count, 1) }, (_, index) => index + 1).join('\n');
+  });
   let failure = $state<unknown>(null);
 
   $effect(() => {
@@ -91,6 +107,12 @@
     </div>
     {#if markdown && text !== null}<button type="button" onclick={() => (source = !source)}
         >{source ? 'Rendered' : 'Source'}</button
+      >{/if}
+    {#if formatted !== null}<button
+        type="button"
+        aria-pressed={!asSaved}
+        title="Laid out for reading; every value as saved"
+        onclick={() => (asSaved = !asSaved)}>{asSaved ? 'Format' : 'As saved'}</button
       >{/if}
     {#if pdf}<a
         class="button-link"
@@ -126,8 +148,16 @@
             Reading the file…
           </p>{:else if markdown && !source}<div class="markdown-file">
             <Markdown source={text} {projectId} />
-          </div>{:else if text === ''}<p class="empty-note">The file is empty.</p>{:else}<pre
-            class="file-text">{visibleOutput(text)}</pre>{/if}
+          </div>{:else if text === ''}<p class="empty-note">The file is empty.</p>{:else}<div
+            class="code-view"
+          >
+            <pre class="gutter" aria-hidden="true">{lines}</pre>
+            <pre
+              class="file-text">{#each tokens as token, index (index)}{#if token.kind === 'plain'}{visibleOutput(
+                    token.text,
+                  )}{:else}<span class="tok-{token.kind}">{visibleOutput(token.text)}</span
+                  >{/if}{/each}</pre>
+          </div>{/if}
       {:else if pdf}
         <p class="empty-note">Open the PDF in the page viewer to read it.</p>
       {:else}
@@ -225,11 +255,63 @@
     min-width: 0;
     font-size: 13px;
   }
-  .file-text {
-    max-height: none;
+  .code-view {
+    display: flex;
+    align-items: flex-start;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .code-view pre {
     margin: 0;
+    padding: 12px 14px;
     font-size: 12.5px;
     line-height: 1.55;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+  .gutter {
+    flex: none;
+    text-align: right;
+    color: var(--muted);
+    user-select: none;
+    border-right: 1px solid var(--border) !important;
+    padding-right: 10px !important;
+  }
+  .file-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-height: none;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .tok-keyword {
+    color: var(--code-keyword);
+  }
+  .tok-string,
+  .tok-key {
+    color: var(--code-string);
+  }
+  .tok-key {
+    font-weight: 600;
+  }
+  .tok-number,
+  .tok-literal,
+  .tok-variable {
+    color: var(--code-number);
+  }
+  .tok-function,
+  .tok-builtin {
+    color: var(--code-function);
+  }
+  .tok-comment {
+    color: var(--code-comment);
+    font-style: italic;
+  }
+  .tok-punctuation {
+    color: var(--muted);
   }
   .markdown-file {
     max-width: 760px;

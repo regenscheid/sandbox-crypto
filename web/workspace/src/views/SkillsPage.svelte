@@ -98,7 +98,6 @@
           );
         }),
   );
-  const selected = $derived(shown?.effective.find((item) => item.id === selectedSkill) ?? null);
   const pin = $derived(shown?.pins.find((item) => item.source === selectedSource) ?? null);
   const changed = $derived.by(() => {
     const current = shown;
@@ -162,7 +161,6 @@
         excluded = found.settings.excluded.join('\n');
         baseRevision = found.settings.revision;
       }
-      if (selectedSkill === null) selectedSkill = found.effective[0]?.id ?? null;
       if (selectedSource === null) selectedSource = found.pins[0]?.source ?? null;
       failure = null;
     } catch (caught) {
@@ -290,19 +288,25 @@
       {catalog.length} matching skills. Choices here affect future runs; each run records what it actually
       loaded.
     </p>
-    <div class="browser-columns" style:--detail-width={`${detailWidth}px`}>
-      <section class="browser-list" aria-label="Skill catalog">
-        {#each catalog as skill (skill.id)}
-          <div class="skill-row" class:selected={selectedSkill === skill.id}>
+    <section class="skill-list" aria-label="Skill catalog">
+      {#each catalog as skill (skill.id)}
+        {@const open = selectedSkill === skill.id}
+        <div class="skill-item" class:open>
+          <div class="skill-row">
             <button
               type="button"
               class="browser-row"
-              class:selected={selectedSkill === skill.id}
-              aria-pressed={selectedSkill === skill.id}
-              onclick={() => (selectedSkill = skill.id)}
+              aria-expanded={open}
+              onclick={() => (selectedSkill = open ? '' : skill.id)}
             >
-              <span class="row-top"><strong>{visible(skill.name)}</strong></span>
-              <span class="row-description">{visible(skill.short || skill.description)}</span>
+              <span class="row-top"
+                ><strong>{visible(skill.name)}</strong><span class="chevron" aria-hidden="true"
+                  >›</span
+                ></span
+              >
+              <span class="row-description"
+                >{visible(open ? skill.description : skill.short || skill.description)}</span
+              >
               <span class="muted"
                 >{visible(skill.source)}{#if skill.topic}
                   · {visible(skill.topic)}{/if}</span
@@ -320,60 +324,40 @@
                 >{/each}
             </div>
           </div>
-        {:else}
-          <p class="muted">
-            No skills match these filters. Excluded IDs without metadata are listed under Loading
-            rules.
-          </p>
-        {/each}
-      </section>
-      <PaneResizer bind:width={detailWidth} {maxWidth} label="Resize skill details" />
-      <aside class="browser-detail" aria-label="Skill details">
-        {#if selected}
-          <p class="eyebrow">
-            {visible(selected.source)} · {selected.entry ? 'entry skill' : 'skill'}
-          </p>
-          <h2>{visible(selected.name)}</h2>
-          <p>{visible(selected.description)}</p>
-          <dl class="facts">
-            <dt>ID</dt>
-            <dd><code>{visible(selected.id)}</code></dd>
-            <dt>Revision</dt>
-            <dd><code>{visible(selected.revision)}</code></dd>
-            <dt>Topic</dt>
-            <dd>
-              {selected.topic ? visible(selected.topic) : 'Unspecified'}{#if selected.topic_by}
-                · {selected.topic_by === 'user' ? 'set by you' : 'derived'}{/if}
-            </dd>
-            <dt>Short description</dt>
-            <dd>
-              {selected.short ? visible(selected.short) : 'Unspecified'}{#if selected.short_by}
-                · {selected.short_by === 'user' ? 'set by you' : 'derived'}{/if}
-            </dd>
-          </dl>
-          <fieldset class="mode-choice">
-            <legend>For future runs</legend>
-            {#each ['available', 'always', 'excluded'] as mode}
-              <label
-                ><input
-                  type="radio"
-                  name="skill-mode"
-                  checked={skillMode(selected.id) === mode}
-                  onchange={() => setMode(selected.id, mode as 'available' | 'always' | 'excluded')}
-                />{mode === 'always'
-                  ? 'Always loaded'
-                  : mode === 'excluded'
-                    ? 'Off: never offered'
-                    : 'On request'}</label
-              >
-            {/each}
-          </fieldset>
-          <p class="muted">
-            These choices do not change historical runs. Save pending changes under Loading rules.
-          </p>
-        {:else}<p class="muted">Select a skill to see its details.</p>{/if}
-      </aside>
-    </div>
+          {#if open}
+            <div class="skill-detail">
+              <dl class="facts">
+                <dt>ID</dt>
+                <dd><code>{visible(skill.id)}</code></dd>
+                <dt>Revision</dt>
+                <dd><code>{visible(skill.revision)}</code></dd>
+                <dt>Kind</dt>
+                <dd>{skill.entry ? 'Entry skill' : 'Skill'} from {visible(skill.source)}</dd>
+                {#if skill.topic}<dt>Topic</dt>
+                  <dd>
+                    {visible(skill.topic)}{#if skill.topic_by}
+                      · {skill.topic_by === 'user' ? 'set by you' : 'derived'}{/if}
+                  </dd>{/if}
+                {#if skill.short && skill.short !== skill.description}<dt>Short description</dt>
+                  <dd>
+                    {visible(skill.short)}{#if skill.short_by}
+                      · {skill.short_by === 'user' ? 'set by you' : 'derived'}{/if}
+                  </dd>{/if}
+              </dl>
+              <p class="muted small">
+                On request: offered to agents, loaded when they ask. Always: loaded into every run.
+                Off: never offered. Past runs keep what they loaded.
+              </p>
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <p class="muted">
+          No skills match these filters. Excluded IDs without metadata are listed under Loading
+          rules.
+        </p>
+      {/each}
+    </section>
   {:else if view === 'sources'}
     <div class="browser-columns" style:--detail-width={`${detailWidth}px`}>
       <section class="browser-list" aria-label="Pinned sources">
@@ -583,24 +567,54 @@
     background: transparent;
     cursor: pointer;
   }
+  .skill-list {
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    overflow: hidden;
+  }
+  .skill-item {
+    border-bottom: 1px solid var(--border);
+  }
+  .skill-item:last-child {
+    border-bottom: 0;
+  }
+  .skill-item.open {
+    background: var(--panel);
+  }
   .skill-row {
     display: flex;
     align-items: center;
     gap: 8px;
     padding-right: 8px;
-    border-bottom: 1px solid var(--border, #ccc);
+  }
+  .chevron {
+    color: var(--muted);
+    transition: transform 0.15s;
+  }
+  .open .chevron {
+    transform: rotate(90deg);
+  }
+  .open .row-description {
+    display: block;
+  }
+  .skill-detail {
+    padding: 0 0.85rem 0.85rem;
+  }
+  .skill-detail .facts {
+    margin: 0 0 8px;
+  }
+  .small {
+    font-size: 12px;
   }
   .skill-row .browser-row {
     flex: 1;
     min-width: 0;
     border-bottom: 0;
   }
-  .skill-row.selected,
-  .skill-row:hover {
-    background: var(--surface-raised, #f1f4f3);
+  .skill-item:not(.open) .skill-row:hover {
+    background: var(--subtle);
   }
-  .skill-row .browser-row:hover,
-  .skill-row .browser-row.selected {
+  .skill-row .browser-row:hover {
     background: transparent;
   }
   .skill-mode {
@@ -649,16 +663,6 @@
     max-height: 70vh;
     padding: 1rem;
     border-left: 1px solid var(--border, #ccc);
-  }
-  .mode-choice {
-    display: grid;
-    gap: 0.4rem;
-    margin-top: 1rem;
-  }
-  .mode-choice label {
-    display: flex;
-    gap: 0.4rem;
-    align-items: center;
   }
   .overrides,
   .loading-rules {

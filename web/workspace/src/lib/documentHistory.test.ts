@@ -3,10 +3,13 @@ import { describe, expect, it } from 'vitest';
 import type { PatchPreview, PatchRecord } from './api';
 import {
   applyPatch,
+  compareRevisions,
   declineSuggestion,
   newestFirst,
   patchApplied,
+  patchState,
   reviewable,
+  summarizeChanges,
 } from './documentHistory';
 
 describe('the document history', () => {
@@ -38,5 +41,76 @@ describe('the document history', () => {
       expect(patchApplied({ outcome } as never)).toBe(true);
     for (const outcome of ['conflicted', 'refused'])
       expect(patchApplied({ outcome } as never)).toBe(false);
+  });
+});
+
+describe('what changed between revisions', () => {
+  const block = (id: string, kind: string, source: string) => ({ id, kind, source });
+  const before = {
+    blocks: [
+      block('b1', 'heading', '# Scope'),
+      block('b2', 'paragraph', 'The rank bounds the cost.'),
+      block('b3', 'paragraph', 'An old remark.'),
+      block('b4', 'heading', '## Proof'),
+      block('b5', 'paragraph', 'Kept as it was.'),
+      block('b6', 'paragraph', 'Also kept.'),
+    ],
+  };
+  const after = {
+    blocks: [
+      block('b1', 'heading', '# Scope'),
+      block('b2', 'paragraph', 'The rank bounds the attack cost.'),
+      block('b4', 'heading', '## Proof'),
+      block('b7', 'math', '$$x^2$$'),
+      block('b5', 'paragraph', 'Kept as it was.'),
+      block('b6', 'paragraph', 'Also kept.'),
+    ],
+  };
+
+  it('lists edits, additions and removals where they stand, under their headings', () => {
+    const changes = compareRevisions(before, after)!;
+    expect(changes.map((item) => item.kind)).toEqual([
+      'same',
+      'changed',
+      'removed',
+      'same',
+      'added',
+      'same',
+    ]);
+    const edited = changes[1]!;
+    expect(edited).toMatchObject({ passage: 'paragraph', section: 'Scope' });
+    const added = 'diff' in edited ? edited.diff?.filter((part) => part.kind === 'added') : [];
+    expect(added?.map((part) => part.text).join('')).toBe('attack ');
+    expect(changes[2]).toMatchObject({ before: 'An old remark.', section: 'Scope' });
+    expect(changes[4]).toMatchObject({ passage: 'math', section: 'Proof', after: '$$x^2$$' });
+    expect(changes[5]).toEqual({ kind: 'same', count: 2 });
+  });
+
+  it('marks moved passages only when told, and gives up without the blocks text', () => {
+    expect(compareRevisions(after, after, ['b5'])!.map((item) => item.kind)).toEqual([
+      'same',
+      'moved',
+      'same',
+    ]);
+    expect(compareRevisions({ blocks: [{ id: 'b1', kind: 'paragraph' }] }, after)).toBeNull();
+  });
+
+  it('says how much a revision changed in words, without block names', () => {
+    const revision = {
+      tombstone: false,
+      parent: 3,
+      changed: ['b2', 'b3'],
+      added: ['b9'],
+      moved: [],
+      removed: [],
+    };
+    expect(summarizeChanges(revision)).toBe('Edited 2 passages, added 1');
+    expect(summarizeChanges({ ...revision, changed: [], added: [], removed: ['b1'] })).toBe(
+      'Removed 1 passage',
+    );
+    expect(summarizeChanges({ ...revision, parent: null })).toBe('First revision');
+    expect(summarizeChanges({ ...revision, tombstone: true })).toBe('Deleted the document');
+    expect(summarizeChanges({ ...revision, changed: [], added: [] })).toBe('No change to the text');
+    expect(patchState('suggested')).toBe('Waiting for you');
   });
 });

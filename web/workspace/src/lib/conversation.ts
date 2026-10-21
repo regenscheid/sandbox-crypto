@@ -232,6 +232,19 @@ export function clock(iso: string): string {
   return time.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
+/** A time for a list: the clock time today, with the day before then (`Oct 17, 5:26 PM`). */
+export function dayAndTime(iso: string, now: number = Date.now()): string {
+  const time = new Date(iso);
+  if (Number.isNaN(time.getTime())) return '';
+  if (time.toDateString() === new Date(now).toDateString()) return clock(iso);
+  const day = time.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(time.getFullYear() === new Date(now).getFullYear() ? {} : { year: 'numeric' }),
+  });
+  return `${day}, ${clock(iso)}`;
+}
+
 /** Minutes and seconds since a time, such as 1:52. */
 export function elapsed(from: string, now: number): string {
   const seconds = Math.max(0, Math.floor((now - Date.parse(from)) / 1000));
