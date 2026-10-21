@@ -212,6 +212,85 @@ def test_ambient_openshell_settings_cannot_change_the_gateway_driver(
         assert "OPENSHELL_GATEWAY_CONFIG" not in env
 
 
+def test_gateway_signing_is_generated_in_isolated_state_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "personal-config"))
+    monkeypatch.setenv("OPENSHELL_LOCAL_TLS_DIR", str(tmp_path / "personal-tls"))
+    mac.prepare_dirs(chosen)
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], *, env: dict[str, str], **_kwargs: object) -> str:
+        calls.append(args)
+        assert env["XDG_CONFIG_HOME"] == str(chosen.root / "gateway/config")
+        assert env["OPENSHELL_LOCAL_TLS_DIR"] == str(chosen.root / "gateway/tls")
+        tls = Path(args[-1])
+        for name in (
+            "ca.crt",
+            "ca.key",
+            "server/tls.crt",
+            "server/tls.key",
+            "client/tls.crt",
+            "client/tls.key",
+            "jwt/signing.pem",
+            "jwt/public.pem",
+            "jwt/kid",
+        ):
+            path = tls / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("test certificate")
+        return ""
+
+    monkeypatch.setattr(mac, "run", fake_run)
+    mac.ensure_gateway_signing(chosen, "openshell-gateway")
+    mac.ensure_gateway_signing(chosen, "openshell-gateway")
+    assert len(calls) == 1
+    assert calls[0][:3] == ["openshell-gateway", "generate-certs", "--output-dir"]
+    assert Path(calls[0][-1]).parent.parent == chosen.root / "gateway"
+    assert (chosen.root / "gateway/tls/jwt/signing.pem").is_file()
+    assert not (tmp_path / "personal-config").exists()
+    assert not (tmp_path / "personal-tls").exists()
+
+
+def test_interrupted_gateway_signing_keeps_live_state_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+
+    def interrupted(args: list[str], **_kwargs: object) -> str:
+        staged = Path(args[-1])
+        (staged / "ca.crt").write_text("partial")
+        raise mac.SetupError("generation interrupted")
+
+    monkeypatch.setattr(mac, "run", interrupted)
+    with pytest.raises(mac.SetupError, match="generation interrupted"):
+        mac.ensure_gateway_signing(chosen, "openshell-gateway")
+    assert list((chosen.root / "gateway/tls").iterdir()) == []
+    assert not list((chosen.root / "gateway").glob(".gateway-signing-*"))
+
+
+def test_gateway_signing_refuses_partial_or_symlinked_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+    tls = chosen.root / "gateway/tls"
+    (tls / "jwt").mkdir()
+    (tls / "jwt/signing.pem").write_text("test key")
+    with pytest.raises(mac.SetupError, match="Partial gateway signing state"):
+        mac.ensure_gateway_signing(chosen, "openshell-gateway")
+    (tls / "jwt/signing.pem").unlink()
+    (tls / "jwt").rmdir()
+    (tls / "jwt").symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(mac.SetupError, match="must not contain symlinks"):
+        mac.ensure_gateway_signing(chosen, "openshell-gateway")
+
+
 @pytest.mark.parametrize("existing_env", [False, True])
 def test_effective_application_config_pins_child_gateway_selection(
     tmp_path: Path, existing_env: bool

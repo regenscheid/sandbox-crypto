@@ -114,7 +114,17 @@ This prepares owner-only directories on the chosen volume, installs missing
 downloaded installer SHA-256, checks the generated VM gateway config, and
 verifies the separate `openshell-driver-vm` executable in the same Homebrew
 installation as the gateway. It records that executable's directory in the
-generated gateway config, and prompts once for the GHCR token if its Keychain
+generated gateway config. It also creates the gateway's sandbox launch-signing
+bundle under `gateway/tls/` with OpenShell's `generate-certs` command. That
+command receives isolated XDG paths, so its CLI certificate copy stays on the
+selected volume. Listener TLS remains disabled on the loopback test gateway;
+VM sandbox launch signing is a separate requirement. Generation happens in a
+temporary directory on that volume so interruption cannot leave a partial live
+bundle. Existing complete signing files are reused, and previously partial
+files are left for inspection rather than overwritten. A direct `smoke` run
+also creates a missing bundle after checking
+the VM driver, so an earlier `install` need not be repeated. The helper prompts
+once for the GHCR token if its Keychain
 item is absent. The entrypoint
 also installs Homebrew Python 3.13 if your available `python3` is older than
 3.11. The script never puts the token in the TOML or a shell argument.

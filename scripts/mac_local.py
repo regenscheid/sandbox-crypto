@@ -401,6 +401,7 @@ def install(settings: Settings) -> None:
             raise SetupError(f"{command} must be version {OPEN_SHELL_VERSION}; found {version}")
     driver_dir = vm_driver_dir(require_command("openshell-gateway"))
     write_gateway_config(settings, driver_dir)
+    ensure_gateway_signing(settings, require_command("openshell-gateway"))
     e2fs = run([brew, "--prefix", "e2fsprogs"], capture=True)
     preflight_env = clean_openshell_env()
     preflight_env["PATH"] = f"{e2fs}/sbin:{preflight_env.get('PATH', '')}"
@@ -419,11 +420,8 @@ def install(settings: Settings) -> None:
     print(f"Ready. Large VM and gateway state: {settings.root}")
 
 
-def gateway_env(settings: Settings) -> dict[str, str]:
-    """Supply private registry auth and selected-volume state to one gateway."""
-    token = keychain_token(settings)
-    if not token:
-        raise SetupError("No GHCR token in Keychain; run install first")
+def gateway_state_env(settings: Settings) -> dict[str, str]:
+    """Confine gateway tools and their CLI auto-discovery copy to this volume."""
     env = clean_openshell_env()
     gateway = settings.root / "gateway"
     env.update(
@@ -434,10 +432,90 @@ def gateway_env(settings: Settings) -> dict[str, str]:
             "XDG_CACHE_HOME": str(gateway / "cache"),
             "OPENSHELL_LOCAL_TLS_DIR": str(gateway / "tls"),
             "OPENSHELL_DB_URL": f"sqlite:{gateway / 'openshell.db'}?mode=rwc",
-            "OPENSHELL_REGISTRY_USERNAME": settings.github_user,
-            "OPENSHELL_REGISTRY_TOKEN": token,
         }
     )
+    return env
+
+
+def ensure_gateway_signing(settings: Settings, gateway_binary: str) -> None:
+    """Create the VM launch signer once, without touching the normal CLI profile."""
+    tls_dir = settings.root / "gateway/tls"
+    tls_files = (
+        tls_dir / "ca.crt",
+        tls_dir / "ca.key",
+        tls_dir / "server/tls.crt",
+        tls_dir / "server/tls.key",
+        tls_dir / "client/tls.crt",
+        tls_dir / "client/tls.key",
+    )
+    jwt_files = (
+        tls_dir / "jwt/signing.pem",
+        tls_dir / "jwt/public.pem",
+        tls_dir / "jwt/kid",
+    )
+    if any(
+        path.is_symlink()
+        for path in (
+            tls_dir,
+            *(path.parent for path in (*tls_files, *jwt_files)),
+            *tls_files,
+            *jwt_files,
+        )
+    ):
+        raise SetupError(f"Gateway signing state must not contain symlinks: {tls_dir}")
+    tls_count = sum(path.is_file() for path in tls_files)
+    jwt_count = sum(path.is_file() for path in jwt_files)
+    if (tls_count, jwt_count) == (6, 3):
+        if not all(path.stat().st_size for path in (*tls_files, *jwt_files)):
+            raise SetupError(f"Gateway signing state has an empty file at {tls_dir}")
+        return
+    if (tls_count, jwt_count) not in {(0, 0), (6, 0)}:
+        raise SetupError(f"Partial gateway signing state at {tls_dir}; inspect it before retrying")
+    # OpenShell installs individual files, so generate in a disposable sibling
+    # first. A cancelled command cannot leave the live signer half written.
+    with tempfile.TemporaryDirectory(prefix=".gateway-signing-", dir=tls_dir.parent) as temp:
+        staged = Path(temp) / "tls"
+        staged.mkdir(mode=0o700)
+        if tls_count == 6:
+            for source in tls_files:
+                destination = staged / source.relative_to(tls_dir)
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+        run(
+            [gateway_binary, "generate-certs", "--output-dir", str(staged)],
+            env=gateway_state_env(settings),
+            timeout=60,
+        )
+        if not all(
+            (staged / path.relative_to(tls_dir)).is_file()
+            and (staged / path.relative_to(tls_dir)).stat().st_size
+            for path in (*tls_files, *jwt_files)
+        ):
+            raise SetupError(f"Gateway did not generate a complete signing bundle in {staged}")
+        if tls_count == 0:
+            if any(tls_dir.iterdir()):
+                raise SetupError(f"Unexpected gateway signing state at {tls_dir}; inspect it")
+            tls_dir.rmdir()
+            staged.rename(tls_dir)
+        else:
+            jwt_dir = tls_dir / "jwt"
+            if jwt_dir.exists():
+                if any(jwt_dir.iterdir()):
+                    raise SetupError(f"Unexpected gateway signing state at {jwt_dir}; inspect it")
+                jwt_dir.rmdir()
+            (staged / "jwt").rename(jwt_dir)
+    if not all(path.is_file() and path.stat().st_size for path in (*tls_files, *jwt_files)):
+        raise SetupError(f"Gateway did not create a complete signing bundle at {tls_dir}")
+
+
+def gateway_env(settings: Settings) -> dict[str, str]:
+    """Supply private registry auth and selected-volume state to one gateway."""
+    token = keychain_token(settings)
+    if not token:
+        raise SetupError("No GHCR token in Keychain; run install first")
+    env = gateway_state_env(settings)
+    env["OPENSHELL_REGISTRY_USERNAME"] = settings.github_user
+    env["OPENSHELL_REGISTRY_TOKEN"] = token
     brew = require_command("brew")
     e2fs = run([brew, "--prefix", "e2fsprogs"], capture=True)
     env["PATH"] = f"{e2fs}/sbin:{env.get('PATH', '')}"
@@ -559,6 +637,7 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
     require_command("openshell")
     prepare_dirs(settings)
     check_vm_socket_storage(settings)
+    ensure_gateway_signing(settings, gateway)
     with socket.socket() as probe:
         if probe.connect_ex(("127.0.0.1", settings.gateway_port)) == 0:
             raise SetupError(f"Port {settings.gateway_port} is already in use; choose another port")
