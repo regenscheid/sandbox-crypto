@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: MIT
+# Copy outside the checkout. This template deliberately has no runnable image pins.
+# Set [images].app and .worker to approved trusted-app/trusted-worker digest URLs.
+name = "research-workbench"
+namespace = "research"
+
+[images]
+# app = "YOUR_REGISTRY/trusted-app@sha256:YOUR_VERIFIED_DIGEST"
+# worker = "YOUR_REGISTRY/trusted-worker@sha256:YOUR_VERIFIED_DIGEST"
+
+[app]
+architecture = "arm64"
+storage_gib = 10
+# storage_class = "YOUR_BLOCK_STORAGE_CLASS"
+
+[pool]
+architecture = "amd64"
+storage_gib = 20
+
+[secrets.control]
+name = "workbench-control"
+extra_files = []
+
+[secrets.workspace]
+name = "workbench-workspace"
+
+[secrets.worker]
+name = "workbench-worker"
+extra_files = ["pool-token", "ceiling.yaml", "targets.yaml", "gateway.toml"]
+
+[secrets.middleware]
+name = "workbench-middleware"
+extra_files = ["ceiling.yaml", "targets.yaml", "gateway-public.pem"]
+
+# Add [secrets.cache] name = "workbench-cache" and approved network.sandboxes
+# peers to enable the optional co-located package cache.
+
+[network.dns]
+namespace_labels = { "kubernetes.io/metadata.name" = "kube-system" }
+pod_labels = { "k8s-app" = "kube-dns" }
+
+[[network.runtimes]]
+namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
+pod_labels = { "app.kubernetes.io/component" = "orchestrator-runtime" }
+
+[[network.supervisors]]
+namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
+pod_labels = { "app.kubernetes.io/component" = "supervisor" }
+
+# Add explicit [[network.app_egress]] and [[network.pool_egress]] entries for
+# approved gateway/S3/package destinations. No external egress is enabled here.
+# ports = [443]
+# peer.cidr = "192.0.2.10/32"  # documentation-only address; replace privately
+
+[worker]
+cpu_request_millis = 500
+cpu_limit_millis = 2000
+memory_request_mib = 512
+memory_limit_mib = 2048
+ephemeral_request_mib = 256
+ephemeral_limit_mib = 2048
+scratch_mib = 512

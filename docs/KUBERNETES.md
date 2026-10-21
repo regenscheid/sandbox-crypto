@@ -178,6 +178,11 @@ StorageClass reclaim policy.
 
 ## Delivery sequence
 
+The [offline deployment bundle](KUBERNETES-BUNDLE.md) now prepares trusted singleton
+services, private credential projections, resource/PVC placement and scoped network
+rules from private TOML. It never applies, publishes an image or creates a runtime;
+operator bootstrap and live qualification remain explicit.
+
 1. Trusted profile-level Kubernetes placement/resource configuration and native
    helper compatibility; deterministic tests before live workloads.
 2. S3-backed immutable artifact content, bounded archived reads, verified upload
