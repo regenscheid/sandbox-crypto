@@ -23,10 +23,11 @@ import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
-OPEN_SHELL_VERSION = "0.1.3"
-INSTALLER = "https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.1.3/install.sh"
-INSTALLER_SHA256 = "b8daa915e766564f0473b76ed4e012fff9723c1ac98007b3f85ba20f59442d28"
+OPEN_SHELL_VERSION = "0.1.5"
+INSTALLER = f"https://raw.githubusercontent.com/NVIDIA/OpenShell/v{OPEN_SHELL_VERSION}/install.sh"
+INSTALLER_SHA256 = "7bf6706741b8b59c1b61e0c47030f0a34fefba6cee3c74cd52638cbf7cdc3655"
 DEFAULT_IMAGE = "ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871"
 # OpenShell's VM driver sends its one registry credential to every pull, so the
 # bootstrap image is NVIDIA's index mirrored beside crypto-base with its digest kept.
@@ -36,9 +37,10 @@ DEFAULT_BOOTSTRAP_IMAGE = (
 )
 LEGACY_BOOTSTRAP_IMAGE = "nvcr.io/nvidia/base/ubuntu:24.04"
 GATEWAY_NAME = "ss-mac-crypto-test"
-# A sandbox's own filesystem policy replaces OpenShell v0.1.3's default rather than
-# extending it, so this repeats that default (as `policy get --full` reports it) and
-# adds the image's Conda prefix read-only. The smoke sandbox has no network policy.
+# OpenShell's supervisor adds its baseline paths only to a sandbox with network rules,
+# which the smoke sandbox lacks, so this repeats OpenShell's default policy (as
+# `policy get --full` reports it), adds the image's Conda prefix read-only and requires
+# Landlock, as compiled policies do.
 SMOKE_POLICY = """version: 1
 filesystem_policy:
   include_workdir: true
@@ -55,7 +57,7 @@ filesystem_policy:
   - /tmp
   - /dev/null
 landlock:
-  compatibility: best_effort
+  compatibility: hard_requirement
 """
 ISOLATED_CLI_KEYS = (
     "XDG_CONFIG_HOME",
@@ -188,8 +190,9 @@ def require_command(name: str) -> str:
 
 
 def pinned_version(output: str) -> bool:
-    """Match exactly v0.1.3, not a later 0.1.30 installation."""
-    return re.search(r"(?<![\w.])v?0\.1\.3(?![\w.+-])", output) is not None
+    """Match exactly the pinned release, not 0.1.50 or a prerelease of it."""
+    pattern = rf"(?<![\w.])v?{re.escape(OPEN_SHELL_VERSION)}(?![\w.+-])"
+    return re.search(pattern, output) is not None
 
 
 def run(
@@ -311,9 +314,33 @@ def vm_driver_dir(gateway: str) -> Path:
             f"OpenShell VM driver is missing or not executable: {driver}. "
             "Inspect the pinned Homebrew installation with "
             "`brew list nvidia/openshell/openshell`; if incomplete, "
-            "reinstall OpenShell v0.1.3 with Homebrew before retrying"
+            f"reinstall OpenShell v{OPEN_SHELL_VERSION} with Homebrew before retrying"
         )
     return driver.parent
+
+
+HOMEBREW_DRIVER_RE: Final = re.compile(r"/opt/homebrew/Cellar/openshell/\d+\.\d+\.\d+/libexec")
+
+
+def earlier_gateway_configs(settings: Settings, driver_dir: Path, previous: str) -> set[str]:
+    """Configs this helper generated before, which it may replace without asking.
+
+    An earlier config may name the VM driver of an earlier Homebrew OpenShell, which an
+    upgrade removes; only a driver directory of that exact form is accepted.
+    """
+    drivers: list[Path | None] = [None, driver_dir]
+    try:
+        named = tomllib.loads(previous)["openshell"]["drivers"]["vm"].get("driver_dir")
+    except (tomllib.TOMLDecodeError, KeyError, TypeError, AttributeError):
+        named = None
+    if isinstance(named, str) and HOMEBREW_DRIVER_RE.fullmatch(named):
+        drivers.append(Path(named))
+    return {
+        gateway_config(settings, driver, bootstrap)
+        for driver in drivers
+        for bootstrap in (None, settings.bootstrap_image)
+        if not (driver is None and bootstrap is not None)
+    }
 
 
 def write_gateway_config(settings: Settings, driver_dir: Path) -> None:
@@ -328,12 +355,13 @@ def write_gateway_config(settings: Settings, driver_dir: Path) -> None:
         previous = target.read_text()
         if previous == content:
             return
-        if previous not in {gateway_config(settings), gateway_config(settings, driver_dir)}:
+        if previous not in earlier_gateway_configs(settings, driver_dir, previous):
             raise SetupError(
                 f"Gateway config differs from this setup: {target}; inspect it before changing it"
             )
         # Replace only an exact earlier helper-generated config, which lacked the
-        # driver's Homebrew location or the GHCR bootstrap. A crash cannot leave half a TOML.
+        # driver's Homebrew location or the GHCR bootstrap, or named an earlier Homebrew
+        # OpenShell's driver. A crash cannot leave half a TOML.
         with tempfile.NamedTemporaryFile(
             mode="w", prefix=".gateway-", suffix=".toml", dir=target.parent, delete=False
         ) as stream:
@@ -432,7 +460,10 @@ def install(settings: Settings) -> None:
     version = run([installed, "--version"], capture=True) if installed else ""
     if installed and not pinned_version(version):
         raise SetupError(
-            f"Installed OpenShell is {version}; use the pinned {OPEN_SHELL_VERSION} release"
+            f"Installed OpenShell is {version}; this helper needs {OPEN_SHELL_VERSION}. "
+            f"Upgrade it with OpenShell's installer: curl -LsSf {INSTALLER} | "
+            f"OPENSHELL_VERSION=v{OPEN_SHELL_VERSION} sh (it reinstalls the Homebrew "
+            "formula and restarts its gateway service); the VM state on the volume is kept"
         )
     if not installed:
         curl = require_command("curl")

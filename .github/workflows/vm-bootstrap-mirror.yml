@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 name: VM bootstrap mirror
 
-# OpenShell v0.1.3's VM driver sends its one registry credential to every pull, and
+# OpenShell v0.1.5's VM driver sends its one registry credential to every pull, and
 # nvcr.io rejects a GitHub token. The Mac helper therefore boots from NVIDIA's
 # bootstrap index copied beside the private crypto-base package, digest unchanged.
 on:

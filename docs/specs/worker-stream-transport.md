@@ -4,7 +4,7 @@ The OpenShell backend uses `openshell sandbox ssh-config NAME` to obtain a priva
 per-connection SSH configuration, never installing it in the user's SSH files.
 The worker host requires the OpenSSH `ssh` executable. OpenSSH runs without a PTY, forwarding or login shell (`OPENSHELL_NO_LOGIN_SHELL=1`),
 with the same fixed Python, uploaded executor files, shim and daemon identity.
-This bypasses OpenShell 0.1.3's cumulative 4 MiB `sandbox exec` stdin ceiling.
+This bypasses OpenShell 0.1.5's cumulative 4 MiB `sandbox exec` stdin ceiling.
 OpenShell requires daemon mode; `daemon=false` is explicitly unsupported before
 upload/start. Local stdio and local daemon transports retain their existing format.
 

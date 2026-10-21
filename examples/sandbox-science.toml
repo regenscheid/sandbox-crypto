@@ -88,7 +88,7 @@ static = "../web/workspace/dist"
 
 # The worker's [openshell] table (docs/WORKER.md), for the lab .agents/labs/lab_up.sh brings up.
 [openshell]
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
 python = "/opt/sandbox-science/bin/python"
 isolation_tier = 3
 package_cache = "http://host.openshell.internal:8090"

@@ -199,6 +199,8 @@ elif command == ["policy", "set"]:
     )
     if not kept:
         fail("message: \"filesystem policy cannot be removed on a live sandbox\"")
+    if box["policy"].get("landlock") != policy.get("landlock"):
+        fail("landlock policy cannot be changed on a live sandbox (applied at startup)")
     box["policy"], box["version"] = policy, box["version"] + 1
     out = "set"
 elif command == ["rule", "get"]:
@@ -480,6 +482,25 @@ async def test_a_revision_carries_the_live_filesystem_section_and_rebinds(setup:
     assert setup.environments.store.binding(info.sandbox_id) == revision
     await setup.environments.revise("env-1", revision)
     assert len(setup.fake.calls("policy", "set")) == 1
+
+
+async def test_a_revision_keeps_the_live_landlock_section(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    state = setup.fake.read()
+    box = state["sandboxes"][info.sandbox]
+    assert box["policy"]["landlock"] == {"compatibility": "hard_requirement"}
+    # A sandbox created before compiled policies carried a Landlock section has none, and
+    # OpenShell refuses a revision that adds one.
+    del box["policy"]["landlock"]
+    setup.fake.write(state)
+    revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
+    await setup.environments.revise("env-1", revision)
+    revised = setup.fake.read()["sandboxes"][info.sandbox]["policy"]
+    assert "landlock" not in revised
+    assert (
+        revised["network_middlewares"]["sandbox-science-policy"]["config"]["policy"]["digest"]
+        == revision
+    )
 
 
 async def test_a_revision_with_other_providers_is_refused(setup: Setup) -> None:
@@ -809,7 +830,8 @@ async def test_policy_add_stores_revisions_for_environments(
 
 
 async def test_sandbox_names_fit_openshells_limit_and_are_random() -> None:
-    # OpenShell v0.1.3 refuses names over 19 characters (lab 12), and uses "--" itself.
+    # OpenShell refuses names over 19 characters (v0.1.3 in lab 12, unchanged in v0.1.5),
+    # and uses "--" itself.
     # A name derived from the ID had room for 32 bits of a hash, so another ID could be
     # found to share it (review of D78); 64 random bits cannot be matched.
     names = {new_sandbox_name() for _ in range(1000)}

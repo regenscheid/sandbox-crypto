@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Run a command under a Landlock ruleset like the one OpenShell v0.1.3 gives a research sandbox.
+"""Run a command under a Landlock ruleset like the one OpenShell v0.1.5 gives a research sandbox.
 
 images/test.sh uses it to check, outside OpenShell, that the paths a base profile declares for
 the OpenShell targets file (docs/IMAGES.md) are enough. OpenShell's supervisor handles every

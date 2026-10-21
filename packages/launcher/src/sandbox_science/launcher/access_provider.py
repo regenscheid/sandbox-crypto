@@ -26,7 +26,7 @@ It:
 
 The values are secrets. They reach one child only, ``openshell provider create`` or
 ``update``, through that child's environment (``--credential KEY`` without ``=VALUE``
-reads the variable ``KEY``; OpenShell 0.1.3 takes a credential no other way but on its
+reads the variable ``KEY``; OpenShell 0.1.5 takes a credential no other way but on its
 command line), and from it OpenShell's own encrypted store. While that child runs, the
 user's other processes can read its environment in ``/proc/<pid>/environ``. The values
 are never in an argument, in this process's own environment, in an error or in anything

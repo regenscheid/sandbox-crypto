@@ -33,7 +33,7 @@ from sandbox_science.launcher.config import load_config
 from sandbox_science.orchestrator.projects import ProjectStore
 
 REPO = Path(__file__).resolve().parents[2]
-OS_BIN = Path.home() / ".local/opt/openshell-0.1.3/bin"
+OS_BIN = Path.home() / ".local/opt/openshell-0.1.5/bin"
 PURPOSE = "disposable synthetic recovery acceptance"
 PROJECT = "recovery"
 

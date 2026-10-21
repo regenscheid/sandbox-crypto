@@ -9,7 +9,7 @@ test ! -e "$LAB" || { echo "lab exists: $LAB" >&2; exit 1; }
 if ss -ltn | grep -qE ':(8090|8080|8100|50051|17670)\b'; then echo "a lab port is busy" >&2; exit 1; fi
 mkdir -p "$LAB" && chmod 700 "$LAB"
 cat > "$LAB/env.sh" <<'EOF'
-export OS_BIN="$HOME/.local/opt/openshell-0.1.3/bin"
+export OS_BIN="$HOME/.local/opt/openshell-0.1.5/bin"
 export LAB="$HOME/.local/state/openshell-lab"
 export XDG_CONFIG_HOME="$LAB/config"
 export XDG_STATE_HOME="$LAB/state"

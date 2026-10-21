@@ -33,7 +33,7 @@ if [ -z "$image" ]; then  # the tag build.sh gives
 fi
 docker image inspect "$image" >/dev/null
 
-# OpenShell v0.1.3's baseline for a sandbox whose policy has network rules, and its workdir.
+# OpenShell v0.1.5's baseline for a sandbox whose policy has network rules, and its workdir.
 baseline_ro=(/usr /lib /etc /app /var/log /proc /dev/urandom)
 baseline_rw=(/tmp /dev/null /sandbox)
 # The devices the policy compiler adds (sandbox_science.policy.openshell.SANDBOX_DEVICES_*).

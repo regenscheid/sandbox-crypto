@@ -9,7 +9,7 @@ UI. Mac launch, restart and Resume have not yet passed native acceptance; see
 
 ## What you need before starting
 
-- An Apple Silicon Mac and a native ARM64 terminal. OpenShell v0.1.3's MicroVM
+- An Apple Silicon Mac and a native ARM64 terminal. OpenShell v0.1.5's MicroVM
   runtime uses macOS Hypervisor.framework; this path does not use Docker Desktop
   for research sandboxes. `uname -m` must print `arm64`, not `x86_64` under Rosetta.
 - Homebrew, Git and internet access to GitHub Releases and GHCR. OpenShell's
@@ -113,7 +113,7 @@ and the same `--config` option with `smoke` or `launch`.
 ```
 
 This prepares owner-only directories on the chosen volume, installs missing
-`e2fsprogs` and `uv`, installs **OpenShell v0.1.3** if absent, verifies the
+`e2fsprogs` and `uv`, installs **OpenShell v0.1.5** if absent, verifies the
 downloaded installer SHA-256, checks the generated VM gateway config, and
 verifies the separate `openshell-driver-vm` executable in the same Homebrew
 installation as the gateway. It records that executable's directory in the
@@ -285,15 +285,15 @@ testing restart and Resume.
 | VM socket path is too long | Shorten `directory` or use a shorter volume name before `install`. |
 | `Operation not supported (os error 45)` as the VM driver starts | The chosen volume may not support Unix sockets. Run `diskutil info /Volumes/ExternalSSD` (substitute your mount point) to inspect its filesystem, then run the updated helper's `install` to probe socket support. For ExFAT, use the APFS sparse bundle above or another APFS volume. Leave the existing `SandboxScience` directory in place; do not erase it. |
 | Port 18081 is already in use | Choose a free `gateway_port` before `install`; do not overwrite a live gateway config or attach to another gateway. |
-| Installed OpenShell version differs | The helper requires v0.1.3. Inspect the existing installation before changing it; it will not replace another version automatically. |
+| Installed OpenShell version differs | The helper requires v0.1.5 and will not replace another version itself. Its error prints the upgrade command, `curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v0.1.5/install.sh \| OPENSHELL_VERSION=v0.1.5 sh`, which reinstalls the Homebrew formula and restarts its gateway service; the VM state on the volume is kept. The first `smoke` after upgrading from v0.1.3 prepares the VM images again once, since v0.1.4 changed the cache layout; the old cache files stay on the volume unused and can be removed by hand. |
 | `vm compute driver binary not found` | Update the checkout with `git pull --ff-only`, then run `./scripts/mac-local install` and `./scripts/mac-local smoke` again. The helper now locates the driver in the gateway's Homebrew installation and pins its directory. If `install` says the executable is missing, inspect `brew list nvidia/openshell/openshell`; the pinned installation is incomplete and needs repair before a smoke retry. Preserve the selected-volume state. |
-| `name exceeds maximum length (22 > 19)` during `smoke` | Update `dev` with `git pull --ff-only` and rerun `./scripts/mac-local smoke`. Older helper versions generated a test sandbox name longer than OpenShell v0.1.3 accepts. The corrected name stays below 19 characters. |
+| `name exceeds maximum length (22 > 19)` during `smoke` | Update `dev` with `git pull --ff-only` and rerun `./scripts/mac-local smoke`. Older helper versions generated a test sandbox name longer than OpenShell v0.1.3 and v0.1.5 accept. The corrected name stays below 19 characters. |
 | Sage exits with status 126 or `Permission denied` for `/opt/sandbox-science/bin/sage` | The helper predates its smoke sandbox policy; OpenShell's default policy does not include the image's Conda prefix. Update with `git pull --ff-only` and rerun `smoke`. |
 | `failed to authenticate registry access for vm sandbox image 'nvcr.io/nvidia/base/ubuntu:24.04'` | The gateway config predates the GHCR bootstrap mirror. Run `git pull --ff-only`, then `./scripts/mac-local smoke`; the helper rewrites an unchanged generated config to the mirrored digest. |
 | GHCR pull fails or returns access denied | Confirm the Keychain token is a classic PAT with `read:packages` and access to the private package; inspect `gateway.log` without sharing its credentials. |
 | Gateway or Sage test fails | Read the printed gateway log path, keep the volume mounted and retry only after identifying the failure. The test cleans up its named sandbox when it can. |
 | Full `launch` reports missing files | Recheck the private application TOML's paths, current image/revision, policy and targets; the babbage example is not a Mac-ready config. |
 
-The pinned [OpenShell v0.1.3 installation guide](https://docs.nvidia.com/openshell/v0.1.3/about/installation/)
-and [VM driver notes](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-driver-vm/README.md)
+The pinned [OpenShell v0.1.5 installation guide](https://docs.nvidia.com/openshell/v0.1.5/about/installation/)
+and [VM driver notes](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/crates/openshell-driver-vm/README.md)
 describe the external runtime used by these steps.

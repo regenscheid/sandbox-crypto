@@ -50,9 +50,13 @@ def test_sample_config_selects_the_published_crypto_base_image() -> None:
 
 
 def test_pinned_version_does_not_accept_a_later_patch_number() -> None:
-    assert mac.pinned_version("openshell 0.1.3")
-    assert not mac.pinned_version("openshell 0.1.30")
-    assert not mac.pinned_version("openshell 0.1.3-pre.1")
+    assert mac.OPEN_SHELL_VERSION == "0.1.5"
+    assert mac.pinned_version("openshell 0.1.5")
+    assert mac.pinned_version("openshell-gateway v0.1.5")
+    assert not mac.pinned_version("openshell 0.1.3")
+    assert not mac.pinned_version("openshell 0.1.50")
+    assert not mac.pinned_version("openshell 0.1.5-pre.1")
+    assert mac.INSTALLER.endswith("/v0.1.5/install.sh")
 
 
 def test_unmounted_volume_refuses_state_creation(
@@ -157,7 +161,7 @@ def test_gateway_config_keeps_image_state_on_volume_and_refuses_overwrite(
 
 
 def test_vm_driver_is_resolved_beside_the_pinned_homebrew_gateway(tmp_path: Path) -> None:
-    prefix = tmp_path / "Cellar/openshell/0.1.3"
+    prefix = tmp_path / "Cellar/openshell/0.1.5"
     gateway = prefix / "bin/openshell-gateway"
     driver = prefix / "libexec/openshell-driver-vm"
     gateway.parent.mkdir(parents=True)
@@ -204,6 +208,25 @@ def test_nvcr_bootstrap_config_migrates_to_the_ghcr_mirror(
     vm = tomllib.loads(target.read_text())["openshell"]["drivers"]["vm"]
     assert vm["bootstrap_image"] == vm["default_image"] == mac.DEFAULT_BOOTSTRAP_IMAGE
     assert "nvcr.io" not in target.read_text()
+
+
+def test_config_for_an_earlier_homebrew_driver_migrates_but_not_another_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    driver_dir = Path("/opt/homebrew/Cellar/openshell/0.1.5/libexec")
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+    target = mac.config_path(chosen)
+    old_driver = Path("/opt/homebrew/Cellar/openshell/0.1.3/libexec")
+    target.write_text(mac.gateway_config(chosen, old_driver, mac.DEFAULT_BOOTSTRAP_IMAGE))
+    mac.write_gateway_config(chosen, driver_dir)
+    vm = tomllib.loads(target.read_text())["openshell"]["drivers"]["vm"]
+    assert vm["driver_dir"] == str(driver_dir)
+    elsewhere = Path("/tmp/openshell/libexec")
+    target.write_text(mac.gateway_config(chosen, elsewhere, mac.DEFAULT_BOOTSTRAP_IMAGE))
+    with pytest.raises(mac.SetupError, match="differs"):
+        mac.write_gateway_config(chosen, driver_dir)
 
 
 def test_bootstrap_mirror_workflow_copies_the_digest_the_helper_boots() -> None:

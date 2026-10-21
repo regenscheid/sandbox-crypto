@@ -14,7 +14,7 @@
 #   SS_PERSONAL_GATEWAY_PORT 17680, SS_PERSONAL_MIDDLEWARE_PORT 50061,
 #   SS_PERSONAL_CACHE_PORT 8390, SS_PERSONAL_PROXY_PORT 8380      (loopback ports)
 #   VM_VCPUS 8, VM_MEM_MIB 16384, VM_DISK_MIB 32768              (each sandbox's VM)
-#   OS_BIN ~/.local/opt/openshell-0.1.3/bin, R the repository (this script's by default)
+#   OS_BIN ~/.local/opt/openshell-0.1.5/bin, R the repository (this script's by default)
 #
 # None of it is the labs' (.agents/labs/lab_up.sh: ~/.local/state/openshell-lab, units
 # openshell-lab-*, ports 17670, 50051, 8090, 8100, 8200), and lab_down.sh leaves it alone.
@@ -27,7 +27,7 @@ GATEWAY_PORT=${SS_PERSONAL_GATEWAY_PORT:-17680}
 MIDDLEWARE_PORT=${SS_PERSONAL_MIDDLEWARE_PORT:-50061}
 CACHE_PORT=${SS_PERSONAL_CACHE_PORT:-8390}
 PROXY_PORT=${SS_PERSONAL_PROXY_PORT:-8380}
-OS_BIN=${OS_BIN:-$HOME/.local/opt/openshell-0.1.3/bin}
+OS_BIN=${OS_BIN:-$HOME/.local/opt/openshell-0.1.5/bin}
 OPENSHELL_ONLY=false
 case "${1:-}" in
   "") ;;

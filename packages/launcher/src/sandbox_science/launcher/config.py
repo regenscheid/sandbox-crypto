@@ -31,7 +31,7 @@ git = "https://github.com/OWNER/REPO"   # or archive = "pack.tar.gz"
 ref = "main"                            # optional: the default branch otherwise
 
 [openshell]
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
 python = "/opt/sandbox-science/bin/python"
 isolation_tier = 3
 

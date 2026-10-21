@@ -93,11 +93,11 @@ _RECORDING_WAIT: Final = 0.25
 append: past it, the request is refused and its retry records or finds the request."""
 _URL_SCHEMES: Final = {"http": "http", "https": "https", "ws": "http", "wss": "https"}
 _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
-# OpenShell labels the scheme by how a request reached its proxy, not by
-# whether it used TLS: everything through a CONNECT tunnel is "https", even
-# plain HTTP to port 80. Rules without ports match the scheme's default port,
-# so the port decides on the default ports; elsewhere the scheme only changes
-# the URL's length.
+# OpenShell v0.1.3 labelled everything through a CONNECT tunnel "https", even
+# plain HTTP to port 80; since v0.1.4 the tunnel reports "http" for plain HTTP it
+# detects. Rules without ports match the scheme's default port, so the port
+# decides on the default ports either way; elsewhere the scheme only changes the
+# URL's text and length.
 _PORT_SCHEMES: Final = {80: "http", 443: "https"}
 _HOST_RE: Final = re.compile(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+")
 _MONITOR_REPEAT: Final = timedelta(hours=1)
@@ -347,10 +347,9 @@ class PolicyMiddleware:
         credentialed = destination[0] in loaded.policy.credentials.hosts
         if credentialed and facts.port == CREDENTIAL_PORT and facts.scheme.lower() == "http":
             # OpenShell substitutes a bound credential on its port whatever the
-            # transport, and forwards plain HTTP unencrypted. It reports "http"
-            # only for requests it knows are plain (its forward proxy): through a
-            # tunnel everything reads "https", so that route remains a residual
-            # risk (docs/POLICY.md).
+            # transport, and forwards plain HTTP unencrypted. Its forward proxy
+            # reports such requests as "http", and since v0.1.4 so does its tunnel
+            # when it detects plain HTTP (docs/POLICY.md, "Residual risks").
             reason = f"plain HTTP to {facts.host}:{facts.port}, where a credential is bound"
             return _deny(CREDENTIAL_UNENCRYPTED, reason)
         if destination == ref.mcp_proxy:
