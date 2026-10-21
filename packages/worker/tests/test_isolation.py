@@ -101,6 +101,21 @@ def test_an_unknown_boot_id_counts_as_a_shared_kernel(
     assert assessment.evidence.kernel == "unknown"
 
 
+def test_a_linux_sandbox_on_a_host_of_another_kernel_has_one_of_its_own() -> None:
+    # A Mac worker host has no boot ID; a sandbox that reports one runs on a Linux kernel,
+    # so not on the host's (Mac test, 2026-10-21).
+    mac = HOST.model_copy(update={"boot_id": None})
+    assessment = assess(3, mac, VM, "hidden", host_linux=False)
+    assert assessment.tier == 3
+    assert assessment.evidence.kernel == "separate"
+    # A sandbox that reports no boot ID still shows nothing.
+    unknown = assess(3, mac, VM.model_copy(update={"boot_id": None}), "hidden", host_linux=False)
+    assert unknown.tier == 1
+    assert unknown.evidence.kernel == "unknown"
+    # A visible sentinel still means tier 0.
+    assert assess(3, mac, VM, "visible", host_linux=False).tier == 0
+
+
 @pytest.mark.parametrize("sentinel", ["visible", "unknown"])
 def test_the_worker_files_must_be_out_of_sight(sentinel: SentinelState) -> None:
     assessment = assess(3, HOST, VM, sentinel)
