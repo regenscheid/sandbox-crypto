@@ -239,6 +239,14 @@ class ControlStore:
         if self.readonly:
             if not self.path.is_file():
                 raise ControlError(NOT_FOUND, "nothing has been stored yet")
+            if self._without_wal_files():
+                name = self.path.name
+                raise ControlError(
+                    UNAVAILABLE,
+                    f"{name} is in WAL mode but {name}-wal and {name}-shm are missing, as "
+                    "when the store is copied without them: open it once with the harness or "
+                    "the workspace, which recreate them, or copy them with it",
+                )
             db = self._readonly()
             try:
                 migrations.check(self.path, db, readonly=True)
@@ -250,7 +258,9 @@ class ControlStore:
             if self.path.is_file():
                 # Refuse a file this code cannot use before anything could change it:
                 # opening it to write could switch its journal or replay a crashed WAL.
-                probe = self._readonly()
+                # A WAL store copied without its -wal and -shm opens read-only only as
+                # immutable; with no -wal there is nothing it could miss.
+                probe = self._readonly(immutable=self._without_wal_files())
                 try:
                     migrations.check(self.path, probe, readonly=False)
                 finally:
@@ -271,9 +281,23 @@ class ControlStore:
         self._db = db
         return db
 
-    def _readonly(self) -> sqlite3.Connection:
+    def _without_wal_files(self) -> bool:
+        """Whether the file is in WAL mode with neither its -wal nor its -shm file beside
+        it, which SQLite cannot open read-only: it would have to create the -shm."""
+        try:
+            with self.path.open("rb") as stream:
+                header = stream.read(20)
+        except OSError:
+            return False
+        # Bytes 18 and 19 of the header are the file format's write and read versions;
+        # 2 means WAL.
+        return header[18:20] == b"\x02\x02" and not any(
+            self.path.with_name(self.path.name + suffix).exists() for suffix in ("-wal", "-shm")
+        )
+
+    def _readonly(self, *, immutable: bool = False) -> sqlite3.Connection:
         return sqlite3.connect(
-            self.path.resolve().as_uri() + "?mode=ro",
+            self.path.resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro"),
             uri=True,
             timeout=self.timeout,
             isolation_level=None,
