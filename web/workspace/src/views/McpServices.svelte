@@ -103,7 +103,7 @@
 <nav class="trail">
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
 </nav>
-<h1>MCP services</h1>
+<h1>Connectors</h1>
 <p class="muted">
   Configured services and observations from a bounded sample of recorded runs. The most recent
   result shown for a service may not be its latest run. Viewing never invokes a tool. Use Check

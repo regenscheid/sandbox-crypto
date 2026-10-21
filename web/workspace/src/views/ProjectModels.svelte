@@ -8,7 +8,7 @@
   import { idle, type Submitting } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
 
-  let { projectId }: { projectId: string } = $props();
+  let { projectId, open = false }: { projectId: string; open?: boolean } = $props();
   type AgentModelRole = 'main' | 'delegated' | 'reviewer';
   let settings = $state<ModelSettings | null>(null);
   let expected = $state(0);
@@ -73,7 +73,7 @@
   }
 </script>
 
-<details>
+<details {open}>
   <summary>Agent models and reasoning effort</summary>
   <p class="muted">
     These choices apply when the next research tree starts. Active agents, their children and an

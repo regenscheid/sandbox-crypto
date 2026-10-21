@@ -2218,3 +2218,73 @@ button.primary-button:hover:not(:disabled) {
   margin: 12px 12px 0;
   font-size: 12px;
 }
+
+/* Project pages: a header with the page's controls, segmented choices, and links shown as
+   buttons. */
+.workspace-body > main h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.workspace-body > main h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.page-head > div:first-child {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.page-head p {
+  margin: 0;
+}
+.page-head input[type='search'] {
+  width: 260px;
+  max-width: 100%;
+}
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--subtle);
+}
+.segmented button {
+  flex: 1 1 0;
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--body-text);
+  white-space: nowrap;
+}
+.segmented button[aria-selected='true'],
+.segmented button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgb(23 52 72 / 8%);
+}
+a.button-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+}
+a.button-link:hover {
+  background: var(--subtle);
+  text-decoration: none;
+}
+.overview-shortcuts a {
+  padding: 4px 0;
+}

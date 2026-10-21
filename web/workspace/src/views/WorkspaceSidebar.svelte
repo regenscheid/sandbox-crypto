@@ -8,6 +8,9 @@
     memoryHref,
     mcpHref,
     skillsHref,
+    documentsHref,
+    artifactsHref,
+    settingsHref,
     type Route,
   } from '../lib/router';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
@@ -58,6 +61,19 @@
             href: projectHref(projectId),
             icon: 'overview',
             current: route.view === 'project',
+          },
+          {
+            label: 'Documents',
+            href: documentsHref(projectId),
+            icon: 'document',
+            current:
+              route.view === 'documents' || route.view === 'document' || route.view === 'history',
+          },
+          {
+            label: 'Artifacts',
+            href: artifactsHref(projectId),
+            icon: 'artifact',
+            current: route.view === 'artifacts' || route.view === 'pdf',
           },
           {
             label: 'Ledger',
@@ -157,6 +173,12 @@
     </div>
   {/if}
   <div class="sidebar-footer">
+    {#if projectId}<a
+        href={settingsHref(projectId)}
+        onclick={close}
+        aria-current={route.view === 'settings' ? 'page' : undefined}
+        ><Icon name="settings" />Settings</a
+      >{/if}
     <a href="#/" onclick={close} aria-current={route.view === 'projects' ? 'page' : undefined}
       ><Icon name="projects" />All projects</a
     >

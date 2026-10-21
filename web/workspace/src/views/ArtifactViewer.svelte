@@ -1,0 +1,192 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- One artifact revision, opened in the Artifacts page: an image or a figure from the
+     preview origin (figures, FG-12, FG-14), a PDF through the page viewer, Markdown
+     rendered, and other text as text, read from its kept bytes up to a limit. The file's
+     text is the agents' and is never rendered as HTML outside the Markdown component. -->
+<script lang="ts">
+  import type { ArtifactEntry } from '../lib/api-types';
+  import { kindText, splitPath, textual } from '../lib/artifactGrid';
+  import { keptText, whoText } from '../lib/artifactFiles';
+  import { shownAsImage, shownInFrame } from '../lib/figures';
+  import { formatTime } from '../lib/format';
+  import Markdown from '../lib/Markdown.svelte';
+  import { sizeText, viewable } from '../lib/pdfAnchors';
+  import { pdfHref, sessionHref } from '../lib/router';
+  import { visibleOutput } from '../lib/text';
+  import ErrorMessage from './ErrorMessage.svelte';
+  import FigureFrame from './FigureFrame.svelte';
+  import FigureImage from './FigureImage.svelte';
+
+  /** The most bytes of a text file the viewer reads. */
+  const TEXT_LIMIT = 512 * 1024;
+
+  let {
+    projectId,
+    entry,
+    viewer,
+    close,
+  }: { projectId: string; entry: ArtifactEntry; viewer: boolean; close: () => void } = $props();
+  const download = $derived(
+    `/api/v0/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(entry.artifact_id)}/revisions/${entry.revision}/content?sha256=${encodeURIComponent(entry.sha256)}`,
+  );
+  const parts = $derived(splitPath(entry.path));
+  const image = $derived(shownAsImage(entry, viewer));
+  const framed = $derived(shownInFrame(entry, viewer));
+  const pdf = $derived(!entry.deleted && entry.content_retained && viewable(entry, viewer));
+  const readable = $derived(
+    !entry.deleted && entry.content_retained && textual(entry) && entry.size <= TEXT_LIMIT,
+  );
+  const markdown = $derived(/\.(md|markdown)$/i.test(entry.path));
+  let source = $state(false);
+  let text = $state<string | null>(null);
+  let failure = $state<unknown>(null);
+
+  $effect(() => {
+    const url = download,
+      wanted = readable;
+    text = null;
+    failure = null;
+    if (!wanted) return;
+    const controller = new AbortController();
+    fetch(url, { signal: controller.signal, credentials: 'same-origin' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`The file could not be read (HTTP ${response.status}).`);
+        text = await response.text();
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) failure = error;
+      });
+    return () => controller.abort();
+  });
+</script>
+
+<section class="artifact-viewer" aria-label="File viewer">
+  <div class="viewer-bar">
+    <button type="button" class="link-button" onclick={close}>← Artifacts</button>
+    <div class="viewer-title">
+      <strong><bdi>{parts.name}</bdi></strong>
+      <small class="muted"
+        ><bdi>{parts.folder || '/'}</bdi> · {kindText(entry)} · revision {entry.revision}</small
+      >
+    </div>
+    {#if markdown && text !== null}<button type="button" onclick={() => (source = !source)}
+        >{source ? 'Rendered' : 'Source'}</button
+      >{/if}
+    {#if pdf}<a
+        class="button-link"
+        href={pdfHref(projectId, entry.artifact_id, entry.revision, entry.sha256)}
+        >Open in the PDF viewer</a
+      >{/if}
+    {#if entry.content_retained && !entry.deleted}<a class="button-link" href={download} download
+        >Download</a
+      >{/if}
+  </div>
+  <div class="viewer-body">
+    <div class="viewer-content">
+      {#if keptText(entry)}
+        <p class="empty-note">This revision's {keptText(entry)}.</p>
+      {:else if image}
+        <FigureImage
+          {projectId}
+          artifact={entry.artifact_id}
+          revision={entry.revision}
+          sha256={entry.sha256}
+          alt={entry.path}
+        />
+      {:else if framed}
+        <FigureFrame
+          {projectId}
+          artifact={entry.artifact_id}
+          revision={entry.revision}
+          sha256={entry.sha256}
+          alt={entry.path}
+        />
+      {:else if readable}
+        {#if failure}<ErrorMessage error={failure} />{:else if text === null}<p class="muted">
+            Reading the file…
+          </p>{:else if markdown && !source}<div class="markdown-file">
+            <Markdown source={text} {projectId} />
+          </div>{:else if text === ''}<p class="empty-note">The file is empty.</p>{:else}<pre
+            class="file-text">{visibleOutput(text)}</pre>{/if}
+      {:else if pdf}
+        <p class="empty-note">Open the PDF in the page viewer to read it.</p>
+      {:else}
+        <p class="empty-note">
+          {entry.size > TEXT_LIMIT && textual(entry)
+            ? `The file is ${sizeText(entry.size)}, more than the viewer reads; download it to read it.`
+            : 'This kind of file has no preview here; download it to open it.'}
+        </p>
+      {/if}
+    </div>
+    <aside class="viewer-facts">
+      <span class="eyebrow">About this file</span>
+      <dl class="facts">
+        <dt>Size</dt>
+        <dd>{entry.deleted ? '—' : sizeText(entry.size)}</dd>
+        <dt>Written</dt>
+        <dd>{formatTime(entry.created_at)}</dd>
+        <dt>By</dt>
+        <dd><bdi>{whoText(entry)}</bdi></dd>
+        <dt>Session</dt>
+        <dd><a href={sessionHref(projectId, entry.session_id)}>{entry.session_id}</a></dd>
+        <dt>Result</dt>
+        <dd>{entry.result ? 'Yes' : 'No'}</dd>
+        <dt>SHA-256</dt>
+        <dd><code>{entry.sha256.slice(0, 16)}…</code></dd>
+      </dl>
+    </aside>
+  </div>
+</section>
+
+<style>
+  .artifact-viewer {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .viewer-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--subtle);
+  }
+  .viewer-title {
+    flex: 1 1 260px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .viewer-title strong {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .viewer-body {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px;
+    padding: 20px 0;
+  }
+  .viewer-content {
+    flex: 999 1 520px;
+    min-width: 0;
+  }
+  .viewer-facts {
+    flex: 1 1 220px;
+    max-width: 300px;
+    min-width: 0;
+    font-size: 13px;
+  }
+  .file-text {
+    max-height: none;
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.55;
+  }
+  .markdown-file {
+    max-width: 760px;
+  }
+</style>

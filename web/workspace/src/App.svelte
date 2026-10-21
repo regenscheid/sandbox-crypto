@@ -25,6 +25,9 @@
   import RunTreeView from './views/RunTreeView.svelte';
   import SessionView from './views/SessionView.svelte';
   import ProjectMath from './views/ProjectMath.svelte';
+  import DocumentsPage from './views/DocumentsPage.svelte';
+  import ArtifactsPage from './views/ArtifactsPage.svelte';
+  import SettingsPage from './views/SettingsPage.svelte';
 
   let hash = $state(window.location.hash);
   const route = $derived(parseRoute(hash));
@@ -127,7 +130,10 @@
     <main
       id="workspace-content"
       class:session-main={inSession}
-      class:ledger-main={route.view === 'ledger' || route.view === 'entry'}
+      class:ledger-main={route.view === 'ledger' ||
+        route.view === 'entry' ||
+        route.view === 'documents' ||
+        route.view === 'artifacts'}
       tabindex="-1"
     >
       <ProjectMath projectId={'project' in route ? route.project : null}>
@@ -193,6 +199,18 @@
         {:else if route.view === 'mcp'}
           {#key route.project}
             <McpServices projectId={route.project} />
+          {/key}
+        {:else if route.view === 'documents'}
+          {#key route.project}
+            <DocumentsPage projectId={route.project} />
+          {/key}
+        {:else if route.view === 'artifacts'}
+          {#key route.project}
+            <ArtifactsPage projectId={route.project} />
+          {/key}
+        {:else if route.view === 'settings'}
+          {#key route.project}
+            <SettingsPage projectId={route.project} />
           {/key}
         {:else if route.view === 'message'}
           {#key `${route.project}/${route.message}`}
