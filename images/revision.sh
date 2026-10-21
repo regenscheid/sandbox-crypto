@@ -11,6 +11,8 @@ recipe_packages() {
   case $1 in
     orchestrator) packages=(contracts orchestrator) ;;
     mcp-proxy) packages=(contracts policy event-store mcp-proxy) ;;
+    trusted-app) packages=(contracts orchestrator workspace) ;;
+    trusted-worker) packages=(contracts policy event-store worker policy-middleware package-cache) ;;
     *) packages=() ;;
   esac
 }
@@ -24,7 +26,21 @@ recipe_inputs() {
       inputs+=(../packages/worker/src/sandbox_science/worker/binding_inventory.py
         ../packages/worker/src/sandbox_science/worker/shim/sched_self.c)
       ;;
+    trusted-app|trusted-worker)
+      inputs+=(trusted services build_trusted.sh test_trusted.sh orchestrator/conda-lock.yml ../pyproject.toml ../uv.lock
+        ../scripts/check_licenses.py)
+      ;;
   esac
+  if [ "$1" = trusted-app ]; then
+    inputs+=(../skills/builtin ../web/workspace/src ../web/workspace/server
+      ../web/workspace/licenses ../web/workspace/stubs ../web/workspace/package.json
+      ../web/workspace/package-lock.json ../web/workspace/.npmrc
+      ../web/workspace/index.html ../web/workspace/svelte.config.js
+      ../web/workspace/tsconfig.json ../web/workspace/tsconfig.node.json
+      ../web/workspace/vite.config.ts ../web/workspace/vite.viewer.config.ts
+      ../web/workspace/vite.figures.config.ts ../web/workspace/vite.math.config.ts
+      ../web/workspace/vite.figurecheck.config.ts)
+  fi
   recipe_packages "$1"
   for package in "${packages[@]}"; do
     inputs+=("../packages/$package/pyproject.toml" "../packages/$package/src")

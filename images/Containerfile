@@ -6,6 +6,7 @@
 #   crypto-base   the pinned cryptography environment; it contains GPL tools and stays private
 #   orchestrator  the harness, for the orchestrator's own sandbox; permissive like minimal
 #   mcp-proxy     the MCP proxy, for its own sandbox, with a launcher as its command; permissive
+#   trusted-app / trusted-worker  unpublished cluster services; build_trusted.sh only
 # Build with images/build.sh (context: images/, target: the profile). Every download is pinned:
 # the Ubuntu image by digest, apt packages by archive snapshot, micromamba by SHA-256, Conda
 # packages by the lockfiles' SHA-256, Python wheels by hash and source trees by commit. The
@@ -21,6 +22,12 @@ ARG G6K_COMMIT=c71e084dd003e1ffbfe8c91a7211b0ce9da22245
 ARG G6K_MARCH_AMD64=x86-64-v3
 ARG G6K_MARCH_ARM64=armv8.2-a
 ARG LATTICE_ESTIMATOR_COMMIT=53da5982597709ba0fdf94ea37a84d822310fd84
+ARG NODE_VERSION=24.22.0
+ARG NODE_SHA256_AMD64=cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008
+ARG NODE_SHA256_ARM64=fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143
+ARG OPENSHELL_VERSION=0.1.3
+ARG OPENSHELL_SHA256_AMD64=ed08ea7874c47f22d6e5dcc4b27d9ef1ef5d2060f83035b35ff725d5160830a3
+ARG OPENSHELL_SHA256_ARM64=07687dacefc52bc73b01943f5b58f7a5082c1ceaa228461b9a2a78023b8057c0
 
 # micromamba's release binary for the target architecture, checked against its published SHA-256.
 FROM scratch AS micromamba-amd64
@@ -316,3 +323,171 @@ LABEL org.opencontainers.image.title="Sandbox Science MCP proxy" \
       org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
       io.github.regenscheid.sandbox-science.profile="mcp-proxy"
 CMD ["/opt/sandbox-science/bin/mcp-proxy-run"]
+
+# ---------------------------------------------------------------------------------------------
+# Unpublished trusted service targets: build_trusted.sh only loads these locally.
+FROM base AS trusted-inputs
+RUN echo "trusted targets require build_trusted.sh's locked inputs context" >&2 && exit 1
+
+FROM base AS workspace-web
+RUN echo "trusted-app requires build_trusted.sh's workspace web context" >&2 && exit 1
+
+FROM base AS repository-tools
+RUN echo "trusted targets require build_trusted.sh's license checker context" >&2 && exit 1
+
+FROM scratch AS trusted-node-amd64
+ARG NODE_VERSION
+ARG NODE_SHA256_AMD64
+ADD --checksum=sha256:${NODE_SHA256_AMD64} \
+    https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+
+FROM scratch AS trusted-node-arm64
+ARG NODE_VERSION
+ARG NODE_SHA256_ARM64
+ADD --checksum=sha256:${NODE_SHA256_ARM64} \
+    https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz /node.tar.xz
+
+FROM trusted-node-${TARGETARCH} AS trusted-node
+
+FROM scratch AS trusted-openshell-amd64
+ARG OPENSHELL_VERSION
+ARG OPENSHELL_SHA256_AMD64
+ADD --checksum=sha256:${OPENSHELL_SHA256_AMD64} \
+    https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-x86_64-unknown-linux-musl.tar.gz /openshell.tar.gz
+
+FROM scratch AS trusted-openshell-arm64
+ARG OPENSHELL_VERSION
+ARG OPENSHELL_SHA256_ARM64
+ADD --checksum=sha256:${OPENSHELL_SHA256_ARM64} \
+    https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-aarch64-unknown-linux-musl.tar.gz /openshell.tar.gz
+
+FROM trusted-openshell-${TARGETARCH} AS trusted-openshell
+
+FROM base AS trusted-python
+ARG UBUNTU_SNAPSHOT
+RUN apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
+    apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" install -y --no-install-recommends \
+        git openssh-client xz-utils && rm -rf /var/lib/apt/lists/*
+USER 1000:1000
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.yml \
+    micromamba install -y -n base -f /tmp/conda-lock.yml && \
+    micromamba clean -a -y && find /opt/sandbox-science/pkgs -mindepth 1 -delete
+
+FROM trusted-python AS trusted-node-unpack
+USER root
+RUN --mount=type=bind,from=trusted-node,source=/node.tar.xz,target=/tmp/node.tar.xz \
+    mkdir /node && tar -xJf /tmp/node.tar.xz -C /node --strip-components=1
+
+FROM trusted-python AS trusted-openshell-unpack
+USER root
+RUN --mount=type=bind,from=trusted-openshell,source=/openshell.tar.gz,target=/tmp/openshell.tar.gz \
+    mkdir /openshell && tar -xzf /tmp/openshell.tar.gz -C /openshell && \
+    test -x /openshell/openshell
+ADD --checksum=sha256:d07c0367e2861e7fe70fa1b679f879f4fa2f9138ade4457d44ecf8b2e135bb45 \
+    https://raw.githubusercontent.com/NVIDIA/OpenShell/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/LICENSE /openshell/LICENSE
+
+FROM trusted-python AS trusted-web-build
+USER root
+COPY --from=trusted-node-unpack /node /node
+ENV PATH=/node/bin:${PATH}
+WORKDIR /build/web
+COPY --from=workspace-web package.json package-lock.json .npmrc index.html svelte.config.js ./
+COPY --from=workspace-web tsconfig*.json vite*.config.ts ./
+COPY --from=workspace-web src ./src
+COPY --from=workspace-web server ./server
+COPY --from=workspace-web licenses ./licenses
+COPY --from=workspace-web stubs ./stubs
+RUN --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/tmp/check_licenses.py \
+    python /tmp/check_licenses.py --npm package-lock.json && npm ci --ignore-scripts && \
+    python /tmp/check_licenses.py --npm package-lock.json --installed && \
+    npm run build && npm run build:math
+
+FROM trusted-python AS trusted-app
+USER 1000:1000
+RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,from=wheels,target=/tmp/wheels \
+    python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
+        -r /run/ss-build/requirements.txt && \
+    python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
+        sandbox-science-contracts sandbox-science-orchestrator sandbox-science-workspace && \
+    python -m pip check && sandbox-science-control --help && sandbox-science-workspace --help
+USER root
+COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
+COPY --from=trusted-node-unpack /node/bin/node /usr/local/bin/node
+COPY --from=trusted-node-unpack /node/LICENSE /usr/share/licenses/node/LICENSE
+COPY --from=trusted-web-build /build/web/dist /usr/share/sandbox-science/workspace
+COPY --from=trusted-web-build /build/web/dist-math /usr/share/sandbox-science/math
+ARG UBUNTU_IMAGE
+ARG UBUNTU_SNAPSHOT
+ARG MICROMAMBA_VERSION
+ARG NODE_VERSION
+ARG REVISION=unknown
+ARG VERSION=unknown
+ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
+ARG LICENSES=NOASSERTION
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/run/ss-build/conda-lock.yml \
+    --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,source=common/image_report.py,target=/run/ss-build/image_report.py \
+    --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/run/ss-build/check_licenses.py \
+    --mount=type=bind,source=trusted/record.py,target=/run/ss-build/record.py \
+    find /sandbox -mindepth 1 -delete && node --version && \
+    python -B /run/ss-build/record.py --profile trusted-app --revision "${REVISION}" \
+        --source-url "${SOURCE_URL}" --base-image "${UBUNTU_IMAGE}" \
+        --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" --micromamba "${MICROMAMBA_VERSION}" \
+        --source "nodejs|${NODE_VERSION}|MIT|https://nodejs.org/|upstream binary" \
+        --expect-licenses "${LICENSES}"
+USER 1000:1000
+WORKDIR /sandbox
+LABEL org.opencontainers.image.title="Sandbox Science trusted application" \
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="${LICENSES}" \
+      org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
+      io.github.regenscheid.sandbox-science.profile="trusted-app"
+CMD ["sandbox-science-control", "--help"]
+
+FROM trusted-python AS trusted-worker
+USER 1000:1000
+RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,from=wheels,target=/tmp/wheels \
+    python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
+        -r /run/ss-build/requirements.txt && \
+    python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
+        sandbox-science-contracts sandbox-science-policy sandbox-science-event-store \
+        sandbox-science-worker sandbox-science-policy-middleware sandbox-science-package-cache && \
+    python -m pip check && sandbox-science-worker --help && \
+    sandbox-science-policy-middleware --help && sandbox-science-package-cache --help
+USER root
+COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
+COPY --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
+COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
+ARG UBUNTU_IMAGE
+ARG UBUNTU_SNAPSHOT
+ARG MICROMAMBA_VERSION
+ARG OPENSHELL_VERSION
+ARG REVISION=unknown
+ARG VERSION=unknown
+ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
+ARG LICENSES=NOASSERTION
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/run/ss-build/conda-lock.yml \
+    --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
+    --mount=type=bind,source=common/image_report.py,target=/run/ss-build/image_report.py \
+    --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/run/ss-build/check_licenses.py \
+    --mount=type=bind,source=trusted/record.py,target=/run/ss-build/record.py \
+    find /sandbox -mindepth 1 -delete && openshell --version && ssh -V && \
+    python -B /run/ss-build/record.py --profile trusted-worker --revision "${REVISION}" \
+        --source-url "${SOURCE_URL}" --base-image "${UBUNTU_IMAGE}" \
+        --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" --micromamba "${MICROMAMBA_VERSION}" \
+        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/NVIDIA/OpenShell|upstream binary" \
+        --expect-licenses "${LICENSES}"
+USER 1000:1000
+WORKDIR /sandbox
+LABEL org.opencontainers.image.title="Sandbox Science trusted worker pool" \
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="${LICENSES}" \
+      org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
+      io.github.regenscheid.sandbox-science.profile="trusted-worker"
+CMD ["sandbox-science-worker", "--help"]

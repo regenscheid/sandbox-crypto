@@ -1,5 +1,13 @@
 # Base profile images
 
+Separate unpublished [trusted service targets](../images/trusted/README.md) prepare
+the Kubernetes control/workspace and worker/middleware services. Use
+`images/build_trusted.sh trusted-app|trusted-worker`, which only loads locally;
+`images/test_trusted.sh` checks an existing local image without network or pulls.
+These targets retain distinct build profiles and are absent from publication
+workflows. Recipes and deterministic tests do not establish native ARM64 or
+Kubernetes runtime qualification.
+
 Research sandboxes start from one of two standard base profiles (D46, D22). The orchestrator's own sandbox starts from a third image, `orchestrator`, which has the harness installed, and the MCP proxy's from a fourth, `mcp-proxy`, which has the proxy installed and a command that keeps it running. Their recipes are in `images/`: one `Containerfile` with a target per profile, a Conda environment and lockfile per profile, and scripts to lock, build and test them. The worker maps each research profile to an image (`[openshell.environments] profiles`, [worker](WORKER.md#environments)). This page is the contract the images follow, and how to build and check them.
 
 | Profile | Contents | Licensing |
