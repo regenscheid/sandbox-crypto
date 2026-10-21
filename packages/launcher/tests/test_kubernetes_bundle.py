@@ -20,6 +20,9 @@ def values() -> dict:
     return {
         "name": "research",
         "namespace": "research-test",
+        "models": {
+            role: {"alias": f"research-{role}"} for role in ("main", "delegated", "reviewer")
+        },
         "images": {
             role: f"ghcr.io/test/{role}@sha256:{hashlib.sha256(role.encode()).hexdigest()}"
             for role in ("app", "worker")
@@ -391,3 +394,80 @@ def test_standard_shared_credential_provider_can_read_an_explicit_private_file(t
     loaded = provider.load()
     assert loaded.method == "shared-credentials-file"
     assert loaded.access_key == "test-secret-access"
+
+
+def test_workspace_role_catalog_defaults_and_explicit_efforts_reach_cli():
+    data = values()
+    data["models"]["delegated"]["effort"] = "high"
+    items = objects(configured(data))
+    app = next(
+        item
+        for item in items
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "research-app"
+    )
+    workspace = next(
+        item
+        for item in app["spec"]["template"]["spec"]["containers"]
+        if item["name"] == "workspace"
+    )
+    command = workspace["command"]
+    assert command.count("--agent-model") == command.count("--agent-api") == 3
+    assert "main=research-main" in command
+    assert "delegated=research-delegated" in command
+    assert "reviewer=research-reviewer" in command
+    assert "main=max" in command
+    assert "delegated=high" in command
+    assert "reviewer=medium" in command
+    assert "research-main=responses" in command
+    assert "--api-key-file" not in command
+    assert "--model-url" not in command
+
+
+def test_shared_alias_has_one_adapter_and_messages_have_no_effort():
+    data = values()
+    data["models"] = {
+        "main": {"alias": "research-shared", "api": "messages"},
+        "delegated": {"alias": "research-shared", "api": "messages"},
+    }
+    arguments = configured(data).models.workspace_arguments()
+    assert arguments.count("--agent-api") == 1
+    assert "research-shared=messages" in arguments
+    assert "--agent-effort" not in arguments
+    assert not any(argument.startswith("reviewer=") for argument in arguments)
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        None,
+        {},
+        {"main": {"alias": "research-main"}},
+        {"main": {"alias": ""}, "delegated": {"alias": "research-delegated"}},
+        {
+            "main": {"alias": "research-main", "api": "unknown"},
+            "delegated": {"alias": "research-delegated"},
+        },
+        {
+            "main": {"alias": "research-main", "api": "messages", "effort": "max"},
+            "delegated": {"alias": "research-delegated"},
+        },
+        {
+            "main": {"alias": "research-shared", "api": "chat"},
+            "delegated": {"alias": "research-shared", "api": "responses"},
+        },
+        {
+            "main": {"alias": "research-main", "effort": "MAX"},
+            "delegated": {"alias": "research-delegated"},
+        },
+        {
+            "main": {"alias": "research-main"},
+            "delegated": {"alias": "research-delegated"},
+            "endpoint": "https://192.0.2.1",
+        },
+    ],
+)
+def test_role_catalog_rejects_missing_roles_incompatible_adapters_and_untyped_fields(models):
+    data = values()
+    data["models"] = models
+    with pytest.raises(ValidationError):
+        configured(data)

@@ -233,6 +233,7 @@ def _command(config: BundleConfig, name: str) -> list[str]:
             f"{PRIVATE}/worker-token",
             "--worker-ca-file",
             f"{PRIVATE}/worker-ca.crt",
+            *config.models.workspace_arguments(),
         ]
     executable = (
         "sandbox-science-policy-middleware" if name == "middleware" else f"sandbox-science-{name}"

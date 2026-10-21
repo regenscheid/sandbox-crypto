@@ -13,6 +13,9 @@ from pathlib import Path
 import aiohttp
 import pytest
 
+from sandbox_science.launcher.kubernetes_models import ModelCatalog
+from sandbox_science.orchestrator.projects import ProjectStore
+
 pytestmark = pytest.mark.slow
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -38,13 +41,20 @@ async def test_workspace_cli_cold_volume_starts_without_connected_runtime(tmp_pa
     static = tmp_path / "static"
     (static / "assets").mkdir(parents=True)
     (static / "index.html").write_text(
-        '<!doctype html><title>Cold Workspace</title>'
+        "<!doctype html><title>Cold Workspace</title>"
         '<script type="module" src="/assets/test.js"></script>'
     )
     (static / "assets/test.js").write_text("console.log('synthetic cold-volume test')")
     token = tmp_path / "worker-token"
     token.write_text("test-secret-unreachable-worker-token")
     token.chmod(0o600)
+    models = ModelCatalog.model_validate(
+        {
+            "main": {"alias": "test-research-main"},
+            "delegated": {"alias": "test-research-delegated"},
+            "reviewer": {"alias": "test-research-reviewer"},
+        }
+    )
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -62,6 +72,7 @@ async def test_workspace_cli_cold_volume_starts_without_connected_runtime(tmp_pa
         "https://127.0.0.1:1",
         "--worker-token-file",
         str(token),
+        *models.workspace_arguments(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=tmp_path,
@@ -83,6 +94,16 @@ async def test_workspace_cli_cold_volume_starts_without_connected_runtime(tmp_pa
             async with client.get(f"{base}/api/v0/projects") as response:
                 assert response.status == 200
                 assert (await response.json())["projects"] == []
+            with contextlib.closing(ProjectStore(volume / "control")) as projects:
+                projects.create("cold-project", "minimal", "sha256:" + "a" * 64)
+            async with client.get(
+                f"{base}/api/v0/projects/cold-project/models/settings"
+            ) as response:
+                assert response.status == 200
+                settings = await response.json()
+                assert settings["roles"]["main"]["reasoning_effort"] == "max"
+                assert settings["roles"]["delegated"]["reasoning_effort"] == "max"
+                assert settings["roles"]["reviewer"]["reasoning_effort"] == "medium"
         assert any((volume / "control").iterdir())
     finally:
         with contextlib.suppress(ProcessLookupError):

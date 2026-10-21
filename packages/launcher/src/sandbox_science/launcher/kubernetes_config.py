@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from .kubernetes_models import ModelCatalog
+
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")]
 Port = Annotated[int, Field(strict=True, ge=1, le=65535)]
 Count = Annotated[int, Field(strict=True, ge=1, le=1048576)]
@@ -219,6 +221,7 @@ class BundleConfig(Model):
     pool: Placement
     secrets: Secrets
     network: Network
+    models: ModelCatalog
     control: Service = Service()
     workspace: Service = Service()
     worker: Service = Service()

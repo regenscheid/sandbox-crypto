@@ -62,6 +62,25 @@ limits; a request alone reserves scheduler capacity. Service data must use the P
 layout below; the image root and credential mounts are read-only. `/tmp` is scratch,
 not retained state. Credentials have a separate 4 MiB memory emptyDir per service.
 
+## Configure the workspace model catalog
+
+`models.main` and `models.delegated` are required. Each selects a nonsecret `alias`,
+`api` (`responses`, `chat` or `messages`) and optional `effort`; the optional
+`models.reviewer` selects the reviewer role. These become the workspace CLI's
+`--agent-model`, `--agent-api` and `--agent-effort` options, enabling the project
+model settings GUI instead of leaving it unavailable. The default API is Responses.
+Non-Messages research roles default to `max` effort; a configured non-Messages
+reviewer defaults to `medium`. Set its alias to the site's approved cheaper reviewer
+model. Messages accepts no requested effort, including an explicit effort in TOML.
+One shared alias must have the same API in every role, though effort is per role.
+
+The example names generic research/reviewer aliases, not real gateway routes. This
+catalog contains no model endpoint, API key or credential and makes no LLM calls.
+Keep the control settings and separately installed runtime's model allowlists,
+adapters and effort defaults aligned with this catalog. The renderer cannot inspect
+the private `control.json` or verify gateway availability. Configuring the GUI does
+not itself start the runtime or enable math-repair model calls in the workspace.
+
 ## Prepare existing Secrets and recovery state
 
 The operator creates the named Secrets through the site's existing secure workflow.
@@ -128,6 +147,10 @@ operator on the pool PVC. The optional `worker.environment.HOME` value is exactl
 the CLI's real directory structure before use; selecting a directory does not
 initialize a gateway identity or populate it from flat Secret keys. A standalone
 `gateway.toml` extra file is not automatically a complete OpenShell CLI profile.
+The pinned CLI's XDG tree includes `openshell/active_gateway` and
+`openshell/gateways/<name>/metadata.json` plus the gateway's
+`mtls/ca.crt`, `mtls/tls.crt` and `mtls/tls.key`; preserve that actual tree through
+the trusted operator's existing secure configuration workflow.
 Default HOME is the existing per-container `/tmp` scratch volume. Engine/gateway
 credentials belong only in the worker's trusted state/private settings, not in the
 application containers. The renderer still does not mount kubeconfig or an engine
@@ -222,9 +245,28 @@ validation checks only the renderer's configuration contract. Independently insp
 the JSON, service DNS/certificates, copied settings, node/resource/storage capacity
 and NetworkPolicies before an operator chooses a cluster context and applies it.
 `kubectl diff`/server dry-run can provide cluster admission evidence, but neither is
-executed by this tool. The operator must also prepare the exact project policies,
-record ownership/generation and bootstrap the separate orchestrator runtime through
-the existing trusted workflow; there is no automatic runtime controller here.
+executed by this tool. The operator must also prepare the exact project policies
+and recorded ownership.
+
+**Cluster runtime bootstrap is an unimplemented gate.** There is currently no safe
+cluster bootstrap command/controller that completes this rendered bundle. A third,
+separate image uses the `orchestrator` profile, not `trusted-app`. Its OCI image
+digest is distinct from its source revision; the source revision must match
+`control.json.image_revision`. Control and runtime must agree on protocol/schema,
+generation, scoped token, permitted projects and model allowlists/adapters/efforts.
+The private runtime settings (`runtime.json`), runtime token, model key and control
+CA must be placed inside the exact recorded original OpenShell sandbox, and its
+runtime CLI must execute only there. Neither a trusted Pod nor an init container
+runs that agent loop. Preparation, callback connectivity and original-identity
+recovery still require implementation and live qualification before a complete
+cluster launch can be claimed.
+
+Do not run `sandbox-science up` against this bundle as a bootstrap workaround: it
+creates a local control instance, rotates generation/token and creates a new
+runtime, breaking the cluster's intended original identity. Likewise, a failed
+handshake or empty PVC never authorizes inventing a replacement runtime or clearing
+ownership/recovery state. These gaps are explicit release gates, not actions the
+offline renderer performs.
 
 Control readiness `/ready` is independent of runtime connectivity so that its
 Service can accept the first authenticated runtime connection. `/live` is separate

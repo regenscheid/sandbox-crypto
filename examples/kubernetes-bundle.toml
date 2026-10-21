@@ -8,6 +8,21 @@ namespace = "research"
 # app = "YOUR_REGISTRY/trusted-app@sha256:YOUR_VERIFIED_DIGEST"
 # worker = "YOUR_REGISTRY/trusted-worker@sha256:YOUR_VERIFIED_DIGEST"
 
+[models.main]
+alias = "research-main"
+api = "responses"
+effort = "max"
+
+[models.delegated]
+alias = "research-delegated"
+api = "responses"
+effort = "max"
+
+[models.reviewer]
+alias = "research-reviewer"
+api = "responses"
+effort = "medium"
+
 [app]
 architecture = "arm64"
 storage_gib = 10
