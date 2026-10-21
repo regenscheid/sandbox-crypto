@@ -8,6 +8,12 @@ Conda metadata from the actual installed Python distributions. Neither trusted
 target installs Sage/Jupyter research kernels; the worker omits the orchestrator
 and workspace application wheels.
 
+Trusted apt installation retains the exact Ubuntu snapshot and normal signature/TLS
+verification. A shared build helper uses five apt transport retries and makes any
+index failure fatal before installation. This prevents an unavailable snapshot from
+being misreported as nonexistent packages; a persistent archive outage still stops
+the build. It never falls back to current packages or changes the snapshot date.
+
 `trusted-app` installs contracts, orchestrator and workspace, including the wheel's
 built-in skills. Its immutable web files are at `/usr/share/sandbox-science/workspace`
 and math/figure checker files at `/usr/share/sandbox-science/math`. The Node binary

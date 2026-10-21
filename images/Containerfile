@@ -365,9 +365,9 @@ FROM trusted-openshell-${TARGETARCH} AS trusted-openshell
 
 FROM base AS trusted-python
 ARG UBUNTU_SNAPSHOT
-RUN apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
-    apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" install -y --no-install-recommends \
-        git openssh-client xz-utils && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=bind,source=common/apt_install.sh,target=/run/ss-build/apt_install.sh \
+    bash /run/ss-build/apt_install.sh "${UBUNTU_SNAPSHOT}" git openssh-client xz-utils && \
+    rm -rf /var/lib/apt/lists/*
 USER 1000:1000
 RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.yml \
     micromamba install -y -n base -f /tmp/conda-lock.yml && \
