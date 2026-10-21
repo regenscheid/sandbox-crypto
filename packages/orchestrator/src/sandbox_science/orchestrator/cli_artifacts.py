@@ -7,14 +7,17 @@ import argparse
 import asyncio
 import json
 import sys
-from collections.abc import Generator
+from dataclasses import asdict
 from pathlib import Path
 
-from .artifact_blobs import ArtifactBlobs, Blob
+from .artifact_blobs import ArtifactBlobs
 from .artifact_config import S3Settings, install
+from .artifact_maintenance import load_policy, maintain
+from .artifact_references import references as references
 from .artifact_retention import RetentionOutbox, drain
 from .control import ControlError
 from .documents import DocumentError, DocumentStore
+from .maintenance_cursor import progress, save, scope
 from .worker_client import WorkerClient
 
 
@@ -48,35 +51,30 @@ async def acknowledge(args: argparse.Namespace) -> int:
         documents.close()
 
 
-def references(database: Path) -> Generator[Blob]:
-    """Page immutable references without holding a transaction across object I/O."""
-    documents = DocumentStore(database, readonly=True)
-    after = ""
-    try:
-        while True:
-            with documents.control.read() as tx:
-                rows = tx.sql.execute(
-                    "SELECT sha256,min(size),max(size) FROM ("
-                    "SELECT sha256,size FROM artifact_revision_blobs UNION ALL "
-                    "SELECT sha256,size FROM user_upload_blobs) "
-                    "WHERE sha256>? GROUP BY sha256 ORDER BY sha256 LIMIT 100",
-                    (after,),
-                ).fetchall()
-            if not rows:
-                return
-            for sha256, size, largest in rows:
-                if size != largest:
-                    raise ValueError("artifact hash has inconsistent referenced sizes")
-                yield Blob(sha256, size)
-            after = rows[-1][0]
-    finally:
-        documents.close()
+def maintenance(args: argparse.Namespace) -> int:
+    """Run one policy pass, optionally serializing and checkpointing a scheduler."""
+    policy = load_policy(args.policy)
+    if args.cursor_file is None:
+        result = maintain(args.database, policy, apply=args.apply, after=args.after or "")
+    else:
+        with progress(args.cursor_file, scope(args.database, policy, args.apply)) as current:
+            result = maintain(args.database, policy, apply=args.apply, after=current.after)
+            save(args.cursor_file, current, result.next_after)
+    print(json.dumps({"apply": args.apply, **asdict(result)}), flush=True)
+    return int(result.failed != 0)
 
 
 def main(argv: list[str] | None = None) -> int:
     """No credential arguments, remote deletion, orphan scanning or implicit eviction."""
     parser = argparse.ArgumentParser(prog="sandbox-science-artifacts")
     commands = parser.add_subparsers(dest="command", required=True)
+    maintenance_parser = commands.add_parser("maintain", help="one bounded physical cache pass")
+    maintenance_parser.add_argument("--database", type=Path, required=True)
+    maintenance_parser.add_argument("--policy", type=Path, required=True)
+    maintenance_parser.add_argument("--apply", action="store_true")
+    cursor = maintenance_parser.add_mutually_exclusive_group()
+    cursor.add_argument("--after", help="continue after this reference hash")
+    cursor.add_argument("--cursor-file", type=Path, help="private persistent scheduled progress")
     ack = commands.add_parser("acknowledge", help="retry a bounded durable worker-retention page")
     ack.add_argument("--database", type=Path, required=True)
     ack.add_argument("--worker", required=True)
@@ -102,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "acknowledge":
             return asyncio.run(acknowledge(args))
+        if args.command == "maintain":
+            return maintenance(args)
         store = ArtifactBlobs(args.database)
         if args.command == "configure":
             # Do not create or migrate a database while configuring its backing.

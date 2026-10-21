@@ -3168,6 +3168,12 @@ def _artifact_retention(schema: Schema) -> None:
     install(schema)
 
 
+def _artifact_reference_indexes(schema: Schema) -> None:
+    """Version 76: bounded reference seeks never scan/sort the entire retained history."""
+    schema.execute("CREATE INDEX artifact_blob_hash ON artifact_revision_blobs(sha256,size)")
+    schema.execute("CREATE INDEX upload_blob_hash ON user_upload_blobs(sha256,size)")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3243,6 +3249,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _project_model_settings,
     _external_user_uploads,
     _artifact_retention,
+    _artifact_reference_indexes,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

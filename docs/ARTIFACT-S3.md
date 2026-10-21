@@ -52,6 +52,42 @@ a failed copy or verification preserves the local file. It never deletes remote
 objects, staging, orphans, reservations, worker copies, upload records, legacy
 inline SQLite content or environment PVCs. Logical retention quota usage is unchanged.
 
+## Bounded cache maintenance
+
+`sandbox-science-artifacts maintain` runs one operator policy pass. Use the
+[example policy](../examples/kubernetes/artifact-retention.toml), then inspect:
+
+```bash
+sandbox-science-artifacts maintain --database /srv/sandbox-science/control.sqlite3 \
+  --policy /etc/sandbox-science/artifact-retention.toml
+```
+
+It scans at most `max_references` committed external hashes and selects at most
+`max_bytes` of content per pass. Full local/remote verification may read selected
+bytes several times; those limits are not a strict network-byte or elapsed deadline.
+The SDK retains its finite socket/between-chunk budgets. `min_age_seconds` preserves
+recent local files. Missing local copies report `not_cached` without claiming remote
+verification or downloading content just to discard it. Logical scientific quotas,
+metadata, inline uploads, transfers, worker copies, orphans and PVCs remain intact.
+Schema 76 adds covering hash/size indexes. Each page merges bounded index seeks
+from artifact and upload references, including first/last size checks for shared
+hashes; it does not repeatedly scan or sort the full revision history.
+
+Use `--apply` for verified local eviction. `archive_before_evict = true` first
+archives historical local content in apply mode; previews never write remote objects.
+Remote failures preserve local bytes and report `unavailable` without leaking private
+endpoint details. A pass exits unsuccessfully if any entry failed.
+
+Manual pagination accepts `--after SHA256`. For an opt-in external scheduler, supply
+`--cursor-file /srv/sandbox-science/maintenance-apply.json` instead. Its parent must
+already exist; it stores private progress under an exclusive nonblocking lock. Repeated
+invocations continue bounded pages and wrap after the last page, revisiting failures
+and newly inserted lower hashes. Cursor advancement is progress, not a retention
+receipt. Dry-run and apply use distinct policy-bound cursor files; changing policy,
+database path or mode requires a new progress file. A crash before progress commits
+may repeat verification, but never replays a research operation or deletes remote data.
+No timer or background controller is enabled implicitly.
+
 New user-upload originals also use this store and its verified S3 backing. Their
 immutable metadata and references live in schema 74; existing inline originals are
 read without rewriting their rows. Archive/evict includes the new upload references,
