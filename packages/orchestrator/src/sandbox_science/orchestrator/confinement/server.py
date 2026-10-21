@@ -94,6 +94,7 @@ class ControlSettings(Contract):
     tls: ServerTLS | None = None
     worker: str = Field(min_length=1, max_length=2048)
     worker_token_file: Path
+    worker_ca_file: Path | None = None
     runtime_token_file: Path
     generation: Identifier
     generation_file: Path | None = None
@@ -188,7 +189,9 @@ def create_app(settings: ControlSettings) -> web.Application:
             documents = DocumentStore(store_path(settings.state_dir), producer="harness")
             documents.initialize()
             async with WorkerClient(
-                settings.worker, private_token(settings.worker_token_file)
+                settings.worker,
+                private_token(settings.worker_token_file),
+                ca_file=settings.worker_ca_file,
             ) as worker:
 
                 async def handle(kind: Capability, value: JsonValue) -> JsonValue:

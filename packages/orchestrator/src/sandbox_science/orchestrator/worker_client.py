@@ -16,6 +16,7 @@ import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Final, TypeVar
 
 import aiohttp
@@ -92,6 +93,8 @@ from sandbox_science.contracts.worker import (
     Language,
 )
 
+from .transport_tls import client_tls
+
 _log = logging.getLogger(__name__)
 _EVENT: Final = TypeAdapter[Event](Event)
 MAX_KERNEL_OBSERVATION_BYTES: Final = 1024 + 512 * MAX_SESSION_KERNELS
@@ -159,6 +162,7 @@ class WorkerClient:
         token: str,
         *,
         session: aiohttp.ClientSession | None = None,
+        ca_file: Path | None = None,
         stream_timeout: float = STREAM_TIMEOUT,
         reconnect_delay: float = RECONNECT_DELAY,
         result_grace: float = RESULT_GRACE,
@@ -167,6 +171,9 @@ class WorkerClient:
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        if ca_file is not None and (session is not None or not base_url.startswith("https://")):
+            raise ValueError("worker CA requires HTTPS and an owned HTTP session")
+        self._tls = client_tls(ca_file) if ca_file is not None else None
         self.stream_timeout = stream_timeout
         self.reconnect_delay = reconnect_delay
         self.result_grace = result_grace
@@ -208,7 +215,11 @@ class WorkerClient:
 
     def _http(self) -> aiohttp.ClientSession:
         if self._session is None:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(sock_connect=10))
+            connector = aiohttp.TCPConnector(ssl=self._tls) if self._tls is not None else None
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(sock_connect=10),
+                connector=connector,
+            )
         return self._session
 
     def _observation_configuration(self) -> tuple[str, tuple[tuple[str, str], ...]]:

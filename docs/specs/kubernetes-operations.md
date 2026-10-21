@@ -94,6 +94,13 @@ header mode is added. Private projected Kubernetes Secret files are copied by a
 narrow init step into private regular mode-600 files in memory-backed volumes;
 existing private-credential checks remain strict.
 
+Worker API listeners also accept an explicit TLS identity. Control and workspace
+clients can add a custom worker CA to system trust, requiring HTTPS when supplied;
+they never disable hostname verification. Supplying a custom CA with a borrowed
+HTTP session is refused instead of pretending to change that session's connector.
+Existing local HTTP configurations remain unchanged. Cluster rendering requires
+encrypted worker/control links and keeps worker bearer scope independent of TLS.
+
 ## First deployment bundle
 
 The initial topology uses a singleton application Pod: control and workspace share

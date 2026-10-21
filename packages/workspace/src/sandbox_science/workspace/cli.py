@@ -282,6 +282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     command.add_argument("--worker", help="worker URL for live jobs and cancellation")
     command.add_argument("--worker-token-file", type=Path, help="worker key (server only)")
+    command.add_argument("--worker-ca-file", type=Path, help="private worker CA; requires HTTPS")
     command.add_argument(
         "--skills-metadata-model",
         help="the alias of the import's pass whose topics, entry skills and short "
@@ -410,7 +411,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     job_worker = None
     job_state = None
-    if args.worker is not None or args.worker_token_file is not None:
+    if any(
+        value is not None for value in (args.worker, args.worker_token_file, args.worker_ca_file)
+    ):
         if args.worker is None or args.worker_token_file is None:
             parser.error("--worker and --worker-token-file must be given together")
         if not args.worker.startswith(("http://", "https://")):
@@ -419,7 +422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             token = args.worker_token_file.read_text().strip()
             if not token:
                 raise ValueError("worker token file is empty")
-            job_worker = WorkerClient(args.worker, token)
+            job_worker = WorkerClient(args.worker, token, ca_file=args.worker_ca_file)
             job_state = JobState(args.state_dir)
         except (OSError, UnicodeError, ValueError) as exc:
             parser.error(f"cannot configure job worker: {exc}")

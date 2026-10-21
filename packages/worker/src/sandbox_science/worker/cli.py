@@ -68,7 +68,12 @@ async def serve(settings: Settings) -> None:
         await manager.start()
         await parts.provisioner.start()
         await runner.setup()
-        site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
+        site = web.TCPSite(
+            runner,
+            settings.listen_host,
+            settings.listen_port,
+            ssl_context=settings.tls.context() if settings.tls else None,
+        )
         await site.start()
         _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
         if environments is not None and environments.settings.admission:

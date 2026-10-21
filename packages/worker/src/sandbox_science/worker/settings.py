@@ -61,6 +61,7 @@ from sandbox_science.contracts import Identifier
 from .documents_catalog import CatalogLimits
 from .kubernetes import KubernetesProfile
 from .package_clients import check_cache_url
+from .tls import ServerTLS
 
 MIN_TOKEN: Final = 32
 """The fewest characters a bearer token may have."""
@@ -191,6 +192,7 @@ class ClientSettings(_Model):
 
 class Settings(_Model):
     listen: str = "127.0.0.1:8100"
+    tls: ServerTLS | None = None
     token_file: Path
     """The pool's own token, which may act for every project."""
     state_dir: Path
@@ -260,6 +262,12 @@ def load_settings(path: Path) -> Settings:
         value = data.get(key)
         if isinstance(value, str) and value:
             data[key] = base / value
+    tls: object = data.get("tls")
+    if isinstance(tls, dict):
+        for key in ("certificate", "private_key"):
+            value = tls.get(key)
+            if isinstance(value, str):
+                tls[key] = base / value
     openshell: object = data.get("openshell")
     if isinstance(openshell, dict):
         environments: object = cast(dict[str, object], openshell).get("environments")

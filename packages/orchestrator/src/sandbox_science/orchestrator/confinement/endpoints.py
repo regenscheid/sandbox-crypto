@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.transport_tls import client_tls as client_tls
 
 from .transport import TransportError
 
@@ -72,14 +73,6 @@ def control_endpoint(value: str) -> str:
     if parsed.port == 0:
         raise ValueError("control URL port must be from 1 to 65535")
     return value
-
-
-def client_tls(ca_file: Path | None = None) -> ssl.SSLContext:
-    """System trust plus an optional private CA; certificate and hostname checks stay on."""
-    context = ssl.create_default_context()
-    if ca_file is not None:
-        context.load_verify_locations(cafile=ca_file)
-    return context
 
 
 def control_trace() -> aiohttp.TraceConfig:
