@@ -630,7 +630,7 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
 
 def smoke(shell: str, settings: Settings, env: dict[str, str]) -> None:
     """Check the real ARM64 Sage image in a newly named MicroVM sandbox."""
-    name = f"ss-mac-crypto-{secrets.token_hex(4)}"
+    name = f"ss-mac-{secrets.token_hex(4)}"
     created = False
     passed = False
     try:

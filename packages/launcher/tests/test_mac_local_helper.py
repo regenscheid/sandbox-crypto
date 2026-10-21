@@ -285,6 +285,7 @@ def test_failed_sandbox_create_still_attempts_cleanup(
     assert calls[0][1:3] == ["sandbox", "create"]
     assert calls[1][1:3] == ["sandbox", "delete"]
     assert calls[0][calls[0].index("--name") + 1] == calls[1][-1]
+    assert len(calls[1][-1]) <= 19
 
 
 def test_successful_sage_check_requires_sandbox_cleanup(
