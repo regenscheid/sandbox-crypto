@@ -1101,6 +1101,7 @@ export interface PendingApproval {
   server: string;
   tool: string;
   method: string;
+  policy: string;
   session: string | null;
   rule: string | null;
   reason: string | null;

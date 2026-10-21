@@ -1308,6 +1308,21 @@ async def test_an_operator_lists_its_projects_waiting_requests_without_arguments
     )  # fmt: skip
     assert item["rule"] == "mcp.servers.papers.tools.escalate[crawl]"
     assert item["timed_out"] is False
+    # The workspace's PendingApproval reads exactly these (test_routes_approvals.py).
+    assert set(item) == {
+        "seq",
+        "server",
+        "method",
+        "tool",
+        "policy",
+        "session",
+        "rule",
+        "reason",
+        "recorded_at",
+        "expires_at",
+        "timed_out",
+        "on_timeout",
+    }
     assert "example.org" not in json.dumps(listed.body)  # only the digest is kept
     other = await harness.operator("GET", "/permission-requests", caller="other-operator")
     assert other.body == {"requests": []}  # another project's operator sees none

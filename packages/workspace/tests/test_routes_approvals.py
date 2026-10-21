@@ -34,7 +34,9 @@ class FakeProxy:
     def hold(self, seq: int, tool: str, session: str = "a", server: str = "papers") -> None:
         self.waiting.append(
             {
+                # Every field the proxy's listing sends (mcp_proxy.proxy), no fewer.
                 "seq": seq, "server": server, "tool": tool, "method": "tools/call",
+                "policy": "sha256:" + "a" * 64,
                 "session": session, "rule": f"mcp.servers.{server}.tools.escalate[{tool}]",
                 "reason": "escalated", "recorded_at": "2026-10-21T18:00:00+00:00",
                 "expires_at": "2026-10-21T18:30:00+00:00", "timed_out": False,
@@ -179,3 +181,22 @@ async def test_the_relay_gives_remembered_approvals_again_and_forgets_removed_on
         7,
         8,
     ]
+
+
+def test_the_listing_is_read_with_every_field_the_proxy_sends() -> None:
+    # The proxy's listing (test_proxy.py pins the same set): a field it adds must be
+    # declared here, or the strict model refuses every listing.
+    assert set(approvals.PendingApproval.model_fields) == {
+        "seq",
+        "server",
+        "method",
+        "tool",
+        "policy",
+        "session",
+        "rule",
+        "reason",
+        "recorded_at",
+        "expires_at",
+        "timed_out",
+        "on_timeout",
+    }

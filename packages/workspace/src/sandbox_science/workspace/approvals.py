@@ -65,6 +65,8 @@ class PendingApproval(Contract):
     server: str
     tool: str
     method: str
+    policy: str
+    """The policy revision the call was held under."""
     session: str | None = None
     rule: str | None = None
     reason: str | None = None
