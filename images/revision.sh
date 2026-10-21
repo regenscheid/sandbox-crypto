@@ -32,7 +32,7 @@ recipe_inputs() {
       ;;
   esac
   if [ "$1" = trusted-app ]; then
-    inputs+=(../skills/builtin ../web/workspace/src ../web/workspace/server
+    inputs+=(../LICENSE ../skills/builtin ../web/workspace/src ../web/workspace/server
       ../web/workspace/licenses ../web/workspace/stubs ../web/workspace/package.json
       ../web/workspace/package-lock.json ../web/workspace/.npmrc
       ../web/workspace/index.html ../web/workspace/svelte.config.js

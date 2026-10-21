@@ -27,6 +27,13 @@ uv --directory "$here/.." export --locked --no-dev --no-emit-workspace \
 image_args+=(--build-context "trusted-inputs=$image_work"
   --build-context "workspace-web=$here/../web/workspace"
   --build-context "repository-tools=$here/../scripts")
+if [ "$profile" = trusted-app ]; then
+  # The notice generator reads ../../LICENSE from web/workspace. Send that exact
+  # authoritative file without exposing the full checkout as a Docker context.
+  mkdir "$image_work/repository-license"
+  cp "$here/../LICENSE" "$image_work/repository-license/LICENSE"
+  image_args+=(--build-context "repository-license=$image_work/repository-license")
+fi
 tag="sandbox-science/$profile:$short"
 docker buildx build "${image_args[@]}" --tag "$tag" --load \
   --metadata-file "$image_work/metadata.json" "$here"

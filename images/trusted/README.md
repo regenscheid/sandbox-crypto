@@ -29,6 +29,13 @@ worker, policy middleware and package cache, with `/usr/local/bin/openshell` and
 snapshot-pinned OpenSSH client/git dependencies. No gateway server, VM driver,
 cluster token or default deployment config is embedded.
 
+The web builder retains the repository's `web/workspace` directory layout and
+receives the authoritative root `LICENSE` through a narrow, explicit build
+context. The unchanged notice generator checks its manifest digest and emits it
+beside each GUI, PDF viewer, figure, math and figure-check distribution. Package
+notices and embedded-component texts still come from their checked web inputs;
+the application build never substitutes empty notices or skips aggregation.
+
 `images/build_trusted.sh trusted-app|trusted-worker` takes exactly one profile,
 loads the result locally and accepts no arbitrary Buildx arguments, exporters,
 registry outputs or push flags. `PLATFORM=linux/amd64|linux/arm64` and `BUILDER`

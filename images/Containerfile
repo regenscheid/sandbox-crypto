@@ -335,6 +335,9 @@ RUN echo "trusted-app requires build_trusted.sh's workspace web context" >&2 && 
 FROM base AS repository-tools
 RUN echo "trusted targets require build_trusted.sh's license checker context" >&2 && exit 1
 
+FROM base AS repository-license
+RUN echo "trusted-app requires build_trusted.sh's repository license context" >&2 && exit 1
+
 FROM scratch AS trusted-node-amd64
 ARG NODE_VERSION
 ARG NODE_SHA256_AMD64
@@ -387,7 +390,8 @@ FROM trusted-python AS trusted-web-build
 USER root
 COPY --from=trusted-node-unpack /node /node
 ENV PATH=/node/bin:${PATH}
-WORKDIR /build/web
+WORKDIR /build/web/workspace
+COPY --from=repository-license LICENSE /build/LICENSE
 COPY --from=workspace-web package.json package-lock.json .npmrc index.html svelte.config.js ./
 COPY --from=workspace-web tsconfig*.json vite*.config.ts ./
 COPY --from=workspace-web src ./src
@@ -413,8 +417,8 @@ COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-scienc
 COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
 COPY --from=trusted-node-unpack /node/bin/node /usr/local/bin/node
 COPY --from=trusted-node-unpack /node/LICENSE /usr/share/licenses/node/LICENSE
-COPY --from=trusted-web-build /build/web/dist /usr/share/sandbox-science/workspace
-COPY --from=trusted-web-build /build/web/dist-math /usr/share/sandbox-science/math
+COPY --from=trusted-web-build /build/web/workspace/dist /usr/share/sandbox-science/workspace
+COPY --from=trusted-web-build /build/web/workspace/dist-math /usr/share/sandbox-science/math
 ARG UBUNTU_IMAGE
 ARG UBUNTU_SNAPSHOT
 ARG MICROMAMBA_VERSION
