@@ -2,6 +2,8 @@
 
 ## 2026-10-20
 
+- Continue Kubernetes work as far as local implementation/validation allows without publishing images: offline complete-workspace checkpoints and separate durable transport, verified TLS control callbacks, bounded artifact-cache maintenance and generic unpublished deployment support. Preserve operation holds and distinguish local checkpoints from coordinated recovery sets and PVC-release authority ([contract](../docs/specs/kubernetes-operations.md)).
+
 - Continue `k8s` with exact worker-retention acknowledgements, an atomic control outbox and explicit offline replica release under the worker state lease. Preserve installer/shared references, legacy unknowns and PVCs; new image publication remains deferred by the owner ([contract](../docs/specs/durable-artifact-blobs.md#worker-capture-replica-retention-2026-10-20)).
 
 - Start Kubernetes work on `k8s`: generic heterogeneous AMD64/ARM64 pool configuration, S3-compatible artifact backing and verified local eviction before packaging trusted cluster services. Preserve active/paused PVCs; workspace archive/restore, worker-copy release and hosted retention remain separate gates ([Kubernetes work](../docs/KUBERNETES.md), D91). Site configuration stays outside Git.
