@@ -49,17 +49,17 @@ async function show(active: boolean) {
 
 const said = (target: HTMLElement) => (target.textContent ?? '').replace(/\s+/g, ' ');
 
-it('says the agent is working, with no Resume button, while research is active', async () => {
+it('shows nothing, and no Resume button, while research is active', async () => {
   // A disabled Resume button beside "Research is active" read as something to do
   // (owner, 2026-10-21).
   const target = await show(true);
-  expect(said(target)).toContain('The agent is working on the open research branch.');
+  expect(said(target)).not.toContain('stopped');
   expect(target.querySelector('button')).toBeNull();
 });
 
 it('offers Resume when the unfinished research has stopped', async () => {
   const target = await show(false);
-  expect(said(target)).toContain('1 unfinished research branch, stopped: resume to continue.');
+  expect(said(target)).toContain('One line of research stopped before finishing.');
   const resume = target.querySelector('button');
   expect(resume?.textContent).toBe('Resume research');
   expect(resume?.disabled).toBe(false);

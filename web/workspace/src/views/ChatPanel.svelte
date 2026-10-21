@@ -3,10 +3,12 @@
   Chat with the session's main agent (docs/specs/run-service.md): the messages written and
   their states, the run that holds the session with its events as they arrive, and the
   run service's state. All text is shown as text, or as Markdown for the user's and the
-  agent's own words, as the run view shows them. The agent's questions to the user
-  (docs/QUESTIONS.md) show above the message box while open, and below their run once
-  closed; while the run that holds the session waits for an answer, a message answers its
-  oldest open question, and the box says so.
+  agent's own words, as the run view shows them. The conversation stays quiet: the steps
+  between messages fold into one line each (conversation.ts), and the run's state shows in
+  the session header (`signals`). The agent's questions to the user (docs/QUESTIONS.md)
+  show above the message box while open, and where they were asked once closed; while the
+  run that holds the session waits for an answer, a message answers its oldest open
+  question, and the box says so.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -19,13 +21,14 @@
     pendingMessages,
     sendMessage,
     startingText,
-    thinking,
     type ChatView,
     type WatchedRun,
   } from '../lib/chat';
   import { attachmentDrafts, attachmentMessage } from '../lib/uploads';
   import { uploadDraft } from '../lib/uploadDrafts.svelte';
   import ChatAttachments from './ChatAttachments.svelte';
+  import Icon from './Icon.svelte';
+  import ModelPicker from './ModelPicker.svelte';
   import { chatDrafts } from '../lib/drafts';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import {
@@ -38,17 +41,35 @@
     type AnswerBody,
     type Question,
   } from '../lib/questions';
+  import type { ChatSignals } from '../lib/sessionStatus';
   import { idle, submit } from '../lib/submit';
   import ChatQuestion from './ChatQuestion.svelte';
   import ChatRecovery from './ChatRecovery.svelte';
   import ChatRun from './ChatRun.svelte';
   import ChatWaiting from './ChatWaiting.svelte';
+  import BrandMark from './BrandMark.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   import PollStatus from './PollStatus.svelte';
 
-  let { projectId, sessionId, closed }: { projectId: string; sessionId: string; closed: boolean } =
-    $props();
+  let {
+    projectId,
+    sessionId,
+    closed,
+    signals = $bindable(null),
+    subagents = null,
+    showAgents = null,
+  }: {
+    projectId: string;
+    sessionId: string;
+    closed: boolean;
+    signals?: ChatSignals | null;
+    /** "2 active subagents", while any run. */
+    subagents?: string | null;
+    showAgents?: (() => void) | null;
+  } = $props();
+  let attach = $state<ReturnType<typeof ChatAttachments> | null>(null);
+  let attachMenu = $state(false);
   const scope = untrack(() => `${projectId}:${sessionId}`);
   let draft = $state(chatDrafts.load(scope).draft ?? { text: '' });
   let persisted = $state(true);
@@ -70,8 +91,6 @@
   const sending = $state(idle());
   const asking = $state(idle());
   const chat = $derived(view.data);
-  const current = $derived(chat?.runs.at(-1));
-  const earlier = $derived(chat?.runs.slice(0, -1) ?? []);
   // Messages not yet in a run's transcript: queued, held or refused.
   const waiting = $derived(chat ? pendingMessages(chat.messages, chat.runs) : []);
   const held = $derived(waiting.some((message) => message.state === 'held'));
@@ -87,6 +106,21 @@
   /** A message that answers a question holds no more than an answer may. */
   const chars = $derived(next ? answerChars(combined) : 0);
   const tooLong = $derived(bytes > MAX_MESSAGE_BYTES || chars > MAX_ANSWER_CHARS);
+  const cannotSend = $derived(
+    sending.busy ||
+      uploading ||
+      incomplete ||
+      (!draft.text.trim() && !attachments.length) ||
+      tooLong,
+  );
+  $effect(() => {
+    signals = chat
+      ? { service: chat.service, lease: chat.lease?.run ?? null, questions: waitingOn, held }
+      : null;
+  });
+  /** Whether a run is working now, rather than waiting for an answer. */
+  const live = (run: WatchedRun) =>
+    run.state === 'active' && chat?.lease?.run === run.run && waitingOn === 0;
 
   $effect(() => {
     const project = projectId,
@@ -121,10 +155,6 @@
     }
   });
 
-  function runState(run: WatchedRun): string {
-    if (run.state === 'active') return 'running';
-    return run.state === 'ended' ? 'ended' : 'interrupted, without a record';
-  }
   async function send() {
     const text = draft.text;
     const files = [...attached];
@@ -154,11 +184,6 @@
   async function answer(question: Question, body: AnswerBody) {
     await questionsApi.answer(projectId, sessionId, question.question_id, body);
   }
-  async function cancel(run: string) {
-    await submit(asking, async () => {
-      await chatApi.cancel(projectId, sessionId, run);
-    });
-  }
 </script>
 
 {#snippet closedQuestion(question: Question)}
@@ -166,6 +191,9 @@
 {/snippet}
 
 <svelte:window
+  onpointerdown={(event) => {
+    if (attachMenu && !(event.target as Element).closest?.('.composer-bar')) attachMenu = false;
+  }}
   onbeforeunload={(event) => {
     if ((draft.text && !persisted) || (attachments.length && !attachmentsPersisted))
       event.preventDefault();
@@ -177,14 +205,9 @@
   <div class="chat-history" role="log" aria-label="Conversation" tabindex="0">
     <PollStatus phase={view.phase} hasData={chat !== null} what="Chat views" />
     {#if chat}
-      <div class="chat-connection">
-        <span class="session-dot" class:closed={!chat.service}></span>{chat.service
-          ? 'Connected to research agent'
-          : 'Agent offline · messages will wait'}
-      </div>
-      {#if !current && earlier.length === 0 && waiting.length === 0}
+      {#if chat.runs.length === 0 && waiting.length === 0}
         <div class="chat-welcome">
-          <span class="welcome-symbol" aria-hidden="true">∑</span>
+          <BrandMark size={48} />
           <h2>Where shall we begin?</h2>
           <p>Explore a problem, investigate a paper, or develop a new research direction.</p>
           <p class="muted">
@@ -192,28 +215,18 @@
           </p>
         </div>
       {/if}
-      {#each earlier as run (run.run)}
-        <details>
-          <summary>Run <code>{run.run}</code>: {runState(run)}</summary>
-          <ChatRun {run} {projectId} questions={closedOf(run)} question={closedQuestion} />
-        </details>
-      {/each}
-      {#if current}
-        <p>
-          <span class="state-badge">{runState(current)}</span>
-          {#if chat.lease && chat.lease.run === current.run}<button
-              disabled={asking.busy}
-              onclick={() => cancel(current.run)}>Cancel run</button
-            >{/if}
-        </p>
+      {#each chat.runs as run (run.run)}
         <ChatRun
-          run={current}
+          {run}
           {projectId}
-          questions={closedOf(current)}
+          questions={closedOf(run)}
           question={closedQuestion}
+          live={live(run)}
+          {now}
+          {subagents}
+          {showAgents}
         />
-        {#if thinking(current)}<p role="status">The agent is thinking…</p>{/if}
-      {/if}
+      {/each}
       <ChatWaiting messages={waiting} {starting} />
       <ChatRecovery {projectId} {sessionId} {held} busy={asking.busy} {closed} {resume} />
       {#if asking.error}<ErrorMessage error={asking.error} />{/if}
@@ -230,32 +243,80 @@
   </div>
   <div class="chat-composer">
     {#if !closed}
-      <ChatAttachments {projectId} {sessionId} disabled={sending.busy} />
       {#if next}<p role="status" class="hint">
           Your message will answer: <q>{hintText(next.text)}</q>{#if waitingOn > 1}
             (the oldest of the {waitingOn} open questions){/if}
         </p>{/if}
-      <label
-        ><span class="sr-only">Message to the main agent</span><textarea
-          aria-label="Message to the main agent"
-          bind:value={draft.text}
-          placeholder="Ask a question or guide the research…"
-          onkeydown={(event) => {
-            if (
-              (event.ctrlKey || event.metaKey) &&
-              event.key === 'Enter' &&
-              !sending.busy &&
-              !uploading &&
-              !incomplete &&
-              (draft.text.trim() || attachments.length) &&
-              !tooLong
-            ) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-          rows="3"></textarea></label
-      >
+      <div class="composer-box">
+        <ChatAttachments
+          bind:this={attach}
+          {projectId}
+          {sessionId}
+          disabled={sending.busy}
+          actions={false}
+        />
+        <label
+          ><span class="sr-only">Message to the main agent</span><textarea
+            aria-label="Message to the main agent"
+            bind:value={draft.text}
+            placeholder={next
+              ? 'Answer in your own words…'
+              : 'Ask a question or guide the research…'}
+            onkeydown={(event) => {
+              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !cannotSend) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+            rows="2"></textarea></label
+        >
+        <div class="composer-bar">
+          <div class="model-picker">
+            <button
+              type="button"
+              class="round-button"
+              aria-label="Attach files"
+              aria-haspopup="menu"
+              aria-expanded={attachMenu}
+              disabled={sending.busy}
+              onclick={() => (attachMenu = !attachMenu)}><Icon name="plus" size={18} /></button
+            >
+            {#if attachMenu}<div class="model-popover attach-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="model-option"
+                  onclick={() => {
+                    attachMenu = false;
+                    attach?.pick();
+                  }}>Upload files…</button
+                ><button
+                  type="button"
+                  role="menuitem"
+                  class="model-option"
+                  onclick={() => {
+                    attachMenu = false;
+                    attach?.stored();
+                  }}>Attach a stored file</button
+                >
+                <div class="composer-note">Or drop files on the box · up to 100 MiB each</div>
+              </div>{/if}
+          </div>
+          <span class="spacer"></span>
+          <ModelPicker {projectId} />
+          <button
+            type="button"
+            class="send-button"
+            disabled={cannotSend}
+            title="Send (Ctrl / ⌘ + Enter)"
+            onclick={send}
+            >{#if sending.busy}Sending…{:else if next}Send as the answer{:else}<Icon
+                name="send"
+                size={16}
+              /><span class="sr-only">Send message</span>{/if}</button
+          >
+        </div>
+      </div>
       <HiddenBanner text={draft.text} />
       {#if bytes > MAX_MESSAGE_BYTES}<p role="alert">
           The message is {bytes.toLocaleString('en-US')} bytes; a message holds at most {MAX_MESSAGE_BYTES.toLocaleString(
@@ -266,17 +327,8 @@
           As an answer, the message is {chars.toLocaleString('en-US')} characters; {'an answer holds at most'}
           {MAX_ANSWER_CHARS.toLocaleString('en-US')}.
         </p>{/if}
-      <div class="composer-actions">
-        <span class="muted">LaTeX supported · Ctrl / ⌘ + Enter to send</span><button
-          class="primary-button"
-          disabled={sending.busy ||
-            uploading ||
-            incomplete ||
-            (!draft.text.trim() && !attachments.length) ||
-            tooLong}
-          onclick={send}
-          >{sending.busy ? 'Sending…' : next ? 'Send as the answer' : 'Send message ↑'}</button
-        >
+      <div class="composer-note">
+        The agent reads your message at its next step · LaTeX supported · Ctrl / ⌘ + Enter to send
       </div>
       {#if sending.error}<ErrorMessage error={sending.error} />{/if}
       {#if !persisted || !attachmentsPersisted}<p role="alert">
@@ -295,14 +347,13 @@
     min-height: 0;
     height: 100%;
   }
-  textarea {
-    width: 100%;
-    box-sizing: border-box;
-  }
   label {
     display: block;
   }
-  .hint {
-    font-weight: bold;
+  .attach-menu {
+    left: 0;
+    right: auto;
+    width: 240px;
+    gap: 4px;
   }
 </style>

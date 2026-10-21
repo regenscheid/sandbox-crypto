@@ -69,6 +69,46 @@ export async function uploadFile(
   });
 }
 
+const MANIFEST_HEAD = '\n\nAttached files (sandbox copies; original bytes retained):\n```json\n';
+
+/** A file a message names in its manifest, as `attachmentMessage` writes it. */
+export interface AttachedFile {
+  filename: string;
+  path: string;
+  size: number;
+  sha256: string;
+}
+
+/**
+ * A message's own words and the files its manifest lists, so the conversation shows the
+ * files as files rather than as JSON. A text without a manifest that reads back, such as
+ * one the user wrote that only looks like one, stays whole.
+ */
+export function splitAttachments(text: string): { text: string; files: AttachedFile[] } {
+  const start = text.lastIndexOf(MANIFEST_HEAD);
+  if (start < 0 || !text.endsWith('\n```')) return { text, files: [] };
+  let listed: unknown;
+  try {
+    listed = JSON.parse(text.slice(start + MANIFEST_HEAD.length, -4));
+  } catch {
+    return { text, files: [] };
+  }
+  if (!Array.isArray(listed) || listed.length === 0) return { text, files: [] };
+  const files: AttachedFile[] = [];
+  for (const item of listed) {
+    const file = (item ?? {}) as Record<string, unknown>;
+    if (typeof file.filename !== 'string' || typeof file.size !== 'number')
+      return { text, files: [] };
+    files.push({
+      filename: file.filename,
+      path: typeof file.path === 'string' ? file.path : '',
+      size: file.size,
+      sha256: typeof file.sha256 === 'string' ? file.sha256 : '',
+    });
+  }
+  return { text: text.slice(0, start), files };
+}
+
 /** Matches the server's manifest exactly for message and question-answer budgets. */
 export function attachmentMessage(text: string, files: UserUpload[]): string {
   if (!files.length) return text;
@@ -79,10 +119,5 @@ export function attachmentMessage(text: string, files: UserUpload[]): string {
     sha256: f.sha256,
     size: f.size,
   }));
-  return (
-    text.trimEnd() +
-    '\n\nAttached files (sandbox copies; original bytes retained):\n```json\n' +
-    JSON.stringify(manifest, null, 2) +
-    '\n```'
-  );
+  return text.trimEnd() + MANIFEST_HEAD + JSON.stringify(manifest, null, 2) + '\n```';
 }

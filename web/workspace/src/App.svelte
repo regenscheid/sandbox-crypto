@@ -4,6 +4,7 @@
   import { focusPanel } from './lib/focusPanel';
   import { api } from './lib/api';
   import WorkspaceSidebar from './views/WorkspaceSidebar.svelte';
+  import Icon from './views/Icon.svelte';
   import { parseRoute } from './lib/router';
   import DocumentView from './views/DocumentView.svelte';
   import HistoryView from './views/HistoryView.svelte';
@@ -66,7 +67,11 @@
     document.getElementById('workspace-content')?.focus();
   }}>Skip to content</a
 >
-<div class="workspace-shell" class:nav-open={navigationOpen && !loggedOut}>
+<div
+  class="workspace-shell"
+  class:nav-open={navigationOpen && !loggedOut}
+  class:nav-closed={!navigationOpen && !loggedOut}
+>
   {#if !loggedOut}
     <div
       class="sidebar-slot"
@@ -89,7 +94,16 @@
             navigationOpen = false;
           }}>Close navigation ×</button
         >{/if}
-      <WorkspaceSidebar {route} close={closeDrawer} />
+      <WorkspaceSidebar
+        {route}
+        close={closeDrawer}
+        hide={narrow
+          ? null
+          : () => {
+              navigationOpen = false;
+            }}
+        {logout}
+      />
     </div>
     {#if navigationOpen}<button
         class="navigation-scrim"
@@ -100,23 +114,16 @@
       ></button>{/if}
   {/if}
   <div class="workspace-body" inert={navigationOpen && narrow}>
-    <header class="workspace-topbar">
-      <button
-        class="icon-button"
-        aria-label={navigationOpen ? 'Hide navigation' : 'Show navigation'}
-        aria-expanded={navigationOpen}
+    {#if !navigationOpen && !loggedOut}<button
+        class="nav-toggle"
+        type="button"
+        aria-label="Show navigation"
+        aria-expanded="false"
         aria-controls="workspace-navigation"
         onclick={() => {
-          navigationOpen = !navigationOpen;
-        }}>☰</button
-      >
-      <span class="topbar-location"
-        >{'project' in route ? route.project : 'Research workspace'}</span
-      >
-      <span class="topbar-spacer"></span>
-      {#if !loggedOut}<button class="quiet-button" type="button" onclick={logout}>Log out</button
-        >{/if}
-    </header>
+          navigationOpen = true;
+        }}><Icon name="sidebar" /></button
+      >{/if}
     <main
       id="workspace-content"
       class:session-main={inSession}

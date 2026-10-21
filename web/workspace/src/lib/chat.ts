@@ -334,7 +334,15 @@ export type ChatEntry =
       /** This model call's tokens, as the gateway reported them; null when not recorded. */
       usage: string | null;
     }
-  | { kind: 'tool'; seq: number; name: string; outcome: string; result: string }
+  | {
+      kind: 'tool';
+      seq: number;
+      /** The call this result answers, by its ID; empty when the event does not say. */
+      call: string;
+      name: string;
+      outcome: string;
+      result: string;
+    }
   | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string };
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -523,6 +531,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
       entries.push({
         kind: 'tool',
         seq,
+        call: text(data['call_id']),
         name: text(data['name']) || 'tool',
         outcome: outcomeText(data['outcome']),
         result: text(data['result']),

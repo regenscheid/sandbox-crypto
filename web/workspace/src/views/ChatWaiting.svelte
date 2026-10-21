@@ -7,6 +7,8 @@
 -->
 <script lang="ts">
   import { messageState, type ChatMessage } from '../lib/chat';
+  import { splitAttachments } from '../lib/uploads';
+  import FileChips from './FileChips.svelte';
 
   let {
     messages,
@@ -14,13 +16,15 @@
   }: { messages: readonly ChatMessage[]; starting?: string | null } = $props();
 </script>
 
-{#if starting}<p role="status">{starting}</p>{/if}
+{#if starting}<p role="status" class="transcript-note">{starting}</p>{/if}
 {#if messages.length}
-  <ul class="messages">
+  <ul class="waiting-messages">
     {#each messages as message (message.message_id)}
-      <li>
-        <span class="muted">{messageState(message)}:</span>
-        <span class="text">{message.text}</span>
+      {@const split = splitAttachments(message.text)}
+      <li class="bubble">
+        <span class="meta">{messageState(message)}</span>
+        <span class="text">{split.text}</span>
+        <FileChips files={split.files} />
       </li>
     {/each}
   </ul>
@@ -30,5 +34,16 @@
   .text {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+  }
+  .bubble {
+    max-width: 80%;
+    background: var(--subtle);
+    border-radius: 16px;
+    padding: 10px 14px;
+  }
+  .meta {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
   }
 </style>

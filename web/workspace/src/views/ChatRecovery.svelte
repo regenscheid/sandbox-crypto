@@ -40,21 +40,26 @@
 
 <PollStatus phase={state.phase} hasData={recovery !== null} what="Research recovery" />
 {#key `${projectId}/${sessionId}`}<ChatResources {projectId} {sessionId} />{/key}
-{#if recovery && recovery.unfinished > 0}
-  {@const branches = recovery.unfinished === 1 ? 'branch' : 'branches'}
-  <p role="status">
-    {#if recovery.active}
-      The agent is working on {recovery.unfinished === 1 ? 'the' : recovery.unfinished} open research
-      {branches}.
-    {:else}
-      {recovery.unfinished} unfinished research {branches}, stopped: resume to continue.
-    {/if}
-  </p>
-  {#each blocked as work (work.work)}
-    <p class="muted">Blocked: {work.reason ?? 'Review this branch before resuming.'}</p>
-  {/each}
-{/if}
-<!-- While research is active there is nothing to resume, so no button (owner, 2026-10-21). -->
+<!-- While research is active the header says so and there is nothing to resume, so the
+     conversation shows nothing here (owner, 2026-10-21). -->
 {#if !closed && !recovery?.active && (held || (recovery && recovery.unfinished > 0))}
-  <button disabled={busy} onclick={resume}>Resume research</button>
+  <section class="stopped-card" aria-label="Research stopped">
+    <strong>Research stopped before it finished</strong>
+    <p role="status">
+      {#if recovery && recovery.unfinished > 0}
+        {recovery.unfinished === 1
+          ? 'One line of research'
+          : `${recovery.unfinished} lines of research`} stopped before finishing. The plan, files and
+        finished checks are kept; resuming picks up from the last saved step.
+      {:else}
+        Your messages are held until you resume.
+      {/if}
+    </p>
+    {#each blocked as work (work.work)}
+      <p class="muted">Blocked: {work.reason ?? 'Review this work before resuming.'}</p>
+    {/each}
+    <div class="actions">
+      <button class="primary-button" disabled={busy} onclick={resume}>Resume research</button>
+    </div>
+  </section>
 {/if}

@@ -415,7 +415,14 @@ describe('the transcript of a run', () => {
         calls: [{ id: 'c1', name: 'python', arguments: '{"code": "1"}' }],
         usage: 'model-a: 1,200 input and 34 output tokens',
       },
-      { kind: 'tool', seq: 5, name: 'python', outcome: 'succeeded, exit code 0', result: '1' },
+      {
+        kind: 'tool',
+        seq: 5,
+        call: '',
+        name: 'python',
+        outcome: 'succeeded, exit code 0',
+        result: '1',
+      },
       { kind: 'note', seq: 6, text: 'Notices from jobs: j1.', problem: false },
       { kind: 'note', seq: 7, text: 'Waiting for all of jobs j1.', problem: false },
       { kind: 'note', seq: 8, text: 'The wait for jobs ended.', problem: false },
@@ -447,10 +454,10 @@ describe('the transcript of a run', () => {
     } as never;
     const body = render(ChatRun, { props: { run } }).body;
     expect(body).not.toContain('no state recorded');
-    const summaries = [...body.matchAll(/<summary>(.*?)<\/summary>/g)].map((m) =>
-      (m[1] ?? '').replace(/<!--.*?-->/g, '').replace(/<\/?code>/g, ''),
+    const heads = [...body.matchAll(/<div class="call-head">(.*?)<\/div>/g)].map((m) =>
+      (m[1] ?? '').replace(/<!--.*?-->/g, '').replace(/<\/?(code|span)[^>]*>/g, ''),
     );
-    expect(summaries).toEqual(['plan_create', 'python: succeeded, exit code 0']);
+    expect(heads).toEqual(['plan_create', 'python · succeeded, exit code 0']);
   });
 
   it('takes no field of the wrong type, and says how a run stopped', () => {
@@ -679,13 +686,13 @@ describe('the messages waiting for a run', () => {
     const body = html([queued], startingText({ lease: null, environment: 'creating' }, [queued]));
     expect(body).toContain('role="status"');
     expect(body).toContain('Starting the environment');
-    expect(body).toContain('Queued:');
+    expect(body).toContain('Queued');
     expect(body).toContain('What is $2^{64}');
   });
 
   it('says nothing more than the state of each message when the server has no news', () => {
     const body = html([message(1, 'queued')], null);
-    expect(body).toContain('Queued:');
+    expect(body).toContain('Queued');
     expect(body).not.toContain('role="status"');
     expect(html([])).toBe(html([], null)); // no list for no messages
     expect(html([])).not.toContain('<ul');

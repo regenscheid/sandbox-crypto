@@ -5,6 +5,19 @@
   import { focusPanel } from '../lib/focusPanel';
   import { untrack } from 'svelte';
   import { api, type SessionDetail } from '../lib/api';
+  import type { RunTree, StatusPage } from '../lib/api-types';
+  import { chatApi } from '../lib/chat';
+  import { get } from '../lib/http';
+  import {
+    activeSubagents,
+    sessionStatus,
+    subagentText,
+    type ChatSignals,
+  } from '../lib/sessionStatus';
+  import { idle, submit } from '../lib/submit';
+  import ErrorMessage from './ErrorMessage.svelte';
+  import SessionReviews from './SessionReviews.svelte';
+  import SessionCompute from './SessionCompute.svelte';
   import { formatTime } from '../lib/format';
   import SessionDocuments from './SessionDocuments.svelte';
   import SessionAgents from './SessionAgents.svelte';
@@ -15,12 +28,9 @@
   import { rememberSession } from '../lib/lastSession';
   import ChatPanel from './ChatPanel.svelte';
   import FoldProposals from './FoldProposals.svelte';
-  import JobsPanel from './JobsPanel.svelte';
-  import KernelPanel from './KernelPanel.svelte';
   import PlanPanel from './PlanPanel.svelte';
   import PollStatus from './PollStatus.svelte';
   import RunSection from './RunSection.svelte';
-  const reviewComponent = import('./ReviewsPanel.svelte');
 
   let {
     projectId,
@@ -32,11 +42,11 @@
     /** A review to choose in the review panel, as a link names it. */
     reviewId?: string | null;
   } = $props();
-  type Panel = 'documents' | 'plan' | 'agents' | 'activity';
+  type Panel = 'plan' | 'agents' | 'reviews' | 'compute' | 'documents' | 'activity';
   let panel = $state<Panel | null>(
-    untrack(() => (reviewId ? 'activity' : window.innerWidth > 1120 ? 'plan' : null)),
+    untrack(() => (reviewId ? 'reviews' : window.innerWidth > 1120 ? 'plan' : null)),
   );
-  let visited = $state<Panel[]>(untrack(() => (reviewId ? ['activity'] : ['plan'])));
+  let visited = $state<Panel[]>(untrack(() => (reviewId ? ['reviews'] : ['plan'])));
   const browserScope = untrack(() => `session-browser:${projectId}:${sessionId}`);
   const keptBrowser = untrack(() => browserState.load(browserScope).draft ?? {});
   let activityCategory = $state(keptBrowser.category ?? 'all');
@@ -57,16 +67,6 @@
         ?.focus(),
     );
   }
-  const tabs: { id: Panel; label: string }[] = [
-    { id: 'documents', label: 'Documents' },
-    { id: 'plan', label: 'Plan' },
-    { id: 'agents', label: 'Agents' },
-    { id: 'activity', label: 'Activity' },
-  ];
-  function choose(id: Panel) {
-    if (!visited.includes(id)) visited = [...visited, id];
-    panel = panel === id ? null : id;
-  }
   // Polled, so that a run that ends and a session that closes show up.
   let view = $state<PollState<SessionDetail>>(initialPoll());
   $effect(() => {
@@ -82,6 +82,70 @@
     );
     return poller.watch();
   });
+  // The run tree and the recovery status, for the header and the Agents and Reviews tabs.
+  let tree = $state<RunTree | null>(null);
+  let recovery = $state<StatusPage | null>(null);
+  let signals = $state<ChatSignals | null>(null);
+  const acting = $state(idle());
+  $effect(() => {
+    const project = projectId,
+      session = sessionId;
+    const at = `/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(session)}`;
+    return new Poller(
+      (signal) =>
+        Promise.all([
+          api.runTree(project, session, signal),
+          get<StatusPage>(`${at}/recovery`, { signal }),
+        ]),
+      (value) => {
+        if (value.data) [tree, recovery] = value.data;
+      },
+      { intervalMs: 3000 },
+    ).watch();
+  });
+  const subagents = $derived(activeSubagents(tree));
+  const checks = $derived(
+    tree?.delegations.filter((item) => item.kind === 'check' && item.ended === null).length ?? 0,
+  );
+  const status = $derived(
+    sessionStatus({
+      closed: view.data !== null && view.data.session.closed_at !== null,
+      service: signals?.service ?? true,
+      running: (signals?.lease ?? null) !== null,
+      questions: signals?.questions ?? 0,
+      held: signals?.held ?? false,
+      recovery,
+      subagents,
+    }),
+  );
+  const tabs = $derived<{ id: Panel; label: string; badge: number }[]>([
+    { id: 'plan', label: 'Plan', badge: 0 },
+    {
+      id: 'agents',
+      label: 'Agents',
+      badge: tree?.runs.filter((run) => run.state === 'running').length ?? 0,
+    },
+    { id: 'reviews', label: 'Reviews', badge: checks },
+    { id: 'compute', label: 'Compute', badge: 0 },
+    { id: 'documents', label: 'Documents', badge: 0 },
+    { id: 'activity', label: 'Activity log', badge: 0 },
+  ]);
+  function choose(id: Panel) {
+    if (!visited.includes(id)) visited = [...visited, id];
+    panel = panel === id ? null : id;
+  }
+  function show(id: Panel) {
+    if (!visited.includes(id)) visited = [...visited, id];
+    panel = id;
+  }
+  async function stop() {
+    const run = signals?.lease;
+    if (run)
+      await submit(acting, () => chatApi.cancel(projectId, sessionId, run).then(() => undefined));
+  }
+  async function resume() {
+    await submit(acting, () => chatApi.resume(projectId, sessionId).then(() => undefined));
+  }
 </script>
 
 <svelte:window
@@ -92,25 +156,53 @@
 />
 <div class="session-workspace" style:--inspector-width={`${width}px`}>
   <header class="session-header" inert={narrow && panel !== null}>
-    <div>
-      <span class="eyebrow">Research session</span>
+    <div class="session-title">
+      <span class="eyebrow">Session</span>
       <h1>{sessionId}</h1>
     </div>
+    <button
+      type="button"
+      class="status-pill tone-{status.tone}"
+      title="Show the session's agents"
+      onclick={() => show('agents')}
+      ><span class="status-dot" aria-hidden="true"></span><strong>{status.label}</strong
+      >{#if status.detail}<span>· {status.detail}</span>{/if}</button
+    >
+    {#if signals?.lease && status.tone !== 'closed'}<button
+        type="button"
+        disabled={acting.busy}
+        title="Stop the run that holds the session; its background jobs keep running"
+        onclick={stop}>Stop</button
+      >{:else if status.tone === 'stopped'}<button
+        type="button"
+        class="primary-button"
+        disabled={acting.busy}
+        onclick={resume}>Resume</button
+      >{/if}
     <div class="research-actions" aria-label="Research views">
-      {#each tabs as tab}<button
+      {#each tabs as tab (tab.id)}<button
           data-panel={tab.id}
           class:active={panel === tab.id}
           aria-pressed={panel === tab.id}
           aria-controls="research-pane"
-          onclick={() => choose(tab.id)}>{tab.label}</button
+          onclick={() => choose(tab.id)}
+          >{tab.label}{#if tab.badge}<span class="tab-badge">{tab.badge}</span>{/if}</button
         >{/each}
     </div>
+    {#if acting.error}<ErrorMessage error={acting.error} />{/if}
   </header>
   <div class="session-columns">
     <div class="conversation-column" inert={narrow && panel !== null}>
       <PollStatus phase={view.phase} hasData={view.data !== null} what="Session views" />
       {#if view.data}
-        <ChatPanel {projectId} {sessionId} closed={view.data.session.closed_at !== null} />
+        <ChatPanel
+          {projectId}
+          {sessionId}
+          closed={view.data.session.closed_at !== null}
+          bind:signals
+          subagents={subagentText(subagents)}
+          showAgents={() => show('agents')}
+        />
       {/if}
     </div>
     {#if panel}<PaneResizer bind:width {maxWidth} />{/if}
@@ -140,25 +232,28 @@
             <SessionDocuments {projectId} {sessionId} />
           </div>{/if}
         {#if visited.includes('agents')}<div hidden={panel !== 'agents'}>
-            <SessionAgents {projectId} {sessionId} />
+            <SessionAgents {projectId} {sessionId} {tree} />
+          </div>{/if}
+        {#if visited.includes('reviews')}<div hidden={panel !== 'reviews'}>
+            <SessionReviews {projectId} {sessionId} {reviewId} {tree} />
           </div>{/if}
         {#if view.data}
           {@const detail = view.data}
           {@const kernelScope = kernelPanelScope(projectId, sessionId, detail)}
+          {#if visited.includes('compute')}<div hidden={panel !== 'compute'}>
+              <SessionCompute {projectId} {sessionId} {tree} {kernelScope} />
+            </div>{/if}
           {#if visited.includes('plan')}<div hidden={panel !== 'plan'}>
               <PlanPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />
             </div>{/if}
           {#if visited.includes('activity')}
             <div hidden={panel !== 'activity'}>
-              <h2>Session activity</h2>
+              <h2>Activity log</h2>
+              <p class="muted">Every event of every run, for when you need the detail.</p>
               <label
                 >Activity source <select bind:value={activityCategory}
                   ><option value="all">All sources</option><option value="runs">Run events</option
-                  ><option value="reviews">Reviews and findings</option><option value="jobs"
-                    >Jobs</option
-                  ><option value="kernels">Kernels</option><option value="folds"
-                    >Fold proposals</option
-                  ></select
+                  ><option value="folds">Fold proposals</option></select
                 ></label
               >
               <label
@@ -189,23 +284,6 @@
               </details>
               <div hidden={!['all', 'folds'].includes(activityCategory)}>
                 <FoldProposals {projectId} {sessionId} />
-              </div>
-              <div hidden={!['all', 'kernels'].includes(activityCategory)}>
-                {#if kernelScope}<KernelPanel
-                    {projectId}
-                    {sessionId}
-                    environmentId={kernelScope.environmentId}
-                  />{/if}
-              </div>
-              <div hidden={!['all', 'jobs'].includes(activityCategory)}>
-                <JobsPanel {projectId} {sessionId} />
-              </div>
-              <div hidden={!['all', 'reviews'].includes(activityCategory)}>
-                {#await reviewComponent then component}{@const Reviews = component.default}<Reviews
-                    {projectId}
-                    {sessionId}
-                    {reviewId}
-                  />{/await}
               </div>
               <div hidden={!['all', 'runs'].includes(activityCategory)}>
                 <h2>Run history</h2>

@@ -9,7 +9,14 @@
     projectId,
     sessionId,
     disabled = false,
-  }: { projectId: string; sessionId: string; disabled?: boolean } = $props();
+    actions = true,
+  }: {
+    projectId: string;
+    sessionId: string;
+    disabled?: boolean;
+    /** Show its own buttons; without them, the message box calls `pick` and `stored`. */
+    actions?: boolean;
+  } = $props();
   const draft = untrack(() => uploadDraft(projectId, sessionId));
   const files = $derived(draft.files),
     pending = $derived(draft.pending),
@@ -34,6 +41,15 @@
   }
   function retry() {
     return flushUploads(projectId, sessionId);
+  }
+  /** Open the file picker. */
+  export function pick() {
+    if (!disabled && !busy) input.click();
+  }
+  /** Show or hide the files stored before, to attach one again. */
+  export function stored() {
+    if (showPrevious) showPrevious = false;
+    else void readPrevious();
   }
   async function readPrevious(more = false) {
     loading = true;
@@ -76,16 +92,16 @@
       void add(chosen);
     }}
   />
-  <div class="attachment-actions">
-    <button type="button" disabled={disabled || busy} onclick={() => input.click()}
-      >＋ Attach files</button
-    ><button
-      type="button"
-      disabled={disabled || loading}
-      onclick={() => (showPrevious ? (showPrevious = false) : void readPrevious())}
-      >Stored files</button
-    ><span class="muted">or drop here · up to 100 MiB each</span>
-  </div>
+  {#if actions}<div class="attachment-actions">
+      <button type="button" disabled={disabled || busy} onclick={() => input.click()}
+        >＋ Attach files</button
+      ><button
+        type="button"
+        disabled={disabled || loading}
+        onclick={() => (showPrevious ? (showPrevious = false) : void readPrevious())}
+        >Stored files</button
+      ><span class="muted">or drop here · up to 100 MiB each</span>
+    </div>{/if}
   {#if files.length || pending.length}<ul class="attachment-cards" aria-label="Message attachments">
       {#each files as file (file.upload_id)}<li>
           <span
