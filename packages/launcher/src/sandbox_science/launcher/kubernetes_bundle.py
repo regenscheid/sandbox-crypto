@@ -16,6 +16,7 @@ from .kubernetes_config import (
 )
 
 COPY_HELPER = "/usr/local/libexec/sandbox-science/copy-credentials.py"
+STATE_HELPER = "/usr/local/libexec/sandbox-science/initialize-state.py"
 PRIVATE = "/private"
 DATA = "/var/lib/sandbox-science"
 
@@ -293,7 +294,34 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
     )
     if component == "pool" and config.secrets.cache is not None:
         roles.append(("cache", config.cache, config.secrets.cache))
-    inits: list[dict[str, object]] = []
+    initialize: dict[str, object] = {
+        "name": "initialize-state",
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["python3", "-I", STATE_HELPER],
+        "args": [
+            "--root",
+            DATA,
+            "--component",
+            component,
+            *(
+                ["--package-cache"]
+                if component == "pool" and config.secrets.cache is not None
+                else []
+            ),
+        ],
+        "securityContext": _security(),
+        "resources": _resources(
+            Capacity(
+                cpu_request_millis=50,
+                cpu_limit_millis=100,
+                memory_request_mib=32,
+                memory_limit_mib=128,
+            )
+        ),
+        "volumeMounts": [{"name": "data", "mountPath": DATA}],
+    }
+    inits: list[dict[str, object]] = [initialize]
     volumes: list[dict[str, object]] = [
         {"name": "data", "persistentVolumeClaim": {"claimName": f"{config.name}-{component}-data"}}
     ]

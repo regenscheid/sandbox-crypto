@@ -16,6 +16,16 @@ seccomp. No application service account token, RBAC, privileged Pod, host path,
 runtime agent loop or research process is generated. Install and qualify OpenShell
 separately with its own required gateway authority and isolation tier.
 
+A first UID-1000 init container mounts only that Pod's data PVC and creates the
+fixed missing state directories: `control` for the application, `worker` and
+`middleware` for the pool, plus `package-cache` when enabled. This breaks the cold
+volume startup dependency: workspace can initialize its empty control database
+before any runtime has connected. Initialization is create-only, preserves existing
+directory modes and all content, refuses symlink/non-directory collisions and does
+not reset databases, recursive permissions, policies, ownership or runtime state.
+The PVC mount root must already be writable through the configured fsGroup; this
+helper does not repair volume-driver ownership or substitute for operator bootstrap.
+
 ## Prepare private configuration
 
 Copy [the template](../examples/kubernetes-bundle.toml) outside Git. Set `images.app`

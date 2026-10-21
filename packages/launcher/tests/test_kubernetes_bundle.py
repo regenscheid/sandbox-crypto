@@ -119,6 +119,17 @@ def test_credentials_projected_only_to_init_and_each_service_has_private_volume(
             private_names.append(private["name"])
         assert len(set(private_names)) == len(private_names)
         for init in pod["initContainers"]:
+            if init["name"] == "initialize-state":
+                assert init["command"] == [
+                    "python3",
+                    "-I",
+                    "/usr/local/libexec/sandbox-science/initialize-state.py",
+                ]
+                assert init["volumeMounts"] == [
+                    {"name": "data", "mountPath": "/var/lib/sandbox-science"}
+                ]
+                assert init["args"][:2] == ["--root", "/var/lib/sandbox-science"]
+                continue
             assert init["command"] == [
                 "python3",
                 "-I",
@@ -202,6 +213,9 @@ def test_optional_cache_requires_sandbox_scope_and_adds_only_cache_flow():
         "middleware",
         "cache",
     }
+    init = pool["spec"]["template"]["spec"]["initContainers"][0]
+    assert init["name"] == "initialize-state"
+    assert init["args"][-1] == "--package-cache"
 
 
 @pytest.mark.parametrize(
