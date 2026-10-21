@@ -41,14 +41,20 @@
 <PollStatus phase={state.phase} hasData={recovery !== null} what="Research recovery" />
 {#key `${projectId}/${sessionId}`}<ChatResources {projectId} {sessionId} />{/key}
 {#if recovery && recovery.unfinished > 0}
+  {@const branches = recovery.unfinished === 1 ? 'branch' : 'branches'}
   <p role="status">
-    {recovery.unfinished} unfinished research {recovery.unfinished === 1 ? 'branch' : 'branches'}.
-    {#if recovery.active}Research is active.{/if}
+    {#if recovery.active}
+      The agent is working on {recovery.unfinished === 1 ? 'the' : recovery.unfinished} open research
+      {branches}.
+    {:else}
+      {recovery.unfinished} unfinished research {branches}, stopped: resume to continue.
+    {/if}
   </p>
   {#each blocked as work (work.work)}
     <p class="muted">Blocked: {work.reason ?? 'Review this branch before resuming.'}</p>
   {/each}
 {/if}
-{#if !closed && (held || (recovery && recovery.unfinished > 0))}
-  <button disabled={busy || recovery?.active} onclick={resume}>Resume research</button>
+<!-- While research is active there is nothing to resume, so no button (owner, 2026-10-21). -->
+{#if !closed && !recovery?.active && (held || (recovery && recovery.unfinished > 0))}
+  <button disabled={busy} onclick={resume}>Resume research</button>
 {/if}
