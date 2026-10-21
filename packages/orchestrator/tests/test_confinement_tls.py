@@ -342,3 +342,58 @@ async def test_tls_shutdown_closes_socket_fences_admission_and_drains_original_e
                 if shutdown is not None:
                     await shutdown
                 await server.close()
+
+
+async def test_tls_shutdown_joins_a_socket_still_preparing_its_response(tmp_path: Path) -> None:
+    tls, ca = certificates(tmp_path)
+    preparing, release = asyncio.Event(), asyncio.Event()
+    worker = web.Application()
+    worker.router.add_get("/v1/ready", worker_ready)
+    async with TestServer(worker) as backend:
+        app = create_app(settings(tmp_path, str(backend.make_url("")), tls=tls))
+
+        async def hold(request: web.Request, response: web.StreamResponse) -> None:
+            if request.path == "/control":
+                assert not response.prepared
+                preparing.set()
+                await release.wait()
+
+        app.on_response_prepare.append(hold)
+        server = TestServer(app, scheme="https")
+        await server.start_server(ssl=tls.context())
+        connector = aiohttp.TCPConnector(ssl=client_tls(ca))
+        async with aiohttp.ClientSession(connector=connector) as client:
+            base = str(server.make_url("/").with_host("localhost"))
+
+            async def connect() -> aiohttp.ClientWebSocketResponse:
+                return await client.ws_connect(
+                    base + "control",
+                    headers={
+                        "Authorization": "Bearer " + TOKEN,
+                        CONTROL_HEADER: str(CONTROL_PROTOCOL),
+                    },
+                )
+
+            connecting = asyncio.create_task(connect())
+            shutdown: asyncio.Task[None] | None = None
+            socket: aiohttp.ClientWebSocketResponse | None = None
+            try:
+                await asyncio.wait_for(preparing.wait(), 3)
+                shutdown = asyncio.create_task(app.shutdown())
+                async with client.get(base + "ready") as ready:
+                    assert ready.status == 503
+                assert not shutdown.done()
+                release.set()
+                socket = await asyncio.wait_for(connecting, 3)
+                assert (await socket.receive(timeout=3)).type is aiohttp.WSMsgType.CLOSE
+                await asyncio.wait_for(shutdown, 3)
+            finally:
+                release.set()
+                if socket is not None:
+                    await socket.close()
+                if not connecting.done():
+                    connecting.cancel()
+                    await asyncio.gather(connecting, return_exceptions=True)
+                if shutdown is not None:
+                    await shutdown
+                await server.close()

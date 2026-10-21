@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
-from aiohttp import web
+from aiohttp import WSCloseCode, web
 from pydantic import Field, JsonValue, field_validator, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
@@ -399,7 +399,12 @@ def create_app(settings: ControlSettings) -> web.Application:
                     raise web.HTTPServiceUnavailable(text="control service is draining")
                 await socket.prepare(request)
                 lifecycle.channel = channel
-                await serve_socket(socket, channel)
+                # Response preparation can await hooks after the first admission fence.
+                # Shutdown must not miss a socket that became prepared during its drain.
+                if lifecycle.draining:
+                    await socket.close(code=WSCloseCode.GOING_AWAY, message=b"control stopping")
+                else:
+                    await serve_socket(socket, channel)
         finally:
             lifecycle.channel = None
             async with AsyncExitStack() as cleanup:
