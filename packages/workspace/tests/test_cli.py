@@ -133,6 +133,25 @@ def test_serve_warns_only_when_the_preview_origin_shares_the_site(
     assert warned is None or warned in caplog.text
 
 
+def test_an_mcp_service_leaves_the_preview_origin_localhost(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The services' loop once reused the viewer's host name variable, so with an MCP
+    # service configured the viewer's origin became http://<service>:8201 (Mac, 2026-10-21).
+    given: list[object] = []
+
+    async def serve(*args: object) -> None:
+        preview = args[4]
+        assert isinstance(preview, tuple)
+        given.append(preview[-1])
+
+    monkeypatch.setattr(cli, "serve", serve)
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
+    args += ["--mcp-project", "p1", "--mcp-service", "crypto-research-mcp=research papers"]
+    assert cli.main(args) == 0
+    assert given == ["localhost"]
+
+
 def test_messages_agent_reviewer_starts_without_an_effort_default(
     state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

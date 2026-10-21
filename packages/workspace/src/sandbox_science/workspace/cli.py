@@ -432,11 +432,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mcp_service and args.mcp_project is None:
         parser.error("--mcp-service needs --mcp-project")
     for item in args.mcp_service:
-        name, separator, purpose = item.partition("=")
-        if not separator or any(found.name == name for found in mcp_inventory):
+        # Not `name`: that is the viewer's host name, used below.
+        service, separator, purpose = item.partition("=")
+        if not separator or any(found.name == service for found in mcp_inventory):
             parser.error("--mcp-service needs a unique NAME=PURPOSE")
         try:
-            mcp_inventory.append(ServiceConfig(name=name, purpose=purpose))
+            mcp_inventory.append(ServiceConfig(name=service, purpose=purpose))
         except ValueError:
             parser.error("--mcp-service needs a valid service name and purpose")
     metadata = None
