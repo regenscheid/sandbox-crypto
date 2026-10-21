@@ -161,6 +161,10 @@
   }
 </script>
 
+{#snippet closedQuestion(question: Question)}
+  <ChatQuestion {question} {now} answer={(body) => answer(question, body)} />
+{/snippet}
+
 <svelte:window
   onbeforeunload={(event) => {
     if ((draft.text && !persisted) || (attachments.length && !attachmentsPersisted))
@@ -191,10 +195,7 @@
       {#each earlier as run (run.run)}
         <details>
           <summary>Run <code>{run.run}</code>: {runState(run)}</summary>
-          <ChatRun {run} {projectId} />
-          {#each closedOf(run) as question (question.question_id)}
-            <ChatQuestion {question} {now} answer={(body) => answer(question, body)} />
-          {/each}
+          <ChatRun {run} {projectId} questions={closedOf(run)} question={closedQuestion} />
         </details>
       {/each}
       {#if current}
@@ -205,10 +206,12 @@
               onclick={() => cancel(current.run)}>Cancel run</button
             >{/if}
         </p>
-        <ChatRun run={current} {projectId} />
-        {#each closedOf(current) as question (question.question_id)}
-          <ChatQuestion {question} {now} answer={(body) => answer(question, body)} />
-        {/each}
+        <ChatRun
+          run={current}
+          {projectId}
+          questions={closedOf(current)}
+          question={closedQuestion}
+        />
         {#if thinking(current)}<p role="status">The agent is thinking…</p>{/if}
       {/if}
       <ChatWaiting messages={waiting} {starting} />

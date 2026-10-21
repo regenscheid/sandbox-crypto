@@ -1,13 +1,26 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One run's transcript in the chat panel, from its events (RS-14). -->
-<script lang="ts">
-  import { chatEntries, type WatchedRun } from '../lib/chat';
+<script lang="ts" generics="Q extends { tool_call: string; question_id: string }">
+  import type { Snippet } from 'svelte';
+  import { chatEntries, placeQuestions, type WatchedRun } from '../lib/chat';
   import Markdown from '../lib/Markdown.svelte';
   import { messageHref } from '../lib/router';
   import { visible, visibleOutput } from '../lib/text';
   import HiddenBanner from './HiddenBanner.svelte';
-  let { run, projectId = null }: { run: WatchedRun; projectId?: string | null } = $props();
+  let {
+    run,
+    projectId = null,
+    questions = [],
+    question,
+  }: {
+    run: WatchedRun;
+    projectId?: string | null;
+    /** The run's questions, each shown after the entry that asked it, or after the rest. */
+    questions?: readonly Q[];
+    question?: Snippet<[Q]>;
+  } = $props();
   const entries = $derived(chatEntries(run.events));
+  const placed = $derived(placeQuestions(entries, questions));
 </script>
 
 <ol class="transcript">
@@ -49,7 +62,17 @@
         <p class="muted">{entry.text}</p>
       {/if}
     </li>
+    {#if question}
+      {#each placed.after.get(entry.seq) ?? [] as asked (asked.question_id)}
+        <li>{@render question(asked)}</li>
+      {/each}
+    {/if}
   {/each}
+  {#if question}
+    {#each placed.unplaced as asked (asked.question_id)}
+      <li>{@render question(asked)}</li>
+    {/each}
+  {/if}
 </ol>
 
 <style>

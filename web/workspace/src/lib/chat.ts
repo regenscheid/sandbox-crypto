@@ -329,7 +329,8 @@ export type ChatEntry =
       text: string;
       /** The text's references to recorded files, as the event pins them (FG-7, F2). */
       pins: Record<string, unknown>[];
-      calls: { name: string; arguments: string }[];
+      /** The tools this model call called; ``id`` is the call's, which a question names. */
+      calls: { id: string; name: string; arguments: string }[];
       /** This model call's tokens, as the gateway reported them; null when not recorded. */
       usage: string | null;
     }
@@ -458,6 +459,30 @@ export function tokensText(value: unknown): string | null {
 }
 
 /**
+ * Where a run's questions go in its transcript: each after the entry whose model call
+ * asked it (the `ask_user` call the question names), so that what came later stays below
+ * it. A question whose call is not among the entries, as before its events load, is
+ * `unplaced`, and is shown after the transcript.
+ */
+export function placeQuestions<T extends { tool_call: string }>(
+  entries: readonly ChatEntry[],
+  questions: readonly T[],
+): { after: Map<number, T[]>; unplaced: T[] } {
+  const asked = new Map<string, number>();
+  for (const entry of entries)
+    if (entry.kind === 'assistant')
+      for (const call of entry.calls) if (call.id) asked.set(call.id, entry.seq);
+  const after = new Map<number, T[]>();
+  const unplaced: T[] = [];
+  for (const question of questions) {
+    const seq = asked.get(question.tool_call);
+    if (seq === undefined) unplaced.push(question);
+    else after.set(seq, [...(after.get(seq) ?? []), question]);
+  }
+  return { after, unplaced };
+}
+
+/**
  * The transcript of a run's events, in order. A `model` event (a model call began) shows
  * nothing itself; `thinking` says whether one is in progress.
  */
@@ -482,6 +507,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
     } else if (kind === 'user') entries.push({ kind: 'user', seq, text: text(data['text']), pins });
     else if (kind === 'assistant') {
       const calls = list(data['tool_calls']).map((call) => ({
+        id: text(record(call)['id']),
         name: text(record(call)['name']),
         arguments: text(record(call)['arguments']),
       }));

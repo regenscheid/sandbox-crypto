@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { createRawSnippet } from 'svelte';
 import { render } from 'svelte/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatRun from '../views/ChatRun.svelte';
@@ -18,6 +19,7 @@ import {
   messageState,
   PAGE,
   pendingMessages,
+  placeQuestions,
   sendMessage,
   startingText,
   stoppedText,
@@ -410,7 +412,7 @@ describe('the transcript of a run', () => {
         seq: 4,
         text: 'Let me check.',
         pins: [],
-        calls: [{ name: 'python', arguments: '{"code": "1"}' }],
+        calls: [{ id: 'c1', name: 'python', arguments: '{"code": "1"}' }],
         usage: 'model-a: 1,200 input and 34 output tokens',
       },
       { kind: 'tool', seq: 5, name: 'python', outcome: 'succeeded, exit code 0', result: '1' },
@@ -696,5 +698,42 @@ describe('the messages waiting for a run', () => {
     ]);
     expect(body).not.toContain('<img');
     expect(body.match(/&lt;img src=x onerror=alert\(1\)/g)).toHaveLength(2); // the text and the reason
+  });
+});
+
+describe('answered questions in the transcript', () => {
+  const asked = event(2, 'assistant', {
+    text: null,
+    tool_calls: [{ id: 'call-ask', name: 'ask_user', arguments: '{}' }],
+  });
+  const later = [
+    event(3, 'tool', { name: 'ask_user', call_id: 'call-ask', result: 'answered' }),
+    event(4, 'user', { text: 'Can you continue the research?' }),
+    event(5, 'assistant', { text: 'Yes, continuing.', tool_calls: [] }),
+  ];
+  const question = { question_id: 'q1', tool_call: 'call-ask' };
+  const elsewhere = { question_id: 'q2', tool_call: 'call-not-loaded' };
+
+  it('places each after the entry whose call asked it, and keeps the rest apart', () => {
+    const entries = chatEntries([event(1, 'user', { text: 'start' }), asked, ...later]);
+    const { after, unplaced } = placeQuestions(entries, [question, elsewhere]);
+    expect([...after]).toEqual([[2, [question]]]);
+    expect(unplaced).toEqual([elsewhere]);
+  });
+
+  it('renders an answered question before what came after it (Mac, 2026-10-21)', () => {
+    // The panel once drew a run's answered questions after its whole transcript, so the
+    // last thing on the page never changed while the run went on above it.
+    const run = { run: 'r1', state: 'active', events: [asked, ...later] } as never;
+    const shown = createRawSnippet((q: () => { question_id: string }) => ({
+      render: () => `<p>Question ${q().question_id}</p>`,
+    }));
+    const body = render(ChatRun, {
+      props: { run, questions: [question, elsewhere], question: shown },
+    }).body;
+    const at = (needle: string) => body.indexOf(needle);
+    expect(at('Question q1')).toBeGreaterThan(at('ask_user'));
+    expect(at('Question q1')).toBeLessThan(at('Can you continue the research?'));
+    expect(at('Question q2')).toBeGreaterThan(at('Yes, continuing.'));
   });
 });
