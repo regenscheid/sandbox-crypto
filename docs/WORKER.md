@@ -850,6 +850,71 @@ restoring the original binding. Actual Kubernetes-volume and native ARM64 recove
 qualification remain separate from local filesystem tests. See the
 [operations contract](specs/kubernetes-operations.md#offline-workspace-checkpoints).
 
+### Durable checkpoint transport
+
+Install the optional `sandbox-science-worker[s3]` extra for these operator commands.
+Keep a private, owner-only regular `checkpoint-storage.toml` outside the repository:
+
+```toml
+bucket = "example-research-checkpoints"
+prefix = "sandbox-science"
+region = "us-east-1"
+# endpoint = "https://s3.example.invalid"  # omit for AWS S3
+addressing_style = "path"                 # auto or virtual also accepted
+```
+
+This file contains destination settings only; unknown fields, including credential
+fields, are rejected without echoing their values. Authentication uses the SDK's
+standard credential chain. Agents never receive bucket credentials. Credentials,
+bucket policy, encryption, versioning and retention rules remain operator settings.
+
+```bash
+sandbox-science-worker workspace-checkpoint upload --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/env-1-checkpoint \
+  --storage checkpoint-storage.toml
+sandbox-science-worker workspace-checkpoint fetch --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/fetched-checkpoint \
+  --storage checkpoint-storage.toml --manifest EXACT_PRINTED_MANIFEST_SHA256
+```
+
+These commands hold the worker state lease and check the retained original binding;
+they only read/write checkpoint files and immutable objects, so no sandbox stop/start
+is performed. Upload verifies the complete local archive first, then streams
+16 MiB chunks through temporary disk files with 512 KiB buffers. It conditionally
+creates hash-named objects and independently reads every object back to check its
+full hash and length. Existing objects and lost PUT replies take the same exact
+readback path; an unverified result never creates a completed manifest. The final
+bounded NDJSON manifest, including the original receipt values, is published last
+and independently verified. An identical upload retry produces the same manifest
+identity and never replaces remote bytes.
+
+The transport supports archives up to 1 TiB, 65,536 chunks and an 8 MiB manifest,
+independently of local checkpoint and scientific artifact limits. It keeps no full
+archive or chunk array in memory. Each transfer reuses one SDK connection pool;
+SDK retries are disabled. `--timeout` sets an operation deadline (3,600 seconds by
+default, 1–86,400 allowed), checked around bounded I/O and chunk reads. Connection
+and socket-read timeouts are at most 5 and 15 seconds respectively, narrowed for
+shorter operation budgets; admitted I/O drains before reporting a timeout.
+
+Fetch requires the exact printed manifest hash, verifies the complete manifest
+before requesting chunks, then verifies every chunk and the reconstructed archive.
+It publishes a new local checkpoint directory by atomic no-overwrite rename only
+after complete validation. The adjacent `<destination>.checkpoint-fetch` journal
+retains incomplete staging and failure evidence. Existing destinations or journals
+are never replaced; retry an incomplete fetch with the same manifest identity at
+a new destination, preserving the earlier attempt. Fetch does not extract research
+files or change environment bindings. A subsequent offline `restore` still needs
+the original sandbox and the normal stopped/exclusive checks.
+
+No transport command deletes remote objects, source data, worker records or PVCs.
+Remote checkpoint retention still does not establish a complete recovery set or
+permission to release a volume. Deterministic SDK-stub tests qualify these paths;
+Garage/AWS endpoint compatibility and cluster-volume restore require separate live
+acceptance. The SDK operation semantics are documented in
+[PutObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/put_object.html),
+[GetObject](https://docs.aws.amazon.com/boto3/latest/reference/services/s3/client/get_object.html)
+and [botocore Config](https://docs.aws.amazon.com/botocore/latest/reference/config.html).
+
 ## Conformance suite
 
 `packages/worker/tests/test_conformance.py` runs the [execution-tools fixtures](specs/tools.md#acceptance-fixtures) through the worker API alone, so it checks any backend without the harness (D52). It covers shell calls, the location and the isolation probe, kernels (state, interrupt, restart, death, streaming, reconnection), output bounds, cancellation, the file tools' confinement and publication. A backend passes only if the probe leaves its declared tier standing. CI runs it twice against a worker with the local backend that the suite starts from `tests/harness.py`: once with the executor over stdio (`local-stdio`) and once through the sandbox daemon (`local-daemon`), whose daemons it stops at the end. To check a worker that is already running, such as one with the OpenShell backend in a lab, set:

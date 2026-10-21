@@ -527,3 +527,21 @@ def test_retained_source_does_not_rewrite_unknown_recovery_state(retained):
         assert db.execute(
             "SELECT status,provision_id,revision FROM package_status WHERE environment_id='e'"
         ).fetchone() == ("needs_recovery", "interrupted-installer", 3)
+
+
+async def test_receipt_serialization_bound_is_checked_before_commit(tmp_path, retained):
+    settings, _ = retained
+    root, checkpoint = tmp_path / "sandbox", tmp_path / "checkpoint"
+    tree(root)
+    launch = json.dumps(
+        {
+            "kubernetes": {"pod": {"node_selector": {"kubernetes.io/arch": "arm64"}}},
+            "annotation": "\\" * 32550,
+        }
+    )
+    with sqlite3.connect(settings.state_dir / "environments.sqlite3") as db:
+        db.execute("UPDATE sandbox_launch_settings SET driver_config=?", (launch,))
+    with pytest.raises(ValueError, match="receipt exceeds its metadata bound"):
+        await operate(settings, "create", "e", "arm64", checkpoint, root, True)
+    assert not (checkpoint / "receipt.json").exists()
+    assert (checkpoint / "failure.json").is_file()

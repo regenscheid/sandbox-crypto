@@ -1851,10 +1851,14 @@ kernels = [
 pdf = [
     { name = "pdf-oxide" },
 ]
+s3 = [
+    { name = "boto3" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
+    { name = "boto3", marker = "extra == 's3'", specifier = ">=1.36,<2" },
     { name = "ipykernel", marker = "extra == 'kernels'", specifier = ">=6.29" },
     { name = "jupyter-client", marker = "extra == 'kernels'", specifier = ">=8.6" },
     { name = "pdf-oxide", marker = "extra == 'pdf'", specifier = ">=0.3.78" },
@@ -1862,7 +1866,7 @@ requires-dist = [
     { name = "sandbox-science-event-store", editable = "packages/event-store" },
     { name = "sandbox-science-policy", editable = "packages/policy" },
 ]
-provides-extras = ["kernels", "pdf"]
+provides-extras = ["s3", "kernels", "pdf"]
 
 [[package]]
 name = "sandbox-science-workspace"

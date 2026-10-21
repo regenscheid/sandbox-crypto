@@ -10,6 +10,7 @@ import os
 import secrets
 import sqlite3
 import stat
+from collections.abc import Callable
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -182,7 +183,12 @@ def _matches(summary: StreamSummary, expected: CheckpointReceipt) -> None:
         raise ValueError("checkpoint archive differs from its immutable receipt")
 
 
-def verify(directory: Path, source: CheckpointSource | None = None) -> CheckpointReceipt:
+def verify(
+    directory: Path,
+    source: CheckpointSource | None = None,
+    *,
+    check: Callable[[], None] | None = None,
+) -> CheckpointReceipt:
     """A portable verification reads all bytes and the exact recorded provenance."""
     expected = receipt(directory)
     if source is not None and expected.source != source:
@@ -191,11 +197,12 @@ def verify(directory: Path, source: CheckpointSource | None = None) -> Checkpoin
     with os.fdopen(descriptor, "rb") as handle:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ValueError("checkpoint archive is not a regular file")
-        _matches(decode(handle, expected.source), expected)
+        _matches(decode(handle, expected.source, check=check), expected)
     return expected
 
 
-def _rename_new(source: Path, target: Path) -> None:
+def publish_directory(source: Path, target: Path) -> None:
+    """Atomically expose a completed private tree without replacing a destination."""
     # Linux renameat2 makes completed directory publication atomic and no-overwrite;
     # checking target.exists() before ordinary rename would race an administrative writer.
     library = ctypes.CDLL(None, use_errno=True)
@@ -283,11 +290,14 @@ async def operate(
                 _prefix(stage, source)
             if retained_source(settings, environment, architecture) != source:
                 raise ValueError("checkpoint retained binding changed during the operation")
+            receipt_bytes = expected.model_dump_json().encode()
+            if len(receipt_bytes) > MAX_CHECKPOINT_RECEIPT:
+                raise ValueError("checkpoint receipt exceeds its metadata bound")
             await _stopped(settings, source)
             if action == "restore":
-                _rename_new(stage, workspace)
+                publish_directory(stage, workspace)
                 sync(workspace.parent)
-            install(journal / "receipt.json", expected.model_dump_json().encode())
+            install(journal / "receipt.json", receipt_bytes)
             return expected
         except BaseException as error:
             install(

@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+s3 = ["boto3>=1.36,<2"]
 # The executor runs kernels with these inside the sandbox; the local backend
 # needs them beside the worker service.
 kernels = [

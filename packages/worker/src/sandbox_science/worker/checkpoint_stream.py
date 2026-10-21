@@ -10,7 +10,7 @@ import sqlite3
 import stat
 import struct
 import tempfile
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,9 +43,10 @@ class StreamSummary:
 class Stream:
     """Hash every byte while enforcing bounded individual reads and writes."""
 
-    def __init__(self, handle: BinaryIO) -> None:
+    def __init__(self, handle: BinaryIO, check: Callable[[], None] | None = None) -> None:
         self.handle, self.digest, self.size = handle, hashlib.sha256(), 0
         self.members = self.content = self.metadata = 0
+        self.check = check
 
     def write(self, data: bytes) -> None:
         if self.handle.write(data) != len(data):
@@ -54,6 +55,8 @@ class Stream:
         self.size += len(data)
 
     def read(self, amount: int) -> bytes:
+        if self.check is not None:
+            self.check()
         data = self.handle.read(amount)
         self.digest.update(data)
         self.size += len(data)
@@ -290,9 +293,15 @@ def _validate(db: sqlite3.Connection, member: CheckpointMember, number: int) -> 
         raise ValueError("checkpoint has a duplicate member path") from None
 
 
-def decode(handle: BinaryIO, source: CheckpointSource, target: Path | None = None) -> StreamSummary:
+def decode(
+    handle: BinaryIO,
+    source: CheckpointSource,
+    target: Path | None = None,
+    *,
+    check: Callable[[], None] | None = None,
+) -> StreamSummary:
     """Verify the entire stream; optionally extract into a caller-owned empty directory."""
-    stream = Stream(handle)
+    stream = Stream(handle, check)
     if stream.read(len(MAGIC)) != MAGIC:
         raise ValueError("unsupported checkpoint archive format")
     source_bytes = stream.header(MAX_CHECKPOINT_RECEIPT)
