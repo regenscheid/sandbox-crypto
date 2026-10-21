@@ -60,3 +60,15 @@ memory_limit_mib = 2048
 ephemeral_request_mib = 256
 ephemeral_limit_mib = 2048
 scratch_mib = 512
+
+# Optional, after the operator prepares the OpenShell CLI tree on the pool PVC:
+# [worker.environment]
+# HOME = "/var/lib/sandbox-science/worker-home"
+# XDG_CONFIG_HOME = "/var/lib/sandbox-science/worker-config"
+#
+# Standard S3 credentials require projected extra_files plus explicit discovery:
+# [workspace.environment]
+# AWS_SHARED_CREDENTIALS_FILE = "/private/s3-credentials"
+# AWS_CONFIG_FILE = "/private/s3-config"
+# AWS_PROFILE = "artifact-reader"
+# Add s3-credentials/s3-config to secrets.workspace.extra_files first.

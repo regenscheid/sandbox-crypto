@@ -5,22 +5,16 @@ from __future__ import annotations
 
 import json
 
-from .kubernetes_config import BundleConfig, Capacity, Peer, Placement, Secret
+from .kubernetes_config import (
+    REQUIRED_FILES,
+    BundleConfig,
+    Capacity,
+    Peer,
+    Placement,
+    Secret,
+    Service,
+)
 
-REQUIRED_FILES: dict[str, tuple[str, ...]] = {
-    "control": (
-        "control.json",
-        "control-token",
-        "worker-token",
-        "control.crt",
-        "control.key",
-        "worker-ca.crt",
-    ),
-    "workspace": ("worker-token", "worker-ca.crt"),
-    "worker": ("worker.toml", "worker.crt", "worker.key"),
-    "middleware": ("middleware.toml", "middleware.crt", "middleware.key"),
-    "cache": ("cache.toml",),
-}
 COPY_HELPER = "/usr/local/libexec/sandbox-science/copy-credentials.py"
 PRIVATE = "/private"
 DATA = "/var/lib/sandbox-science"
@@ -247,9 +241,13 @@ def _command(config: BundleConfig, name: str) -> list[str]:
     return [executable, "serve", "--settings", f"{PRIVATE}/{name}.toml"]
 
 
-def _container(
-    config: BundleConfig, name: str, image: str, capacity: Capacity
-) -> dict[str, object]:
+def _container(config: BundleConfig, name: str, image: str, capacity: Service) -> dict[str, object]:
+    environment = {
+        "HOME": "/tmp",  # noqa: S108 - existing bounded per-container Pod volume
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "AWS_EC2_METADATA_DISABLED": "true",
+        **capacity.environment,
+    }
     result: dict[str, object] = {
         "name": name,
         "image": image,
@@ -257,10 +255,7 @@ def _container(
         "command": _command(config, name),
         "securityContext": _security(),
         "resources": _resources(capacity),
-        "env": [
-            {"name": "HOME", "value": "/tmp/home"},  # noqa: S108 - bounded per-container Pod volume
-            {"name": "PYTHONDONTWRITEBYTECODE", "value": "1"},
-        ],
+        "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
         "volumeMounts": [
             {"name": "data", "mountPath": DATA},
             {"name": f"{name}-scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume

@@ -81,6 +81,48 @@ copied. Every listed key must exist; unrelated Secret keys are not projected. Ke
 all absolute paths in private settings aligned with `/private` and the PVC layout.
 Do not put token or key values in TOML, shell arguments or the rendered JSON.
 
+Each service's `environment` table can select standard SDK discovery paths. File
+values for `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE` and `AWS_CA_BUNDLE` must
+be exact `/private/<key>` paths projected for that same service. `AWS_PROFILE` and
+`AWS_REGION` accept bounded names; explicit application S3 settings still determine
+the configured endpoint/region. Metadata credentials remain disabled through
+`AWS_EC2_METADATA_DISABLED = "true"`, which cannot be changed to false. No inline
+access-key/session-token variables, arbitrary process/code-path environment,
+proxy configuration or TLS-verification bypass is accepted.
+
+For example, grant the workspace a separate read-only object-store principal and
+create its private credential/config keys through the site's Secret workflow:
+
+```toml
+[secrets.workspace]
+name = "workbench-workspace"
+extra_files = ["s3-credentials", "s3-config"]
+
+[workspace.environment]
+AWS_SHARED_CREDENTIALS_FILE = "/private/s3-credentials"
+AWS_CONFIG_FILE = "/private/s3-config"
+AWS_PROFILE = "artifact-reader"
+```
+
+Only paths and the profile name appear in the rendered manifest. The credential
+file holds the actual keys; do not put them in this TOML. Select a suitable writer
+profile separately under `control.environment`, and use another prefix-limited
+principal for an operator's checkpoint transport. The renderer validates file
+selection, not the permissions, certificate contents or SDK profile correctness.
+
+OpenShell CLI state may need a persistent home/config tree prepared by the trusted
+operator on the pool PVC. The optional `worker.environment.HOME` value is exactly
+`/var/lib/sandbox-science/worker-home`; `XDG_CONFIG_HOME` is exactly
+`/var/lib/sandbox-science/worker-config`. Other roles can select their corresponding
+`<role>-home` / `<role>-config` paths. Prepare those owned, private directories and
+the CLI's real directory structure before use; selecting a directory does not
+initialize a gateway identity or populate it from flat Secret keys. A standalone
+`gateway.toml` extra file is not automatically a complete OpenShell CLI profile.
+Default HOME is the existing per-container `/tmp` scratch volume. Engine/gateway
+credentials belong only in the worker's trusted state/private settings, not in the
+application containers. The renderer still does not mount kubeconfig or an engine
+socket or grant cluster authority to any application.
+
 Configure the actual service settings using the existing
 [worker](WORKER.md), [control architecture](ARCHITECTURE.md) and
 [policy middleware](POLICY-MIDDLEWARE.md) documentation. Important cluster bindings:
@@ -119,8 +161,12 @@ through the runtime's private settings. Certificate and hostname verification mu
 remain enabled in clients. Kubelet HTTPS probes do not verify the server certificate;
 validate client trust independently before claiming an encrypted working deployment.
 
-If using [S3 artifacts](ARTIFACT-S3.md), grant only the trusted control process its
-required object-store credentials through its private settings and standard chain.
+If using [S3 artifacts](ARTIFACT-S3.md), both trusted control and workspace servers
+open the artifact store: control needs its scoped retention/write access and the
+workspace needs read-only GET/HEAD access to the same artifact prefix for cold
+downloads. Give each its own standard-chain credential file/profile as above; no
+credential is exposed to the browser. Worker operator checkpoint transport uses
+a separate archive prefix and principal, independently of scientific artifacts.
 No S3 key belongs in research sandboxes. Coordinate metadata, backing settings,
 retained blobs, worker ownership/bindings and complete workspace checkpoints as a
 recovery set. This bundle does not initialize project policy/bindings or restore it.

@@ -27,6 +27,31 @@ _LABEL = re.compile(
     r"^(?:[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?/)?[A-Za-z0-9][-A-Za-z0-9_.]{0,62}$"
 )
 _VALUE = re.compile(r"^(?:[A-Za-z0-9][-A-Za-z0-9_.]{0,61}[A-Za-z0-9]|[A-Za-z0-9])?$")
+REQUIRED_FILES: dict[str, tuple[str, ...]] = {
+    "control": (
+        "control.json",
+        "control-token",
+        "worker-token",
+        "control.crt",
+        "control.key",
+        "worker-ca.crt",
+    ),
+    "workspace": ("worker-token", "worker-ca.crt"),
+    "worker": ("worker.toml", "worker.crt", "worker.key"),
+    "middleware": ("middleware.toml", "middleware.crt", "middleware.key"),
+    "cache": ("cache.toml",),
+}
+_AWS_FILES = frozenset(("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_CA_BUNDLE"))
+_MANAGED_DIRECTORIES = {"HOME": "home", "XDG_CONFIG_HOME": "config"}
+_ENVIRONMENT = (
+    _AWS_FILES
+    | _MANAGED_DIRECTORIES.keys()
+    | {
+        "AWS_REGION",
+        "AWS_PROFILE",
+        "AWS_EC2_METADATA_DISABLED",
+    }
+)
 
 
 class BundleError(Exception):
@@ -77,6 +102,25 @@ class Capacity(Model):
         ):
             raise ValueError("requests and scratch must fit their limits")
         return self
+
+
+class Service(Capacity):
+    environment: dict[str, str] = Field(default_factory=dict, max_length=8)
+
+    @field_validator("environment")
+    @classmethod
+    def allowed_environment(cls, values: dict[str, str]) -> dict[str, str]:
+        for name, value in values.items():
+            if name not in _ENVIRONMENT or not 1 <= len(value) <= 256:
+                raise ValueError("unsupported service environment")
+            if name == "AWS_EC2_METADATA_DISABLED" and value != "true":
+                raise ValueError("node metadata credentials must remain disabled")
+            if (
+                name in ("AWS_REGION", "AWS_PROFILE")
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,63}", value) is None
+            ):
+                raise ValueError("use a bounded region or profile name")
+        return values
 
 
 class Placement(Model):
@@ -175,16 +219,39 @@ class BundleConfig(Model):
     pool: Placement
     secrets: Secrets
     network: Network
-    control: Capacity = Capacity()
-    workspace: Capacity = Capacity()
-    worker: Capacity = Capacity()
-    middleware: Capacity = Capacity()
-    cache: Capacity = Capacity()
+    control: Service = Service()
+    workspace: Service = Service()
+    worker: Service = Service()
+    middleware: Service = Service()
+    cache: Service = Service()
 
     @model_validator(mode="after")
     def cache_peers(self) -> Self:
         if self.secrets.cache is not None and not self.network.sandboxes:
             raise ValueError("a package cache requires approved sandbox peers")
+        for role, service, secret in (
+            ("control", self.control, self.secrets.control),
+            ("workspace", self.workspace, self.secrets.workspace),
+            ("worker", self.worker, self.secrets.worker),
+            ("middleware", self.middleware, self.secrets.middleware),
+            ("cache", self.cache, self.secrets.cache),
+        ):
+            if secret is None:
+                if service.environment:
+                    raise ValueError("environment requires an enabled service")
+                continue
+            projected = {
+                f"/private/{name}" for name in (*REQUIRED_FILES[role], *secret.extra_files)
+            }
+            for name, value in service.environment.items():
+                if name in _AWS_FILES and value not in projected:
+                    raise ValueError(
+                        "SDK credential/config paths require that service's projection"
+                    )
+                if name in _MANAGED_DIRECTORIES and value != (
+                    f"/var/lib/sandbox-science/{role}-{_MANAGED_DIRECTORIES[name]}"
+                ):
+                    raise ValueError("service directories must use the role's managed PVC path")
         return self
 
 

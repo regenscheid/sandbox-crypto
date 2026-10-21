@@ -293,3 +293,87 @@ def test_output_symlink_is_never_followed(tmp_path):
     with pytest.raises(FileExistsError):
         write_bundle(linked, b"replace")
     assert real.read_bytes() == b"preserve"
+
+
+def test_standard_sdk_paths_are_role_scoped_and_rendered_without_credential_contents():
+    data = values()
+    for role, profile in (("control", "artifact-writer"), ("workspace", "artifact-reader")):
+        data["secrets"][role]["extra_files"] = ["s3-credentials", "s3-config", "s3-ca.crt"]
+        data[role] = {
+            "environment": {
+                "AWS_SHARED_CREDENTIALS_FILE": "/private/s3-credentials",
+                "AWS_CONFIG_FILE": "/private/s3-config",
+                "AWS_CA_BUNDLE": "/private/s3-ca.crt",
+                "AWS_REGION": "us-east-1",
+                "AWS_PROFILE": profile,
+            }
+        }
+    data["worker"] = {
+        "environment": {
+            "HOME": "/var/lib/sandbox-science/worker-home",
+            "XDG_CONFIG_HOME": "/var/lib/sandbox-science/worker-config",
+        }
+    }
+    deployments = [item for item in objects(configured(data)) if item["kind"] == "Deployment"]
+    for deployment in deployments:
+        for container in deployment["spec"]["template"]["spec"]["containers"]:
+            environment = {item["name"]: item["value"] for item in container["env"]}
+            assert environment["AWS_EC2_METADATA_DISABLED"] == "true"
+            role = container["name"]
+            if role in ("control", "workspace"):
+                assert environment["AWS_SHARED_CREDENTIALS_FILE"] == "/private/s3-credentials"
+                expected = "artifact-writer" if role == "control" else "artifact-reader"
+                assert environment["AWS_PROFILE"] == expected
+            elif role == "worker":
+                assert environment["HOME"] == "/var/lib/sandbox-science/worker-home"
+                assert environment["XDG_CONFIG_HOME"] == "/var/lib/sandbox-science/worker-config"
+                assert "AWS_SHARED_CREDENTIALS_FILE" not in environment
+            else:
+                assert "AWS_PROFILE" not in environment
+    assert "test-secret" not in json.dumps(deployments)
+
+
+@pytest.mark.parametrize(
+    ("role", "environment"),
+    [
+        ("control", {"AWS_SHARED_CREDENTIALS_FILE": "/private/not-projected"}),
+        ("workspace", {"AWS_CONFIG_FILE": "/private/control.json"}),
+        ("control", {"AWS_CA_BUNDLE": "/etc/ssl/private/ca.crt"}),
+        ("control", {"AWS_SHARED_CREDENTIALS_FILE": "/private/../worker-token"}),
+        ("worker", {"AWS_ACCESS_KEY_ID": "test-secret-key"}),
+        ("worker", {"AWS_SECRET_ACCESS_KEY": "test-secret-value"}),
+        ("worker", {"AWS_SESSION_TOKEN": "test-secret-token"}),
+        ("worker", {"AWS_EC2_METADATA_DISABLED": "false"}),
+        ("worker", {"AWS_PROFILE": "test\nprofile"}),
+        ("worker", {"AWS_REGION": "x" * 65}),
+        ("worker", {"HOME": "/var/lib/sandbox-science/control-home"}),
+        ("worker", {"HOME": "/root"}),
+        ("worker", {"XDG_CONFIG_HOME": "/private"}),
+        ("worker", {"PYTHONPATH": "/private/code"}),
+        ("worker", {"LD_PRELOAD": "/private/test.so"}),
+        ("worker", {"HTTPS_PROXY": "https://192.0.2.1"}),
+        ("worker", {"NODE_TLS_REJECT_UNAUTHORIZED": "0"}),
+        ("cache", {"AWS_REGION": "us-east-1"}),
+    ],
+)
+def test_rejects_secret_environment_bypass_or_unprojected_files(role, environment):
+    data = values()
+    data[role] = {"environment": environment}
+    with pytest.raises(ValidationError):
+        configured(data)
+
+
+def test_standard_shared_credential_provider_can_read_an_explicit_private_file(tmp_path):
+    session_module = pytest.importorskip("botocore.session")
+    credentials = tmp_path / "s3-credentials"
+    credentials.write_text(
+        "[artifact-reader]\naws_access_key_id=test-secret-access\n"
+        "aws_secret_access_key=test-secret-value\n"
+    )
+    session = session_module.Session(profile="artifact-reader")
+    session.set_config_variable("credentials_file", str(credentials))
+    session.set_config_variable("config_file", str(tmp_path / "absent-config"))
+    provider = session.get_component("credential_provider").get_provider("shared-credentials-file")
+    loaded = provider.load()
+    assert loaded.method == "shared-credentials-file"
+    assert loaded.access_key == "test-secret-access"
