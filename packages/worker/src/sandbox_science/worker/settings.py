@@ -264,10 +264,11 @@ def load_settings(path: Path) -> Settings:
             data[key] = base / value
     tls: object = data.get("tls")
     if isinstance(tls, dict):
+        identity = cast(dict[str, object], tls)
         for key in ("certificate", "private_key"):
-            value = tls.get(key)
+            value = identity.get(key)
             if isinstance(value, str):
-                tls[key] = base / value
+                identity[key] = base / value
     openshell: object = data.get("openshell")
     if isinstance(openshell, dict):
         environments: object = cast(dict[str, object], openshell).get("environments")
