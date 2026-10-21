@@ -81,6 +81,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Architecture](ARCHITECTURE.md) | Component architecture and placement |
 | [Apple Silicon qualification](MAC-ARM64.md) | Native ARM64 images, Mac supervision and OpenShell gates, and the mixed Kubernetes follow-on |
 | [Kubernetes work](KUBERNETES.md) | Mixed-architecture placement, S3-backed artifact retention, PVC lifecycle and cluster qualification gates |
+| [Offline Kubernetes bundle](KUBERNETES-BUNDLE.md) | Private configuration, trusted service images, scoped credentials and deterministic deployment rendering |
 | [Execution plan](EXECUTION-PLAN.md) | Execution and deployment requirements and first decisions |
 | [Projects and sessions](PROJECTS-AND-SESSIONS.md) | Project, session and environment ownership |
 | [Product](PRODUCT.md) | Product requirements and acceptance criteria |

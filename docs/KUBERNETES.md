@@ -47,12 +47,13 @@ The current kernel-identity probe also cannot distinguish an isolated guest from
 an ordinary container on a different cluster node. Acceptance must check the
 admitted runtime and actual ingress/egress NetworkPolicy enforcement independently.
 
-The first deployment should use one replica of the trusted control/store services
-with a block-backed PVC, distinct trusted workers and separate OpenShell sandbox
-pools. The current host launcher supervises local processes and assumes loopback
-addresses; placing it unchanged in a Deployment does not establish cluster support.
-Service addresses, authenticated runtime callbacks, probe endpoints, signal/drain
-behavior and owned sandbox replacement need explicit cluster wiring first.
+The [offline deployment bundle](KUBERNETES-BUNDLE.md) renders singleton application
+and worker-pool Pods with separate block-backed PVCs. Trusted control and worker
+links use verified TLS with optional private CAs. Control liveness, admission
+readiness and runtime connectivity are separate; shutdown fences admission and
+drains owned work. The local host launcher is not placed unchanged in a Deployment.
+OpenShell runtime ownership/bootstrap and cluster restart qualification remain
+separate work; rendering does not create or replace an agent runtime.
 
 Shared image tags contain both Linux architectures. Research image recipes now
 include their target-native scheduler shim; the worker verifies source identity,
@@ -163,7 +164,27 @@ The [offline worker release command](WORKER.md#offline-capture-replica-retention
 requires every shared-hash reference to be acknowledged and holds the worker's
 exclusive state lease. A disposable local process test verifies lost-reply recovery,
 dry-run/apply, restart and unchanged control content without recapture. Automatic
-online cleanup and whole-workspace/PVC archive/release remain separate work.
+online worker cleanup remains separate work. The bounded control cache maintenance
+command scans referenced content by indexed hash pages, defaults to dry-run and
+can archive before verified eviction. Its private resumable cursor never grants
+retention authority; unknown or corrupt copies remain local. See
+[artifact maintenance](ARTIFACT-S3.md).
+Complete offline workspace checkpoints now capture native packages, journals,
+research files, initialization sentinel, modes and link topology with bounded
+streaming. Trusted create/restore requires the original sandbox to be Stopped and
+an operator-declared exclusive offline mount. Receipts bind the original image,
+placement, prefix identity and package fingerprint. Restore publishes a verified
+new directory without rebinding ownership or clearing recovery holds. The separate
+S3 transport uploads 16 MiB immutable chunks and commits a fully verified manifest;
+fetch requires its exact digest. See [workspace checkpoint operations](WORKER.md#offline-complete-workspace-checkpoints).
+
+A disposable Garage test verified a 128 MiB workspace archive, repeat upload of the
+same immutable identity, fetch, content hashes, modes, symlinks and hardlinks, then
+verified teardown. This is transport compatibility evidence, not a cluster writer
+fence or complete recovery set. Automatic PVC release still requires coordinated
+control/worker/policy/event/binding backups and ownership restoration; an artifact
+or workspace archive alone cannot authorize it.
+
 The owner has deferred new image publication; no image changes were published.
 
 For hosted clusters, prefer small metadata PVCs and short-lived reconstructible
@@ -196,8 +217,9 @@ operator bootstrap and live qualification remain explicit.
    state lease and requires every reference sharing a hash to be acknowledged.
    Installer-log references retain their bytes. Online deletion additionally needs
    writer fences and pinned download descriptors; it is not a plain file unlink.
-4. Trusted service images and manifests/chart: Service DNS, mTLS/Secrets,
-   readiness/draining, one-writer PVC placement, RBAC and NetworkPolicy. Keep
+4. Unpublished trusted service image recipes and the offline deployment renderer:
+   Service DNS, verified TLS/bearer scopes, private Secrets, readiness/draining,
+   one-writer PVC placement, no service-account authority and NetworkPolicy. Keep
    release values separate from private site values. Do not grant agents cluster
    or storage administration rights.
 5. Disposable acceptance in both architectures: Sage/PDF/MCP, large artifacts,
