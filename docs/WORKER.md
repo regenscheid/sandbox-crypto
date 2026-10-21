@@ -17,6 +17,7 @@ Contents:
 - Isolation and OpenShell: [isolation tiers](#isolation-tiers), [running under OpenShell](#running-under-openshell), [environments](#environments), [admission on demand](#admission-on-demand), [idle suspension](#idle-suspension)
 - Data and packages: [shared data across environments](#shared-data-across-environments), [package commands](#package-commands), [provisioning operations](#provisioning-operations), [PDFs](#pdfs), [bounded artifact capture](#bounded-artifact-capture), [worker-local output observations](#worker-local-output-observations)
 - The sandbox side: [executor protocol](#executor-protocol), [sandbox daemon and recovery](#sandbox-daemon-and-recovery)
+- [Offline complete workspace checkpoints](#offline-complete-workspace-checkpoints)
 - [Settings](#settings), [conformance suite](#conformance-suite), [not built](#not-built), and the parked [document catalog prerequisite](#document-catalog-prerequisite)
 
 ## Components
@@ -784,6 +785,70 @@ The harness's command line runs a task through the worker. A JSON script of mode
 ```bash
 sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.token --project p1 --session s1 --environment env-1 --script turns.json "the task"
 ```
+
+## Offline complete workspace checkpoints
+
+The trusted operator CLI captures a complete, explicitly mounted `/sandbox` tree
+without a new worker API or agent permission:
+
+```bash
+sandbox-science-worker workspace-checkpoint create --settings worker.toml \
+  --environment env-1 --architecture arm64 --workspace /mnt/offline-sandbox \
+  --checkpoint /archives/env-1-checkpoint --exclusive-offline-mount
+sandbox-science-worker workspace-checkpoint verify --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/env-1-checkpoint
+sandbox-science-worker workspace-checkpoint restore --settings worker.toml \
+  --environment env-1 --architecture arm64 --checkpoint /archives/env-1-checkpoint \
+  --workspace /mnt/restored-sandbox --exclusive-offline-mount
+```
+
+Stop the worker first. Independently stop the original OpenShell sandbox and mount
+its full workspace exclusively; the command verifies its original ID and `Stopped`
+phase before and after create/restore, and holds the worker's state lock throughout.
+`--exclusive-offline-mount` declares that there are no other writers, including
+administrative processes. It is not a Kubernetes writer fence. The command never
+stops a sandbox itself, and stopping only the worker does not stop its research
+daemons or jobs. Paths and settings are trusted operator configuration, never agent
+tool arguments. The token file is not read by these commands.
+
+The new checkpoint directory contains `archive.bin`, an incomplete `intent.json`
+and, only after full verification and the final stopped check, immutable
+`receipt.json`. Failures preserve partial bytes and a failure record; a crash leaves
+the original intent incomplete. Existing checkpoint directories are never replaced.
+The receipt binds the exact project, environment, sandbox ID, image, launch settings,
+declared native architecture, required prefix identity and known package fingerprint.
+The architecture must match any original Kubernetes placement pin. Verification
+requires the exact archive and receipt; it never reconstructs missing source files.
+
+The framed format streams 512 KiB content blocks and uses disk-backed path/inode
+indexes. Explicit limits are one million members, 256 MiB of member metadata,
+16 TiB of file contents, 16 KiB per member header and 256 path components. Whole
+content and provenance are checksummed. Regular files, directories, modes, symlink
+text and existing hardlink topology survive; links are never followed out of the
+tree. Special files are refused. Ownership becomes the invoking operator's;
+timestamps, extended attributes and ACLs are outside this format. The initialized
+workspace sentinel and required native prefix marker must match the retained state.
+Source metadata is checked during reads and again after the whole capture.
+
+Restore requires a destination that does not yet exist and an adjacent new
+`<destination>.checkpoint-restore` journal directory. It verifies the entire archive,
+extracts into a private staged tree, verifies its hash again, and publishes with
+Linux's atomic no-overwrite directory rename. The journal commits its receipt last.
+Interrupted or failed staging remains explicitly incomplete. Existing workspaces,
+including mount roots, cannot be merged or overwritten: restore to a new directory
+on the offline volume. Restrictive original directory modes are applied after their
+children. An archive cannot write through a symlink parent or select an absolute
+extraction path.
+
+This proves **local checkpoint completion** only. The CLI reports that remote
+retention and a complete recovery set are not established. Preserve control/worker/
+policy/event stores, bindings, retained artifact bytes and backing settings
+separately. Checkpoint restoration does not rebind environments, clear package or
+operation holds, replay interrupted work, restore interpreter memory, or delete any
+source, PVC or remote object. Coordinate Resume through the orchestrator after
+restoring the original binding. Actual Kubernetes-volume and native ARM64 recovery
+qualification remain separate from local filesystem tests. See the
+[operations contract](specs/kubernetes-operations.md#offline-workspace-checkpoints).
 
 ## Conformance suite
 

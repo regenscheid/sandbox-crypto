@@ -34,6 +34,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Identifier
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy.store import StoreError
 
+from . import checkpoint_cli
 from .admission import DraftWatcher
 from .artifact_retention import MAX_RELEASE_PAGE
 from .artifacts import Blobs
@@ -237,6 +238,9 @@ def _project(value: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sandbox-science-worker")
     commands = parser.add_subparsers(dest="command", required=True)
+    checkpoint_cli.parser(
+        commands.add_parser("workspace-checkpoint", help="offline complete workspace checkpoint")
+    )
     serve_parser = commands.add_parser("serve", help="run the worker API")
     serve_parser.add_argument("--settings", type=Path, required=True)
     serve_parser.add_argument(
@@ -290,6 +294,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     retention_parser.add_argument("--after", help="continue after this SHA-256 cursor")
     args = parser.parse_args(argv)
+    if args.command == "workspace-checkpoint":
+        return checkpoint_cli.run(args)
     if args.command == "token":
         if args.out is not None:
             token = secrets.token_urlsafe(32)
