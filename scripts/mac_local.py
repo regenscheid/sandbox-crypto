@@ -198,6 +198,28 @@ def prepare_dirs(settings: Settings) -> None:
         path.chmod(0o700)
 
 
+def check_vm_socket_storage(settings: Settings) -> None:
+    """Verify the chosen volume can host the VM driver's Unix control socket."""
+    socket_dir = settings.root / "vm/run"
+    socket_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    socket_path = socket_dir / f".{secrets.token_hex(8)}"
+    bound = False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.bind(str(socket_path))
+            bound = True
+    except OSError as exc:
+        raise SetupError(
+            f"The VM state volume cannot host a Unix socket at {socket_path}: {exc}. "
+            "Choose a local volume that supports Unix sockets (APFS recommended) "
+            "for `volume` in the Mac TOML; "
+            "preserve the existing SandboxScience directory before changing paths."
+        ) from exc
+    finally:
+        if bound:
+            socket_path.unlink()
+
+
 def gateway_config(settings: Settings, driver_dir: Path | None = None) -> str:
     """Render the VM config; None reproduces only the former generated config."""
     driver_location = (
@@ -349,6 +371,7 @@ def install(settings: Settings) -> None:
     require_mac(settings)
     brew = require_command("brew")
     prepare_dirs(settings)
+    check_vm_socket_storage(settings)
     if subprocess.run(  # noqa: S603 - brew path came from command lookup.
         [brew, "list", "--versions", "e2fsprogs"], capture_output=True
     ).returncode:
@@ -535,6 +558,7 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
         require_command("uv")
     require_command("openshell")
     prepare_dirs(settings)
+    check_vm_socket_storage(settings)
     with socket.socket() as probe:
         if probe.connect_ex(("127.0.0.1", settings.gateway_port)) == 0:
             raise SetupError(f"Port {settings.gateway_port} is already in use; choose another port")

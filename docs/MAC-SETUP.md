@@ -18,10 +18,12 @@ UI. Mac launch, restart and Resume have not yet passed native acceptance; see
   OpenShell by hand: `install` installs missing prerequisites through Homebrew
   and OpenShell's pinned installer. If another OpenShell version is already on
   `PATH`, the helper stops rather than replacing it.
-- A **mounted, writable local volume** for the large files, such as
-  `/Volumes/Research`. Set `volume` to the mount point itself, not a folder
-  inside it. About 40 GiB free is recommended for the first image preparation;
-  the helper warns below that amount. Its test gateway config assigns four
+- A **mounted, writable local volume that supports Unix sockets** for the large
+  files, such as `/Volumes/Research`. Set `volume` to the mount point itself,
+  not a folder inside it. APFS is recommended; ExFAT and network shares may
+  reject the VM driver's control socket. About 40 GiB free is recommended for
+  the first image preparation; the helper warns below that amount. Its test
+  gateway config assigns four
   vCPUs, 8 GiB of VM memory and a 16 GiB sparse writable overlay.
 - Access to this repository's private `crypto-base` GHCR package. Have a GitHub
   **classic personal access token** with `read:packages` and access to the
@@ -43,11 +45,12 @@ If `git --version` starts the Apple Command Line Tools installer, complete it
 before cloning. Homebrew is already installed in your case, so there is no
 Homebrew setup step here.
 
-The helper will refuse an unmounted volume, the system root, a path that makes
-the VM's Unix socket too long, or an occupied dedicated gateway port. It keeps
-the existing Docker Desktop image store and any existing OpenShell gateway
-configuration alone. OpenShell's installer may start its normal Homebrew
-gateway; this guide's test uses a **separate** gateway on port 18081.
+The helper will refuse an unmounted volume, a volume that cannot host Unix
+sockets, the system root, a path that makes the VM's Unix socket too long, or
+an occupied dedicated gateway port. It keeps the existing Docker Desktop image
+store and any existing OpenShell gateway configuration alone. OpenShell's
+installer may start its normal Homebrew gateway; this guide's test uses a
+**separate** gateway on port 18081.
 
 ## 1. Clone the development branch
 
@@ -85,6 +88,16 @@ user and dedicated port already have defaults. If port 18081 is in use, choose
 another `gateway_port` **before** `install`; the helper deliberately refuses to
 overwrite a generated gateway config later. Leave `application_config`
 commented out for now. The helper config contains no model key or LiteLLM URL.
+
+If your external SSD is ExFAT, keep its existing files and create an APFS
+**sparse bundle disk image** on it with Disk Utility (File > New Image > Blank
+Image). Give the mounted image a short name such as `ScienceVM`, choose APFS as
+the format and Sparse Bundle Image as the image format, and set a maximum size
+large enough for your research. It grows as data is stored. Mount that image,
+then set `volume = "/Volumes/ScienceVM"` and run the helper. Keep both the SSD
+and image mounted for every run. Leave the old `SandboxScience` directory on
+ExFAT untouched. Do not copy its generated gateway config to the new path;
+it contains absolute paths tied to the old mount point.
 
 The default commands below read `$HOME/sandbox-science-mac.toml`. For a
 different location, use `./scripts/mac-local --config /absolute/path/to/mac.toml install`
@@ -255,6 +268,7 @@ testing restart and Resume.
 | `requires an Apple Silicon Mac` | Run in a native Mac terminal; `uname -m` must be `arm64`. |
 | `Volume is not mounted` | Mount the chosen local volume and set `volume` to its root under `/Volumes`, not a subdirectory. |
 | VM socket path is too long | Shorten `directory` or use a shorter volume name before `install`. |
+| `Operation not supported (os error 45)` as the VM driver starts | The chosen volume may not support Unix sockets. Run `diskutil info /Volumes/ExternalSSD` (substitute your mount point) to inspect its filesystem, then run the updated helper's `install` to probe socket support. For ExFAT, use the APFS sparse bundle above or another APFS volume. Leave the existing `SandboxScience` directory in place; do not erase it. |
 | Port 18081 is already in use | Choose a free `gateway_port` before `install`; do not overwrite a live gateway config or attach to another gateway. |
 | Installed OpenShell version differs | The helper requires v0.1.3. Inspect the existing installation before changing it; it will not replace another version automatically. |
 | `vm compute driver binary not found` | Update the checkout with `git pull --ff-only`, then run `./scripts/mac-local install` and `./scripts/mac-local smoke` again. The helper now locates the driver in the gateway's Homebrew installation and pins its directory. If `install` says the executable is missing, inspect `brew list nvidia/openshell/openshell`; the pinned installation is incomplete and needs repair before a smoke retry. Preserve the selected-volume state. |

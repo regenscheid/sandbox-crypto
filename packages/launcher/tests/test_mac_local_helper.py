@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.util
 import sys
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +87,33 @@ def test_long_vm_socket_path_is_rejected_before_writing(
     with pytest.raises(mac.SetupError, match="too long"):
         mac.require_mac(chosen)
     assert not chosen.root.exists()
+
+
+def test_vm_socket_storage_probe_cleans_up_on_supported_volume(tmp_path: Path) -> None:
+    chosen = replace(settings(tmp_path), root=tmp_path)
+    mac.check_vm_socket_storage(chosen)
+    assert list((tmp_path / "vm/run").iterdir()) == []
+
+
+def test_vm_socket_storage_probe_reports_unsupported_volume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+
+    class UnsupportedSocket:
+        def __enter__(self) -> UnsupportedSocket:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def bind(self, _address: str) -> None:
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(mac.socket, "socket", lambda *_args: UnsupportedSocket())
+    with pytest.raises(mac.SetupError, match=r"cannot host a Unix socket.*Operation not supported"):
+        mac.check_vm_socket_storage(chosen)
+    assert list((chosen.root / "vm/run").iterdir()) == []
 
 
 def test_system_root_cannot_be_the_large_state_volume(
