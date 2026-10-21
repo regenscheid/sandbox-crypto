@@ -3154,6 +3154,26 @@ def _project_model_settings(schema: Schema) -> None:
 ) STRICT""")
 
 
+def _project_connector_settings(schema: Schema) -> None:
+    """Version 74: the connectors the user turned off in a project (narrowing only)."""
+    schema.execute("""CREATE TABLE project_connector_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    disabled TEXT NOT NULL CHECK (json_valid(disabled) AND json_type(disabled) = 'array'),
+    author TEXT NOT NULL
+) STRICT""")
+
+
+def _project_approval_settings(schema: Schema) -> None:
+    """Version 75: the connector tool calls the user approved for a whole project."""
+    schema.execute("""CREATE TABLE project_approval_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    grants TEXT NOT NULL CHECK (json_valid(grants) AND json_type(grants) = 'array'),
+    author TEXT NOT NULL
+) STRICT""")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3227,6 +3247,8 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _context_auxiliary_window,
     _context_captures,
     _project_model_settings,
+    _project_connector_settings,
+    _project_approval_settings,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

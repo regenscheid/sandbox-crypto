@@ -4,7 +4,13 @@
      asked them. While the run is `live`, its latest steps show what runs now. -->
 <script lang="ts" generics="Q extends { tool_call: string; question_id: string }">
   import type { Snippet } from 'svelte';
-  import { chatEntries, placeQuestions, thinking, type WatchedRun } from '../lib/chat';
+  import {
+    awaitingApproval,
+    chatEntries,
+    placeQuestions,
+    thinking,
+    type WatchedRun,
+  } from '../lib/chat';
   import { clock, foldTranscript } from '../lib/conversation';
   import Markdown from '../lib/Markdown.svelte';
   import { messageHref } from '../lib/router';
@@ -82,6 +88,7 @@
           steps={item.steps}
           live={live && index === items.length - 1}
           thinking={thinking(run)}
+          approval={awaitingApproval(run)}
           {now}
           {subagents}
           {showAgents}
@@ -109,6 +116,7 @@
         steps={[]}
         live
         thinking={thinking(run)}
+        approval={awaitingApproval(run)}
         {now}
         {subagents}
         {showAgents}

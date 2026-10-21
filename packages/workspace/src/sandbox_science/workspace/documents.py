@@ -66,8 +66,18 @@ class ApplyPatch(_Change):
     patch_id: str = Field(pattern=r"^patch-[0-9a-f]{24}$")
 
 
+class Decline(Contract):
+    """The user declines an agent's suggestion (LD-20): the document is not changed."""
+
+    action: Literal["decline"]
+    patch_id: str = Field(pattern=r"^patch-[0-9a-f]{24}$")
+
+
 _CHANGE: Final = TypeAdapter(
-    Annotated[SourceEdit | BlockEdit | Revert | Promote | ApplyPatch, Field(discriminator="action")]
+    Annotated[
+        SourceEdit | BlockEdit | Revert | Promote | ApplyPatch | Decline,
+        Field(discriminator="action"),
+    ]
 )
 
 
@@ -75,6 +85,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get("/api/v0/projects/{project}/documents", documents)
     app.router.add_get("/api/v0/projects/{project}/documents/{document}", document)
     app.router.add_get("/api/v0/projects/{project}/documents/{document}/history", history)
+    app.router.add_get("/api/v0/projects/{project}/documents/{document}/source", source)
     app.router.add_get("/api/v0/projects/{project}/documents/{document}/comments", comments)
     app.router.add_post("/api/v0/projects/{project}/documents/{document}/comments", comment_change)
     app.router.add_get(
@@ -178,6 +189,8 @@ async def change(request: web.Request) -> web.Response:
                 reason=value.reason,
                 operation_id=value.operation_id,
             )
+        elif isinstance(value, Decline):
+            result = store.decide(project, reference, value.patch_id, accept=False, author=USER)
         elif isinstance(value, Promote):
             result = store.promote(
                 project,
@@ -219,6 +232,40 @@ async def document(request: web.Request) -> web.Response:
         return api_error(DocumentError("invalid_request", "revision is a revision number, from 1"))
     number = None if raw is None else int(raw)
     return await answer(request, lambda store: _revision(store, project, reference, number))
+
+
+async def source(request: web.Request) -> web.Response:
+    """A revision's stored Markdown as a file to save: the export is the source (LD-38)."""
+    project, reference = request.match_info["project"], request.match_info["document"]
+    raw = request.query.get("revision")
+    if raw is not None and _REVISION.fullmatch(raw) is None:
+        return api_error(DocumentError("invalid_request", "revision is a revision number, from 1"))
+    if not _reference(reference):
+        return api_error(
+            DocumentError("invalid_request", "a document is named by its ID or its name")
+        )
+    projects, store = request.app[api.STORE], request.app[DOCUMENTS]
+
+    def read() -> tuple[str, str]:
+        projects.get(project)
+        info = store.document(project, reference)
+        revision = store.revision(project, info.document_id, None if raw is None else int(raw))
+        return f"{info.name}-r{revision.info.number}.md", revision.text
+
+    try:
+        name, text = await asyncio.to_thread(read)
+    except DocumentError as error:
+        return api_error(error)
+    return web.Response(
+        body=text.encode("utf-8"),
+        headers={
+            hdrs.CONTENT_TYPE: "text/markdown; charset=utf-8",
+            # The name is the document's (NAME: letters, digits, '.', '_', '-') and a number.
+            hdrs.CONTENT_DISPOSITION: f'attachment; filename="{name}"',
+            hdrs.CACHE_CONTROL: "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 async def history(request: web.Request) -> web.Response:

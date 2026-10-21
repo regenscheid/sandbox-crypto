@@ -19,6 +19,12 @@ import type {
   HistoryPage,
   HistoryChunk,
   ArtifactListing,
+  RevisionListing,
+  ConnectorSettings,
+  AnswerResult,
+  ApprovalSettings,
+  Grant,
+  PendingListing,
   Category,
   FoldProposalList,
   FrontierAnswer,
@@ -477,6 +483,9 @@ export interface CommentChange {
  */
 export const ARTIFACT_LISTING_MAX_BYTES = 256 * 1024;
 
+/** The most a page of one artifact's revisions can be: twenty such entries. */
+export const ARTIFACT_REVISIONS_MAX_BYTES = 512 * 1024;
+
 const part = encodeURIComponent;
 
 /**
@@ -530,6 +539,9 @@ export const api = {
     get<ProjectAnswer>(`/projects/${part(project)}`, { signal }).then((found) => found.project),
   session: (project: string, session: string, signal?: AbortSignal) =>
     get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`, { signal }),
+  /** Open a new session in the project's shared environment; a name it has is a conflict. */
+  createSession: (project: string, session: string) =>
+    post<SessionView>(`/projects/${part(project)}/sessions`, { session_id: session }),
   jobs: (project: string, session: string, signal?: AbortSignal) =>
     get<JobListing>(`/projects/${part(project)}/sessions/${part(session)}/jobs`, { signal }),
   cancelJob: (project: string, session: string, job: string) =>
@@ -705,6 +717,13 @@ export const api = {
     get<ArtifactListing>(
       `/projects/${part(project)}/artifacts?${artifactQuery(group, filter, before)}`,
       { maxBytes: ARTIFACT_LISTING_MAX_BYTES },
+    ),
+  /** One artifact's revisions, the newest first, twenty at a time (RA-37). */
+  artifactRevisions: (project: string, artifact: string, before: number | null = null) =>
+    get<RevisionListing>(
+      `/projects/${part(project)}/artifacts/${part(artifact)}/revisions` +
+        (before === null ? '' : `?before=${before}`),
+      { maxBytes: ARTIFACT_REVISIONS_MAX_BYTES },
     ),
   /** The project's settings for the files its executions write, with the defaults. */
   fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),
@@ -907,6 +926,33 @@ export const api = {
   skills: (project: string) => get<ProjectSkills>(`/projects/${part(project)}/skills`),
   /** Safe configured MCP service identity and bounded historical run observations. */
   mcpServices: (project: string) => get<McpInventory>(`/projects/${part(project)}/mcp-services`),
+  /** The session's connector tool calls the MCP proxy holds for the user's answer. */
+  permissionRequests: (project: string, session: string, signal?: AbortSignal) =>
+    get<PendingListing>(
+      `/projects/${part(project)}/sessions/${part(session)}/permission-requests`,
+      { signal },
+    ),
+  answerPermission: (
+    project: string,
+    seq: number,
+    decision: 'once' | 'project' | 'server' | 'deny',
+  ) =>
+    post<AnswerResult>(`/projects/${part(project)}/permission-requests/${seq}/answer`, {
+      decision,
+    }),
+  approvalSettings: (project: string) =>
+    get<ApprovalSettings>(`/projects/${part(project)}/approvals/settings`),
+  changeApprovalSettings: (
+    project: string,
+    change: { expected: number; grants: Grant[]; operation_id: string },
+  ) => post<ApprovalSettings>(`/projects/${part(project)}/approvals/settings`, change),
+  /** Which configured connectors the project's user turned off. */
+  connectorSettings: (project: string) =>
+    get<ConnectorSettings>(`/projects/${part(project)}/mcp-services/settings`),
+  changeConnectorSettings: (
+    project: string,
+    change: { expected: number; disabled: string[]; operation_id: string },
+  ) => post<ConnectorSettings>(`/projects/${part(project)}/mcp-services/settings`, change),
   /** The user's change of the always-loaded and excluded skills, at `expected`. */
   changeSkillSettings: (project: string, change: SkillSettingsChange) =>
     post<SkillSettingsView>(`/projects/${part(project)}/skills/settings`, change),

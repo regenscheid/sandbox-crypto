@@ -278,7 +278,7 @@ match (name, args[:2]):
         serve(None, [f"serving the sessions of {option('--state-dir')}"], stream=sys.stderr)
     case ("sandbox-science-mcp-proxy", ["compile-policy", *_]):
         Path(option("--out")).write_text("# compiled\n")
-        note("compile-policy")
+        note("compile-policy" + (" --admit-escalated" if "--admit-escalated" in args else ""))
     case ("sandbox-science-workspace", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:

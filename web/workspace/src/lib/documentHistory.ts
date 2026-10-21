@@ -31,3 +31,8 @@ export function applyPatch(preview: PatchPreview): Record<string, unknown> {
 export function patchApplied(result: DocumentChange): boolean {
   return result.outcome === 'accepted' || result.outcome === 'unchanged';
 }
+
+/** The change that declines an agent's suggestion: the document stays as it is (LD-20). */
+export function declineSuggestion(patchId: string): Record<string, unknown> {
+  return { action: 'decline', patch_id: patchId };
+}

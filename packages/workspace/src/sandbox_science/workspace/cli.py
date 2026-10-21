@@ -48,6 +48,7 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .app import create_app
+from .approvals import ApprovalClient
 from .context import CONTEXT
 from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
@@ -301,6 +302,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.add_argument(
         "--mcp-proxy-token-file", type=Path, help="host-only proxy caller token path"
     )
+    command.add_argument(
+        "--mcp-operator-token-file",
+        type=Path,
+        help="the proxy operator token, with which the user answers held tool calls",
+    )
     agents = command.add_argument_group(
         "agent models", "trusted project choices for main, delegated and reviewer roles"
     )
@@ -448,6 +454,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             metadata = MetadataClient(args.mcp_proxy, args.mcp_proxy_token_file.read_text().strip())
         except (OSError, UnicodeError, ValueError):
             parser.error("cannot configure MCP metadata source")
+    answers = None
+    if args.mcp_operator_token_file is not None:
+        if args.mcp_proxy is None or args.mcp_project is None:
+            parser.error("--mcp-operator-token-file needs --mcp-proxy and --mcp-project")
+        try:
+            answers = ApprovalClient(
+                args.mcp_proxy, args.mcp_operator_token_file.read_text().strip()
+            )
+        except (OSError, UnicodeError, ValueError):
+            parser.error("cannot read the MCP operator token")
     try:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
@@ -462,6 +478,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_project=args.mcp_project,
             mcp_inventory=tuple(mcp_inventory),
             mcp_metadata=metadata,
+            mcp_approvals=answers,
             model_configuration=model_configuration,
         )
     except OSError as exc:

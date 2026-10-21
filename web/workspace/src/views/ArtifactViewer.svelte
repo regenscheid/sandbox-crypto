@@ -4,7 +4,9 @@
      rendered, and other text as text, read from its kept bytes up to a limit. The file's
      text is the agents' and is never rendered as HTML outside the Markdown component. -->
 <script lang="ts">
+  import { api } from '../lib/api';
   import type { ArtifactEntry } from '../lib/api-types';
+  import { emptyList, PagedList } from '../lib/pagedList';
   import { kindText, splitPath, textual } from '../lib/artifactGrid';
   import { keptText, whoText } from '../lib/artifactFiles';
   import { shownAsImage, shownInFrame } from '../lib/figures';
@@ -25,7 +27,25 @@
     entry,
     viewer,
     close,
-  }: { projectId: string; entry: ArtifactEntry; viewer: boolean; close: () => void } = $props();
+    choose,
+  }: {
+    projectId: string;
+    entry: ArtifactEntry;
+    viewer: boolean;
+    close: () => void;
+    /** Show another revision of the same artifact. */
+    choose: (revision: ArtifactEntry) => void;
+  } = $props();
+  // The artifact's revisions, the newest first, a page at a time (RA-37).
+  const revisions = $state(emptyList<ArtifactEntry, number>());
+  const history = new PagedList(revisions, async (before) => {
+    const page = await api.artifactRevisions(projectId, entry.artifact_id, before);
+    return { items: page.revisions, next: page.next_before };
+  });
+  $effect(() => {
+    void entry.artifact_id;
+    void history.restart();
+  });
   const download = $derived(
     `/api/v0/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(entry.artifact_id)}/revisions/${entry.revision}/content?sha256=${encodeURIComponent(entry.sha256)}`,
   );
@@ -134,6 +154,31 @@
         <dt>SHA-256</dt>
         <dd><code>{entry.sha256.slice(0, 16)}…</code></dd>
       </dl>
+      <span class="eyebrow">Revisions</span>
+      <ol class="revision-list">
+        {#each revisions.items as revision (revision.revision)}
+          <li>
+            <button
+              type="button"
+              class="revision"
+              aria-current={revision.revision === entry.revision ? 'true' : undefined}
+              onclick={() => choose(revision)}
+              ><strong>{revision.revision}</strong><span
+                >{revision.deleted
+                  ? 'deleted'
+                  : `${sizeText(revision.size)} · ${formatTime(revision.created_at)}`}</span
+              ></button
+            >
+          </li>
+        {/each}
+      </ol>
+      {#if revisions.loading}<p class="muted">Loading…</p>{/if}
+      {#if revisions.error}<ErrorMessage error={revisions.error} />{/if}
+      {#if revisions.next !== null}<button
+          type="button"
+          disabled={revisions.loading}
+          onclick={() => history.more()}>Older revisions</button
+        >{/if}
     </aside>
   </div>
 </section>
@@ -188,5 +233,34 @@
   }
   .markdown-file {
     max-width: 760px;
+  }
+  .revision-list {
+    list-style: none;
+    padding: 0;
+    margin: 6px 0 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .revision {
+    width: 100%;
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    min-height: 0;
+    padding: 6px 8px;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font-size: 12px;
+    color: var(--body-text);
+  }
+  .revision strong {
+    width: 28px;
+    flex: none;
+    font-weight: 600;
+  }
+  .revision[aria-current='true'] {
+    background: var(--subtle);
   }
 </style>

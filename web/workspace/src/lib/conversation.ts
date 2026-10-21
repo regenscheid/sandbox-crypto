@@ -241,3 +241,34 @@ export function elapsed(from: string, now: number): string {
     ? `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
     : `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
 }
+
+/**
+ * The call a held permission request is for, as the run's transcript has it: the latest
+ * call of ``tool`` with no result yet, its arguments and its step's words. The proxy keeps
+ * only a digest of the arguments, so the page shows them from here; null when the
+ * transcript has no such call.
+ */
+export function heldCall(
+  events: readonly RunEvent[],
+  tool: string,
+): { arguments: string; text: string } | null {
+  const answered = new Set(
+    events
+      .filter((event) => event.kind === 'tool')
+      .map((event) => String(event.data['call_id'] ?? '')),
+  );
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!;
+    if (event.kind !== 'assistant') continue;
+    const calls = Array.isArray(event.data['tool_calls']) ? event.data['tool_calls'] : [];
+    for (const raw of calls) {
+      const call = (raw ?? {}) as Record<string, unknown>;
+      if (call['name'] !== tool || answered.has(String(call['id'] ?? ''))) continue;
+      return {
+        arguments: typeof call['arguments'] === 'string' ? call['arguments'] : '',
+        text: typeof event.data['text'] === 'string' ? event.data['text'] : '',
+      };
+    }
+  }
+  return null;
+}

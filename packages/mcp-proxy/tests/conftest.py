@@ -45,6 +45,8 @@ TOKENS = {
     "shared": "test-secret-worker-shared",
     "dedicated": "test-secret-worker-dedicated",
     "other": "test-secret-other-project",
+    "operator": "test-secret-operator",
+    "other-operator": "test-secret-other-operator",
 }
 CALLERS = {
     "orchestrator": Caller("orchestrator", "orchestrator", "crypto"),
@@ -53,6 +55,8 @@ CALLERS = {
         "crypto-s42", "worker", "crypto", container="ss-crypto-s42", session="s-42"
     ),
     "other": Caller("other-orchestrator", "orchestrator", "other"),
+    "operator": Caller("workspace", "operator", "crypto"),
+    "other-operator": Caller("other-workspace", "operator", "other"),
 }
 POLICY = """\
 apiVersion: sandbox-science/v0alpha1
@@ -150,6 +154,7 @@ class Harness:
             environ=self.environ,
             # test_records.py swaps in a sink on a real store, which has no reader.
             requests=self.sink.records if isinstance(self.sink, RecordingSink) else None,
+            answers=self._answer if isinstance(self.sink, RecordingSink) else None,
             now=lambda: (
                 self.sink.now()
                 if isinstance(self.sink, RecordingSink)
@@ -164,6 +169,23 @@ class Harness:
         app.on_cleanup.append(close)
         self.client = TestClient(TestServer(app, host="127.0.0.1"))
         await self.client.start_server()
+
+    async def _answer(self, kind: str, payload: dict[str, object]) -> int:
+        assert isinstance(self.sink, RecordingSink)
+        return self.sink.append(kind, payload)
+
+    async def operator(
+        self, method: str, path: str, body: object = None, *, caller: str = "operator"
+    ) -> Answer:
+        """A request to the proxy's operator routes, as a caller."""
+        assert self.client is not None
+        headers = {"Authorization": f"Bearer {TOKENS[caller]}"} if caller else {}
+        async with self.client.request(
+            method, path, json=body if body is not None else None, headers=headers
+        ) as response:
+            text = await response.read()
+            parsed: object = json.loads(text) if text else None
+            return Answer(response.status, dict(response.headers), parsed)
 
     async def post(
         self,

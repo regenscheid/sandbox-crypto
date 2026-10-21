@@ -51,6 +51,7 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from . import (
     api,
+    approvals,
     artifacts,
     chat,
     context_inspector,
@@ -68,6 +69,7 @@ from . import (
     project_settings,
     provisioning,
     reviews,
+    session_opening,
     skills,
     uploads,
 )
@@ -210,6 +212,7 @@ def create_app(
     mcp_project: str | None = None,
     mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
     mcp_metadata: MetadataClient | None = None,
+    mcp_approvals: approvals.ApprovalClient | None = None,
     model_configuration: project_settings.ModelConfiguration | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
@@ -370,8 +373,14 @@ def create_app(
         mcp_services,
         messages,
         uploads,
+        session_opening,
+        approvals,
     ):
         feature.add_routes(app)
+    if mcp_approvals is not None:
+        if mcp_project is None:
+            raise ValueError("MCP approvals need an explicit project scope")
+        approvals.configure(app, mcp_project, mcp_approvals)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)

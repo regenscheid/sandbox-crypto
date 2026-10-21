@@ -638,3 +638,51 @@ async def test_a_revision_shows_its_pins_and_the_user_moves_one(
     assert moved["text"] == text
     assert moved["revision"]["number"] == 2
     assert [(found["revision"], found.get("latest")) for found in moved["pins"]] == [(2, None)]
+
+
+async def test_the_user_declines_a_suggestion_and_the_document_stays(
+    client: TestClient[Any, Any], documents: dict[str, str], state_dir: Path
+) -> None:
+    doc = documents["ff"]
+    store = DocumentStore(store_path(state_dir), producer="test")
+    store.set_suggestions("p1", doc, on=True, author=USER)
+    suggested = store.patch(
+        "p1",
+        doc,
+        base=2,
+        author=AGENT.model_copy(update={"delegated": True}),
+        reason="tighter",
+        operation_id="s1",
+        operations=[{"op": "replace", "block": documents["paragraph"], "markdown": "Agent."}],
+    )
+    store.close()
+    assert suggested.outcome == "suggested"
+    body = {"action": "decline", "patch_id": suggested.patch_id}
+    declined = await post_change(client, doc, body)
+    assert (declined["outcome"], declined["revision"]) == ("declined", 2)
+    latest = await get(client, f"/api/v0/projects/p1/documents/{doc}")
+    assert latest["document"]["head"] == 2
+    assert "Agent." not in latest["text"]
+    # A second decline, as a retry, finds no waiting suggestion; an unknown field is refused.
+    again = await post_change(client, doc, body, status=409)
+    assert "not a waiting suggestion" in again["error"]["message"]
+    await post_change(client, doc, {**body, "author": {"kind": "agent"}}, status=400)
+
+
+async def test_a_revision_downloads_as_its_markdown_source(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/source"
+    head = await client.get(path)
+    assert head.status == 200
+    assert head.headers["Content-Type"] == "text/markdown; charset=utf-8"
+    assert head.headers["Content-Disposition"] == 'attachment; filename="ff-r2.md"'
+    assert head.headers["X-Content-Type-Options"] == "nosniff"
+    assert "Let $p$ be prime." in await head.text()
+    first = await client.get(path, params={"revision": "1"})
+    assert first.headers["Content-Disposition"] == 'attachment; filename="ff-r1.md"'
+    assert await first.text() == FF
+    for params, status in (({"revision": "0"}, 400), ({"revision": "9"}, 404)):
+        assert (await client.get(path, params=params)).status == status
+    other = f"/api/v0/projects/p1/documents/{documents['other']}/source"
+    assert (await client.get(other)).status == 404

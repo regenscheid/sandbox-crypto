@@ -17,7 +17,7 @@ from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.workspace.api import dumps
-from sandbox_science.workspace.artifacts import ArtifactEntry, ArtifactListing
+from sandbox_science.workspace.artifacts import ArtifactEntry, ArtifactListing, RevisionListing
 
 from .test_pdf_viewer import PDF_BYTES, SOURCE, publish
 from .test_pdf_viewer import origins as origins
@@ -186,3 +186,56 @@ def test_the_client_reads_every_listing_the_route_can_send() -> None:
     listing = ArtifactListing(artifacts=[entry] * 10, next_before=2**62, viewer=True)
     largest = len(dumps(listing.model_dump(mode="json")).encode())
     assert largest <= int(found[1]) * 1024
+
+
+async def test_an_artifacts_revisions_come_newest_first_with_its_tombstone(
+    origins, recorded
+) -> None:
+    workspace = origins[0]
+    draft = next(e for e in await listing(workspace, "group=results") if e["deleted"])
+    path = f"/api/v0/projects/p1/artifacts/{draft['artifact_id']}/revisions"
+    response = await workspace.get(path)
+    assert response.status == 200, await response.text()
+    found = await response.json()
+    assert [(r["revision"], r["deleted"], r["kind"]) for r in found["revisions"]] == [
+        (2, True, "execution_record"), (1, False, "agent_publication"),
+    ]  # fmt: skip
+    assert found["next_before"] is None
+    assert all(r["result"] for r in found["revisions"])
+    assert (await workspace.get(path, params={"before": "x"})).status == 400
+    for elsewhere in (
+        "/api/v0/projects/p1/artifacts/art-missing/revisions",
+        path.replace("p1", "p2"),
+    ):
+        assert (await workspace.get(elsewhere)).status == 404
+
+
+async def test_a_long_history_comes_twenty_revisions_at_a_time(origins, state_dir) -> None:
+    documents = DocumentStore(store_path(state_dir))
+    inventory = ArtifactInventory(documents)
+    for index in range(22):
+        written(inventory, f"call{index}", "log.json", b'{"n": %d}' % index)
+    documents.close()
+    workspace = origins[0]
+    (entry,) = await listing(workspace, "")
+    path = f"/api/v0/projects/p1/artifacts/{entry['artifact_id']}/revisions"
+    first = await (await workspace.get(path)).json()
+    assert [r["revision"] for r in first["revisions"]] == list(range(22, 2, -1))
+    assert first["next_before"] == 3
+    rest = await (await workspace.get(path, params={"before": "3"})).json()
+    assert ([r["revision"] for r in rest["revisions"]], rest["next_before"]) == ([2, 1], None)
+
+
+def test_the_client_reads_every_revision_page_the_route_can_send() -> None:
+    found = re.search(r"ARTIFACT_REVISIONS_MAX_BYTES = (\d+) \* 1024;", API.read_text())
+    assert found, "api.ts must set ARTIFACT_REVISIONS_MAX_BYTES as a number of KiB"
+    entry = ArtifactEntry(
+        artifact_id="a" * 128, revision=999999999,
+        path="sessions/" + "s" * 128 + "/" + "\U0001f600" * 1024,
+        sha256="f" * 64, size=MAX_ARTIFACT_BYTES * 2**10, media_type="x/" + "y" * 250,
+        created_at=datetime(2026, 10, 14, 12, 0, 0, 123456, UTC), result=True, deleted=False,
+        content_retained=False, content_note="too_large", kind="execution_record",
+        session_id="s" * 128, run_id="r" * 128, role="delegated", tool_call="c" * 128,
+    )  # fmt: skip
+    page = RevisionListing(revisions=[entry] * 20, next_before=999999999)
+    assert len(dumps(page.model_dump(mode="json")).encode()) <= int(found[1]) * 1024

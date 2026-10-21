@@ -12,6 +12,9 @@ that sent the request, so attribution has levels:
   names that session.
 - ``container``: worker code in a shared project container. Any process there
   can use the token, so a session label it sends is recorded as a claim only.
+
+An ``operator`` caller (the workspace, for its user) makes no MCP calls: it reads its
+project's permission requests and answers them, as the command line does (D76).
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ SESSION_HEADER: Final = "Sandbox-Science-Session"
 _LABEL_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _MAX_TOKEN: Final = 4096
 
-CallerKind = Literal["orchestrator", "worker"]
+CallerKind = Literal["orchestrator", "worker", "operator"]
 Level = Literal["orchestrator", "sandbox", "container"]
 
 
@@ -43,6 +46,13 @@ class Caller:
     project: str
     container: str | None = None
     session: str | None = None
+
+    @property
+    def origin(self) -> Literal["orchestrator", "worker"]:
+        """Where a caller's MCP calls come from, for the policy; an operator makes none."""
+        if self.kind == "operator":
+            raise ValueError("an operator caller makes no MCP calls")
+        return self.kind
 
     @property
     def level(self) -> Level:

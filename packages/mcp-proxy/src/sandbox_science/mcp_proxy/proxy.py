@@ -30,7 +30,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, Literal, cast, get_args
@@ -56,6 +56,7 @@ from sandbox_science.policy.approvals import (
     TimedOut,
     Unrecorded,
     Waiting,
+    prepare_answer,
 )
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import McpVersion
@@ -252,6 +253,7 @@ class McpProxy:
         credentials: Mapping[str, str],
         environ: Mapping[str, str],
         requests: Callable[[int], Iterable[RecordLike]] | None = None,
+        answers: Callable[[str, dict[str, object]], Awaitable[int]] | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         """``requests`` reads the event store's records after a sequence number, from which
@@ -259,6 +261,9 @@ class McpProxy:
         is recorded and refused, and none can be approved."""
         self._metadata = Metadata()
         self._requests = requests
+        self._answers = answers
+        """Appends an operator's approval or denial and returns its sequence number;
+        without it, an operator caller can read requests but not answer them."""
         self._now = now
         self._approvals = Approvals()
         self._recording = tuple(asyncio.Lock() for _ in range(_RECORDING_LOCKS))
@@ -278,6 +283,8 @@ class McpProxy:
         """The aiohttp application; request bodies over ``max_body_bytes`` are refused."""
         app = web.Application(client_max_size=max_body_bytes)
         app.router.add_get("/metadata/{server}", self._metadata_view)
+        app.router.add_get("/permission-requests", self._permission_requests)
+        app.router.add_post("/permission-requests/{seq}/answer", self._answer_request)
         app.router.add_route("POST", "/mcp/{server}", self._post)
         app.router.add_route("GET", "/mcp/{server}", self._get)
         app.router.add_route("DELETE", "/mcp/{server}", self._delete)
@@ -354,10 +361,139 @@ class McpProxy:
             headers={hdrs.CACHE_CONTROL: "no-store"},
         )
 
+    async def _permission_requests(self, request: web.Request) -> web.Response:
+        """The operator's project's MCP permission requests nobody answered, oldest first,
+        each with the call's server, method and tool, the session the call came from, the
+        rule's reason, and when it times out. Never the call's arguments: the request
+        holds only their digest."""
+        caller = self._authenticate(request)
+        if isinstance(caller, web.Response):
+            return caller
+        if caller.kind != "operator" or request.query or request.can_read_body:
+            return web.Response(status=403)
+        await self._refresh_approvals()
+        now = self._now()
+        waiting = [
+            found
+            for found in self._approvals.unanswered()
+            if found.key.kind == "mcp" and found.key.fields()["project_id"] == caller.project
+        ]
+        recorded = await asyncio.to_thread(self._escalations, {found.seq for found in waiting})
+        items: list[dict[str, object]] = []
+        for found in waiting:
+            fields = found.key.fields()
+            detail = recorded.get(found.seq, {})
+            items.append(
+                {
+                    "seq": found.seq,
+                    "server": fields["server"],
+                    "method": fields["method"],
+                    "tool": fields["tool"],
+                    "policy": fields["policy_digest"],
+                    "session": detail.get("session"),
+                    "rule": detail.get("rule"),
+                    "reason": detail.get("reason"),
+                    "recorded_at": found.recorded.isoformat(timespec="seconds"),
+                    "expires_at": (found.recorded + found.timeout).isoformat(timespec="seconds"),
+                    "timed_out": found.expired(now),
+                    "on_timeout": found.on_timeout,
+                }
+            )
+        return web.json_response({"requests": items}, headers={hdrs.CACHE_CONTROL: "no-store"})
+
+    def _escalations(self, seqs: set[int]) -> dict[int, dict[str, object]]:
+        """The session, rule and reason of the escalation records ``seqs``. Blocking."""
+        if not seqs or self._requests is None:
+            return {}
+        found: dict[int, dict[str, object]] = {}
+        for record in self._requests(min(seqs) - 1):
+            if record.seq not in seqs or record.kind != "escalation":
+                continue
+            try:
+                data = record.data()
+            except ValueError:
+                continue
+            attribution = data.get("attribution")
+            session = (
+                cast(dict[str, object], attribution).get("session")
+                if isinstance(attribution, dict)
+                else None
+            )
+            found[record.seq] = {
+                "session": session if isinstance(session, str) else None,
+                "rule": data.get("rule") if isinstance(data.get("rule"), str) else None,
+                "reason": data.get("reason") if isinstance(data.get("reason"), str) else None,
+            }
+        return found
+
+    async def _answer_request(self, request: web.Request) -> web.Response:
+        """An operator's approval or denial of one of its project's MCP permission
+        requests: ``{"approve": bool, "scope": "call" | "tool" | "server", "hours": null |
+        number}``. An answer only ever covers calls the policy escalates (``resolve`` is
+        asked of nothing else), so no scope reaches a denied tool."""
+        caller = self._authenticate(request)
+        if isinstance(caller, web.Response):
+            return caller
+        if caller.kind != "operator" or request.query:
+            return web.Response(status=403)
+        raw = request.match_info["seq"]
+        if not raw.isascii() or not raw.isdigit() or len(raw) > 18:
+            return web.json_response({"error": "invalid permission request"}, status=400)
+        try:
+            raw_body: object = await request.json()
+        except ValueError:
+            return web.json_response({"error": "invalid answer"}, status=400)
+        body = cast(dict[str, object], raw_body) if isinstance(raw_body, dict) else None
+        approve, scope, hours = (
+            (body.get("approve"), body.get("scope"), body.get("hours"))
+            if body is not None
+            else (None, None, None)
+        )
+        if (
+            body is None
+            or set(body) - {"approve", "scope", "hours"}
+            or not isinstance(approve, bool)
+            or not isinstance(scope, str)
+            or not (
+                hours is None or (isinstance(hours, int | float) and not isinstance(hours, bool))
+            )
+        ):
+            return web.json_response({"error": "invalid answer"}, status=400)
+        await self._refresh_approvals()
+        found = self._approvals.request(int(raw))
+        if (
+            found is None
+            or found.key.kind != "mcp"
+            or found.key.fields()["project_id"] != caller.project
+        ):
+            return web.json_response({"error": "no such permission request"}, status=404)
+        if self._answers is None:
+            return web.json_response({"error": "answers cannot be recorded"}, status=503)
+        try:
+            kind, payload = prepare_answer(
+                self._approvals,
+                found.seq,
+                approve=approve,
+                scope=scope,
+                hours=None if hours is None else float(hours),
+                now=self._now(),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        try:
+            seq = await self._answers(kind, payload)
+        except Exception:
+            _log.exception("could not record an answer to a permission request")
+            return web.json_response({"error": "the answer could not be recorded"}, status=503)
+        await self._refresh_approvals()
+        return web.json_response({"answer": seq, "kind": kind}, status=201)
+
     async def _post(self, request: web.Request) -> web.Response:
         caller = self._authenticate(request)
         if isinstance(caller, web.Response):
             return caller
+        if caller.kind == "operator":
+            return web.Response(status=403)  # an operator answers requests; it calls nothing
         call = Call(attribute(caller, ()), request.match_info["server"], time.monotonic())
         try:
             return await self._handle(request, call)
@@ -373,6 +509,8 @@ class McpProxy:
         caller = self._authenticate(request)
         if isinstance(caller, web.Response):
             return caller
+        if caller.kind == "operator":
+            return web.Response(status=403)
         # No stream for server-initiated messages: the proxy relays none (MCP allows 405).
         return web.Response(status=405, headers={hdrs.ALLOW: "POST, DELETE"})
 
@@ -380,6 +518,8 @@ class McpProxy:
         caller = self._authenticate(request)
         if isinstance(caller, web.Response):
             return caller
+        if caller.kind == "operator":
+            return web.Response(status=403)
         ids = request.headers.getall(SESSION_ID, [])
         server = request.match_info["server"]
         session = self._sessions.get(ids[0], caller, server) if len(ids) == 1 else None
@@ -421,7 +561,7 @@ class McpProxy:
                 call.server,
                 value,
                 loaded,
-                origin=call.caller.kind,
+                origin=call.caller.origin,
                 ceiling=self._ceiling,
                 floor=self._floor,
             )
@@ -690,7 +830,7 @@ class McpProxy:
                     call.server,
                     message,
                     loaded,
-                    origin=call.caller.kind,
+                    origin=call.caller.origin,
                     ceiling=self._ceiling,
                     floor=self._floor,
                 )

@@ -1561,6 +1561,9 @@ details[open] > summary > .chevron {
   background: transparent;
   text-decoration: underline;
 }
+.live-dot.asking {
+  background: var(--warn-dot);
+}
 .live-dot {
   width: 8px;
   height: 8px;
@@ -2287,4 +2290,34 @@ a.button-link:hover {
 }
 .overview-shortcuts a {
   padding: 4px 0;
+}
+
+.new-session-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--body-text);
+  text-align: left;
+}
+.new-session {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 4px 0;
+}
+.new-session input {
+  width: 100%;
+  font-size: 13px;
+}
+.new-session-actions {
+  display: flex;
+  gap: 6px;
+}
+.new-session p {
+  margin: 0;
+  font-size: 12px;
 }

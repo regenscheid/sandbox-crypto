@@ -1295,3 +1295,100 @@ async def test_a_server_that_cannot_be_listed_is_unavailable_not_missing(
         store.close()
     started = events[0].data
     assert started["connectors_unavailable"] == summary["unavailable"]
+
+
+async def test_a_connector_the_user_turns_off_takes_no_more_calls(proxied: Proxied) -> None:
+    client = ProxyClient(proxied.url, TOKEN)
+    off: set[str] = set()
+    connectors = Connectors(client, ["papers"], session="s-1", disabled=lambda: frozenset(off))
+    try:
+        await connectors.load()
+        text, _ = await connectors.call("search", {"query": "lattices"})
+        assert text == "search: ok"
+        off.add("papers")  # turned off during the run
+        text, record = await connectors.call("search", {"query": "codes"})
+        assert error_of(text)["kind"] == "connector_disabled"
+        assert record == {"connector": "papers", "error": "connector_disabled"}
+        assert proxied.fake.tool_calls() == ["search"]  # the refused call never left
+    finally:
+        await client.close()
+
+
+def first_request(heard: list[dict[str, object] | None]) -> int:
+    """The permission request the first wait heard of."""
+    wait = heard[0]
+    assert wait is not None
+    request = wait["permission_request"]
+    assert isinstance(request, int)
+    return request
+
+
+async def waiting_connectors(
+    proxied: Proxied, heard: list[dict[str, object] | None]
+) -> tuple[ProxyClient, Connectors]:
+    async def on_approval(wait: dict[str, object] | None) -> None:
+        heard.append(wait)
+
+    client = ProxyClient(proxied.url, TOKEN)
+    connectors = Connectors(client, ["papers"], session="s-1", on_approval=on_approval)
+    await connectors.load()
+    return client, connectors
+
+
+async def test_a_call_that_needs_approval_waits_in_place_until_the_user_approves(
+    proxied: Proxied, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sandbox_science.orchestrator.connectors as module
+
+    monkeypatch.setattr(module, "APPROVAL_POLL", (0.05, 0.05))
+    heard: list[dict[str, object] | None] = []
+    client, connectors = await waiting_connectors(proxied, heard)
+    try:
+        call = asyncio.create_task(connectors.call("crawl", {"url": "https://example.org/a"}))
+        while not heard:
+            await asyncio.sleep(0.01)
+        request = first_request(heard)
+        assert heard == [{"permission_request": request, "server": "papers", "tool": "crawl"}]
+        assert not call.done()
+        proxied.approve(request)
+        text, record = await asyncio.wait_for(call, 5)
+        assert text.startswith("crawl")
+        assert record["permission_request"] == request
+        assert heard[-1] is None  # the wait's end is heard too
+        assert proxied.fake.tool_calls() == ["crawl"]
+    finally:
+        await client.close()
+
+
+async def test_a_denied_call_stops_waiting_and_says_not_to_call_again(
+    proxied: Proxied, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sandbox_science.orchestrator.connectors as module
+
+    monkeypatch.setattr(module, "APPROVAL_POLL", (0.05, 0.05))
+    heard: list[dict[str, object] | None] = []
+    client, connectors = await waiting_connectors(proxied, heard)
+    try:
+        call = asyncio.create_task(connectors.call("crawl", {"url": "https://example.org/a"}))
+        while not heard:
+            await asyncio.sleep(0.01)
+        request = first_request(heard)
+        approvals = Approvals()
+        approvals.load(proxied.sink.records(0))
+        kind, payload = prepare_answer(
+            approvals,
+            request,
+            approve=False,
+            scope=None,
+            hours=None,
+            now=proxied.sink.now(),
+        )
+        proxied.sink.append(kind, payload)
+        text, record = await asyncio.wait_for(call, 5)
+        assert error_of(text)["kind"] == "approval_denied"
+        assert "do not call it again" in error_of(text)["message"]
+        assert record["permission_request"] == request
+        assert heard[-1] is None
+        assert proxied.fake.tool_calls() == []
+    finally:
+        await client.close()

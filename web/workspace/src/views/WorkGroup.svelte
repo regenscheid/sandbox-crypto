@@ -25,6 +25,7 @@
     steps,
     live = false,
     thinking = false,
+    approval = null,
     now = Date.now(),
     subagents = null,
     showAgents = null,
@@ -35,6 +36,8 @@
     live?: boolean;
     /** A model call is in progress. */
     thinking?: boolean;
+    /** The tool whose call waits for the user's approval, if one does. */
+    approval?: string | null;
     now?: number;
     /** "1 active subagent", when any run. */
     subagents?: string | null;
@@ -47,11 +50,13 @@
   );
   const runningCall = $derived(recent.findLast((item) => !item.call.done));
   const summary = $derived(
-    runningCall
-      ? `running ${visible(runningCall.call.name)} (${elapsed(runningCall.at, now)})`
-      : thinking
-        ? 'thinking'
-        : 'working',
+    approval
+      ? `waiting for your approval of ${visible(approval)}`
+      : runningCall
+        ? `running ${visible(runningCall.call.name)} (${elapsed(runningCall.at, now)})`
+        : thinking
+          ? 'thinking'
+          : 'working',
   );
   const failed = (outcome: string) => /fail|error|timed?\s?out|refused/i.test(outcome);
 </script>
@@ -60,8 +65,8 @@
   <section class="live-card" aria-label="What the agent is doing">
     <div class="live-head">
       <button type="button" aria-expanded={liveOpen} onclick={() => (liveOpen = !liveOpen)}>
-        <span class="live-dot" aria-hidden="true"></span>
-        <strong>Working</strong>
+        <span class="live-dot" class:asking={approval} aria-hidden="true"></span>
+        <strong>{approval ? 'Waiting for you' : 'Working'}</strong>
         <span class="muted">· {summary}</span>
         <Icon name="chevron" size={14} class="chevron" />
       </button>
@@ -76,7 +81,8 @@
             <span class="step-time">{clock(at)}</span>
             <code>{visible(call.name)}</code>
             <span class="live-what">{callSummary(call)}</span>
-            {#if !call.done}<span class="pill running">running {elapsed(at, now)}</span
+            {#if !call.done && approval === call.name}<span class="pill warn">waiting for you</span
+              >{:else if !call.done}<span class="pill running">running {elapsed(at, now)}</span
               >{:else if failed(call.outcome)}<span class="pill failed"
                 >{visible(call.outcome)}</span
               >{:else}<span class="pill">done</span>{/if}

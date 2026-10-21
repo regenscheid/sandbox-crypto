@@ -342,6 +342,8 @@ def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
         "http://127.0.0.1:18080",
         "--mcp-proxy-token-file",
         str(layout.token("mcp-orchestrator")),
+        "--mcp-operator-token-file",
+        str(layout.token("mcp-workspace")),
         "--mcp-service",
         "s=the policy's server s",
         "--mcp-service",
@@ -528,3 +530,29 @@ def test_role_effort_reaches_both_confined_sides_and_native_cli(make_config: Any
 def test_invalid_role_effort_is_refused(make_config: Any, efforts: dict[str, str]) -> None:
     with pytest.raises(LauncherError, match="reasoning_effort"):
         load_config(make_config({"model": {"reasoning_effort": efforts}}))
+
+
+def test_without_approvals_the_proxy_gets_the_callers_an_older_image_knows(
+    make_config: Any, commands: Path
+) -> None:
+    proxy = {
+        "image": "sandbox-science/mcp-proxy:abc1234",
+        "providers": ["p"],
+        "servers": ["s"],
+        "approvals": False,
+    }
+    config = load_config(make_config({"bin_dir": str(commands), "mcp_proxy": proxy}))
+    layout = parts.prepare(config)
+    import tomllib
+
+    callers = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())["callers"]
+    assert [caller["kind"] for caller in callers] == ["orchestrator"]
+    assert not layout.token("mcp-workspace").exists()
+    assert "--mcp-operator-token-file" not in parts.workspace_argv(config, layout)
+    approving = load_config(
+        make_config({"bin_dir": str(commands), "mcp_proxy": {**proxy, "approvals": True}})
+    )
+    layout = parts.prepare(approving)
+    callers = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())["callers"]
+    assert [caller["kind"] for caller in callers] == ["orchestrator", "operator"]
+    assert mode(layout.token("mcp-workspace")) == 0o600

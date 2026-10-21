@@ -49,6 +49,8 @@
   let filter = $state({ ...NO_FILTER });
   let selected = $state<string | null>(null);
   let opened = $state(false);
+  /** The revision the viewer shows, when not the latest. */
+  let revision = $state<ArtifactEntry | null>(null);
   $effect(() => {
     browserState.save(scope, {
       group,
@@ -155,7 +157,16 @@
 </div>
 
 {#if opened && chosen}
-  <ArtifactViewer {projectId} entry={chosen} {viewer} close={() => (opened = false)} />
+  <ArtifactViewer
+    {projectId}
+    entry={revision ?? chosen}
+    {viewer}
+    close={() => {
+      opened = false;
+      revision = null;
+    }}
+    choose={(picked) => (revision = picked.revision === chosen.revision ? null : picked)}
+  />
 {:else}
   <div class="split">
     <section class="grid-wrap" aria-label="Files">

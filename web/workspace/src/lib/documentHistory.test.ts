@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
 import type { PatchPreview, PatchRecord } from './api';
-import { applyPatch, newestFirst, patchApplied, reviewable } from './documentHistory';
+import {
+  applyPatch,
+  declineSuggestion,
+  newestFirst,
+  patchApplied,
+  reviewable,
+} from './documentHistory';
 
 describe('the document history', () => {
   it('lists newest first without changing what the store sent', () => {
@@ -20,6 +26,11 @@ describe('the document history', () => {
     expect(JSON.stringify(applyPatch(preview))).toBe(
       '{"action":"apply_patch","patch_id":"p-7","base":4,' +
         '"reason":"User reviewed and applied patch p-7"}',
+    );
+  });
+  it('declines a suggestion by its ID alone, as the strict change schema takes it', () => {
+    expect(JSON.stringify(declineSuggestion('patch-1'))).toBe(
+      '{"action":"decline","patch_id":"patch-1"}',
     );
   });
   it('ends the review when the patch is in or there was nothing to change', () => {

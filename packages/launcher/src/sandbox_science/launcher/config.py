@@ -488,6 +488,11 @@ class McpProxyConfig(_Strict):
     within OpenShell's 19 characters."""
     listen: Listen = "127.0.0.1:18080"
     """Where the forward to the proxy listens, for the run service."""
+    approvals: bool = True
+    """Whether the user answers the project's escalated tool calls in the workspace's
+    chat: the proxy sandbox's fence admits the tools the policy escalates by name, and
+    the proxy holds each call until its permission request is approved (D76). Off, an
+    escalated tool is refused at the fence, whatever the answer."""
     provider_env_file: ConfigPath | None = None
     """The owner's file with the Cloudflare Access service token of the provider
     ``crypto-research-mcp``. With it, ``up`` registers the provider from the file, in a

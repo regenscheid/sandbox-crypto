@@ -90,9 +90,10 @@ def test_up_makes_the_proxys_sandbox_and_deletes_it_when_it_stops(mcp: dict[str,
     sandbox = ours(mcp["state"])
     (runtime,) = [name for name in sandboxes(mcp["state"]) if name.startswith("ss-orch-")]
     steps = journal(mcp["journal"])
-    made = steps.index("sandbox-science-mcp-proxy compile-policy")
+    # Escalated tools pass the sandbox's fence, for the user's approval (approvals on).
+    made = steps.index("sandbox-science-mcp-proxy compile-policy --admit-escalated")
     assert steps[made:] == [
-        "sandbox-science-mcp-proxy compile-policy",
+        "sandbox-science-mcp-proxy compile-policy --admit-escalated",
         f"openshell sandbox create {sandbox} {IMAGE} provider crypto-research-mcp "
         "/opt/sandbox-science/bin/mcp-proxy-run",
         f"openshell exec {sandbox} mkdir -p {remote}",
@@ -123,18 +124,27 @@ def test_up_makes_the_proxys_sandbox_and_deletes_it_when_it_stops(mcp: dict[str,
     agent = json.loads((layout.root / "orchestrator" / "upload" / "runtime.json").read_text())
     assert "proxy" not in agent
     assert "sandbox-science-harness start" not in steps
-    # The proxy's one caller is the run service, by its token's digest only.
+    # The proxy's callers are the run service, and the workspace as an operator that
+    # answers permission requests and calls no tool, each by its token's digest only.
     layout = Layout(load_config(launcher.config).state_dir)
     token = layout.token("mcp-orchestrator").read_text().strip()
+    operator = layout.token("mcp-workspace").read_text().strip()
     proxy = (layout.mcp / "upload" / "proxy.toml").read_text()
-    (caller,) = tomllib.loads(proxy)["callers"]
+    caller, workspace = tomllib.loads(proxy)["callers"]
     assert caller == {
         "name": "orchestrator",
         "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
         "kind": "orchestrator",
         "project": "crypto",
     }
+    assert workspace == {
+        "name": "workspace",
+        "token_sha256": hashlib.sha256(operator.encode()).hexdigest(),
+        "kind": "operator",
+        "project": "crypto",
+    }
     assert token not in proxy
+    assert operator not in proxy
     assert tomllib.loads(proxy)["credentials"] == {
         "crypto-research-mcp.CF_ACCESS_CLIENT_ID": "CF_ACCESS_CLIENT_ID"
     }

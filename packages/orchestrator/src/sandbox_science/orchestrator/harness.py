@@ -47,6 +47,7 @@ from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
+from .connector_settings import ProjectConnectors
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
 from .consistency.findings import Findings
@@ -1717,12 +1718,23 @@ class Harness:
         connectors = None
         if self.mcp is not None and self.mcp.project == context.project_id and not delegated:
             # Listed at the run's start: a server added later is offered to the next run.
+            # The servers the project's user turned off are not offered (narrowing only).
+            settings_of = (
+                functools.partial(ProjectConnectors(stores.documents).disabled, context.project_id)
+                if stores is not None
+                else None
+            )
+            off: frozenset[str] = (
+                await asyncio.to_thread(settings_of) if settings_of is not None else frozenset()
+            )
             connectors = Connectors(
                 self.mcp.client,
-                self.mcp.servers,
+                [server for server in self.mcp.servers if server not in off],
                 session=context.session_id,
                 about=self.mcp.about,
                 shown=self.mcp.shown,
+                disabled=settings_of,
+                on_approval=chat.approval if chat is not None else None,
             )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:

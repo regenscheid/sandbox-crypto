@@ -34,6 +34,8 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.orchestrator.approval_settings import ApprovalSettings
+from sandbox_science.orchestrator.connector_settings import ConnectorSettings
 from sandbox_science.orchestrator.continuity.grants import TokenGrantDecision, TokenGrantStatus
 from sandbox_science.orchestrator.continuity.resources import ResourceRequestPage
 from sandbox_science.orchestrator.continuity.status import StatusPage
@@ -43,7 +45,14 @@ from sandbox_science.orchestrator.model_settings import ModelSettings
 from sandbox_science.orchestrator.runtree import RunTree
 from sandbox_science.orchestrator.uploads import UploadPage
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
-from sandbox_science.workspace.artifacts import ArtifactListing, ChartLink, FigureLink, ViewerLink
+from sandbox_science.workspace.approvals import AnswerResult, PendingListing
+from sandbox_science.workspace.artifacts import (
+    ArtifactListing,
+    ChartLink,
+    FigureLink,
+    RevisionListing,
+    ViewerLink,
+)
 from sandbox_science.workspace.chat import (
     EventPage,
     MessageAnswer,
@@ -125,7 +134,12 @@ MODELS: tuple[type[BaseModel], ...] = (
     QuestionListing,
     QuestionAnswer,
     Requested,
+    ApprovalSettings,
+    AnswerResult,
+    PendingListing,
+    ConnectorSettings,
     ArtifactListing,
+    RevisionListing,
     ViewerLink,
     LedgerListing,
     LedgerEntry,

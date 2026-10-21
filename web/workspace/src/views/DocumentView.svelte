@@ -172,6 +172,11 @@
         onclick={() => (inspector = 'edit')}>Edit</button
       >
       <a href={historyHref(projectId, info.document_id)}>History</a>
+      <a
+        href={`/api/v0/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(info.document_id)}/source?revision=${shown.number}`}
+        download
+        title="The revision's Markdown source, as stored">Export Markdown</a
+      >
     </div>
   </div>
   {#if revision === null && observedHead !== null && observedHead > shown.number}

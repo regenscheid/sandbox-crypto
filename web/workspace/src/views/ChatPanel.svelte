@@ -43,7 +43,11 @@
   } from '../lib/questions';
   import type { ChatSignals } from '../lib/sessionStatus';
   import { idle, submit } from '../lib/submit';
+  import ChatPermission from './ChatPermission.svelte';
   import ChatQuestion from './ChatQuestion.svelte';
+  import { api } from '../lib/api';
+  import type { PendingApproval } from '../lib/api-types';
+  import { heldCall } from '../lib/conversation';
   import ChatRecovery from './ChatRecovery.svelte';
   import ChatRun from './ChatRun.svelte';
   import ChatWaiting from './ChatWaiting.svelte';
@@ -113,9 +117,37 @@
       (!draft.text.trim() && !attachments.length) ||
       tooLong,
   );
+  // Connector calls the proxy holds for the user's answer (D76), polled with the chat.
+  let permissions = $state<PendingApproval[]>([]);
+  $effect(() => {
+    const project = projectId,
+      session = sessionId;
+    return new Poller(
+      (signal) => api.permissionRequests(project, session, signal),
+      (value) => {
+        // A workspace without approvals answers no list: none wait.
+        const requests = value.data?.requests;
+        if (Array.isArray(requests)) permissions = requests.filter((item) => !item.timed_out);
+      },
+      { intervalMs: 2000 },
+    ).watch();
+  });
+  const transcript = $derived(chat?.runs.flatMap((run) => run.events) ?? []);
+  async function answerPermission(
+    request: PendingApproval,
+    decision: 'once' | 'project' | 'server' | 'deny',
+  ) {
+    await api.answerPermission(projectId, request.seq, decision);
+    permissions = permissions.filter((item) => item.seq !== request.seq);
+  }
   $effect(() => {
     signals = chat
-      ? { service: chat.service, lease: chat.lease?.run ?? null, questions: waitingOn, held }
+      ? {
+          service: chat.service,
+          lease: chat.lease?.run ?? null,
+          questions: waitingOn + permissions.length,
+          held,
+        }
       : null;
   });
   /** Whether a run is working now, rather than waiting for an answer. */
@@ -231,6 +263,13 @@
       <ChatRecovery {projectId} {sessionId} {held} busy={asking.busy} {closed} {resume} />
       {#if asking.error}<ErrorMessage error={asking.error} />{/if}
     {/if}
+    {#each permissions as request (request.seq)}
+      <ChatPermission
+        {request}
+        call={heldCall(transcript, request.tool)}
+        answer={(decision) => answerPermission(request, decision)}
+      />
+    {/each}
     {#each open as question (question.question_id)}
       <ChatQuestion
         {question}

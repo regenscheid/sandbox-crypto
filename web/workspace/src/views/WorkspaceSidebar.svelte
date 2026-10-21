@@ -48,6 +48,35 @@
     return poller.watch();
   });
   let search = $state('');
+  // A new session: its name, suggested from the sessions the project has.
+  let naming = $state(false);
+  let newName = $state('');
+  let creating = $state(false);
+  let failure = $state<unknown>(null);
+  function startNaming() {
+    const taken = new Set(current.data?.sessions.map((s) => s.session_id) ?? []);
+    let number = taken.size + 1;
+    while (taken.has(`session-${number}`)) number += 1;
+    newName = `session-${number}`;
+    failure = null;
+    naming = true;
+  }
+  async function createSession(event: SubmitEvent) {
+    event.preventDefault();
+    if (!projectId || creating) return;
+    creating = true;
+    failure = null;
+    try {
+      const opened = await api.createSession(projectId, newName.trim());
+      naming = false;
+      location.hash = sessionHref(projectId, opened.session_id);
+      close();
+    } catch (error) {
+      failure = error;
+    } finally {
+      creating = false;
+    }
+  }
   const sessions = $derived(
     [...(current.data?.sessions ?? [])]
       .reverse()
@@ -161,6 +190,30 @@
             {#if session.closed_at}<span class="muted">Closed</span>{/if}
           </a>
         {:else}<p class="muted">{search ? 'No matching sessions.' : 'No sessions yet.'}</p>{/each}
+      {/if}
+      {#if naming}
+        <form class="new-session" onsubmit={createSession}>
+          <label for="new-session-name" class="sr-only">New session name</label>
+          <input
+            id="new-session-name"
+            bind:value={newName}
+            maxlength="128"
+            pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"
+            title="Letters, digits, '.', '_' and '-', starting with a letter or digit"
+            required
+          />
+          <div class="new-session-actions">
+            <button type="submit" class="primary-button" disabled={creating}
+              >{creating ? 'Opening…' : 'Open'}</button
+            ><button type="button" onclick={() => (naming = false)}>Cancel</button>
+          </div>
+          <p class="muted">Runs in the project's shared environment.</p>
+          {#if failure}<ErrorMessage error={failure} />{/if}
+        </form>
+      {:else}
+        <button type="button" class="new-session-button" onclick={startNaming}
+          ><Icon name="plus" size={14} />New session</button
+        >
       {/if}
     </div>
     <div class="sidebar-section">

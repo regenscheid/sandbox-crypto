@@ -169,6 +169,21 @@ class RunChat:
         except Exception:
             _log.exception("the %s event of run %s could not be written", kind, self.run)
 
+    async def approval(self, wait: dict[str, object] | None) -> None:
+        """A connector call began waiting for the user's answer to its permission request
+        (its number, server and tool), or the wait ended (``None``)."""
+        if wait is None:
+            await self.write("waiting", {"permission_request": None})
+        else:
+            await self.write(
+                "waiting",
+                {
+                    "permission_request": wait["permission_request"],
+                    "server": wait["server"],
+                    "tool": wait["tool"],
+                },
+            )
+
     async def waiting(self, wait: dict[str, object] | None) -> None:
         """A job wait began, or ended (``None``)."""
         if wait is None:

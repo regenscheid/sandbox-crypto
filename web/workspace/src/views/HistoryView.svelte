@@ -150,6 +150,7 @@
                     {projectId}
                     documentId={info.document_id}
                     patchId={patch.patch_id}
+                    suggested={patch.state === 'suggested'}
                     refreshed={() => void histories.reload()}
                   />
                 {/if}

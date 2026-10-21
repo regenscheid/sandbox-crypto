@@ -544,6 +544,18 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         text: `Notices from ${text(data['source'])}: ${ids}.`,
         problem: false,
       });
+    } else if (kind === 'waiting' && 'permission_request' in data) {
+      // A connector call held for the user's answer (D76), or the end of that wait.
+      const request = data['permission_request'];
+      entries.push({
+        kind: 'note',
+        seq,
+        text:
+          typeof request === 'number'
+            ? `Waiting for your approval of ${visible(text(data['tool']))} on ${visible(text(data['server']))} (permission request ${request}).`
+            : 'The wait for approval ended.',
+        problem: false,
+      });
     } else if (kind === 'waiting') {
       const jobs = list(data['job_ids']).map(String);
       const children = list(data['delegation_ids']).map(String);
@@ -581,6 +593,17 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
     }
   }
   return entries;
+}
+
+/** The tool a running run waits on the user's approval for, or null. */
+export function awaitingApproval(run: WatchedRun | null | undefined): string | null {
+  if (run?.state !== 'active') return null;
+  for (let index = run.events.length - 1; index >= 0; index--) {
+    const event = run.events[index]!;
+    if (event.kind !== 'waiting' || !('permission_request' in event.data)) continue;
+    return typeof event.data['permission_request'] === 'number' ? text(event.data['tool']) : null;
+  }
+  return null;
 }
 
 /** Whether the run is in a model call now: active, and its last event began one. */

@@ -122,6 +122,12 @@
       .sort();
   });
 
+  const MODES = [
+    ['available', 'On request'],
+    ['always', 'Always'],
+    ['excluded', 'Off'],
+  ] as const;
+
   function skillMode(id: string): 'available' | 'always' | 'excluded' {
     if (draftExcluded.includes(id)) return 'excluded';
     return draftAlways.includes(id) ? 'always' : 'available';
@@ -260,8 +266,8 @@
       >
       <label
         >Loading <select bind:value={loading}
-          ><option value="all">All choices</option><option value="available">Available</option
-          ><option value="always">Always loaded</option><option value="excluded">Excluded</option
+          ><option value="all">All choices</option><option value="available">On request</option
+          ><option value="always">Always loaded</option><option value="excluded">Off</option
           ></select
         ></label
       >
@@ -269,6 +275,17 @@
   {/if}
 
   {#if view === 'catalog'}
+    {#if dirty && shown}<div class="save-bar" role="status">
+        <span
+          >{changed.length}
+          {changed.length === 1 ? 'skill change' : 'skill changes'} not saved yet</span
+        ><button
+          type="button"
+          class="primary-button"
+          disabled={saving.busy || baseRevision !== shown.settings.revision}
+          onclick={() => void save()}>Save</button
+        ><button type="button" disabled={saving.busy} onclick={discard}>Discard</button>
+      </div>{/if}
     <p class="muted">
       {catalog.length} matching skills. Choices here affect future runs; each run records what it actually
       loaded.
@@ -276,28 +293,33 @@
     <div class="browser-columns" style:--detail-width={`${detailWidth}px`}>
       <section class="browser-list" aria-label="Skill catalog">
         {#each catalog as skill (skill.id)}
-          <button
-            type="button"
-            class="browser-row"
-            class:selected={selectedSkill === skill.id}
-            aria-pressed={selectedSkill === skill.id}
-            onclick={() => (selectedSkill = skill.id)}
-          >
-            <span class="row-top"
-              ><strong>{visible(skill.name)}</strong><span class="mode"
-                >{skillMode(skill.id) === 'always'
-                  ? 'Always loaded'
-                  : skillMode(skill.id) === 'excluded'
-                    ? 'Excluded'
-                    : 'Available'}</span
-              ></span
+          <div class="skill-row" class:selected={selectedSkill === skill.id}>
+            <button
+              type="button"
+              class="browser-row"
+              class:selected={selectedSkill === skill.id}
+              aria-pressed={selectedSkill === skill.id}
+              onclick={() => (selectedSkill = skill.id)}
             >
-            <span class="row-description">{visible(skill.short || skill.description)}</span>
-            <span class="muted"
-              >{visible(skill.source)}{#if skill.topic}
-                · {visible(skill.topic)}{/if}</span
+              <span class="row-top"><strong>{visible(skill.name)}</strong></span>
+              <span class="row-description">{visible(skill.short || skill.description)}</span>
+              <span class="muted"
+                >{visible(skill.source)}{#if skill.topic}
+                  · {visible(skill.topic)}{/if}</span
+              >
+            </button>
+            <div
+              class="segmented skill-mode"
+              role="group"
+              aria-label={`When runs load ${skill.name}`}
             >
-          </button>
+              {#each MODES as [mode, label] (mode)}<button
+                  type="button"
+                  aria-pressed={skillMode(skill.id) === mode}
+                  onclick={() => setMode(skill.id, mode)}>{label}</button
+                >{/each}
+            </div>
+          </div>
         {:else}
           <p class="muted">
             No skills match these filters. Excluded IDs without metadata are listed under Loading
@@ -341,8 +363,8 @@
                 />{mode === 'always'
                   ? 'Always loaded'
                   : mode === 'excluded'
-                    ? 'Excluded'
-                    : 'Available on request'}</label
+                    ? 'Off: never offered'
+                    : 'On request'}</label
               >
             {/each}
           </fieldset>
@@ -560,6 +582,47 @@
     border-bottom: 1px solid var(--border, #ccc);
     background: transparent;
     cursor: pointer;
+  }
+  .skill-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-right: 8px;
+    border-bottom: 1px solid var(--border, #ccc);
+  }
+  .skill-row .browser-row {
+    flex: 1;
+    min-width: 0;
+    border-bottom: 0;
+  }
+  .skill-row.selected,
+  .skill-row:hover {
+    background: var(--surface-raised, #f1f4f3);
+  }
+  .skill-row .browser-row:hover,
+  .skill-row .browser-row.selected {
+    background: transparent;
+  }
+  .skill-mode {
+    flex: none;
+  }
+  .skill-mode button {
+    font-size: 12px;
+    padding: 0 8px;
+  }
+  .save-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 8px 0;
+    border: 1px solid var(--accent-line, #ccc);
+    border-radius: 10px;
+    background: var(--accent-soft, #eef);
+  }
+  .save-bar span {
+    flex: 1;
   }
   .browser-row:hover,
   .browser-row.selected {

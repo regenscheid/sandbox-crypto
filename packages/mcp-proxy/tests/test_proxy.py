@@ -81,6 +81,9 @@ class Harness(Protocol):
     def policy(self, **overrides: Any) -> str: ...
     def bind(self, text: str, project: str = "crypto") -> LoadedPolicy: ...
     async def post(self, body: object, **options: Any) -> Answer: ...
+    async def operator(
+        self, method: str, path: str, body: object = None, *, caller: str = "operator"
+    ) -> Answer: ...
     async def request(self, method: str, data: bytes = b"", **options: Any) -> Answer: ...
     async def initialize(
         self, caller: str = "orchestrator", version: str = "2025-11-25"
@@ -1277,3 +1280,67 @@ async def test_a_call_takes_the_time_after_reading_the_store(
     assert reason(answer) == "approval_required"
     # Each time taken for a resolution follows a read: none comes before the first.
     assert steps[0] == "read", steps
+
+
+# Answers from the workspace, as an operator caller (D76; owner decision, 2026-10-21).
+
+
+async def test_an_operator_lists_its_projects_waiting_requests_without_arguments(
+    harness: Harness,
+) -> None:
+    session = await harness.initialize()
+    held = await harness.post(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "crawl", "arguments": {"url": "https://example.org/secret"}},
+        },
+        session=session,
+        headers={"Sandbox-Science-Session": "s-7"},
+    )
+    seq = request_of(held)
+    listed = await harness.operator("GET", "/permission-requests")
+    assert listed.status == 200
+    [item] = listed.body["requests"]
+    assert (item["seq"], item["server"], item["tool"], item["session"]) == (
+        seq, "papers", "crawl", "s-7",
+    )  # fmt: skip
+    assert item["rule"] == "mcp.servers.papers.tools.escalate[crawl]"
+    assert item["timed_out"] is False
+    assert "example.org" not in json.dumps(listed.body)  # only the digest is kept
+    other = await harness.operator("GET", "/permission-requests", caller="other-operator")
+    assert other.body == {"requests": []}  # another project's operator sees none
+    for caller in ("orchestrator", "shared"):  # neither may read the queue
+        assert (await harness.operator("GET", "/permission-requests", caller=caller)).status == 403
+    assert (await harness.operator("GET", "/permission-requests", caller="")).status == 401
+
+
+async def test_an_operators_server_wide_approval_covers_every_escalated_tool_only(
+    harness: Harness,
+) -> None:
+    harness.bind(harness.policy(default="escalate"))
+    session = await harness.initialize()
+    seq = request_of(await harness.tool(session, "crawl", {"url": "https://example.org/a"}))
+    path = f"/permission-requests/{seq}/answer"
+    for bad in ({"approve": True, "scope": "host"}, {"approve": "yes", "scope": "call"}, {}):
+        assert (await harness.operator("POST", path, bad)).status == 400
+    assert (
+        await harness.operator(
+            "POST", path, {"approve": True, "scope": "server"}, caller="other-operator"
+        )
+    ).status == 404
+    answered = await harness.operator("POST", path, {"approve": True, "scope": "server"})
+    assert answered.status == 201
+    assert answered.body["kind"] == "approval"
+    assert "result" in (await harness.tool(session, "crawl", {"url": "https://x.example"})).body
+    # A tool the default escalates is covered too; a denied tool never is.
+    assert "result" in (await harness.tool(session, "misc", {})).body
+    assert reason(await harness.tool(session, "admin_reset", {})) == "policy_denied"
+    assert (await harness.operator("GET", "/permission-requests")).body == {"requests": []}
+
+
+async def test_an_operator_makes_no_mcp_calls(harness: Harness) -> None:
+    for method in ("POST", "GET", "DELETE"):
+        answer = await harness.request(method, b"{}", caller="operator")
+        assert answer.status == 403

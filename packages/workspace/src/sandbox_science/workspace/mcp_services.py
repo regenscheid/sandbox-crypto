@@ -5,6 +5,12 @@ Only safe service identity and operator-written purpose enter this process from 
 launcher. The latest run observation is historical evidence, not a live health check.
 No proxy URL, credential, server response body or untrusted failure message is sent to
 the browser.
+
+``GET …/mcp-services/settings`` and ``POST …/mcp-services/settings`` with
+``{"expected", "disabled", "operation_id"}`` read and change which configured services the
+project's user turned off (``connector_settings.py``): narrowing only, since a name the
+launcher does not configure is refused. A run does not offer a service turned off, and a
+running run's calls to it are refused.
 """
 
 from __future__ import annotations
@@ -20,8 +26,11 @@ from pydantic import Field
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.contracts.mcp_metadata import McpServiceMetadata
+from sandbox_science.orchestrator.connector_settings import ProjectConnectors
+from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
+from . import documents
 from .api import dumps
 from .context import CONTEXT, identifier, json_answer, json_body, no_query
 from .mcp_metadata import AvailabilityCheck, MetadataClient
@@ -83,6 +92,38 @@ class McpInventory(Contract):
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, services)
     app.router.add_post(PATH + "/{server}/check", check_service)
+    app.router.add_get(PATH + "/settings", settings)
+    app.router.add_post(PATH + "/settings", change_settings)
+
+
+def _configured(request: web.Request, project: str) -> tuple[str, ...]:
+    config = request.app.get(CONFIGURATION, Configuration())
+    return tuple(item.name for item in config.services) if config.project == project else ()
+
+
+async def settings(request: web.Request) -> web.Response:
+    """Which configured services the project's user turned off."""
+    project = identifier(request, "project")
+    configured = _configured(request, project)
+    return await documents.answer(
+        request,
+        lambda store: ProjectConnectors(store).get(project, configured).model_dump(mode="json"),
+    )
+
+
+async def change_settings(request: web.Request) -> web.Response:
+    """The user turns configured services off, or back on, at the revision read."""
+    project = identifier(request, "project")
+    configured = _configured(request, project)
+    value = await json_body(request, "connector settings")
+
+    def write(store: DocumentStore) -> dict[str, object]:
+        answer, replayed = ProjectConnectors(store).change(
+            project, value, USER, configured=configured
+        )
+        return {**answer.model_dump(mode="json"), "replayed": replayed}
+
+    return await documents.answer(request, write, writer=True)
 
 
 def _observations(

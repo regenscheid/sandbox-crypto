@@ -1119,6 +1119,35 @@ class ArtifactInventory:
             )
             return entries, (rows[9][2] if len(rows) > 10 else None)
 
+    def history(
+        self, project: str, artifact: str, *, before: int | None = None
+    ) -> tuple[tuple[ArtifactRevision, ...], int | None]:
+        """At most twenty revisions of one artifact, the newest first, tombstones and
+        revisions whose bytes were not kept included, and the next page's ``before``
+        (``None`` at the end): the artifact's history (RA-37)."""
+        self._scope(project)
+        _IDENTIFIER.validate_python(artifact)
+        if before is not None and (type(before) is not int or before < 1):
+            raise DocumentError(INVALID_REQUEST, "invalid revision cursor")
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no artifact inventory")
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            if (
+                db.execute(
+                    "SELECT 1 FROM artifact_objects WHERE project=? AND id=?", (project, artifact)
+                ).fetchone()
+                is None
+            ):
+                raise DocumentError(NOT_FOUND, "no such artifact in project")
+            rows = db.execute(
+                "SELECT number FROM artifact_revisions WHERE project=? AND artifact=? "
+                "AND number<? ORDER BY number DESC LIMIT 21",
+                (project, artifact, before if before is not None else MAX_COUNTER + 1),
+            ).fetchall()
+            entries = tuple(self._revision(db, project, artifact, row[0]) for row in rows[:20])
+            return entries, (entries[-1].reference.revision if len(rows) > 20 else None)
+
     def results(self, project: str, artifacts: Sequence[str]) -> set[str]:
         """Which of ``artifacts`` are results: published or declared (RA-37), with new
         bytes or the head's (RA-9)."""

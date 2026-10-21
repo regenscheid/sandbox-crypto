@@ -37,6 +37,18 @@ export interface Answer {
   text: string | null;
 }
 
+export interface AnswerResult {
+  seq: number;
+  decision: string;
+  remembered: Grant | null;
+}
+
+export interface ApprovalSettings {
+  project: string;
+  revision: number;
+  grants: Grant[];
+}
+
 /** An artifact at its latest revision, and who made that revision. */
 export interface ArtifactEntry {
   artifact_id: string;
@@ -240,6 +252,13 @@ export interface CondaPackage {
   sha256: string | null;
   md5: string | null;
   license: string | null;
+}
+
+export interface ConnectorSettings {
+  project: string;
+  revision: number;
+  configured: string[];
+  disabled: string[];
 }
 
 export interface ContextAttempt {
@@ -712,6 +731,11 @@ export interface GoalOutcome {
   remaining_work: string[];
 }
 
+export interface Grant {
+  server: string;
+  tool: string | null;
+}
+
 /** A derived binding the project's runs do not set, and why (SK-31). */
 export interface HeldBinding {
   variable: string;
@@ -1069,6 +1093,25 @@ export interface Origin {
   kind: string;
   message: string | null;
   position: number | null;
+}
+
+/** A call the proxy holds for the user's answer. */
+export interface PendingApproval {
+  seq: number;
+  server: string;
+  tool: string;
+  method: string;
+  session: string | null;
+  rule: string | null;
+  reason: string | null;
+  recorded_at: string;
+  expires_at: string;
+  timed_out: boolean;
+  on_timeout: string;
+}
+
+export interface PendingListing {
+  requests: PendingApproval[];
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */
@@ -1471,6 +1514,11 @@ export interface ResumeStatus {
   status: string;
   reason: string | null;
   created: number;
+}
+
+export interface RevisionListing {
+  revisions: ArtifactEntry[];
+  next_before: number | null;
 }
 
 /** One recorded package and its declared license, including unchanged packages. */

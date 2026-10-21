@@ -350,6 +350,9 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
             "--mcp-proxy-token-file",
             str(layout.token(mcp.PROXY_CALLER)),
         ]
+        if config.mcp_proxy.approvals:
+            # An operator caller: it reads and answers the project's permission requests.
+            services += ["--mcp-operator-token-file", str(layout.token(mcp.OPERATOR_CALLER))]
         for server in config.mcp_proxy.servers:
             services += ["--mcp-service", f"{server}={config.mcp_proxy.about.get(server, '')}"]
     named = workspace.preview_name
