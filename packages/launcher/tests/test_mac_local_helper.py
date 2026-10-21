@@ -112,16 +112,53 @@ def test_gateway_config_keeps_image_state_on_volume_and_refuses_overwrite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chosen = settings(tmp_path)
+    driver_dir = tmp_path / "homebrew/libexec"
     monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
     mac.prepare_dirs(chosen)
-    mac.write_gateway_config(chosen)
+    mac.write_gateway_config(chosen, driver_dir)
     data = tomllib.loads(mac.config_path(chosen).read_text())
     assert data["openshell"]["drivers"]["vm"]["state_dir"] == str(chosen.root / "vm")
+    assert data["openshell"]["drivers"]["vm"]["driver_dir"] == str(driver_dir)
     assert data["openshell"]["gateway"]["compute_driver"] == "vm"
     mac.config_path(chosen).write_text("local modification\n")
     with pytest.raises(mac.SetupError, match="differs"):
-        mac.write_gateway_config(chosen)
+        mac.write_gateway_config(chosen, driver_dir)
     assert mac.config_path(chosen).read_text() == "local modification\n"
+
+
+def test_vm_driver_is_resolved_beside_the_pinned_homebrew_gateway(tmp_path: Path) -> None:
+    prefix = tmp_path / "Cellar/openshell/0.1.3"
+    gateway = prefix / "bin/openshell-gateway"
+    driver = prefix / "libexec/openshell-driver-vm"
+    gateway.parent.mkdir(parents=True)
+    driver.parent.mkdir(parents=True)
+    gateway.write_text("gateway")
+    gateway.chmod(0o755)
+    driver.write_text("driver")
+    driver.chmod(0o755)
+    link = tmp_path / "bin/openshell-gateway"
+    link.parent.mkdir()
+    link.symlink_to(gateway)
+    assert mac.vm_driver_dir(str(link)) == driver.parent
+    driver.unlink()
+    with pytest.raises(mac.SetupError, match="VM driver is missing"):
+        mac.vm_driver_dir(str(link))
+
+
+def test_exact_legacy_gateway_config_migrates_without_touching_other_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen = settings(tmp_path)
+    driver_dir = tmp_path / "homebrew/libexec"
+    monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
+    mac.prepare_dirs(chosen)
+    target = mac.config_path(chosen)
+    target.write_text(mac.gateway_config(chosen))
+    target.chmod(0o600)
+    mac.write_gateway_config(chosen, driver_dir)
+    assert target.read_text() == mac.gateway_config(chosen, driver_dir)
+    assert target.stat().st_mode & 0o777 == 0o600
+    mac.write_gateway_config(chosen, driver_dir)
 
 
 def test_cli_is_pinned_to_the_dedicated_gateway(tmp_path: Path) -> None:

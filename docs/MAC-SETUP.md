@@ -99,7 +99,10 @@ and the same `--config` option with `smoke` or `launch`.
 This prepares owner-only directories on the chosen volume, installs missing
 `e2fsprogs` and `uv`, installs **OpenShell v0.1.3** if absent, verifies the
 downloaded installer SHA-256, checks the generated VM gateway config, and
-prompts once for the GHCR token if its Keychain item is absent. The entrypoint
+verifies the separate `openshell-driver-vm` executable in the same Homebrew
+installation as the gateway. It records that executable's directory in the
+generated gateway config, and prompts once for the GHCR token if its Keychain
+item is absent. The entrypoint
 also installs Homebrew Python 3.13 if your available `python3` is older than
 3.11. The script never puts the token in the TOML or a shell argument.
 
@@ -115,7 +118,9 @@ The large files are organized as follows, with the default `directory`:
 
 Do not move or delete these directories while a sandbox is in use. Re-run
 `install` with the same settings if it was interrupted; it does not erase the
-existing state.
+existing state. If you used an earlier version of this helper, `install` or
+`smoke` adds the VM driver directory to an unchanged helper-generated gateway
+config. It refuses to overwrite a config you edited yourself.
 
 ## 4. Run the `crypto-base` MicroVM test
 
@@ -252,6 +257,7 @@ testing restart and Resume.
 | VM socket path is too long | Shorten `directory` or use a shorter volume name before `install`. |
 | Port 18081 is already in use | Choose a free `gateway_port` before `install`; do not overwrite a live gateway config or attach to another gateway. |
 | Installed OpenShell version differs | The helper requires v0.1.3. Inspect the existing installation before changing it; it will not replace another version automatically. |
+| `vm compute driver binary not found` | Update the checkout with `git pull --ff-only`, then run `./scripts/mac-local install` and `./scripts/mac-local smoke` again. The helper now locates the driver in the gateway's Homebrew installation and pins its directory. If `install` says the executable is missing, inspect `brew list nvidia/openshell/openshell`; the pinned installation is incomplete and needs repair before a smoke retry. Preserve the selected-volume state. |
 | GHCR pull fails or returns access denied | Confirm the Keychain token is a classic PAT with `read:packages` and access to the private package; inspect `gateway.log` without sharing its credentials. |
 | Gateway or Sage test fails | Read the printed gateway log path, keep the volume mounted and retry only after identifying the failure. The test cleans up its named sandbox when it can. |
 | Full `launch` reports missing files | Recheck the private application TOML's paths, current image/revision, policy and targets; the babbage example is not a Mac-ready config. |

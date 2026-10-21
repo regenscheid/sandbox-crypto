@@ -198,8 +198,11 @@ def prepare_dirs(settings: Settings) -> None:
         path.chmod(0o700)
 
 
-def gateway_config(settings: Settings) -> str:
-    """Render the pinned VM driver config, with all large state on the volume."""
+def gateway_config(settings: Settings, driver_dir: Path | None = None) -> str:
+    """Render the VM config; None reproduces only the former generated config."""
+    driver_location = (
+        f"driver_dir = {json.dumps(str(driver_dir))}\n" if driver_dir is not None else ""
+    )
     return f'''[openshell]
 version = 2
 
@@ -213,7 +216,7 @@ image_preparation_timeout_seconds = 3600
 allow_unauthenticated_users = true
 
 [openshell.drivers.vm]
-state_dir = {json.dumps(str(settings.root / "vm"))}
+{driver_location}state_dir = {json.dumps(str(settings.root / "vm"))}
 grpc_endpoint = "{settings.gateway_url}"
 default_image = "nvcr.io/nvidia/base/ubuntu:24.04"
 vcpus = 4
@@ -227,17 +230,48 @@ def config_path(settings: Settings) -> Path:
     return settings.root / "gateway/gateway.toml"
 
 
-def write_gateway_config(settings: Settings) -> None:
-    """Write the expected config once, refusing to replace local changes."""
+def vm_driver_dir(gateway: str) -> Path:
+    """Find the VM driver in the same pinned Homebrew installation as the gateway."""
+    gateway_path = Path(gateway).resolve()
+    driver = gateway_path.parent.parent / "libexec/openshell-driver-vm"
+    if not driver.is_file() or not os.access(driver, os.X_OK):
+        raise SetupError(
+            f"OpenShell VM driver is missing or not executable: {driver}. "
+            "Inspect the pinned Homebrew installation with "
+            "`brew list nvidia/openshell/openshell`; if incomplete, "
+            "reinstall OpenShell v0.1.3 with Homebrew before retrying"
+        )
+    return driver.parent
+
+
+def write_gateway_config(settings: Settings, driver_dir: Path) -> None:
+    """Write the pinned config, migrating only our exact previous generated text."""
     target = config_path(settings)
-    content = gateway_config(settings)
+    content = gateway_config(settings, driver_dir)
+    if target.parent.is_symlink():
+        raise SetupError(f"Gateway directory must not be a symlink: {target.parent}")
     if target.is_symlink():
         raise SetupError(f"Gateway config must not be a symlink: {target}")
     if target.exists():
-        if target.read_text() != content:
+        previous = target.read_text()
+        if previous == content:
+            return
+        if previous != gateway_config(settings):
             raise SetupError(
                 f"Gateway config differs from this setup: {target}; inspect it before changing it"
             )
+        # Preserve an existing exact helper-generated config while adding the
+        # driver's explicit Homebrew location. A crash cannot leave half a TOML.
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix=".gateway-", suffix=".toml", dir=target.parent, delete=False
+        ) as stream:
+            stream.write(content)
+            replacement = Path(stream.name)
+        try:
+            replacement.chmod(0o600)
+            replacement.replace(target)
+        finally:
+            replacement.unlink(missing_ok=True)
         return
     with target.open("x") as stream:
         stream.write(content)
@@ -315,7 +349,6 @@ def install(settings: Settings) -> None:
     require_mac(settings)
     brew = require_command("brew")
     prepare_dirs(settings)
-    write_gateway_config(settings)
     if subprocess.run(  # noqa: S603 - brew path came from command lookup.
         [brew, "list", "--versions", "e2fsprogs"], capture_output=True
     ).returncode:
@@ -343,6 +376,8 @@ def install(settings: Settings) -> None:
         version = run([require_command(command), "--version"], capture=True)
         if not pinned_version(version):
             raise SetupError(f"{command} must be version {OPEN_SHELL_VERSION}; found {version}")
+    driver_dir = vm_driver_dir(require_command("openshell-gateway"))
+    write_gateway_config(settings, driver_dir)
     e2fs = run([brew, "--prefix", "e2fsprogs"], capture=True)
     preflight_env = clean_openshell_env()
     preflight_env["PATH"] = f"{e2fs}/sbin:{preflight_env.get('PATH', '')}"
@@ -466,8 +501,9 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
         raise SetupError("Gateway config missing; run install first")
     if config_path(settings).is_symlink():
         raise SetupError("Gateway config must not be a symlink")
-    if config_path(settings).read_text() != gateway_config(settings):
-        raise SetupError("Gateway config changed; inspect it before launch")
+    gateway = require_command("openshell-gateway")
+    driver_dir = vm_driver_dir(gateway)
+    write_gateway_config(settings, driver_dir)
     if app:
         if settings.application_config is None or not settings.application_config.is_file():
             raise SetupError(
@@ -498,7 +534,6 @@ def run_with_gateway(settings: Settings, *, app: bool) -> None:
             )
         require_command("uv")
     require_command("openshell")
-    gateway = require_command("openshell-gateway")
     prepare_dirs(settings)
     with socket.socket() as probe:
         if probe.connect_ex(("127.0.0.1", settings.gateway_port)) == 0:
