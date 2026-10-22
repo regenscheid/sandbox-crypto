@@ -1,8 +1,8 @@
 # Handoff
 
 Updated 2026-10-21. Current work is the isolated branch
-`codex/context-lifecycle-refactor` in the attached `agent-context-refactor` worktree,
-based on fetched `origin/dev` at `391cb7a7`. The primary checkout, remote branches
+`agent-context-refactor` in the attached `agent-context-refactor` worktree,
+based on fetched `origin/dev` at `391cb7a7`. The primary checkout, `dev`
 and deployed services are unchanged. Read [STATUS.md](STATUS.md),
 [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md), and the
 [context ownership map](../docs/specs/agent-context-refactor.md).
@@ -22,8 +22,9 @@ and deployed services are unchanged. Read [STATUS.md](STATUS.md),
   workspace: 855 pass; static checks pass. Broad dev WAL/ledger/SIGTERM failures remain
   ([evidence](docs/agent-reports/context-refactor-2026-10-21.md)); do not claim the
   entire suite is green.
-- No real model calls, paid research, live services, archive migration, remote push
-  or merge were part of this refactor. Continue in this separate worktree.
+- No real model calls, paid research, live services, archive migration or merge were
+  part of this refactor. The owner requested publishing `agent-context-refactor`.
+  Continue in this separate worktree.
 
 ## Earlier accepted scope and evidence
 

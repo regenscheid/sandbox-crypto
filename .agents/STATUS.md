@@ -1,7 +1,7 @@
 # Status
 
 Updated 2026-10-21. The context-focused refactor is isolated on
-`codex/context-lifecycle-refactor`, based on fetched `origin/dev` at `391cb7a7`.
+`agent-context-refactor`, based on fetched `origin/dev` at `391cb7a7`.
 The primary checkout and deployed services are unchanged. Context ownership,
 attempt finalization and workspace request execution are implemented and locally
 reviewed; no remote merge or rollout is implied.
