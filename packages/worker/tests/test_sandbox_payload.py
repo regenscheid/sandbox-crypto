@@ -27,6 +27,7 @@ LOADS: dict[str, frozenset[str]] = {
         {
             "binding_inventory",
             "capture",
+            "executor_lifecycle",
             "provisioning",
             "sandbox_files",
             "sandbox_processes",

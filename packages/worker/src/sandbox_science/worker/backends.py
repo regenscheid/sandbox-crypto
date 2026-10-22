@@ -24,6 +24,7 @@ from . import (
     capture,
     daemon,
     executor,
+    executor_lifecycle,
     pdfhelper,
     provisioning,
     request_frames,
@@ -46,6 +47,7 @@ PROVISIONING_SOURCE = Path(provisioning.__file__)
 """The package-command wrappers and hook (provisioning.py), which the executor loads."""
 SANDBOX_FILES: tuple[Path, ...] = (
     EXECUTOR_SOURCE,
+    Path(executor_lifecycle.__file__),
     Path(binding_inventory.__file__),
     PROVISIONING_SOURCE,
     PDF_HELPER_SOURCE,

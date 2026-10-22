@@ -48,18 +48,6 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 
-async def _owned[T](work: Awaitable[T], cancelled: Callable[[], None] | None = None) -> T:
-    """Cancellation cannot outlive an actual process launch or its cleanup."""
-    task = asyncio.ensure_future(work)
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if cancelled is not None:
-                cancelled()
-    return task.result()
-
-
 def _sibling(name: str) -> ModuleType:
     """A module of the worker package; in a sandbox, the copy the worker put beside this file."""
     if __package__:
@@ -83,6 +71,7 @@ if TYPE_CHECKING:
     from . import (
         binding_inventory,
         capture,
+        executor_lifecycle,
         provisioning,
         sandbox_files,
         sandbox_processes,
@@ -95,6 +84,7 @@ if TYPE_CHECKING:
 else:
     binding_inventory = _sibling("binding_inventory")
     capture = _sibling("capture")
+    executor_lifecycle = _sibling("executor_lifecycle")
     provisioning = _sibling("provisioning")
     sandbox_files = _sibling("sandbox_files")
     sandbox_processes = _sibling("sandbox_processes")
@@ -103,6 +93,8 @@ else:
     encode_line = sandbox_files.encode_line
     SHARED = sandbox_files.SHARED
     MAX_PATH_BYTES = sandbox_files.MAX_PATH_BYTES
+
+_owned = executor_lifecycle.owned
 
 PROTOCOL = 3
 """The executor's protocol: 3 checks generated restrictions at every binding-bearing
@@ -678,21 +670,27 @@ class Executor:
         self.owner_prefix = ""
         self.kernel_idle = kernel_idle
         """Stop a kernel nobody has used for this many seconds; None keeps them."""
-        self.reaper: asyncio.Task[None] | None = None
         self.send = send
         self.subreaper = subreaper
         self.protected = protected
         """Whether this process adopts orphans, so leftovers are found below it."""
-        self.running: dict[str, Running] = {}
-        self.kernels: dict[tuple[str, str, str], Kernel] = {}
-        """By session, run (empty for the session's own) and language."""
-        self.ended_runs: dict[str, dict[str, None]] = {}
-        """By session, the runs whose kernels were closed, oldest first."""
-        self.tasks: set[asyncio.Task[None]] = set()
-        self.launch_controls: set[asyncio.Task[Any]] = set()
+        self.lifecycle = executor_lifecycle.Lifecycle(
+            self.clock,
+            make_kernel=self.make_kernel,
+            error=ToolError,
+            signal=self.signal_command,
+            leftovers=self.leftovers,
+            collect=end_and_collect,
+            end_descendants=self.end_descendants,
+            close_resources=self.captures.close,
+            languages=tuple(KERNEL_NAMES),
+            max_run_kernels=MAX_RUN_KERNELS,
+            max_ended_runs=MAX_ENDED_RUNS,
+            term_grace=TERM_GRACE,
+            package_grace=PACKAGE_GRACE,
+        )
         self.configured: dict[str, str] = {}
         """Variables from ``configure``, added to every command's and kernel's environment."""
-        self.closing = False
         self.package_gate_id = "gate-" + secrets.token_hex(12)
         self.package_generation = -1
         self.package_mode = "hold"
@@ -751,11 +749,28 @@ class Executor:
             chunk = text[start : start + STREAM_CHUNK]
             await self.event(execution, "stream", name=name, text=chunk)
 
+    @property
+    def running(self) -> dict[str, Running]:
+        return self.lifecycle.running
+
+    @property
+    def kernels(self) -> dict[tuple[str, str, str], Kernel]:
+        return self.lifecycle.kernels
+
+    @property
+    def tasks(self) -> set[asyncio.Task[None]]:
+        return self.lifecycle.tasks
+
+    @property
+    def closing(self) -> bool:
+        return self.lifecycle.closing
+
+    def start_idle_reaper(self, idle: float) -> None:
+        """Start this connection's owned idle-kernel task."""
+        self.lifecycle.start_idle_reaper(idle)
+
     def spawn(self, coroutine: Awaitable[None]) -> asyncio.Task[None]:
-        task = asyncio.ensure_future(coroutine)
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
-        return task
+        return self.lifecycle.spawn(coroutine)
 
     async def handle(self, request: Message) -> None:
         handlers: dict[str, Callable[[Message], Awaitable[None]]] = {
@@ -797,35 +812,9 @@ class Executor:
             await self.fail(request, ToolError("internal", message))
 
     async def shutdown(self) -> None:
-        """Stop every command and kernel, then anything still running below this process."""
-        await _owned(self.finish_shutdown(asyncio.current_task()))
+        await self.lifecycle.shutdown()
 
-    async def finish_shutdown(self, requester: asyncio.Task[Any] | None) -> None:
-        self.closing = True
-        await self.captures.close()
-        if self.reaper is not None:
-            self.reaper.cancel()
-        running = list(self.running.values())
-        await asyncio.gather(
-            *(self.terminate(item) for item in running if item.process is not None),
-            return_exceptions=True,
-        )
-        for item in running:
-            item.cancel_requested = True
-            if item.task is not None:
-                item.task.cancel()
-        await asyncio.gather(
-            *(item.task for item in running if item.task is not None), return_exceptions=True
-        )
-        controls = [
-            task for task in self.launch_controls if task not in (requester, asyncio.current_task())
-        ]
-        for task in controls:
-            task.cancel()
-        await asyncio.gather(*controls, return_exceptions=True)
-        await asyncio.gather(
-            *(kernel.stop() for kernel in self.kernels.values()), return_exceptions=True
-        )
+    async def end_descendants(self) -> None:
         await asyncio.to_thread(sandbox_processes.end_descendants)
 
     # Paths and environment.
@@ -1345,7 +1334,7 @@ class Executor:
                         epoch = self.package_epoch if fingerprint == self.reported else None
             if running.cancel_requested:
                 raise _NotStartedError
-            if self.closing or (
+            if self.lifecycle.closing or (
                 (running.kind == "restart" or running.package_operation)
                 and running.controller
                 and not running.controller()
@@ -1373,7 +1362,7 @@ class Executor:
         """Wait without retaining the launch lock; serialize the final launch with hold ACK."""
         while True:
             await self.package_launch.acquire()
-            if self.closing:
+            if self.lifecycle.closing:
                 self.package_launch.release()
                 raise ToolError("unavailable", "executor is closing; new launch refused")
             if (
@@ -1465,7 +1454,7 @@ class Executor:
         execution = request.get("execution")
         if not isinstance(execution, str) or not execution:
             raise ToolError("invalid_request", "missing execution id")
-        if execution in self.running:
+        if execution in self.lifecycle.running:
             raise ToolError("conflict", f"execution {execution} is already running")
         running = Running(execution=execution, kind=kind)
         inventory = request.get("binding_inventory")
@@ -1484,7 +1473,7 @@ class Executor:
             running.controller = lambda: bool(guard())
         if self.owner_prefix:
             running.owner = self.owner_prefix + secrets.token_hex(8)
-        self.running[execution] = running
+        self.lifecycle.accept(running)
         return running
 
     async def op_pdf(self, request: Message) -> None:
@@ -1667,7 +1656,7 @@ class Executor:
                 os.close(descriptor)
             if running.process is not None:
                 sandbox_processes.spawned.discard(running.process.pid)
-            self.running.pop(execution, None)
+            self.lifecycle.finish(execution)
             observations = written.pop("output_observations", None)
             result = {
                 "exit_code": exit_code,
@@ -1683,7 +1672,7 @@ class Executor:
             }
             if running.bindings_dropped:
                 result["bindings_dropped"] = list(running.bindings_dropped)
-            if not self.closing:
+            if not self.lifecycle.closing:
                 await self.event(
                     execution, "end", state=state, result=result, output_observations=observations
                 )
@@ -1756,7 +1745,7 @@ class Executor:
         execution = request.get("execution")
         if type(execution) is not str or re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid child execution identity")
-        running = self.running.get(execution)
+        running = self.lifecycle.running.get(execution)
         if running is None or running.kind != "job":
             await self.reply(request, found=False)
             return
@@ -1773,33 +1762,14 @@ class Executor:
         await self.reply(request, found=True, cpu_seconds=cpu, memory_bytes=memory, **streams)
 
     async def terminate(self, running: Running) -> None:
-        """SIGTERM to the command and what it started, then SIGKILL after a grace period.
+        await self.lifecycle.terminate(running)
 
-        A package command's wrapper passes its SIGTERM on, so the command gets one only.
-        The grace is for every process of the call, not only its shell, which may end at
-        once and leave the others; a package command still in its turn gets PACKAGE_GRACE.
-        """
-        process = running.process
-        if process is None:
-            return
-        owner, leader = running.owner, running.leader
+    async def signal_command(self, owner: str, leader: sandbox_processes.Leader | None) -> None:
         await asyncio.to_thread(
             lambda: sandbox_processes.signal_processes(
                 without_wrapped(sandbox_processes.owned_processes(owner, leader)), signal.SIGTERM
             )
         )
-        started = time.monotonic()
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(process.wait(), TERM_GRACE)
-        while True:
-            left, in_turn = await asyncio.to_thread(self.leftovers, owner, leader)
-            grace = PACKAGE_GRACE if in_turn else TERM_GRACE
-            if not left or time.monotonic() - started >= grace:
-                break
-            await asyncio.sleep(0.1)
-        if left or process.returncode is None:
-            await end_and_collect(owner, leader)
-        await process.wait()
 
     def leftovers(
         self, owner: str, leader: sandbox_processes.Leader | None
@@ -1810,39 +1780,18 @@ class Executor:
         holder = (self.packages.holding() or {}).get("pid")
         return left, isinstance(holder, int) and any(info.pid == holder for info in left)
 
+    def make_kernel(self, session: str, language: str, run: str | None) -> Kernel:
+        return Kernel(
+            session,
+            language,
+            self.directory(session, "."),
+            self.environment(session),
+            last_used=self.clock.monotonic(),
+            run=run,
+        )
+
     def kernel(self, session: str, language: str, run: str | None = None) -> Kernel:
-        """The session's kernel of ``language``, or the run's own, made on first use."""
-        if language not in KERNEL_NAMES:
-            raise ToolError("unsupported", f"no {language!r} kernel here")
-        key = (session, run or "", language)
-        if run is not None and run in self.ended_runs.get(session, {}):
-            raise ToolError("conflict", f"run {run} has ended, and its kernels with it")
-        if key not in self.kernels:
-            in_use = {id(running.kernel) for running in self.running.values()}
-            runs = {
-                kernel.run
-                for kernel in self.kernels.values()
-                if kernel.session == session
-                and kernel.run not in (None, run)
-                and (kernel.manager is not None or id(kernel) in in_use)
-            }
-            if run is not None and len(runs) >= MAX_RUN_KERNELS:
-                raise ToolError(
-                    "unavailable",
-                    f"{MAX_RUN_KERNELS} runs of this session have kernels of their own; "
-                    "one must end first",
-                )
-            cwd = self.directory(session, ".")
-            kernel = Kernel(
-                session,
-                language,
-                cwd,
-                self.environment(session),
-                last_used=self.clock.monotonic(),
-                run=run,
-            )
-            self.kernels[key] = kernel
-        return self.kernels[key]
+        return self.lifecycle.kernel(session, language, run)
 
     def run_name(self, request: Message) -> str | None:
         """The run a request names for its own kernel; ``None`` for the session's."""
@@ -1947,7 +1896,7 @@ class Executor:
             result = {"error": {"kind": "internal", "message": message}}
         finally:
             running.queued = False
-            self.running.pop(execution, None)
+            self.lifecycle.finish(execution)
             kernel.last_used = self.clock.monotonic()
             if ran_on is None and kernel.generation:
                 ran_on = kernel.info()
@@ -1963,7 +1912,7 @@ class Executor:
             )
             if running.bindings_dropped:
                 result["bindings_dropped"] = list(running.bindings_dropped)
-            if not self.closing:
+            if not self.lifecycle.closing:
                 observations = result.pop("output_observations", None)
                 await self.event(
                     execution, "end", state=state, result=result, output_observations=observations
@@ -2078,7 +2027,7 @@ class Executor:
         )
 
     async def op_cancel(self, request: Message) -> None:
-        running = self.running.get(str(request.get("execution")))
+        running = self.lifecycle.running.get(str(request.get("execution")))
         if running is None:
             await self.reply(request, found=False)
             return
@@ -2094,14 +2043,8 @@ class Executor:
         # runs, and a running one is interrupted by its loop.
 
     async def op_restart(self, request: Message) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self.launch_controls.add(task)
-        try:
+        with self.lifecycle.control():
             await self.restart_request(request)
-        finally:
-            if task is not None:
-                self.launch_controls.discard(task)
 
     async def restart_request(self, request: Message) -> None:
         session = self.session(request)
@@ -2113,131 +2056,39 @@ class Executor:
         guard = request.get("_admission_guard")
         if callable(guard):
             restart.controller = lambda: bool(guard())
-        async with kernel.control:
-            await self.package_launch.acquire()
-            try:
-                self.controller_present(request)
-                if self.closing or self.package_mode != "ready":
-                    raise ToolError(
-                        "unavailable", "package admission is closed; kernel restart refused"
-                    )
-                if request.get("only_if_absent") is True and await kernel.alive():
-                    raise ToolError(
-                        "conflict", "kernel became live before conditional recovery restart"
-                    )
-                # The running cell does not hold up a restart: it ends, cancelled.
-                for running in self.running.values():
-                    if running.kernel is kernel and running.started:
-                        running.restarted = True
-                if kernel.manager is not None:
-                    await self.own_launch(restart, kernel.stop())
-                    kernel.state_lost = True
-            finally:
-                self.package_launch.release()
-            _not_retired(kernel)
-            await kernel.ensure_started(lambda work: self.start_kernel(restart, kernel, 180, work))
+        await self.lifecycle.restart(
+            kernel,
+            only_if_absent=request.get("only_if_absent") is True,
+            permit=lambda: self.restart_permit(request),
+            stop=lambda: self.own_launch(restart, kernel.stop()),
+            start=lambda: kernel.ensure_started(
+                lambda work: self.start_kernel(restart, kernel, 180, work)
+            ),
+        )
         await self.reply(request, kernel=kernel.info())
 
-    async def reap_idle_kernels(self, idle: float) -> None:
-        """Stop kernels unused for ``idle`` seconds; the session's next cell reports lost state."""
-        interval = max(0.2, min(30.0, idle / 2))
-        while True:
-            await self.clock.sleep(interval)
-            for kernel in tuple(self.kernels.values()):
-                if kernel.manager is None or self.clock.monotonic() - kernel.last_used < idle:
-                    continue
-                async with kernel.control:
-                    busy = any(running.kernel is kernel for running in self.running.values())
-                    if kernel.manager is None or busy:
-                        continue
-                    if self.clock.monotonic() - kernel.last_used < idle:
-                        continue
-                    await kernel.stop()
-                    kernel.state_lost = True
-                print(
-                    f"executor: stopped kernel {kernel.kernel_id} after {idle:.0f} s unused",
-                    file=sys.stderr,
+    @contextlib.asynccontextmanager
+    async def restart_permit(self, request: Message):
+        async with self.package_launch:
+            self.controller_present(request)
+            if self.lifecycle.closing or self.package_mode != "ready":
+                raise ToolError(
+                    "unavailable", "package admission is closed; kernel restart refused"
                 )
+            yield
+
+    async def reap_idle_kernels(self, idle: float) -> None:
+        await self.lifecycle.reap_idle_kernels(idle)
 
     async def op_close_session(self, request: Message) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self.launch_controls.add(task)
-        try:
-            await _owned(self.close_session_request(request))
-        finally:
-            if task is not None:
-                self.launch_controls.discard(task)
-
-    async def close_session_request(self, request: Message) -> None:
-        """Stop all session kernels; reply with the kernels it stopped.
-
-        Its running cells end cancelled and its queued ones never start. Each kernel
-        keeps its generation, so the session's next cell starts a new one and reports
-        that earlier state is gone. Shell calls are not affected. Runs' own kernels are
-        retired and forgotten, and their runs remembered as ended, so a late cell is
-        refused rather than starting one again. A request naming a run stops only that
-        run's own kernels; the session's kernels and jobs stay.
-        """
-        session = self.session(request)
-        run = self.run_name(request)
-        stopped: list[Message] = []
-        jobs = [
-            running
-            for running in self.running.values()
-            if running.kind == "job" and running.session == session and run is None
-        ]
-        for running in jobs:
-            running.cancel_requested = True
-        await asyncio.gather(
-            *(self.terminate(running) for running in jobs if running.process is not None)
-        )
-        await asyncio.gather(
-            *(running.task for running in jobs if running.task is not None), return_exceptions=True
-        )
-        for key, kernel in list(self.kernels.items()):
-            if kernel.session != session or (run is not None and kernel.run != run):
-                continue
-            for running in self.running.values():
-                if running.kernel is kernel:
-                    running.cancel_requested = True
-                    if running.started:
-                        running.closing = True
-            async with kernel.control:
-                if kernel.manager is not None:
-                    stopped.append(kernel.info())
-                    await kernel.stop()
-                    kernel.state_lost = True
-                if kernel.run is not None:
-                    kernel.retired = True
-                    self.kernels.pop(key, None)
-                    self.end_run(session, kernel.run)
-        if run is not None:
-            self.end_run(session, run)
+        with self.lifecycle.control():
+            stopped = await _owned(
+                self.lifecycle.close_session(self.session(request), self.run_name(request))
+            )
         await self.reply(request, kernels=stopped)
 
-    def end_run(self, session: str, run: str) -> None:
-        """Remember ``run`` as ended, within ``MAX_ENDED_RUNS`` per session."""
-        ended = self.ended_runs.setdefault(session, {})
-        ended.pop(run, None)
-        ended[run] = None
-        while len(ended) > MAX_ENDED_RUNS:
-            del ended[next(iter(ended))]
-
     async def session_kernels(self, session: str) -> list[Message]:
-        """Only this session's live kernels, its own and its runs', in the order of their
-        runs and then the fixed supported-language order."""
-        found: list[Message] = []
-        order = {language: number for number, language in enumerate(KERNEL_NAMES)}
-        keys = sorted(
-            (key for key in self.kernels if key[0] == session),
-            key=lambda key: (key[1], order.get(key[2], len(order))),
-        )
-        for key in keys:
-            kernel = self.kernels[key]
-            if await kernel.alive():
-                found.append(kernel.info())
-        return found
+        return await self.lifecycle.session_kernels(session)
 
     async def op_kernels(self, request: Message) -> None:
         await self.reply(request, kernels=await self.session_kernels(self.session(request)))
@@ -2249,8 +2100,10 @@ class Executor:
         say in a background thread, from an idle one.
         """
         cpu = await asyncio.to_thread(sandbox_processes.cpu_seconds_below, os.getpid())
-        kernels = sum(1 for kernel in self.kernels.values() if kernel.manager is not None)
-        await self.reply(request, cpu_seconds=cpu, kernels=kernels, running=len(self.running))
+        kernels = sum(1 for kernel in self.lifecycle.kernels.values() if kernel.manager is not None)
+        await self.reply(
+            request, cpu_seconds=cpu, kernels=kernels, running=len(self.lifecycle.running)
+        )
 
     async def op_read(self, request: Message) -> None:
         path = request.get("path")
@@ -2817,7 +2670,7 @@ async def serve_stdio(
         root, send, subreaper=subreaper, protected=protected, kernel_idle=kernel_idle
     )
     if kernel_idle is not None:
-        executor.reaper = executor.spawn(executor.reap_idle_kernels(kernel_idle))
+        executor.start_idle_reaper(kernel_idle)
     try:
         while True:
             try:
