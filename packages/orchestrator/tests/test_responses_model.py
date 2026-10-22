@@ -511,11 +511,30 @@ async def test_split_stream_keeps_only_the_completed_response(
     assert json.loads(turn.native or b"") == final
 
 
+async def test_a_stream_that_ends_before_its_final_response_is_tried_again(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    # The gateway's stream cut off after partial text (as on the Mac, 2026-10-21): the
+    # outcome is unknown, so the call is made again, and the partial text is never a turn.
+    fake.then(
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta",'
+        '"delta":"partial"}\n\n',
+        headers={"Content-Type": "text/event-stream"},
+    )
+    fake.then(
+        "data: "
+        + json.dumps({"type": "response.completed", "response": json.loads(response(said("done")))})
+        + "\n\n",
+        headers={"Content-Type": "text/event-stream"},
+    )
+    turn = await gpt.complete([{"role": "user", "content": TASK}], [])
+    assert turn.text == "done"
+    assert turn.retried == ("incomplete response",)
+
+
 @pytest.mark.parametrize(
     "events",
     [
-        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta",'
-        '"delta":"partial"}\n\n',
         'event: error\ndata: {"type":"error","message":"upstream failed"}\n\n',
         "event: response.completed\ndata: not-json\n\n",
         'event: response.completed\ndata: {"type":"response.completed"}\n\n',

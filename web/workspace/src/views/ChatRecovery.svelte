@@ -24,6 +24,13 @@
   let state = $state<PollState<StatusPage>>(initialPoll());
   const recovery = $derived(state.data);
   const blocked = $derived(recovery?.works.filter((work) => work.state === 'blocked') ?? []);
+  /** The latest Resume of this research, when it did not start, with why. */
+  const refused = $derived.by(() => {
+    const latest = [...(recovery?.resumes ?? [])]
+      .filter((item) => item.root === recovery?.root)
+      .sort((a, b) => b.created - a.created)[0];
+    return latest?.status === 'blocked' && latest.reason ? latest.reason : null;
+  });
 
   $effect(() => {
     const path = `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/recovery`;
@@ -55,6 +62,7 @@
         Your messages are held until you resume.
       {/if}
     </p>
+    {#if refused}<p class="muted">The last resume did not start: {refused}</p>{/if}
     {#each blocked as work (work.work)}
       <p class="muted">Blocked: {work.reason ?? 'Review this work before resuming.'}</p>
     {/each}

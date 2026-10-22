@@ -743,7 +743,8 @@ async def test_failed_environment_preparation_prevents_claim_and_model_dispatch(
                 "SELECT status, reason FROM research_resumes WHERE request=?", (request,)
             ).fetchone()
         assert status == "blocked"
-        assert reason == "interrupted"
+        # The cause is kept for the user, after the interruption.
+        assert reason == "interrupted: original environment missing"
     finally:
         documents.close()
         state.projects.close()
