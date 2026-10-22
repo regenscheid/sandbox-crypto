@@ -944,6 +944,12 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         assert await service.waiting_work() == ()
         post(harness, "m-3", "Help consolidate again.")
         await service.tick()
+        # Admission may finish after the tick returns; only a later tick removes it.
+        await eventually(
+            lambda: (PROJECT, SESSION) in service.active,
+            timeout=20,
+            describe="the consolidation run to be admitted",
+        )
         active = service.active[(PROJECT, SESSION)]
         assert active.task is not None
         await asyncio.wait_for(asyncio.shield(active.task), timeout=20)
