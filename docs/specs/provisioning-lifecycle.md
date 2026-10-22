@@ -22,9 +22,10 @@ provisioning collaborators, not a reusable workflow framework or mixins.
 
 The stage runner returns a `Completion` value containing outcome, reason, stage,
 error, next step and record updates. A successful installer returns the before and
-after revisions together as `Installed`. Permission approval returns the request
-identity as `PermissionGrant`. These internal values and typed update, observation
-and probe callbacks live in `provision_types.py`.
+after revisions together as `Installed`. Permission approval completes the wait;
+its exact request identity is already recorded through the coordinator. Internal
+completion values and typed update, observation and probe callbacks live in
+`provision_types.py`.
 Reconciliation returns a completion value; early denials and failed steps use the
 same completion representation. The coordinator alone turns it into a terminal
 record and wakes record waiters.
@@ -53,6 +54,8 @@ record and wakes record waiters.
    cannot clear a recovery mark established by another unfinished install.
 8. Environment removal requires durable terminal classification. A failed write
    is retried on a later forget; finished coroutine state alone is insufficient.
+   Retention cannot evict a drained owner whose terminal write failed. A successful
+   forget retires its drained terminal owners, including those kept past retention.
 
 ## Verification
 

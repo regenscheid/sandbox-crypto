@@ -351,6 +351,8 @@ class Provisioner:
             )
         if failure is not None:
             raise failure
+        for op in operations:
+            self._retire(op)
 
     async def close(self) -> None:
         """End every operation still running: each is recorded as failed."""
@@ -386,6 +388,15 @@ class Provisioner:
         changed, op.changed = op.changed, asyncio.get_running_loop().create_future()
         changed.set_result(None)
 
+    def _retire(self, op: Operation) -> None:
+        """Release only drained owners whose terminal record was saved successfully."""
+        if (
+            op.record.state is ProvisionState.FINISHED
+            and (op.task is None or op.task.done())
+            and self._ops.get(op.record.provision_id) is op
+        ):
+            self._ops.pop(op.record.provision_id)
+
     def _release(self, op: Operation) -> None:
         """Give the environment's turn to the next operation."""
         environment_id = op.record.request.context.environment_id
@@ -408,12 +419,11 @@ class Provisioner:
             self._queues.pop(environment_id, None)
 
         def retire(_task: asyncio.Task[None] | None = None) -> None:
-            asyncio.get_running_loop().call_later(
-                self.retain, self._ops.pop, op.record.provision_id, None
-            )
+            asyncio.get_running_loop().call_later(self.retain, self._retire, op)
 
         # forget() locates environment owners through _ops. A terminal append
         # can outlive retention, so begin eviction only after its task drains.
+        # Failed terminal writes retain their owner until forget can retry them.
         if op.task is not None and not op.task.done():
             op.task.add_done_callback(retire)
         else:

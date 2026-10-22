@@ -243,13 +243,6 @@ class Observe(Protocol):
     async def __call__(self, record: ProvisionOperation, kind: str) -> None: ...
 
 
-@dataclass(frozen=True, slots=True)
-class PermissionGrant:
-    """The exact-file permission request approved for this operation."""
-
-    request: int
-
-
 class Probe(Protocol):
     """Execute a capability probe in the operation's original execution context."""
 

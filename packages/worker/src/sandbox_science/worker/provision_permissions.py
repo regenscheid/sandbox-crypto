@@ -26,7 +26,6 @@ from .provision_types import (
     Governing,
     Observe,
     Operation,
-    PermissionGrant,
     RecordUpdate,
     Stop,
     asked,
@@ -82,9 +81,7 @@ class ProvisionPermissions:
                     self.clock.now(),
                 )
 
-    async def request(
-        self, op: Operation, governing: Governing, decided: Decided
-    ) -> PermissionGrant:
+    async def request(self, op: Operation, governing: Governing, decided: Decided) -> None:
         """Ask once for the exact resolved file set, and wait for the answer (CP-8)."""
         request = op.record.request
         escalated = [decided.decisions[index] for index in decided.with_action(Action.ESCALATE)]
@@ -162,7 +159,7 @@ class ProvisionPermissions:
         _log.info("provisioning %s waits for permission request %d", op.record.provision_id, seq)
         deadline = self.clock.now() + timeout
         await self._observe(op.record, "provision.awaiting_permission")
-        return await self.await_answer(op, seq, self.permissions, deadline, timeout)
+        await self.await_answer(op, seq, self.permissions, deadline, timeout)
 
     async def await_answer(
         self,
@@ -171,7 +168,7 @@ class ProvisionPermissions:
         permissions: Permissions,
         deadline: datetime,
         timeout: timedelta,
-    ) -> PermissionGrant:
+    ) -> None:
         """Wait for the answer, until ``deadline``: its own, so that a store the worker can
         no longer read cannot hold the environment's turn for ever."""
         while True:
@@ -203,7 +200,7 @@ class ProvisionPermissions:
                         ),
                     )
                 self._update(op, outcome=None, next_step=None)
-                return PermissionGrant(seq)
+                return
             if answer is not None:
                 raise Stop(
                     ProvisionOutcome.DENIED,

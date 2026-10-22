@@ -400,6 +400,7 @@ async def make_world(
         kind: type[Provisioner] = Provisioner,
         stages: type[ProvisionStages] | None = None,
         permission_store: type[Permissions] = Permissions,
+        retain: float = 600.0,
     ) -> World:
         prefix = make_prefix(tmp_path)
         index = tmp_path / "index.json"
@@ -456,6 +457,7 @@ async def make_world(
             restorer=restorer,
             clock=clock,
             poll=0.1,
+            retain=retain,
         )
         await provisioner.start()
         client = await aiohttp_client(
@@ -1824,3 +1826,36 @@ async def test_public_terminal_record_releases_turn_while_observation_remains_ow
         first["provision_id"],
         following["provision_id"],
     }
+
+
+async def test_public_forget_retries_terminal_write_after_retention_expired(
+    make_world: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drained coroutine whose terminal write failed stays available for recovery."""
+    world = await make_world(retain=0.001)
+    original = Store.update_provision
+    failed_write = asyncio.Event()
+    unavailable = True
+
+    def update(store: Store, record: ProvisionOperation) -> None:
+        if unavailable and record.state is ProvisionState.FINISHED:
+            failed_write.set()
+            raise OSError("synthetic terminal write unavailable")
+        original(store, record)
+
+    monkeypatch.setattr(Store, "update_provision", update)
+    submitted = await world.provision("terminal-write-failure", system=["synthetic-system"])
+    await asyncio.wait_for(failed_write.wait(), 5)
+    with pytest.raises(WorkerError, match="not durably finished"):
+        await world.provisioner.forget("env1")
+    retained = world.provisioner.get(submitted["provision_id"])
+    assert retained.state is not ProvisionState.FINISHED
+    # A public long poll lets the ordinary retirement deadline expire without
+    # inspecting the coordinator's owner dictionary or scheduling private hooks.
+    after_retention = await world.provisioner.wait(retained.provision_id, retained.seq, 0.02)
+    assert after_retention.state is not ProvisionState.FINISHED
+    assert not world.store.provisioning_finished("env1")
+    unavailable = False
+    await world.provisioner.forget("env1")
+    assert world.store.provisioning_finished("env1")
+    assert world.provisioner.get(retained.provision_id).state is ProvisionState.FINISHED
