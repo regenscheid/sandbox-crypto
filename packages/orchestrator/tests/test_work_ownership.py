@@ -11,12 +11,12 @@ from typing import Literal
 import pytest
 
 from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.harness import save
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_id_of
 from sandbox_science.orchestrator.runstate import RunState
 
@@ -284,13 +284,13 @@ async def test_resume_attempt_source_is_explicitly_shown_once(
 
 
 def test_completed_child_outcome_must_be_consumed_before_parent_completion(projects: ProjectStore):
+    from sandbox_science.orchestrator.context.history import Archive, Entry
+    from sandbox_science.orchestrator.context.history.receipts import save_receipts
     from sandbox_science.orchestrator.delegation.records import (
         Delegation,
         DelegationRecords,
         Ending,
     )
-    from sandbox_science.orchestrator.history import Archive, Entry
-    from sandbox_science.orchestrator.history.receipts import save_receipts
 
     works = WorkRecords(projects.control)
     works.admit("p", "s", RUN)

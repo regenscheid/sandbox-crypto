@@ -14,6 +14,9 @@ from typing import Any, cast
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned, threaded
+from sandbox_science.orchestrator.context.history.collections import Collection
+from sandbox_science.orchestrator.context.history.log import RunArchive
+from sandbox_science.orchestrator.context.history.retention import fits
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import (
     CURRENT,
@@ -22,9 +25,6 @@ from sandbox_science.orchestrator.continuity.records import (
     check_owner,
 )
 from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.history.collections import Collection
-from sandbox_science.orchestrator.history.log import RunArchive
-from sandbox_science.orchestrator.history.retention import fits
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
 from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.kernel_check import KernelCheck
@@ -128,7 +128,7 @@ class Prepared:
         if (state.max_turns, state.max_input_chars) != (given.max_turns, given.max_input_chars):
             raise TransportError("denied", "runtime changed the admitted attempt limits")
         if self.shadow is None:
-            from sandbox_science.orchestrator.history.memory import RunMemory
+            from sandbox_science.orchestrator.context.history.memory import RunMemory
 
             if not isinstance(self.log, RunArchive):
                 raise TransportError(

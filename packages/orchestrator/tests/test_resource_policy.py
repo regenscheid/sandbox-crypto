@@ -7,13 +7,13 @@ import pytest
 
 from sandbox_science.contracts.artifact_inventory import ArtifactPublicationSource
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
+from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
 from sandbox_science.orchestrator.continuity.resource_policy import continuation_allowed
 from sandbox_science.orchestrator.continuity.resources import ResourceApprovalRequest
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.hooks import Closing, Notice, TurnHook
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel

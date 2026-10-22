@@ -15,10 +15,10 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.context.history import Archive, Entry, RunArchive
+from sandbox_science.orchestrator.context.history.operations import PAGE, ToolJournal, ToolRecord
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.history import Archive, Entry, RunArchive
-from sandbox_science.orchestrator.history.operations import PAGE, ToolJournal, ToolRecord
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
@@ -400,7 +400,7 @@ def test_record_pages_preserve_exact_bytes_across_reopen_and_mid_character_cuts(
 ) -> None:
     import hashlib
 
-    from sandbox_science.orchestrator.history.operations import CHUNK_BYTES, READ_BYTES
+    from sandbox_science.orchestrator.context.history.operations import CHUNK_BYTES, READ_BYTES
 
     full = {"output": "\u00e9\U0001f680\x00\n" * (READ_BYTES // 8), "value": "0123456789"}
     raw = json.dumps(full, ensure_ascii=False, allow_nan=False).encode()

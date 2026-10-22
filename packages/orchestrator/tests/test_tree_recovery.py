@@ -831,7 +831,7 @@ async def test_legacy_missing_alias_blocks_before_new_model_dispatch(tmp_path: P
 
 
 async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path: Path):
-    from sandbox_science.orchestrator.history.operations import ToolJournal
+    from sandbox_science.orchestrator.context.history.operations import ToolJournal
     from sandbox_science.orchestrator.model import ToolCall
     from sandbox_science.orchestrator.questions import Answer, Questions
 

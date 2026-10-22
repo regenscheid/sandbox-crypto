@@ -14,12 +14,12 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, Entry, Folder, FoldRecord
+from sandbox_science.orchestrator.context.history.bound import _short, bound
+from sandbox_science.orchestrator.context.history.folds import CONSOLIDATE
+from sandbox_science.orchestrator.context.history.geometry import Shares, geometry
+from sandbox_science.orchestrator.context.history.view import session_view, settle
 from sandbox_science.orchestrator.digest import Rendered
-from sandbox_science.orchestrator.history import Archive, Entry, Folder, FoldRecord
-from sandbox_science.orchestrator.history.bound import _short, bound
-from sandbox_science.orchestrator.history.folds import CONSOLIDATE
-from sandbox_science.orchestrator.history.geometry import Shares, geometry
-from sandbox_science.orchestrator.history.view import session_view, settle
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import CONSOLIDATION
 from sandbox_science.orchestrator.projects import ProjectStore

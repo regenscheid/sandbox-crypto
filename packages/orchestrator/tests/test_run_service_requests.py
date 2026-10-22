@@ -16,11 +16,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, Entry, body
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
-from sandbox_science.orchestrator.history import Archive, Entry, body
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -267,7 +267,7 @@ async def test_confined_disconnect_consumes_receipts_before_replacement_queue(
 ) -> None:
     from typing import Any
 
-    from sandbox_science.orchestrator.history.log import RunArchive
+    from sandbox_science.orchestrator.context.history.log import RunArchive
     from sandbox_science.orchestrator.loop import Transcript
 
     request = harness.work_request()
@@ -424,8 +424,8 @@ async def test_annotation_only_receipt_survives_a_released_lease(harness: Harnes
 async def test_annotation_offer_uses_exact_attempt_when_short_run_id_is_reused(
     harness: Harness,
 ) -> None:
+    from sandbox_science.orchestrator.context.history.collections import Members
     from sandbox_science.orchestrator.continuity.records import WorkRecords
-    from sandbox_science.orchestrator.history.collections import Members
 
     request = harness.work_request()
     projects = ProjectStore(harness.state)
@@ -485,8 +485,8 @@ async def test_stopped_annotation_is_not_restarted_by_replacement_service(harnes
 async def test_annotation_offer_membership_failure_rolls_back_its_claim(harness: Harness) -> None:
     import sqlite3
 
+    from sandbox_science.orchestrator.context.history.collections import Members
     from sandbox_science.orchestrator.continuity.records import WorkRecords
-    from sandbox_science.orchestrator.history.collections import Members
 
     request = harness.work_request()
     projects = ProjectStore(harness.state)

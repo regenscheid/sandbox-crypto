@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 import pytest
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
 from sandbox_science.orchestrator.continuity.grants import TokenGrantRequest, TokenGrants
@@ -22,8 +24,6 @@ from sandbox_science.orchestrator.continuity.resources import (
 )
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.hooks import Closing, Notice, TurnHook
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel

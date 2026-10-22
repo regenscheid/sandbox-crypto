@@ -39,7 +39,7 @@ from sandbox_science.orchestrator.connector_settings import ConnectorSettings
 from sandbox_science.orchestrator.continuity.grants import TokenGrantDecision, TokenGrantStatus
 from sandbox_science.orchestrator.continuity.resources import ResourceRequestPage
 from sandbox_science.orchestrator.continuity.status import StatusPage
-from sandbox_science.orchestrator.history.captured import CapturedCalls, ContextParts, ContextText
+from sandbox_science.orchestrator.context.history.captured import CapturedCalls, ContextParts, ContextText
 from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.orchestrator.model_settings import ModelSettings
 from sandbox_science.orchestrator.runtree import RunTree

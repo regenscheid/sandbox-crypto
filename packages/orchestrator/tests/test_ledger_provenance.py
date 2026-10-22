@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.history.archive import HEADER, Archive, Entry
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import (
     USER,
@@ -22,7 +23,6 @@ from sandbox_science.orchestrator.documents import (
     store_path,
 )
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
-from sandbox_science.orchestrator.history.archive import HEADER, Archive, Entry
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.provenance import normal, numbers, unread
 from sandbox_science.orchestrator.notices import REQUESTS

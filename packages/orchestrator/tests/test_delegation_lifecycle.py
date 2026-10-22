@@ -19,6 +19,7 @@ from typing import Any, Final
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation import hook
 from sandbox_science.orchestrator.delegation.fence import ChildFence
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd, Delegations
@@ -29,7 +30,6 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import DELEGATIONS

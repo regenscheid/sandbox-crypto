@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import WriteFileRequest
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.outcome import Outcome, Proof, Target, proof_reads
 from sandbox_science.orchestrator.delegation.prompt import brief_text, check_task
 from sandbox_science.orchestrator.delegation.records import (
@@ -28,7 +29,6 @@ from sandbox_science.orchestrator.delegation.records import (
 from sandbox_science.orchestrator.delegation.specs import CheckBrief
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import gate
 from sandbox_science.orchestrator.ledger.models import EvidenceLink, GateClause
 from sandbox_science.orchestrator.loop import Transcript

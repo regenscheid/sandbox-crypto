@@ -18,10 +18,10 @@ import json, sys, tracemalloc
 from pathlib import Path
 from datetime import UTC, datetime
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.operations import ToolRecord, ToolJournal
-from sandbox_science.orchestrator.history.export import EvidenceExport
-from sandbox_science.orchestrator.history.verify_export import verify
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.operations import ToolRecord, ToolJournal
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
+from sandbox_science.orchestrator.context.history.verify_export import verify
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 mode, root, size = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3])

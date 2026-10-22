@@ -27,13 +27,13 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator import service as service_module
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
+from sandbox_science.orchestrator.context.history import Folder, body
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import Harness as Core
 from sandbox_science.orchestrator.harness import Role, Settings, Stores
 from sandbox_science.orchestrator.harness import admit as harness_admit
-from sandbox_science.orchestrator.history import Folder, body
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import MAX_TURNS

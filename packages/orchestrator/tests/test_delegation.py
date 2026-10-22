@@ -22,6 +22,8 @@ import pytest
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import chat, cli
 from sandbox_science.orchestrator.chat import RunChat, SessionHeld
+from sandbox_science.orchestrator.context.history import Archive, body, geometry, session_view
+from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.delegation.outcome import parse
 from sandbox_science.orchestrator.delegation.records import (
@@ -30,8 +32,6 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.history import Archive, body, geometry, session_view
-from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.memory import ProjectMemory

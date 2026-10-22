@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.orchestrator.aio import lease, threaded
+from sandbox_science.orchestrator.context.history import Archive, body
+from sandbox_science.orchestrator.context.history.collections import Collection as RunCollection
+from sandbox_science.orchestrator.context.history.snapshot import inline
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
-from sandbox_science.orchestrator.history import Archive, body
-from sandbox_science.orchestrator.history.collections import Collection as RunCollection
-from sandbox_science.orchestrator.history.snapshot import inline
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,

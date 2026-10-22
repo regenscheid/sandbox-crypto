@@ -20,8 +20,8 @@ from sandbox_science.orchestrator.confinement.models import (
 )
 from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
+from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.harness import Role
-from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.hooks import RunView, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway

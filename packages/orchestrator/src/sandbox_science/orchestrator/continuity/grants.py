@@ -10,11 +10,11 @@ from pydantic import Field
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract
 from sandbox_science.contracts.model import Revision
+from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.delegation.records import MAX_TOKENS, settings_in
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.projects import RunName
 from sandbox_science.orchestrator.runstate import LEASE_SECONDS
 

@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.history import Archive, Entry, RunArchive
-from sandbox_science.orchestrator.history.collections import Collection
-from sandbox_science.orchestrator.history.geometry import Geometry
-from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
-from sandbox_science.orchestrator.history.memory import RunMemory
-from sandbox_science.orchestrator.history.view import session_view
+from sandbox_science.orchestrator.context.history import Archive, Entry, RunArchive
+from sandbox_science.orchestrator.context.history.collections import Collection
+from sandbox_science.orchestrator.context.history.geometry import Geometry
+from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
+from sandbox_science.orchestrator.context.history.memory import RunMemory
+from sandbox_science.orchestrator.context.history.view import session_view
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import AssistantMessage
 from sandbox_science.orchestrator.projects import ProjectStore

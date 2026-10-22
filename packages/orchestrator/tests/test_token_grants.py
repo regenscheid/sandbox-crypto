@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive
 from sandbox_science.orchestrator.continuity.grants import TokenGrantRequest, TokenGrants
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.recovery import Recovery
@@ -17,7 +18,6 @@ from sandbox_science.orchestrator.continuity.resolutions import RecoveryControls
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
 from sandbox_science.orchestrator.harness import Harness, Role, Settings
-from sandbox_science.orchestrator.history import Archive
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient

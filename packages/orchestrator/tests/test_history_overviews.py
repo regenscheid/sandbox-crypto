@@ -16,7 +16,7 @@ from typing import Any, cast
 
 import pytest
 
-from sandbox_science.orchestrator.history import (
+from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
     Entry,
@@ -29,10 +29,10 @@ from sandbox_science.orchestrator.history import (
     register_reads,
     session_view,
 )
-from sandbox_science.orchestrator.history.markers import Held
-from sandbox_science.orchestrator.history.overview import asked, merge, verify
-from sandbox_science.orchestrator.history.reads import Read, Register
-from sandbox_science.orchestrator.history.view import _left_markers
+from sandbox_science.orchestrator.context.history.markers import Held
+from sandbox_science.orchestrator.context.history.overview import asked, merge, verify
+from sandbox_science.orchestrator.context.history.reads import Read, Register
+from sandbox_science.orchestrator.context.history.view import _left_markers
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.notices import FOLD_OVERVIEW, FOLD_REGION

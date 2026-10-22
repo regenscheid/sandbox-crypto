@@ -10,13 +10,13 @@ import tracemalloc
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history import archive as archives
+from sandbox_science.orchestrator.context.history.collections import Collection
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
+from sandbox_science.orchestrator.context.history.operations import ToolRecord
 from sandbox_science.orchestrator.control import ControlError, ControlStore, migrations
 from sandbox_science.orchestrator.control import store as stores
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history import archive as archives
-from sandbox_science.orchestrator.history.collections import Collection
-from sandbox_science.orchestrator.history.export import EvidenceExport
-from sandbox_science.orchestrator.history.operations import ToolRecord
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
 from .test_tool_journal import RUN

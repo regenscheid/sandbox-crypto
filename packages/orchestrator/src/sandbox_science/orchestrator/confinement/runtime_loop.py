@@ -12,7 +12,7 @@ from typing import Any, cast
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned
-from sandbox_science.orchestrator.history.memory import RunMemory
+from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.hooks import (
     Appended,
     Closing,

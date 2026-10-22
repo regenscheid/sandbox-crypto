@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from pydantic import JsonValue, ValidationError
 
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
+from sandbox_science.orchestrator.context.history.verify_export import verify
 from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.history.export import EvidenceExport
-from sandbox_science.orchestrator.history.verify_export import verify
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -268,9 +268,9 @@ def test_missing_pin_ancestor_records_gap_and_allows_resume(
     evidence: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    from sandbox_science.orchestrator.context.history import Archive, Entry
     from sandbox_science.orchestrator.continuity.models import ModelIntents
     from sandbox_science.orchestrator.continuity.records import WorkRecords
-    from sandbox_science.orchestrator.history import Archive, Entry
     from sandbox_science.orchestrator.runstate import RunState
 
     from .test_work_ownership import record
@@ -297,9 +297,9 @@ def test_never_started_proof_does_not_ignore_active_dispatch_evidence(
     projects: ProjectStore,
     evidence: str,
 ) -> None:
+    from sandbox_science.orchestrator.context.history import Archive, Entry
     from sandbox_science.orchestrator.continuity.models import ModelIntents
     from sandbox_science.orchestrator.continuity.records import WorkRecords
-    from sandbox_science.orchestrator.history import Archive, Entry
     from sandbox_science.orchestrator.runstate import RunState
 
     works = WorkRecords(projects.control)

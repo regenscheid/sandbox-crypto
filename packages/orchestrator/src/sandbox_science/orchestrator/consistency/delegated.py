@@ -35,9 +35,9 @@ from dataclasses import dataclass, replace
 from itertools import chain
 from typing import Any, Final, cast
 
-from sandbox_science.orchestrator.history import Archive
-from sandbox_science.orchestrator.history.memory import RunMemory
-from sandbox_science.orchestrator.history.scratch import Scratch
+from sandbox_science.orchestrator.context.history import Archive
+from sandbox_science.orchestrator.context.history.memory import RunMemory
+from sandbox_science.orchestrator.context.history.scratch import Scratch
 from sandbox_science.orchestrator.projects import ProjectStore, run_id_of
 
 from .actions import action_from

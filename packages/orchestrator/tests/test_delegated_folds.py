@@ -9,10 +9,10 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.orchestrator.history import Archive, Entry, geometry, session_view
-from sandbox_science.orchestrator.history.delegated import delegated_folder
-from sandbox_science.orchestrator.history.geometry import DEFAULT_SHARES
-from sandbox_science.orchestrator.history.view import spanned
+from sandbox_science.orchestrator.context.history import Archive, Entry, geometry, session_view
+from sandbox_science.orchestrator.context.history.delegated import delegated_folder
+from sandbox_science.orchestrator.context.history.geometry import DEFAULT_SHARES
+from sandbox_science.orchestrator.context.history.view import spanned
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore

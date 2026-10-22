@@ -10,10 +10,10 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract
 from sandbox_science.contracts.model import Counter
+from sandbox_science.orchestrator.context.history.inspector import OriginalHistory
+from sandbox_science.orchestrator.context.history.inspector_index import InspectorIndex
+from sandbox_science.orchestrator.context.history.timeline import AttemptTimeline
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
-from sandbox_science.orchestrator.history.inspector import OriginalHistory
-from sandbox_science.orchestrator.history.inspector_index import InspectorIndex
-from sandbox_science.orchestrator.history.timeline import AttemptTimeline
 from sandbox_science.orchestrator.projects import ModelUsage, RunName
 
 from . import documents

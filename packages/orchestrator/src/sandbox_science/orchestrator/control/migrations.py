@@ -3139,7 +3139,7 @@ def _context_auxiliary_window(schema: Schema) -> None:
 
 def _context_captures(schema: Schema) -> None:
     """Version 72: actual dispatch captures and independent inspector search."""
-    from sandbox_science.orchestrator.history.capture_schema import create
+    from sandbox_science.orchestrator.context.history.capture_schema import create
 
     create(schema)
 

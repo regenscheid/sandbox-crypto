@@ -21,12 +21,12 @@ from typing import Any
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
 
+from .context.history.reads import Register, shown
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.agent_text import visible
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
 from .figurechecks import subscribe as check_figures
-from .history.reads import Register, shown
 from .ledger import Ledger
 from .mathchecks import subscribe as check_math
 from .projects import ProjectError, ProjectStore, ensure_environment

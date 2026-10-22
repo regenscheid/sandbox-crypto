@@ -12,8 +12,8 @@ from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, Validatio
 
 from sandbox_science.contracts import Contract
 from sandbox_science.contracts.model import Counter
+from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
-from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.projects import RunName
 
 from . import documents

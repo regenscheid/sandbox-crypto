@@ -5,13 +5,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.hook import Delegations
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import ProjectStore

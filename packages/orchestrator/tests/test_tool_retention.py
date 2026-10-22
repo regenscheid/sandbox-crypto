@@ -14,15 +14,15 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.harness import Finished, save
-from sandbox_science.orchestrator.history import Archive, RunArchive
-from sandbox_science.orchestrator.history.retention import (
+from sandbox_science.orchestrator.context.history import Archive, RunArchive
+from sandbox_science.orchestrator.context.history.retention import (
     INLINE_BYTES,
     PREVIEW_BYTES,
     STORAGE,
     StoredToolRecord,
     retain,
 )
+from sandbox_science.orchestrator.harness import Finished, save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec

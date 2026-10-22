@@ -15,10 +15,16 @@ from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.consistency.controller import ReviewController, Reviews
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.context.history import (
+    Archive,
+    Folder,
+    RunArchive,
+    geometry,
+    session_view,
+)
+from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.harness import Finished, save
-from sandbox_science.orchestrator.history import Archive, Folder, RunArchive, geometry, session_view
-from sandbox_science.orchestrator.history.memory import RunMemory
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ToolCall, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name

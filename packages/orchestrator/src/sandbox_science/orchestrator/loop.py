@@ -25,11 +25,11 @@ from contextlib import (
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
-from .history.capture import prompt_pins
-from .history.collections import Collection, Members
-from .history.limits import WorkingMemoryLimitError
-from .history.log import RunArchive
-from .history.memory import VIEW_BYTES, RunMemory
+from .context.history.capture import prompt_pins
+from .context.history.collections import Collection, Members
+from .context.history.limits import WorkingMemoryLimitError
+from .context.history.log import RunArchive
+from .context.history.memory import VIEW_BYTES, RunMemory
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
 from .images import IMAGE
 from .kernel_check import KernelCheck

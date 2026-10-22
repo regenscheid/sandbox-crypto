@@ -18,6 +18,11 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.archive import Archived
+from sandbox_science.orchestrator.context.history.folds import Folder
+from sandbox_science.orchestrator.context.history.geometry import geometry
+from sandbox_science.orchestrator.context.history.view import session_view
 from sandbox_science.orchestrator.digest import Digest
 from sandbox_science.orchestrator.documents import (
     USER,
@@ -25,11 +30,6 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.archive import Archived
-from sandbox_science.orchestrator.history.folds import Folder
-from sandbox_science.orchestrator.history.geometry import geometry
-from sandbox_science.orchestrator.history.view import session_view
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.proposals import FoldProposals
 from sandbox_science.orchestrator.ledger.tool import LedgerTool

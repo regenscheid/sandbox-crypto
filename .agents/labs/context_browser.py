@@ -35,15 +35,15 @@ from sandbox_science.orchestrator.continuity.records import Ownership, WorkRecor
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.capture import (
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.capture import (
     ContextMessage,
     Origin,
     prompt_pins,
     request,
 )
-from sandbox_science.orchestrator.history.captured import CapturedContexts
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
+from sandbox_science.orchestrator.context.history.captured import CapturedContexts
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_id_of

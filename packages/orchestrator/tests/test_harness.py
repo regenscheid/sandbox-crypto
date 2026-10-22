@@ -51,10 +51,10 @@ from sandbox_science.contracts import (
     WriteFileRequest,
 )
 from sandbox_science.orchestrator import cli, worker_client
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.harness import describe_isolation, save, tier_in_effect
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task

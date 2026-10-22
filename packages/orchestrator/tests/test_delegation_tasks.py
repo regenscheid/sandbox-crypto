@@ -12,11 +12,11 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.outcome import TASK_FORMAT, parse_task
 from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore
 

@@ -20,10 +20,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.control import ControlStore
-from sandbox_science.orchestrator.harness import Harness as Harness_
-from sandbox_science.orchestrator.harness import Role
-from sandbox_science.orchestrator.history import (
+from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
     Entry,
@@ -36,11 +33,14 @@ from sandbox_science.orchestrator.history import (
     session_view,
     settle,
 )
-from sandbox_science.orchestrator.history.enrich import check
-from sandbox_science.orchestrator.history.folds import build, span
-from sandbox_science.orchestrator.history.geometry import input_limit
-from sandbox_science.orchestrator.history.reads import Read, Register
-from sandbox_science.orchestrator.history.skeleton import _fit
+from sandbox_science.orchestrator.context.history.enrich import check
+from sandbox_science.orchestrator.context.history.folds import build, span
+from sandbox_science.orchestrator.context.history.geometry import input_limit
+from sandbox_science.orchestrator.context.history.reads import Read, Register
+from sandbox_science.orchestrator.context.history.skeleton import _fit
+from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.harness import Harness as Harness_
+from sandbox_science.orchestrator.harness import Role
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import (
     GatewayModel,
@@ -1568,7 +1568,7 @@ async def test_fold_response_cancelled_during_validation_has_no_input_estimate(
     archive: Archive, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The returned call's usage owns it, including if validation is interrupted."""
-    from sandbox_science.orchestrator.history.enrich import EnrichmentProgress, enrich
+    from sandbox_science.orchestrator.context.history.enrich import EnrichmentProgress, enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "A supported result remains open.")
@@ -1578,7 +1578,7 @@ async def test_fold_response_cancelled_during_validation_has_no_input_estimate(
         entered.set()
         await asyncio.sleep(3600)
 
-    monkeypatch.setattr("sandbox_science.orchestrator.history.enrich.threaded", waiting_check)
+    monkeypatch.setattr("sandbox_science.orchestrator.context.history.enrich.threaded", waiting_check)
     model = ScriptedModel([ModelTurn(answer_with("A supported result remains open."))])
     progress = EnrichmentProgress()
     spent: list[ModelUsage] = []
@@ -1667,7 +1667,7 @@ async def test_size_rejected_enrichment_gets_measured_bounded_repair(
     archive: Archive,
     failure: str,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "Known result; the proof obligation remains open.")
@@ -1726,7 +1726,7 @@ async def test_size_rejected_enrichment_gets_measured_bounded_repair(
 async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "Unresolved proof obligation and retained source.")
@@ -1752,7 +1752,7 @@ async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
 async def test_fold_admission_denial_keeps_the_skeleton_without_a_paid_call(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "An unresolved proof obligation remains.")
@@ -1780,7 +1780,7 @@ async def test_fold_admission_denial_keeps_the_skeleton_without_a_paid_call(
 async def test_fold_retry_checks_admission_again_and_releases_its_first_hold(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 
     rows, record = spanned(archive, "An unresolved proof obligation remains.")
@@ -1816,7 +1816,7 @@ async def test_fold_retry_checks_admission_again_and_releases_its_first_hold(
 async def test_fold_admission_hold_releases_when_model_call_is_cancelled(
     archive: Archive,
 ) -> None:
-    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.context.history.enrich import enrich
     from sandbox_science.orchestrator.model import ModelTurn
 
     rows, record = spanned(archive, "An unresolved proof obligation remains.")

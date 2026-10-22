@@ -4,7 +4,7 @@
 from collections.abc import Sequence
 from dataclasses import replace
 
-from sandbox_science.orchestrator.history import capture
+from sandbox_science.orchestrator.context.history import capture
 from sandbox_science.orchestrator.model import (
     ChatModel,
     GatewayBudgetError,

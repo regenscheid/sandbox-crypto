@@ -14,9 +14,9 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, stock_prompts
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import USER, DocumentStore, DocumentTool
 from sandbox_science.orchestrator.harness import save
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript, run_task
 from sandbox_science.orchestrator.model import (

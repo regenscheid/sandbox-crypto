@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator import digest as digest_module
+from sandbox_science.orchestrator.context.history import Archive, Entry, body
+from sandbox_science.orchestrator.context.history.reads import Read
 from sandbox_science.orchestrator.digest import (
     Digest,
     Line,
@@ -27,8 +29,6 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
-from sandbox_science.orchestrator.history import Archive, Entry, body
-from sandbox_science.orchestrator.history.reads import Read
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.notices import DIGEST, TASK_CONSTRAINTS
 from sandbox_science.orchestrator.projects import ProjectStore

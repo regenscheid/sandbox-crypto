@@ -12,8 +12,14 @@ from contextlib import closing
 from pathlib import Path
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.history import Archive, Entry, FoldRecord, Geometry, session_view
-from sandbox_science.orchestrator.history.record import FORMAT
+from sandbox_science.orchestrator.context.history import (
+    Archive,
+    Entry,
+    FoldRecord,
+    Geometry,
+    session_view,
+)
+from sandbox_science.orchestrator.context.history.record import FORMAT
 from sandbox_science.orchestrator.projects import ProjectStore
 
 ROOT = ExecutionContext(project_id="p", session_id="s", environment_id="e")

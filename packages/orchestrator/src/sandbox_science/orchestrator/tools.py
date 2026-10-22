@@ -51,6 +51,8 @@ from .connectors import (
     Connectors,
 )
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
+from .context.history import SPECS as HISTORY_SPECS
+from .context.history import HistoryTool
 from .delegation import specs as delegation_specs
 from .delegation.tracks import EFFECTS as TRACK_EFFECTS
 from .delegation.tracks import SPECS as TRACK_SPECS
@@ -59,8 +61,6 @@ from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .documents.tool import SPECS as DOCUMENT_SPECS
 from .effects import UnknownEffectError
-from .history import SPECS as HISTORY_SPECS
-from .history import HistoryTool
 from .hooks import Effect, Notice, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, STOP_AT_FAILURE, JobNotices, JobTools
 from .kernel_check import KernelCheck
