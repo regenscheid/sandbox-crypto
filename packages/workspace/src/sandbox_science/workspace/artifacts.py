@@ -43,9 +43,10 @@ from sandbox_science.contracts.artifact_inventory import ArtifactLink, ArtifactR
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import api, artifact_downloads
+from . import artifact_downloads
 from .context import CONTEXT, identifier, json_answer
 from .preview import CAPABILITY_SECONDS, DATA, HTML, IMAGES, MAX_IMAGE_BYTES, PDF, SVG, Preview
+from .requests import dumps
 
 PREVIEW: Final = web.AppKey("preview", Preview)
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -174,7 +175,7 @@ async def listing(request: web.Request) -> web.Response:
         results = inventory.results(project, [e.reference.artifact_id for e in found_entries])
         entries = [_entry(found, found.reference.artifact_id in results) for found in found_entries]
         answer = ArtifactListing(artifacts=entries, next_before=next_before, viewer=on)
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(read))
 
@@ -218,7 +219,7 @@ async def revisions(request: web.Request) -> web.Response:
         answer = RevisionListing(
             revisions=[_entry(revision, result) for revision in found], next_before=next_before
         )
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(read))
 
@@ -281,7 +282,7 @@ async def figure(request: web.Request) -> web.Response:
         answer = FigureLink(
             kind=kind, url=url, capability=given, expires_at=expires, media_type=media
         )
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))
 
@@ -326,7 +327,7 @@ async def chart(request: web.Request) -> web.Response:
         expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
         url = f"{preview.origin}/figures/#{urlencode({'w': preview.workspace_origin})}"
         answer = ChartLink(url=url, capabilities=capabilities, expires_at=expires)
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))
 
@@ -347,6 +348,6 @@ async def viewer(request: web.Request) -> web.Response:
         fragment = urlencode({"c": capability, "w": preview.workspace_origin})
         url = f"{preview.origin}/viewer/#{fragment}"
         answer = ViewerLink(url=url, expires_at=expires, path=found.path)
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))

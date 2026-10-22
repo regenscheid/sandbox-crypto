@@ -16,8 +16,8 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator.jobs import JobTools, summary
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import api
 from .context import CONTEXT, identifier, json_answer, session_record
+from .requests import dumps
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/jobs"
 
@@ -57,9 +57,7 @@ async def listed(request: web.Request) -> web.Response:
         )
     waiting = await asyncio.to_thread(state.waits, tools.context) if state is not None else []
     return json_answer(
-        api.dumps(
-            {"enabled": True, "jobs": values, "truncated": listing.truncated, "waits": waiting}
-        )
+        dumps({"enabled": True, "jobs": values, "truncated": listing.truncated, "waits": waiting})
     )
 
 

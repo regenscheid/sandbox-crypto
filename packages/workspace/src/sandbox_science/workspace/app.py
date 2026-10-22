@@ -73,7 +73,16 @@ from . import (
     skills,
     uploads,
 )
-from .context import CONTEXT, WorkspaceContext, json_body, listener, own_hosts
+from .context import (
+    CONTEXT,
+    MAX_RUN_BYTES,
+    TIMEOUTS,
+    Timeouts,
+    WorkspaceContext,
+    json_body,
+    listener,
+    own_hosts,
+)
 from .errors import json_error
 from .mathrepair import (
     MathRepairService,
@@ -201,12 +210,12 @@ def create_app(
     *,
     login_token: str,
     check_host: bool = True,
-    max_run_bytes: int = api.MAX_RUN_BYTES,
+    max_run_bytes: int = MAX_RUN_BYTES,
     math_repair: MathRepairService | None = None,
     document_store: DocumentStore | None = None,
     job_worker: WorkerClient | None = None,
     job_state: JobState | None = None,
-    timeouts: api.Timeouts = api.TIMEOUTS,
+    timeouts: Timeouts = TIMEOUTS,
     preview: Preview | None = None,
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
@@ -330,10 +339,6 @@ def create_app(
             stack.callback(writer.close)
 
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
-    app[api.STORE] = store
-    app[api.MAX_RUN] = max_run_bytes
-    app[documents.DOCUMENTS] = document_store
-    app[documents.WRITER] = writer
     if skills_metadata is not None:
         app[skills.METADATA] = skills_metadata
     app[mcp_services.CONFIGURATION] = mcp_services.Configuration(
@@ -348,6 +353,7 @@ def create_app(
         worker=job_worker,
         job_state=job_state,
         timeouts=timeouts,
+        max_run_bytes=max_run_bytes,
     )
     if preview is not None:
         app[artifacts.PREVIEW] = preview

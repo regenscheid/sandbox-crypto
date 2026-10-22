@@ -16,8 +16,8 @@ from sandbox_science.contracts import ArtifactRef
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.workspace.api import dumps
 from sandbox_science.workspace.artifacts import ArtifactEntry, ArtifactListing, RevisionListing
+from sandbox_science.workspace.requests import dumps
 
 from .test_pdf_viewer import PDF_BYTES, SOURCE, publish
 from .test_pdf_viewer import origins as origins

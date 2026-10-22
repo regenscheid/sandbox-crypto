@@ -18,7 +18,6 @@ one with a ``reason``. Same-origin, the user's only.
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -42,8 +41,8 @@ from sandbox_science.orchestrator.ledger.models import (
 from sandbox_science.orchestrator.ledger.proposals import FoldProposals, ProposalView
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import documents
-from .context import CONTEXT, identifier, json_answer, json_body
+from .context import CONTEXT, identifier, json_body
+from .requests import document_answer, encoded_response
 
 PATH: Final = "/api/v0/projects/{project}/ledger"
 PROPOSALS: Final = "/api/v0/projects/{project}/sessions/{session}/proposals"
@@ -166,13 +165,12 @@ async def read_answer(
     request: web.Request, project: str, read: Callable[[Ledger], str]
 ) -> web.Response:
     context = request.app[CONTEXT]
-
-    def view() -> str:
-        context.projects.get(project)  # an unknown project is not found
-        return read(Ledger(context.documents))
-
-    async with asyncio.timeout(context.timeouts.call):
-        return json_answer(await asyncio.to_thread(view))
+    return await encoded_response(
+        request,
+        lambda: read(Ledger(context.documents)),
+        project=project,
+        timeout=context.timeouts.call,
+    )
 
 
 async def listing(request: web.Request) -> web.Response:
@@ -310,7 +308,7 @@ async def check(request: web.Request) -> web.Response:
         )
         return result.model_dump(mode="json")
 
-    return await documents.answer(request, checked, writer=True)
+    return await document_answer(request, checked, access="write")
 
 
 class AssessRequest(Contract):
@@ -350,7 +348,7 @@ async def assess(request: web.Request) -> web.Response:
         )
         return result.model_dump(mode="json")
 
-    return await documents.answer(request, assessed, writer=True)
+    return await document_answer(request, assessed, access="write")
 
 
 class DropRequest(Contract):
@@ -388,7 +386,7 @@ async def drop(request: web.Request) -> web.Response:
         )
         return result.model_dump(mode="json")
 
-    return await documents.answer(request, dropped, writer=True)
+    return await document_answer(request, dropped, access="write")
 
 
 class ClearRequest(Contract):
@@ -438,7 +436,7 @@ async def clear(request: web.Request) -> web.Response:
         )
         return result.model_dump(mode="json")
 
-    return await documents.answer(request, cleared, writer=True)
+    return await document_answer(request, cleared, access="write")
 
 
 async def reopen(request: web.Request) -> web.Response:
@@ -462,7 +460,7 @@ async def reopen(request: web.Request) -> web.Response:
         )
         return result.model_dump(mode="json")
 
-    return await documents.answer(request, reopened, writer=True)
+    return await document_answer(request, reopened, access="write")
 
 
 async def proposals_read(request: web.Request) -> web.Response:
@@ -504,7 +502,7 @@ async def proposal_accepted(request: web.Request) -> web.Response:
         proposals = _of_session(store, project, session, proposal)
         return proposals.accept(project, proposal, value.operation_id, USER)
 
-    return await documents.answer(request, accepted, writer=True)
+    return await document_answer(request, accepted, access="write")
 
 
 async def proposal_dismissed(request: web.Request) -> web.Response:
@@ -521,7 +519,7 @@ async def proposal_dismissed(request: web.Request) -> web.Response:
         proposals = _of_session(store, project, session, proposal)
         return proposals.dismiss(project, proposal, value.reason, USER).model_dump(mode="json")
 
-    return await documents.answer(request, dismissed, writer=True)
+    return await document_answer(request, dismissed, access="write")
 
 
 def _of_session(store: DocumentStore, project: str, session: str, proposal: str) -> FoldProposals:

@@ -38,9 +38,9 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
-from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
 from sandbox_science.workspace.approvals import ApprovalClient
+from sandbox_science.workspace.context import TIMEOUTS, Timeouts
 from sandbox_science.workspace.mcp_metadata import MetadataClient
 from sandbox_science.workspace.mcp_services import ServiceConfig
 

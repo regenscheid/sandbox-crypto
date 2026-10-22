@@ -20,15 +20,10 @@ encoded, in a thread, so a large run does not hold up other requests.
 
 from __future__ import annotations
 
-import asyncio
-import json
-import math
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final, Self, cast
+from typing import Self
 
-from aiohttp import hdrs, web
+from aiohttp import web
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier, PolicyRevision
 from sandbox_science.orchestrator.projects import (
@@ -41,31 +36,8 @@ from sandbox_science.orchestrator.projects import (
 from sandbox_science.orchestrator.runstate import WINDOW, CostRole, RunState
 from sandbox_science.orchestrator.runtree import RunTree, RunTrees
 
-MAX_RUN_BYTES: Final = 64 * 1024 * 1024
-STORE: Final = web.AppKey("store", ProjectStore)
-MAX_RUN: Final = web.AppKey("max_run", int)
-
-
-@dataclass(frozen=True)
-class Timeouts:
-    """Seconds the workspace waits for its reads and for the worker."""
-
-    call: float = 6.0
-    """A kernel, plan, plan-edit or provisioning request as a whole."""
-    upload: float = 300.0
-    """One upload or attachment delivery, including transfer admission; observations stay short."""
-    comparison: float = 10.0
-    """A lockfile comparison or a revision's package page as a whole."""
-    worker_call: float = 5.0
-    """One provisioning observation from the worker."""
-    worker_comparison: float = 9.0
-    """One comparison or package page from the worker, within its eight-second budget."""
-    environment: float = 2.0
-    """The worker's record of an environment, which the chat reads at every poll while a
-    message waits for its run: it never holds the chat up for long."""
-
-
-TIMEOUTS: Final = Timeouts()
+from .context import CONTEXT
+from .requests import json_response
 
 Json = dict[str, object]
 
@@ -186,46 +158,34 @@ def add_routes(app: web.Application) -> None:
 
 
 async def projects(request: web.Request) -> web.Response:
-    return await _answer(lambda store: ProjectListing(projects=_projects(store)), request)
+    return await json_response(
+        request, lambda: ProjectListing(projects=_projects(request.app[CONTEXT].projects))
+    )
 
 
 async def project(request: web.Request) -> web.Response:
     found = request.match_info["project"]
-    return await _answer(lambda store: ProjectAnswer(project=_project(store, found)), request)
+    return await json_response(
+        request, lambda: ProjectAnswer(project=_project(request.app[CONTEXT].projects, found))
+    )
 
 
 async def session(request: web.Request) -> web.Response:
     found = request.match_info["project"], request.match_info["session"]
-    return await _answer(lambda store: _session(store, *found), request)
+    return await json_response(request, lambda: _session(request.app[CONTEXT].projects, *found))
 
 
 async def run(request: web.Request) -> web.Response:
     found = request.match_info["project"], request.match_info["session"], request.match_info["run"]
-    limit = request.app[MAX_RUN]
-    return await _answer(lambda store: _run(store, *found, limit), request)
+    limit = request.app[CONTEXT].max_run_bytes
+    return await json_response(request, lambda: _run(request.app[CONTEXT].projects, *found, limit))
 
 
 async def tree(request: web.Request) -> web.Response:
     """The session's run tree: its runs, running ones included, and its delegations
     (PD-42)."""
     found = request.match_info["project"], request.match_info["session"]
-    return await _answer(lambda store: _tree(store, *found), request)
-
-
-async def _answer(
-    view: Callable[[ProjectStore], Json | Contract], request: web.Request
-) -> web.Response:
-    """The view of the store as JSON; reading and encoding happen in a thread."""
-    store = request.app[STORE]
-
-    def text() -> str:
-        found = view(store)
-        return dumps(found.model_dump(mode="json") if isinstance(found, Contract) else found)
-
-    text_ = await asyncio.to_thread(text)
-    return web.Response(
-        text=text_, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
-    )
+    return await json_response(request, lambda: _tree(request.app[CONTEXT].projects, *found))
 
 
 def _projects(store: ProjectStore) -> list[ProjectSummary | DamagedProject]:
@@ -305,22 +265,3 @@ def _no_session(project_id: str, session_id: str) -> ProjectError:
     return ProjectError(
         ErrorKind.NOT_FOUND, f"project {project_id!r} has no session {session_id!r}"
     )
-
-
-def dumps(data: object) -> str:
-    """JSON a browser parses: ASCII, with lone surrogates escaped and no NaN or infinity,
-    which a record can hold (a float a tool's JSON carried) but JSON cannot."""
-    try:
-        return json.dumps(data, allow_nan=False)
-    except ValueError:
-        return json.dumps(_finite(data), allow_nan=False)
-
-
-def _finite(value: object) -> object:
-    if isinstance(value, float) and not math.isfinite(value):
-        return str(value)
-    if isinstance(value, dict):
-        return {key: _finite(item) for key, item in cast(dict[str, object], value).items()}
-    if isinstance(value, list):
-        return [_finite(item) for item in cast(list[object], value)]
-    return value

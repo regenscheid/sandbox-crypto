@@ -44,9 +44,8 @@ from sandbox_science.orchestrator.connectors import check_proxy
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import documents
-from .api import dumps
 from .context import CONTEXT, identifier, json_answer, json_body, session_record
+from .requests import document_answer, dumps
 
 _log = logging.getLogger(__name__)
 
@@ -234,7 +233,7 @@ async def answer(request: web.Request) -> web.Response:
                 USER,
             )
 
-        await asyncio.to_thread(remember, request.app[documents.WRITER])
+        await asyncio.to_thread(remember, request.app[CONTEXT].writer)
     scope, hours = {
         "once": ("call", ONCE_HOURS),
         "project": ("tool", GRANT_HOURS),
@@ -248,7 +247,7 @@ async def answer(request: web.Request) -> web.Response:
 
 async def settings(request: web.Request) -> web.Response:
     project = identifier(request, "project")
-    return await documents.answer(
+    return await document_answer(
         request, lambda store: ProjectApprovals(store).get(project).model_dump(mode="json")
     )
 
@@ -261,13 +260,13 @@ async def change_settings(request: web.Request) -> web.Response:
         found, replayed = ProjectApprovals(store).change(project, value, USER)
         return {**found.model_dump(mode="json"), "replayed": replayed}
 
-    return await documents.answer(request, write, writer=True)
+    return await document_answer(request, write, access="write")
 
 
 async def _relay(app: web.Application) -> None:
     """Give the proxy each remembered approval again when a call it covers is held."""
     config = app[APPROVALS]
-    store = app[documents.DOCUMENTS]
+    store = app[CONTEXT].documents
     while True:
         try:
             for held in await config.client.pending():

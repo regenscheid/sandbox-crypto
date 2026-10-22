@@ -16,8 +16,8 @@ from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.projects import RunName
 
-from . import documents
 from .context import CONTEXT, identifier, session_record
+from .requests import document_answer
 
 _RUN: Final = TypeAdapter[str](RunName)
 _NAME: Final = re.compile(r"[a-z_]{1,64}")
@@ -93,7 +93,7 @@ async def listing(request: web.Request) -> web.Response:
             }
         ).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 async def chunk(request: web.Request) -> web.Response:
@@ -114,4 +114,4 @@ async def chunk(request: web.Request) -> web.Response:
 
     if "position" not in query:
         raise DocumentError("invalid_request", "a history byte read needs an item position")
-    return await documents.answer(request, read)
+    return await document_answer(request, read)

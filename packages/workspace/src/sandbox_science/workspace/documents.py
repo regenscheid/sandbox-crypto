@@ -7,7 +7,6 @@ server-derived user attribution and the application's authenticated same-origin 
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Callable
 from typing import Annotated, Final, Literal, cast
@@ -23,12 +22,9 @@ from sandbox_science.orchestrator.documents.operations import Operation, unlay
 from sandbox_science.orchestrator.documents.project_macros import view as macro_view
 from sandbox_science.orchestrator.figurechecks import shown as figure_checks
 
-from . import api, errors
+from . import errors
 from .context import json_body
-
-DOCUMENTS: Final = web.AppKey("documents", DocumentStore)
-WRITER: Final = web.AppKey("document_writer", DocumentStore)
-
+from .requests import document_answer, document_store, execute
 
 _DOCUMENT_ID: Final = re.compile(r"doc-[0-9a-f]{24}")
 _REVISION: Final = re.compile(r"[1-9][0-9]{0,8}")
@@ -100,8 +96,8 @@ def add_routes(app: web.Application) -> None:
 async def comments(request: web.Request) -> web.Response:
     raw = request.query.get("revision")
     if raw is not None and _REVISION.fullmatch(raw) is None:
-        return api_error(DocumentError("invalid_request", "invalid document revision"))
-    return await answer(
+        return errors.to_response(DocumentError("invalid_request", "invalid document revision"))
+    return await _answer(
         request,
         lambda store: Annotations(store).list(
             request.match_info["project"],
@@ -115,8 +111,8 @@ async def comments(request: web.Request) -> web.Response:
 async def comment_thread(request: web.Request) -> web.Response:
     raw = request.query.get("before")
     if raw is not None and _REVISION.fullmatch(raw) is None:
-        return api_error(DocumentError("invalid_request", "invalid entry cursor"))
-    return await answer(
+        return errors.to_response(DocumentError("invalid_request", "invalid entry cursor"))
+    return await _answer(
         request,
         lambda store: Annotations(store).read_thread(
             request.match_info["project"],
@@ -129,17 +125,17 @@ async def comment_thread(request: web.Request) -> web.Response:
 
 async def comment_change(request: web.Request) -> web.Response:
     raw = await json_body(request, "annotation change")
-    return await answer(
+    return await _answer(
         request,
         lambda store: Annotations(store).change(
             request.match_info["project"], request.match_info["document"], raw, USER
         ),
-        writer=True,
+        access="write",
     )
 
 
 async def preview(request: web.Request) -> web.Response:
-    return await answer(
+    return await _answer(
         request,
         lambda store: store.preview_patch(
             request.match_info["project"],
@@ -155,7 +151,7 @@ async def change(request: web.Request) -> web.Response:
     try:
         value = _CHANGE.validate_python(raw)
     except ValidationError:
-        return api_error(DocumentError("invalid_request", "invalid document change"))
+        return errors.to_response(DocumentError("invalid_request", "invalid document change"))
     project, reference = request.match_info["project"], request.match_info["document"]
 
     def write(store: DocumentStore) -> Json:
@@ -213,7 +209,7 @@ async def change(request: web.Request) -> web.Response:
             )
         return result.model_dump(mode="json")
 
-    return await answer(request, write, writer=True)
+    return await _answer(request, write, access="write")
 
 
 async def documents(request: web.Request) -> web.Response:
@@ -222,16 +218,18 @@ async def documents(request: web.Request) -> web.Response:
     def view(store: DocumentStore) -> Json:
         return {"documents": [found.model_dump(mode="json") for found in store.documents(project)]}
 
-    return await answer(request, view)
+    return await _answer(request, view)
 
 
 async def document(request: web.Request) -> web.Response:
     project, reference = request.match_info["project"], request.match_info["document"]
     raw = request.query.get("revision")
     if raw is not None and _REVISION.fullmatch(raw) is None:
-        return api_error(DocumentError("invalid_request", "revision is a revision number, from 1"))
+        return errors.to_response(
+            DocumentError("invalid_request", "revision is a revision number, from 1")
+        )
     number = None if raw is None else int(raw)
-    return await answer(request, lambda store: _revision(store, project, reference, number))
+    return await _answer(request, lambda store: _revision(store, project, reference, number))
 
 
 async def source(request: web.Request) -> web.Response:
@@ -239,23 +237,21 @@ async def source(request: web.Request) -> web.Response:
     project, reference = request.match_info["project"], request.match_info["document"]
     raw = request.query.get("revision")
     if raw is not None and _REVISION.fullmatch(raw) is None:
-        return api_error(DocumentError("invalid_request", "revision is a revision number, from 1"))
+        return errors.to_response(
+            DocumentError("invalid_request", "revision is a revision number, from 1")
+        )
     if not _reference(reference):
-        return api_error(
+        return errors.to_response(
             DocumentError("invalid_request", "a document is named by its ID or its name")
         )
-    projects, store = request.app[api.STORE], request.app[DOCUMENTS]
+    store = document_store(request)
 
     def read() -> tuple[str, str]:
-        projects.get(project)
         info = store.document(project, reference)
         revision = store.revision(project, info.document_id, None if raw is None else int(raw))
         return f"{info.name}-r{revision.info.number}.md", revision.text
 
-    try:
-        name, text = await asyncio.to_thread(read)
-    except DocumentError as error:
-        return api_error(error)
+    name, text = await execute(request, read, project=project)
     return web.Response(
         body=text.encode("utf-8"),
         headers={
@@ -270,33 +266,21 @@ async def source(request: web.Request) -> web.Response:
 
 async def history(request: web.Request) -> web.Response:
     project, reference = request.match_info["project"], request.match_info["document"]
-    return await answer(request, lambda store: store.history(project, reference))
+    return await _answer(request, lambda store: store.history(project, reference))
 
 
-async def answer(
-    request: web.Request, view: Callable[[DocumentStore], Json], *, writer: bool = False
+async def _answer(
+    request: web.Request,
+    view: Callable[[DocumentStore], Json],
+    *,
+    access: Literal["read", "write"] = "read",
 ) -> web.Response:
-    """The view as JSON, read and encoded in a thread, once the project is known."""
-    projects = request.app[api.STORE]
-    store = request.app[WRITER if writer else DOCUMENTS]
-    project = request.match_info["project"]
     reference = request.match_info.get("document")
     if reference is not None and not _reference(reference):
-        return api_error(
+        return errors.to_response(
             DocumentError("invalid_request", "a document is named by its ID or its name")
         )
-
-    def read() -> str:
-        projects.get(project)  # a project that does not exist is not found
-        return api.dumps(view(store))
-
-    try:
-        text = await asyncio.to_thread(read)
-    except DocumentError as error:
-        return api_error(error)
-    return web.Response(
-        text=text, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
-    )
+    return await document_answer(request, view, access=access)
 
 
 def _reference(reference: str) -> bool:
@@ -304,11 +288,6 @@ def _reference(reference: str) -> bool:
         _DOCUMENT_ID.fullmatch(reference) is not None
         or NAME.fullmatch(reference.removesuffix(".md")) is not None
     )
-
-
-def api_error(error: DocumentError) -> web.Response:
-    """A document store error, by the workspace's one mapping (errors.py)."""
-    return errors.to_response(error)
 
 
 def _revision(store: DocumentStore, project: str, reference: str, number: int | None) -> Json:

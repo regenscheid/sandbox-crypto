@@ -14,7 +14,7 @@ from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore, store_path
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore
-from sandbox_science.workspace.api import Timeouts
+from sandbox_science.workspace.context import Timeouts
 
 from .route_support import ClientFactory, origin, workspace
 

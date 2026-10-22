@@ -235,6 +235,16 @@ Errors are `{"error": {"kind", "message"}}` (document errors also carry `details
 
 The server reads the harness's records through the orchestrator's `ProjectStore`, and the documents, plans and reviews through its `DocumentStore`, in a thread. Views read through read-only `ProjectStore` and `DocumentStore` connections, and a separate writable connection makes user changes. At startup the command opens that writer to bring the store to the current schema version, and does not start if it cannot. Reading the harness's state directory directly is this stage's arrangement: the workspace runs beside the harness and imports the orchestrator's stores (the one deployable member importing another, in the [conventions](../.agents/CONVENTIONS.md)). W5 gives the control application an API of its own for the GUI to use.
 
+The server registers shared dependencies once, in `WorkspaceContext`: the project reader,
+document reader, user writer, worker, timeouts and run-size limit. `requests.py` owns
+project-scope checks, explicit read/write store selection, thread execution and JSON
+responses. Document-name validation, session ownership, action schemas and cursor rules
+remain in their feature modules. The application guard translates raised errors through
+`errors.py`, retaining the common status, error details and `no-store` header. The ledger's
+adapter retains its typed JSON encoder and read deadline; generic document reads and user
+writes retain no request deadline. A deadline cancels only the await of a thread, so it
+must not be treated as stopping a write already in progress.
+
 ## The client
 
 The app talks to the server through a few shared modules (`web/workspace/src/lib`).

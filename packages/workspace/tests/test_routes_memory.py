@@ -25,8 +25,8 @@ from sandbox_science.orchestrator.memory import (
     MemoryVersion,
     ProjectMemory,
 )
-from sandbox_science.workspace.api import dumps
 from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
+from sandbox_science.workspace.requests import dumps
 
 from .test_reviews import client as client
 

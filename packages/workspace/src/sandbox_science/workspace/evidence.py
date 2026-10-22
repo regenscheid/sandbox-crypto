@@ -15,7 +15,6 @@ from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.projects import RunName
 
 from .context import CONTEXT, identifier, session_record
-from .documents import DOCUMENTS
 
 _RUN: Final = TypeAdapter[str](RunName)
 _ACTIVE: Final = web.AppKey("evidence_exports", set[object])
@@ -47,7 +46,7 @@ async def download(request: web.Request) -> web.StreamResponse:
     lines: Iterator[bytes] | None = None
     try:
         context = request.app[CONTEXT]
-        store = request.app[DOCUMENTS]
+        store = context.documents
 
         def prepare() -> EvidenceExport:
             session_record(context.projects, project, session)
