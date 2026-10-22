@@ -18,6 +18,17 @@
 - [x] Implement and independently review recent-context retention, bounded overview evidence validation and upfront enrichment budgeting; the 743-test integration selection passes on this branch. Publication is separate from merging and runtime qualification.
 - [ ] Qualify takeaway preservation with real multi-fold continuity probes; deterministic tests do not establish scientific recall quality.
 
+### Parallel follow-up authorized 2026-10-21
+
+- [ ] Assemble tool entries and required ordered hooks through explicit capabilities,
+  retaining role restrictions, reserved names, effects and cleanup ownership.
+- [ ] Extract review evidence selection/budgeting into a typed snapshot planner;
+  retain transactional rechecks, immutable pins, watermarks and dispatch ordering.
+- [ ] Generate document/comment/job API contracts and typed write unions; organize
+  their clients by domain while preserving transport and omission/null behavior.
+- [ ] Independently cross-review all three paths, integrate on this branch, and run
+  combined validation before publication. Worker lifecycle remains a separate pass.
+
 Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev`; implementation, runtime qualification and deployment are distinct.
 
 ## Research continuity after the SNOVA acceptance run

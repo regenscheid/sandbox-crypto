@@ -23,6 +23,11 @@ research-state hold detection, numeric arrays and signed values at page boundari
 Prior first-stage checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
 unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
 
+Three authorized follow-ups are now in isolated implementation worktrees: capability
+assembly, review snapshot planning and generated document/comment/job API contracts.
+Root coordinates cross-review and combined checks before integrating and publishing
+on `agent-context-refactor`; these follow-ups are not yet validated or deployed.
+
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 
 - **Recovery:** opt-in launcher supervision restarts owned worker/control/workspace processes and replaces only the recorded agent VM. Durable bounded retry state survives launcher loss; exhausted optional components leave a degraded instance. Automatic root Resume reconciles supported original effects and honors Stop, ownership and budgets. Unknown worker/MCP effects are not blindly replayed. Three owned live probes passed worker restart, agent-VM replacement and host-process-loss recovery while a genuine Sage job retained its original operation. The real-model tree then completed after control/runtime replacement; this is not physical-host reboot qualification or arbitrary interpreter restoration.

@@ -2,6 +2,7 @@
 
 ## 2026-10-21
 
+- The owner authorized two or three further refactors in parallel. Select capability assembly, review snapshot planning and document/comment/job API contracts as independent changes on `agent-context-refactor`; preserve existing behavior and cross-review before integration. Worker executor lifecycle remains a dedicated later pass.
 - Continue the isolated context refactor with a context-only fold engine, preserving ordered hook cleanup; retain whole recent units, prioritize retrievable research takeaways, and page original evidence for overview validation ([contract](../docs/specs/agent-context-refactor.md#folding-retention-policy), D91 amended).
 - Follow the owner's development refactoring review in an isolated worktree from fetched `origin/dev` (`391cb7a7`): consolidate `orchestrator/context/` around shared active state and scoped history preparation, retaining the existing folding engine ([ownership](../docs/specs/agent-context-refactor.md)).
 - Pursue attempt finalization and workspace request execution as independent parallel refactors. Keep worker lifecycle and capability decomposition for later work; no running service or archive migration is part of this branch.

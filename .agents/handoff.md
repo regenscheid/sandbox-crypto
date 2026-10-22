@@ -26,6 +26,8 @@ and deployed services are unchanged. Read [STATUS.md](STATUS.md),
 - No real model calls, service rollout, archive migration or merge into dev.
   The owner requested publication on `agent-context-refactor`; continue in its
   separate worktree and preserve the primary checkout and services.
+- In progress: capability assembly, review planning and API contracts in parallel;
+  root coordinates integration and cross-review.
 
 ## Earlier accepted scope and evidence
 
