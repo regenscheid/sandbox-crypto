@@ -250,8 +250,10 @@ class _Text:
         for pattern, compiled in self.patterns.items():
             if pattern in self.found.patterns:
                 continue
+            # Signed decimals reject a following period-plus-digit; wait for
+            # both real characters across page and incremental decoder boundaries.
             if any(
-                (match.start() > 0 or not self.started) and (match.end() < len(text) or final)
+                (match.start() > 0 or not self.started) and (len(text) - match.end() >= 2 or final)
                 for match in compiled.finditer(text)
             ):
                 self.found.patterns.add(pattern)
