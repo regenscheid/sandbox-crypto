@@ -342,3 +342,26 @@ def test_completed_candidate_stops_body_reads_but_missing_facts_scan_the_span(
     found = source.verify(replace(request, numbers=frozenset({"289", "777"})))
     assert found.numbers == {"289"}
     assert set(bodies) == {first.message_id, last.message_id}
+
+
+@pytest.mark.parametrize(
+    ("following", "supported"),
+    [("0;", False), ("0, -0.7];", False), (" next observation;", True), ("", True)],
+)
+def test_negative_sentence_period_waits_for_the_next_page_before_proving_a_value(
+    archive: Archive, following: str, supported: bool
+) -> None:
+    # The earlier positive value supplies numeric support, so only the signed
+    # whole-value pattern can prevent a premature successful verification.
+    prefix, boundary = "Positive 0.5; ", "; -0.5."
+    text = prefix + "x" * (CHUNK_BYTES - len(prefix) - len(boundary)) + boundary + following
+    row = archive.append("p", "s", "main", Entry("assistant", "assistant", text))
+    made, why = check(
+        json.dumps({"narrative": "Difference -.5.", "keys": []}),
+        record(row),
+        ArchiveEvidence(archive, CONTEXT, row.position, row.position),
+        share=4000,
+    )
+    assert why == ""
+    assert made is not None
+    assert (made.narrative == "Difference -.5.") is supported
