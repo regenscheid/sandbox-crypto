@@ -165,6 +165,14 @@ async def reachable(address: str, timeout: float = 1.0) -> bool:
     return True
 
 
+async def _exited(process: asyncio.subprocess.Process) -> None:
+    """Return once the process has exited. ``Process.wait`` also waits until its output
+    pipe closes (Python 3.13), which an orphaned child of a killed Darwin watcher keeps
+    open until its session is ended: waiting on it then would never end."""
+    while process.returncode is None:
+        await asyncio.sleep(POLL)
+
+
 class Supervisor:
     """The parts started so far, in their order."""
 
@@ -220,7 +228,7 @@ class Supervisor:
     async def _wait_ready(self, running: Running, timeout: float) -> None:
         part = running.part
         ready = asyncio.ensure_future(self._ready(running))
-        exited = asyncio.ensure_future(running.process.wait())
+        exited = asyncio.ensure_future(_exited(running.process))
         stopped = asyncio.ensure_future(self.stop_requested.wait())
         try:
             done, _ = await asyncio.wait(
@@ -235,6 +243,8 @@ class Supervisor:
         if stopped in done:
             raise StopRequested
         if exited in done or running.process.returncode is not None:
+            # What it left in its session may hold its output open, as in watch().
+            await asyncio.to_thread(end_session, running.process.pid)
             if running.pump is not None:
                 await running.pump
             raise LauncherError(
@@ -302,7 +312,7 @@ class Supervisor:
         """Wait until the launcher is asked to stop (None) or a part stops by itself."""
         while True:
             exits = {
-                asyncio.ensure_future(running.process.wait()): running
+                asyncio.ensure_future(_exited(running.process)): running
                 for running in self.running
                 if not (running.reported and running.process.returncode is not None)
             }
