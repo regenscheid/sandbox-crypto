@@ -27,6 +27,7 @@ async def test_fold_and_restore_keep_full_archived_history_and_answered_usage(tm
         context = AgentContext.start([system], log=log)
         await context.append({"role": "user", "content": "Original question."}, Appended("task"))
         question = log.last_message
+        assert question is not None
         size = context.size
         reply = await context.complete(
             ScriptedModel([ModelTurn("Supported answer.", input_tokens=100, output_tokens=12)]),
@@ -37,6 +38,7 @@ async def test_fold_and_restore_keep_full_archived_history_and_answered_usage(tm
             {"role": "assistant", "content": reply.text}, Appended("assistant", reply=reply)
         )
         answer = log.last_message
+        assert answer is not None
         full_history = list(context.messages)
         summary: Message = {"role": "user", "content": "A compact account of the question."}
         context.rebuild([summary])

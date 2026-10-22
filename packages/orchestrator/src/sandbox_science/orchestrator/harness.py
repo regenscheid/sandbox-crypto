@@ -1112,7 +1112,7 @@ class Harness:
             ),
             former_model=former,
             learned=self._learned,
-            observe_kernels=self.client.observe_kernels,
+            observe_kernels=lambda context: self.client.observe_kernels(context),
             allowance=allowance or self._fold_allowance(admitted),
             clock=self.clock,
         )

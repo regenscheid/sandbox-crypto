@@ -22,8 +22,10 @@ import pytest
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import chat, cli
 from sandbox_science.orchestrator.chat import RunChat, SessionHeld
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, body, geometry, session_view
 from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
+from sandbox_science.orchestrator.context.history.log import RunArchive
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.delegation.outcome import parse
 from sandbox_science.orchestrator.delegation.records import (
@@ -33,7 +35,6 @@ from sandbox_science.orchestrator.delegation.records import (
 )
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.ledger import Ledger
-from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
@@ -408,18 +409,25 @@ async def test_memory_limited_parent_drains_its_paid_child_before_ending(
     delegating: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     free, child_entered = asyncio.Event(), asyncio.Event()
-    original = Transcript.sent.fget
+    original = AgentContext.sent.fget
     assert original is not None
     tripped = False
 
-    def guarded(run: Transcript):
+    def guarded(run: AgentContext):
         nonlocal tripped
-        if not tripped and any(tool.get("tool") == "delegate" for tool in run.tool_records):
+        # In this fixture the root's first tool result is the delegation receipt.
+        # Inject at the context owner, after that receipt, while its child is live.
+        if (
+            not tripped
+            and isinstance(run.log, RunArchive)
+            and run.log.parent is None
+            and any(message.get("role") == "tool" for message in run.messages)
+        ):
             tripped = True
             raise WorkingMemoryLimitError("synthetic parent working-state ceiling")
         return original(run)
 
-    monkeypatch.setattr(Transcript, "sent", property(guarded))
+    monkeypatch.setattr(AgentContext, "sent", property(guarded))
 
     async def blocked() -> None:
         child_entered.set()
