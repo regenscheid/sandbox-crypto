@@ -1052,6 +1052,8 @@ class Harness:
                                     TypeAdapter(Settings).dump_python(self.settings, mode="json"),
                                 ),
                                 predecessor=request.predecessor,
+                                accept_changes=request.resume_source == "operator",
+                                changed=sink.note,
                             ),
                             *hooks,
                         )

@@ -37,7 +37,8 @@ from .usability import Usability
 _log = logging.getLogger(__name__)
 
 STARTUP_RECOVERY_ATTEMPTS = 5
-"""Recovery attempts at startup before the worker refuses to start."""
+"""Recovery attempts at startup before the worker may refuse to start, and only once
+``ManagerTimeouts.startup_recovery`` has passed too: a sandbox still booting is waited for."""
 REPLAY_PAGES = 64
 """Pages one replay asks for before it leaves the rest to the next pass."""
 LATEST_BATCH = 256
@@ -110,11 +111,13 @@ class DaemonRecovery:
         One recovery runs for an environment at a time. Each attempt collects the
         executions again, so one whose bridge was lost while a recovery ran is not left
         behind, and attempts repeat with a capped backoff until none is left. Startup
-        waits for one attempt that reaches the daemon, and refuses to start without one.
+        waits for one attempt that reaches the daemon, trying while the sandbox may still
+        be booting (``startup_recovery``), and refuses to start without one.
         """
         if not self.usability.begin_recovery(environment_id):
             return
         delay = self.timeouts.recovery_retry
+        began = asyncio.get_running_loop().time()
         try:
             for attempt in itertools.count(1):
                 try:
@@ -128,7 +131,12 @@ class DaemonRecovery:
                     reached and (startup or not self.unattached(environment_id))
                 ):
                     break
-                if startup and attempt == STARTUP_RECOVERY_ATTEMPTS:
+                waited = asyncio.get_running_loop().time() - began
+                if (
+                    startup
+                    and attempt >= STARTUP_RECOVERY_ATTEMPTS
+                    and waited >= self.timeouts.startup_recovery
+                ):
                     raise WorkerError(
                         ErrorKind.UNAVAILABLE,
                         "cannot reconcile the sandbox daemon; startup refused",

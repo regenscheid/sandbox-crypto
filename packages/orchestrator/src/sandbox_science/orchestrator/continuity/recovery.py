@@ -499,8 +499,13 @@ class Recovery:
         authorized_context = self._context(blueprint.context).model_copy(
             update={"authority": ExecutionAuthority(work=work.work, run=plan.run, epoch=self.epoch)}
         )
+        source = await threaded(
+            self.records.resume_source, self.project, self.session, self.request
+        )
+        # The user's own Resume goes on past a kernel that cannot be rebuilt, reported lost
+        # (RC-11); an automatic one stops there.
         await KernelJournal(control, owner, work.kernel).reconcile(
-            self.harness.client, authorized_context
+            self.harness.client, authorized_context, accept_loss=source == "operator"
         )
         parent = None if work.parent is None else (await threaded(self.plans.get, work.parent)).run
         async with self._delegation_lock:
@@ -515,9 +520,7 @@ class Recovery:
             stop_by=None,
             work=work.work,
             predecessor=plan.predecessor,
-            resume_source=await threaded(
-                self.records.resume_source, self.project, self.session, self.request
-            ),
+            resume_source=source,
             epoch=self.epoch,
             parent=parent,
             delegation=delegation,

@@ -332,3 +332,59 @@ def test_never_started_proof_does_not_ignore_active_dispatch_evidence(
         assert owner is not None
         ModelIntents(projects.control).begin(owner, kind="main", alias="fixture")
     assert store.previous("p", "s", RUN, active_run=active) is None
+
+
+async def test_the_users_resume_goes_on_with_changed_pins_and_says_so(
+    projects: ProjectStore,
+) -> None:
+    # A new orchestrator image changed the tools' descriptions, and every continuation of
+    # the interrupted session stopped on its pins (Mac, 2026-10-21).
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+    store = RunInputs(projects.control)
+    WorkRecords(projects.control).admit("p", "s", RUN)
+    request: dict[str, JsonValue] = {"project": "p", "session": "s", "task": "Compute"}
+
+    async def never(_):
+        pytest.fail("unexpected tool dispatch")
+
+    await run_task(
+        ScriptedModel([ModelTurn("Original")]),
+        toolbox(never),
+        "Compute",
+        run_id="original",
+        system="Pinned system",
+        hooks=(RecordInputs(store, CONTEXT, RUN, request, {}),),
+    )
+    continued = "20261017T030003000000Z-after-upgrade"
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)",
+            ("p", "s", continued, RUN, RUN),
+        )
+    said: list[str] = []
+    result = await run_task(
+        ScriptedModel([ModelTurn("Continued")]),
+        toolbox(never),
+        "Compute",
+        run_id=continued,
+        system="Upgraded system",
+        hooks=(
+            RecordInputs(
+                store,
+                CONTEXT,
+                continued,
+                request,
+                {},
+                predecessor=RUN,
+                accept_changes=True,
+                changed=said.append,
+            ),
+        ),
+    )
+    assert result.stopped == "answered"
+    assert len(said) == 1
+    assert "accepted the change" in said[0]
+    saved = store.get("p", "s", continued)
+    original = store.get("p", "s", RUN)
+    assert saved.pins != original.pins  # the change is on record, not hidden

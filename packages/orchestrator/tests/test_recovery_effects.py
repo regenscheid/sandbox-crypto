@@ -688,3 +688,39 @@ async def test_interrupted_child_observation_does_not_invent_results_or_dispatch
         assert "execution" not in record
         assert "report" not in record
     assert not worker.lookups
+
+
+async def test_the_users_resume_accepts_a_kernel_it_cannot_rebuild(projects: ProjectStore):
+    # A relaunch restarted the sandbox and its kernel with it; the cells were not
+    # replayable, so every Resume stopped there (Mac, 2026-10-21). The user's own Resume
+    # goes on with the kernel reported lost; nothing is replayed.
+    owner = WorkRecords(projects.control).admit("p", "s", RUN)
+    journal = KernelJournal(projects.control, owner, None)
+    saved = KernelObservation(
+        environment_id=CONTEXT.environment_id,
+        session_id="s",
+        observed_at=datetime.now(UTC),
+        kernels=(KernelInfo(kernel_id="lost-kernel", language="sage", generation=3),),
+    )
+    await journal.record(saved)
+
+    class Restarted:
+        async def observe_kernels(self, context):
+            return saved.model_copy(update={"kernels": ()})
+
+        async def restart_kernel(self, *args, **kwargs):
+            pytest.fail("an accepted loss is not rebuilt")
+
+    with pytest.raises(ControlError, match="lost_kernel"):
+        await journal.reconcile(cast(WorkerClient, Restarted()), CONTEXT)
+    await journal.reconcile(cast(WorkerClient, Restarted()), CONTEXT, accept_loss=True)
+    with projects.control.read() as tx:
+        detail = tx.sql.execute(
+            "SELECT detail FROM research_observations WHERE kind='kernel_loss_accepted'"
+        ).fetchone()[0]
+    assert json.loads(detail) == {
+        "lost": [{"language": "sage", "kernel_id": "lost-kernel", "generation": 3}],
+        "accepted_by": "user",
+    }
+    # Later resumes have no kernel to rebuild: the next cell starts a clean one.
+    await journal.reconcile(cast(WorkerClient, Restarted()), CONTEXT)
