@@ -3,7 +3,8 @@
 The 2026-10-21 refactor starts from remote `dev` at `391cb7a7`, following the
 owner's development refactoring review. Both main and delegated agents already
 fold through the shared `Folder` engine. This work consolidates ownership of
-that behavior; it does not introduce another folding algorithm.
+that behavior. The follow-up separates the folding engine from execution and
+refines retention without changing the archive or folding record formats.
 
 ## Package boundary
 
@@ -51,13 +52,16 @@ lifecycle, capability bundles and the remaining candidates remain later work.
 | --- | --- |
 | Scope, initial root/child view, digest and constraints, reconstruction after Resume | `context/preparation.py`, `HistoryScope` and `PreparedContext` |
 | Working messages, replay input, prompt pins, usage, fold offsets and archive-first appends | `context/agent.py`, `AgentContext` |
+| Context-only folding contract and ordered cleanup adapter | `context/folding.py`, `FoldPoint`, `FoldLifecycle` |
 | Background folding and enrichment, overflow handling and learned ceilings | `context/history/folds.py` and `enrich.py` |
 | Complete archived messages, bounded reads, search and descendant visibility | `context/history/archive.py` and `tool.py` |
 | Captured dispatch composition, timeline and inspector indexes | `context/history/capture.py`, `timeline.py` and `inspector.py` |
 | Turn scheduling, tools, accepted answers and delivery decisions | `loop.py`, `Transcript` composed with `AgentContext` |
 
-The loop's existing hook properties are forwarding views; they do not keep another
-copy of context state. Internal callers construct `Transcript(context=AgentContext(...))`.
+The execution transcript has no context forwarding properties. Hooks read
+`RunView.context`; folding receives `FoldPoint(context, call_index)` and never
+imports the execution transcript. Internal callers construct
+`Transcript(context=AgentContext(...))`.
 `AgentContext.start` initializes archive-backed or confined scratch collections;
 `append` commits before exposing a message, `complete` carries prompt pins to the
 model, `record_reply` records answered usage, and `rebuild`/`restore` replace the
@@ -65,13 +69,38 @@ working view while retaining original history.
 
 `PreparedContext` supplies the folder, message log and history tool from one
 admitted scope. Model-role selection and tool assembly remain harness responsibilities.
-The folder still participates in the ordered hook leases: its background work is
-settled before the loop copies final summaries. Store lifetime stays with its
-existing caller. Root preparation now passes the configured clock into the folder,
+`FoldLifecycle` occupies the folder's existing ordered hook slot. It settles
+background enrichment and canonical saves before final summaries, and resets
+overflow tracking only after the answered response is committed. The confined
+runtime forwards context operations; only the host owns this engine lifecycle.
+Store lifetime stays with its existing caller. Root preparation now passes the configured clock into the folder,
 as child preparation already did; the production default remains the system clock.
 
-This refactor changes no database version, archive wire format, model prompt text,
-or confined protocol schema. It does not launch research or migrate running services.
+The structural extraction changes no database version, archive wire format or
+confined protocol schema. It does not launch research or migrate running services.
+
+## Folding retention policy
+
+The working context has three jobs: retain important takeaways, leave exact retrieval
+anchors for omitted bulk, and preserve recent conversation verbatim. Narrative folds
+prioritize findings and their scope, standing constraints, assumptions, failed
+approaches and their stated reasons, unresolved questions and identified next steps.
+They distinguish hypotheses from conclusions. Old tool output and document passages
+are retrieved from canonical history instead of copied into every overview.
+
+At each fold, stubbing protects complete recent assistant/tool-result units covering
+the configured raw floor, in addition to the newest five results and all history
+retrievals. Crossing the floor keeps the whole unit, even when its output is large.
+Old saved folds remain unchanged. The model summary is lossy and fallible: exact
+values remain in the original archive, with searchable keys and message pointers.
+
+Overview validation scans the original scoped span in bounded text pages, rather
+than loading all covered messages and native replay payloads. Candidate facts still
+need original evidence; a prior summary is not evidence for a new value. A fragment
+that cannot be proven within bounded validation is omitted with a diagnostic, not
+accepted or turned into a new stop of the research run. Summarizer instructions
+budget narrative space after mandatory record content; no room means a documented
+code fallback without a paid summarizer attempt.
 
 ## Local verification
 

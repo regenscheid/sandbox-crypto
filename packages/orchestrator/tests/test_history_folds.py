@@ -252,6 +252,42 @@ async def test_past_the_trigger_the_oldest_span_folds_and_old_large_results_beco
     assert stubs(harness.gateway.main[0]) == raw[:-5]
 
 
+async def test_applied_fold_keeps_recent_context_beyond_five_results(harness: Harness) -> None:
+    """Drive the real fold path: the recent floor protects more than five raw results."""
+    harness.gateway.per_token = 4.0
+    identifiers = seed(harness, 60, size=6_000)
+    options = ["--context-ceiling", "110000", "--fold-chunk", "40000", "--skeleton-only-folds"]
+    result = await harness.run("recent-floor", [Reply("Done.")], options=options)
+    assert folds(result)["folds"]
+    (request,) = harness.gateway.main
+    omitted = stubs(request)
+    assert omitted
+    assert not set(identifiers[-10:]) & set(omitted)
+    store = ProjectStore(harness.state)
+    try:
+        archive = Archive(store.control)
+        for identifier in identifiers[-10:]:
+            assert archive.message(PROJECT, identifier).chat() in request
+        # Stubs keep exact original IDs, and neither stubbing nor a new run rewrites them.
+        originals = {identifier: archive.message(PROJECT, identifier) for identifier in omitted}
+        assert all(len(row.entry.content or "") > 6_000 for row in originals.values())
+    finally:
+        store.close()
+    await harness.run("after-recent-floor", [Reply("Again.")], options=options)
+    (reopened,) = harness.gateway.main
+    assert stubs(reopened) == omitted
+    store = ProjectStore(harness.state)
+    try:
+        archive = Archive(store.control)
+        assert all(
+            archive.message(PROJECT, identifier) == row for identifier, row in originals.items()
+        )
+        for identifier in identifiers[-10:]:
+            assert archive.message(PROJECT, identifier).chat() in reopened
+    finally:
+        store.close()
+
+
 async def test_between_rebuilds_a_request_only_grows_at_its_end(harness: Harness) -> None:
     """CM-F14, CM-32: after the fold at the run's first call, the next request sends the
     first one unchanged, then what was added; no stub is made between rebuilds."""

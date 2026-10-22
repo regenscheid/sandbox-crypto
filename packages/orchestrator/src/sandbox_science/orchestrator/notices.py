@@ -206,14 +206,21 @@ FOLD_REGION: Final = Framing(
 """The fold region (docs/specs/context-management.md, CM-17, CM-25)."""
 FOLD_ENRICH: Final = Framing(
     "fold-enrich",
-    "sandbox-fold-enrich-2",
+    "sandbox-fold-enrich-3",
     "Platform instruction, apart from your work: the platform is folding the oldest part "
     "of this conversation into a record, whose outline, built by code, follows. Write the "
     "narrative that connects it. Call no tool. Answer with one JSON object and nothing "
     'else: {"narrative": "...", "keys": ["..."], "proposals": []}. In the narrative, '
     "keep every standing constraint the user gave, those that earlier fold records carry "
     "too; tell attempts, changes of approach, decisions and outcomes only where the span's "
-    "messages show them, and add no cause the span does not state; call a read that was "
+    "messages show them, and add no cause the span does not state. Prioritize important "
+    "takeaways: supported findings and their scope, assumptions, failed approaches and "
+    "why they failed, unresolved questions, and the next steps actually identified. "
+    "Keep the distinction between an observation, a hypothesis and a proven conclusion. "
+    "Omit bulk tool output and copied document passages; retain concise descriptions and "
+    "exact source message IDs or search keys so history_read or history_search can recover "
+    "the details. Summarize only the named old span; the recent conversation stays in full. "
+    "Call a read that was "
     "truncated, sampled or a preview incomplete, never reviewed; and give concepts and "
     "what values are for, not the values themselves, which the archive keeps. In keys, "
     "list literal names and identifiers as they occur in the span, word for word. In "
@@ -233,7 +240,7 @@ FOLD_ENRICH: Final = Framing(
 """A fold's enrichment instruction (docs/specs/context-management.md, CM-19)."""
 FOLD_OVERVIEW: Final = Framing(
     "fold-overview",
-    "sandbox-fold-overview-1",
+    "sandbox-fold-overview-2",
     "Platform instruction, apart from your work: the platform is merging the oldest fold "
     "records of this conversation into one overview. Its header, marker lines and search "
     "keys, copied by code from its parts, follow, then the parts' narratives, oldest "
@@ -241,7 +248,13 @@ FOLD_OVERVIEW: Final = Framing(
     "what is still true word for word, say what was finished or superseded, and add what "
     "the newer parts add. Call no tool. Answer with one JSON object and nothing else: "
     '{"narrative": "...", "keys": ["..."], "proposals": []}. Write no marker lines, which '
-    "code copies; keep every standing constraint the user gave; add no cause the parts do "
+    "code copies; keep every standing constraint the user gave. Carry forward supported "
+    "findings and their scope, assumptions, failed approaches and their stated reasons, "
+    "unresolved questions and identified next steps. Preserve source message IDs or "
+    "search keys for retrieving omitted bulk tool output and document text. Keep "
+    "hypotheses distinct from conclusions, and do not turn an untested direction into "
+    "a negative result. Prefer these takeaways over a chronology of calls. "
+    "Add no cause the parts do "
     "not state; call a read that was truncated, sampled or a preview incomplete; and give "
     "concepts and what values are for, not the values themselves, which the archive "
     "keeps. In keys, list literal names and identifiers as they occur in the parts' "

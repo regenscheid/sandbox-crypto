@@ -9,22 +9,23 @@ and deployed services are unchanged. Read [STATUS.md](STATUS.md),
 
 ## Current refactor
 
-- `orchestrator/context/agent.py`: shared mutable conversation owner;
-  `context/preparation.py`: trusted scope, reconstruction, folder/log/history tool;
-  `context/history/`: full archive, search/reads, folding and inspector implementation.
-- `finalization.py`: common fresh/resumed child persistence and settlement, followed
-  by retryable terminal-kernel cleanup. `harness.save` remains a compatible export.
-- Workspace `requests.py`: common scoped threaded request execution/encoding;
-  `WorkspaceContext` is the only store registration.
-- All changes are signed local commits. Independent context/finalization review
-  found no actionable issues. Public characterization caught an eager optional
-  kernel-observation lookup; it is now deferred as before. Targeted tests: 426 pass;
-  workspace: 855 pass; static checks pass. Broad dev WAL/ledger/SIGTERM failures remain
-  ([evidence](docs/agent-reports/context-refactor-2026-10-21.md)); do not claim the
-  entire suite is green.
-- No real model calls, paid research, live services, archive migration or merge were
-  part of this refactor. The owner requested publishing `agent-context-refactor`.
-  Continue in this separate worktree.
+- `context/agent.py` owns working messages, pins, usage and archive-first writes;
+  `context/preparation.py` prepares trusted root/child scopes and retrieval.
+- `context/folding.py` gives the engine context and a call index, independently of
+  Transcript; `FoldLifecycle` retains hook ordering, cleanup and accounting. Hooks
+  read `RunView.context`; Transcript no longer forwards context properties.
+- `context/history/` owns archives, reads/search, folds and inspection. The follow-up
+  protects recent complete call/result units, prioritizes narrative takeaways with
+  retrieval anchors, pages original overview evidence and preflights narrative room.
+- Parallel extractions: `finalization.py` for child persistence/settlement/cleanup,
+  workspace `requests.py` for scoped execution/encoding.
+- All changes are signed. Current follow-up validation is in progress. First-stage
+  tests: 426 targeted, 855 workspace passed. The [report](docs/agent-reports/context-refactor-2026-10-21.md)
+  records baseline WAL/ledger/SIGTERM failures and an unresolved serving timeout;
+  do not claim the whole suite is green or summaries scientifically qualified.
+- No real model calls, service rollout, archive migration or merge into dev.
+  The owner requested publication on `agent-context-refactor`; continue in its
+  separate worktree and preserve the primary checkout and services.
 
 ## Earlier accepted scope and evidence
 

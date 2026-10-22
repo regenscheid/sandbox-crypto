@@ -9,11 +9,16 @@
 - [x] Complete integrated checks and record the [independent review and validation results](docs/agent-reports/context-refactor-2026-10-21.md): 426 targeted and 855 workspace tests pass; broad-suite baseline failures remain explicitly recorded.
 - [ ] Repair the existing dev test fixtures that close the last control-store writer
   before read-only authority checks; investigate the ledger category assertion and
-  intermittent SIGTERM stopped-event failure. Do not weaken the production WAL guard.
+  intermittent SIGTERM stopped-event failure, plus the unresolved serving subprocess
+  timeout observed during follow-up checks. Do not weaken the production WAL guard.
 - [ ] Later review candidates: worker lifecycle/executor splitting, capability bundles and
   the remaining generated API/domain-contract work. These are outside this focused branch.
 
-Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev` as requested; implementation, runtime qualification and deployment are distinct. Older PR/branch references record historical delivery evidence.
+- [x] Remove Transcript's context forwarding facade and decouple the shared fold engine through `FoldPoint` and `FoldLifecycle`; preserve local/confined hook order and research-state holds.
+- [ ] Finish recent-context retention, bounded overview evidence validation and upfront enrichment budgeting, then review and test the integrated paths.
+- [ ] Qualify takeaway preservation with real multi-fold continuity probes; deterministic tests do not establish scientific recall quality.
+
+Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev`; implementation, runtime qualification and deployment are distinct.
 
 ## Research continuity after the SNOVA acceptance run
 

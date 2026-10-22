@@ -10,13 +10,16 @@ reviewed; no remote merge or rollout is implied.
 
 The [context ownership refactor](../docs/specs/agent-context-refactor.md) consolidates
 preparation, active state, histories, folding, search and diagnostics under
-`orchestrator/context/`. Root and delegated agents share this machinery. Parallel
-work extracts attempt finalization and workspace request execution. Archive formats,
-transport schemas and role policy remain compatible. Implementation and independent
-review are complete. Integrated targeted tests pass (426), as does the full workspace
-suite (855). Static, schema and hygiene checks pass. Broad testing also reproduced
-existing dev failures; this branch does not claim an entirely green suite
-([validation and limits](docs/agent-reports/context-refactor-2026-10-21.md)).
+`orchestrator/context/`. Root and delegated agents share it. The follow-up removes
+Transcript's forwarding properties and gives folding a context-only interface with
+an ordered lifecycle adapter. New retention protects full recent call/result units;
+narrative prompts prioritize takeaways and retrieval anchors. Overview validation
+pages original text and stops once candidate evidence is proven; enrichment budgets
+actual narrative room before admission. Archive and transport formats are unchanged.
+Final focused integration validation is in progress; independent review corrected
+research-state hold detection and numeric-array evidence scanning. Prior first-stage
+checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
+unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 

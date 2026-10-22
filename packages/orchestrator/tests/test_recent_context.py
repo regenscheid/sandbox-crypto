@@ -10,17 +10,21 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
     Entry,
+    Folder,
     FoldRecord,
     Geometry,
     HistoryTool,
     View,
+    geometry,
     session_view,
 )
 from sandbox_science.orchestrator.context.history.record import FORMAT, stubbed
+from sandbox_science.orchestrator.model import AssistantMessage
 from sandbox_science.orchestrator.projects import ProjectStore
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
@@ -39,7 +43,13 @@ def archive(tmp_path: Path) -> Iterator[Archive]:
 
 
 def calls(
-    archive: Archive, number: int, *, results: int = 1, chars: int = 6_000, tool: str = "shell"
+    archive: Archive,
+    number: int,
+    *,
+    results: int = 1,
+    chars: int = 6_000,
+    tool: str = "shell",
+    native: bytes | None = None,
 ) -> tuple[Archived, ...]:
     arguments = tuple(
         {
@@ -50,7 +60,17 @@ def calls(
         for index in range(results)
     )
     answer = archive.append(
-        "p", "s", "r", Entry("assistant", "assistant", "Working.", tool_calls=arguments)
+        "p",
+        "s",
+        "r",
+        Entry(
+            "assistant",
+            "assistant",
+            "Working.",
+            tool_calls=arguments,
+            native=native,
+            native_format="fixture" if native else None,
+        ),
     )
     return (
         answer,
@@ -191,3 +211,77 @@ async def test_old_bulk_becomes_exact_history_pointer_while_recent_units_and_ori
     for identifier in stubs:
         text, _ = await retrieval.call("history_read", {"message": identifier})
         assert json.loads(text)["text"] == originals[identifier].entry.content
+
+
+@pytest.mark.parametrize("older_units", [45, 75])
+async def test_context_owner_folds_real_history_without_cutting_native_recent_unit(
+    archive, older_units
+):
+    for number in range(older_units):
+        calls(archive, number)
+    native = b"complete-native-assistant-payload"
+    latest = calls(archive, 100, results=10, native=native)
+    shape = geometry(110_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=shape, per_token=4.0)
+    engine = Folder(
+        archive,
+        CONTEXT,
+        run="active",
+        view=view,
+        start=shape,
+        ceiling=shape.ceiling,
+        chunk=shape.chunk,
+    )
+    context = AgentContext.start(
+        [{"role": "system", "content": "Research."}, *view.messages], folds=engine
+    )
+    assert await context.before_call(call_index=7)
+    summary = engine.summary()
+    assert isinstance(summary, dict)
+    assert summary["folds"]
+    sent = context.sent
+    for original in latest:
+        assert original.chat() in sent
+    (assistant,) = [
+        message
+        for message in sent
+        if isinstance(message, AssistantMessage) and message.native == native
+    ]
+    assert assistant.native_format == "fixture"
+    assert len(assistant["tool_calls"]) == 10
+    assert sum(message.get("tool_call_id", "").startswith("c-100-") for message in sent) == 10
+    after = session_view(archive, CONTEXT, geometry=shape, per_token=4.0)
+    assert after.stubs
+    identifier = after.stubs[0]
+    original = archive.message("p", identifier)
+    assert f"history_read {identifier}" in next(
+        message["content"] for message in sent if "\n(Stub: " in str(message.get("content", ""))
+    )
+    tool = HistoryTool(archive, CONTEXT, run="active", delegated=False)
+    text, _ = await tool.call("history_read", {"message": identifier})
+    assert json.loads(text)["text"] == original.entry.content
+    assert archive.message("p", identifier) == original
+    await engine.finish_background()
+
+
+async def test_a_recent_unit_larger_than_the_wall_is_not_silently_shortened(archive):
+    latest = calls(archive, 0, results=10, chars=50_000, native=b"oversized-recent-unit")
+    shape = geometry(110_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=shape, per_token=4.0)
+    engine = Folder(
+        archive,
+        CONTEXT,
+        run="active",
+        view=view,
+        start=shape,
+        ceiling=shape.ceiling,
+        chunk=shape.chunk,
+    )
+    context = AgentContext.start(
+        [{"role": "system", "content": "Research."}, *view.messages], folds=engine
+    )
+    assert not await context.before_call(call_index=1)
+    assert engine.stopped == "irreducible"
+    assert all(row.chat() in context.sent for row in latest)
+    assert not any("\n(Stub: " in str(message.get("content", "")) for message in context.sent)
+    await engine.finish_background()

@@ -73,6 +73,7 @@ from sandbox_science.orchestrator.worker_client import dump
 from .archive import Archive, Archived, Entry, escape
 from .collections import Collection
 from .enrich import Enriched, EnrichmentProgress, enrich
+from .evidence import ArchiveEvidence, EvidenceSource
 from .geometry import Geometry, geometry
 from .log import PATIENCE, patiently
 from .markers import Judge
@@ -82,7 +83,7 @@ from .reads import Read, Register
 from .record import FORMAT, FoldRecord, stubbed
 from .skeleton import skeleton
 from .snapshot import inline
-from .view import Earlier, Unit, View, session_view, settle, spanned
+from .view import Earlier, Unit, View, session_view, settle
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.digest import Rendered
@@ -123,6 +124,8 @@ class _Running:
     kept: tuple[Archived, FoldRecord] | None = None
     progress: EnrichmentProgress = field(default_factory=EnrichmentProgress)
     """Only an actual in-flight enrichment call can need a cancellation estimate."""
+    evidence: EvidenceSource | None = None
+    """An overview validates against paged originals, without holding their bodies."""
     parts: tuple[tuple[str, FoldRecord], ...] = ()
     """A merge's parts, oldest first; its ``record`` is the overview as code built it."""
 
@@ -549,7 +552,7 @@ class Folder:
                 sent,
                 specs,
                 running.record,
-                running.rows,
+                running.evidence if running.evidence is not None else running.rows,
                 share=share,
                 exists=self.exists,
                 spent=spent,
@@ -640,7 +643,9 @@ class Folder:
             view = await threaded(self._view, per_token)
             last = record.last[0]
             after = [p.row for u in view.units for p in u if p.row and p.row.position > last]
-            record = replace(record, stubs=stubbed(after, view.stubs))
+            assert self.geometry is not None  # noqa: S101 - initialized before any fold
+            protected = view.recent_ids(self.geometry.floor)
+            record = replace(record, stubs=stubbed(after, view.stubs, protected=protected))
         entry = Entry(
             "user",
             "fold",
@@ -820,15 +825,14 @@ class Folder:
             await self._rejected(record, why)
             return
         first, last = record.first[0], record.last[0]
-        rows = await threaded(
-            spanned,
+        evidence = ArchiveEvidence(
             self.archive,
             self.context,
             first,
             last,
             run=self.run if self.parent is not None else None,
         )
-        running = _Running(record, tuple(rows), parts=tuple(due))
+        running = _Running(record, (), evidence=evidence, parts=tuple(due))
         before = self.tokens(point)
         running.progress.baseline_input_tokens = before
         running.task = asyncio.create_task(

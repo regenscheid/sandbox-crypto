@@ -1,5 +1,7 @@
 # Plan changes
 
+- 2026-10-21: Continue the isolated context refactor with a context-only fold engine, preserving ordered hook cleanup; retain whole recent units, prioritize retrievable research takeaways, and page original evidence for overview validation ([contract](../docs/specs/agent-context-refactor.md#folding-retention-policy)).
+
 ## 2026-10-21
 
 - Follow the owner's development refactoring review in an isolated worktree from fetched `origin/dev` (`391cb7a7`): consolidate `orchestrator/context/` around shared active state and scoped history preparation, retaining the existing folding engine ([ownership](../docs/specs/agent-context-refactor.md)).
