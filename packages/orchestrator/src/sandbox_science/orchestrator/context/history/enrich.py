@@ -52,6 +52,7 @@ from sandbox_science.orchestrator.prompts import schema_json
 from sandbox_science.orchestrator.worker_client import dump
 
 from .archive import Archived, escape
+from .evidence import EvidenceMatches, EvidenceRequest, EvidenceSource, RowEvidence
 from .record import FoldRecord, flat, guarded
 
 Json = dict[str, Any]
@@ -185,7 +186,7 @@ async def enrich(
     view: Sequence[Message],
     specs: Sequence[ToolSpec],
     record: FoldRecord,
-    rows: Sequence[Archived],
+    rows: Sequence[Archived] | EvidenceSource,
     *,
     share: int,
     exists: Callable[[str], bool] | None = None,
@@ -201,8 +202,23 @@ async def enrich(
     ``exists`` says whether a ledger handle exists, and ``spent`` takes each call's usage
     as it returns, so that a fold cancelled later still counts its calls. An overview's
     update has its own ``framing`` and is ``shown`` its parts' narratives (CM-21)."""
+    initial = _size(record, share, 0)
+    capacity = min(share // 4, max(0, (share - initial.fixed) // 3))
+    if capacity == 0:
+        return Enriched(
+            record,
+            (),
+            "the retained record leaves no narrative room",
+            attempts=(
+                {"attempt": 0, "outcome": "no_narrative_room", "size": _size_diagnostic(initial)},
+            ),
+        )
     limits = (
-        f"The narrative takes at most {share // 4:,} characters, and the keys at most "
+        f"The narrative target is at most {capacity:,} characters, including room for "
+        f"rendered line quoting; the full-record share is {share:,}. The fixed outline, "
+        f"retained keys and framing occupy {initial.fixed:,} characters. Keep important "
+        "takeaways, failed approaches, open questions and exact retrieval references; "
+        "remove repetition rather than qualifications. The keys take at most "
         f"{share // 10:,} in all. The span:\n"
     )
     content = framing.text + limits + (shown or record.text("(this span)"))
@@ -258,11 +274,22 @@ async def enrich(
             continue
         # A span, an overview's above all, can be millions of characters: off the loop.
         sizes: list[_Size] = []
+        evidence: list[EvidenceMatches] = []
         found, why = await threaded(
-            check, turn.text or "", record, rows, share=share, exists=exists, size=sizes.append
+            check,
+            turn.text or "",
+            record,
+            rows,
+            share=share,
+            exists=exists,
+            size=sizes.append,
+            evidence_report=evidence.append,
         )
         if found is not None:
-            attempts.append({"attempt": attempt + 1, "outcome": "accepted"})
+            accepted: Json = {"attempt": attempt + 1, "outcome": "accepted"}
+            if evidence and (diagnostic := evidence[-1].diagnostic()):
+                accepted["evidence"] = diagnostic
+            attempts.append(accepted)
             offered = (_object(turn.text or "") or {}).get("proposals")
             proposals = tuple(cast(list[object], offered)) if isinstance(offered, list) else ()
             return Enriched(found, tuple(calls), proposals=proposals, attempts=tuple(attempts))
@@ -279,15 +306,15 @@ async def enrich(
 def check(
     text: str,
     record: FoldRecord,
-    rows: Sequence[Archived],
+    rows: Sequence[Archived] | EvidenceSource,
     *,
     share: int,
     exists: Callable[[str], bool] | None = None,
     size: Callable[[_Size], None] | None = None,
+    evidence_report: Callable[[EvidenceMatches], None] | None = None,
 ) -> tuple[FoldRecord | None, str]:
     """``record`` with the answer's narrative and keys, as code checks them against the
     span ``rows``; ``None`` and why when the answer cannot be used."""
-    span = "\n".join(f"{row.message_id}\n{row.entry.text}" for row in rows)
     answer = _object(text) or {}
     narrative = answer.get("narrative")
     if not isinstance(narrative, str):
@@ -300,12 +327,44 @@ def check(
             size(_size(record, share, len(narrative)))
         return None, f"its narrative passed {share // 4:,} characters"
     keys = dict(record.keys)
-    found = numbers(span)
-    for key in cast(list[object], answer.get("keys") or []):
-        # A key is one line of text a message of the span holds; a message's ID is not.
-        if not isinstance(key, str) or "\n" in key or "\r" in key or not flat(key):
-            continue
-        holder = next((row.message_id for row in rows if key in row.entry.text), None)
+    offered: object = answer.get("keys") or []
+    candidates = (
+        tuple(
+            key
+            for key in cast(list[object], offered)
+            if isinstance(key, str)
+            and "\n" not in key
+            and "\r" not in key
+            and flat(key)
+            and len(flat(key)) + 24 <= share // 10
+        )
+        if isinstance(offered, list)
+        else ()
+    )
+    wanted_numbers: set[str] = set()
+    literals: set[str] = set()
+    patterns: set[str] = set()
+    for match in _VALUES.finditer(narrative):
+        value, kind = match.group(0), match.lastgroup
+        if kind == "number":
+            value = _whole(value.rstrip(".,"))
+            wanted_numbers.update(numbers(value))
+            if value.startswith(("-", "\u2212")):
+                patterns.add(_negative(value))
+        elif kind == "handle":
+            patterns.add(_handle(value))
+        else:
+            literals.add(value)
+    source = RowEvidence(rows) if isinstance(rows, Sequence) else rows
+    supported = source.verify(
+        EvidenceRequest(
+            frozenset(wanted_numbers), frozenset(literals), frozenset(patterns), candidates
+        )
+    )
+    if evidence_report is not None:
+        evidence_report(supported)
+    for key in candidates:
+        holder = supported.keys.get(key)
         if holder is not None and flat(key) not in keys:
             keys[flat(key)] = holder
     kept: list[tuple[str, str]] = []
@@ -314,7 +373,7 @@ def check(
         if used + len(key) + 24 <= share // 10:
             kept.append((key, at))
             used += len(key) + 24
-    narrative = _VALUES.sub(lambda m: _checked(m, span, found, kept, exists), narrative)
+    narrative = _VALUES.sub(lambda m: _checked(m, supported, kept, exists), narrative)
     made = replace(record, narrative=narrative, keys=tuple(kept), state="applied")
     if made.chars > share:
         if size is not None:
@@ -323,30 +382,40 @@ def check(
     return made, ""
 
 
+def _whole(value: str) -> str:
+    return re.sub(r"^([-+\u2212]?)\.", r"\g<1>0.", value)
+
+
+def _negative(value: str) -> str:
+    digits = re.escape(value[1:])
+    if value[1:].startswith("0."):
+        digits = "0?" + digits[1:]
+    return rf"(?<![\w.])[-\u2212]\s?{digits}(?![\w.])"
+
+
+def _handle(value: str) -> str:
+    return rf"(?<![\w-]){re.escape(value)}(?![\w-])"
+
+
 def _checked(
     match: re.Match[str],
-    span: str,
-    found: set[str],
+    supported: EvidenceMatches,
     keys: Sequence[tuple[str, str]],
     exists: Callable[[str], bool] | None,
 ) -> str:
     value, kind = match.group(0), match.lastgroup
     tail = ""
-    if kind == "number":  # a sentence's punctuation after it is not part of it
+    if kind == "number":
         stripped = value.rstrip(".,")
         value, tail = stripped, value[len(stripped) :]
-        whole = re.sub(r"^([-+\u2212]?)\.", r"\g<1>0.", value)  # .5 is 0.5
-        known = numbers(whole) <= found
-        if known and whole[0] in "-\u2212":  # a sign is part of the value: the span says it
-            digits = re.escape(whole[1:])
-            if whole[1:].startswith("0."):  # -0.5 is said so or as -.5
-                digits = "0?" + digits[1:]
-            known = re.search(rf"(?<![\w.])[-\u2212]\s?{digits}(?![\w.])", span) is not None
+        whole = _whole(value)
+        known = numbers(whole) <= supported.numbers
+        if known and whole.startswith(("-", "\u2212")):
+            known = _negative(whole) in supported.patterns
     elif kind == "handle":
-        within = re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", span) is not None
-        known = within or (exists is not None and exists(value))
+        known = _handle(value) in supported.patterns or (exists is not None and exists(value))
     else:
-        known = value in span
+        known = value in supported.literals
     if known:
         return value + tail
     if not keys:
