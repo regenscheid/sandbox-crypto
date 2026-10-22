@@ -9,7 +9,9 @@ handling, worker operations and deferred connector loading.
 Each definition supplies its reserved names and its position in the tool and hook
 orders. These orders differ and remain explicit. A hook factory creates fresh
 adapter state for each `turn_hooks()` call; controllers that already are hooks
-retain their identity. The catalog reserves names even when a role or worker
+retain their identity. Current public controller replacements and job notice bounds
+are resolved when hooks are built, including absent controllers later installed by
+direct callers. Excluded child capabilities gain no empty hook slot. The catalog reserves names even when a role or worker
 feature does not offer the capability. Worker specifications remain with their
 handlers and contribute their names to the same reservation calculation.
 

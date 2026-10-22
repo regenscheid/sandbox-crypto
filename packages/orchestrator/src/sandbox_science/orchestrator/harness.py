@@ -37,6 +37,7 @@ from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import Language
 
+from . import capabilities as caps
 from . import figurechecks, mathchecks
 from .agent_messages import AgentMailbox, AgentMessageStore
 from .aio import threaded
@@ -1552,6 +1553,9 @@ class Harness:
         languages, features = admitted.languages, admitted.features
         role = admitted.request.role
         delegated = role == "delegated"
+        bundles: list[caps.Capability] = []
+        if delegations is not None:
+            bundles.append(caps.delegations(delegations))
         jobs = JobTools(
             self.client,
             context,
@@ -1572,6 +1576,8 @@ class Harness:
                 else None
             ),
         )
+        if "jobs" in features:
+            bundles.append(caps.jobs(jobs))
         connectors = None
         if self.mcp is not None and self.mcp.project == context.project_id and not delegated:
             # Listed at the run's start: a server added later is offered to the next run.
@@ -1602,7 +1608,8 @@ class Harness:
                 context,
                 languages=languages,
                 features=features,
-                jobs=jobs,
+                capabilities=(caps.task if delegated else caps.main)(bundles),
+                delegated=delegated,
                 connectors=connectors,
             )
         if prepared is None:
@@ -1611,12 +1618,9 @@ class Harness:
         viewer = None
         if accepts:
             viewer = ImageViewer(ArtifactInventory(stores.documents), context, self.client)
-
-            async def forget() -> None:
-                viewer.close()
-
-            on_close(forget)
+            bundles.append(caps.images(viewer, on_close))
         documents = DocumentTool(stores.documents, context, run_id=run_id, role=role, alias=alias)
+        bundles.append(caps.documents(documents))
         if chat is not None:
             chat.requests = documents.requests_waiting
         # Code in the sandbox has no route to the ledger: the agent imports what it
@@ -1629,6 +1633,7 @@ class Harness:
             alias=alias,
             read=lambda request: self.client.read_file(request),
         )
+        bundles.append(caps.ledger(ledger))
         # Main and delegated runs propose; only the user changes the memory (PM-3).
         memory_tool = MemoryTool(
             ProjectMemory(stores.documents),
@@ -1637,6 +1642,7 @@ class Harness:
             role=role,
             alias=alias,
         )
+        bundles.append(caps.memory(memory_tool))
         # The project's skills as the run starts: its set stays the same to the end (SK-5).
         # A check, and a run given no delegate tools, gets no skill that teaches them.
         delegates = delegations is not None and admitted.request.target is None
@@ -1655,6 +1661,8 @@ class Harness:
         if skills is not None and self.vectors is not None:
             # Reads the vectors the store has; the gateway's work goes on in the background.
             await skills.use(self.vectors, context.project_id, clock=self.clock)
+        if skills is not None:
+            bundles.append(caps.skills(skills))
         inventory = ArtifactInventory(stores.documents)
         review_store = ReviewStore(
             stores.documents, artifacts=inventory, defaults=self.settings.reviews()
@@ -1674,9 +1682,9 @@ class Harness:
                 archived_as=chat.run if chat is not None else None,
                 images=await self._reviewer_images(inventory, context, reviewer),
             )
-            on_close(reviews.close)
+            bundles.append(caps.reviews(reviews, on_close))
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
-        on_close(artifacts.aclose)
+        bundles.append(caps.artifacts(artifacts, on_close))
         recorder = FileRecorder(
             artifacts,
             ProjectFiles(stores.documents),
@@ -1684,10 +1692,12 @@ class Harness:
             parent_run=admitted.request.parent,
             delegation=admitted.request.delegation,
         )
+        bundles.append(caps.files(recorder))
         jobs.recorder = ledger.recorder = recorder
         math_checks = MathController(
             review_store, context.project_id, context.session_id, run_id, checker=self.checker
         )
+        bundles.append(caps.math(math_checks))
         # The plan tools hold nothing to close: the run's project store is the stores'.
         plans = None
         if not delegated:
@@ -1699,6 +1709,7 @@ class Harness:
                 run_id=run_id,
                 alias=alias,
             )
+            bundles.append(caps.plans(plans))
         # A main run asks the user and waits in the call; a delegated run that needs
         # the user ends blocked (PD-41).
         questions = None
@@ -1710,6 +1721,7 @@ class Harness:
                 stop=stop,
                 clock=self.clock,
             )
+            bundles.append(caps.questions(questions))
         # A delegated run's cells run in kernels of its own, which stop when it ends
         # (PD-37); a main run uses the session's, and its kernel check closes those its
         # session's earlier runs left (PD-40) at its first observation of a connected
@@ -1727,6 +1739,7 @@ class Harness:
                 granted=track[0],
                 track=track[1],
             )
+            bundles.append(caps.tracks(tracks))
         kernel_run = (
             (
                 run_id_of(admitted.request.work)
@@ -1736,66 +1749,58 @@ class Harness:
             if admitted.request.parent is not None
             else None
         )
+        mailbox = AgentMailbox(
+            AgentMessageStore(stores.projects.control, clock=self.clock),
+            context,
+            run=run_name(admitted.started_at, admitted.run_id),
+            delegation=admitted.request.delegation,
+            may_message_child=delegations is not None and bool(delegations.specs),
+            user_arrived=(
+                chat.arrived if chat is not None and admitted.request.delegation is None else None
+            ),
+            clock=self.clock,
+        )
+        resources = (
+            Resources(
+                ResourceRequests(stores.projects.control, clock=self.clock),
+                Ownership(
+                    project=context.project_id,
+                    session=context.session_id,
+                    work=context.authority.work,
+                    run=context.authority.run,
+                    epoch=context.authority.epoch,
+                ),
+                turns=admitted.request.max_turns or self.settings.max_turns,
+                tokens=admitted.request.tokens,
+                delegated=delegated,
+                inventory=inventory,
+                clock=self.clock,
+            )
+            if context.authority is not None
+            else None
+        )
+        bundles.append(caps.mailbox(mailbox))
+        if resources is not None:
+            bundles.append(caps.resources(resources))
+        bundles.append(caps.history(prepared.retrieval))
+        selected = (
+            caps.main(bundles, read_only_records=admitted.request.target is not None)
+            if not delegated
+            else caps.check(bundles)
+            if admitted.request.target is not None
+            else caps.task(bundles)
+        )
         return Toolbox(
             self.client,
             context,
             languages=languages,
             features=features,
-            documents=documents,
-            jobs=jobs,
-            reviews=reviews,
-            math_checks=math_checks,
-            artifacts=artifacts,
-            plans=plans,
-            ledger=ledger,
-            memory=memory_tool,
             check_kernels=True,
             sweep_left_kernels=kernel_run is None,
             connectors=connectors,
             kernel_run=kernel_run,
-            recorder=recorder,
-            delegations=delegations,
-            mailbox=AgentMailbox(
-                AgentMessageStore(stores.projects.control, clock=self.clock),
-                context,
-                run=run_name(admitted.started_at, admitted.run_id),
-                delegation=admitted.request.delegation,
-                may_message_child=delegations is not None and bool(delegations.specs),
-                user_arrived=(
-                    chat.arrived
-                    if chat is not None and admitted.request.delegation is None
-                    else None
-                ),
-                clock=self.clock,
-            ),
-            resources=(
-                Resources(
-                    ResourceRequests(stores.projects.control, clock=self.clock),
-                    Ownership(
-                        project=context.project_id,
-                        session=context.session_id,
-                        work=context.authority.work,
-                        run=context.authority.run,
-                        epoch=context.authority.epoch,
-                    ),
-                    turns=admitted.request.max_turns or self.settings.max_turns,
-                    tokens=admitted.request.tokens,
-                    delegated=delegated,
-                    inventory=inventory,
-                    clock=self.clock,
-                )
-                if context.authority is not None
-                else None
-            ),
-            questions=questions,
             delegated=delegated,
-            # A check reads and recomputes; it changes no entry, document or memory.
-            check=admitted.request.target is not None,
-            tracks=tracks,
-            skills=skills,
-            # Main reads its session; delegated runs read their own subtree (CM-37).
-            history=prepared.retrieval,
-            images=viewer,
+            capabilities=selected,
             image_offer={"offered": accepts, "why": why},
         )
 
