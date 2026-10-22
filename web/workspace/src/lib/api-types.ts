@@ -758,6 +758,7 @@ export interface DocumentRevision {
 }
 
 export interface DocumentWarning {
+  path?: string;
   kind: string;
   message: string;
   block?: string;

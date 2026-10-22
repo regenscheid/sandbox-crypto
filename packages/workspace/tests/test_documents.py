@@ -740,3 +740,22 @@ async def test_a_revision_downloads_as_its_markdown_source(
         assert (await client.get(path, params=params)).status == status
     other = f"/api/v0/projects/p1/documents/{documents['other']}/source"
     assert (await client.get(other)).status == 404
+
+
+async def test_unresolved_file_warning_retains_its_path(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    changed = await post_change(
+        client,
+        documents["notes"],
+        {
+            "action": "source",
+            "base": 1,
+            "reason": "Reference a missing image",
+            "operation_id": "missing-image",
+            "text": "![Plot](missing.png)\n",
+        },
+    )
+    assert changed["warnings"][0]["path"] == "missing.png"
+    found = await get(client, f"/api/v0/projects/p1/documents/{documents['notes']}")
+    assert found["revision"]["warnings"][0]["path"] == "missing.png"

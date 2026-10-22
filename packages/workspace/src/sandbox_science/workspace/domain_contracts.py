@@ -106,6 +106,7 @@ class DocumentListing(TypedDict):
 
 @with_config(ConfigDict(extra="forbid"))
 class DocumentWarning(TypedDict):
+    path: NotRequired[str]
     kind: str
     message: str
     block: NotRequired[str]
