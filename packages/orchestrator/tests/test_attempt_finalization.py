@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.continuity.child_settlement import ChildSettlement
 from sandbox_science.orchestrator.finalization import AttemptFinalizer, record_and_acknowledge
 from sandbox_science.orchestrator.harness import Finished
@@ -29,7 +30,11 @@ def completed(delegation: str, hooks: tuple[TurnHook, ...] = ()) -> Finished:
         final.context,
         final.task,
         final.started_at,
-        Transcript(messages=[], stopped="answered", final_text="Checked original evidence."),
+        Transcript(
+            context=AgentContext(messages=[]),
+            stopped="answered",
+            final_text="Checked original evidence.",
+        ),
         hooks=hooks,
         parent=RUN,
         delegation=delegation,

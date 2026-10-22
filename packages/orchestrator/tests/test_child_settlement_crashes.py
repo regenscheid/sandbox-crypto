@@ -104,7 +104,7 @@ async def crash():
 
             finished = Completed(
                 record.run_id, record.context, record.task, record.started_at,
-                Transcript(messages=[], stopped="answered", final_text=record.final_text),
+                Transcript(context=AgentContext(messages=[]), stopped="answered", final_text=record.final_text),
                 hooks=(mailbox,), parent=record.parent, delegation=record.delegation,
             )
 
