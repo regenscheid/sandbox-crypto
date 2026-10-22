@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Transaction-scoped ledger preparation. The caller owns the transaction."""
+"""Transaction-scoped ledger  The caller owns the transaction."""
 
 from __future__ import annotations
 
@@ -10,29 +10,39 @@ from typing import Final, cast
 
 from pydantic import BaseModel, ValidationError
 
+from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.documents.agent_text import agent_text, agent_values
 from sandbox_science.orchestrator.documents.blocks import parse
 from sandbox_science.orchestrator.documents.errors import (
+    CONFLICT,
     INVALID_REQUEST,
+    NOT_FOUND,
     DocumentError,
 )
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.normalize import normalize
+from sandbox_science.orchestrator.documents.pins import pin as pin_references
+from sandbox_science.orchestrator.documents.pins import text_references
 from sandbox_science.orchestrator.projects import run_id_of
 
-from . import evidence, frontier, records
+from . import evidence, frontier, queries, records
 from . import provenance as anchoring
 from .models import (
     FIELDS,
+    LINKS,
     STATUSES,
     THIS_SESSION,
     EntryChange,
+    EntryLink,
     EvidenceInput,
+    EvidenceLink,
+    LinkInput,
     Mutation,
     ReferenceFields,
     WorkInput,
+    wrong_link_target,
 )
-from .records import Json, Row
+from .records import TEXTS, Json, Planned, Row
 
 MAX_FIELDS: Final = 65536
 
@@ -263,3 +273,286 @@ def labelled(error: DocumentError, provenance: Json | None) -> DocumentError:
     return DocumentError(
         error.kind, f"line {line}: {error.message}", {**error.details, "line": line}
     )
+
+
+def plan_entry(
+    db: sqlite3.Connection,
+    project: str,
+    change: EntryChange,
+    role: str,
+    numbers: dict[str, int],
+    session: str | None = None,
+) -> Planned:
+    if change.entry is None:
+        if change.repin is not None:
+            raise DocumentError(INVALID_REQUEST, "a new entry's references are pinned anew")
+        return create_entry(db, project, change, role, numbers)
+    if change.type is not None or change.origin is not None or change.key is not None:
+        raise DocumentError(INVALID_REQUEST, "a revision keeps the entry's type and origin")
+    if change.expected is None:
+        raise DocumentError(INVALID_REQUEST, "a revision names the revision it expects")
+    row = queries.find(db, project, change.entry)
+    if role == "delegated" and (
+        not change.evidence
+        or change.model_dump(
+            exclude_none=True, exclude={"entry", "expected", "evidence", "basis", "anchors"}
+        )
+    ):
+        # LG-13: a delegated agent adds evidence, and changes nothing else.
+        raise records.refused("a delegated agent creates entries and adds evidence, nothing else")
+    if change.expected != row.head:
+        raise DocumentError(
+            CONFLICT,
+            f"{row.handle} is at revision {row.head}, not {change.expected}; read it again",
+            {"entry": row.entry_id, "current": row.head},
+        )
+    current = db.execute(queries.REVISION, (row.entry_id, row.head)).fetchone()
+    planned = Planned(
+        change,
+        row,
+        False,
+        title=current[1],
+        status=current[2],
+        status_before=current[2],
+        fields=json.loads(current[4]),
+        fields_before=json.loads(current[4]),
+    )
+    if change.title is not None and change.title != current[1]:
+        planned.title, planned.changed = change.title, [*planned.changed, "title"]
+    if change.statement is not None:
+        text = normalized(change.statement)
+        saved = TEXTS.read(db, row.entry_id, current[3], full=False)
+        if saved is None or text != saved["body"]:
+            planned.statement, planned.changed = text, [*planned.changed, "statement"]
+    if change.fields is not None:
+        given = change.fields
+        if (
+            row.type == "decision"
+            and change.status not in (None, current[2])
+            and set(given) <= {"reopen_condition"}
+        ):
+            # A decision rejected or reversed states its reopen condition and keeps its
+            # other fields, such as an obstruction's excluded scope (CM-10).
+            given = {**planned.fields, **given}
+        fields = validated_fields(row.type, given)
+        check_pdf(db, project, fields)
+        frontier.check_result(db, project, fields)
+        if fields != planned.fields:
+            planned.fields, planned.changed = fields, [*planned.changed, "fields"]
+    if change.status is not None and change.status != current[2]:
+        planned.status = revision_status(row, current[2], change.status)
+        planned.changed = [*planned.changed, "status"]
+    if change.links is not None:
+        planned.previous = queries.links(db, row.entry_id, row.head)
+    if change.repin is not None:
+        body = planned.statement
+        if body is None:
+            saved = TEXTS.read(db, row.entry_id, current[3], full=False)
+            assert saved is not None  # noqa: S101 - written with its revision
+            body = saved["body"]
+        moves = {("statement", item.path): item.revision for item in change.repin}
+        pins, moved = pin_references(
+            db,
+            project,
+            session,
+            text_references(body, "statement"),
+            json.loads(current[10] or "[]"),
+            moves,
+        )
+        if moved:
+            # A pin moved is no change of the statement's text, its evidence or what
+            # it claims, so it flags nothing (LG-28 as amended for figures).
+            planned.pins, planned.changed = pins, [*planned.changed, "pins"]
+    return planned
+
+
+def create_entry(
+    db: sqlite3.Connection,
+    project: str,
+    change: EntryChange,
+    role: str,
+    numbers: dict[str, int],
+) -> Planned:
+    if change.type is None or change.expected is not None:
+        raise DocumentError(INVALID_REQUEST, "a new entry names its type and no revision")
+    if change.title is None or change.statement is None:
+        raise DocumentError(INVALID_REQUEST, "a new entry has a title and a statement")
+    kind = change.type
+    if (kind in ("claim", "result")) != (change.origin is not None):
+        raise DocumentError(INVALID_REQUEST, "claims and results, and only they, have an origin")
+    status = first_status(kind, change.origin)
+    if kind == "decision" and change.status in ("in_effect", "rejected"):
+        # LG-17: the user or the main agent records a decision in effect at once, and
+        # an approach abandoned as a rejected one, with its reopen condition (CM-10).
+        if role == "delegated":
+            raise records.refused("a delegated agent's decision is proposed")
+        status = change.status
+    if change.status is not None and change.status != status:
+        raise DocumentError(INVALID_REQUEST, f"a new {kind} starts {status}")
+    # Handles count per project and type; a mutation's new entries take the next ones.
+    number = (
+        numbers.get(kind)
+        or db.execute(
+            "SELECT coalesce(max(number),0) FROM ledger_entries WHERE project=? AND type=?",
+            (project, kind),
+        ).fetchone()[0]
+    )
+    number = numbers[kind] = number + 1
+    row = Row(new_id("entry"), project, kind, number, change.origin, 0)
+    return Planned(
+        change,
+        row,
+        True,
+        title=change.title,
+        statement=normalized(change.statement),
+        status=status,
+        fields=result_fields(
+            db,
+            project,
+            check_pdf(db, project, validated_fields(kind, change.fields or {})),
+        ),
+        links=[] if change.links is None else None,
+    )
+
+
+def resolve_link(
+    db: sqlite3.Connection,
+    project: str,
+    planned: Planned,
+    link: LinkInput,
+    keys: dict[str, Row],
+    pinned: dict[evidence.Block, str],
+    heads: dict[str, int],
+) -> EntryLink:
+    holders, targets = LINKS[link.kind]
+    if planned.row.type not in holders:
+        raise DocumentError(INVALID_REQUEST, f"a {planned.row.type} holds no {link.kind} link")
+    if link.kind == "dominates" and link.note is None:
+        raise DocumentError(INVALID_REQUEST, "a dominates link states its reason")
+    if link.kind == "compares_to" and link.note is None:
+        raise DocumentError(INVALID_REQUEST, "a compares_to link states the difference")
+    named = [link.entry, link.finding, link.document]
+    if sum(value is not None for value in named) != 1:
+        raise DocumentError(INVALID_REQUEST, "a link names one entry, finding or block")
+    if link.finding is not None:
+        if "finding" not in targets or link.revision is not None or link.block is not None:
+            raise DocumentError(INVALID_REQUEST, f"a {link.kind} link names no finding")
+        found = db.execute(
+            "SELECT session FROM review_findings WHERE finding_id=? AND project=?",
+            (link.finding, project),
+        ).fetchone()
+        if found is None:
+            raise DocumentError(NOT_FOUND, f"no finding {link.finding} in this project")
+        return EntryLink(
+            kind=link.kind,
+            target="finding",
+            target_id=link.finding,
+            note=link.note,
+            session=found[0],
+        )
+    if link.document is not None:
+        if "block" not in targets or link.block is None or link.revision is None:
+            raise DocumentError(
+                INVALID_REQUEST, f"a {link.kind} link names no document block, or no revision"
+            )
+        # Stored by the document's ID, which a name given here may later not name.
+        return EntryLink(
+            kind=link.kind,
+            target="block",
+            target_id=pinned[(link.document, link.revision, link.block, None)],
+            revision=link.revision,
+            block=link.block,
+            note=link.note,
+        )
+    assert link.entry is not None  # noqa: S101 - one of the three is named
+    if link.block is not None:
+        raise DocumentError(INVALID_REQUEST, "an entry link names no block")
+    if link.entry.startswith("new:"):
+        target = keys.get(link.entry.removeprefix("new:"))
+        if target is None:
+            raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {link.entry}")
+    else:
+        target = queries.find(db, project, link.entry)
+    head = heads.get(target.entry_id, target.head)
+    if target.entry_id == planned.row.entry_id:
+        raise DocumentError(INVALID_REQUEST, "an entry does not link to itself")
+    if target.type not in targets:
+        raise DocumentError(
+            INVALID_REQUEST,
+            wrong_link_target(link.kind, planned.row.type, target.handle, target.type),
+        )
+    revision = link.revision
+    if revision is not None and not 1 <= revision <= head:
+        raise DocumentError(NOT_FOUND, f"{target.handle} has no revision {revision}")
+    if link.kind == "assumes" and revision is None:
+        revision = head  # pinned to the assumption as it reads now (LG-27)
+    return EntryLink(
+        kind=link.kind,
+        target="entry",
+        target_id=target.entry_id,
+        revision=revision,
+        note=link.note,
+        handle=target.handle,
+    )
+
+
+def resolve_evidence(
+    db: sqlite3.Connection,
+    project: str,
+    p: Planned,
+    keys: dict[str, Row],
+    heads: dict[str, int],
+    pinned: dict[evidence.Block, str],
+    linker: evidence.Linker,
+) -> None:
+    """The evidence the change leaves the entry: what it held, without the links the
+    change removes, with those it adds (LG-8)."""
+    if p.change.evidence is None and p.change.evidence_removed is None:
+        return
+    held = evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
+    removed = set(p.change.evidence_removed or ())
+    unknown = removed - {link.evidence_id for link in held}
+    if unknown:
+        raise DocumentError(
+            NOT_FOUND, f"{p.row.handle} holds no evidence {', '.join(sorted(unknown))}"
+        )
+    holder = evidence.Holder(p.row.entry_id, p.row.handle, p.row.type, p.row.head)
+    added: list[EvidenceLink] = []
+    for item in p.change.evidence or ():
+        target = None
+        if item.entry is not None:
+            if item.entry.startswith("new:"):
+                row = keys.get(item.entry.removeprefix("new:"))
+                if row is None:
+                    raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {item.entry}")
+            else:
+                row = queries.find(db, project, item.entry)
+            target = evidence.EntryTarget(
+                row.entry_id, row.handle, row.type, heads.get(row.entry_id, row.head)
+            )
+        added.append(evidence.resolve(db, project, holder, item, target, pinned, linker))
+    result = [link for link in held if link.evidence_id not in removed] + added
+    if len({evidence.key(link) for link in result}) != len(result):
+        raise DocumentError(INVALID_REQUEST, f"{p.row.handle} holds that evidence already")
+    if len(result) > 128:
+        raise DocumentError(INVALID_REQUEST, "an entry holds at most 128 evidence links")
+    if sum(len((link.scope or "").encode()) for link in result) > evidence.MAX_SCOPES:
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{p.row.handle}'s evidence scope notes exceed {evidence.MAX_SCOPES} bytes",
+        )
+    p.evidence = result
+    if not p.created:
+        p.changed = [*p.changed, "evidence"]
+
+
+def final_links(db: sqlite3.Connection, p: Planned) -> list[EntryLink]:
+    """The links the change leaves ``p``'s entry."""
+    return p.links if p.links is not None else queries.links(db, p.row.entry_id, p.row.head)
+
+
+def final_evidence(db: sqlite3.Connection, p: Planned) -> list[EvidenceLink]:
+    """The evidence the change leaves ``p``'s entry."""
+    if p.evidence is not None:
+        return p.evidence
+    return evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
