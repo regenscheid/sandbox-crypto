@@ -1,9 +1,9 @@
 # Review snapshot planning
 
-The review repository currently chooses and budgets evidence while also owning review
-transactions, watermarks, leases, call accounting and completion. This change gives
-snapshot selection a separate policy owner without changing the public `ReviewStore`
-facade or the reviewer's input.
+`SnapshotPlanner` chooses and budgets review evidence. `ReviewStore` owns review
+transactions, watermarks, leases, call accounting and completion. Snapshot selection
+has a separate policy owner; the public `ReviewStore` facade and the reviewer's
+input remain unchanged.
 
 ## Boundary
 

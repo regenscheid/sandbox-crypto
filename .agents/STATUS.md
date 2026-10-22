@@ -23,10 +23,11 @@ research-state hold detection, numeric arrays and signed values at page boundari
 Prior first-stage checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
 unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
 
-Three authorized follow-ups are now in isolated implementation worktrees: capability
-assembly, review snapshot planning and generated document/comment/job API contracts.
-Root coordinates cross-review and combined checks before integrating and publishing
-on `agent-context-refactor`; these follow-ups are not yet validated or deployed.
+Three follow-ups are integrated and independently reviewed: typed capability assembly,
+pure review snapshot planning, and generated document/comment/job contracts with
+focused clients. Combined checks: 804 pass, three ledger failures match the prior
+baseline exactly; 92 final checks, 862 workspace and 2,289 frontend tests pass.
+See the [report](docs/agent-reports/parallel-refactor-2026-10-21.md). No merge or rollout.
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 

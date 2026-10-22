@@ -11,8 +11,8 @@
   before read-only authority checks; investigate the ledger category assertion and
   intermittent SIGTERM stopped-event failure, plus the unresolved serving subprocess
   timeout observed during follow-up checks. Do not weaken the production WAL guard.
-- [ ] Later review candidates: worker lifecycle/executor splitting, capability bundles and
-  the remaining generated API/domain-contract work. These are outside this focused branch.
+- [ ] Later review candidates: worker lifecycle/executor splitting and generated
+  contracts for API domains beyond documents, comments and jobs.
 
 - [x] Remove Transcript's context forwarding facade and decouple the shared fold engine through `FoldPoint` and `FoldLifecycle`; preserve local/confined hook order and research-state holds.
 - [x] Implement and independently review recent-context retention, bounded overview evidence validation and upfront enrichment budgeting; the 743-test integration selection passes on this branch. Publication is separate from merging and runtime qualification.
@@ -20,14 +20,17 @@
 
 ### Parallel follow-up authorized 2026-10-21
 
-- [ ] Assemble tool entries and required ordered hooks through explicit capabilities,
+- [x] Assemble tool entries and required ordered hooks through explicit capabilities,
   retaining role restrictions, reserved names, effects and cleanup ownership.
-- [ ] Extract review evidence selection/budgeting into a typed snapshot planner;
+- [x] Extract review evidence selection/budgeting into a typed snapshot planner;
   retain transactional rechecks, immutable pins, watermarks and dispatch ordering.
-- [ ] Generate document/comment/job API contracts and typed write unions; organize
+- [x] Generate document/comment/job API contracts and typed write unions; organize
   their clients by domain while preserving transport and omission/null behavior.
-- [ ] Independently cross-review all three paths, integrate on this branch, and run
-  combined validation before publication. Worker lifecycle remains a separate pass.
+- [x] Independently review all three paths and integrate on this branch: 804 combined
+  checks pass with three exact prior-baseline ledger failures; 92 final checks,
+  862 workspace tests and 2,289 frontend tests pass. See the
+  [report](docs/agent-reports/parallel-refactor-2026-10-21.md). Worker lifecycle remains
+  a separate pass; publication does not imply merging or deployment.
 
 Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev`; implementation, runtime qualification and deployment are distinct.
 
