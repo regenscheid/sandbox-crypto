@@ -123,9 +123,12 @@ def _database(path: Path, version: int, application: int = 0, *, wal: bool = Tru
 
 
 def _kept(before: dict[str, str], path: Path) -> bool:
-    """Whether each file that was there before is unchanged."""
+    """Whether each file that was there before is unchanged, but the -shm: SQLite's
+    shared-memory index, which any open rewrites. macOS's SQLite keeps it after a clean
+    close, where Linux's removes it."""
     after = _files(path)
-    return {name: after.get(name) for name in before} == before
+    data = [name for name in before if not name.endswith("-shm")]
+    return {name: after.get(name) for name in data} == {name: before[name] for name in data}
 
 
 def _refused(path: Path, match: str) -> ControlError:
@@ -748,15 +751,22 @@ def test_a_wal_store_copied_without_its_files_opens_for_writing(tmp_path: Path) 
 def test_a_reader_says_what_is_missing_from_a_copied_wal_store(tmp_path: Path) -> None:
     copy = _copied_without_wal_files(tmp_path)
     before = _files(copy)
-    reader = _store(copy, readonly=True)
-    with (
-        pytest.raises(
-            ControlError, match=re.escape("control.sqlite3-wal and control.sqlite3-shm are missing")
-        ) as raised,
-        reader.read(),
-    ):
-        pass
-    reader.close()
+    # Where SQLite may not make the files. Linux's makes them in a writable directory and
+    # the copy reads (as after a writer's clean close there); macOS's never does.
+    copy.parent.chmod(0o555)
+    try:
+        reader = _store(copy, readonly=True)
+        with (
+            pytest.raises(
+                ControlError,
+                match=re.escape("control.sqlite3-wal and control.sqlite3-shm are missing"),
+            ) as raised,
+            reader.read(),
+        ):
+            pass
+        reader.close()
+    finally:
+        copy.parent.chmod(0o755)
     assert raised.value.kind == "unavailable"
     assert "not a control store" not in str(raised.value)
     assert _files(copy) == before

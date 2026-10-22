@@ -239,17 +239,24 @@ class ControlStore:
         if self.readonly:
             if not self.path.is_file():
                 raise ControlError(NOT_FOUND, "nothing has been stored yet")
-            if self._without_wal_files():
-                name = self.path.name
-                raise ControlError(
-                    UNAVAILABLE,
-                    f"{name} is in WAL mode but {name}-wal and {name}-shm are missing, as "
-                    "when the store is copied without them: open it once with the harness or "
-                    "the workspace, which recreate them, or copy them with it",
-                )
             db = self._readonly()
             try:
                 migrations.check(self.path, db, readonly=True)
+            except ControlError as error:
+                db.close()
+                # A WAL store without its -wal and -shm, as a writer's clean close leaves it
+                # on Linux, opens read-only where SQLite may make them; where it may not
+                # (macOS, a read-only directory), say what is missing rather than calling
+                # the file something else.
+                if error.kind == UNAVAILABLE and self._without_wal_files():
+                    name = self.path.name
+                    raise ControlError(
+                        UNAVAILABLE,
+                        f"{name} is in WAL mode but {name}-wal and {name}-shm are missing, "
+                        "as when the store is copied without them: open it once with the "
+                        "harness or the workspace, which recreate them, or copy them with it",
+                    ) from None
+                raise
             except BaseException:
                 db.close()
                 raise
