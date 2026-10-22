@@ -217,6 +217,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Durable recorded cluster runtime bootstrap/restart, actual service authentication and CNI enforcement; qualify existing OpenShell supervisor placement and CLI state recovery. Publication remains deferred.
 - [ ] Kubernetes isolation evidence: verify admitted runtime and network enforcement; different controller/sandbox node boot IDs alone cannot establish a VM boundary. Account for separately scheduled OpenShell supervisor pods.
 - [ ] Mixed-architecture live acceptance, Sage/MCP/PDF, interruption/root Resume, cold object-store retrieval and verified cleanup.
+- [ ] Kata tier-3 and runc tier-1 pools (D43, 2026-10-22): render several worker pools, Kata RuntimeClass labelled sandbox-attachable with node scheduling, and qualify OpenShell 0.1.5 inside Kata on the actual nodes ([isolation](../docs/KUBERNETES.md#sandbox-isolation)).
 
 ## W0: behavior specification and harness foundation
 

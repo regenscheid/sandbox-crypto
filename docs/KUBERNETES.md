@@ -64,6 +64,48 @@ mounted data, not interpreter memory or changes to the image's writable layer.
 The research image layout below keeps installed packages in that mounted data;
 older images need migration or a verified rebuild before claiming the same revision.
 
+### Sandbox isolation
+
+Decided 2026-10-22 (D43, D92). OpenShell 0.1.x installs a mandatory Landlock
+baseline (ABI 3) in every Docker, Podman, Kubernetes and VM sandbox and probes
+seccomp user notification before admitting a workload; startup fails closed
+without them ([OpenShell kernel requirements](https://docs.nvidia.com/openshell/about/support-matrix)).
+gVisor implements neither: its syscall table has no Landlock calls, and runsc
+`release-20261012.0` was measured returning ENOSYS for Landlock and EINVAL for
+the seccomp listener with OpenShell 0.1.5 ([NVIDIA/OpenShell#3361](https://github.com/NVIDIA/OpenShell/issues/3361),
+[#3362](https://github.com/NVIDIA/OpenShell/issues/3362)). NVIDIA's reduced-fidelity
+gVisor adapter ([#3367](https://github.com/NVIDIA/OpenShell/pull/3367)) closed
+unmerged; a gVisor isolation backend is proposed, not shipped. Older OpenShell
+releases ran under gVisor only by skipping best-effort Landlock, which 0.1.x no
+longer allows. gVisor is therefore not a tier-2 option here.
+
+- **Tier 3, Kata.** Install the Talos `kata-containers` system extension on nodes
+  with KVM. Its RuntimeClass carries `openshell.ai/sandbox-attachable=true` and a
+  scheduling node selector limited to those nodes. External evidence reports the
+  stock OpenShell 0.1.5 runtime qualifying (Landlock ABI 7) inside Kata 4.1.0 with
+  a 6.18 guest kernel, given `net.ipv4.ip_unprivileged_port_start=0` and an
+  explicit capability set for a root-started container ([#3362](https://github.com/NVIDIA/OpenShell/issues/3362)).
+  This project has not qualified it.
+- **Tier 1, plain runc.** Nodes without KVM run sandboxes in OpenShell's combined
+  topology without a sandboxed RuntimeClass. OpenShell's Landlock, seccomp and
+  network controls still apply, but the workload shares the node kernel. The owner
+  accepts tier 1 for these pools; the worker records it for every execution.
+- **Pools.** `isolation_tier` belongs to a worker, so Kata and runc capacity are
+  separate worker pools, each declaring its own tier. A profile's runtime class
+  and node selector must match its pool. Work whose policy requires a higher tier
+  is refused, never moved to a tier-1 pool. The offline renderer currently renders
+  one pool Pod; rendering several pools is open work.
+- **Verification.** The boot-ID probe cannot lower the tier of a sandbox on another
+  node. RuntimeClass admission labels keep sandboxes on the intended runtime;
+  confirming the admitted runtime from trusted state or inside the guest remains
+  open (backlog). OpenShell's caller-supplied driver configuration is off by
+  default since 0.1.0 and must be enabled for profile placement.
+- **Version.** This plan assumes OpenShell 0.1.5, as `dev` runs on babbage; the
+  v0.1.3 statements on this page need requalification on 0.1.5.
+- **Unverified on the owner's cluster:** KVM on each candidate node (VM nodes need
+  nested virtualization), Kata under Talos on Raspberry Pi 5, and Landlock enabled
+  in the Talos kernel.
+
 ### Persistent research prefix increment
 
 The shared `minimal` and `crypto-base` image layout places real package bytes

@@ -59,9 +59,9 @@ Each execution records the tier it actually ran at. If a pool cannot provide the
 
 | Tier | Mechanism | Shares a kernel with Z1/Z2? | Intended use |
 | --- | --- | --- | --- |
-| 1 | Hardened container (runc, rootless where possible, seccomp default, no capabilities, read-only rootfs) | Yes | Development and trusted fixtures only, with the risk accepted explicitly |
-| 2 | Sandboxed runtime (gVisor `runsc`) or a separate VM for all workers | No | Default on the mixed-arch Kubernetes test cluster (gVisor supports amd64 and arm64); macOS where available |
-| 3 | Per-sandbox microVM (Kata, Firecracker, OpenShell MicroVM driver) | No | **Default on babbage** (OpenShell MicroVM driver over KVM); cluster nodes that support it; required for T4 workloads |
+| 1 | Hardened container (runc, rootless where possible, seccomp default, no capabilities, read-only rootfs) | Yes | Development and trusted fixtures only, with the risk accepted explicitly; the owner accepts it for runc pools on cluster nodes without KVM (D43, 2026-10-22) |
+| 2 | Sandboxed runtime (gVisor `runsc`) or a separate VM for all workers | No | A separate VM for all workers, e.g. macOS. gVisor is not usable with OpenShell 0.1.x, which requires Landlock and seccomp user notification ([Kubernetes isolation](KUBERNETES.md#sandbox-isolation)) |
+| 3 | Per-sandbox microVM (Kata, Firecracker, OpenShell MicroVM driver) | No | **Default on babbage** (OpenShell MicroVM driver over KVM); Kata on cluster nodes with KVM; required for T4 workloads |
 
 Docker Desktop and Colima on macOS run every container in one Linux VM. Unless workers run under `runsc`, or in a VM separate from Z1/Z2, a local all-in-Docker deployment is **tier 1**. On babbage, OpenShell needs Landlock ABI ≥ 3 and active kernel qualification. Ubuntu's AppArmor restriction on unprivileged user namespaces affects rootless runtimes, so check it for each candidate.
 

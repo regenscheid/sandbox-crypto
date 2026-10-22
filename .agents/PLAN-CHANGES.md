@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-22
+
+- Amend D43/D92 for the Kubernetes cluster: OpenShell 0.1.x cannot run under gVisor (mandatory Landlock and seccomp user notification), so the cluster uses Kata at tier 3 on KVM nodes and owner-accepted plain runc at tier 1 elsewhere, as separate worker pools ([isolation](../docs/KUBERNETES.md#sandbox-isolation)).
+
 ## 2026-10-21
 
 - Implement the remaining high and medium-high executor, ledger and provisioning ownership refactors in parallel, preserving public protocols, atomic receipts and cancellation ownership. Independent review also found and corrected retention of failed provisioning saves; [verification](docs/agent-reports/priority-ownership-refactor-2026-10-21.md) separates local checks from deployment.
