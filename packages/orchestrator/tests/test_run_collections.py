@@ -108,8 +108,8 @@ async def test_response_receipts_survive_observer_failure_and_are_scoped(
     assert result.stopped == "error"
     assert receipts.page("fixture") == ("notice-1",)
     assert Receipts(projects.control, "p", "s", RUN + "x").page("fixture") == ()
-    assert isinstance(result.messages, Collection)
-    assert result.messages[-1]["content"] == "Done"
+    assert isinstance(result.context.messages, Collection)
+    assert result.context.messages[-1]["content"] == "Done"
 
 
 async def test_compact_final_record_retains_history_reference(

@@ -15,6 +15,7 @@ from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned, threaded
 from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint, Folds
 from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.context.history.log import RunArchive
 from sandbox_science.orchestrator.context.history.retention import fits
@@ -30,7 +31,6 @@ from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, No
 from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.kernel_check import KernelCheck
 from sandbox_science.orchestrator.loop import (
-    Folds,
     Transcript,
     attach_notices,
     not_run,
@@ -147,11 +147,14 @@ class Prepared:
                 tool_records=memory.tools(),
             )
         run = self.shadow
-        if len(run.messages) != state.message_count or len(run.tool_records) != state.tool_count:
+        if (
+            len(run.context.messages) != state.message_count
+            or len(run.tool_records) != state.tool_count
+        ):
             raise TransportError("conflict", "runtime state does not match committed events")
-        if state.usage_count == len(run.usage) + 1 and state.last_usage is not None:
-            run.usage.append(state.last_usage)
-        if len(run.usage) != state.usage_count:
+        if state.usage_count == len(run.context.usage) + 1 and state.last_usage is not None:
+            run.context.usage.append(state.last_usage)
+        if len(run.context.usage) != state.usage_count:
             raise TransportError("conflict", "runtime usage is not contiguous")
         omitted = {
             "system",
@@ -171,7 +174,7 @@ class Prepared:
             raise TransportError("invalid_request", "historical receipts do not cross loop state")
         run.context.max_input_chars = state.max_input_chars
         run.context.tools_chars = state.tools_chars
-        run.context.restore(run.rebuilt, base=state.base, since=state.since)
+        run.context.restore(run.context.rebuilt, base=state.base, since=state.since)
         run.context.prompt_provenance = state.prompt_provenance
         return run
 
@@ -229,18 +232,18 @@ class Prepared:
                 if self.folds is None:
                     raise TransportError("denied", "this attempt has no folding capability")
                 proceed = await (
-                    self.folds.before_call(run)
+                    self.folds.before_call(FoldPoint(run.context, run.turns))
                     if kind is Capability.FOLD_BEFORE
-                    else self.folds.overflow(run)
+                    else self.folds.overflow(FoldPoint(run.context, run.turns))
                 )
                 return payload(
                     FoldReply(
                         proceed=proceed,
-                        rebuilt=tuple(WireMessage.of(m) for m in run.rebuilt)
-                        if run.rebuilt is not None
+                        rebuilt=tuple(WireMessage.of(m) for m in run.context.rebuilt)
+                        if run.context.rebuilt is not None
                         else None,
-                        base=run.base,
-                        since=run.since,
+                        base=run.context.base,
+                        since=run.context.since,
                     )
                 )
             if kind is Capability.TOOL_DONE:
@@ -421,12 +424,12 @@ class Prepared:
         if IMAGE in source:
             message = {**message, IMAGE: source[IMAGE]}
         if (
-            not isinstance(self.shadow.messages, Collection)
+            not isinstance(self.shadow.context.messages, Collection)
             or not isinstance(self.log, RunArchive)
             or self.log.last_message is None
         ):
             raise TransportError("internal", "confined history has no canonical archive entry")
-        self.shadow.messages.append_encoded(
+        self.shadow.context.messages.append_encoded(
             {
                 "archive_message": self.log.last_message,
                 **({IMAGE: source[IMAGE]} if IMAGE in source else {}),
@@ -439,8 +442,8 @@ class Prepared:
                 self.shadow.identities(key, delivered=True).update(ids)
         if request.kind == "assistant" and request.reply is not None:
             self.pending_calls = {call.id: call for call in request.reply.tool_calls}
-        if request.usage is not None and request.usage_index == len(self.shadow.usage) + 1:
-            self.shadow.usage.append(request.usage)
+        if request.usage is not None and request.usage_index == len(self.shadow.context.usage) + 1:
+            self.shadow.context.usage.append(request.usage)
         retained = None
         if request.kind == "tool_result" and call is not None and outcome is not None:
             record = {"tool": call.name, "arguments": call.arguments, **outcome.record}

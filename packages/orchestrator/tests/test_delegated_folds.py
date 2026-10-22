@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint
 from sandbox_science.orchestrator.context.history import Archive, Entry, geometry, session_view
 from sandbox_science.orchestrator.context.history.delegated import delegated_folder
 from sandbox_science.orchestrator.context.history.geometry import DEFAULT_SHARES
@@ -86,11 +87,11 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
                 parent="root",
             )
             first = first or row
-            transcript.messages.append(row.chat())
-        assert await made.before_call(transcript)
+            transcript.context.messages.append(row.chat())
+        assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
         assert made.geometry is not None
-        assert made.tokens(transcript) <= made.geometry.wall
-        sent = json.dumps(transcript.sent)
+        assert made.tokens(FoldPoint(transcript.context, transcript.turns)) <= made.geometry.wall
+        sent = json.dumps(transcript.context.sent)
         assert brief in sent
         assert all(text not in sent for text in forbidden)
         if constraints:
@@ -125,9 +126,9 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
                 messages=[{"role": "system", "content": "s" * 400}, *rebuilt.view.messages]
             )
         )
-        assert await rebuilt.before_call(resumed)
-        assert brief in json.dumps(resumed.sent)
-        assert all(text not in json.dumps(resumed.sent) for text in forbidden)
+        assert await rebuilt.before_call(FoldPoint(resumed.context, resumed.turns))
+        assert brief in json.dumps(resumed.context.sent)
+        assert all(text not in json.dumps(resumed.context.sent) for text in forbidden)
         assert first is not None
         assert archive.message(PROJECT, first.message_id).entry.content == first.entry.content
         main = session_view(archive, CONTEXT, geometry=geometry(160_000, 0, 32_000))

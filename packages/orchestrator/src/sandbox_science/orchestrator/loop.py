@@ -26,7 +26,7 @@ from typing import Any, Final, Literal, TypeVar, cast
 
 from .context.agent import MAX_INPUT_CHARS as MAX_INPUT_CHARS
 from .context.agent import AgentContext
-from .context.agent import Folds as Folds
+from .context.folding import Folds
 from .context.history.collections import Collection, Members
 from .context.history.limits import WorkingMemoryLimitError
 from .context.history.memory import RunMemory
@@ -47,8 +47,8 @@ from .model import (
 from .notices import REPORT
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
-from .projects import FailurePhase, ModelUsage
-from .prompts import PromptPins, Section, assemble, schema_json
+from .projects import FailurePhase
+from .prompts import Section, assemble, schema_json
 from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
@@ -264,67 +264,12 @@ class Transcript:
     overflowed: bool = field(default=False, repr=False)
     """Whether the last model call was refused for the conversation's length."""
 
-    @property
-    def folds(self) -> Folds | None:
-        return self.context.folds
-
-    @property
-    def messages(self) -> MutableSequence[Message]:
-        return self.context.messages
-
-    @property
-    def prompt_provenance(self) -> PromptPins | None:
-        return self.context.prompt_provenance
-
-    @property
-    def usage(self) -> MutableSequence[ModelUsage]:
-        return self.context.usage
-
-    @property
-    def max_input_chars(self) -> int:
-        return self.context.max_input_chars
-
-    @property
-    def tools_chars(self) -> int:
-        return self.context.tools_chars
-
-    @property
-    def log(self) -> MessageLog | None:
-        return self.context.log
-
-    @property
-    def memory(self) -> RunMemory | None:
-        return self.context.memory
-
-    @property
-    def rebuilt(self) -> list[Message] | None:
-        return self.context.rebuilt
-
-    @property
-    def base(self) -> int:
-        return self.context.base
-
-    @property
-    def since(self) -> int:
-        return self.context.since
-
-    @property
-    def sent(self) -> list[Message]:
-        return self.context.sent
-
-    @property
-    def size(self) -> int:
-        return self.context.size
-
-    def rebuild(self, view: Sequence[Message]) -> None:
-        self.context.rebuild(view)
-
     def identities(self, source: str, *, delivered: bool = False) -> set[str] | Members:
         mapping = self.delivered if delivered else self.offered
         if source not in mapping:
             mapping[source] = (
-                self.memory.members(("delivered:" if delivered else "offered:") + source)
-                if self.memory is not None
+                self.context.memory.members(("delivered:" if delivered else "offered:") + source)
+                if self.context.memory is not None
                 else set()
             )
         return mapping[source]
@@ -342,7 +287,7 @@ class Transcript:
         if self.turns_left <= 0 or not self.room:
             return False
         added = len(dump([notice_message(notice) for notice in notices])) if notices else 0
-        return self.size + added <= self.max_input_chars
+        return self.context.size + added <= self.context.max_input_chars
 
     def delivered_ids(self, source: str) -> AbstractSet[str]:
         return self.delivered.get(source, frozenset())
@@ -523,8 +468,8 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     when the gateway refused the call for its budget, which ``halted`` then says. No
     model call saw the notices offered since the last one.
     """
-    size = transcript.size
-    if size > transcript.max_input_chars:
+    size = transcript.context.size
+    if size > transcript.context.max_input_chars:
         _log.warning("the conversation, %d characters, exceeds the run's budget", size)
         return None
     transcript.phase = "model"
@@ -669,8 +614,8 @@ async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple
                 else "the run's tokens leave room for this call and no other"
             )
             return reason, detail
-    limit = transcript.max_input_chars
-    if transcript.folds is None and transcript.size > limit - limit // REPORT_ROOM:
+    limit = transcript.context.max_input_chars
+    if transcript.context.folds is None and transcript.context.size > limit - limit // REPORT_ROOM:
         return "context_limit", f"the conversation is near its {limit:,}-character limit"
     return None
 
@@ -703,21 +648,23 @@ async def _report(
         # closed again with no turn left to take, as at a halt.
         await _closing(hooks, transcript, transcript.pending)
         return
-    folds = transcript.folds
-    if folds is not None and not await folds.before_call(transcript):
+    if not await transcript.context.before_call(call_index=transcript.turns):
         # The view has no room however it folds: the run stops for that, whose reason
         # its folds keep (CM-45), as before any other call.
         transcript.stopped = "context_limit"
         return
     notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": reason, "detail": detail})
-    if transcript.size + len(dump([notice_message(notice)])) > transcript.max_input_chars:
+    if (
+        transcript.context.size + len(dump([notice_message(notice)]))
+        > transcript.context.max_input_chars
+    ):
         return  # no room for the call: the run stops as before, without a report
     await _offer(transcript, (notice,))
     transcript.turns += 1
     await _consumption(hooks, transcript)
     reply = await _complete(model, toolbox, transcript)
-    while reply is None and transcript.overflowed and folds is not None:
-        if not await folds.overflow(transcript):
+    while reply is None and transcript.overflowed:
+        if not await transcript.context.overflow(call_index=transcript.turns):
             break
         reply = await _complete(model, toolbox, transcript)
     transcript.halted = reason
@@ -734,7 +681,9 @@ async def _report(
         )
         record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
         transcript.tool_records.append(
-            transcript.log.retained_tool(record) if transcript.log is not None else record
+            transcript.context.log.retained_tool(record)
+            if transcript.context.log is not None
+            else record
         )
     if reply.text:
         await _closing(hooks, transcript, reply.text)
@@ -769,15 +718,14 @@ async def _run_task(
             return transcript
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
-        folds = transcript.folds
-        if folds is not None and not await folds.before_call(transcript):
+        if not await transcript.context.before_call(call_index=transcript.turns):
             await _out_of_room(hooks, transcript)
             return transcript
         await _consumption(hooks, transcript)
         reply = await _complete(model, toolbox, transcript)
         # A context error folds once and tries once more; the fold engine says when not.
-        while reply is None and transcript.overflowed and folds is not None:
-            if not await folds.overflow(transcript):
+        while reply is None and transcript.overflowed:
+            if not await transcript.context.overflow(call_index=transcript.turns):
                 break
             reply = await _complete(model, toolbox, transcript)
         if reply is None:
@@ -804,8 +752,8 @@ async def _run_task(
         viewed: list[tuple[Notice, str]] = []
         for call in reply.tool_calls:
             operation = operation_id(f"{run_id}-t{turn}", call)
-            if transcript.log is not None:
-                await transcript.log.start_tool(call, operation)
+            if transcript.context.log is not None:
+                await transcript.context.log.start_tool(call, operation)
             transcript.phase = "tool"
             outcome = await toolbox.call(call, operation, model=reply.model, gates=hooks)
             transcript.phase = "harness"
@@ -819,11 +767,16 @@ async def _run_task(
             record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
             index = len(transcript.tool_records)
             retained = (
-                transcript.log.retained_tool(record) if transcript.log is not None else record
+                transcript.context.log.retained_tool(record)
+                if transcript.context.log is not None
+                else record
             )
             transcript.tool_records.append(retained)
-            if isinstance(transcript.tool_records, Collection):
-                transcript.tool_records.expose_current(index, record)
+            archived_records = (
+                transcript.tool_records if isinstance(transcript.tool_records, Collection) else None
+            )
+            if archived_records is not None:
+                archived_records.expose_current(index, record)
             try:
                 for hook in hooks:
                     await hook.observe_tool(
@@ -834,8 +787,8 @@ async def _run_task(
                 if outcome.image is not None:
                     viewed.append(outcome.image)
             finally:
-                if isinstance(transcript.tool_records, Collection):
-                    transcript.tool_records.release_current(index)
+                if archived_records is not None:
+                    archived_records.release_current(index)
                 else:
                     transcript.tool_records[index] = retained
                 # Coroutine locals otherwise retain the full last result across the
@@ -1048,7 +1001,7 @@ async def run_task(
         if toolbox.image_offer is not None:
             transcript.summaries["view_image"] = toolbox.image_offer
         if toolbox.skills is not None:
-            first = transcript.usage[0].model if transcript.usage else None
+            first = transcript.context.usage[0].model if transcript.context.usage else None
             if (started := toolbox.skills.summary(first)) is not None:
                 # Beside the discoveries the hook of that name keeps there.
                 found = cast(dict[str, Any], transcript.summaries.get("skills") or {})

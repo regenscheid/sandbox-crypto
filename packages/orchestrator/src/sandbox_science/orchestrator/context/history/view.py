@@ -603,18 +603,22 @@ class ViewMeter(TurnHook):
 
     def tokens(self, run: RunView) -> int:
         """The view's tokens before the run's next call."""
-        return view_tokens(run.size, run.usage[run.since :], self.view.per_token)
+        return view_tokens(
+            run.context.size, run.context.usage[run.context.since :], self.view.per_token
+        )
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Any]:
-        if isinstance(run.messages, Collection) and not isinstance(self.calls, Collection):
-            self.calls = Collection[Json](run.messages.control, run.messages.scope, "view_calls")
+        if isinstance(run.context.messages, Collection) and not isinstance(self.calls, Collection):
+            self.calls = Collection[Json](
+                run.context.messages.control, run.context.messages.scope, "view_calls"
+            )
         if point == "turn":
             self.estimated = self.tokens(run)
         return ()
 
     async def model_returned(self, run: RunView) -> None:
         if len(self.calls) < 100:
-            reported = run.usage[-1].input_tokens if run.usage else None
+            reported = run.context.usage[-1].input_tokens if run.context.usage else None
             self.calls.append({"estimated": self.estimated, "reported": reported})
 
     def summary(self) -> object | None:

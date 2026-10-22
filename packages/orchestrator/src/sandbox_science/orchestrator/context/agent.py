@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, MutableSequence, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import Final
 
 from sandbox_science.orchestrator.hooks import Appended, MessageLog
 from sandbox_science.orchestrator.images import IMAGE
@@ -26,30 +26,12 @@ from sandbox_science.orchestrator.projects import ModelUsage
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.worker_client import dump
 
+from .folding import FoldPoint, Folds
 from .history.capture import prompt_pins
 from .history.collections import Collection
 from .history.limits import WorkingMemoryLimitError
 from .history.log import RunArchive
 from .history.memory import VIEW_BYTES, RunMemory
-
-if TYPE_CHECKING:
-    from sandbox_science.orchestrator.loop import Transcript
-
-
-class Folds(Protocol):
-    """What folds a run's conversation (docs/specs/context-management.md, CM-24, CM-43)."""
-
-    async def before_call(self, transcript: Transcript) -> bool:
-        """At a safe point before a model call: fold if the view needs it. ``False``
-        when the view has no room for the call however it folds: the run then stops as
-        when it is out of room (``context_limit``)."""
-        ...
-
-    async def overflow(self, transcript: Transcript) -> bool:
-        """After the gateway refused a call for its length: whether a fold made room for
-        one more try."""
-        ...
-
 
 MAX_INPUT_CHARS: Final = 400_000
 """Default character budget including tool schemas, about 100,000 English tokens."""
@@ -149,6 +131,14 @@ class AgentContext:
             base,
             since,
         )
+
+    async def before_call(self, *, call_index: int) -> bool:
+        """Prepare the working view at a safe point; execution owns the call index."""
+        return self.folds is None or await self.folds.before_call(FoldPoint(self, call_index))
+
+    async def overflow(self, *, call_index: int) -> bool:
+        """Recover a refused context without replaying tools or changing run policy."""
+        return self.folds is not None and await self.folds.overflow(FoldPoint(self, call_index))
 
     async def complete(self, model: ChatModel, specs: Sequence[ToolSpec]) -> ModelTurn:
         """Send the current view with its prompt pins.

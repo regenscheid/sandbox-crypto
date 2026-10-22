@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint
 from sandbox_science.orchestrator.context.history import Archive, Entry, Folder, FoldRecord
 from sandbox_science.orchestrator.context.history.bound import _short, bound
 from sandbox_science.orchestrator.context.history.folds import CONSOLIDATE
@@ -242,11 +243,11 @@ async def test_decisions_that_do_not_fit_stop_the_run_with_research_state(archiv
     view = session_view(archive, CONTEXT, geometry=start, per_token=1.0)
     assert view.stop is not None
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=4_000, chunk=1_000)
-    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
+    made.per_token = lambda point: 1.0  # type: ignore[method-assign]
     transcript = Transcript(
         context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
     )
-    assert not await made.before_call(transcript)
+    assert not await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.stopped == "research_state"
     assert made.detail is not None
     assert made.detail.startswith("the session's current decisions do not fit")
@@ -335,11 +336,11 @@ async def test_a_stopped_view_starts_no_enrichment(archive: Archive) -> None:
     model = Counting()
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=40_000,
                   chunk=4_000, model=cast(Any, model))  # fmt: skip
-    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
+    made.per_token = lambda point: 1.0  # type: ignore[method-assign]
     transcript = Transcript(
         context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
     )
-    assert not await made.before_call(transcript)
+    assert not await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.stopped == "research_state"
     assert (made.running, model.calls, made.folds) == (None, 0, [])
 

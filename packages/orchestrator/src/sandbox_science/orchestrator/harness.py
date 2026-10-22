@@ -49,6 +49,7 @@ from .consistency.controller import ReviewController
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .consistency.store import ReviewStore
 from .context.agent import AgentContext
+from .context.folding import FoldLifecycle
 from .context.history import (
     CEILING,
     View,
@@ -487,13 +488,17 @@ class Finished:
     def fields(self) -> dict[str, object]:
         """The run record's fields, as the harness has them."""
         transcript = self.transcript
-        memory = transcript.memory
-        messages = inline(transcript.messages) if memory is not None else transcript.messages
+        memory = transcript.context.memory
+        messages = (
+            inline(transcript.context.messages)
+            if memory is not None
+            else transcript.context.messages
+        )
         tools = inline(transcript.tool_records) if memory is not None else transcript.tool_records
         usage = (
-            inline(transcript.usage)
+            inline(transcript.context.usage)
             if memory is not None
-            else [item.model_dump(mode="json") for item in transcript.usage]
+            else [item.model_dump(mode="json") for item in transcript.context.usage]
         )
         delivered: dict[str, object] = {}
         summaries = (
@@ -528,8 +533,8 @@ class Finished:
             "answer": transcript.answer,
             "messages": messages or [],
             "prompt_provenance": (
-                transcript.prompt_provenance.model_dump(mode="json")
-                if transcript.prompt_provenance is not None
+                transcript.context.prompt_provenance.model_dump(mode="json")
+                if transcript.context.prompt_provenance is not None
                 else None
             ),
             "tools": tools or [],
@@ -973,7 +978,7 @@ class Harness:
                     if view is not None:
                         hooks = (*hooks, ViewMeter(view))
                     if folder is not None and chat is not None:
-                        hooks = (*hooks, folder)
+                        hooks = (*hooks, FoldLifecycle(folder))
                         chat.context_stop = lambda: folder.stopped
                         folder.events = functools.partial(chat.write, "fold")
                         folder.refit = functools.partial(_refit, toolbox, discovery)
@@ -1463,7 +1468,9 @@ class Harness:
             result.model_dump(mode="json") if result is not None else None,
             errors,
             finished.alias or self.delegated.alias,
-            tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
+            tuple(dict.fromkeys(u.model for u in transcript.context.usage if u.model is not None))[
+                :10
+            ],
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,
             _recorded(finished.hooks, found.pinned if found is not None and result else []),

@@ -75,8 +75,8 @@ async def test_truncated_partial_or_terminal_tool_response_is_discarded_before_r
     assert result.stopped == "answered"
     assert result.final_text == "Done"
     assert result.turns == 1
-    assert result.usage[0].cost == 0.03
-    assert result.usage[0].retried == ["incomplete response", "incomplete response"]
+    assert result.context.usage[0].cost == 0.03
+    assert result.context.usage[0].retried == ["incomplete response", "incomplete response"]
 
 
 async def test_truncation_exhausts_ten_attempts_with_unknown_charge():

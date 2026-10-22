@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint
 from sandbox_science.orchestrator.context.history import (
     Archive,
     Entry,
@@ -75,10 +76,13 @@ async def test_a_switch_to_a_smaller_model_refits_the_view_under_its_trigger(
     for n in range(60):
         worked(archive, "earlier", n, 4_000)
     made, transcript, events = switching(archive, 60_000, Answering())
-    assert made.tokens(transcript) > geometry(60_000, 0, 10_000).wall
-    assert await made.before_call(transcript)
+    assert (
+        made.tokens(FoldPoint(transcript.context, transcript.turns))
+        > geometry(60_000, 0, 10_000).wall
+    )
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.geometry is not None
-    assert made.tokens(transcript) <= made.geometry.trigger
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) <= made.geometry.trigger
     assert events[0]["state"] == "refit"
     applied = [fold for fold in made.folds if "parts" not in fold]
     assert applied
@@ -92,9 +96,9 @@ async def test_without_the_earlier_model_the_refit_is_skeleton_only(archive: Arc
     for n in range(60):
         worked(archive, "earlier", n, 4_000)
     made, transcript, _ = switching(archive, 60_000, None)
-    assert await made.before_call(transcript)
+    assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.geometry is not None
-    assert made.tokens(transcript) <= made.geometry.trigger
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) <= made.geometry.trigger
     assert {fold["state"] for fold in made.folds} <= {"skeleton_only", "code_merge"}
 
 
@@ -103,7 +107,7 @@ async def test_a_refit_that_cannot_fit_refuses_the_switch(archive: Archive) -> N
     switch with the reason."""
     archive.append(PROJECT, SESSION, "earlier", Entry("user", "user", "x" * 300_000))
     made, transcript, _ = switching(archive, 60_000, Answering())
-    assert not await made.before_call(transcript)
+    assert not await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.stopped == "irreducible"
     assert made.detail is not None
     assert made.detail.startswith("the switch from larger, whose ceiling was 400,000 tokens")
@@ -139,9 +143,11 @@ async def test_the_refit_waits_for_the_earlier_model_at_most_its_wait(archive: A
         worked(archive, "earlier", n, 4_000)
     made, transcript, events = switching(archive, 60_000, Silent())
     made.wait = 0.2
-    assert await asyncio.wait_for(made.before_call(transcript), 30)
+    assert await asyncio.wait_for(
+        made.before_call(FoldPoint(transcript.context, transcript.turns)), 30
+    )
     assert made.geometry is not None
-    assert made.tokens(transcript) <= made.geometry.trigger
+    assert made.tokens(FoldPoint(transcript.context, transcript.turns)) <= made.geometry.trigger
     assert {fold["state"] for fold in made.folds} <= {"skeleton_only", "code_merge"}
     steps = [event for event in events if event["state"] == "refit_step"]
     assert steps
@@ -165,7 +171,7 @@ async def test_a_switch_refused_for_the_decisions_stops_with_research_state(
                   native=record.stored(), native_format="sandbox-fold-1")  # fmt: skip
     archive.append(PROJECT, SESSION, "folder", entry)
     made, transcript, _ = switching(archive, 60_000, None)
-    assert not await made.before_call(transcript)
+    assert not await made.before_call(FoldPoint(transcript.context, transcript.turns))
     assert made.stopped == "research_state"
     assert made.detail is not None
     assert made.detail.startswith("the switch from larger, whose ceiling was 400,000 tokens")

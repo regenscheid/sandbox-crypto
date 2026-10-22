@@ -19,6 +19,7 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.folding import FoldPoint
 from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.context.history.archive import Archived
 from sandbox_science.orchestrator.context.history.folds import Folder
@@ -416,9 +417,9 @@ async def test_a_folds_enrichment_proposals_are_kept_as_it_is_archived(tmp_path:
         transcript = Transcript(
             context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
         )
-        assert await made.before_call(transcript)
-        transcript.messages.append({"role": "user", "content": "x" * 40_000})
-        assert await made.before_call(transcript)
+        assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
+        transcript.context.messages.append({"role": "user", "content": "x" * 40_000})
+        assert await made.before_call(FoldPoint(transcript.context, transcript.turns))
         applied = [e for e in events if "fold" in e]
         assert applied[0]["proposals"]["kept"] == 1
         assert len(applied[0]["proposals"]["refused"]) == 1

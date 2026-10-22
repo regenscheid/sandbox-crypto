@@ -35,6 +35,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
 from .aio import owned, threaded
 from .chat import SOURCE, session_lease
+from .context.folding import FoldLifecycle
 from .context.history import Archive, Folder
 from .context.history.markers import Decided, current_decisions
 from .context.history.receipts import Receipts
@@ -614,7 +615,9 @@ class RunService:
                 _log.warning("the model gateway's budget is spent; session %s waits", session)
                 self.waiting_until[project, session] = self.clock.monotonic() + MAX_WAIT
             if finished.transcript.stopped == "context_limit" and any(
-                isinstance(hook, Folder) and hook.stopped == RESEARCH_STATE
+                isinstance(hook, FoldLifecycle)
+                and isinstance(hook.engine, Folder)
+                and hook.engine.stopped == RESEARCH_STATE
                 for hook in finished.hooks
             ):
                 # The next run would stop the same way: what waits, waits for a change of
