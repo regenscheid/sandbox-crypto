@@ -24,7 +24,7 @@ from .test_tool_journal import RUN
 from .test_work_ownership import CHILD, CONTINUATION, record
 
 
-def tree(tmp_path, *, saved=True, finished=True, persisted=True):
+def tree(tmp_path, *, saved=True, finished=True, persisted=True, checkpoint=True):
     state, documents = stores(tmp_path)
     state.projects.open_session("p", "s", dedicated=False)
     works = WorkRecords(state.projects.control)
@@ -58,7 +58,8 @@ def tree(tmp_path, *, saved=True, finished=True, persisted=True):
         "Checked original evidence.",
         result={"verdict": "confirmed", "status": "complete", "summary": "Original typed answer"},
     )
-    settlement.keep("p", "s", CHILD, delegation.delegation_id, outcome)
+    if checkpoint:
+        settlement.keep("p", "s", CHILD, delegation.delegation_id, outcome)
     child_record = record(CHILD).model_copy(
         update={"parent": RUN, "delegation": delegation.delegation_id, "role": "delegated"}
     )

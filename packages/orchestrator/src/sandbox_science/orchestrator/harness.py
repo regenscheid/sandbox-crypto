@@ -16,22 +16,18 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
-import json
 import logging
-import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
-from pydantic import JsonValue, TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
     Clock,
-    ErrorKind,
     ExecutionContext,
     Identifier,
     Location,
@@ -62,7 +58,6 @@ from .context.history import (
 from .context.history.delegated import FoldAllowance
 from .context.history.geometry import DEFAULT_SHARES, Shares
 from .context.history.limits import WorkingMemoryLimitError
-from .context.history.receipts import Receipts
 from .context.history.retention import fits
 from .context.history.snapshot import inline
 from .context.preparation import FoldLimits, HistoryScope, PreparedContext, prepare_context
@@ -72,9 +67,8 @@ from .continuity.grants import TokenGrants
 from .continuity.hook import WorkHook
 from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
-from .continuity.records import Ownership, Work, WorkRecords, authority
+from .continuity.records import Ownership, WorkRecords, authority
 from .continuity.resources import ResourceRequests
-from .control import ControlError
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Deadline, Delegations
@@ -82,10 +76,12 @@ from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .delegation.tracks import TrackTools, grant
-from .documents import DocumentError, DocumentStore, DocumentTool
+from .documents import DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .environment_claim import environment_claim
 from .file_settings import ProjectFiles
+from .finalization import AttemptCompletion, AttemptFinalizer
+from .finalization import save as save
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -121,9 +117,7 @@ from .model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from .model_settings import AgentModelRole, AgentModelSelection, ProjectModels
 from .plan_tools import PlanTools
 from .projects import (
-    ProjectError,
     ProjectStore,
-    RunRecord,
     RunRole,
     ensure_environment,
     operator_ref,
@@ -145,7 +139,7 @@ from .skills.embeddings import SkillVectors
 from .skills.staging import Stager
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .view_image import ImageViewer
-from .worker_client import WorkerAPIError, WorkerClient
+from .worker_client import WorkerClient
 
 _IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
 Snapshot = tuple[int, tuple[MemoryEntry, ...]]
@@ -1396,70 +1390,47 @@ class Harness:
         finished = await self.start(admitted, sink, stop=stop)
         if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
             finished.transcript.stopped = "interrupted"
-        settlement = await self.checkpoint_child(finished)
-        await save(
-            finished.fields(),
-            finished.status,
-            finished.hooks,
-            projects=self.stores.projects,
-            error=sink.error,
+        completed = await self.finalize(finished, error=sink.error)
+        if completed.child is None:
+            raise RuntimeError("a delegated run completed without a child settlement")
+        return completed.child
+
+    def finalizer(self) -> AttemptFinalizer:
+        """The durable attempt protocol, shared by fresh and resumed runs."""
+        if self.stores is None:
+            raise ValueError("attempt finalization requires durable stores")
+        return AttemptFinalizer(
+            self.stores.projects,
+            self.stores.documents,
+            self.client,
+            close_timeout=KERNEL_CLOSE_SECONDS,
         )
-        await self.release_child(finished)
-        return await settlement.settle(
-            finished.context.project_id,
-            finished.context.session_id,
-            run_name(finished.started_at, finished.run_id),
+
+    async def finalize(
+        self, finished: Finished, *, error: Callable[[str], None]
+    ) -> AttemptCompletion:
+        """Record and acknowledge a run, settling delegated evidence before cleanup."""
+        end = (
+            self.child_outcome(finished, finished.status)
+            if finished.delegation is not None
+            else None
         )
+        return await self.finalizer().finish(finished, end=end, error=error)
 
     async def checkpoint_child(self, finished: Finished) -> ChildSettlement:
         """Save typed validation evidence before final persistence can complete work."""
-        if self.stores is None or finished.delegation is None:
-            raise ValueError("child settlement requires a durable delegated run")
-        settlement = ChildSettlement(self.stores.projects.control, Ledger(self.stores.documents))
-        await threaded(
-            settlement.keep,
-            finished.context.project_id,
-            finished.context.session_id,
-            run_name(finished.started_at, finished.run_id),
-            finished.delegation,
-            self.child_outcome(finished, finished.status),
+        return await self.finalizer().checkpoint(
+            finished, self.child_outcome(finished, finished.status)
         )
-        return settlement
 
     async def release_child(self, finished: Finished) -> None:
         """Release only completed/stopped child kernels after durable finalization."""
-        if self.stores is None:
-            return
-        work = await threaded(
-            WorkRecords(self.stores.projects.control).for_run,
-            finished.context.project_id,
-            finished.context.session_id,
-            run_name(finished.started_at, finished.run_id),
-        )
-        if work is not None:
-            await self._release_child_kernel(finished.context, work)
+        if self.stores is not None:
+            await self.finalizer().release(finished)
 
     async def release_completed_children(self, context: ExecutionContext, root: str) -> None:
         """Reconcile terminal child kernels under the current Resume root's authority."""
-        if self.stores is None or context.authority is None or context.authority.work != root:
-            raise ValueError("child kernel recovery requires the current root authority")
-        records = WorkRecords(self.stores.projects.control)
-        after = ""
-        while page := await threaded(
-            records.page, context.project_id, context.session_id, root, after=after
-        ):
-            for work in page:
-                await self._release_child_kernel(context, work)
-            after = page[-1].work
-
-    async def _release_child_kernel(self, context: ExecutionContext, work: Work) -> None:
-        if work.parent is None or work.kernel is None or work.state not in ("completed", "stopped"):
-            return
-        try:
-            async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
-                await self.client.close_session(context, run=work.kernel)
-        except (WorkerAPIError, TimeoutError) as exc:
-            _log.warning("could not close completed work kernels: %r", exc)
+        await self.finalizer().release_completed(context, root)
 
     def child_outcome(self, finished: Finished, saved_status: int) -> ChildEnd:
         """Typed durable handback shared by first and continued child attempts."""
@@ -1904,111 +1875,3 @@ def closing(
             await close()
 
     stack.push_async_callback(protected)
-
-
-async def save(
-    fields: dict[str, object],
-    status: int,
-    hooks: Sequence[TurnHook],
-    *,
-    projects: ProjectStore | None,
-    error: Callable[[str], None],
-    transcript: Path | None = None,
-) -> int:
-    """Keep a run's record, then let each hook acknowledge what the saved record names;
-    ``status`` unless something fails, which ``error`` reports.
-
-    The record is written to ``transcript`` first, then kept in ``projects``. A record
-    that does not validate, such as a tool result nested deeper than pydantic follows,
-    still reaches ``transcript`` as the harness has it. A crash between the save and an
-    acknowledgement safely repeats those notices. A hook that fails to acknowledge is
-    reported; the others still acknowledge theirs.
-    """
-    owner = None
-    if projects is not None:
-        try:
-            candidate = RunRecord.model_validate(fields)
-            owner = await threaded(
-                WorkRecords(projects.control).owner,
-                candidate.context.project_id,
-                candidate.context.session_id,
-                run_name(candidate.started_at, candidate.run_id),
-            )
-        except (ValidationError, RecursionError):
-            pass  # _save preserves the invalid transcript and reports the exact error
-    try:
-        if owner is not None:
-            with authority(owner):
-                return await _save(
-                    fields, status, hooks, projects=projects, error=error, transcript=transcript
-                )
-        return await _save(
-            fields, status, hooks, projects=projects, error=error, transcript=transcript
-        )
-    except ControlError as exc:
-        error(f"the run's ownership or persistence failed: {exc}")
-        return 1
-
-
-async def _save(
-    fields: dict[str, object],
-    status: int,
-    hooks: Sequence[TurnHook],
-    *,
-    projects: ProjectStore | None,
-    error: Callable[[str], None],
-    transcript: Path | None,
-) -> int:
-    persisted = True
-    try:
-        # A large record takes long to check and to write: off the event loop, which
-        # the session's other runs share.
-        record: RunRecord | None = await threaded(RunRecord.model_validate, fields)
-        invalid = ""
-    except (ValidationError, RecursionError) as exc:
-        record, invalid = None, str(exc)[:300]
-    if transcript is not None:
-        try:
-            text = record.to_json() if record is not None else json.dumps(fields, default=str)
-            transcript.write_text(text)
-        except (OSError, ValueError, RecursionError) as exc:
-            error(f"the transcript could not be written: {exc}")
-            status = 1
-            persisted = False
-    if projects is None:
-        return status
-    try:
-        if record is None:
-            raise ProjectError(ErrorKind.INVALID_REQUEST, f"the record is invalid: {invalid}")
-        await threaded(projects.save_run, record)
-    except (ProjectError, DocumentError, OSError, ValueError, RecursionError, sqlite3.Error) as exc:
-        error(f"the run's record could not be kept: {exc}")
-        if record is not None:
-            await threaded(WorkRecords(projects.control).finish, record, persisted=False)
-        return 1
-    for hook in hooks:
-        try:
-            if record.stored_history is not None and hook.name not in ("events",):
-                receipts = Receipts(
-                    projects.control,
-                    record.context.project_id,
-                    record.context.session_id,
-                    run_name(record.started_at, record.run_id),
-                )
-                source = hook.name
-                after = ""
-                while page := await threaded(receipts.page, source, after=after):
-                    await hook.acknowledge(
-                        record.model_copy(update={"delivered": {source: list(page)}})
-                    )
-                    after = page[-1]
-                if not after:
-                    await hook.acknowledge(record)
-            else:
-                await hook.acknowledge(record)
-        except Exception as exc:
-            error(f"the run's {hook.name} could not be acknowledged: {exc}")
-            status = 1
-            persisted = False
-    await threaded(WorkRecords(projects.control).finish, record, persisted=persisted)
-    return status

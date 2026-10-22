@@ -47,6 +47,7 @@ from sandbox_science.orchestrator.continuity.recovery import Recovery
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
 from sandbox_science.orchestrator.harness import Admitted, Finished, Harness, RunRequest, Stores
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.harness import Role
