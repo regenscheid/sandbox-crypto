@@ -258,6 +258,8 @@ export interface CommentAnchor {
 }
 
 export interface CommentAttachment {
+  start?: number;
+  end?: number;
   status: "current" | "moved" | "stale" | "orphaned";
   quote: string;
   current: string | null;
@@ -645,6 +647,7 @@ export interface DocumentMath {
 }
 
 export interface DocumentNormalization {
+  normalized?: boolean;
   converted?: Record<string, number>;
   kept?: Record<string, string>[];
 }

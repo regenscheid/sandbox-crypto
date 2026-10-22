@@ -759,3 +759,53 @@ async def test_unresolved_file_warning_retains_its_path(
     assert changed["warnings"][0]["path"] == "missing.png"
     found = await get(client, f"/api/v0/projects/p1/documents/{documents['notes']}")
     assert found["revision"]["warnings"][0]["path"] == "missing.png"
+
+
+async def test_normalized_math_flag_survives_edit_and_revision_read(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    changed = await post_change(
+        client,
+        documents["notes"],
+        {
+            "action": "source",
+            "base": 1,
+            "reason": "Normalize math delimiters",
+            "operation_id": "normalized-math",
+            "text": r"Let \(x\) be prime." + "\n",
+        },
+    )
+    assert changed["normalized"]["normalized"] is True
+    assert changed["normalized"]["converted"] == {"inline": 1}
+    found = await get(client, f"/api/v0/projects/p1/documents/{documents['notes']}")
+    assert found["revision"]["normalized"] == changed["normalized"]
+    assert found["text"] == "Let $x$ be prime.\n"
+
+
+async def test_range_comment_positions_survive_listing_and_thread_read(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/comments"
+    response = await client.post(
+        path,
+        json={
+            "action": "create",
+            "anchor": {"revision": 2, "block": documents["paragraph"], "start": 4, "end": 7},
+            "body": "Explain this formula",
+            "operation_id": "range-comment",
+        },
+        headers={"Origin": str(client.make_url("/")).rstrip("/")},
+    )
+    assert response.status == 200, await response.text()
+    result = await response.json()
+    page = await get(client, path + "?revision=2")
+    shown = page["threads"][0]["attachment"]
+    assert shown == {
+        "status": "current",
+        "quote": "$p$",
+        "current": "Let $p$ be prime.",
+        "start": 4,
+        "end": 7,
+    }
+    thread = await get(client, path + f"/{result['thread_id']}")
+    assert thread["attachment"] == shown

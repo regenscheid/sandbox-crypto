@@ -115,6 +115,7 @@ class DocumentWarning(TypedDict):
 
 @with_config(ConfigDict(extra="forbid"))
 class DocumentNormalization(TypedDict):
+    normalized: NotRequired[bool]
     converted: NotRequired[dict[str, int]]
     kept: NotRequired[list[dict[str, str]]]
 
@@ -370,6 +371,8 @@ class CommentRequest(TypedDict):
 
 @with_config(ConfigDict(extra="forbid"))
 class CommentAttachment(TypedDict):
+    start: NotRequired[int]
+    end: NotRequired[int]
     status: Literal["current", "moved", "stale", "orphaned"]
     quote: str
     current: str | None
