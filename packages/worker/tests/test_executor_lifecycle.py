@@ -4,6 +4,10 @@
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from sandbox_science.testing import FakeClock, eventually
+from sandbox_science.worker import provisioning
 from sandbox_science.worker.executor import Executor
 
 
@@ -65,3 +69,44 @@ async def test_run_retirement_is_scoped_to_its_session(tmp_path: Path) -> None:
         assert listing["kernels"] == []
     finally:
         await peer.executor.shutdown()
+
+
+@pytest.mark.parametrize("package_turn", [False, True])
+async def test_admission_deadline_uses_the_injected_clock(
+    tmp_path: Path, package_turn: bool
+) -> None:
+    clock = FakeClock()
+    clock.advance(1000)
+    messages: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    executor = Executor(tmp_path, send, clock=clock)
+    state = provisioning.State(tmp_path / ".executor" / "provisioning")
+    held = state.try_lock(exclusive=True) if package_turn else None
+    try:
+        await executor.handle(
+            {
+                "id": 1,
+                "op": "shell",
+                "session": "s1",
+                "execution": "waiting",
+                "argv": ["/bin/true"],
+                "timeout": 5,
+            }
+        )
+        assert messages[0]["type"] == "reply"
+        assert messages[0]["ok"]
+        await eventually(lambda: clock.sleepers == 1)
+        clock.advance(6)
+        end = await eventually(lambda: next((m for m in messages if m.get("event") == "end"), None))
+        assert end["state"] == "timed_out"
+        assert end["result"]["elapsed_seconds"] == 6
+        assert "did not start" in end["result"]["error"]["message"]
+    finally:
+        if held is not None:
+            import os
+
+            os.close(held)
+        await executor.shutdown()

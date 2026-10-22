@@ -61,7 +61,7 @@ checks=$(mktemp -d)
 trap 'rm -rf "$checks"' EXIT
 # The worker's in-sandbox files (SANDBOX_FILES in backends.py; a worker test keeps this in step).
 cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$checks/"
-for name in binding_inventory executor executor_lifecycle provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_setup; do
+for name in binding_inventory executor executor_lifecycle executor_admission provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_setup; do
   cp "$worker/$name.py" "$checks/"
 done
 chmod -R a+rX "$checks"

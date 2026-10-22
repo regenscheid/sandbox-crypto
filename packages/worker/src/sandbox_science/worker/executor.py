@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from . import (
         binding_inventory,
         capture,
+        executor_admission,
         executor_lifecycle,
         provisioning,
         sandbox_files,
@@ -85,6 +86,7 @@ else:
     binding_inventory = _sibling("binding_inventory")
     capture = _sibling("capture")
     executor_lifecycle = _sibling("executor_lifecycle")
+    executor_admission = _sibling("executor_admission")
     provisioning = _sibling("provisioning")
     sandbox_files = _sibling("sandbox_files")
     sandbox_processes = _sibling("sandbox_processes")
@@ -158,7 +160,7 @@ Send = Callable[[Message], Awaitable[None]]
 
 
 class Clock(Protocol):
-    """Time for stopping idle kernels; the worker's tests pass a fake one.
+    """Monotonic admission, execution and lifecycle time; tests pass a fake one.
 
     The same shape as ``sandbox_science.contracts.Clock``, which the executor cannot
     import: it runs with the standard library only.
@@ -179,20 +181,6 @@ class _SystemClock:
 
 class _NotStartedError(Exception):
     """An attempt cancelled before it started: a cell before it reached its kernel."""
-
-
-@dataclass
-class _Change:
-    """A change to the environment's packages, as one ``revision`` event reports it."""
-
-    fingerprint: str
-    managed: bool
-    cause: str | None
-    """The execution that ran its package commands, or after which it was seen."""
-    commands: list[Message] = field(default_factory=list[Message])
-    lockfile: object = None
-    names: list[str] = field(default_factory=list[str])
-    """The journal records it accounts for, which leave the journal once it is sent."""
 
 
 class _BusyError(Exception):
@@ -691,27 +679,27 @@ class Executor:
         )
         self.configured: dict[str, str] = {}
         """Variables from ``configure``, added to every command's and kernel's environment."""
-        self.package_gate_id = "gate-" + secrets.token_hex(12)
-        self.package_generation = -1
-        self.package_mode = "hold"
-        self.package_operation = ""
-        self.package_revision: int | None = None
-        self.package_launch = asyncio.Lock()
-        """Shutting down: attempts it stops are not reported as ended. The worker
-        reports them lost when this connection closes, since it stopped them."""
         # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
         self.packages = provisioning.State(root / ".executor" / "provisioning")
         self.places = provisioning.Places.here()
         self.provisioning: provisioning.Config | None = None
         """None when the wrappers could not be written: package commands then run as they are."""
         self.wrapped: list[str] = []
-        self.observing = asyncio.Lock()
-        """Held while looking at the environment and reporting what changed, so that the
-        worker learns of each revision before any result that shows it."""
-        self.owners: dict[str, list[tuple[float, str]]] = {}
-        """The attempts each call or kernel ran, with when they started, by its OWNER mark."""
-        self.reported = ""
-        self.package_epoch = 0
+        self.admission = executor_admission.Admission(
+            self.clock,
+            closed=lambda: self.lifecycle.closing,
+            error=ToolError,
+            busy=_BusyError,
+            not_started=_NotStartedError,
+            send=send,
+            remove_records=self.packages.remove_records,
+            usable=provisioning.usable,
+            max_looks=MAX_LOOKS,
+            max_lockfile_event=MAX_LOCKFILE_EVENT,
+            max_commands=MAX_COMMANDS,
+            max_owners=MAX_OWNERS,
+            max_runs=MAX_RUNS,
+        )
         self.binding_inventory = binding_inventory.Inventory()
         self.binding_inventory_lock = asyncio.Lock()
         """The packages' fingerprint as the worker knows it, from ``hello`` and the
@@ -719,11 +707,14 @@ class Executor:
         try:
             config = provisioning.Config(sys.executable, str(PROVISIONING), sys.prefix, self.places)
             self.wrapped = provisioning.refresh(self.packages, config, self.tool_path())
-            self.reported = provisioning.baseline(self.packages, self.places)
+            self.admission.reported = provisioning.baseline(self.packages, self.places)
             self.provisioning = config
         except OSError as exc:
             print(f"executor: package commands run without turns: {exc}", file=sys.stderr)
-            self.reported = provisioning.fingerprint(self.places)
+            self.admission.reported = provisioning.fingerprint(self.places)
+
+    async def op_package_gate(self, request: Message) -> None:
+        await self.reply(request, **await self.admission.update(request))
 
     # Plumbing.
 
@@ -748,22 +739,6 @@ class Executor:
         for start in range(0, len(text), STREAM_CHUNK):
             chunk = text[start : start + STREAM_CHUNK]
             await self.event(execution, "stream", name=name, text=chunk)
-
-    @property
-    def running(self) -> dict[str, Running]:
-        return self.lifecycle.running
-
-    @property
-    def kernels(self) -> dict[tuple[str, str, str], Kernel]:
-        return self.lifecycle.kernels
-
-    @property
-    def tasks(self) -> set[asyncio.Task[None]]:
-        return self.lifecycle.tasks
-
-    @property
-    def closing(self) -> bool:
-        return self.lifecycle.closing
 
     def start_idle_reaper(self, idle: float) -> None:
         """Start this connection's owned idle-kernel task."""
@@ -1001,18 +976,15 @@ class Executor:
     # reaches the worker as a ``revision`` event before any result that shows it.
 
     async def baseline(self) -> str:
-        """The packages' fingerprint as this executor starts, which ``hello`` reports."""
-        async with self.observing:
-            previous = self.reported
+        """The packages' fingerprint as this executor starts, which hello reports."""
+        async with self.admission.observing:
             if self.provisioning is None:
-                self.reported = await asyncio.to_thread(provisioning.fingerprint, self.places)
+                fingerprint = await asyncio.to_thread(provisioning.fingerprint, self.places)
             else:
-                self.reported = await asyncio.to_thread(
+                fingerprint = await asyncio.to_thread(
                     provisioning.baseline, self.packages, self.places
                 )
-            if previous and previous != self.reported:
-                self.package_epoch += 1
-            return self.reported
+            return self.admission.baseline(fingerprint)
 
     async def begin(self, running: Running, timeout: float) -> str | None:
         """Wait while a package command changes the environment, then look at it (CP-12).
@@ -1023,7 +995,7 @@ class Executor:
         """
         if self.provisioning is None:
             return None
-        started = time.monotonic()
+        started = self.clock.monotonic()
         delay = 0.02
         while True:
             try:
@@ -1035,14 +1007,14 @@ class Executor:
                 break
             if running.cancel_requested:
                 raise _NotStartedError
-            waited = time.monotonic() - started
+            waited = self.clock.monotonic() - started
             if waited >= timeout:
                 raise _BusyError(waited, await asyncio.to_thread(self.packages.holding))
-            await asyncio.sleep(min(delay, timeout - waited))
+            await self.clock.sleep(min(delay, timeout - waited))
             delay = min(2 * delay, PACKAGE_POLL)
-        running.waited = time.monotonic() - started
+        running.waited = self.clock.monotonic() - started
         try:
-            await self.observing.acquire()
+            await self.admission.observing.acquire()
         except BaseException:
             os.close(held)
             raise
@@ -1051,17 +1023,21 @@ class Executor:
             for _ in range(MAX_LOOKS):
                 # observe closes the descriptor, in its thread, however this task ends.
                 observed = await asyncio.to_thread(
-                    provisioning.observe, self.packages, self.places, self.reported, descriptor
+                    provisioning.observe,
+                    self.packages,
+                    self.places,
+                    self.admission.reported,
+                    descriptor,
                 )
                 descriptor = None
-                await self.report(running.execution, observed, None)
+                await self.admission.report(running.execution, observed, None)
                 if observed.complete:
                     break
         except OSError as exc:
             print(f"executor: cannot read the package journal: {exc}", file=sys.stderr)
             return None
         finally:
-            self.observing.release()
+            self.admission.observing.release()
         # A manager installed since (pip install uv) gets its wrapper.
         try:
             self.wrapped = await asyncio.to_thread(
@@ -1069,7 +1045,7 @@ class Executor:
             )
         except OSError as exc:
             print(f"executor: cannot write the package wrappers: {exc}", file=sys.stderr)
-        return self.reported
+        return self.admission.reported
 
     async def settle(self, running: Running) -> Message:
         """Report what changed while an attempt ran: the result's ``environment`` fields.
@@ -1079,7 +1055,7 @@ class Executor:
         """
         if self.provisioning is None:
             return {"environment": await asyncio.to_thread(environment_fingerprint)}
-        async with self.observing:
+        async with self.admission.observing:
             observed = provisioning.Observation()
             try:
                 for _ in range(MAX_LOOKS):
@@ -1088,117 +1064,20 @@ class Executor:
                             provisioning.observe,
                             self.packages,
                             self.places,
-                            self.reported,
+                            self.admission.reported,
                             lockfile_wanted=True,
                         )
                     )
-                    await self.report(running.execution, observed, running.execution)
+                    await self.admission.report(running.execution, observed, running.execution)
                     if observed.complete:
                         break
             except OSError as exc:  # research code can break the state directory
                 print(f"executor: cannot read the package lock: {exc}", file=sys.stderr)
                 return {"environment": await asyncio.to_thread(environment_fingerprint)}
-            return {"environment": self.reported, "environment_changing": observed.busy is not None}
-
-    async def report(
-        self, execution: str, observed: provisioning.Observation, cause: str | None
-    ) -> None:
-        """Send a ``revision`` event, as part of ``execution``, for each change, in order.
-
-        The records of one attempt's package commands, one after another, make one
-        managed change, set against that attempt, with its last commands. A change before
-        a record, or one no record accounts for, is unmanaged (CP-4), set against
-        ``cause``: the attempt after which it was seen, if any. The last change of each
-        attempt carries a lockfile, the packages as that attempt left them; the worker
-        keeps one for each attempt. A record leaves the journal once its event is sent,
-        so that one a cancelled attempt did not send is read again by the next. Hold
-        ``observing``.
-        """
-        changes, spare = self.changes(observed, cause)
-        self.packages.remove_records(spare)  # records that changed nothing
-        last = {change.cause: index for index, change in enumerate(changes)}
-        for index, change in enumerate(changes):
-            raw = (
-                change.lockfile
-                if change.cause is not None and last[change.cause] == index
-                else None
-            )
-            lockfile = cast(Message, raw) if isinstance(raw, dict) else None
-            if lockfile is not None:
-                size = len(json.dumps(lockfile, separators=(",", ":")))
-                if size > MAX_LOCKFILE_EVENT:
-                    print(f"executor: a lockfile of {size} bytes is too large", file=sys.stderr)
-                    lockfile = None
-            self.package_epoch += 1
-            await self.event(
-                execution,
-                "revision",
-                fingerprint=change.fingerprint,
-                package_epoch=self.package_epoch,
-                managed=change.managed,
-                cause=change.cause,
-                commands=change.commands[-MAX_COMMANDS:],
-                omitted_commands=max(0, len(change.commands) - MAX_COMMANDS),
-                lockfile=lockfile,
-            )
-            self.reported = change.fingerprint
-            self.packages.remove_records(change.names)
-
-    def changes(
-        self, observed: provisioning.Observation, cause: str | None
-    ) -> tuple[list[_Change], list[str]]:
-        """The changes an observation shows, in order, and the records that changed nothing."""
-        changes: list[_Change] = []
-        spare: list[str] = []
-        reported = self.reported
-        for name, record in observed.records:
-            if not provisioning.usable(record):
-                spare.append(name)
-                continue
-            before, after = str(record["before"]), str(record["after"])
-            if before != reported:  # changed meanwhile by something no record accounts for
-                changes.append(_Change(before, False, cause))
-                reported = before
-            if after == reported:
-                spare.append(name)
-                continue
-            command = {
-                key: record.get(key)
-                for key in ("command", "via", "exit_code", "signal", "started", "ended")
+            return {
+                "environment": self.admission.reported,
+                "environment_changing": observed.busy is not None,
             }
-            who = self.cause(record)
-            if changes and changes[-1].managed and changes[-1].cause == who:
-                change = changes[-1]
-                change.fingerprint = after
-                change.lockfile = record.get("lockfile")
-            else:
-                change = _Change(after, True, who, lockfile=record.get("lockfile"))
-                changes.append(change)
-            change.commands.append(command)
-            change.names.append(name)
-            reported = after
-        if observed.fingerprint is not None and observed.fingerprint != reported:
-            changes.append(_Change(observed.fingerprint, False, cause, lockfile=observed.lockfile))
-        return changes, spare
-
-    def own(self, owner: str, execution: str) -> None:
-        """Remember that ``execution`` runs under ``owner``, a call's or a kernel's mark."""
-        runs = self.owners.pop(owner, [])
-        runs.append((time.time(), execution))
-        self.owners[owner] = runs[-MAX_RUNS:]
-        while len(self.owners) > MAX_OWNERS:
-            del self.owners[next(iter(self.owners))]
-
-    def cause(self, record: Message) -> str | None:
-        """The attempt that ran a package command: the latest of its owner's to start before it."""
-        owner, invoked = record.get("owner"), record.get("invoked")
-        runs = self.owners.get(owner) if isinstance(owner, str) else None
-        if not runs:
-            return None
-        if not isinstance(invoked, int | float) or isinstance(invoked, bool):
-            return runs[-1][1]
-        earlier = [execution for started, execution in runs if started <= invoked]
-        return earlier[-1] if earlier else runs[0][1]
 
     # Operations.
 
@@ -1208,7 +1087,7 @@ class Executor:
             request,
             protocol=PROTOCOL,
             max_request_bytes=MAX_REQUEST,
-            package_gate=self.package_gate_id,
+            package_gate=self.admission.incarnation,
             languages=languages,
             location={
                 "hostname": socket.gethostname(),
@@ -1227,54 +1106,8 @@ class Executor:
             run_kernels=1,
             conditional_kernel_restart=1,
             environment=await self.baseline(),
-            package_epoch=self.package_epoch,
+            package_epoch=self.admission.epoch,
         )
-
-    async def op_package_gate(self, request: Message) -> None:
-        """ACK a hold only after every launch ordered before it has completed admission."""
-        generation, mode = request.get("generation"), request.get("mode")
-        operation, revision = request.get("operation"), request.get("revision")
-        if (
-            request.get("incarnation") != self.package_gate_id
-            or type(generation) is not int
-            or not 0 <= generation < 2**62
-            or mode not in ("ready", "hold", "needs_recovery")
-            or not isinstance(operation, str)
-            or len(operation) > 128
-            or (operation and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", operation) is None)
-            or (mode == "ready" and operation)
-            or (mode == "needs_recovery" and not operation)
-            or (revision is not None and (type(revision) is not int or not 0 <= revision < 2**62))
-        ):
-            raise ToolError("invalid_request", "invalid package admission identity or state")
-        async with self.package_launch:
-            self.controller_present(request)
-            existing = (
-                self.package_generation,
-                self.package_mode,
-                self.package_operation,
-                self.package_revision,
-            )
-            incoming = (generation, mode, operation, revision)
-            if generation < self.package_generation or (
-                generation == self.package_generation and incoming != existing
-            ):
-                raise ToolError("conflict", "stale package admission generation")
-            self.package_generation, self.package_mode = generation, mode
-            self.package_operation, self.package_revision = operation, revision
-        await self.reply(
-            request,
-            incarnation=self.package_gate_id,
-            generation=generation,
-            mode=mode,
-            operation=operation,
-            revision=revision,
-        )
-
-    def controller_present(self, request: Message) -> None:
-        guard = request.get("_admission_guard")
-        if callable(guard) and not guard():
-            raise ToolError("unavailable", "controller detached before admission")
 
     async def own_launch[T](self, running: Running, work: Awaitable[T]) -> T:
         """Keep launch serialization through actual work and repeated cancellation."""
@@ -1283,7 +1116,7 @@ class Executor:
     async def start_kernel(
         self, running: Running, kernel: Kernel, timeout: float, work: Callable[[], Awaitable[None]]
     ) -> None:
-        async with self.launch(running, timeout):
+        async with self.admission.launch(running, timeout):
             await self.own_launch(running, self.kernel_birth(running, kernel, timeout, work))
 
     async def kernel_birth(
@@ -1302,26 +1135,26 @@ class Executor:
                 while held is None:
                     if running.cancel_requested:
                         raise _NotStartedError
-                    if time.monotonic() - running.admitted >= timeout:
-                        raise _BusyError(time.monotonic() - running.admitted, None)
+                    if self.clock.monotonic() - running.admitted >= timeout:
+                        raise _BusyError(self.clock.monotonic() - running.admitted, None)
                     try:
                         held = self.packages.try_lock(exclusive=False)
                     except OSError:
                         break  # damaged lock: start is explicitly unknown
                     if held is None:
-                        await asyncio.sleep(0.05)
+                        await self.clock.sleep(0.05)
                 if held is not None:
-                    async with self.observing:
+                    async with self.admission.observing:
                         if running.kind == "cell":
                             for _ in range(MAX_LOOKS):
                                 observed = await asyncio.to_thread(
                                     provisioning.observe,
                                     self.packages,
                                     self.places,
-                                    self.reported,
+                                    self.admission.reported,
                                     os.dup(held),
                                 )
-                                await self.report(running.execution, observed, None)
+                                await self.admission.report(running.execution, observed, None)
                                 if observed.complete:
                                     fingerprint = observed.fingerprint
                                     break
@@ -1331,7 +1164,9 @@ class Executor:
                             fingerprint = await asyncio.to_thread(
                                 provisioning.fingerprint, self.places
                             )
-                        epoch = self.package_epoch if fingerprint == self.reported else None
+                        epoch = (
+                            self.admission.epoch if fingerprint == self.admission.reported else None
+                        )
             if running.cancel_requested:
                 raise _NotStartedError
             if self.lifecycle.closing or (
@@ -1356,47 +1191,6 @@ class Executor:
         finally:
             if held is not None:
                 os.close(held)
-
-    @contextlib.asynccontextmanager
-    async def launch(self, running: Running, timeout: float):
-        """Wait without retaining the launch lock; serialize the final launch with hold ACK."""
-        while True:
-            await self.package_launch.acquire()
-            if self.lifecycle.closing:
-                self.package_launch.release()
-                raise ToolError("unavailable", "executor is closing; new launch refused")
-            if (
-                (running.package_operation or running.kind == "restart")
-                and running.controller
-                and not running.controller()
-            ):
-                self.package_launch.release()
-                raise ToolError("unavailable", "provisioning controller detached before launch")
-            if self.package_mode == "needs_recovery":
-                self.package_launch.release()
-                raise ToolError("unavailable", "environment needs_recovery; new work is refused")
-            exempt = (
-                running.package_operation
-                and running.package_operation == self.package_operation
-                and running.package_generation == self.package_generation
-            )
-            if self.package_mode == "ready" or exempt:
-                break
-            self.package_launch.release()
-            if running.cancel_requested:
-                raise _NotStartedError
-            if time.monotonic() - running.admitted >= timeout:
-                raise _BusyError(time.monotonic() - running.admitted, None)
-            await asyncio.sleep(0.05)
-        try:
-            if running.cancel_requested:
-                raise _NotStartedError
-            running.waited = max(running.waited, time.monotonic() - running.admitted)
-            if running.waited >= timeout:
-                raise _BusyError(running.waited, None)
-            yield
-        finally:
-            self.package_launch.release()
 
     async def op_probe(self, request: Message) -> None:
         """Describe this sandbox, and say whether each of the worker's sentinel paths shows here."""
@@ -1456,7 +1250,7 @@ class Executor:
             raise ToolError("invalid_request", "missing execution id")
         if execution in self.lifecycle.running:
             raise ToolError("conflict", f"execution {execution} is already running")
-        running = Running(execution=execution, kind=kind)
+        running = Running(execution=execution, kind=kind, admitted=self.clock.monotonic())
         inventory = request.get("binding_inventory")
         if inventory is not None and (
             not isinstance(inventory, str) or _SHA256_RE.fullmatch(inventory) is None
@@ -1532,7 +1326,7 @@ class Executor:
         limit: int,
     ) -> None:
         execution = running.execution
-        started = time.monotonic()
+        started = self.clock.monotonic()
         wall_started = time.time()
         captures = {name: Capture(name, limit) for name in ("stdout", "stderr")}
         running.captures = captures
@@ -1560,12 +1354,12 @@ class Executor:
                 return
             if running.kind == "job":
                 logs = await asyncio.to_thread(self.job_logs, session, execution)
-            self.own(running.owner, execution)
+            self.admission.own(running.owner, execution)
             # The process is the executor's child before its pid is in spawned.
             with sandbox_processes.starting_children():
                 try:
                     async with (
-                        self.launch(running, timeout),
+                        self.admission.launch(running, timeout),
                         self.binding_guard(set(running.bindings), running.binding_inventory),
                     ):
                         process = await self.own_launch(
@@ -1664,7 +1458,7 @@ class Executor:
                 "stdout": captures["stdout"].summary(),
                 "stderr": captures["stderr"].summary(),
                 "error": error,
-                "elapsed_seconds": time.monotonic() - started,
+                "elapsed_seconds": self.clock.monotonic() - started,
                 "sandbox_started": wall_started,
                 "sandbox_ended": time.time(),
                 **written,
@@ -1833,7 +1627,7 @@ class Executor:
         self, running: Running, kernel: Kernel, code: str, timeout: float, limit: int
     ) -> None:
         execution = running.execution
-        started = time.monotonic()
+        started = self.clock.monotonic()
         wall_started = time.time()
         captures = {name: Capture(name, limit) for name in ("stdout", "stderr")}
         outputs: list[Message] = []
@@ -1855,12 +1649,12 @@ class Executor:
                     )
                 if running.cancel_requested:  # asked for while the kernel started
                     raise _NotStartedError
-                self.own(kernel.owner, execution)
+                self.admission.own(kernel.owner, execution)
                 ran_on = kernel.info()
                 state_lost, kernel.state_lost = kernel.state_lost, False
                 before = await asyncio.to_thread(self.snapshot, kernel.session)
                 async with (
-                    self.launch(running, timeout),
+                    self.admission.launch(running, timeout),
                     self.binding_guard(
                         set(running.bindings) | set(kernel.started_bindings),
                         kernel.start_binding_inventory
@@ -1906,7 +1700,7 @@ class Executor:
                 outputs=outputs,
                 kernel=ran_on,
                 running_kernels=await self.session_kernels(kernel.session),
-                elapsed_seconds=time.monotonic() - started,
+                elapsed_seconds=self.clock.monotonic() - started,
                 sandbox_started=wall_started,
                 sandbox_ended=time.time(),
             )
@@ -1932,12 +1726,11 @@ class Executor:
     ) -> tuple[str, Message]:
         from queue import Empty
 
-        loop = asyncio.get_running_loop()
         # This generation's client and manager, even once a restart replaces the kernel's.
         client, manager = kernel.client, kernel.manager
         if msg_id is None:
             msg_id = client.execute(code, store_history=True, allow_stdin=False)
-        deadline = loop.time() + max(0.0, timeout - running.waited)
+        deadline = self.clock.monotonic() + max(0.0, timeout - running.waited)
         interrupted_at: float | None = None
         timed_out = False
         cell = CellMessages(msg_id, limit, captures, outputs)
@@ -1955,7 +1748,7 @@ class Executor:
                     "error": {"kind": "cancelled", "message": message},
                     "state_lost": True,
                 }
-            now = loop.time()
+            now = self.clock.monotonic()
             if not timed_out and now >= deadline:
                 timed_out = True
                 interrupted_at = now
@@ -2051,7 +1844,7 @@ class Executor:
         kernel = self.kernel(
             session, str(request.get("language", "python")), self.run_name(request)
         )
-        restart = Running("restart", "restart")
+        restart = Running("restart", "restart", admitted=self.clock.monotonic())
         restart.kernel = kernel
         guard = request.get("_admission_guard")
         if callable(guard):
@@ -2059,23 +1852,13 @@ class Executor:
         await self.lifecycle.restart(
             kernel,
             only_if_absent=request.get("only_if_absent") is True,
-            permit=lambda: self.restart_permit(request),
+            permit=lambda: self.admission.restart_permit(request),
             stop=lambda: self.own_launch(restart, kernel.stop()),
             start=lambda: kernel.ensure_started(
                 lambda work: self.start_kernel(restart, kernel, 180, work)
             ),
         )
         await self.reply(request, kernel=kernel.info())
-
-    @contextlib.asynccontextmanager
-    async def restart_permit(self, request: Message):
-        async with self.package_launch:
-            self.controller_present(request)
-            if self.lifecycle.closing or self.package_mode != "ready":
-                raise ToolError(
-                    "unavailable", "package admission is closed; kernel restart refused"
-                )
-            yield
 
     async def reap_idle_kernels(self, idle: float) -> None:
         await self.lifecycle.reap_idle_kernels(idle)
@@ -2229,11 +2012,11 @@ class Executor:
                 pass
         except ToolError as error:
             if error.kind == "policy_denied" and self.binding_inventory.manifest is not None:
-                found["inventory"] = self.binding_inventory.projection(names, self.package_epoch)
+                found["inventory"] = self.binding_inventory.projection(names, self.admission.epoch)
             else:
                 found["inventory"] = {"state": "unavailable", "coverage": error.message[:2000]}
         else:
-            found["inventory"] = self.binding_inventory.projection(names, self.package_epoch)
+            found["inventory"] = self.binding_inventory.projection(names, self.admission.epoch)
         await self.reply(request, **found)
 
     async def op_skills_put(self, request: Message) -> None:

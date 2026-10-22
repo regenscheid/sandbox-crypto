@@ -59,6 +59,7 @@ EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = (
     "executor.py",
     "executor_lifecycle.py",
+    "executor_admission.py",
     "binding_inventory.py",
     "provisioning.py",
     "pdfhelper.py",
