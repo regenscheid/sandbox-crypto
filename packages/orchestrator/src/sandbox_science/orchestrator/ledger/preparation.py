@@ -32,6 +32,7 @@ from .models import (
     LINKS,
     STATUSES,
     THIS_SESSION,
+    AnchorInput,
     EntryChange,
     EntryLink,
     EvidenceInput,
@@ -556,3 +557,98 @@ def final_evidence(db: sqlite3.Connection, p: Planned) -> list[EvidenceLink]:
     if p.evidence is not None:
         return p.evidence
     return evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
+
+
+def resolve_sources(
+    db: sqlite3.Connection,
+    project: str,
+    basis: str | None,
+    anchors: list[AnchorInput],
+    author: Author,
+    pinned: dict[evidence.Block, str],
+    provenance_: Json | None,
+) -> tuple[str, list[Json]]:
+    """The basis and resolved anchors of a revision or work record (CM-9): the user's
+    are the user's; an import's are anchored on its results file's line, observed when
+    the file is an artifact revision an execution produced and interpreted otherwise;
+    a check's outcome is observed, anchored on its delegation; an agent's are what it
+    names, where it may look, ``interpreted`` by default, and never the user's own."""
+
+    def find(reference: str) -> tuple[str, int]:
+        row = queries.find(db, project, reference)
+        return row.entry_id, row.head
+
+    def block(name: str, revision: int, block: str) -> str:
+        return pinned[(name, revision, block, None)]
+
+    kept = anchoring.resolve(db, project, anchors, block, find, anchor_scope(db, project, author))
+    if author.kind == "user" and provenance_ is not None and "proposal" in provenance_:
+        # A fold's proposal the user accepts keeps its basis: its words are the model's.
+        return basis or "interpreted", kept
+    if author.kind == "user":
+        return "user", kept
+    if provenance_ is not None and "file" in provenance_:
+        artifact, revision = provenance_.get("artifact"), provenance_.get("revision")
+        digest = str(provenance_.get("sha256"))
+        executed = None
+        if isinstance(artifact, str) and isinstance(revision, int):
+            executed = anchoring.executed(db, project, artifact, revision, digest)
+        if executed is None:
+            line = {k: provenance_.get(k) for k in ("file", "sha256", "line")}
+            return "interpreted", [line, *kept]
+        line = {"artifact": artifact, "revision": revision, "sha256": digest}
+        line["line"] = provenance_.get("line")
+        return ("observed" if executed else "interpreted"), [line, *kept]
+    if provenance_ is not None and "delegation" in provenance_:
+        return "observed", [{"delegation": provenance_["delegation"]}, *kept]
+    if basis == "user":
+        raise anchoring.refused(
+            "an agent's record is never the user's own: record what the user said as "
+            "user_quoted, with a quote of the user's message"
+        )
+    return basis or "interpreted", kept
+
+
+def resolve_provenance(
+    db: sqlite3.Connection,
+    project: str,
+    p: Planned,
+    author: Author,
+    pinned: dict[evidence.Block, str],
+    provenance_: Json | None,
+) -> None:
+    """Set ``p``'s basis and anchors (CM-9), refusing an agent's change that needs an
+    anchor and names none, whose evidence included, or whose basis its anchors do not
+    bear out."""
+    p.basis, p.anchors = resolve_sources(
+        db, project, p.change.basis, p.change.anchors or [], author, pinned, provenance_
+    )
+    if author.kind == "user" or platform_provenance(provenance_):
+        return
+    held = final_evidence(db, p)
+    needs = (
+        p.created
+        or {"statement", "fields"} & set(p.changed)
+        # A pin moved on a decided entry changes what it shows, as content does.
+        or ("pins" in p.changed and p.status_before in _DECIDED)
+        or (
+            p.row.type == "decision"
+            and "status" in p.changed
+            and p.status in ("in_effect", "rejected", "reversed")
+        )
+    )
+    if needs and not p.anchors and not held:
+        raise anchoring.refused(
+            f"{p.row.handle} names no anchor: a message by its ID, a tool result by its "
+            "call, an artifact, a document block or an entry revision, or evidence it holds"
+        )
+    statement = p.statement
+    if statement is None and not p.created:
+        latest = TEXTS.latest(db, p.row.entry_id)
+        text = None if latest is None else TEXTS.read(db, p.row.entry_id, latest[0])
+        statement = "" if text is None else text["body"]
+    texts = [statement or "", *anchoring.values(p.fields)]
+    anchoring.check(db, project, p.basis or "", p.anchors, held, texts, p.row.handle)
+
+
+_DECIDED: Final = frozenset({"established", "recorded", "in_effect", "rejected", "reversed"})

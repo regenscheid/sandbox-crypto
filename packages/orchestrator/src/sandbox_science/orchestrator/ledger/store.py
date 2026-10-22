@@ -53,7 +53,6 @@ from .models import (
     SET_ASIDE,
     SHOWN_FLAGGED,
     WORK_HOLDERS,
-    AnchorInput,
     Category,
     CategoryDefinition,
     CategoryPage,
@@ -78,7 +77,6 @@ from .records import TEXTS, Planned, Row
 
 Json = dict[str, Any]
 
-_DECIDED: Final = frozenset({"established", "recorded", "in_effect", "rejected", "reversed"})
 """Statuses that settle an entry: a repin there needs an anchor (figures, FG-8)."""
 """Each entry's statement, a text revision under the entry's ID."""
 
@@ -676,7 +674,7 @@ class Ledger:
         self._check_links(db, planned)
         self._check_research(db, project, planned, author)
         for p in planned:
-            self._provenance(db, project, p, author, pinned, provenance)
+            preparation.resolve_provenance(db, project, p, author, pinned, provenance)
         self._check_dominates(db, project, planned, role)
         self._check_quotes(db, planned)
         self._check_published(db, planned)
@@ -823,7 +821,7 @@ class Ledger:
                         "the entry the work it assesses is on",
                     )
             cited = [self._cited(db, project, ref, named, pinned) for ref in item.references]
-            basis, anchors = self._sources(
+            basis, anchors = preparation.resolve_sources(
                 db, project, item.basis, item.anchors or [], author, pinned, provenance
             )
             if author.kind != "user" and not preparation.platform_provenance(provenance):
@@ -1956,100 +1954,6 @@ class Ledger:
                 raise DocumentError(
                     INVALID_REQUEST, f"{p.row.handle} holds split_into links only while split"
                 )
-
-    def _sources(
-        self,
-        db: sqlite3.Connection,
-        project: str,
-        basis: str | None,
-        anchors: list[AnchorInput],
-        author: Author,
-        pinned: dict[evidence.Block, str],
-        provenance_: Json | None,
-    ) -> tuple[str, list[Json]]:
-        """The basis and resolved anchors of a revision or work record (CM-9): the user's
-        are the user's; an import's are anchored on its results file's line, observed when
-        the file is an artifact revision an execution produced and interpreted otherwise;
-        a check's outcome is observed, anchored on its delegation; an agent's are what it
-        names, where it may look, ``interpreted`` by default, and never the user's own."""
-
-        def find(reference: str) -> tuple[str, int]:
-            row = queries.find(db, project, reference)
-            return row.entry_id, row.head
-
-        def block(name: str, revision: int, block: str) -> str:
-            return pinned[(name, revision, block, None)]
-
-        kept = anchoring.resolve(
-            db, project, anchors, block, find, preparation.anchor_scope(db, project, author)
-        )
-        if author.kind == "user" and provenance_ is not None and "proposal" in provenance_:
-            # A fold's proposal the user accepts keeps its basis: its words are the model's.
-            return basis or "interpreted", kept
-        if author.kind == "user":
-            return "user", kept
-        if provenance_ is not None and "file" in provenance_:
-            artifact, revision = provenance_.get("artifact"), provenance_.get("revision")
-            digest = str(provenance_.get("sha256"))
-            executed = None
-            if isinstance(artifact, str) and isinstance(revision, int):
-                executed = anchoring.executed(db, project, artifact, revision, digest)
-            if executed is None:
-                line = {k: provenance_.get(k) for k in ("file", "sha256", "line")}
-                return "interpreted", [line, *kept]
-            line = {"artifact": artifact, "revision": revision, "sha256": digest}
-            line["line"] = provenance_.get("line")
-            return ("observed" if executed else "interpreted"), [line, *kept]
-        if provenance_ is not None and "delegation" in provenance_:
-            return "observed", [{"delegation": provenance_["delegation"]}, *kept]
-        if basis == "user":
-            raise anchoring.refused(
-                "an agent's record is never the user's own: record what the user said as "
-                "user_quoted, with a quote of the user's message"
-            )
-        return basis or "interpreted", kept
-
-    def _provenance(
-        self,
-        db: sqlite3.Connection,
-        project: str,
-        p: Planned,
-        author: Author,
-        pinned: dict[evidence.Block, str],
-        provenance_: Json | None,
-    ) -> None:
-        """Set ``p``'s basis and anchors (CM-9), refusing an agent's change that needs an
-        anchor and names none, whose evidence included, or whose basis its anchors do not
-        bear out."""
-        p.basis, p.anchors = self._sources(
-            db, project, p.change.basis, p.change.anchors or [], author, pinned, provenance_
-        )
-        if author.kind == "user" or preparation.platform_provenance(provenance_):
-            return
-        held = preparation.final_evidence(db, p)
-        needs = (
-            p.created
-            or {"statement", "fields"} & set(p.changed)
-            # A pin moved on a decided entry changes what it shows, as content does.
-            or ("pins" in p.changed and p.status_before in _DECIDED)
-            or (
-                p.row.type == "decision"
-                and "status" in p.changed
-                and p.status in ("in_effect", "rejected", "reversed")
-            )
-        )
-        if needs and not p.anchors and not held:
-            raise anchoring.refused(
-                f"{p.row.handle} names no anchor: a message by its ID, a tool result by its "
-                "call, an artifact, a document block or an entry revision, or evidence it holds"
-            )
-        statement = p.statement
-        if statement is None and not p.created:
-            latest = TEXTS.latest(db, p.row.entry_id)
-            text = None if latest is None else TEXTS.read(db, p.row.entry_id, latest[0])
-            statement = "" if text is None else text["body"]
-        texts = [statement or "", *anchoring.values(p.fields)]
-        anchoring.check(db, project, p.basis or "", p.anchors, held, texts, p.row.handle)
 
     def _check_research(
         self, db: sqlite3.Connection, project: str, planned: list[Planned], author: Author
