@@ -44,7 +44,7 @@ from sandbox_science.orchestrator.documents.pins import text_references
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
-from . import evidence, flags, frontier, gate, queries, standing
+from . import evidence, flags, frontier, gate, queries, records, standing
 from . import provenance as anchoring
 from .models import (
     DECIDED,
@@ -118,10 +118,6 @@ def _first_status(kind: str, origin: str | None) -> str:
 
 LISTED_FLAGS: Final = 500
 """The flags one change's event lists; it counts the rest."""
-
-
-def _refused(message: str) -> DocumentError:
-    return DocumentError(POLICY_DENIED, f"not_permitted_for_role: {message}")
 
 
 class Ledger:
@@ -271,9 +267,9 @@ class Ledger:
         try:
             value = CategoryDefinition.model_validate(raw)
         except ValidationError as error:
-            raise DocumentError(INVALID_REQUEST, _first_error(error)) from None
+            raise DocumentError(INVALID_REQUEST, records.validation_error(error)) from None
         if self._authority(project, author) == "delegated":
-            raise _refused("a delegated agent defines no frontier category")
+            raise records.refused("a delegated agent defines no frontier category")
         if author.kind != "user":
             # Agents read categories again and the user decides on them: an agent's text
             # holds no character the user may not see (threat model A3), and is kept with
@@ -399,10 +395,10 @@ class Ledger:
             if p.row.type != "result" or p.links is None:
                 continue
             final = {link.target_id for link in p.links if link.kind == "dominates"}
-            for link in _added(p, "dominates"):
+            for link in records.links_added(p, "dominates"):
                 found.append(
                     f"{p.row.handle} dominates {handle(link.target_id)}: "
-                    + _clip(link.note or "", 100)
+                    + records.clip(link.note or "", 100)
                 )
             found += [
                 f"{p.row.handle} no longer dominates {handle(link.target_id)}"
@@ -456,7 +452,7 @@ class Ledger:
         moved on. Only the user records one; an agent's check counts for nothing. A
         reference's check vouches for the PDF the revision names (LG-16)."""
         if author.kind != "user":
-            raise _refused("only the user records that they checked an entry")
+            raise records.refused("only the user records that they checked an entry")
         self._project(project)
         with self.control.read() as tx:
             entry = queries.find(tx.sql, project, reference).entry_id
@@ -522,7 +518,9 @@ class Ledger:
         reason (LG-22; the review's M3): a change to ``holder`` at ``revision``, the one
         read, that keeps its other links. A later revision is a conflict."""
         if author.kind != "user":
-            raise _refused("only the user drops a dominates link; an agent revises its links")
+            raise records.refused(
+                "only the user drops a dominates link; an agent revises its links"
+            )
         self._project(project)
         with self.control.read() as tx:
             entry = queries.find(tx.sql, project, holder)
@@ -587,7 +585,7 @@ class Ledger:
         try:
             mutation = Mutation.model_validate(raw)
         except ValidationError as error:
-            raise DocumentError(INVALID_REQUEST, _first_error(error)) from None
+            raise DocumentError(INVALID_REQUEST, records.validation_error(error)) from None
         return self.apply(project, [(mutation, provenance)], author)[0]
 
     def apply(
@@ -749,7 +747,7 @@ class Ledger:
             {
                 "operation_id": mutation.operation_id,
                 "author": author.actor,
-                "reason": _clip(mutation.reason, 500),
+                "reason": records.clip(mutation.reason, 500),
                 "entries": [p.row.handle for p in planned if p.row.type == "result"],
                 **(
                     {"dominates": linked}
@@ -885,7 +883,7 @@ class Ledger:
                     None if provenance is None else json.dumps(provenance, sort_keys=True),
                     now,
                     basis,
-                    provenance_json(anchors),
+                    records.anchors_json(anchors),
                 ),
             )
             self.events.append(
@@ -969,7 +967,7 @@ class Ledger:
                     mutation.operation_id,
                     None if provenance is None else json.dumps(provenance, sort_keys=True),
                     now.isoformat(),
-                    provenance_json(
+                    records.anchors_json(
                         []
                         if decider is None
                         else [{"entry": decider.entry_id, "revision": decider.revision}]
@@ -1125,7 +1123,9 @@ class Ledger:
             )
         ):
             # LG-13: a delegated agent adds evidence, and changes nothing else.
-            raise _refused("a delegated agent creates entries and adds evidence, nothing else")
+            raise records.refused(
+                "a delegated agent creates entries and adds evidence, nothing else"
+            )
         if change.expected != row.head:
             raise DocumentError(
                 CONFLICT,
@@ -1213,7 +1213,7 @@ class Ledger:
             # LG-17: the user or the main agent records a decision in effect at once, and
             # an approach abandoned as a rejected one, with its reopen condition (CM-10).
             if role == "delegated":
-                raise _refused("a delegated agent's decision is proposed")
+                raise records.refused("a delegated agent's decision is proposed")
             status = change.status
         if change.status is not None and change.status != status:
             raise DocumentError(INVALID_REQUEST, f"a new {kind} starts {status}")
@@ -1376,14 +1376,14 @@ class Ledger:
                 p.title,
                 p.status,
                 statement,
-                _encoded(p.fields),
+                records.encoded(p.fields),
                 author.model_dump_json(exclude_none=True),
                 mutation.reason,
                 mutation.operation_id,
                 None if provenance is None else json.dumps(provenance, sort_keys=True),
                 now.isoformat(),
                 p.basis,
-                provenance_json(p.anchors),
+                records.anchors_json(p.anchors),
                 json.dumps(pins, sort_keys=True) if pins else None,
             ),
         )
@@ -1720,7 +1720,7 @@ class Ledger:
         what the user read, on the issue as it reads at ``revision``; a later revision is
         a conflict. Only the user records one this way; agents use their change tool."""
         if author.kind != "user":
-            raise _refused("only the user records an assessment this way")
+            raise records.refused("only the user records an assessment this way")
         self._project(project)
         with self.control.read() as tx:
             row = queries.find(tx.sql, project, reference)
@@ -1831,7 +1831,7 @@ class Ledger:
         if not mutation.flags_cleared and not mutation.flags_cleared_on:
             return []
         if role == "delegated":
-            raise _refused("a delegated agent clears no flag")
+            raise records.refused("a delegated agent clears no flag")
         found: dict[str, tuple[str, str, str, str]] = {}
         for flag in mutation.flags_cleared or ():
             row = db.execute(
@@ -1878,12 +1878,12 @@ class Ledger:
             if not standing.settled(db, entry, revision):
                 continue
             if kind not in ("claim", "result"):
-                raise _refused(
+                raise records.refused(
                     f"{handle} was settled when the flag was raised or since: only the user "
                     "clears a flag on a settled issue or decision"
                 )
             if not gate.fresh_check(db, entry, flag):
-                raise _refused(
+                raise records.refused(
                     f"{handle} is settled, and clearing its flag settles it again: that needs "
                     "the user, or a delegation's check of it at its current revision, from a "
                     "brief that named the flag, started since it was last weakened, that "
@@ -1926,7 +1926,7 @@ class Ledger:
         if not mutation.flags_reopened:
             return []
         if role != "user":
-            raise _refused("only the user reopens a flag")
+            raise records.refused("only the user reopens a flag")
         opened: list[str] = []
         reopened: list[tuple[str, str, str, str, str]] = []
         for old in dict.fromkeys(mutation.flags_reopened):
@@ -2083,9 +2083,9 @@ class Ledger:
         where the rule cannot compare them."""
         by_id = {p.row.entry_id: p for p in planned}
         for p in planned:
-            for link in _added(p, "dominates"):
+            for link in records.links_added(p, "dominates"):
                 if role == "delegated":
-                    raise _refused("a delegated agent records no dominates link")
+                    raise records.refused("a delegated agent records no dominates link")
                 other = by_id.get(link.target_id)
                 if other is not None:
                     target = (other.row.handle, other.row.origin, other.status, other.fields)
@@ -2128,7 +2128,9 @@ class Ledger:
         the frontier reads them: a disputed result as the revision before, and only the
         results it holds eligible."""
         added = {
-            (p.row.entry_id, link.target_id): p for p in planned for link in _added(p, "dominates")
+            (p.row.entry_id, link.target_id): p
+            for p in planned
+            for link in records.links_added(p, "dominates")
         }
         if not added:
             return
@@ -2197,7 +2199,10 @@ class Ledger:
 
         superseding: list[str] = []
         for p in planned:
-            for link in [*_added(p, "supersedes"), *_added(p, "split_into")]:
+            for link in [
+                *records.links_added(p, "supersedes"),
+                *records.links_added(p, "split_into"),
+            ]:
                 seen: set[str] = set()
                 reached = [link.target_id]
                 while reached:
@@ -2211,7 +2216,7 @@ class Ledger:
                     if entry not in seen:
                         seen.add(entry)
                         reached.extend(targets(entry, link.kind))
-            for link in _added(p, "supersedes"):
+            for link in records.links_added(p, "supersedes"):
                 if p.status == "superseded":
                     raise DocumentError(
                         INVALID_REQUEST, f"{p.row.handle} is superseded and supersedes nothing new"
@@ -2221,7 +2226,7 @@ class Ledger:
                         INVALID_REQUEST,
                         f"{link.handle} becomes superseded in the change that supersedes it",
                     )
-            superseding += [link.target_id for link in _dropped(p, "supersedes")]
+            superseding += [link.target_id for link in records.links_dropped(p, "supersedes")]
         moved = [p.row.entry_id for p in planned if "status" in p.changed]
         for entry in dict.fromkeys([*moved, *superseding]):
             if by_id.get(entry) is not None and by_id[entry].row.type not in ("claim", "result"):
@@ -2392,7 +2397,7 @@ class Ledger:
                     )
             dropped = set(p.fields_before.get("caveats", ())) - set(p.fields.get("caveats", ()))
             if author.kind != "user" and dropped:
-                raise _refused(
+                raise records.refused(
                     f"an agent adds caveats to {p.row.handle} and removes none: the user may "
                     "remove one"
                 )
@@ -2457,7 +2462,7 @@ class Ledger:
                 f"{p.row.handle} becomes {p.status}: state what would justify reopening "
                 f"it (fields.reopen_condition), or {NO_CONDITION}",
             )
-        for link in _added(p, "reopen_on"):
+        for link in records.links_added(p, "reopen_on"):
             target = by_id.get(link.target_id)
             kind, status, asked = (
                 (target.row.type, target.status, target.fields.get("kind"))
@@ -2506,7 +2511,7 @@ class Ledger:
                 and ("links" not in p.changed or final == p.previous)
             )
             if not stated:
-                raise _refused(
+                raise records.refused(
                     f"{p.row.handle} is the user's decision: an agent changes its status by a "
                     "decision, and never its title, statement (its pins included), fields, "
                     "links or evidence"
@@ -2538,7 +2543,7 @@ class Ledger:
         if session == before:
             return
         if author.kind != "user" and {session, before} - {None, author.session_id}:
-            raise _refused("an agent scopes a decision to its own session, and no other")
+            raise records.refused("an agent scopes a decision to its own session, and no other")
         if (
             session is not None
             and session not in recorded(self.documents.path.parent, project).sessions
@@ -2556,7 +2561,7 @@ class Ledger:
         if author.kind == "user":
             return "user"
         if author.kind != "agent" or author.role not in ("main", "delegated"):
-            raise _refused(f"a {author.role or author.kind} does not change the ledger")
+            raise records.refused(f"a {author.role or author.kind} does not change the ledger")
         if author.session_id not in sessions:
             raise DocumentError(NOT_FOUND, "the agent's session is not in this project")
         return cast(str, author.role)
@@ -2602,7 +2607,9 @@ def _fields(kind: str, raw: Json) -> Json:
     try:
         value = model.model_validate(raw)
     except ValidationError as error:
-        raise DocumentError(INVALID_REQUEST, f"{kind} fields: {_first_error(error)}") from None
+        raise DocumentError(
+            INVALID_REQUEST, f"{kind} fields: {records.validation_error(error)}"
+        ) from None
     if isinstance(value, ReferenceFields):
         # LG-15: a citation has a locator, and a date: published, versioned or retrieved.
         if not (value.identifiers or value.pdf):
@@ -2613,7 +2620,7 @@ def _fields(kind: str, raw: Json) -> Json:
                 "a reference gives its publication or version date, or when it was retrieved",
             )
     fields = value.model_dump(mode="json", exclude_defaults=True)
-    if len(_encoded(fields).encode()) > MAX_FIELDS:
+    if len(records.encoded(fields).encode()) > MAX_FIELDS:
         raise DocumentError(INVALID_REQUEST, f"{kind} fields exceed {MAX_FIELDS} bytes")
     return fields
 
@@ -2622,11 +2629,6 @@ def _result(db: sqlite3.Connection, project: str, fields: Json) -> Json:
     """``fields``, once a result's category reads them (LG-19)."""
     frontier.check_result(db, project, fields)
     return fields
-
-
-def _encoded(fields: Json) -> str:
-    """Fields as the table keeps them: UTF-8 as is, no NaN or infinity."""
-    return json.dumps(fields, sort_keys=True, ensure_ascii=False, allow_nan=False)
 
 
 def _check_pdf(db: sqlite3.Connection, project: str, fields: Json) -> Json:
@@ -2639,7 +2641,7 @@ def _check_pdf(db: sqlite3.Connection, project: str, fields: Json) -> Json:
     pdf["sha256"] = evidence.retained(
         db, project, pdf["artifact_id"], pdf["revision"], pdf.get("sha256")
     )
-    if len(_encoded(fields).encode()) > MAX_FIELDS:
+    if len(records.encoded(fields).encode()) > MAX_FIELDS:
         raise DocumentError(INVALID_REQUEST, f"reference fields exceed {MAX_FIELDS} bytes")
     return fields
 
@@ -2683,10 +2685,6 @@ def _status(row: Row, before: str, status: str) -> str:
     return status
 
 
-def _clip(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
 def _given(link: EntryLink) -> Json:
     """A stored link as a change gives it."""
     value: Json = {"kind": link.kind}
@@ -2701,32 +2699,6 @@ def _given(link: EntryLink) -> Json:
     if link.note is not None:
         value["note"] = link.note
     return value
-
-
-def _added(p: Planned, kind: str) -> list[EntryLink]:
-    """The links of ``kind`` the change's new revision holds that the one before did not."""
-    before = {(link.target, link.target_id) for link in p.previous if link.kind == kind}
-    return [
-        link
-        for link in p.links or ()
-        if link.kind == kind and (link.target, link.target_id) not in before
-    ]
-
-
-def _dropped(p: Planned, kind: str) -> list[EntryLink]:
-    """The links of ``kind`` the revision before held that the change's new one does not."""
-    if p.links is None:
-        return []
-    after = {(link.target, link.target_id) for link in p.links if link.kind == kind}
-    return [
-        link
-        for link in p.previous
-        if link.kind == kind and (link.target, link.target_id) not in after
-    ]
-
-
-def provenance_json(anchors: list[Json]) -> str:
-    return json.dumps(anchors, sort_keys=True, ensure_ascii=False)
 
 
 def _unsettles(before: Json, after: Json) -> bool:
@@ -2888,9 +2860,3 @@ def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:
     return DocumentError(
         error.kind, f"line {line}: {error.message}", {**error.details, "line": line}
     )
-
-
-def _first_error(error: ValidationError) -> str:
-    first = error.errors()[0]
-    where = ".".join(str(part) for part in first["loc"]) or "request"
-    return f"{where}: {first['msg']}"

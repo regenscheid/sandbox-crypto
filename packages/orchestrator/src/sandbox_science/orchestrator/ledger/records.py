@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Final
 
+from pydantic import ValidationError
+
 from sandbox_science.orchestrator.control.texts import TextRevisions
+from sandbox_science.orchestrator.documents.errors import (
+    POLICY_DENIED,
+    DocumentError,
+)
 
 from .models import (
     PREFIXES,
@@ -63,3 +70,48 @@ class Planned:
     pins: list[Json] | None = None
     """The statement's pins, when a ``repin`` moved them; otherwise they are made when
     the revision is written (figures spec, FG-7, FG-8)."""
+
+
+def refused(message: str) -> DocumentError:
+    return DocumentError(POLICY_DENIED, f"not_permitted_for_role: {message}")
+
+
+def encoded(fields: Json) -> str:
+    """Fields as the table keeps them: UTF-8 as is, no NaN or infinity."""
+    return json.dumps(fields, sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+
+def clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def links_added(p: Planned, kind: str) -> list[EntryLink]:
+    """The links of ``kind`` the change's new revision holds that the one before did not."""
+    before = {(link.target, link.target_id) for link in p.previous if link.kind == kind}
+    return [
+        link
+        for link in p.links or ()
+        if link.kind == kind and (link.target, link.target_id) not in before
+    ]
+
+
+def links_dropped(p: Planned, kind: str) -> list[EntryLink]:
+    """The links of ``kind`` the revision before held that the change's new one does not."""
+    if p.links is None:
+        return []
+    after = {(link.target, link.target_id) for link in p.links if link.kind == kind}
+    return [
+        link
+        for link in p.previous
+        if link.kind == kind and (link.target, link.target_id) not in after
+    ]
+
+
+def anchors_json(anchors: list[Json]) -> str:
+    return json.dumps(anchors, sort_keys=True, ensure_ascii=False)
+
+
+def validation_error(error: ValidationError) -> str:
+    first = error.errors()[0]
+    where = ".".join(str(part) for part in first["loc"]) or "request"
+    return f"{where}: {first['msg']}"
