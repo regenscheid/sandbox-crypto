@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime
+from typing import Final
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import EventLog
@@ -23,9 +24,10 @@ from sandbox_science.orchestrator.documents.pins import text_references
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import run_id_of
 
-from . import evidence, flags, frontier, preparation, queries, records, standing
+from . import evidence, flags, frontier, gate, preparation, queries, records, standing
 from . import provenance as anchoring
 from .models import (
+    MAX_CLEARED,
     MAX_ENTRY_WORK,
     PREFIXES,
     WORK_HOLDERS,
@@ -625,3 +627,189 @@ def work_id(db: sqlite3.Connection, project: str, reference: str, named: dict[st
     ):
         raise DocumentError(NOT_FOUND, f"no work record {reference} in this project")
     return reference
+
+
+def clear_flags(
+    db: sqlite3.Connection,
+    project: str,
+    mutation: Mutation,
+    author: Author,
+    role: str,
+    now: datetime,
+    *,
+    events: EventLog,
+) -> list[str]:
+    """Clear the open flags the mutation names, by ID or by entry and cause, with its
+    reason (LG-29): the user's or the main agent's to clear, never a delegated
+    agent's. One event records them all."""
+    if not mutation.flags_cleared and not mutation.flags_cleared_on:
+        return []
+    if role == "delegated":
+        raise records.refused("a delegated agent clears no flag")
+    found: dict[str, tuple[str, str, str, str]] = {}
+    for flag in mutation.flags_cleared or ():
+        row = db.execute(
+            "SELECT f.entry_id,f.cleared,f.cause,e.type,e.number,f.source "
+            "FROM ledger_flags f JOIN ledger_entries e USING(entry_id) "
+            "WHERE f.flag_id=? AND f.project=?",
+            (flag, project),
+        ).fetchone()
+        if row is None:
+            raise DocumentError(NOT_FOUND, f"no flag {flag} in this project")
+        if row[1] is not None:
+            raise DocumentError(CONFLICT, f"flag {flag} is cleared already")
+        found[flag] = (
+            row[0],
+            f"{PREFIXES[row[3]]}-{row[4]}",
+            row[2],
+            json.loads(row[5])["handle"],
+        )
+    for scope in mutation.flags_cleared_on or ():
+        entry = queries.find(db, project, scope.entry)
+        rows = db.execute(
+            "SELECT flag_id,cause,source FROM ledger_flags WHERE entry_id=? "
+            "AND cleared IS NULL AND (? IS NULL OR cause=?) ORDER BY raised,rowid LIMIT ?",
+            (entry.entry_id, scope.cause, scope.cause, MAX_CLEARED + 1),
+        ).fetchall()
+        if not rows:
+            raise DocumentError(
+                CONFLICT,
+                f"{entry.handle} has no open flag"
+                + (f" of cause {scope.cause}" if scope.cause else ""),
+            )
+        for flag, cause, source in rows:
+            found[flag] = (entry.entry_id, entry.handle, cause, json.loads(source)["handle"])
+    if len(found) > MAX_CLEARED:
+        raise DocumentError(INVALID_REQUEST, f"a change clears at most {MAX_CLEARED} flags")
+    for flag, (entry, handle, _, _) in found.items() if role == "main" else ():
+        # The owner's rule (2026-10-15): clearing a flag on a settled entry settles it
+        # again, which needs the user or a passing gate.
+        (revision, kind) = db.execute(
+            "SELECT f.revision,e.type FROM ledger_flags f JOIN ledger_entries e "
+            "USING(entry_id) WHERE f.flag_id=?",
+            (flag,),
+        ).fetchone()
+        if not standing.settled(db, entry, revision):
+            continue
+        if kind not in ("claim", "result"):
+            raise records.refused(
+                f"{handle} was settled when the flag was raised or since: only the user "
+                "clears a flag on a settled issue or decision"
+            )
+        if not gate.fresh_check(db, entry, flag):
+            raise records.refused(
+                f"{handle} is settled, and clearing its flag settles it again: that needs "
+                "the user, or a delegation's check of it at its current revision, from a "
+                "brief that named the flag, started since it was last weakened, that "
+                "counts; ask for one, or leave the flag for the user"
+            )
+    for flag in found:
+        db.execute(
+            "UPDATE ledger_flags SET cleared=?,cleared_by=?,reason=?,operation_id=? "
+            "WHERE flag_id=?",
+            (
+                now.isoformat(),
+                author.model_dump_json(exclude_none=True),
+                mutation.reason,
+                mutation.operation_id,
+                flag,
+            ),
+        )
+    announce_flags(
+        db,
+        project,
+        author,
+        "ledger.flags_cleared",
+        mutation,
+        [(flag, *rest) for flag, rest in found.items()],
+        now,
+        events=events,
+    )
+    return list(found)
+
+
+def reopen_flags(
+    db: sqlite3.Connection,
+    project: str,
+    mutation: Mutation,
+    author: Author,
+    role: str,
+    now: datetime,
+    *,
+    events: EventLog,
+) -> list[str]:
+    """Open cleared flags again, as new flags that name them (LG-29; settled question
+    2: the user can reverse what the main agent did). The user's only."""
+    if not mutation.flags_reopened:
+        return []
+    if role != "user":
+        raise records.refused("only the user reopens a flag")
+    opened: list[str] = []
+    reopened: list[tuple[str, str, str, str, str]] = []
+    for old in dict.fromkeys(mutation.flags_reopened):
+        row = db.execute(
+            "SELECT f.entry_id,f.cleared,f.cause,f.source,f.via,f.key,e.head,e.type,"
+            "e.number FROM ledger_flags f JOIN ledger_entries e USING(entry_id) "
+            "WHERE f.flag_id=? AND f.project=?",
+            (old, project),
+        ).fetchone()
+        if row is None:
+            raise DocumentError(NOT_FOUND, f"no flag {old} in this project")
+        entry, cleared, cause, source, via, same, head, kind, number = row
+        if cleared is None:
+            raise DocumentError(CONFLICT, f"flag {old} is open")
+        flag = new_id("flag")
+        inserted = db.execute(
+            "INSERT INTO ledger_flags(flag_id,project,entry_id,revision,cause,source,via,"
+            "reopens,key,raised) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+            (flag, project, entry, head, cause, source, via, old, same, now.isoformat()),
+        ).rowcount
+        if not inserted:
+            raise DocumentError(CONFLICT, f"a flag like {old} is open on its entry again")
+        opened.append(flag)
+        handle = f"{PREFIXES[kind]}-{number}"
+        reopened.append((flag, entry, handle, cause, json.loads(source)["handle"]))
+    announce_flags(
+        db, project, author, "ledger.flags_reopened", mutation, reopened, now, events=events
+    )
+    return opened
+
+
+def announce_flags(
+    db: sqlite3.Connection,
+    project: str,
+    author: Author,
+    kind: str,
+    mutation: Mutation,
+    found: list[tuple[str, str, str, str, str]],
+    now: datetime,
+    *,
+    events: EventLog,
+) -> None:
+    """One event for the flags a change raised, cleared or reopened: as many as
+    ``LISTED_FLAGS`` of them, each its ID, entry, handle, cause and source, with
+    their count, the change's reason and the run (LG-29, LG-33)."""
+    if not found:
+        return
+    listed = [
+        {"flag": flag, "entry": entry, "handle": handle, "cause": cause, "from": source}
+        for flag, entry, handle, cause, source in found[:LISTED_FLAGS]
+    ]
+    events.append(
+        db,
+        kind,
+        project,
+        author.session_id,
+        found[0][1],
+        {
+            "operation_id": mutation.operation_id,
+            "reason": mutation.reason,
+            "run": author.run_id,
+            "total": len(found),
+            "flags": listed,
+        },
+        now,
+    )
+
+
+LISTED_FLAGS: Final = 500
