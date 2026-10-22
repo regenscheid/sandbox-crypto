@@ -129,7 +129,7 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     assert inputs.request["run_id"] == "run-1"
     assert inputs.request["alias"] == "scripted"
     assert inputs.request["max_turns"] == 2000
-    assert inputs.pins == finished.transcript.prompt_provenance
+    assert inputs.pins == finished.transcript.context.prompt_provenance
 
 
 async def test_a_worker_below_the_minimum_isolation_is_refused(tmp_path: Path) -> None:

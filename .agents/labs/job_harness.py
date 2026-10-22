@@ -144,7 +144,7 @@ async def main() -> None:
                     ended_at=datetime.now(UTC),
                     stopped=transcript.stopped,
                     final_text=transcript.final_text,
-                    messages=transcript.messages,
+                    messages=transcript.context.messages,
                     tools=transcript.tool_records,
                     job_notice_ids=transcript.job_notice_ids,
                 )
@@ -186,7 +186,7 @@ async def main() -> None:
                         ended_at=datetime.now(UTC),
                         stopped=transcript.stopped,
                         final_text=transcript.final_text,
-                        messages=transcript.messages,
+                        messages=transcript.context.messages,
                         tools=transcript.tool_records,
                         job_notice_ids=transcript.job_notice_ids,
                     )

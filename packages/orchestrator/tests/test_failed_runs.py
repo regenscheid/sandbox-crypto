@@ -44,7 +44,7 @@ def record(transcript: Transcript, *, context: ExecutionContext = CONTEXT) -> Ru
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=list(transcript.messages),
+        messages=list(transcript.context.messages),
         tools=list(transcript.tool_records),
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     )
@@ -137,7 +137,7 @@ async def test_job_delivery_snapshot_excludes_failing_model_call_and_cleanup_pre
         transcript = await run_task(Model(), toolbox, "Continue", run_id="failed")
     assert transcript.failure == "model"
     assert sorted(transcript.delivered_ids("jobs")) == ["exe-1"]
-    assert "exe-2" in json.dumps(transcript.messages)
+    assert "exe-2" in json.dumps(transcript.context.messages)
     assert HOSTILE not in record(transcript).to_json()
 
 

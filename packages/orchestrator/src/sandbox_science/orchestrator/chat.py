@@ -226,11 +226,11 @@ class ModelBudget(TurnHook):
         if limit is not None:
             # Its own calls are among the project's: their events are written as they
             # return. Unknown costs remain visible but do not fill the local cap.
-            own = sum(usage.cost or 0 for usage in run.usage)
+            own = sum(usage.cost or 0 for usage in run.context.usage)
             if self.share is not None and own > 0 and own >= self.share * limit:
                 return "run_budget"
         # A delegated run stops before a call that would take it past its limit.
-        used = sum(call_tokens(usage) for usage in run.usage)
+        used = sum(call_tokens(usage) for usage in run.context.usage)
         if self.auxiliary_tokens is not None:
             used += await self.auxiliary_tokens()
         if self.tokens is not None and used + estimate(run) >= self.tokens:
@@ -243,18 +243,18 @@ class ModelBudget(TurnHook):
         rather than stopping without a word."""
         if self.tokens is None:
             return None
-        used = sum(call_tokens(usage) for usage in run.usage)
+        used = sum(call_tokens(usage) for usage in run.context.usage)
         if self.auxiliary_tokens is not None:
             used += await self.auxiliary_tokens()
         # The next call sends at least what the last one sent and answered.
-        last = call_tokens(run.usage[-1]) if run.usage else 0
+        last = call_tokens(run.context.usage[-1]) if run.context.usage else 0
         return "run_budget" if used + 2 * max(estimate(run), last) >= self.tokens else None
 
 
 def estimate(run: RunView) -> int:
     """What a run's next call may cost: what it sends, as a quarter of its characters
     with the tool schemas, and an allowance for the answer."""
-    return run.size // 4 + ANSWER_TOKENS
+    return run.context.size // 4 + ANSWER_TOKENS
 
 
 async def _held(chat: RunChat) -> bool:
@@ -396,19 +396,27 @@ class EventLog(TurnHook):
         self.replies = self.calls = 0
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
         if point == "turn":
             await self.chat.write("model", {"turn": run.turns + 1})
         return ()
 
     async def model_returned(self, run: RunView) -> None:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
 
     async def accept(self, run: RunView) -> None:
-        await self._catch_up(run.messages, run.usage, run.tool_records, run.offered, run)
+        await self._catch_up(
+            run.context.messages, run.context.usage, run.tool_records, run.offered, run
+        )
 
     async def acknowledge(self, record: RunRecord) -> None:
         await self._catch_up(record.messages, record.usage, record.tools, {}, None)
@@ -434,7 +442,7 @@ class EventLog(TurnHook):
         chat = self.chat
         if not self.started:
             self.started = True
-            pins = run.prompt_provenance if run is not None else None
+            pins = run.context.prompt_provenance if run is not None else None
             await chat.write(
                 "started",
                 {

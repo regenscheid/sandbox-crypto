@@ -888,7 +888,7 @@ class Delegations(TurnHook):
         self.returned.clear()
         await self._prune()
         self.turns_left = run.turns_left
-        self.foreground_tokens = sum(call_tokens(usage) for usage in run.usage)
+        self.foreground_tokens = sum(call_tokens(usage) for usage in run.context.usage)
         await self._remaining_tokens()
 
     async def _remaining_tokens(self) -> None:

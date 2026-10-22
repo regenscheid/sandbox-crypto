@@ -247,9 +247,9 @@ def record(transcript, **changes) -> RunRecord:
         "stopped": transcript.stopped,
         "failure": transcript.failure,
         "final_text": transcript.final_text,
-        "messages": transcript.messages,
+        "messages": transcript.context.messages,
         "tools": transcript.tool_records,
-        "prompt_provenance": transcript.prompt_provenance,
+        "prompt_provenance": transcript.context.prompt_provenance,
     }
     return RunRecord(**(fields | changes))
 
@@ -277,7 +277,7 @@ async def test_a_run_records_the_sections_and_tools_its_model_was_given(tmp_path
     finally:
         adapter.projects.close()
         documents.close()
-    pins = transcript.prompt_provenance
+    pins = transcript.context.prompt_provenance
     assert isinstance(pins, PromptPins)
     assert [(p.id, p.version) for p in pins.sections] == [("main", MAIN_VERSION)] + (
         [("planning", GUIDANCE_VERSION)] if planning else []

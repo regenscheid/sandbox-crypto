@@ -249,7 +249,7 @@ def test_native_payloads_count_toward_active_view_ceiling(
             messages.append(AssistantMessage("tiny", native=b"n" * (5 * 1024 * 1024)))
         transcript = Transcript(context=AgentContext(messages=messages, memory=memory))
         with pytest.raises(WorkingMemoryLimitError, match="active model payload"):
-            _ = transcript.sent
+            _ = transcript.context.sent
         assert len(messages) == 3
     finally:
         memory.control.close()

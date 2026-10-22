@@ -54,9 +54,9 @@ def kept(transcript: Transcript, context: ExecutionContext = CONTEXT) -> RunReco
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=list(transcript.messages),
+        messages=list(transcript.context.messages),
         tools=list(transcript.tool_records),
-        prompt_provenance=transcript.prompt_provenance,
+        prompt_provenance=transcript.context.prompt_provenance,
     )
 
 
@@ -103,7 +103,7 @@ async def test_actual_inputs_select_exact_framing_without_adding_tools(
         )
         assert transcript.stopped == "answered"
         assert len(calls) == 1
-        pin = transcript.prompt_provenance
+        pin = transcript.context.prompt_provenance
         assert isinstance(pin, PromptPins)
         assert [(section.id, section.version) for section in pin.sections] == [
             ("main", "sandbox-main-13"),
@@ -157,7 +157,7 @@ async def test_document_injection_catalog_change_and_schema_mutation_do_not_rese
         )
         assert len(calls) == 2
         assert len(transcript.tool_records) == 1
-        pins = transcript.prompt_provenance
+        pins = transcript.context.prompt_provenance
         assert isinstance(pins, PromptPins)
         # The selection made at the start holds, though the catalog changed meanwhile.
         assert [section.id for section in pins.sections] == (

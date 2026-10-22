@@ -142,7 +142,7 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
     transcript = await run_task(model, Toolbox(client, CONTEXT), "demonstrate", run_id="run-1")
     assert transcript.stopped == "answered"
     assert transcript.final_text == "x + 1 is 42, and out.csv is published."
-    results = [json.loads(m["content"]) for m in transcript.messages if m["role"] == "tool"]
+    results = [json.loads(m["content"]) for m in transcript.context.messages if m["role"] == "tool"]
     shell, assign, add, write, published, read = results
     assert shell["state"] == "succeeded"
     assert shell["stdout"] == f"hello from {socket.gethostname()}\n"
@@ -178,7 +178,9 @@ async def test_a_delegated_run_works_in_kernels_of_its_own(client: WorkerClient)
         return ScriptedModel.from_json([*turns, {"text": "done"}])
 
     def results(transcript: Any) -> list[dict[str, Any]]:
-        return [json.loads(m["content"]) for m in transcript.messages if m["role"] == "tool"]
+        return [
+            json.loads(m["content"]) for m in transcript.context.messages if m["role"] == "tool"
+        ]
 
     await run_task(cells("x = 'main'"), Toolbox(client, CONTEXT), "go", run_id="main-1")
     child = await run_task(
@@ -274,7 +276,7 @@ async def test_tool_errors_reach_the_model(client: WorkerClient) -> None:
         ScriptedModel.from_json(script), Toolbox(client, CONTEXT), "fail", run_id="run-2"
     )
     confined, raised, unknown = [
-        json.loads(m["content"]) for m in transcript.messages if m["role"] == "tool"
+        json.loads(m["content"]) for m in transcript.context.messages if m["role"] == "tool"
     ]
     assert confined["error"]["kind"] == "invalid_request"
     assert raised["error"]["kind"] == "exception"
@@ -518,7 +520,7 @@ async def test_a_reused_run_id_marks_replayed_results(client: WorkerClient) -> N
         )
         for _ in range(2)
     ]
-    before, after = (json.loads(run.messages[3]["content"]) for run in runs)
+    before, after = (json.loads(run.context.messages[3]["content"]) for run in runs)
     assert "replayed" not in before
     assert after["attempt_id"] == before["attempt_id"]
     assert after["replayed"].startswith("this call was made before")
@@ -531,7 +533,7 @@ async def test_a_reused_run_id_marks_replayed_results(client: WorkerClient) -> N
         "t",
         run_id="run-1",
     )
-    assert json.loads(third.messages[3]["content"])["stdout"] == "other\n"
+    assert json.loads(third.context.messages[3]["content"])["stdout"] == "other\n"
 
 
 async def test_h1_large_results_reach_the_model(client: WorkerClient) -> None:
@@ -545,7 +547,9 @@ async def test_h1_large_results_reach_the_model(client: WorkerClient) -> None:
     toolbox = Toolbox(client, CONTEXT)
     transcript = await run_task(ScriptedModel.from_json(script), toolbox, "large", run_id="run-2")
     assert transcript.stopped == "answered"
-    tools = [message["content"] for message in transcript.messages if message["role"] == "tool"]
+    tools = [
+        message["content"] for message in transcript.context.messages if message["role"] == "tool"
+    ]
     small, large = (json.loads(text) for text in tools)
     assert small["state"] == large["state"] == "succeeded"
     assert large["stdout_total_bytes"] == 5242880
@@ -757,7 +761,7 @@ async def test_m5_one_failing_tool_call_does_not_end_the_task() -> None:
             ScriptedModel.from_json(script), Failing(client, CONTEXT), "task", run_id="run-3"
         )
     assert transcript.final_text == "carried on"
-    assert json.loads(transcript.messages[3]["content"])["error"]["kind"] == "internal"
+    assert json.loads(transcript.context.messages[3]["content"])["error"]["kind"] == "internal"
 
 
 async def test_the_openai_adapter() -> None:

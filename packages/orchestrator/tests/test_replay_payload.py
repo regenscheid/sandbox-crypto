@@ -31,7 +31,7 @@ def test_live_and_rebuilt_context_exclude_echoes_but_archive_keeps_exact_origina
         )
         memory = RunMemory.archived(RunArchive(archive, context, run="run-test", parent=None))
         transcript = Transcript(context=AgentContext(messages=memory.messages([]), memory=memory))
-        assert isinstance(transcript.messages, Collection)
+        assert isinstance(transcript.context.messages, Collection)
         originals = []
         for index in range(40):
             output = [
@@ -56,8 +56,8 @@ def test_live_and_rebuilt_context_exclude_echoes_but_archive_keeps_exact_origina
             )
             row = archive.append("p", "s", "run-test", entry)
             originals.append((row.message_id, native))
-            transcript.messages.append_encoded({"archive_message": row.message_id})
-        sent = transcript.sent
+            transcript.context.messages.append_encoded({"archive_message": row.message_id})
+        sent = transcript.context.sent
         assert len(sent) == 40
         native_bytes = 0
         for message in sent:
@@ -92,7 +92,7 @@ def test_actual_replay_content_still_hits_working_ceiling(tmp_path: Path):
         message = AssistantMessage("result", native=native, native_format="responses")
         run = Transcript(context=AgentContext(messages=[message, message], memory=memory))
         with pytest.raises(WorkingMemoryLimitError, match="active model payload"):
-            _ = run.sent
+            _ = run.context.sent
     finally:
         memory.control.close()
 

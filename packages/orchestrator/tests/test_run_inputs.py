@@ -70,7 +70,7 @@ async def test_starting_inputs_commit_before_model_and_tool_calls_without_final_
     assert calls == ["model", "tool", "model"]
     assert result.stopped == "answered"
     original = inputs.get("p", "s", RUN)
-    assert original.pins == result.prompt_provenance
+    assert original.pins == result.context.prompt_provenance
     assert projects.runs("p", "s") == []
     projects.close()
     reopened = ProjectStore(tmp_path)
