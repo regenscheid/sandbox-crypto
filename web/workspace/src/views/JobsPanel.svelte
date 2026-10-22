@@ -37,8 +37,14 @@
     {#each data.waits as wait (wait.run_id)}
       <div class="waiting" role="status">
         <strong>{wait.connected ? 'Agent waiting' : 'Waiting harness disconnected'}</strong>
-        for {wait.mode === 'all' ? 'all jobs' : 'the first job to end'}:
-        {wait.job_ids.join(', ')} · {jobElapsed((Date.now() - Date.parse(wait.started_at)) / 1000)}
+        for {wait.mode === 'all'
+          ? 'all jobs'
+          : wait.mode === 'first'
+            ? 'the first job to end'
+            : 'jobs'}:
+        {wait.job_ids.join(', ')} · {wait.started_at
+          ? jobElapsed((Date.now() - Date.parse(wait.started_at)) / 1000)
+          : 'start time unavailable'}
         <p class="muted">
           {wait.watcher
             ? `Check-ins by ${wait.watcher}`

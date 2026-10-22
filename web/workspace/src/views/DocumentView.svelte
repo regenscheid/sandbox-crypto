@@ -194,10 +194,10 @@
    * the current revision, whose text is unchanged; the document is read again after it. */
   async function repin(found: DocumentRevision, block: string, path: string, to: number) {
     const body = {
-      action: 'patch',
+      action: 'patch' as const,
       base: found.document.head,
       reason: `Move the pin of ${path} to revision ${to}`,
-      operations: [{ op: 'repin', block, path, revision: to }],
+      operations: [{ op: 'repin' as const, block, path, revision: to }],
     };
     const scope = `${projectId}:${found.document.document_id}:${block}:${path}:${to}`;
     await guardedWrite('document-repin', scope, body, (change) =>
