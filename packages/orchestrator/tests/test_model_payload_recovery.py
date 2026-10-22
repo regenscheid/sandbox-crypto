@@ -160,7 +160,7 @@ async def test_a_dropped_connection_or_unfinished_stream_is_tried_again(how, out
     assert clock.slept == [2, 4]
     assert result.stopped == "answered"
     assert result.final_text == "Done"
-    assert result.usage[0].retried == [outcome, outcome]
+    assert result.context.usage[0].retried == [outcome, outcome]
 
 
 async def test_an_unreachable_gateway_is_tried_ten_times_then_fails():
