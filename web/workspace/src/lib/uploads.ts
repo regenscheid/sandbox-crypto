@@ -2,6 +2,7 @@
 /** Original upload metadata only; file bytes never enter a browser draft store. */
 import { get, post, request } from './http';
 import { DraftStore } from './mutation';
+import { POLL_DEADLINE_MS } from './poller';
 
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 export type { UserUpload, UploadPage } from './api-types';
@@ -10,7 +11,10 @@ const at = (project: string, session: string) =>
   `/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(session)}/uploads`;
 export const uploadsApi = {
   list: (project: string, session: string, after = 0, signal?: AbortSignal) =>
-    get<UploadPage>(`${at(project, session)}?after=${after}`, { signal, deadlineMs: 10000 }),
+    get<UploadPage>(`${at(project, session)}?after=${after}`, {
+      signal,
+      deadlineMs: POLL_DEADLINE_MS,
+    }),
   download: (file: UserUpload) =>
     `/api/v0${at(file.project, file.session)}/${encodeURIComponent(file.upload_id)}/content`,
   document: (file: UserUpload) =>

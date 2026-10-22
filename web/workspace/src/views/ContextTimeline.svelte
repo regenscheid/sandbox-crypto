@@ -10,7 +10,7 @@
   } from '../lib/api-types';
   import { contextUsage } from '../lib/contextUsage';
   import { formatTime } from '../lib/format';
-  import { initialPoll, Poller, type PollState } from '../lib/poller';
+  import { initialPoll, Poller, POLL_DEADLINE_MS, type PollState } from '../lib/poller';
   import { messageHref } from '../lib/router';
   import { visible } from '../lib/text';
 
@@ -101,7 +101,7 @@
         coverage = page.coverage;
         loaded = true;
       },
-      { intervalMs: 5000, deadlineMs: 15000 },
+      { intervalMs: 5000, deadlineMs: POLL_DEADLINE_MS },
     );
     owner = current;
     const stop = current.watch();

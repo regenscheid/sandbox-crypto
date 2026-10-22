@@ -52,7 +52,10 @@ export interface PollOptions<T> {
 }
 
 export const POLL_INTERVAL_MS = 3000;
-export const POLL_DEADLINE_MS = 8000;
+/** How long a read may take before the view says it is unavailable. Long, because an
+ * investigation's computations often keep the host's CPUs busy and slow the workspace
+ * down (owner, 2026-10-21): a slow read is not a failed one. */
+export const POLL_DEADLINE_MS = 30_000;
 const MAX_BACKOFF_MS = 30_000;
 
 /** The statuses that end a poller by default; other failures are 'unavailable'. */

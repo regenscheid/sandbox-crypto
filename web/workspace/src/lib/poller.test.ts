@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from './http';
-import { Poller, type PollOptions, type PollState } from './poller';
+import { Poller, POLL_DEADLINE_MS, type PollOptions, type PollState } from './poller';
 import { signOut } from './session';
 
 interface Data {
@@ -298,4 +298,10 @@ describe('sign-out', () => {
     stopLate();
     vi.unstubAllGlobals();
   });
+});
+
+it('waits long enough for a workspace a busy host slows down', () => {
+  // An investigation's computations often keep the host's CPUs busy; at 8 s, a slow read
+  // showed as "unavailable" (Mac, 2026-10-21).
+  expect(POLL_DEADLINE_MS).toBeGreaterThanOrEqual(30_000);
 });
