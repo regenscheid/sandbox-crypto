@@ -39,10 +39,9 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.normalize import normalize
-from sandbox_science.orchestrator.documents.pins import newer, text_references
 from sandbox_science.orchestrator.documents.pins import pin as pin_references
+from sandbox_science.orchestrator.documents.pins import text_references
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
-from sandbox_science.orchestrator.figurechecks import results as figure_results
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
 from . import evidence, flags, frontier, gate, queries, standing
@@ -67,14 +66,11 @@ from .models import (
     CategoryPage,
     ChangedEntry,
     CitationCheckView,
-    ClearedFlag,
     EntryChange,
     EntryCitations,
     EntryHistory,
     EntryLink,
     EntryPage,
-    EntryRevision,
-    EntrySummary,
     EntryView,
     EvidenceInput,
     EvidenceLink,
@@ -167,44 +163,8 @@ class Ledger:
         if incoming_after < 0:
             raise DocumentError(INVALID_REQUEST, "incoming_after is a count of links")
         with self.control.read() as tx:
-            db = tx.sql
-            row = queries.find(db, project, reference)
-            number = row.head if revision is None else revision
-            found = db.execute(queries.REVISION, (row.entry_id, number)).fetchone()
-            if found is None:
-                raise DocumentError(NOT_FOUND, f"{row.handle} has no revision {number}")
-            text = TEXTS.read(db, row.entry_id, found[3], full=False)
-            assert text is not None  # noqa: S101 - written with its revision
-            incoming, total = (
-                queries.incoming(db, project, row.entry_id, incoming_after)
-                if number == row.head
-                else ([], 0)
-            )
-            held = evidence.stored(db, row.entry_id, number)
-            open_flags = queries.flags(db, row.entry_id)
-            fields = json.loads(found[4])
-            label = (
-                standing.of_entry(db, row.entry_id, row.type, row.origin, found[2], fields, number)
-                if number == row.head
-                else None
-            )
-            return EntryView(
-                **queries.summary(row, found, evidence.asserted_only(row.type, held), label),
-                open_flags=len(open_flags),
-                statement=text["body"],
-                fields=fields,
-                links=queries.links(db, row.entry_id, number),
-                evidence=held,
-                incoming=incoming,
-                incoming_total=total,
-                findings=queries.findings(db, project, row.entry_id),
-                flags=open_flags,
-                head=row.head,
-                author=json.loads(found[5]),
-                reason=found[6],
-                anchors=json.loads(found[9] or "[]"),
-                pins=newer(db, project, json.loads(found[10] or "[]")),
-                figure_checks=figure_results(db, "statement", row.entry_id, number),
+            return queries.entry_view(
+                tx.sql, project, reference, revision, incoming_after=incoming_after
             )
 
     def entries(
@@ -226,41 +186,9 @@ class Ledger:
         if self.control.missing:
             return EntryPage(entries=[], next_after=None)
         with self.control.read() as tx:
-            db = tx.sql
-            start = 0
-            if after is not None:
-                start = db.execute(
-                    "SELECT position FROM ledger_entries WHERE entry_id=?",
-                    (queries.find(db, project, after).entry_id,),
-                ).fetchone()[0]
-            rows = db.execute(
-                "SELECT e.entry_id,e.project,e.type,e.number,e.origin,e.head,"
-                "r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
-                "r.basis,EXISTS(SELECT 1 FROM ledger_evidence v WHERE v.entry_id=e.entry_id "
-                "AND v.revision=e.head),"
-                "(SELECT count(*) FROM ledger_flags f WHERE f.entry_id=e.entry_id "
-                "AND f.cleared IS NULL) "
-                "FROM ledger_entries e JOIN ledger_revisions r ON r.entry_id=e.entry_id "
-                "AND r.revision=e.head WHERE e.project=? AND e.position>? AND (? IS NULL OR "
-                "e.type=?) AND (? IS NULL OR r.status=?) ORDER BY e.position LIMIT ?",
-                (project, start, kind, kind, status, status, limit + 1),
-            ).fetchall()
-            found = [
-                {
-                    **queries.summary(
-                        Row(*r[:6]),
-                        r[6:],
-                        None if r[2] not in ("claim", "result") else not r[15],
-                        standing.of_entry(db, r[0], r[2], r[4], r[8], json.loads(r[10]), r[6]),
-                    ),
-                    "open_flags": r[16],
-                }
-                for r in rows[:limit]
-            ]
-        return EntryPage(
-            entries=[EntrySummary(**s) for s in found],
-            next_after=found[-1]["entry_id"] if len(rows) > limit else None,
-        )
+            return queries.entry_page(
+                tx.sql, project, kind=kind, status=status, after=after, limit=limit
+            )
 
     def mark(self, project: str) -> tuple[int, int]:
         """A mark of ``project``'s ledger that any change moves: its revisions' count and
@@ -284,59 +212,7 @@ class Ledger:
         if not 1 <= limit <= 200:
             raise DocumentError(INVALID_REQUEST, "a page holds 1 to 200 revisions")
         with self.control.read() as tx:
-            db = tx.sql
-            row = queries.find(db, project, reference)
-            rows = db.execute(
-                "SELECT r.revision,r.title,r.status,r.statement,r.author,r.reason,"
-                "r.operation_id,r.created,r.provenance,(SELECT p.statement FROM ledger_revisions p "
-                "WHERE p.entry_id=r.entry_id AND p.revision=r.revision-1),r.basis,r.anchors "
-                "FROM ledger_revisions r WHERE r.entry_id=? AND r.revision<? "
-                "ORDER BY r.revision DESC LIMIT ?",
-                (row.entry_id, before or row.head + 1, limit + 1),
-            ).fetchall()
-            cleared = [
-                ClearedFlag(
-                    flag_id=f[0],
-                    cause=f[1],
-                    source=json.loads(f[2]),
-                    via=f[3],
-                    revision=f[4],
-                    raised=f[5],
-                    cleared=f[6],
-                    cleared_by=json.loads(f[7]),
-                    reason=f[8],
-                    operation_id=f[9],
-                )
-                for f in db.execute(
-                    "SELECT flag_id,cause,source,via,revision,raised,cleared,cleared_by,reason,"
-                    "operation_id FROM ledger_flags WHERE entry_id=? AND cleared IS NOT NULL "
-                    "ORDER BY cleared DESC,rowid DESC LIMIT 50",
-                    (row.entry_id,),
-                )
-            ]
-        revisions = [
-            EntryRevision(
-                revision=r[0],
-                title=r[1],
-                status=r[2],
-                statement_changed=r[9] != r[3],
-                author=json.loads(r[4]),
-                reason=r[5],
-                operation_id=r[6],
-                provenance=None if r[8] is None else json.loads(r[8]),
-                created=r[7],
-                basis=r[10],
-                anchors=json.loads(r[11] or "[]"),
-            )
-            for r in rows[:limit]
-        ]
-        return EntryHistory(
-            entry_id=row.entry_id,
-            handle=row.handle,
-            revisions=revisions,
-            next_before=revisions[-1].revision if len(rows) > limit else None,
-            flags_cleared=[] if before is not None else cleared,
-        )
+            return queries.entry_history(tx.sql, project, reference, before=before, limit=limit)
 
     def citations(
         self, project: str, reference: str, revision: int | None = None
