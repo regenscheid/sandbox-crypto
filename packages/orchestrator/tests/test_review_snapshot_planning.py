@@ -143,7 +143,7 @@ def test_confirmation_pins_exact_bodies_and_does_not_consume_the_author_feed() -
     assert [i.kind for i in plan.items] == ["finding", "fix-actions"]
     assert stored_json(plan.response_pins[0].record) == pin
     with pytest.raises(FrozenInstanceError):
-        plan.complete = False  # type: ignore[misc]
+        plan.complete = False  # pyright: ignore[reportAttributeAccessIssue]
 
 
 @pytest.mark.parametrize("missing", ["target", "finding", "feed", "grant", "coverage"])
@@ -191,4 +191,4 @@ def test_grant_metadata_counts_utf8_bytes_and_cannot_follow_mutable_input() -> N
         "complete": False,
     }
     with pytest.raises(FrozenInstanceError):
-        grant.size = 0  # type: ignore[misc]
+        grant.size = 0  # pyright: ignore[reportAttributeAccessIssue]

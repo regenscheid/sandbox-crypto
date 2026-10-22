@@ -269,7 +269,15 @@ async def test_stateless_runs_keep_the_legacy_unoffered_tool_response(parent: st
         settings=Settings(min_isolation_tier=None),
     )
     finished = await harness.run(
-        RunRequest("p", "s", "Go", environment="env", parent=parent), Captured()
+        RunRequest(
+            "p",
+            "s",
+            "Go",
+            environment="env",
+            parent=parent,
+            delegation="child-run" if parent is not None else None,
+        ),
+        Captured(),
     )
     assert finished.transcript.stopped == "answered"
     assert finished.hooks == ()
