@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import tracemalloc
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from sandbox_science.orchestrator.context.history.evidence import (
     ArchiveEvidence,
     EvidenceMatches,
     EvidenceRequest,
+    RowEvidence,
 )
 from sandbox_science.orchestrator.context.history.operations import CHUNK_BYTES
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -194,8 +196,11 @@ def test_unbounded_numeric_fragment_is_explicitly_unproved_without_losing_other_
 def test_overview_evidence_exceeds_old_payload_ceiling_without_retaining_originals(
     archive: Archive,
 ) -> None:
-    # The original is larger than the old 64 MiB aggregate cap. The bounded candidate
-    # still proves its source value and exact key near the end of that same message.
+    # Each original respects the per-message limit; together they exceed the old
+    # 64 MiB aggregate cap while a fixed candidate proves the last result and key.
+    first = archive.append(
+        "p", "s", "main", Entry("tool", "tool_result", ("x" * 60000 + ";") * 600, source="python")
+    )
     row = archive.append(
         "p",
         "s",
@@ -203,11 +208,11 @@ def test_overview_evidence_exceeds_old_payload_ceiling_without_retaining_origina
         Entry(
             "tool",
             "tool_result",
-            ("x" * 60000 + ";") * 1120 + "result 2^{80}; exact checkpoint",
+            ("x" * 60000 + ";") * 600 + "result 2^{80}; exact checkpoint",
             source="python",
         ),
     )
-    source = ArchiveEvidence(archive, CONTEXT, row.position, row.position)
+    source = ArchiveEvidence(archive, CONTEXT, first.position, row.position)
     tracemalloc.start()
     try:
         found = source.verify(
@@ -237,3 +242,103 @@ def test_overview_evidence_exceeds_old_row_count_without_rebuilding_a_working_vi
     )
     assert found.numbers == {"0", "8199"}
     assert found.keys == {"case 8199": last.message_id}
+
+
+@pytest.mark.parametrize("separator", [",", ", "])
+def test_long_short_numeric_arrays_remain_provable_across_pages(
+    archive: Archive, separator: str
+) -> None:
+    text = "[" + separator.join(["7"] * 70_000) + "]"
+    row = archive.append("p", "s", "main", Entry("assistant", "assistant", text))
+    request = EvidenceRequest(numbers=frozenset({"7", "77", "777"}))
+    for source in (
+        RowEvidence([row]),
+        ArchiveEvidence(archive, CONTEXT, row.position, row.position),
+    ):
+        matches = source.verify(request)
+        assert matches.numbers == {"7"}
+        assert matches.diagnostic() == {}
+
+
+@pytest.mark.parametrize("digits_before_page_end", [0, 1, 2, 3])
+@pytest.mark.parametrize(
+    ("original", "supported", "unsupported"),
+    [
+        ("1,000,003", {"1000003"}, {"1", "000", "003", "1000"}),
+        ("12,3456", {"12", "3456"}, {"123456", "345"}),
+        ("1,234", {"1234"}, {"1", "234"}),
+        ("1,23", {"1", "23"}, {"123", "2"}),
+    ],
+)
+def test_page_split_commas_preserve_thousands_and_reject_numeric_prefixes(
+    archive: Archive,
+    digits_before_page_end: int,
+    original: str,
+    supported: set[str],
+    unsupported: set[str],
+) -> None:
+    # Put the comma and at most its first three following digits in this page.
+    before_comma = original.index(",")
+    prefix = "x" * (CHUNK_BYTES - before_comma - digits_before_page_end - 3) + "; "
+    row = archive.append("p", "s", "main", Entry("assistant", "assistant", prefix + original))
+    request = EvidenceRequest(numbers=frozenset(supported | unsupported))
+    matches = ArchiveEvidence(archive, CONTEXT, row.position, row.position).verify(request)
+    assert matches.numbers == supported
+    assert matches.diagnostic() == {}
+
+
+def test_unicode_decimal_thousands_keep_the_existing_normalization(archive: Archive) -> None:
+    row = archive.append(
+        "p", "s", "main", Entry("assistant", "assistant", "1,₂₃₄; \u0661,\u0662\u0663\u0664; 7,8,9")
+    )
+    request = EvidenceRequest(numbers=frozenset({"1234", "1", "234", "7", "8", "9"}))
+    matches = ArchiveEvidence(archive, CONTEXT, row.position, row.position).verify(request)
+    assert matches.numbers == {"1234", "7", "8", "9"}
+    assert matches.diagnostic() == {}
+
+
+@pytest.mark.parametrize(
+    ("original", "expected"),
+    [("Difference -0.5.", True), ("Difference -0.5.0.", False), ("Difference -0.50.", False)],
+)
+def test_signed_sentence_punctuation_is_not_a_numeric_prefix(
+    archive: Archive, original: str, expected: bool
+) -> None:
+    row = archive.append("p", "s", "main", Entry("assistant", "assistant", original))
+    made, why = check(
+        json.dumps({"narrative": "Difference -.5.", "keys": []}),
+        record(row),
+        ArchiveEvidence(archive, CONTEXT, row.position, row.position),
+        share=4000,
+    )
+    assert why == ""
+    assert made is not None
+    assert (made.narrative == "Difference -.5.") is expected
+
+
+def test_completed_candidate_stops_body_reads_but_missing_facts_scan_the_span(
+    archive: Archive,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = archive.append("p", "s", "main", Entry("assistant", "assistant", "known result 289;"))
+    last = archive.append("p", "s", "main", Entry("assistant", "assistant", "later result 999;"))
+    read = archive.message_field_chunk
+    bodies: list[str] = []
+
+    def observed(project, message, field, **kwargs):
+        bodies.append(message)
+        return read(project, message, field, **kwargs)
+
+    monkeypatch.setattr(archive, "message_field_chunk", observed)
+    source = ArchiveEvidence(archive, CONTEXT, first.position, last.position)
+    request = EvidenceRequest(
+        numbers=frozenset({"289"}), literals=frozenset({first.message_id}), keys=("known result",)
+    )
+    found = source.verify(request)
+    assert found.numbers == {"289"}
+    assert found.keys == {"known result": first.message_id}
+    assert set(bodies) == {first.message_id}
+    bodies.clear()
+    found = source.verify(replace(request, numbers=frozenset({"289", "777"})))
+    assert found.numbers == {"289"}
+    assert set(bodies) == {first.message_id, last.message_id}

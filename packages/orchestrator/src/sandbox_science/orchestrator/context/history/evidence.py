@@ -23,9 +23,10 @@ from .limits import METADATA_BYTES
 from .operations import CHUNK_BYTES
 
 FRAGMENT_CHARS: Final = 65536
-# These separators cannot participate in a normalized number or a platform ID. An
-# ordinary word between whitespace also breaks every supported numeric expression.
-_SEPARATOR: Final = re.compile(r"""[\x00;|:"'=/!?\[\]]|\s+[A-Za-z]{2,}\s+""")
+# Commas need lookahead before they can split numbers: the ledger normalizer
+# removes one before exactly three digits. Other separators and an ordinary word
+# between whitespace cannot participate in a supported numeric expression.
+_SEPARATOR: Final = re.compile(r"""[\x00,;|:"'=/!?\[\]]|\s+[A-Za-z]{2,}\s+""")
 _NUMERIC: Final = re.compile(r"[\d⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺₀₁₂₃₄₅₆₇₈₉]")
 
 
@@ -169,6 +170,25 @@ def _pieces(text: str) -> Iterator[str]:
         yield text[offset : offset + CHUNK_BYTES]
 
 
+def _comma_separator(text: str, after: int, *, final: bool) -> bool:
+    """Split only after ruling out a normalized three-digit thousands group.
+
+    Retain an incomplete group at a page edge. Four digits already rule out the
+    grouping; one to three digits need the next character (or the original EOF).
+    Checking only the following group is conservative when a power or superscript
+    before the comma normalizes to a decimal digit.
+    """
+    count = 0
+    while after + count < len(text):
+        char = text[after + count]
+        if not (char.isdecimal() or char in "₀₁₂₃₄₅₆₇₈₉"):
+            return count != 3
+        count += 1
+        if count == 4:
+            return True
+    return final and count != 3
+
+
 class _Numbers:
     def __init__(self, wanted: frozenset[str], found: EvidenceMatches) -> None:
         self.wanted, self.found = wanted, found
@@ -189,6 +209,8 @@ class _Numbers:
         text = self.tail + text
         start = 0
         for match in _SEPARATOR.finditer(text):
+            if match[0] == "," and not _comma_separator(text, match.end(), final=final):
+                continue
             self._complete(text[start : match.start()])
             start = match.end()
         self.tail = text[start:]
@@ -237,21 +259,38 @@ class _Text:
         self.tail = text[-self.keep :]
 
 
+def _proved(request: EvidenceRequest, matches: EvidenceMatches) -> bool:
+    return (
+        request.numbers <= matches.numbers
+        and request.literals <= matches.literals
+        and request.patterns <= matches.patterns
+        and all(key in matches.keys for key in request.keys)
+    )
+
+
 def _verify(
     messages: Iterable[tuple[str, Iterator[str]]],
     request: EvidenceRequest,
     found: EvidenceMatches | None = None,
 ) -> EvidenceMatches:
     result = found if found is not None else EvidenceMatches()
+    if _proved(request, result):
+        return result
     for identifier, pieces in messages:
         literal = _Text(request, result, identifier)
         # IDs are part of the old validation span, but never source search keys.
         literal.feed(identifier + "\n", keys=False)
+        if _proved(request, result):
+            return result
         literal.tail = ""
         numeric = _Numbers(request.numbers, result)
         for text in pieces:
             literal.feed(text)
             numeric.feed(text)
+            if _proved(request, result):
+                return result
         literal.feed("", final=True)
         numeric.feed("", final=True)
+        if _proved(request, result):
+            return result
     return result

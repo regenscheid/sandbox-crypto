@@ -101,6 +101,7 @@ async def test_full_retained_record_does_not_dispatch_or_claim_usage(
     original: tuple[list[Archived], FoldRecord],
 ) -> None:
     rows, record = original
+    record = replace(record, keys=())
 
     class NeverCalled:
         async def complete(
@@ -120,5 +121,6 @@ async def test_full_retained_record_does_not_dispatch_or_claim_usage(
     assert result.failed is not None
     assert result.attempts[0]["outcome"] == "no_narrative_room"
     assert progress.inflight_input_tokens is None
-    assert record.keys
-    assert record.markers
+    assert result.record.skeleton == record.skeleton
+    assert result.record.first == record.first
+    assert result.record.markers == record.markers

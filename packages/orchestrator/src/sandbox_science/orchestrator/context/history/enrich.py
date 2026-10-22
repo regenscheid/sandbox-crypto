@@ -390,7 +390,7 @@ def _negative(value: str) -> str:
     digits = re.escape(value[1:])
     if value[1:].startswith("0."):
         digits = "0?" + digits[1:]
-    return rf"(?<![\w.])[-\u2212]\s?{digits}(?![\w.])"
+    return rf"(?<![\w.])[-\u2212]\s?{digits}(?!\w|\.\d)"
 
 
 def _handle(value: str) -> str:
