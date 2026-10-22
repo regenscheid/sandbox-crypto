@@ -32,11 +32,10 @@ from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
     INVALID_REQUEST,
     NOT_FOUND,
-    POLICY_DENIED,
     DocumentError,
 )
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
+from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from . import (
     commit,
@@ -50,13 +49,10 @@ from . import (
     rules,
     standing,
 )
-from . import provenance as anchoring
 from .models import (
     MAX_CLEARED,
-    MAX_ENTRY_WORK,
     PREFIXES,
     SHOWN_FLAGGED,
-    WORK_HOLDERS,
     Category,
     CategoryDefinition,
     CategoryPage,
@@ -73,10 +69,8 @@ from .models import (
     Mutation,
     MutationResult,
     WorkPage,
-    WorkReference,
 )
 from .preparation import fingerprint as fingerprint
-from .records import Planned, Row
 
 Json = dict[str, Any]
 
@@ -613,10 +607,20 @@ class Ledger:
                 )
             )
         rules.check_cycles(db, project, planned)
-        work, rejected = self._record_work(
-            db, project, mutation, author, keys, pinned, provenance, now.isoformat()
+        work, rejected = commit.record_work(
+            db,
+            project,
+            mutation,
+            author,
+            keys,
+            pinned,
+            provenance,
+            now.isoformat(),
+            events=self.events,
         )
-        work += self._reopened(db, project, planned, mutation, author, provenance, now)
+        work += commit.record_reopened(
+            db, project, planned, mutation, author, provenance, now, events=self.events
+        )
         raised = flags.raise_flags(
             db, project, [commit.flag_change(p) for p in planned], now.isoformat()
         )
@@ -679,316 +683,6 @@ class Ledger:
             result.model_dump(mode="json"),
         )
         return result
-
-    def _record_work(
-        self,
-        db: sqlite3.Connection,
-        project: str,
-        mutation: Mutation,
-        author: Author,
-        keys: dict[str, Row],
-        pinned: dict[evidence.Block, str],
-        provenance: Json | None,
-        now: str,
-    ) -> tuple[list[str], list[flags.Raised]]:
-        """Append the change's work records (LG-6), after its entries are written, so
-        that one may be on an entry the change creates: each on an issue, a claim or a
-        result, at the revision the change leaves it, with its references pinned. Any
-        role that changes the ledger records work (LG-13); a record changes no status."""
-        recorded: list[str] = []
-        rejections: list[flags.Raised] = []
-        named: dict[str, str] = {}
-        for number, item in enumerate(mutation.work or (), 1):
-            where = f"work {number}"
-            row = self._work_entry(db, project, item.entry, keys)
-            if row.type not in WORK_HOLDERS:
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"{where} is on {row.handle}: work is recorded on an issue, a claim or a "
-                    "result",
-                )
-            (held,) = db.execute(
-                "SELECT count(*) FROM ledger_work WHERE entry_id=?", (row.entry_id,)
-            ).fetchone()
-            if held >= MAX_ENTRY_WORK:
-                raise DocumentError(
-                    POLICY_DENIED,
-                    f"{row.handle} holds {MAX_ENTRY_WORK} work records, the most an entry "
-                    "holds: record further work on the entries it produced, or a new issue",
-                )
-            produced = [
-                self._produced(db, project, e, keys, row, item.references)
-                for e in item.produced or ()
-            ]
-            part_of = None if item.part_of is None else _work_id(db, project, item.part_of, named)
-            detail: Json = {}
-            if item.limit is not None:
-                detail["limit"] = item.limit
-            if produced:
-                detail["produced"] = [p.entry_id for p in produced]
-            assessed = None
-            if item.assesses is not None:
-                assessed = _work_id(db, project, item.assesses, named)
-                (on,) = db.execute(
-                    "SELECT entry_id FROM ledger_work WHERE record_id=?", (assessed,)
-                ).fetchone()
-                if on != row.entry_id:
-                    raise DocumentError(
-                        INVALID_REQUEST,
-                        f"{where} assesses work on another entry: record the assessment on "
-                        "the entry the work it assesses is on",
-                    )
-            cited = [self._cited(db, project, ref, named, pinned) for ref in item.references]
-            basis, anchors = preparation.resolve_sources(
-                db, project, item.basis, item.anchors or [], author, pinned, provenance
-            )
-            if author.kind != "user" and not preparation.platform_provenance(provenance):
-                rests = [c for c in cited if "work" not in c]
-                if not anchors and not rests:
-                    raise anchoring.refused(
-                        f"{where} names no anchor: a message by its ID, a tool result by its "
-                        "call, an artifact, a document block or an entry revision, or a "
-                        "reference to a delegation, an artifact or a document"
-                    )
-                observed = [*anchors, *(c for c in cited if "artifact" in c)]
-                anchoring.check(db, project, basis, observed, [], [item.tried], where)
-            record = new_id("work")
-            if item.key is not None:
-                if item.key in named:
-                    raise DocumentError(INVALID_REQUEST, f"two work records are keyed {item.key}")
-                named[item.key] = record
-            (head,) = db.execute(
-                "SELECT head FROM ledger_entries WHERE entry_id=?", (row.entry_id,)
-            ).fetchone()
-            db.execute(
-                "INSERT INTO ledger_work(record_id,position,project,entry_id,entry_revision,"
-                "tried,ending,detail,refs,part_of,assesses,verdict,author,reason,"
-                "operation_id,provenance,created,basis,anchors) VALUES(?,"
-                "(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
-                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    record,
-                    project,
-                    row.entry_id,
-                    head,
-                    preparation.normalized(item.tried),
-                    item.ending,
-                    json.dumps(detail, sort_keys=True, ensure_ascii=False),
-                    json.dumps(cited, sort_keys=True, ensure_ascii=False),
-                    part_of,
-                    assessed,
-                    item.verdict,
-                    author.model_dump_json(exclude_none=True),
-                    mutation.reason,
-                    mutation.operation_id,
-                    None if provenance is None else json.dumps(provenance, sort_keys=True),
-                    now,
-                    basis,
-                    records.anchors_json(anchors),
-                ),
-            )
-            self.events.append(
-                db,
-                "ledger.work_recorded",
-                project,
-                author.session_id,
-                row.entry_id,
-                {
-                    "record": record,
-                    "entry": row.entry_id,
-                    "handle": row.handle,
-                    "ending": item.ending,
-                    "operation_id": mutation.operation_id,
-                },
-                datetime.fromisoformat(now),
-            )
-            recorded.append(record)
-            if (
-                assessed is not None
-                and item.verdict != "accepted"
-                and author.kind == "user"
-                and queries.rests_on(db, row.entry_id, assessed)
-            ):
-                # The user no longer accepts the claim an obstruction rests on (LG-7).
-                found = flags.raise_one(
-                    db,
-                    project,
-                    row.entry_id,
-                    "evidence_changed",
-                    {
-                        "entry": row.entry_id,
-                        "handle": row.handle,
-                        "work": record,
-                        "verdict": item.verdict,
-                    },
-                    now,
-                )
-                if found is not None:
-                    rejections.append(found)
-        return recorded, rejections
-
-    def _reopened(
-        self,
-        db: sqlite3.Connection,
-        project: str,
-        planned: list[Planned],
-        mutation: Mutation,
-        author: Author,
-        provenance: Json | None,
-        now: datetime,
-    ) -> list[str]:
-        """A work record on each obstructed issue an agent's change reopens (the owner,
-        2026-10-15): reopening weakens a settled state and needs no decision, and is kept
-        with the change's reason, citing the decision that had made the issue obstructed."""
-        made: list[str] = []
-        for p in planned:
-            if (
-                author.kind == "user"
-                or p.status_before != "obstructed"
-                or p.status == p.status_before
-            ):
-                continue
-            decider = standing.decider(db, p.row.entry_id, "obstructed")
-            cited = "" if decider is None else f", which {decider.handle} had made obstructed"
-            record = new_id("work")
-            db.execute(
-                "INSERT INTO ledger_work(record_id,position,project,entry_id,entry_revision,"
-                "tried,ending,detail,refs,author,reason,operation_id,provenance,created,"
-                "basis,anchors) VALUES(?,(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
-                "?,?,?,?,'reopened',?,'[]',?,?,?,?,?,'interpreted',?)",
-                (
-                    record,
-                    project,
-                    p.row.entry_id,
-                    p.row.head,
-                    preparation.normalized(f"Reopened {p.row.handle}{cited}: {mutation.reason}"),
-                    json.dumps({} if decider is None else {"decision": decider.entry_id}),
-                    author.model_dump_json(exclude_none=True),
-                    mutation.reason,
-                    mutation.operation_id,
-                    None if provenance is None else json.dumps(provenance, sort_keys=True),
-                    now.isoformat(),
-                    records.anchors_json(
-                        []
-                        if decider is None
-                        else [{"entry": decider.entry_id, "revision": decider.revision}]
-                    ),
-                ),
-            )
-            self.events.append(
-                db,
-                "ledger.work_recorded",
-                project,
-                author.session_id,
-                p.row.entry_id,
-                {
-                    "record": record,
-                    "entry": p.row.entry_id,
-                    "handle": p.row.handle,
-                    "ending": "reopened",
-                    "operation_id": mutation.operation_id,
-                },
-                now,
-            )
-            made.append(record)
-        return made
-
-    def _produced(
-        self,
-        db: sqlite3.Connection,
-        project: str,
-        reference: str,
-        keys: dict[str, Row],
-        on: Row,
-        cited: list[WorkReference],
-    ) -> Row:
-        """An entry a work record says it produced (LG-6): one the same change creates,
-        or one the delegation the record cites created (its child run wrote the entry's
-        first revision); never the entry the record is on."""
-        found = self._work_entry(db, project, reference, keys)
-        if found.entry_id == on.entry_id:
-            raise DocumentError(
-                INVALID_REQUEST, f"a work record on {on.handle} names it as produced"
-            )
-        if reference.startswith("new:"):
-            return found
-        # A delegation names its child by the run's record name, its start time and its
-        # ID; an entry's author names the run by its ID.
-        runs = {
-            found
-            for ref in cited
-            if ref.delegation is not None
-            for (run,) in db.execute(
-                "SELECT run FROM delegations WHERE delegation_id=? AND project_id=?",
-                (ref.delegation, project),
-            )
-            for found in (run, run_id_of(run))
-            if found is not None
-        }
-        first = db.execute(
-            "SELECT json_extract(author,'$.run_id') FROM ledger_revisions "
-            "WHERE entry_id=? AND revision=1",
-            (found.entry_id,),
-        ).fetchone()
-        if first is None or first[0] not in runs:
-            raise DocumentError(
-                INVALID_REQUEST,
-                f"{found.handle} is named as produced: a work record names the entries its "
-                "change creates (new:<key>), or those the delegation it cites created",
-            )
-        return found
-
-    def _work_entry(
-        self, db: sqlite3.Connection, project: str, reference: str, keys: dict[str, Row]
-    ) -> Row:
-        """The entry a work record names: one the change creates, by ``new:<key>``, or
-        one of the project's."""
-        if reference.startswith("new:"):
-            found = keys.get(reference.removeprefix("new:"))
-            if found is None:
-                raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {reference}")
-            return found
-        return queries.find(db, project, reference)
-
-    @staticmethod
-    def _cited(
-        db: sqlite3.Connection,
-        project: str,
-        ref: WorkReference,
-        named: dict[str, str],
-        pinned: dict[evidence.Block, str],
-    ) -> Json:
-        """A work record's reference, pinned: a delegation of the project that has
-        ended, an artifact revision whose bytes the platform keeps, with its SHA-256, a
-        document block at its revision, by the document's ID, or a work record."""
-        cited: Json = {}
-        if ref.delegation is not None:
-            found = db.execute(
-                "SELECT ended FROM delegations WHERE delegation_id=? AND project_id=?",
-                (ref.delegation, project),
-            ).fetchone()
-            if found is None:
-                raise DocumentError(NOT_FOUND, f"no delegation {ref.delegation} in this project")
-            if found[0] is None:
-                raise DocumentError(
-                    CONFLICT, f"delegation {ref.delegation} has not ended: cite its outcome after"
-                )
-            cited["delegation"] = ref.delegation
-        elif ref.artifact is not None:
-            assert ref.revision is not None  # noqa: S101 - the model requires it
-            digest = evidence.retained(db, project, ref.artifact, ref.revision, ref.sha256)
-            cited.update(artifact=ref.artifact, revision=ref.revision, sha256=digest)
-        elif ref.document is not None:
-            assert ref.revision is not None  # noqa: S101 - the model requires it
-            assert ref.block is not None  # noqa: S101 - the model requires it
-            document = pinned[(ref.document, ref.revision, ref.block, None)]
-            cited.update(document=document, revision=ref.revision, block=ref.block)
-        else:
-            assert ref.work is not None  # noqa: S101 - one target is named
-            cited["work"] = _work_id(db, project, ref.work, named)
-        if ref.note is not None:
-            cited["note"] = ref.note
-        return cited
 
     def work(
         self, project: str, reference: str, *, before: int | None = None, limit: int = 50
@@ -1281,23 +975,3 @@ def _given(link: EntryLink) -> Json:
     if link.note is not None:
         value["note"] = link.note
     return value
-
-
-def _work_id(db: sqlite3.Connection, project: str, reference: str, named: dict[str, str]) -> str:
-    """The work record ``reference`` names: one the change records before it, by
-    ``new:<key>``, or one of the project's, by its ID."""
-    if reference.startswith("new:"):
-        found = named.get(reference.removeprefix("new:"))
-        if found is None:
-            raise DocumentError(
-                INVALID_REQUEST, f"no work record the change records before it is keyed {reference}"
-            )
-        return found
-    if (
-        db.execute(
-            "SELECT 1 FROM ledger_work WHERE record_id=? AND project=?", (reference, project)
-        ).fetchone()
-        is None
-    ):
-        raise DocumentError(NOT_FOUND, f"no work record {reference} in this project")
-    return reference
