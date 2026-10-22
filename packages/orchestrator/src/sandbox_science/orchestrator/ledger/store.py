@@ -22,13 +22,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Final, NoReturn, cast
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import EventLog, Receipts
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.documents.agent_text import agent_text, agent_values
-from sandbox_science.orchestrator.documents.blocks import parse
+from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.comment_bodies import prepare, sha
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
@@ -38,17 +37,15 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.pins import pin as pin_references
 from sandbox_science.orchestrator.documents.pins import text_references
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
-from . import evidence, flags, frontier, gate, queries, records, standing
+from . import evidence, flags, frontier, gate, preparation, queries, records, standing
 from . import provenance as anchoring
 from .models import (
     DECIDED,
-    FIELDS,
     LINKS,
     MAX_CLEARED,
     MAX_ENTRY_WORK,
@@ -56,8 +53,6 @@ from .models import (
     PREFIXES,
     SET_ASIDE,
     SHOWN_FLAGGED,
-    STATUSES,
-    THIS_SESSION,
     WORK_HOLDERS,
     AnchorInput,
     Category,
@@ -70,7 +65,6 @@ from .models import (
     EntryLink,
     EntryPage,
     EntryView,
-    EvidenceInput,
     EvidenceLink,
     FrontierHistory,
     FrontierPast,
@@ -79,12 +73,11 @@ from .models import (
     LinkInput,
     Mutation,
     MutationResult,
-    ReferenceFields,
-    WorkInput,
     WorkPage,
     WorkReference,
     wrong_link_target,
 )
+from .preparation import fingerprint as fingerprint
 from .records import TEXTS, Planned, Row
 
 Json = dict[str, Any]
@@ -99,7 +92,6 @@ _PROJECT: Final = "project"
 project, whoever retries it, so a shared results file imported from two sessions
 records its lines once (LG-31, LG-36, LG-41)."""
 
-MAX_FIELDS: Final = 65536
 """An entry's fields, as UTF-8 JSON, are at most this many bytes."""
 
 """The links entries' current revisions hold."""
@@ -108,12 +100,6 @@ MAX_FIELDS: Final = 65536
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _first_status(kind: str, origin: str | None) -> str:
-    if kind in ("claim", "result"):
-        return "recorded" if origin == "published" else "proposed"
-    return STATUSES[kind][0]
 
 
 LISTED_FLAGS: Final = 500
@@ -606,11 +592,13 @@ class Ledger:
             kept: list[tuple[Mutation, Json | None]] = []
             for mutation, provenance in mutations:
                 try:
-                    kept.append((_agent_text(mutation), provenance))
+                    kept.append((preparation.agent_mutation(mutation), provenance))
                 except DocumentError as error:
-                    raise _labelled(error, provenance) from None
+                    raise preparation.labelled(error, provenance) from None
             mutations = kept
-        mutations = [(_this_session(m, author), provenance) for m, provenance in mutations]
+        mutations = [
+            (preparation.this_session(m, author), provenance) for m, provenance in mutations
+        ]
         pinned: dict[evidence.Block, str] = {}
         for mutation, provenance in mutations:
             blocks: list[evidence.Block] = []
@@ -634,7 +622,7 @@ class Ledger:
             try:
                 pinned.update(self._blocks(project, blocks))
             except DocumentError as error:
-                raise _labelled(error, provenance) from None
+                raise preparation.labelled(error, provenance) from None
         with self.control.write() as tx:
             results: list[MutationResult] = []
             for mutation, provenance in mutations:
@@ -643,7 +631,7 @@ class Ledger:
                         self._apply(tx.sql, project, mutation, author, role, pinned, provenance)
                     )
                 except DocumentError as error:
-                    raise _labelled(error, provenance) from None
+                    raise preparation.labelled(error, provenance) from None
             if within is not None:
                 within(tx.sql, results)
             return results
@@ -658,7 +646,7 @@ class Ledger:
         pinned: dict[evidence.Block, str],
         provenance: Json | None,
     ) -> MutationResult:
-        digest = fingerprint(mutation)
+        digest = preparation.fingerprint(mutation)
         replay = RECEIPTS.find(db, project, _PROJECT, mutation.operation_id, digest)
         if replay is not None:
             return MutationResult.model_validate({**replay, "replayed": True})
@@ -841,7 +829,7 @@ class Ledger:
             basis, anchors = self._sources(
                 db, project, item.basis, item.anchors or [], author, pinned, provenance
             )
-            if author.kind != "user" and not _platforms(provenance):
+            if author.kind != "user" and not preparation.platform_provenance(provenance):
                 rests = [c for c in cited if "work" not in c]
                 if not anchors and not rests:
                     raise anchoring.refused(
@@ -870,7 +858,7 @@ class Ledger:
                     project,
                     row.entry_id,
                     head,
-                    _normalized(item.tried),
+                    preparation.normalized(item.tried),
                     item.ending,
                     json.dumps(detail, sort_keys=True, ensure_ascii=False),
                     json.dumps(cited, sort_keys=True, ensure_ascii=False),
@@ -960,7 +948,7 @@ class Ledger:
                     project,
                     p.row.entry_id,
                     p.row.head,
-                    _normalized(f"Reopened {p.row.handle}{cited}: {mutation.reason}"),
+                    preparation.normalized(f"Reopened {p.row.handle}{cited}: {mutation.reason}"),
                     json.dumps({} if decider is None else {"decision": decider.entry_id}),
                     author.model_dump_json(exclude_none=True),
                     mutation.reason,
@@ -1146,7 +1134,7 @@ class Ledger:
         if change.title is not None and change.title != current[1]:
             planned.title, planned.changed = change.title, [*planned.changed, "title"]
         if change.statement is not None:
-            text = _normalized(change.statement)
+            text = preparation.normalized(change.statement)
             saved = TEXTS.read(db, row.entry_id, current[3], full=False)
             if saved is None or text != saved["body"]:
                 planned.statement, planned.changed = text, [*planned.changed, "statement"]
@@ -1160,13 +1148,13 @@ class Ledger:
                 # A decision rejected or reversed states its reopen condition and keeps its
                 # other fields, such as an obstruction's excluded scope (CM-10).
                 given = {**planned.fields, **given}
-            fields = _fields(row.type, given)
-            _check_pdf(db, project, fields)
+            fields = preparation.validated_fields(row.type, given)
+            preparation.check_pdf(db, project, fields)
             frontier.check_result(db, project, fields)
             if fields != planned.fields:
                 planned.fields, planned.changed = fields, [*planned.changed, "fields"]
         if change.status is not None and change.status != current[2]:
-            planned.status = _status(row, current[2], change.status)
+            planned.status = preparation.revision_status(row, current[2], change.status)
             planned.changed = [*planned.changed, "status"]
         if change.links is not None:
             planned.previous = queries.links(db, row.entry_id, row.head)
@@ -1208,7 +1196,7 @@ class Ledger:
             raise DocumentError(
                 INVALID_REQUEST, "claims and results, and only they, have an origin"
             )
-        status = _first_status(kind, change.origin)
+        status = preparation.first_status(kind, change.origin)
         if kind == "decision" and change.status in ("in_effect", "rejected"):
             # LG-17: the user or the main agent records a decision in effect at once, and
             # an approach abandoned as a rejected one, with its reopen condition (CM-10).
@@ -1232,10 +1220,14 @@ class Ledger:
             row,
             True,
             title=change.title,
-            statement=_normalized(change.statement),
+            statement=preparation.normalized(change.statement),
             status=status,
-            fields=_result(
-                db, project, _check_pdf(db, project, _fields(kind, change.fields or {}))
+            fields=preparation.result_fields(
+                db,
+                project,
+                preparation.check_pdf(
+                    db, project, preparation.validated_fields(kind, change.fields or {})
+                ),
             ),
             links=[] if change.links is None else None,
         )
@@ -2278,7 +2270,9 @@ class Ledger:
         def block(name: str, revision: int, block: str) -> str:
             return pinned[(name, revision, block, None)]
 
-        kept = anchoring.resolve(db, project, anchors, block, find, _scope(db, project, author))
+        kept = anchoring.resolve(
+            db, project, anchors, block, find, preparation.anchor_scope(db, project, author)
+        )
         if author.kind == "user" and provenance_ is not None and "proposal" in provenance_:
             # A fold's proposal the user accepts keeps its basis: its words are the model's.
             return basis or "interpreted", kept
@@ -2320,7 +2314,7 @@ class Ledger:
         p.basis, p.anchors = self._sources(
             db, project, p.change.basis, p.change.anchors or [], author, pinned, provenance_
         )
-        if author.kind == "user" or _platforms(provenance_):
+        if author.kind == "user" or preparation.platform_provenance(provenance_):
             return
         held = self._final_evidence(db, p)
         needs = (
@@ -2597,94 +2591,6 @@ class Ledger:
         return found
 
 
-def _normalized(text: str) -> str:
-    """The statement in the dollar form (LD-42)."""
-    return normalize(parse(text, documents=False)).text
-
-
-def _fields(kind: str, raw: Json) -> Json:
-    model: type[BaseModel] = FIELDS[kind]
-    try:
-        value = model.model_validate(raw)
-    except ValidationError as error:
-        raise DocumentError(
-            INVALID_REQUEST, f"{kind} fields: {records.validation_error(error)}"
-        ) from None
-    if isinstance(value, ReferenceFields):
-        # LG-15: a citation has a locator, and a date: published, versioned or retrieved.
-        if not (value.identifiers or value.pdf):
-            raise DocumentError(INVALID_REQUEST, "a reference names a locator or its PDF")
-        if not (value.published or value.version or value.retrieved):
-            raise DocumentError(
-                INVALID_REQUEST,
-                "a reference gives its publication or version date, or when it was retrieved",
-            )
-    fields = value.model_dump(mode="json", exclude_defaults=True)
-    if len(records.encoded(fields).encode()) > MAX_FIELDS:
-        raise DocumentError(INVALID_REQUEST, f"{kind} fields exceed {MAX_FIELDS} bytes")
-    return fields
-
-
-def _result(db: sqlite3.Connection, project: str, fields: Json) -> Json:
-    """``fields``, once a result's category reads them (LG-19)."""
-    frontier.check_result(db, project, fields)
-    return fields
-
-
-def _check_pdf(db: sqlite3.Connection, project: str, fields: Json) -> Json:
-    """A reference's PDF is a revision of an artifact of the project (LG-15, RA-19),
-    pinned by its SHA-256: a hash the change gives must be the revision's, and the
-    revision's is recorded when it gives none."""
-    pdf = fields.get("pdf")
-    if pdf is None:
-        return fields
-    pdf["sha256"] = evidence.retained(
-        db, project, pdf["artifact_id"], pdf["revision"], pdf.get("sha256")
-    )
-    if len(records.encoded(fields).encode()) > MAX_FIELDS:
-        raise DocumentError(INVALID_REQUEST, f"reference fields exceed {MAX_FIELDS} bytes")
-    return fields
-
-
-def fingerprint(mutation: Mutation) -> str:
-    """What a receipt compares a retry with: the mutation as JSON without the fields it
-    leaves unset, so that a field a later version adds does not change it."""
-    canonical = json.dumps(
-        mutation.model_dump(mode="json", exclude_none=True),
-        sort_keys=True,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
-
-
-def _status(row: Row, before: str, status: str) -> str:
-    """``status`` for ``row``, which is ``before``, if its type allows the change; that a
-    decision makes it is checked once the whole change is planned (LG-4)."""
-    if status not in STATUSES[row.type]:
-        raise DocumentError(INVALID_REQUEST, f"a {row.type} is never {status}")
-    if row.type == "decision":
-        # LG-30: a decision in effect is reversed by another decision, which states its
-        # own changes; nothing returns to a status by itself.
-        if before in ("rejected", "reversed"):
-            raise DocumentError(
-                INVALID_REQUEST, f"a {before} decision stays {before}: make a new decision"
-            )
-        if before == "in_effect" and status != "reversed":
-            raise DocumentError(
-                INVALID_REQUEST, "a decision in effect is reversed by another decision"
-            )
-        if before == "proposed" and status == "reversed":
-            raise DocumentError(INVALID_REQUEST, "a proposed decision is rejected, not reversed")
-    if status == "established" and row.origin != "project":
-        raise DocumentError(INVALID_REQUEST, "only a project claim or result is established")
-    if status == "recorded" and row.origin != "published":
-        raise DocumentError(INVALID_REQUEST, "only a published entry is recorded")
-    if status == "proposed" and row.origin == "published":
-        raise DocumentError(INVALID_REQUEST, "a published entry is recorded, not proposed")
-    return status
-
-
 def _given(link: EntryLink) -> Json:
     """A stored link as a change gives it."""
     value: Json = {"kind": link.kind}
@@ -2708,78 +2614,6 @@ def _unsettles(before: Json, after: Json) -> bool:
     return kept[0] != kept[1] or not set(before.get("caveats", ())) <= set(after.get("caveats", ()))
 
 
-def _this_session(mutation: Mutation, author: Author) -> Mutation:
-    """``mutation``, a decision's session ``this`` naming the author's own (CM-10): an agent
-    knows the session it runs in by no ID."""
-    changes: list[EntryChange] = []
-    for change in mutation.changes:
-        if change.fields is None or change.fields.get("session") != THIS_SESSION:
-            changes.append(change)
-            continue
-        if author.session_id is None:
-            raise DocumentError(INVALID_REQUEST, "this session names an agent's own session")
-        fields = {**change.fields, "session": author.session_id}
-        changes.append(change.model_copy(update={"fields": fields}))
-    return mutation.model_copy(update={"changes": changes})
-
-
-def _agent_text(mutation: Mutation) -> Mutation:
-    """An agent's ledger text as it is kept: its line ends line feeds, and no character the
-    user may not see, as it is or as a character reference (``check_agent_text``, threat
-    model A3): the user reads and decides on entries, and agents read them again. Checked
-    when written, so stored text still reads; the user's own text is kept as written."""
-    changes: list[EntryChange] = []
-    for number, change in enumerate(mutation.changes, 1):
-        where = f"change {number}'s"
-        update: dict[str, object] = {}
-        if change.title is not None:
-            update["title"] = agent_text(change.title, f"{where} title")
-        if change.statement is not None:
-            update["statement"] = agent_text(change.statement, f"{where} statement")
-        if change.fields is not None:
-            update["fields"] = agent_values(change.fields, f"{where} fields")
-            _ascii_conditions(change.fields, where)
-        if change.links is not None:
-            update["links"] = [
-                link
-                if link.note is None
-                else link.model_copy(
-                    update={"note": agent_text(link.note, f"{where} link {index}'s note")}
-                )
-                for index, link in enumerate(change.links, 1)
-            ]
-        if change.evidence is not None:
-            update["evidence"] = [
-                _agent_evidence(item, f"{where} evidence {index}'s")
-                for index, item in enumerate(change.evidence, 1)
-            ]
-        changes.append(change.model_copy(update=update))
-    reason = agent_text(mutation.reason, "the reason")
-    work = None
-    if mutation.work is not None:
-        work = [_agent_work(item, f"work {n}'s") for n, item in enumerate(mutation.work, 1)]
-    return mutation.model_copy(update={"reason": reason, "changes": changes, "work": work})
-
-
-def _scope(db: sqlite3.Connection, project: str, author: Author) -> anchoring.Scope:
-    """Where ``author``'s anchors on the archive may point (CM-37, PD-13): an agent's,
-    its own session; a delegated agent's, its own run and the messages its brief names."""
-    if author.kind != "agent" or author.session_id is None:
-        return anchoring.Scope()
-    if author.role != "delegated":
-        return anchoring.Scope(session=author.session_id, run=author.run_id)
-    inputs: frozenset[str] = frozenset()
-    for run, brief in db.execute(
-        "SELECT run,brief FROM delegations WHERE project_id=? AND session_id=?",
-        (project, author.session_id),
-    ):
-        if author.run_id is not None and run_id_of(run) == author.run_id:
-            inputs = anchoring.briefed(brief)
-    return anchoring.Scope(
-        session=author.session_id, run=author.run_id, delegated=True, inputs=inputs
-    )
-
-
 def _work_id(db: sqlite3.Connection, project: str, reference: str, named: dict[str, str]) -> str:
     """The work record ``reference`` names: one the change records before it, by
     ``new:<key>``, or one of the project's, by its ID."""
@@ -2798,65 +2632,3 @@ def _work_id(db: sqlite3.Connection, project: str, reference: str, named: dict[s
     ):
         raise DocumentError(NOT_FOUND, f"no work record {reference} in this project")
     return reference
-
-
-def _agent_work(item: WorkInput, where: str) -> WorkInput:
-    """An agent's work record, its text and its references' notes checked."""
-    return item.model_copy(
-        update={
-            "tried": agent_text(item.tried, f"{where} tried"),
-            "references": [
-                ref
-                if ref.note is None
-                else ref.model_copy(
-                    update={"note": agent_text(ref.note, f"{where} reference {index}'s note")}
-                )
-                for index, ref in enumerate(item.references, 1)
-            ],
-        }
-    )
-
-
-def _ascii_conditions(fields: Json, where: str) -> None:
-    """An agent writes a result's condition values in printable ASCII (the frontier
-    review's M4): a letter of another script that looks Latin, a Unicode dash or slash, or
-    other digits would put the result under conditions of its own. The user's are free."""
-    conditions = fields.get("conditions")
-    if not isinstance(conditions, dict):
-        return
-    for key, value in cast(Json, conditions).items():
-        if isinstance(value, str) and not all(" " <= c <= "~" for c in value):
-            raise DocumentError(
-                INVALID_REQUEST,
-                f"{where} fields.conditions.{key} holds a character outside printable ASCII: "
-                "an agent writes condition values in printable ASCII, so that results compare "
-                "under one spelling",
-            )
-
-
-def _agent_evidence(item: EvidenceInput, where: str) -> EvidenceInput:
-    """An agent's evidence item, its scope and the text it quotes checked."""
-    update: dict[str, object] = {}
-    if item.scope is not None:
-        update["scope"] = agent_text(item.scope, f"{where} scope")
-    if item.quote is not None:
-        text = agent_text(item.quote.text, f"{where} quote")
-        update["quote"] = item.quote.model_copy(update={"text": text})
-    return item.model_copy(update=update) if update else item
-
-
-def _platforms(provenance: Json | None) -> bool:
-    """Whether a mutation is a record the platform makes for an agent, anchored by it: an
-    import's line or a delegation's outcome. A fold proposal's accepted is checked as the
-    acceptor's own (CM-15)."""
-    return provenance is not None and ("file" in provenance or "delegation" in provenance)
-
-
-def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:
-    """``error``, naming the results file's line its mutation came from."""
-    line = (provenance or {}).get("line")
-    if line is None:
-        return error
-    return DocumentError(
-        error.kind, f"line {line}: {error.message}", {**error.details, "line": line}
-    )
