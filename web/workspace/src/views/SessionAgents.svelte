@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- The session's agents from its run tree: those working now, then those that finished,
      each in words (what it was asked, how it ended) rather than its record. "View activity"
-     shows a run's events; the full run tree has every field. -->
+     shows a run's events, "Context management" what its model was given; the full run tree
+     has every field. -->
 <script lang="ts">
   import { untrack } from 'svelte';
   import { browserState } from '../lib/browserState';
@@ -11,6 +12,7 @@
   import { treeHref } from '../lib/router';
   import { visible } from '../lib/text';
   import AgentActivity from './AgentActivity.svelte';
+  import SavedContext from './SavedContext.svelte';
   let {
     projectId,
     sessionId,
@@ -78,6 +80,14 @@
           selected = selected === run.name ? null : run.name;
         }}>{selected === run.name ? 'Hide activity' : 'View activity'}</button
       >
+      <!-- What the agent's model was given, and how its context was folded. -->
+      <SavedContext
+        project={projectId}
+        session={sessionId}
+        run={run.name}
+        compact
+        scope={run.role === 'main' ? 'agent' : 'attempt'}
+      />
     </div>
   </article>
 {/snippet}

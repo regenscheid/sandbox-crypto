@@ -21,6 +21,7 @@
   import { formatTime } from '../lib/format';
   import SessionDocuments from './SessionDocuments.svelte';
   import SessionAgents from './SessionAgents.svelte';
+  import SessionContext from './SessionContext.svelte';
   import PaneResizer from './PaneResizer.svelte';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { projectHref } from '../lib/router';
@@ -42,7 +43,7 @@
     /** A review to choose in the review panel, as a link names it. */
     reviewId?: string | null;
   } = $props();
-  type Panel = 'plan' | 'agents' | 'reviews' | 'compute' | 'documents' | 'activity';
+  type Panel = 'plan' | 'agents' | 'context' | 'reviews' | 'compute' | 'documents' | 'activity';
   let panel = $state<Panel | null>(
     untrack(() => (reviewId ? 'reviews' : window.innerWidth > 1120 ? 'plan' : null)),
   );
@@ -125,6 +126,7 @@
       label: 'Agents',
       badge: tree?.runs.filter((run) => run.state === 'running').length ?? 0,
     },
+    { id: 'context', label: 'Context', badge: 0 },
     { id: 'reviews', label: 'Reviews', badge: checks },
     { id: 'compute', label: 'Compute', badge: 0 },
     { id: 'documents', label: 'Documents', badge: 0 },
@@ -233,6 +235,9 @@
           </div>{/if}
         {#if visited.includes('agents')}<div hidden={panel !== 'agents'}>
             <SessionAgents {projectId} {sessionId} {tree} />
+          </div>{/if}
+        {#if visited.includes('context')}<div hidden={panel !== 'context'}>
+            <SessionContext {projectId} {sessionId} {tree} />
           </div>{/if}
         {#if visited.includes('reviews')}<div hidden={panel !== 'reviews'}>
             <SessionReviews {projectId} {sessionId} {reviewId} {tree} />

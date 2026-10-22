@@ -22,21 +22,27 @@
     close,
     project,
     session,
+    initialTab = 'timeline',
+    initialScope = 'attempt',
   }: {
     run: RunRecord | null;
     runName: string;
     close: () => void;
     project?: string;
     session?: string;
+    /** The section it opens on. */
+    initialTab?: 'timeline' | 'folds' | 'context' | 'history';
+    /** This attempt alone, or the agent across its continuations, as the main agent's is. */
+    initialScope?: 'attempt' | 'agent';
   } = $props();
   const projectId = $derived(run?.context.project_id ?? project ?? '');
   const sessionId = $derived(run?.context.session_id ?? session ?? '');
-  let tab = $state<'timeline' | 'folds' | 'context' | 'history'>('timeline');
+  let tab = $state<'timeline' | 'folds' | 'context' | 'history'>(untrack(() => initialTab));
   let query = $state('');
   let role = $state('');
   let kind = $state('');
   let includeDerived = $state(false);
-  let scope = $state<'attempt' | 'agent'>('attempt');
+  let scope = $state<'attempt' | 'agent'>(untrack(() => initialScope));
   let scanning = $state(false);
   let searchGeneration = 0;
   let requestController: AbortController | null = null;
@@ -72,7 +78,11 @@
     includeDerived: boolean;
     scope: 'attempt' | 'agent';
   };
-  let applied = $state<Filters>({ contains: '', includeDerived: false, scope: 'attempt' });
+  let applied = $state<Filters>({
+    contains: '',
+    includeDerived: false,
+    scope: untrack(() => initialScope),
+  });
 
   async function loadUsage() {
     if (usageLoading || usageRows.length >= totalCalls) return;
@@ -408,7 +418,7 @@
             No fold summary is saved for this attempt. Recorded fold events appear on the timeline.
           </p>{/if}
       {:else if tab === 'context'}
-        <ContextComposition project={projectId} session={sessionId} run={runName} />
+        <ContextComposition project={projectId} session={sessionId} run={runName} {initialScope} />
       {:else}
         <h3>Original retained messages</h3>
         <ContextAttempts project={projectId} session={sessionId} run={runName} {close} />
