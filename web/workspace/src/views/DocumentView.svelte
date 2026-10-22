@@ -66,9 +66,15 @@
     };
   }
   let refresh = $state(0);
+  // What to read, through `$derived`, so only another document or revision reads again:
+  // `documentId={chosen.document_id}` re-reads the polled list's object, and the page
+  // showed "Loading…" at each poll.
+  const project = $derived(projectId);
+  const documentName = $derived(documentId);
+  const wanted = $derived(revision);
   const loading = $derived.by(() => {
     refresh;
-    return api.document(projectId, documentId, revision);
+    return api.document(project, documentName, wanted);
   });
   let mismatches: Mismatch[] = $state([]);
   let inspector = $state<'comments' | 'edit'>('comments');
@@ -101,7 +107,7 @@
   const suggestions = $derived.by(() => {
     refresh;
     return api
-      .history(projectId, documentId)
+      .history(project, documentName)
       .then((history) => history.patches.filter((patch) => patch.state === 'suggested'))
       .catch(() => []);
   });

@@ -87,8 +87,12 @@
     composing = true;
     void tick().then(() => commentField?.focus());
   });
+  // Read once a revision: the list's read reads `found`, which the document view gives
+  // anew when it reads the same revision again.
+  const shownRevision = $derived(found.revision.number);
   $effect(() => {
-    void list.reload();
+    void shownRevision;
+    void untrack(() => list.reload());
     api
       .project(projectId)
       .then((project) => {

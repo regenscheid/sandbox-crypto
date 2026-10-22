@@ -9,6 +9,9 @@
     loading = $state(false);
   let loadedFor = $state<string | null>(null);
   setContext('project-macros', () => macros);
+  // Through `$derived`, so only another project reads again: `projectId` comes from the
+  // route, which each change of the address replaces.
+  const project = $derived(projectId);
   let refresh = $state(0);
   $effect(() => {
     const changed = () => {
@@ -19,30 +22,32 @@
   });
   $effect(() => {
     void refresh;
-    const project = projectId;
+    const reading = project;
     error = false;
-    if (project === null) {
+    if (reading === null) {
       macros = NO_MACROS;
       loadedFor = null;
       loading = false;
       return;
     }
-    const first = untrack(() => loadedFor) !== project;
+    const first = untrack(() => loadedFor) !== reading;
     if (first) macros = NO_MACROS;
     let current = true;
     if (first) loading = true;
     api
-      .projectMacros(project)
+      .projectMacros(reading)
       .then((found) => {
         if (current) {
-          macros = macroSet(found.macros, `${project}:${found.revision}:${found.sha256}`);
-          loadedFor = project;
+          const next = macroSet(found.macros, `${reading}:${found.revision}:${found.sha256}`);
+          // The same definitions keep their set, so no text renders again for nothing.
+          if (next.key !== untrack(() => macros).key) macros = next;
+          loadedFor = reading;
         }
       })
       .catch(() => {
         if (current) {
           error = true;
-          loadedFor = project;
+          loadedFor = reading;
         }
       })
       .finally(() => {

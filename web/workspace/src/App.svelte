@@ -31,6 +31,12 @@
 
   let hash = $state(window.location.hash);
   const route = $derived(parseRoute(hash));
+  // The route's project and session as plain values, for views' props: a prop such as
+  // `projectId={routeProject}` re-reads `route`, which each change of the address
+  // replaces, and restarted every view's reads in the same project (choosing a ledger
+  // entry emptied the ledger list). '' where the route has none.
+  const routeProject = $derived('project' in route ? route.project : '');
+  const routeSession = $derived('session' in route ? route.session : '');
   let loggedOut = $state(false);
   let navigationOpen = $state(window.innerWidth > 760);
   let narrow = $state(window.innerWidth <= 760);
@@ -136,7 +142,7 @@
         route.view === 'artifacts'}
       tabindex="-1"
     >
-      <ProjectMath projectId={'project' in route ? route.project : null}>
+      <ProjectMath projectId={routeProject || null}>
         {#if loggedOut}
           <p>
             Logged out. To log in again, open the login URL that sandbox-science-workspace printed.
@@ -145,44 +151,44 @@
           <ProjectList />
         {:else if route.view === 'project'}
           {#key route.project}
-            <ProjectView projectId={route.project} />
+            <ProjectView projectId={routeProject} />
           {/key}
         {:else if route.view === 'session'}
           {#key `${route.project}/${route.session}`}
-            <SessionView projectId={route.project} sessionId={route.session} />
+            <SessionView projectId={routeProject} sessionId={routeSession} />
           {/key}
         {:else if route.view === 'files'}
           {#key `${route.project}/${route.session}/${route.run}`}
-            <RunFilesView projectId={route.project} sessionId={route.session} run={route.run} />
+            <RunFilesView projectId={routeProject} sessionId={routeSession} run={route.run} />
           {/key}
         {:else if route.view === 'tree'}
           {#key `${route.project}/${route.session}`}
-            <RunTreeView projectId={route.project} sessionId={route.session} />
+            <RunTreeView projectId={routeProject} sessionId={routeSession} />
           {/key}
         {:else if route.view === 'run'}
           {#key `${route.project}/${route.session}/${route.run}`}
-            <RunEventsView projectId={route.project} sessionId={route.session} run={route.run} />
+            <RunEventsView projectId={routeProject} sessionId={routeSession} run={route.run} />
           {/key}
         {:else if route.view === 'review'}
           {#key `${route.project}/${route.session}/${route.review}`}
             <SessionView
-              projectId={route.project}
-              sessionId={route.session}
+              projectId={routeProject}
+              sessionId={routeSession}
               reviewId={route.review}
             />
           {/key}
         {:else if route.view === 'finding'}
           {#key `${route.project}/${route.session}/${route.finding}`}
             <FindingView
-              projectId={route.project}
-              sessionId={route.session}
+              projectId={routeProject}
+              sessionId={routeSession}
               findingId={route.finding}
             />
           {/key}
         {:else if route.view === 'document'}
           {#key `${route.project}/${route.document}/${route.revision}`}
             <DocumentView
-              projectId={route.project}
+              projectId={routeProject}
               documentId={route.document}
               revision={route.revision}
               block={route.block}
@@ -190,56 +196,56 @@
           {/key}
         {:else if route.view === 'memory'}
           {#key route.project}
-            <MemoryPage projectId={route.project} />
+            <MemoryPage projectId={routeProject} />
           {/key}
         {:else if route.view === 'skills'}
           {#key route.project}
-            <SkillsPage projectId={route.project} />
+            <SkillsPage projectId={routeProject} />
           {/key}
         {:else if route.view === 'mcp'}
           {#key route.project}
-            <McpServices projectId={route.project} />
+            <McpServices projectId={routeProject} />
           {/key}
         {:else if route.view === 'documents'}
           {#key route.project}
-            <DocumentsPage projectId={route.project} />
+            <DocumentsPage projectId={routeProject} />
           {/key}
         {:else if route.view === 'artifacts'}
           {#key route.project}
-            <ArtifactsPage projectId={route.project} />
+            <ArtifactsPage projectId={routeProject} />
           {/key}
         {:else if route.view === 'settings'}
           {#key route.project}
-            <SettingsPage projectId={route.project} />
+            <SettingsPage projectId={routeProject} />
           {/key}
         {:else if route.view === 'message'}
           {#key `${route.project}/${route.message}`}
-            <MessageView projectId={route.project} messageId={route.message} />
+            <MessageView projectId={routeProject} messageId={route.message} />
           {/key}
         {:else if route.view === 'ledger' || route.view === 'entry'}
           {#key route.project}
             <LedgerBoard
-              projectId={route.project}
+              projectId={routeProject}
               entryName={route.view === 'entry' ? route.entry : null}
               revision={route.view === 'entry' ? route.revision : null}
             />
           {/key}
         {:else if route.view === 'issues'}
           {#key route.project}
-            <IssueList projectId={route.project} />
+            <IssueList projectId={routeProject} />
           {/key}
         {:else if route.view === 'categories'}
           {#key route.project}
-            <FrontierList projectId={route.project} />
+            <FrontierList projectId={routeProject} />
           {/key}
         {:else if route.view === 'frontier'}
           {#key `${route.project}/${route.category}`}
-            <FrontierView projectId={route.project} category={route.category} />
+            <FrontierView projectId={routeProject} category={route.category} />
           {/key}
         {:else if route.view === 'pdf'}
           {#key `${route.project}/${route.artifact}/${route.revision}/${route.sha256}/${route.page}`}
             <PdfView
-              projectId={route.project}
+              projectId={routeProject}
               artifactId={route.artifact}
               revision={route.revision}
               sha256={route.sha256}
@@ -248,7 +254,7 @@
           {/key}
         {:else if route.view === 'history'}
           {#key `${route.project}/${route.document}`}
-            <HistoryView projectId={route.project} documentId={route.document} />
+            <HistoryView projectId={routeProject} documentId={route.document} />
           {/key}
         {:else}
           <p>There is nothing at this address. <a href="#/">See the projects.</a></p>

@@ -42,6 +42,9 @@
   );
   const plan = $derived(data?.plan);
   const counts = $derived(plan ? planCounts(plan) : null);
+  // Through `$derived`, so only a closing restarts the reads: `closed` comes from the
+  // session's detail, which each poll replaces, and the plan showed "Loading" again.
+  const ended = $derived(closed);
   onMount(() => {
     mounted = true;
   });
@@ -62,7 +65,7 @@
       (value) => {
         viewState = value;
       },
-      { once: closed, done: (found) => found.session_closed_at !== null },
+      { once: ended, done: (found) => found.session_closed_at !== null },
     );
     return poller.watch();
   });

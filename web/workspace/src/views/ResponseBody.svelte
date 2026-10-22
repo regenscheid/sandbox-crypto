@@ -16,8 +16,10 @@
   let viewed = $state<ResponseBody | null>(null),
     error = $state<unknown>(null);
   const preview = new Preview();
+  // Through `$derived`, so only another body drops the preview, not an equal one re-read.
+  const sha256 = $derived(source.sha256);
   $effect(() => {
-    source.sha256;
+    sha256;
     projectId;
     sessionId;
     preview.invalidate();

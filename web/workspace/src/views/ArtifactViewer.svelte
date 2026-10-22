@@ -5,6 +5,7 @@
      laid out, read from its kept bytes up to a limit. The file's text is the agents' and is
      never rendered as HTML outside the Markdown component. -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api } from '../lib/api';
   import type { ArtifactEntry } from '../lib/api-types';
   import { emptyList, PagedList } from '../lib/pagedList';
@@ -44,9 +45,12 @@
     const page = await api.artifactRevisions(projectId, entry.artifact_id, before);
     return { items: page.revisions, next: page.next_before };
   });
+  // Through `$derived`, so only another artifact restarts its history, not an equal entry.
+  const artifactId = $derived(entry.artifact_id);
   $effect(() => {
-    void entry.artifact_id;
-    void history.restart();
+    void artifactId;
+    // Its first read reads `entry` itself: only `artifactId` says when to read again.
+    void untrack(() => history.restart());
   });
   const download = $derived(
     `/api/v0/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(entry.artifact_id)}/revisions/${entry.revision}/content?sha256=${encodeURIComponent(entry.sha256)}`,
