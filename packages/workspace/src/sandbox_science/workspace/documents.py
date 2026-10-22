@@ -9,72 +9,33 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from typing import Annotated, Final, Literal, cast
+from typing import Final, Literal, cast
 
 from aiohttp import hdrs, web
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import ValidationError
 
-from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, Mapped
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.models import NAME, USER
-from sandbox_science.orchestrator.documents.operations import Operation, unlay
+from sandbox_science.orchestrator.documents.operations import unlay
 from sandbox_science.orchestrator.documents.project_macros import view as macro_view
 from sandbox_science.orchestrator.figurechecks import shown as figure_checks
 
 from . import errors
 from .context import json_body
+from .domain_contracts import (
+    DOCUMENT_CHANGE,
+    BlockEdit,
+    Decline,
+    Promote,
+    Revert,
+    SourceEdit,
+)
 from .requests import document_answer, document_store, execute
 
 _DOCUMENT_ID: Final = re.compile(r"doc-[0-9a-f]{24}")
 _REVISION: Final = re.compile(r"[1-9][0-9]{0,8}")
 Json = dict[str, object]
-
-
-class _Change(Contract):
-    base: int = Field(ge=1, le=999999999, strict=True)
-    operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-    reason: str = Field(min_length=1, max_length=1000)
-
-
-class SourceEdit(_Change):
-    action: Literal["source"]
-    text: str
-
-
-class BlockEdit(_Change):
-    action: Literal["patch"]
-    operations: tuple[Operation, ...] = Field(min_length=1, max_length=64)
-
-
-class Revert(_Change):
-    action: Literal["revert"]
-    target: int = Field(ge=1, le=999999999, strict=True)
-
-
-class Promote(_Change):
-    action: Literal["promote"]
-    name: str = Field(min_length=1, max_length=67)
-
-
-class ApplyPatch(_Change):
-    action: Literal["apply_patch"]
-    patch_id: str = Field(pattern=r"^patch-[0-9a-f]{24}$")
-
-
-class Decline(Contract):
-    """The user declines an agent's suggestion (LD-20): the document is not changed."""
-
-    action: Literal["decline"]
-    patch_id: str = Field(pattern=r"^patch-[0-9a-f]{24}$")
-
-
-_CHANGE: Final = TypeAdapter(
-    Annotated[
-        SourceEdit | BlockEdit | Revert | Promote | ApplyPatch | Decline,
-        Field(discriminator="action"),
-    ]
-)
 
 
 def add_routes(app: web.Application) -> None:
@@ -149,7 +110,7 @@ async def change(request: web.Request) -> web.Response:
     # JSON escaping can expand the one-MiB source bound; other routes keep 64 KiB.
     raw = await json_body(request, "document change", limit=8 * 1024 * 1024)
     try:
-        value = _CHANGE.validate_python(raw)
+        value = DOCUMENT_CHANGE.validate_python(raw)
     except ValidationError:
         return errors.to_response(DocumentError("invalid_request", "invalid document change"))
     project, reference = request.match_info["project"], request.match_info["document"]

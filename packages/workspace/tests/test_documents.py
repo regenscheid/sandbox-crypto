@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
+from pydantic import TypeAdapter
 
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.consistency.store import ReviewStore
@@ -22,6 +23,16 @@ from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, 
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.domain_contracts import (
+    CommentChange,
+    CommentListing,
+    CommentThread,
+    DocumentChange,
+    DocumentHistory,
+    DocumentListing,
+    DocumentRevision,
+    PatchPreview,
+)
 
 from .test_pdf_viewer import publish
 
@@ -93,7 +104,23 @@ async def get(client: TestClient[Any, Any], path: str, status: int = 200) -> Any
     response = await client.get(path)
     assert response.status == status, await response.text()
     assert response.headers["Cache-Control"] == "no-store"
-    return await response.json()
+    payload = await response.json()
+    if status == 200:
+        schema = (
+            DocumentHistory
+            if "/history" in path
+            else PatchPreview
+            if "/patches/" in path
+            else CommentThread
+            if "/comments/" in path
+            else CommentListing
+            if "/comments" in path
+            else DocumentRevision
+            if "/documents/" in path
+            else DocumentListing
+        )
+        TypeAdapter(schema).validate_python(payload)
+    return payload
 
 
 async def test_a_projects_documents(
@@ -117,6 +144,21 @@ async def test_a_revision_with_its_block_map_and_formulas(
     assert found["document"]["title"] == "FF"
     assert (found["title"], found["macros"]) == ("Fermat", {"\\F": "\\mathbb{F}"})
     assert found["matched"] is True
+    assert set(found) == {
+        "document",
+        "revision",
+        "text",
+        "title",
+        "macros",
+        "macro_context",
+        "matched",
+        "blocks",
+        "removed",
+        "removed_math",
+        "pins",
+        "figure_checks",
+    }
+    assert found["document"]["created_by"]["model"] is None
     revision = found["revision"]
     assert (revision["number"], revision["reason"]) == (2, "primes")
     assert revision["author"]["kind"] == "agent"
@@ -156,6 +198,9 @@ async def test_who_changed_what(client: TestClient[Any, Any], documents: dict[st
         (2, "changed"),
     ]
     assert [patch["state"] for patch in found["patches"]] == ["applied"]
+    assert found["revisions"][0]["author"] == {"kind": "user", "user": "user"}
+    assert found["patches"][0]["session_id"] == "a"
+    assert "decided_at" not in found["patches"][0]
 
 
 async def test_a_workbook_document_by_its_id(
@@ -307,7 +352,10 @@ async def post_change(
         headers={"Origin": str(client.make_url("/")).rstrip("/")},
     )
     assert response.status == status, await response.text()
-    return await response.json()
+    payload = await response.json()
+    if status == 200:
+        TypeAdapter(DocumentChange).validate_python(payload)
+    return payload
 
 
 async def test_user_edit_attribution_base_conflict_and_retained_patch(
@@ -460,6 +508,12 @@ async def test_comments_write_user_attribution_anchor_and_scope(
     )
     assert response.status == 200, await response.text()
     result = await response.json()
+    TypeAdapter(CommentChange).validate_python(result)
+    assert set(result) == {"thread_id", "entry_id", "revision", "request_id", "outcome"}
+    replay = await client.post(
+        path, json=payload, headers={"Origin": str(client.make_url("/")).rstrip("/")}
+    )
+    assert await replay.json() == {**result, "replayed": True}
     page = await get(client, path)
     thread = page["threads"][0]
     assert thread["opener"]["kind"] == "user"
