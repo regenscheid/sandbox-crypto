@@ -11,8 +11,8 @@
   before read-only authority checks; investigate the ledger category assertion and
   intermittent SIGTERM stopped-event failure, plus the unresolved serving subprocess
   timeout observed during follow-up checks. Do not weaken the production WAL guard.
-- [ ] Later review candidates: worker lifecycle/executor splitting and generated
-  contracts for API domains beyond documents, comments and jobs.
+- [ ] Later review candidates: generated contracts for API domains beyond
+  documents, comments and jobs.
 
 - [x] Remove Transcript's context forwarding facade and decouple the shared fold engine through `FoldPoint` and `FoldLifecycle`; preserve local/confined hook order and research-state holds.
 - [x] Implement and independently review recent-context retention, bounded overview evidence validation and upfront enrichment budgeting; the 743-test integration selection passes on this branch. Publication is separate from merging and runtime qualification.
@@ -31,6 +31,17 @@
   862 workspace tests and 2,289 frontend tests pass. See the
   [report](docs/agent-reports/parallel-refactor-2026-10-21.md). Worker lifecycle remains
   a separate pass; publication does not imply merging or deployment.
+
+### Remaining priority refactors authorized 2026-10-21
+
+- [ ] Executor lifecycle and admission: one process/kernel owner, explicit launch
+  coordination, complete the clock seam and preserve the stdlib-only payload.
+- [ ] Ledger ownership: separate queries, mutation preparation, rules and persistence
+  while the public facade retains one transaction and atomic replay receipts.
+- [ ] Provisioning lifecycle: centralize operation ownership and notification, separate
+  permission and reconciliation stages, preserve queue release versus final observation.
+- [ ] Characterize public behavior first, independently review concurrency/storage
+  boundaries, then integrate and validate all three on `agent-context-refactor`.
 
 Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev`; implementation, runtime qualification and deployment are distinct.
 
