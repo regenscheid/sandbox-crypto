@@ -130,6 +130,49 @@ describe('visible polling', () => {
   });
 });
 
+describe('poke', () => {
+  it('reads at once when idle, and right after a read in flight, not at the interval', async () => {
+    vi.useFakeTimers();
+    const pending = deferred<Data>();
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ n: 1 })
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue({ n: 3 });
+    const { poller } = poll(read, { intervalMs: 5000 });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
+    poller.poke(); // the second read is in flight: it may have missed the write
+    expect(read).toHaveBeenCalledTimes(2);
+    pending.resolve({ n: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(read).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(4);
+  });
+
+  it('does nothing while hidden or stopped', async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockResolvedValue({ n: 1 });
+    const { poller } = poll(read);
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).not.toHaveBeenCalled();
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0);
+    poller.stop();
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('options', () => {
   it('endOn: retries statuses the poller does not end on, but a 401 always ends it', async () => {
     vi.useFakeTimers();

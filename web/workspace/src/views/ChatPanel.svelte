@@ -93,9 +93,18 @@
   });
   let view = $state<PollState<ChatView>>(initialPoll());
   let feed: ChatFeed | null = null;
+  let feedPoller: Poller<ChatView> | null = null;
+  /** The message being sent, shown at once until the chat reads it back (`id`). */
+  let outgoing = $state<{ text: string; id: string | null } | null>(null);
   const sending = $state(idle());
   const asking = $state(idle());
   const chat = $derived(view.data);
+  const echo = $derived(
+    outgoing !== null &&
+      !(outgoing.id !== null && chat?.messages.some((item) => item.message_id === outgoing?.id))
+      ? outgoing.text
+      : null,
+  );
   // Messages not yet in a run's transcript: queued, held or refused.
   const waiting = $derived(chat ? pendingMessages(chat.messages, chat.runs) : []);
   const held = $derived(waiting.some((message) => message.state === 'held'));
@@ -174,13 +183,13 @@
       runs: (signal) => api.session(project, session, signal).then((detail) => detail.runs),
     });
     feed = reading;
-    const poller = new Poller(
+    const poller = (feedPoller = new Poller(
       (signal) => reading.read(signal),
       (value) => {
         view = value;
       },
       { intervalMs: 1500 },
-    );
+    ));
     return poller.watch();
   });
   $effect(() => {
@@ -203,13 +212,18 @@
     // The question the box said the message answers: a different one now refuses it, and
     // the draft stays for the user to read the chat again.
     const answers = next?.question_id ?? null;
+    outgoing = { text, id: null };
     const sent = await submit(sending, async () => {
-      await sendMessage(projectId, sessionId, text, undefined, answers, files);
+      const answer = await sendMessage(projectId, sessionId, text, undefined, answers, files);
+      // An answer to a question shows with the question, not as a message.
+      outgoing = answer.message ? { text, id: answer.message.message_id } : null;
     });
     failed = sent ? null : { text, attachments: files };
+    if (!sent) outgoing = null;
     if (sent) {
-      // Writing again also queues held messages: read them again.
+      // Writing again also queues held messages: read them again, now.
       feed?.recheck();
+      feedPoller?.poke();
       if (draft.text === text) draft.text = '';
       uploads.files = attachments.filter((file) => !files.includes(file.upload_id));
     }
@@ -270,7 +284,7 @@
           {continuations}
         />
       {/each}
-      <ChatWaiting messages={waiting} {starting} />
+      <ChatWaiting messages={waiting} {starting} sending={echo} />
       <ChatRecovery {projectId} {sessionId} {held} busy={asking.busy} {closed} {resume} />
       {#if asking.error}<ErrorMessage error={asking.error} />{/if}
     {/if}

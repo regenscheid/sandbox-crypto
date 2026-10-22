@@ -2,7 +2,8 @@
 <!--
   The messages no run has delivered, each with its state, and what the session is doing
   before a run can start, when the server says (`startingText`, chat.ts). Message text is
-  shown as text, never as HTML. Props only, so the chat panel's polling stays in
+  shown as text, never as HTML. `sending` is the user's message on its way, shown at once
+  rather than at the chat's next read. Props only, so the chat panel's polling stays in
   ChatPanel.svelte.
 -->
 <script lang="ts">
@@ -13,11 +14,16 @@
   let {
     messages,
     starting = null,
-  }: { messages: readonly ChatMessage[]; starting?: string | null } = $props();
+    sending = null,
+  }: {
+    messages: readonly ChatMessage[];
+    starting?: string | null;
+    sending?: string | null;
+  } = $props();
 </script>
 
 {#if starting}<p role="status" class="transcript-note">{starting}</p>{/if}
-{#if messages.length}
+{#if messages.length || sending !== null}
   <ul class="waiting-messages">
     {#each messages as message (message.message_id)}
       {@const split = splitAttachments(message.text)}
@@ -36,6 +42,13 @@
         </li>
       {/if}
     {/each}
+    {#if sending !== null}
+      {@const split = splitAttachments(sending)}
+      <li class="bubble sending">
+        <span class="meta">Sending…</span>
+        <span class="text">{split.text}</span>
+      </li>
+    {/if}
   </ul>
 {/if}
 
@@ -49,6 +62,9 @@
     background: var(--subtle);
     border-radius: 16px;
     padding: 10px 14px;
+  }
+  .sending {
+    opacity: 0.7;
   }
   .meta {
     display: block;
