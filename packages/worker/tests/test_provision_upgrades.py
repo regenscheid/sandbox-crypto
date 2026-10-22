@@ -81,7 +81,7 @@ async def test_upgrade_target_read_retains_actual_thread_fd_through_repeated_can
         assert number == 1
         return await asyncio.to_thread(read)
 
-    monkeypatch.setattr(owner, "_lockfile", selected)
+    monkeypatch.setattr(owner, "reconciliation", SimpleNamespace(lockfile=selected), raising=False)
     op = cast(Any, SimpleNamespace(record=SimpleNamespace(request=request())))
     task = asyncio.create_task(owner._upgrade_targets(op, ("pari",)))
     try:
@@ -131,7 +131,7 @@ async def test_upgrade_target_history_unknown_missing_or_changed_refuses(
             )
         )
 
-    monkeypatch.setattr(owner, "_lockfile", selected)
+    monkeypatch.setattr(owner, "reconciliation", SimpleNamespace(lockfile=selected), raising=False)
     with pytest.raises(_Stop) as caught:
         await owner._upgrade_targets(
             cast(Any, SimpleNamespace(record=SimpleNamespace(request=request()))), ("pari",)

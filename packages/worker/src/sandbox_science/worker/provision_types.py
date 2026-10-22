@@ -9,13 +9,14 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Final, Protocol
+from typing import Final, Protocol
 
 from sandbox_science.contracts import (
     ErrorInfo,
     ErrorKind,
     Execution,
     ExecutionState,
+    ProbeResult,
     ProvisionOperation,
     ProvisionOutcome,
     ProvisionRequest,
@@ -33,6 +34,7 @@ from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.ceiling import effective_resources
 from sandbox_science.policy.reasons import APPROVAL_REQUIRED
 
+from .catalog import ProbeSpec
 from .resolution import Decided
 
 _log = logging.getLogger(__name__)
@@ -92,6 +94,18 @@ class Restorer(Protocol):
     async def restore(self, environment_id: str, revision: int) -> bool: ...
 
 
+@dataclass(frozen=True, slots=True)
+class Completion:
+    """An operation's classified result, before the coordinator records its end."""
+
+    outcome: ProvisionOutcome
+    reason: Reason | None = None
+    stage: Stage | None = None
+    error: ErrorInfo | None = None
+    next_step: str | None = None
+    updates: dict[str, object] = field(default_factory=lambda: dict[str, object]())
+
+
 class Stop(Exception):  # noqa: N818 - it ends an operation, as a return would
     """How an operation ends: its outcome and the fields it records."""
 
@@ -102,15 +116,22 @@ class Stop(Exception):  # noqa: N818 - it ends an operation, as a return would
         stage: Stage | None = None,
         error: ErrorInfo | None = None,
         next_step: str | None = None,
-        **updates: Any,
+        **updates: object,
     ) -> None:
         super().__init__(outcome.value)
         self.outcome = outcome
-        self.reason = reason
-        self.stage = stage
+        self.reason: Reason | None = reason
+        self.stage: Stage | None = stage
         self.error = error
         self.next_step = next_step
         self.updates = updates
+
+    @property
+    def completion(self) -> Completion:
+        """The same result when a stage ends early instead of returning normally."""
+        return Completion(
+            self.outcome, self.reason, self.stage, self.error, self.next_step, self.updates
+        )
 
 
 @dataclass
@@ -213,7 +234,7 @@ def install_timeout(governing: Governing) -> float:
 class RecordUpdate(Protocol):
     """The coordinator persists and publishes every record change."""
 
-    def __call__(self, op: Operation, **changes: Any) -> None: ...
+    def __call__(self, op: Operation, **changes: object) -> None: ...
 
 
 class Observe(Protocol):
@@ -227,3 +248,11 @@ class PermissionGrant:
     """The exact-file permission request approved for this operation."""
 
     request: int
+
+
+class Probe(Protocol):
+    """Execute a capability probe in the operation's original execution context."""
+
+    async def __call__(
+        self, op: Operation, capability: str, probe: ProbeSpec, label: str, stage: Stage
+    ) -> ProbeResult: ...
