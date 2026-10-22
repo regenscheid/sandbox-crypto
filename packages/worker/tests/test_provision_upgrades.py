@@ -14,7 +14,9 @@ import pytest
 
 from sandbox_science.contracts import CondaPackage, ExecutionContext, Lockfile, ProvisionRequest
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.provisioner import Provisioner, _Stop
+from sandbox_science.worker.provision_stages import ProvisionStages
+from sandbox_science.worker.provision_types import Stop as _Stop
+from sandbox_science.worker.provisioner import Provisioner
 
 
 def request() -> ProvisionRequest:
@@ -57,7 +59,7 @@ async def test_copied_unknown_action_refuses_before_encoder_or_store(
 async def test_upgrade_target_read_retains_actual_thread_fd_through_repeated_cancel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    owner = object.__new__(Provisioner)
+    owner = object.__new__(ProvisionStages)
     revision = SimpleNamespace(revision=1)
     owner.store = cast(Any, SimpleNamespace(revision=lambda e: revision))
     entered = asyncio.Event()
@@ -107,7 +109,7 @@ async def test_upgrade_target_read_retains_actual_thread_fd_through_repeated_can
 async def test_upgrade_target_history_unknown_missing_or_changed_refuses(
     case: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    owner = object.__new__(Provisioner)
+    owner = object.__new__(ProvisionStages)
     revision = SimpleNamespace(revision=1)
     reads = 0
 

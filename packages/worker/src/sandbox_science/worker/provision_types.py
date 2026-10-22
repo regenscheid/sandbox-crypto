@@ -256,3 +256,11 @@ class Probe(Protocol):
     async def __call__(
         self, op: Operation, capability: str, probe: ProbeSpec, label: str, stage: Stage
     ) -> ProbeResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class Installed:
+    """The revisions observed around an installer that completed successfully."""
+
+    before: int | None
+    after: int | None

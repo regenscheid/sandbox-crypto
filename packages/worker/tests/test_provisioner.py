@@ -74,6 +74,7 @@ from sandbox_science.worker.catalog import Catalog
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.permissions import Permissions, PermissionStoreError
+from sandbox_science.worker.provision_stages import ProvisionStages
 from sandbox_science.worker.provisioner import Governing, Provisioner
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
@@ -397,6 +398,7 @@ async def make_world(
         environments: Any = None,
         clients: tuple[ClientSettings, ...] = (),
         kind: type[Provisioner] = Provisioner,
+        stages: type[ProvisionStages] | None = None,
     ) -> World:
         prefix = make_prefix(tmp_path)
         index = tmp_path / "index.json"
@@ -442,6 +444,8 @@ async def make_world(
         )
         await manager.start()
         clock = FakeClock(datetime.now(UTC))
+        if stages is not None:
+            monkeypatch.setattr(provisioner_module, "ProvisionStages", stages)
         provisioner = kind(
             manager,
             catalog=Catalog.parse(CATALOG.encode()),
@@ -1186,7 +1190,7 @@ async def test_an_install_whose_executor_is_lost_is_looked_at_again(make_world: 
     assert (await world.queue()).status == "needs_recovery"
 
 
-class Blind(Provisioner):
+class Blind(ProvisionStages):
     """Cannot look at the packages after an install step."""
 
     async def _look(self, op: Any, label: str) -> int | None:
@@ -1196,7 +1200,7 @@ class Blind(Provisioner):
 @pytest.mark.asyncio
 async def test_an_install_whose_effect_is_unseen_needs_recovery(make_world: Factory) -> None:
     # CP-13: what nobody saw may have changed: the environment is marked, never left mixed.
-    world = await make_world(kind=Blind)
+    world = await make_world(stages=Blind)
     done = await world.finished((await world.provision("op-1", conda=["lostlink"]))["provision_id"])
     assert (done.outcome, done.reason, done.stage) == ("needs_recovery", "install_failed", "link")
     assert (done.revision_before, done.revision_after) == (0, None)
@@ -1207,7 +1211,7 @@ async def test_an_install_whose_effect_is_unseen_needs_recovery(make_world: Fact
     assert (await world.queue()).status == "needs_recovery"
 
 
-class IndexMoves(Provisioner):
+class IndexMoves(ProvisionStages):
     """Between the dry run and the install, the index changes as ``moves`` says, as when a
     new build is published."""
 
@@ -1231,7 +1235,7 @@ class AgplDependency(IndexMoves):
 
 @pytest.mark.asyncio
 async def test_the_install_is_pinned_to_the_decided_files(make_world: Factory) -> None:
-    world = await make_world(kind=NewBuild)
+    world = await make_world(stages=NewBuild)
     done = await world.finished((await world.provision("op-1", conda=["pari"]))["provision_id"])
     # The new gmp build is not the decided one: the pinned solve fails, and nothing changed.
     assert (done.outcome, done.reason, done.stage) == ("failed", "install_failed", "resolve")
@@ -1245,7 +1249,7 @@ async def test_the_install_is_pinned_to_the_decided_files(make_world: Factory) -
 @pytest.mark.asyncio
 async def test_an_agpl_package_the_decision_never_saw_needs_recovery(make_world: Factory) -> None:
     # CP-9 refuses before download; were one to come all the same, it is no silent success.
-    world = await make_world(kind=AgplDependency)
+    world = await make_world(stages=AgplDependency)
     done = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
     assert (done.outcome, done.reason, done.stage) == ("needs_recovery", "agpl_license", "link")
     assert done.error is not None

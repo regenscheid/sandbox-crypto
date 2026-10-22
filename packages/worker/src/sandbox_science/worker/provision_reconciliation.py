@@ -36,16 +36,15 @@ from .provision_types import (
     PROBE_ID,
     STAGES,
     Completion,
+    Governing,
     Operation,
     Probe,
     RecordUpdate,
+    Restorer,
     Stop,
     append_notes,
     clip,
 )
-from .provision_types import Governing as Governing
-from .provision_types import PolicySource as PolicySource
-from .provision_types import Restorer as Restorer
 from .resolution import Decided
 from .revisions import read_lockfile
 

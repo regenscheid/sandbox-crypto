@@ -149,3 +149,11 @@ Terms:
 ## Sources
 
 [Monitoring](../MONITORING.md) (Conda workflow), [package cache](../PACKAGE-CACHE.md), [policy](../POLICY.md) (packages), [projects and sessions](../PROJECTS-AND-SESSIONS.md), [architecture](../ARCHITECTURE.md) (storage and dependencies), [licensing](../LICENSING.md), [implementation plan](../IMPLEMENTATION-PLAN.md) (W2, W3), decisions D09, D16, D21, D22, D46, D48, D71. CScience behavior from the [Claude Science report](../../.agents/docs/agent-reports/claude-science.md) (environment management and provisioning).
+
+
+## Implementation ownership
+
+The [provisioning lifecycle contract](provisioning-lifecycle.md) defines the operation
+coordinator, stage execution, permission interaction and revision reconciliation.
+Queue release precedes terminal observation drain; close and environment removal
+retain operation and store ownership until the actual writer has finished.

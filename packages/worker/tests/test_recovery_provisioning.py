@@ -27,7 +27,7 @@ async def test_queued_provisioning_cannot_adopt_new_session_epoch(make_world: Fa
         async def _operate(self, op):
             waiting.set()
             await released.wait()
-            await self._execute(
+            await self.stages.execute(
                 op,
                 ("forbidden-installer",),
                 label="probe-epoch",
