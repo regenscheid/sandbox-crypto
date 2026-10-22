@@ -640,6 +640,18 @@ class Harness:
         self._learned: dict[str, int] = {}
         """Each alias's ceiling a context error capped, for later runs (CM-43)."""
 
+    def project_policy(self, project: str) -> Callable[[], Awaitable[str | None]] | None:
+        """How a claim reads the project's current policy revision, to follow a change
+        made during a run (``environment_claim``); none without stores."""
+        stores = self.stores
+        if stores is None:
+            return None
+
+        async def current() -> str | None:
+            return (await threaded(stores.projects.get, project)).policy
+
+        return current
+
     def model_profiles(
         self, request: RunRequest, *, legacy: bool = False
     ) -> dict[ModelRole, ModelProfile]:
@@ -909,6 +921,11 @@ class Harness:
                                 admitted.context,
                                 run_name(admitted.started_at, admitted.run_id),
                                 clock=self.clock,
+                                follow=self.project_policy(admitted.request.project),
+                                followed=lambda revision: sink.note(
+                                    f"the project's policy changed to {revision}; "
+                                    "this run continues under it"
+                                ),
                             )
                         )
                     if self.prepare_attempt is not None:

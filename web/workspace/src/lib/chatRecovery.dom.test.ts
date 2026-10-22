@@ -18,24 +18,24 @@ async function settle() {
   }
 }
 
-const status = (active: boolean): StatusPage => ({
+const status = (active: boolean, resumes: StatusPage['resumes'] = []): StatusPage => ({
   root: 'work-root',
   unfinished: 1,
   active,
   works: [],
-  resumes: [],
+  resumes,
   next_work: null,
   next_resume: null,
   pending_kernel_restore_work: null,
   pending_kernel_restore_identity: null,
 });
 
-async function show(active: boolean) {
+async function show(active: boolean, resumes: StatusPage['resumes'] = []) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) =>
       Response.json(
-        url.endsWith('/recovery') ? status(active) : { requests: [], next_after: null },
+        url.endsWith('/recovery') ? status(active, resumes) : { requests: [], next_after: null },
       ),
     ),
   );
@@ -63,4 +63,21 @@ it('offers Resume when the unfinished research has stopped', async () => {
   const resume = target.querySelector('button');
   expect(resume?.textContent).toBe('Resume research');
   expect(resume?.disabled).toBe(false);
+});
+
+it('says why the last resume did not start', async () => {
+  // Every Resume failed on the Mac with no reason shown (2026-10-21).
+  const target = await show(false, [
+    {
+      request: 'resume-1',
+      root: 'work-root',
+      status: 'blocked',
+      reason: "interrupted: environment claim's policy is stale",
+      created: 1,
+    },
+    { request: 'resume-0', root: 'work-root', status: 'finished', reason: null, created: 0 },
+  ]);
+  expect(said(target)).toContain(
+    "The last resume did not start: interrupted: environment claim's policy is stale",
+  );
 });
