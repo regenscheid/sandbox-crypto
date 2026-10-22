@@ -162,6 +162,7 @@
       messages: (after, signal) => chatApi.messages(project, session, after, signal),
       events: (run, after, signal) => chatApi.events(project, session, run, after, signal),
       questions: (open, signal) => questionsApi.list(project, session, open, signal),
+      runs: (signal) => api.session(project, session, signal).then((detail) => detail.runs),
     });
     feed = reading;
     const poller = new Poller(

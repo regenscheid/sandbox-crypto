@@ -744,3 +744,62 @@ describe('answered questions in the transcript', () => {
     expect(at('Question q2')).toBeGreaterThan(at('Yes, continuing.'));
   });
 });
+
+describe('runs no message names', () => {
+  // A resumed run and the session's automatic continuation of its plan carry no message
+  // of the user's: the chat showed each only while it held the session (Mac, 2026-10-21).
+  const RESUMED = '20261022T014900864922Z-run-resumed';
+  const NEXT = '20261022T015836336042Z-run-next';
+  const ASKED = '20261021T200000000000Z-run-asked';
+
+  it('keeps a finished continuation in the conversation, in the order the runs started', async () => {
+    const { state } = server();
+    let roots = [ASKED, RESUMED];
+    const feed = new ChatFeed({
+      messages: async (after) => ({
+        messages: state.messages.filter((item) => item.number > after),
+        run: state.lease ? { run: state.lease, started_at: '', renewed_at: '' } : null,
+        service: true,
+        environment: null,
+      }),
+      events: async (run) => ({ state: run === NEXT ? 'active' : 'ended', events: [] }),
+      runs: async () =>
+        roots.map((name) => ({ name, run_id: name, started_at: '', role: 'main', parent: null })),
+    });
+    state.messages = [message(1, 'delivered', ASKED)];
+    state.lease = RESUMED;
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([ASKED, RESUMED]);
+    // The resumed run ends, and the next one takes the session.
+    roots = [ASKED, RESUMED, NEXT];
+    state.lease = NEXT;
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([ASKED, RESUMED, NEXT]);
+  });
+
+  it('shows no delegated run as part of the conversation', async () => {
+    const feed = new ChatFeed({
+      messages: async () => ({ messages: [], run: null, service: true, environment: null }),
+      events: async () => ({ state: 'ended', events: [] }),
+      runs: async () => [
+        { name: RESUMED, run_id: 'a', started_at: '', role: 'main', parent: null },
+        { name: NEXT, run_id: 'b', started_at: '', role: 'delegated', parent: RESUMED },
+      ],
+    });
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([RESUMED]);
+  });
+
+  it('carries on without the run list when it cannot be read', async () => {
+    const feed = new ChatFeed({
+      messages: async () => ({
+        messages: [message(1, 'delivered', RESUMED)],
+        run: null,
+        service: true,
+        environment: null,
+      }),
+      events: async () => ({ state: 'ended', events: [] }),
+      runs: async () => {
+        throw new Error('the session could not be read');
+      },
+    });
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([RESUMED]);
+  });
+});

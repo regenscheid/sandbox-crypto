@@ -16,6 +16,7 @@ import type {
   Requested,
   RunEvent,
   RunLease,
+  RunEntry,
 } from './api-types';
 import { formatCost } from './format';
 import { ApiError, get, post } from './http';
@@ -143,7 +144,16 @@ export interface ChatReads {
   /** The session's latest questions to the user, or with `open` its open ones only;
    * without it, the view has none. */
   questions?(open: boolean, signal?: AbortSignal): Promise<QuestionListing>;
+  /** The session's runs; its main ones are shown too, so a run no message names, such as
+   * a resumed or continued one, stays in the conversation after the next one starts. */
+  runs?(signal?: AbortSignal): Promise<readonly RunEntry[]>;
 }
+
+/** Polls between readings of the session's runs, besides when the lease changes. */
+const RUNS_EVERY = 4;
+
+/** A run name's start time, as the service writes it: ``20261022T014900864922Z-run-…``. */
+const STARTED = /^\d{8}T\d{6}\d*Z-/;
 
 /** The most runs the panel shows; earlier ones are in the session's run list. */
 export const MAX_RUNS = 5;
@@ -174,6 +184,8 @@ export class ChatFeed {
    * `stopped` event once it reaps the run. */
   #grace = new Map<string, number>();
   #lease: RunLease | null = null;
+  /** The session's main runs, as last read (``ChatReads.runs``). */
+  #roots: string[] = [];
   #service = false;
   #environment: EnvironmentState | null = null;
   #questions: Question[] = [];
@@ -197,6 +209,7 @@ export class ChatFeed {
     this.#recheck = false;
     // The server answers the environment for the page that holds a queued message.
     let environment: EnvironmentState | null = null;
+    const leased = this.#lease?.run ?? null;
     for (let page = 0; page < PAGES_PER_READ; page++) {
       const listing = await this.reads.messages(after, signal);
       this.#lease = listing.run;
@@ -208,6 +221,22 @@ export class ChatFeed {
     }
     this.#environment = environment;
     if (this.reads.questions) await this.#readQuestions(this.reads.questions, signal);
+    if (
+      this.reads.runs &&
+      (this.#polls % RUNS_EVERY === 1 || (this.#lease?.run ?? null) !== leased)
+    ) {
+      // Only more runs to show: a failed or odd answer keeps the last list, and never
+      // stops the conversation, which the messages and the lease carry on their own.
+      try {
+        const runs: unknown = await this.reads.runs(signal);
+        if (Array.isArray(runs))
+          this.#roots = (runs as RunEntry[])
+            .filter((run) => run?.role === 'main' && run.parent === null)
+            .map((run) => run.name);
+      } catch (caught) {
+        if (signal?.aborted) throw caught;
+      }
+    }
     this.#follow();
     for (const run of this.#runs.values()) {
       if (this.#finished.has(run.run)) continue;
@@ -272,8 +301,9 @@ export class ChatFeed {
   /**
    * The runs to show, rebuilt each poll: the newest `MAX_RUNS` of those the messages name
    * (the run that delivered each, or else the one that last offered it), in the order of
-   * their first message, then the run holding the session. A run kept keeps its events;
-   * one older than the window is not shown again.
+   * their first message, the session's main runs, and the run holding the session. Run
+   * names begin with their start time, so when all do, they are shown in that order. A run
+   * kept keeps its events; one older than the window is not shown again.
    */
   #follow(): void {
     const named: string[] = [];
@@ -281,7 +311,9 @@ export class ChatFeed {
       const run = message.run ?? message.offered;
       if (run !== null && !named.includes(run)) named.push(run);
     }
+    for (const run of this.#roots) if (!named.includes(run)) named.push(run);
     if (this.#lease && !named.includes(this.#lease.run)) named.push(this.#lease.run);
+    if (named.every((run) => STARTED.test(run))) named.sort();
     const shown = new Map<string, WatchedRun>();
     for (const run of named.slice(-MAX_RUNS))
       shown.set(run, this.#runs.get(run) ?? { run, state: 'active', events: [] });
