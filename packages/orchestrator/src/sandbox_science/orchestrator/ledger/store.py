@@ -19,7 +19,6 @@ import json
 import re
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final, NoReturn, cast
 
@@ -27,7 +26,6 @@ from pydantic import BaseModel, ValidationError
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import EventLog, Receipts
-from sandbox_science.orchestrator.control.texts import TextRevisions
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.agent_text import agent_text, agent_values
 from sandbox_science.orchestrator.documents.blocks import parse
@@ -47,7 +45,7 @@ from sandbox_science.orchestrator.documents.project_macros import head as macro_
 from sandbox_science.orchestrator.figurechecks import results as figure_results
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
-from . import evidence, flags, frontier, gate, standing
+from . import evidence, flags, frontier, gate, queries, standing
 from . import provenance as anchoring
 from .models import (
     DECIDED,
@@ -72,8 +70,6 @@ from .models import (
     ClearedFlag,
     EntryChange,
     EntryCitations,
-    EntryFinding,
-    EntryFlag,
     EntryHistory,
     EntryLink,
     EntryPage,
@@ -93,17 +89,16 @@ from .models import (
     MutationResult,
     QuoteChecks,
     ReferenceFields,
-    Standing,
     WorkInput,
     WorkPage,
     WorkRecord,
     WorkReference,
     wrong_link_target,
 )
+from .records import TEXTS, Planned, Row
 
 Json = dict[str, Any]
 
-TEXTS: Final = TextRevisions("statement")
 _DECIDED: Final = frozenset({"established", "recorded", "in_effect", "rejected", "reversed"})
 """Statuses that settle an entry: a repin there needs an anchor (figures, FG-8)."""
 """Each entry's statement, a text revision under the entry's ID."""
@@ -117,24 +112,7 @@ records its lines once (LG-31, LG-36, LG-41)."""
 MAX_FIELDS: Final = 65536
 """An entry's fields, as UTF-8 JSON, are at most this many bytes."""
 
-_ID: Final = re.compile(r"entry-[0-9a-f]{24}")
-_HANDLE: Final = re.compile(r"(I|C|R|A|D|T|REF)-([1-9][0-9]{0,8})")
-_TYPES: Final = {prefix: kind for kind, prefix in PREFIXES.items()}
-_REVISION: Final = (
-    "SELECT r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
-    "r.basis,r.anchors,r.pins FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
-)
-_CURRENT: Final = (
-    "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id AND l.revision=e.head "
-)
 """The links entries' current revisions hold."""
-_HOLDERS: Final = (
-    f"SELECT l.entry_id {_CURRENT}WHERE l.target='entry' AND l.target_id=? AND l.kind=?"
-)
-_TARGETS: Final = (
-    f"SELECT l.target_id {_CURRENT}WHERE l.entry_id=? AND l.kind=? AND l.target='entry'"
-)
-INCOMING: Final = 200
 """A read shows as many links to an entry as this."""
 
 
@@ -154,50 +132,6 @@ LISTED_FLAGS: Final = 500
 
 def _refused(message: str) -> DocumentError:
     return DocumentError(POLICY_DENIED, f"not_permitted_for_role: {message}")
-
-
-@dataclass
-class _Row:
-    entry_id: str
-    project: str
-    type: str
-    number: int
-    origin: str | None
-    head: int
-
-    @property
-    def handle(self) -> str:
-        return f"{PREFIXES[self.type]}-{self.number}"
-
-
-@dataclass
-class _Planned:
-    """One change of a mutation, resolved: the entry it makes or revises, and what the
-    new revision holds."""
-
-    change: EntryChange
-    row: _Row
-    created: bool
-    title: str = ""
-    statement: str | None = None
-    status: str = ""
-    status_before: str | None = None
-    fields: Json = field(default_factory=dict[str, Any])
-    fields_before: Json = field(default_factory=dict[str, Any])
-    """The fields of the revision before; none for an entry the change creates."""
-    links: list[EntryLink] | None = None
-    """The new revision's links; None keeps the revision before's."""
-    previous: list[EntryLink] = field(default_factory=list[EntryLink])
-    """The links of the revision before."""
-    evidence: list[EvidenceLink] | None = None
-    """The new revision's evidence links; None keeps the revision before's."""
-    changed: list[str] = field(default_factory=list[str])
-    basis: str | None = None
-    """Where the new revision comes from (CM-9)."""
-    anchors: list[Json] = field(default_factory=list[Json])
-    pins: list[Json] | None = None
-    """The statement's pins, when a ``repin`` moved them; otherwise they are made when
-    the revision is written (figures spec, FG-7, FG-8)."""
 
 
 class Ledger:
@@ -234,20 +168,20 @@ class Ledger:
             raise DocumentError(INVALID_REQUEST, "incoming_after is a count of links")
         with self.control.read() as tx:
             db = tx.sql
-            row = self._find(db, project, reference)
+            row = queries.find(db, project, reference)
             number = row.head if revision is None else revision
-            found = db.execute(_REVISION, (row.entry_id, number)).fetchone()
+            found = db.execute(queries.REVISION, (row.entry_id, number)).fetchone()
             if found is None:
                 raise DocumentError(NOT_FOUND, f"{row.handle} has no revision {number}")
             text = TEXTS.read(db, row.entry_id, found[3], full=False)
             assert text is not None  # noqa: S101 - written with its revision
             incoming, total = (
-                self._incoming(db, project, row.entry_id, incoming_after)
+                queries.incoming(db, project, row.entry_id, incoming_after)
                 if number == row.head
                 else ([], 0)
             )
             held = evidence.stored(db, row.entry_id, number)
-            open_flags = self._flags(db, row.entry_id)
+            open_flags = queries.flags(db, row.entry_id)
             fields = json.loads(found[4])
             label = (
                 standing.of_entry(db, row.entry_id, row.type, row.origin, found[2], fields, number)
@@ -255,15 +189,15 @@ class Ledger:
                 else None
             )
             return EntryView(
-                **self._summary(row, found, evidence.asserted_only(row.type, held), label),
+                **queries.summary(row, found, evidence.asserted_only(row.type, held), label),
                 open_flags=len(open_flags),
                 statement=text["body"],
                 fields=fields,
-                links=self._links(db, row.entry_id, number),
+                links=queries.links(db, row.entry_id, number),
                 evidence=held,
                 incoming=incoming,
                 incoming_total=total,
-                findings=self._findings(db, project, row.entry_id),
+                findings=queries.findings(db, project, row.entry_id),
                 flags=open_flags,
                 head=row.head,
                 author=json.loads(found[5]),
@@ -297,7 +231,7 @@ class Ledger:
             if after is not None:
                 start = db.execute(
                     "SELECT position FROM ledger_entries WHERE entry_id=?",
-                    (self._find(db, project, after).entry_id,),
+                    (queries.find(db, project, after).entry_id,),
                 ).fetchone()[0]
             rows = db.execute(
                 "SELECT e.entry_id,e.project,e.type,e.number,e.origin,e.head,"
@@ -313,8 +247,8 @@ class Ledger:
             ).fetchall()
             found = [
                 {
-                    **self._summary(
-                        _Row(*r[:6]),
+                    **queries.summary(
+                        Row(*r[:6]),
                         r[6:],
                         None if r[2] not in ("claim", "result") else not r[15],
                         standing.of_entry(db, r[0], r[2], r[4], r[8], json.loads(r[10]), r[6]),
@@ -351,7 +285,7 @@ class Ledger:
             raise DocumentError(INVALID_REQUEST, "a page holds 1 to 200 revisions")
         with self.control.read() as tx:
             db = tx.sql
-            row = self._find(db, project, reference)
+            row = queries.find(db, project, reference)
             rows = db.execute(
                 "SELECT r.revision,r.title,r.status,r.statement,r.author,r.reason,"
                 "r.operation_id,r.created,r.provenance,(SELECT p.statement FROM ledger_revisions p "
@@ -414,7 +348,7 @@ class Ledger:
         self._project(project)
         with self.control.read() as tx:
             db = tx.sql
-            row = self._find(db, project, reference)
+            row = queries.find(db, project, reference)
             shown = row.head if revision is None else revision
             if not 1 <= shown <= row.head:
                 raise DocumentError(NOT_FOUND, f"{row.handle} has no revision {shown}")
@@ -460,7 +394,7 @@ class Ledger:
         self._project(project)
         with self.control.read() as tx:
             db = tx.sql
-            row = self._find(db, project, reference)
+            row = queries.find(db, project, reference)
             status, statement, fields = db.execute(
                 "SELECT status,statement,fields FROM ledger_revisions "
                 "WHERE entry_id=? AND revision=?",
@@ -477,7 +411,7 @@ class Ledger:
                 )
                 for found in db.execute(
                     "SELECT e.entry_id,e.number,r.title,r.status,r.revision,r.author "
-                    f"{_CURRENT}JOIN ledger_revisions r ON r.entry_id=e.entry_id "
+                    f"{queries.CURRENT}JOIN ledger_revisions r ON r.entry_id=e.entry_id "
                     "AND r.revision=e.head WHERE l.kind='affects' AND l.target='entry' "
                     "AND l.target_id=? ORDER BY e.position DESC LIMIT 50",
                     (row.entry_id,),
@@ -491,7 +425,7 @@ class Ledger:
                 now = gate.material(
                     json.loads(fields),
                     statement,
-                    self._links(db, row.entry_id, row.head),
+                    queries.links(db, row.entry_id, row.head),
                     held,
                     None if written is None else written["sha256"],
                 )
@@ -647,7 +581,7 @@ class Ledger:
 
     @staticmethod
     def _categories(
-        db: sqlite3.Connection, planned: list[_Planned], *, written: bool = True
+        db: sqlite3.Connection, planned: list[Planned], *, written: bool = True
     ) -> set[str]:
         """The frontier categories whose results a change made or revised, as they were
         and as it leaves them; ``written`` once it wrote its revisions."""
@@ -686,7 +620,7 @@ class Ledger:
                     db, project, {name}, {"baseline": "frontier history begins"}, now.isoformat()
                 )
 
-    def _dominance_changes(self, db: sqlite3.Connection, planned: list[_Planned]) -> list[str]:
+    def _dominance_changes(self, db: sqlite3.Connection, planned: list[Planned]) -> list[str]:
         """The ``dominates`` links a change adds or drops, in words, the reason of each it
         adds cut short, as many as 8 (the review's M3)."""
         found: list[str] = []
@@ -764,7 +698,7 @@ class Ledger:
             raise _refused("only the user records that they checked an entry")
         self._project(project)
         with self.control.read() as tx:
-            entry = self._find(tx.sql, project, reference).entry_id
+            entry = queries.find(tx.sql, project, reference).entry_id
         check: Json = {
             "role": "independent_check",
             "type": "proof",
@@ -830,9 +764,9 @@ class Ledger:
             raise _refused("only the user drops a dominates link; an agent revises its links")
         self._project(project)
         with self.control.read() as tx:
-            entry = self._find(tx.sql, project, holder)
-            named = self._find(tx.sql, project, target).entry_id
-            links = self._links(tx.sql, entry.entry_id, min(revision, entry.head))
+            entry = queries.find(tx.sql, project, holder)
+            named = queries.find(tx.sql, project, target).entry_id
+            links = queries.links(tx.sql, entry.entry_id, min(revision, entry.head))
         kept = [
             _given(link)
             for link in links
@@ -874,7 +808,7 @@ class Ledger:
         self._project(project)
         with self.control.read() as tx:
             db = tx.sql
-            entry = self._find(db, project, reference)
+            entry = queries.find(db, project, reference)
             for flag in flags:
                 if (
                     db.execute(
@@ -1092,7 +1026,7 @@ class Ledger:
         project: str,
         mutation: Mutation,
         author: Author,
-        keys: dict[str, _Row],
+        keys: dict[str, Row],
         pinned: dict[evidence.Block, str],
         provenance: Json | None,
         now: str,
@@ -1213,7 +1147,7 @@ class Ledger:
                 assessed is not None
                 and item.verdict != "accepted"
                 and author.kind == "user"
-                and _rests_on(db, row.entry_id, assessed)
+                and queries.rests_on(db, row.entry_id, assessed)
             ):
                 # The user no longer accepts the claim an obstruction rests on (LG-7).
                 found = flags.raise_one(
@@ -1237,7 +1171,7 @@ class Ledger:
         self,
         db: sqlite3.Connection,
         project: str,
-        planned: list[_Planned],
+        planned: list[Planned],
         mutation: Mutation,
         author: Author,
         provenance: Json | None,
@@ -1304,10 +1238,10 @@ class Ledger:
         db: sqlite3.Connection,
         project: str,
         reference: str,
-        keys: dict[str, _Row],
-        on: _Row,
+        keys: dict[str, Row],
+        on: Row,
         cited: list[WorkReference],
-    ) -> _Row:
+    ) -> Row:
         """An entry a work record says it produced (LG-6): one the same change creates,
         or one the delegation the record cites created (its child run wrote the entry's
         first revision); never the entry the record is on."""
@@ -1345,8 +1279,8 @@ class Ledger:
         return found
 
     def _work_entry(
-        self, db: sqlite3.Connection, project: str, reference: str, keys: dict[str, _Row]
-    ) -> _Row:
+        self, db: sqlite3.Connection, project: str, reference: str, keys: dict[str, Row]
+    ) -> Row:
         """The entry a work record names: one the change creates, by ``new:<key>``, or
         one of the project's."""
         if reference.startswith("new:"):
@@ -1354,7 +1288,7 @@ class Ledger:
             if found is None:
                 raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {reference}")
             return found
-        return self._find(db, project, reference)
+        return queries.find(db, project, reference)
 
     @staticmethod
     def _cited(
@@ -1406,7 +1340,7 @@ class Ledger:
             raise DocumentError(INVALID_REQUEST, "invalid work page")
         with self.control.read() as tx:
             db = tx.sql
-            row = self._find(db, project, reference)
+            row = queries.find(db, project, reference)
             found = db.execute(
                 "SELECT record_id,position,entry_revision,tried,ending,detail,refs,part_of,"
                 "author,reason,operation_id,provenance,created,assesses,verdict,basis,anchors "
@@ -1418,7 +1352,7 @@ class Ledger:
 
             def handle(entry: str) -> str:
                 if entry not in handles:
-                    handles[entry] = self._find(db, project, entry).handle
+                    handles[entry] = queries.find(db, project, entry).handle
                 return handles[entry]
 
             (status,) = db.execute(
@@ -1469,7 +1403,7 @@ class Ledger:
         role: str,
         numbers: dict[str, int],
         session: str | None = None,
-    ) -> _Planned:
+    ) -> Planned:
         if change.entry is None:
             if change.repin is not None:
                 raise DocumentError(INVALID_REQUEST, "a new entry's references are pinned anew")
@@ -1478,7 +1412,7 @@ class Ledger:
             raise DocumentError(INVALID_REQUEST, "a revision keeps the entry's type and origin")
         if change.expected is None:
             raise DocumentError(INVALID_REQUEST, "a revision names the revision it expects")
-        row = self._find(db, project, change.entry)
+        row = queries.find(db, project, change.entry)
         if role == "delegated" and (
             not change.evidence
             or change.model_dump(
@@ -1493,8 +1427,8 @@ class Ledger:
                 f"{row.handle} is at revision {row.head}, not {change.expected}; read it again",
                 {"entry": row.entry_id, "current": row.head},
             )
-        current = db.execute(_REVISION, (row.entry_id, row.head)).fetchone()
-        planned = _Planned(
+        current = db.execute(queries.REVISION, (row.entry_id, row.head)).fetchone()
+        planned = Planned(
             change,
             row,
             False,
@@ -1530,7 +1464,7 @@ class Ledger:
             planned.status = _status(row, current[2], change.status)
             planned.changed = [*planned.changed, "status"]
         if change.links is not None:
-            planned.previous = self._links(db, row.entry_id, row.head)
+            planned.previous = queries.links(db, row.entry_id, row.head)
         if change.repin is not None:
             body = planned.statement
             if body is None:
@@ -1559,7 +1493,7 @@ class Ledger:
         change: EntryChange,
         role: str,
         numbers: dict[str, int],
-    ) -> _Planned:
+    ) -> Planned:
         if change.type is None or change.expected is not None:
             raise DocumentError(INVALID_REQUEST, "a new entry names its type and no revision")
         if change.title is None or change.statement is None:
@@ -1587,8 +1521,8 @@ class Ledger:
             ).fetchone()[0]
         )
         number = numbers[kind] = number + 1
-        row = _Row(new_id("entry"), project, kind, number, change.origin, 0)
-        return _Planned(
+        row = Row(new_id("entry"), project, kind, number, change.origin, 0)
+        return Planned(
             change,
             row,
             True,
@@ -1605,9 +1539,9 @@ class Ledger:
         self,
         db: sqlite3.Connection,
         project: str,
-        planned: _Planned,
+        planned: Planned,
         link: LinkInput,
-        keys: dict[str, _Row],
+        keys: dict[str, Row],
         pinned: dict[evidence.Block, str],
         heads: dict[str, int],
     ) -> EntryLink:
@@ -1659,7 +1593,7 @@ class Ledger:
             if target is None:
                 raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {link.entry}")
         else:
-            target = self._find(db, project, link.entry)
+            target = queries.find(db, project, link.entry)
         head = heads.get(target.entry_id, target.head)
         if target.entry_id == planned.row.entry_id:
             raise DocumentError(INVALID_REQUEST, "an entry does not link to itself")
@@ -1686,7 +1620,7 @@ class Ledger:
         self,
         db: sqlite3.Connection,
         project: str,
-        p: _Planned,
+        p: Planned,
         mutation: Mutation,
         author: Author,
         provenance: Json | None,
@@ -1754,7 +1688,7 @@ class Ledger:
         evidence.write(db, row.entry_id, row.head, held)
         links = p.links
         if links is None:  # kept from the revision before
-            links = self._links(db, row.entry_id, before)
+            links = queries.links(db, row.entry_id, before)
         for ordinal, link in enumerate(links, 1):
             db.execute(
                 "INSERT INTO ledger_links(entry_id,revision,ordinal,kind,target,target_id,"
@@ -1791,9 +1725,7 @@ class Ledger:
             now,
         )
 
-    def _statement(
-        self, db: sqlite3.Connection, row: _Row, text: str | None, author: Author
-    ) -> int:
+    def _statement(self, db: sqlite3.Connection, row: Row, text: str | None, author: Author) -> int:
         """The text revision of the entry's statement: a new one when it changed, queued
         for its math check (LG-1, LD-53) with the project macros it was saved with."""
         latest = TEXTS.read(db, row.entry_id)
@@ -1821,8 +1753,8 @@ class Ledger:
         self,
         db: sqlite3.Connection,
         project: str,
-        p: _Planned,
-        keys: dict[str, _Row],
+        p: Planned,
+        keys: dict[str, Row],
         heads: dict[str, int],
         pinned: dict[evidence.Block, str],
         linker: evidence.Linker,
@@ -1848,7 +1780,7 @@ class Ledger:
                     if row is None:
                         raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {item.entry}")
                 else:
-                    row = self._find(db, project, item.entry)
+                    row = queries.find(db, project, item.entry)
                 target = evidence.EntryTarget(
                     row.entry_id, row.handle, row.type, heads.get(row.entry_id, row.head)
                 )
@@ -1868,7 +1800,7 @@ class Ledger:
             p.changed = [*p.changed, "evidence"]
 
     def _check_decisions(
-        self, db: sqlite3.Connection, planned: list[_Planned], role: str
+        self, db: sqlite3.Connection, planned: list[Planned], role: str
     ) -> set[str]:
         """Statuses only a decision sets (LG-4): an entry becomes ``established``,
         ``obstructed`` or ``refuted``, and a decision ``reversed``, only in a change that
@@ -1962,7 +1894,7 @@ class Ledger:
         return gated
 
     def _check_obstruction(
-        self, db: sqlite3.Connection, p: _Planned, deciding: list[_Planned]
+        self, db: sqlite3.Connection, p: Planned, deciding: list[Planned]
     ) -> None:
         """The main agent's decision makes or keeps an issue ``obstructed`` (LG-7, LG-F8)
         only when it names the excluded scope, its evidence (an evidence link) and the
@@ -2006,7 +1938,7 @@ class Ledger:
             )
         if p.created or "statement" in p.changed or "fields" in p.changed:
             refuse("the change keeps the issue's statement and fields as they were assessed")
-        current = _content(db, issue.entry_id, issue.head)
+        current = queries.content(db, issue.entry_id, issue.head)
         for d in named:
             found = db.execute(
                 "SELECT a.entry_id,a.verdict,json_extract(a.author,'$.kind'),"
@@ -2057,9 +1989,9 @@ class Ledger:
                     "needs a fresh acceptance of the user's"
                 )
             if not (
-                _content(db, issue.entry_id, at)
+                queries.content(db, issue.entry_id, at)
                 == current
-                == _content(db, issue.entry_id, claimed_at)
+                == queries.content(db, issue.entry_id, claimed_at)
             ):
                 refuse(
                     "its statement or fields changed since the claim or its acceptance: a "
@@ -2086,7 +2018,7 @@ class Ledger:
             raise _refused("only the user records an assessment this way")
         self._project(project)
         with self.control.read() as tx:
-            row = self._find(tx.sql, project, reference)
+            row = queries.find(tx.sql, project, reference)
         if row.head != revision:
             raise DocumentError(
                 CONFLICT,
@@ -2112,7 +2044,7 @@ class Ledger:
         )
 
     @staticmethod
-    def _disputed_once_held(db: sqlite3.Connection, p: _Planned) -> bool:
+    def _disputed_once_held(db: sqlite3.Connection, p: Planned) -> bool:
         """Whether ``p`` is a claim or result, disputed, that was once established or
         recorded: the frontier still shows it as it was then (LG-20)."""
         return (
@@ -2126,7 +2058,7 @@ class Ledger:
             is not None
         )
 
-    def _rewrites(self, db: sqlite3.Connection, p: _Planned) -> bool:
+    def _rewrites(self, db: sqlite3.Connection, p: Planned) -> bool:
         """Whether the change alters what a decision on ``p``'s entry rested on: its
         statement, fields, ``assumes`` links or evidence."""
         if {"statement", "evidence"} & set(p.changed):
@@ -2141,18 +2073,18 @@ class Ledger:
 
         return assumed(p.previous) != assumed(self._final_links(db, p))
 
-    def _final_links(self, db: sqlite3.Connection, p: _Planned) -> list[EntryLink]:
+    def _final_links(self, db: sqlite3.Connection, p: Planned) -> list[EntryLink]:
         """The links the change leaves ``p``'s entry."""
-        return p.links if p.links is not None else self._links(db, p.row.entry_id, p.row.head)
+        return p.links if p.links is not None else queries.links(db, p.row.entry_id, p.row.head)
 
-    def _final_evidence(self, db: sqlite3.Connection, p: _Planned) -> list[EvidenceLink]:
+    def _final_evidence(self, db: sqlite3.Connection, p: Planned) -> list[EvidenceLink]:
         """The evidence the change leaves ``p``'s entry."""
         if p.evidence is not None:
             return p.evidence
         return evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
 
     @staticmethod
-    def _changed(p: _Planned) -> flags.Changed:
+    def _changed(p: Planned) -> flags.Changed:
         """``p`` as the flags read it, once written: what it changed, and the links and
         evidence to other entries its revision gains."""
         before = {(link.kind, link.target_id, link.revision) for link in p.previous}
@@ -2214,7 +2146,7 @@ class Ledger:
                 json.loads(row[5])["handle"],
             )
         for scope in mutation.flags_cleared_on or ():
-            entry = self._find(db, project, scope.entry)
+            entry = queries.find(db, project, scope.entry)
             rows = db.execute(
                 "SELECT flag_id,cause,source FROM ledger_flags WHERE entry_id=? "
                 "AND cleared IS NULL AND (? IS NULL OR cause=?) ORDER BY raised,rowid LIMIT ?",
@@ -2353,7 +2285,7 @@ class Ledger:
             now,
         )
 
-    def _check_quotes(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
+    def _check_quotes(self, db: sqlite3.Connection, planned: list[Planned]) -> None:
         """A quote names what it quotes as the reference reads at the revision it pins
         (LG-8, CR-4): a PDF quote, the reference's PDF, pinned by its SHA-256; an ePrint
         quote, the reference's ePrint identifier. The reference may be one the same
@@ -2372,7 +2304,7 @@ class Ledger:
 
     @staticmethod
     def _quoted(
-        db: sqlite3.Connection, by_id: dict[str, _Planned], p: _Planned, link: EvidenceLink
+        db: sqlite3.Connection, by_id: dict[str, Planned], p: Planned, link: EvidenceLink
     ) -> EvidenceLink:
         """``link``, a new quote, with what it quotes named from its reference's fields."""
         assert link.locator is not None  # noqa: S101 - a quote has one
@@ -2412,7 +2344,7 @@ class Ledger:
         locator["named"] = {"eprint": eprint}
         return link.model_copy(update={"locator": locator})
 
-    def _check_published(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
+    def _check_published(self, db: sqlite3.Connection, planned: list[Planned]) -> None:
         """A published claim or result cites its reference through a ``supports`` link of
         type ``source_claim`` (LG-15), which may be to a reference the same change
         records."""
@@ -2439,7 +2371,7 @@ class Ledger:
                 )
 
     def _check_dominates(
-        self, db: sqlite3.Connection, project: str, planned: list[_Planned], role: str
+        self, db: sqlite3.Connection, project: str, planned: list[Planned], role: str
     ) -> None:
         """A ``dominates`` link a change adds (LG-22): the user's or the main agent's,
         between two results of one category, both eligible as the change leaves them,
@@ -2485,7 +2417,7 @@ class Ledger:
                         "conditions are equal and their measures numbers",
                     )
 
-    def _check_cycles(self, db: sqlite3.Connection, project: str, planned: list[_Planned]) -> None:
+    def _check_cycles(self, db: sqlite3.Connection, project: str, planned: list[Planned]) -> None:
         """Once a change is written, no ``dominates`` link it added lies on a cycle of
         results that dominate one another, by links or by the rule (the review's M2), as
         the frontier reads them: a disputed result as the revision before, and only the
@@ -2501,7 +2433,7 @@ class Ledger:
             if category is None:
                 continue
             for link in frontier.view(db, project, category).void_links:
-                p = added.get((link.entry_id, _entry_id(db, project, link.target)))
+                p = added.get((link.entry_id, queries.entry_id(db, project, link.target)))
                 if p is not None and link.void == frontier.CYCLE:
                     raise DocumentError(
                         INVALID_REQUEST,
@@ -2511,7 +2443,7 @@ class Ledger:
                         "reads them",
                     )
 
-    def _check_links(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
+    def _check_links(self, db: sqlite3.Connection, planned: list[Planned]) -> None:
         """What holds once the change commits (LG-5, LG-30). ``supersedes`` and
         ``split_into`` links never lead back to their holder. An entry is superseded
         exactly while a current revision supersedes it, so a supersedes link and its
@@ -2522,7 +2454,7 @@ class Ledger:
         final = {
             p.row.entry_id: p.links
             if p.links is not None
-            else self._links(db, p.row.entry_id, p.row.head)
+            else queries.links(db, p.row.entry_id, p.row.head)
             for p in planned
         }
 
@@ -2533,10 +2465,10 @@ class Ledger:
                     for link in final[entry]
                     if link.kind == kind and link.target == "entry"
                 ]
-            return [row[0] for row in db.execute(_TARGETS, (entry, kind))]
+            return [row[0] for row in db.execute(queries.TARGETS, (entry, kind))]
 
         def holders(entry: str, kind: str) -> list[str]:
-            stored = [row[0] for row in db.execute(_HOLDERS, (entry, kind))]
+            stored = [row[0] for row in db.execute(queries.HOLDERS, (entry, kind))]
             return [holder for holder in stored if holder not in final] + [
                 holder for holder in final if entry in targets(holder, kind)
             ]
@@ -2630,7 +2562,7 @@ class Ledger:
         names, where it may look, ``interpreted`` by default, and never the user's own."""
 
         def find(reference: str) -> tuple[str, int]:
-            row = self._find(db, project, reference)
+            row = queries.find(db, project, reference)
             return row.entry_id, row.head
 
         def block(name: str, revision: int, block: str) -> str:
@@ -2667,7 +2599,7 @@ class Ledger:
         self,
         db: sqlite3.Connection,
         project: str,
-        p: _Planned,
+        p: Planned,
         author: Author,
         pinned: dict[evidence.Block, str],
         provenance_: Json | None,
@@ -2706,7 +2638,7 @@ class Ledger:
         anchoring.check(db, project, p.basis or "", p.anchors, held, texts, p.row.handle)
 
     def _check_research(
-        self, db: sqlite3.Connection, project: str, planned: list[_Planned], author: Author
+        self, db: sqlite3.Connection, project: str, planned: list[Planned], author: Author
     ) -> None:
         """The research state's rules (CM-10), as the change leaves its entries: a
         contradiction concerns the two sides, at least, that disagree; a decision's reopen
@@ -2784,9 +2716,9 @@ class Ledger:
     def _check_condition(
         self,
         db: sqlite3.Connection,
-        p: _Planned,
+        p: Planned,
         links: list[EntryLink],
-        by_id: dict[str, _Planned],
+        by_id: dict[str, Planned],
     ) -> None:
         """A decision's reopen condition and its ``reopen_on`` links come together, a
         condition the ledger does not hold yet being stated as an open issue of kind
@@ -2840,7 +2772,7 @@ class Ledger:
                 )
 
     def _check_kept(
-        self, db: sqlite3.Connection, p: _Planned, author: Author, deciding: list[_Planned]
+        self, db: sqlite3.Connection, p: Planned, author: Author, deciding: list[Planned]
     ) -> None:
         """A decision in effect, rejected or reversed keeps its statement, fields, links
         and evidence unless it changes its status in the same change or a decision put in
@@ -2894,7 +2826,7 @@ class Ledger:
                 "decision that affects it",
             )
 
-    def _check_session(self, project: str, p: _Planned, author: Author) -> None:
+    def _check_session(self, project: str, p: Planned, author: Author) -> None:
         """A decision scoped to a session names one of the project's; an agent scopes a
         decision to its own session, or takes its own session's scope off, and no other."""
         session, before = p.fields.get("session"), p.fields_before.get("session")
@@ -2953,169 +2885,6 @@ class Ledger:
                     )
             found[key] = document
         return found
-
-    @staticmethod
-    def _find(db: sqlite3.Connection, project: str, reference: str) -> _Row:
-        if _ID.fullmatch(reference):
-            row = db.execute(
-                "SELECT entry_id,project,type,number,origin,head FROM ledger_entries "
-                "WHERE entry_id=? AND project=?",
-                (reference, project),
-            ).fetchone()
-        elif match := _HANDLE.fullmatch(reference):
-            row = db.execute(
-                "SELECT entry_id,project,type,number,origin,head FROM ledger_entries "
-                "WHERE project=? AND type=? AND number=?",
-                (project, _TYPES[match[1]], int(match[2])),
-            ).fetchone()
-        else:
-            raise DocumentError(
-                INVALID_REQUEST, f"{reference!r} names no entry: give an ID or handle"
-            )
-        if row is None:
-            raise DocumentError(NOT_FOUND, f"no entry {reference} in this project")
-        return _Row(*row)
-
-    @staticmethod
-    def _summary(
-        row: _Row, revision: tuple[Any, ...], asserted_only: bool | None, label: Standing | None
-    ) -> Json:
-        fields = json.loads(revision[4])
-        return {
-            "kind": fields.get("kind", "question" if row.type == "issue" else None),
-            "session": fields.get("session") if row.type == "decision" else None,
-            "standing": label,
-            "asserted_only": asserted_only,
-            "entry_id": row.entry_id,
-            "handle": row.handle,
-            "type": row.type,
-            "origin": row.origin,
-            "revision": revision[0],
-            "title": revision[1],
-            "status": revision[2],
-            "updated": revision[7],
-            "basis": revision[8],
-        }
-
-    @staticmethod
-    def _links(db: sqlite3.Connection, entry: str, revision: int) -> list[EntryLink]:
-        return [
-            _stored(db, row)
-            for row in db.execute(
-                "SELECT kind,target,target_id,target_revision,block,note FROM ledger_links "
-                "WHERE entry_id=? AND revision=? ORDER BY ordinal",
-                (entry, revision),
-            ).fetchall()
-        ]
-
-    @staticmethod
-    def _flags(db: sqlite3.Connection, entry: str) -> list[EntryFlag]:
-        """The open flags on ``entry``, newest first, each with the reviews whose
-        snapshots held the revision it was raised on (LG-28)."""
-        found: list[EntryFlag] = []
-        for flag, cause, source, via, revision, raised, reopens in db.execute(
-            "SELECT flag_id,cause,source,via,revision,raised,reopens FROM ledger_flags "
-            "WHERE entry_id=? AND cleared IS NULL ORDER BY raised DESC,rowid DESC LIMIT 50",
-            (entry,),
-        ):
-            reviews = [
-                review
-                for (review,) in db.execute(
-                    "SELECT DISTINCT review_id FROM review_evidence WHERE kind='ledger' "
-                    "AND json_extract(locator,'$.entry')=? "
-                    "AND json_extract(locator,'$.revision')=? ORDER BY review_id",
-                    (entry, revision),
-                )
-            ]
-            found.append(
-                EntryFlag(
-                    flag_id=flag,
-                    cause=cause,
-                    source=json.loads(source),
-                    via=via,
-                    revision=revision,
-                    raised=raised,
-                    reviews=reviews,
-                    reopens=reopens,
-                )
-            )
-        return found
-
-    @staticmethod
-    def _findings(db: sqlite3.Connection, project: str, entry: str) -> list[EntryFinding]:
-        """The review findings anchored to ``entry``, newest first (LG-25)."""
-        found: dict[str, EntryFinding] = {}
-        for row in db.execute(
-            "SELECT f.finding_id,f.session,f.status,f.severity,f.category,f.origin,"
-            "coalesce(json_extract(a.value,'$.field'),json_extract(a.value,'$.locator.field')),"
-            "json_extract(a.value,'$.locator.revision') "
-            "FROM review_finding_entries x JOIN review_findings f USING(finding_id), "
-            "json_each(f.anchors) a WHERE x.entry_id=? AND f.project=? "
-            "AND json_extract(a.value,'$.locator.entry')=? ORDER BY f.created DESC,f.rowid DESC",
-            (entry, project, entry),
-        ):
-            if row[0] not in found and len(found) < 50:
-                found[row[0]] = EntryFinding(
-                    finding_id=row[0],
-                    session=row[1],
-                    status=row[2],
-                    severity=row[3],
-                    category=row[4],
-                    origin=row[5],
-                    field=row[6],
-                    revision=row[7],
-                )
-        return list(found.values())
-
-    @staticmethod
-    def _incoming(
-        db: sqlite3.Connection, project: str, entry: str, after: int
-    ) -> tuple[list[EntryLink], int]:
-        """The links other entries' current revisions hold to ``entry``, from the
-        ``after``-th on, and how many there are."""
-        where = "WHERE l.target='entry' AND l.target_id=? AND e.project=? "
-        total = db.execute(f"SELECT count(*) {_CURRENT}{where}", (entry, project)).fetchone()[0]
-        links = [
-            EntryLink(
-                kind=kind,
-                target="entry",
-                target_id=source,
-                revision=revision,
-                note=note,
-                handle=f"{PREFIXES[source_type]}-{number}",
-            )
-            for kind, source, revision, note, source_type, number in db.execute(
-                f"SELECT l.kind,l.entry_id,l.target_revision,l.note,e.type,e.number {_CURRENT}"
-                f"{where}ORDER BY e.position,l.ordinal LIMIT ? OFFSET ?",
-                (entry, project, INCOMING, after),
-            ).fetchall()
-        ]
-        return links, total
-
-
-def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> EntryLink:
-    kind, target, target_id, revision, block, note = row
-    handle = session = None
-    if target == "entry":
-        found = db.execute(
-            "SELECT type,number FROM ledger_entries WHERE entry_id=?", (target_id,)
-        ).fetchone()
-        handle = f"{PREFIXES[found[0]]}-{found[1]}"
-    elif target == "finding":
-        # Read from the finding, whose session the workspace opens it in.
-        (session,) = db.execute(
-            "SELECT session FROM review_findings WHERE finding_id=?", (target_id,)
-        ).fetchone()
-    return EntryLink(
-        kind=kind,
-        target=target,
-        target_id=target_id,
-        revision=revision,
-        block=block,
-        note=note,
-        handle=handle,
-        session=session,
-    )
 
 
 def _normalized(text: str) -> str:
@@ -3182,7 +2951,7 @@ def fingerprint(mutation: Mutation) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _status(row: _Row, before: str, status: str) -> str:
+def _status(row: Row, before: str, status: str) -> str:
     """``status`` for ``row``, which is ``before``, if its type allows the change; that a
     decision makes it is checked once the whole change is planned (LG-4)."""
     if status not in STATUSES[row.type]:
@@ -3209,16 +2978,6 @@ def _status(row: _Row, before: str, status: str) -> str:
     return status
 
 
-def _entry_id(db: sqlite3.Connection, project: str, handle: str) -> str:
-    """The ID of the result ``handle`` names in ``project``."""
-    number = int(handle.removeprefix(f"{PREFIXES['result']}-"))
-    row = db.execute(
-        "SELECT entry_id FROM ledger_entries WHERE project=? AND type='result' AND number=?",
-        (project, number),
-    ).fetchone()
-    return "" if row is None else row[0]
-
-
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -3239,7 +2998,7 @@ def _given(link: EntryLink) -> Json:
     return value
 
 
-def _added(p: _Planned, kind: str) -> list[EntryLink]:
+def _added(p: Planned, kind: str) -> list[EntryLink]:
     """The links of ``kind`` the change's new revision holds that the one before did not."""
     before = {(link.target, link.target_id) for link in p.previous if link.kind == kind}
     return [
@@ -3249,7 +3008,7 @@ def _added(p: _Planned, kind: str) -> list[EntryLink]:
     ]
 
 
-def _dropped(p: _Planned, kind: str) -> list[EntryLink]:
+def _dropped(p: Planned, kind: str) -> list[EntryLink]:
     """The links of ``kind`` the revision before held that the change's new one does not."""
     if p.links is None:
         return []
@@ -3323,36 +3082,6 @@ def _agent_text(mutation: Mutation) -> Mutation:
     if mutation.work is not None:
         work = [_agent_work(item, f"work {n}'s") for n, item in enumerate(mutation.work, 1)]
     return mutation.model_copy(update={"reason": reason, "changes": changes, "work": work})
-
-
-def _content(db: sqlite3.Connection, entry: str, revision: int) -> tuple[Any, ...]:
-    """An entry's statement (its text revision) and fields at ``revision``."""
-    found = db.execute(
-        "SELECT statement,fields FROM ledger_revisions WHERE entry_id=? AND revision=?",
-        (entry, revision),
-    ).fetchone()
-    return tuple(found) if found is not None else ()
-
-
-def _rests_on(db: sqlite3.Connection, issue: str, claim: str) -> bool:
-    """Whether ``issue`` is obstructed by a decision in effect that named an assessment of
-    ``claim``, as the change that obstructed it wrote that decision (the one its label
-    reads, ``standing.decider``)."""
-    (status,) = db.execute(
-        "SELECT r.status FROM ledger_entries e JOIN ledger_revisions r "
-        "ON r.entry_id=e.entry_id AND r.revision=e.head WHERE e.entry_id=?",
-        (issue,),
-    ).fetchone()
-    decider = standing.decider(db, issue, "obstructed") if status == "obstructed" else None
-    if decider is None or not decider.in_effect or not decider.fields.get("assessment"):
-        return False
-    return (
-        db.execute(
-            "SELECT 1 FROM ledger_work WHERE record_id=? AND assesses=?",
-            (decider.fields["assessment"], claim),
-        ).fetchone()
-        is not None
-    )
 
 
 def _scope(db: sqlite3.Connection, project: str, author: Author) -> anchoring.Scope:
