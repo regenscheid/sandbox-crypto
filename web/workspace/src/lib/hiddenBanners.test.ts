@@ -137,6 +137,24 @@ describe('the chat', () => {
     },
   );
 
+  it('folds plain links into a closed list, and shows a misleading one openly', () => {
+    const reply = (text: string) => chat([event(1, 'assistant', { text, tool_calls: [] })]);
+    const plain = reply(
+      'Read [2026/260](https://eprint.iacr.org/2026/260) and [the PDF](https://eprint.iacr.org/2026/260.pdf).',
+    );
+    expect(plain).toContain('hidden-banner folded');
+    expect(plain).not.toContain('role="status"');
+    expect(plain).toMatch(/<details class="plain-links[^"]*"><summary[^>]*>Links \(2\)<\/summary>/);
+    expect(plain).toContain('https://eprint.iacr.org/2026/260.pdf');
+    const disguised = reply(
+      'Read [eprint.iacr.org/2026/260](https://evil.example/260) and [the PDF](https://eprint.iacr.org/2026/260.pdf).',
+    );
+    expect(disguised).toContain('role="status"');
+    expect(disguised).toContain('Links that may not lead where their words say');
+    expect(disguised).toContain('https://evil.example/260');
+    expect(disguised).toMatch(/<summary[^>]*>Other links \(1\)<\/summary>/);
+  });
+
   it('shows tool arguments and results with hidden characters as code points', () => {
     const override = String.fromCodePoint(0x202e),
       space = String.fromCodePoint(0x200b),
