@@ -265,10 +265,19 @@ class ControlStore:
             if self.path.is_file():
                 # Refuse a file this code cannot use before anything could change it:
                 # opening it to write could switch its journal or replay a crashed WAL.
-                # A WAL store copied without its -wal and -shm opens read-only only as
-                # immutable; with no -wal there is nothing it could miss.
-                probe = self._readonly(immutable=self._without_wal_files())
+                probe = self._readonly()
                 try:
+                    migrations.check(self.path, probe, readonly=False)
+                except ControlError as error:
+                    # A WAL store copied without its -wal and -shm opens read-only only
+                    # as immutable where SQLite may not make them (macOS); with no -wal
+                    # there is nothing it could miss. Only then: on Linux the files are
+                    # also missing for a moment after another process's clean close,
+                    # and an immutable read of a store being written reads it torn.
+                    if error.kind != UNAVAILABLE or not self._without_wal_files():
+                        raise
+                    probe.close()
+                    probe = self._readonly(immutable=True)
                     migrations.check(self.path, probe, readonly=False)
                 finally:
                     probe.close()
