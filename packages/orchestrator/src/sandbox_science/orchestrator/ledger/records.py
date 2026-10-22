@@ -115,3 +115,11 @@ def validation_error(error: ValidationError) -> str:
     first = error.errors()[0]
     where = ".".join(str(part) for part in first["loc"]) or "request"
     return f"{where}: {first['msg']}"
+
+
+@dataclass(frozen=True)
+class Authority:
+    """The authorized role and project sessions captured before a mutation batch."""
+
+    role: str
+    sessions: frozenset[str]

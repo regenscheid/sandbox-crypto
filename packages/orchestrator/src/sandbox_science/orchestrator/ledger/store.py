@@ -47,7 +47,6 @@ from . import provenance as anchoring
 from .models import (
     MAX_CLEARED,
     MAX_ENTRY_WORK,
-    NO_CONDITION,
     PREFIXES,
     SHOWN_FLAGGED,
     WORK_HOLDERS,
@@ -245,7 +244,7 @@ class Ledger:
             value = CategoryDefinition.model_validate(raw)
         except ValidationError as error:
             raise DocumentError(INVALID_REQUEST, records.validation_error(error)) from None
-        if self._authority(project, author) == "delegated":
+        if self._authority(project, author).role == "delegated":
             raise records.refused("a delegated agent defines no frontier category")
         if author.kind != "user":
             # Agents read categories again and the user decides on them: an agent's text
@@ -578,7 +577,8 @@ class Ledger:
         as the line of a results file (LG-41). ``within`` runs in the same change, after
         them, and refuses it all by raising: so a fold's proposal is marked accepted, or
         nothing is written (CM-15)."""
-        role = self._authority(project, author)
+        authority = self._authority(project, author)
+        role = authority.role
         if role != "user":
             kept: list[tuple[Mutation, Json | None]] = []
             for mutation, provenance in mutations:
@@ -619,7 +619,16 @@ class Ledger:
             for mutation, provenance in mutations:
                 try:
                     results.append(
-                        self._apply(tx.sql, project, mutation, author, role, pinned, provenance)
+                        self._apply(
+                            tx.sql,
+                            project,
+                            mutation,
+                            author,
+                            role,
+                            pinned,
+                            provenance,
+                            authority.sessions,
+                        )
                     )
                 except DocumentError as error:
                     raise preparation.labelled(error, provenance) from None
@@ -636,6 +645,7 @@ class Ledger:
         role: str,
         pinned: dict[evidence.Block, str],
         provenance: Json | None,
+        sessions: frozenset[str],
     ) -> MutationResult:
         digest = preparation.fingerprint(mutation)
         replay = RECEIPTS.find(db, project, _PROJECT, mutation.operation_id, digest)
@@ -669,7 +679,7 @@ class Ledger:
                     INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
                 )
         rules.check_links(db, planned)
-        self._check_research(db, project, planned, author)
+        rules.check_research(db, planned, author, sessions)
         for p in planned:
             preparation.resolve_provenance(db, project, p, author, pinned, provenance)
         rules.check_dominates(db, project, planned, role)
@@ -1458,210 +1468,7 @@ class Ledger:
             now,
         )
 
-    def _check_research(
-        self, db: sqlite3.Connection, project: str, planned: list[Planned], author: Author
-    ) -> None:
-        """The research state's rules (CM-10), as the change leaves its entries: a
-        contradiction concerns the two sides, at least, that disagree; a decision's reopen
-        condition, its ``reopen_on`` links and its session follow ``_check_condition``,
-        ``_check_kept`` and ``_check_session``; and only a decision that the change puts
-        in effect to make an issue obstructed names an excluded scope and an assessment
-        (LG-7), so that no later decision widens a settled impossibility."""
-        by_id = {p.row.entry_id: p for p in planned}
-        deciding = [
-            d
-            for d in planned
-            if d.row.type == "decision" and d.status == "in_effect" and d.status_before != d.status
-        ]
-        for p in planned:
-            links = preparation.final_links(db, p)
-            if p.row.type == "issue" and p.fields.get("kind") == "contradiction":
-                sides = {(k.target, k.target_id, k.block) for k in links if k.kind == "concerns"}
-                if len(sides) < 2:
-                    raise DocumentError(
-                        INVALID_REQUEST,
-                        f"{p.row.handle} is a contradiction: it concerns the entries, findings "
-                        "or document blocks that disagree, at least two",
-                    )
-            if p.row.type == "issue" and p.status == "obstructed" != p.status_before:
-                deciders = [
-                    d
-                    for d in deciding
-                    if any(
-                        k.kind == "affects" and k.target_id == p.row.entry_id
-                        for k in preparation.final_links(db, d)
-                    )
-                ]
-                if len(deciders) > 1:
-                    raise DocumentError(
-                        INVALID_REQUEST, f"one decision makes {p.row.handle} obstructed"
-                    )
-                if (
-                    author.kind == "user"
-                    and deciders
-                    and not deciders[0].fields.get("excluded_scope")
-                ):
-                    raise DocumentError(
-                        INVALID_REQUEST,
-                        f"the decision that makes {p.row.handle} obstructed names the scope it "
-                        "excludes (fields.excluded_scope)",
-                    )
-            dropped = set(p.fields_before.get("caveats", ())) - set(p.fields.get("caveats", ()))
-            if author.kind != "user" and dropped:
-                raise records.refused(
-                    f"an agent adds caveats to {p.row.handle} and removes none: the user may "
-                    "remove one"
-                )
-            if p.row.type != "decision":
-                continue
-            self._check_condition(db, p, links, by_id)
-            self._check_kept(db, p, author, deciding)
-            self._check_session(project, p, author)
-            named = [p.fields.get(k) for k in ("excluded_scope", "assessment")]
-            before = [p.fields_before.get(k) for k in ("excluded_scope", "assessment")]
-            if named != before and any(named):
-                obstructs = any(d is p for d in deciding) and any(
-                    k.kind == "affects"
-                    and (target := by_id.get(k.target_id)) is not None
-                    and target.row.type == "issue"
-                    and target.status == "obstructed" != target.status_before
-                    for k in links
-                )
-                if not obstructs:
-                    raise DocumentError(
-                        INVALID_REQUEST,
-                        f"{p.row.handle} names an excluded scope or an assessment only in the "
-                        "change that puts it in effect and makes the issue it affects obstructed",
-                    )
-
-    def _check_condition(
-        self,
-        db: sqlite3.Connection,
-        p: Planned,
-        links: list[EntryLink],
-        by_id: dict[str, Planned],
-    ) -> None:
-        """A decision's reopen condition and its ``reopen_on`` links come together, a
-        condition the ledger does not hold yet being stated as an open issue of kind
-        question that it links to; one that becomes rejected or reversed states its
-        condition, ``none`` when nothing would reopen it (CM-10)."""
-        condition = p.fields.get("reopen_condition")
-        watched = [k for k in links if k.kind == "reopen_on"]
-        if condition is None and watched:
-            raise DocumentError(
-                INVALID_REQUEST,
-                f"{p.row.handle}'s reopen_on links watch for its reopen condition: give "
-                "fields.reopen_condition",
-            )
-        if condition is not None and condition.strip().casefold() == NO_CONDITION:
-            if watched:
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"{p.row.handle}'s reopen condition is none, so it watches nothing",
-                )
-        elif condition is not None and not watched:
-            raise DocumentError(
-                INVALID_REQUEST,
-                f"{p.row.handle}'s reopen condition names what it watches with reopen_on "
-                "links: an open issue of kind question that states the condition, or the "
-                "assumption, claim or result whose change would matter",
-            )
-        moved = p.created or "status" in p.changed
-        if p.status in ("rejected", "reversed") and moved and condition is None:
-            raise DocumentError(
-                INVALID_REQUEST,
-                f"{p.row.handle} becomes {p.status}: state what would justify reopening "
-                f"it (fields.reopen_condition), or {NO_CONDITION}",
-            )
-        for link in records.links_added(p, "reopen_on"):
-            target = by_id.get(link.target_id)
-            kind, status, asked = (
-                (target.row.type, target.status, target.fields.get("kind"))
-                if target is not None
-                else db.execute(
-                    "SELECT e.type,r.status,json_extract(r.fields,'$.kind') FROM ledger_entries "
-                    "e JOIN ledger_revisions r ON r.entry_id=e.entry_id AND r.revision=e.head "
-                    "WHERE e.entry_id=?",
-                    (link.target_id,),
-                ).fetchone()
-            )
-            if kind == "issue" and (status != "open" or (asked or "question") != "question"):
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"{link.handle} is not an open question: a reopen condition watches an "
-                    "open issue of kind question",
-                )
-
-    def _check_kept(
-        self, db: sqlite3.Connection, p: Planned, author: Author, deciding: list[Planned]
-    ) -> None:
-        """A decision in effect, rejected or reversed keeps its statement, fields, links
-        and evidence unless it changes its status in the same change or a decision put in
-        effect by it affects it (LG-30). The user edits a decision of the user's freely; an
-        agent never changes one's title or content, but may state the reopen condition of
-        one it rejects or reverses, if it has none (the coordinator, 2026-10-15)."""
-        content = {"statement", "fields", "links", "evidence"} & set(p.changed)
-        if p.created or not (content or {"title", "pins"} & set(p.changed)):
-            return
-        users = db.execute(
-            "SELECT 1 FROM ledger_revisions WHERE entry_id=? "
-            "AND json_extract(author,'$.kind')='user' LIMIT 1",
-            (p.row.entry_id,),
-        ).fetchone()
-        if users and author.kind == "user":
-            return
-        if users:
-            others = {k: v for k, v in p.fields.items() if k != "reopen_condition"}
-            final = [k for k in preparation.final_links(db, p) if k.kind != "reopen_on"]
-            stated = (
-                not {"statement", "title", "evidence", "pins"} & set(p.changed)
-                and "status" in p.changed
-                and p.status in ("rejected", "reversed")
-                and "reopen_condition" not in p.fields_before
-                and others == p.fields_before
-                and ("links" not in p.changed or final == p.previous)
-            )
-            if not stated:
-                raise records.refused(
-                    f"{p.row.handle} is the user's decision: an agent changes its status by a "
-                    "decision, and never its title, statement (its pins included), fields, "
-                    "links or evidence"
-                )
-        if (
-            content
-            and p.status_before in ("in_effect", "rejected", "reversed")
-            and "status" not in p.changed
-            and not any(
-                d is not p
-                and any(
-                    k.kind == "affects" and k.target_id == p.row.entry_id
-                    for k in preparation.final_links(db, d)
-                )
-                for d in deciding
-            )
-        ):
-            raise DocumentError(
-                INVALID_REQUEST,
-                f"{p.row.handle} is {p.status_before}: its statement, fields, links and "
-                "evidence change only with its status, or in a change that puts in effect a "
-                "decision that affects it",
-            )
-
-    def _check_session(self, project: str, p: Planned, author: Author) -> None:
-        """A decision scoped to a session names one of the project's; an agent scopes a
-        decision to its own session, or takes its own session's scope off, and no other."""
-        session, before = p.fields.get("session"), p.fields_before.get("session")
-        if session == before:
-            return
-        if author.kind != "user" and {session, before} - {None, author.session_id}:
-            raise records.refused("an agent scopes a decision to its own session, and no other")
-        if (
-            session is not None
-            and session not in recorded(self.documents.path.parent, project).sessions
-        ):
-            raise DocumentError(NOT_FOUND, f"no session {session} in this project")
-
-    def _authority(self, project: str, author: Author) -> str:
+    def _authority(self, project: str, author: Author) -> records.Authority:
         """The role LG-13 gives ``author``: ``user``, ``main`` or ``delegated``. Code in
         the sandbox, imports, the platform and other agent roles change nothing."""
         self._project(project)
@@ -1670,12 +1477,12 @@ class Ledger:
         except ProjectError:
             raise DocumentError(NOT_FOUND, "no such ledger project") from None
         if author.kind == "user":
-            return "user"
+            return records.Authority("user", frozenset(sessions))
         if author.kind != "agent" or author.role not in ("main", "delegated"):
             raise records.refused(f"a {author.role or author.kind} does not change the ledger")
         if author.session_id not in sessions:
             raise DocumentError(NOT_FOUND, "the agent's session is not in this project")
-        return cast(str, author.role)
+        return records.Authority(cast(str, author.role), frozenset(sessions))
 
     @staticmethod
     def _project(project: str) -> None:
