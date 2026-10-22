@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Final
 
 from sandbox_science.contracts import new_id
-from sandbox_science.orchestrator.control import EventLog
+from sandbox_science.orchestrator.control import EventLog, Receipts
 from sandbox_science.orchestrator.documents.comment_bodies import prepare
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
@@ -24,18 +24,20 @@ from sandbox_science.orchestrator.documents.pins import text_references
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import run_id_of
 
-from . import evidence, flags, frontier, gate, preparation, queries, records, standing
+from . import evidence, flags, frontier, gate, preparation, queries, records, rules, standing
 from . import provenance as anchoring
 from .models import (
     MAX_CLEARED,
     MAX_ENTRY_WORK,
     PREFIXES,
+    SHOWN_FLAGGED,
     WORK_HOLDERS,
+    ChangedEntry,
     Mutation,
+    MutationResult,
     WorkReference,
 )
-from .preparation import fingerprint as fingerprint
-from .records import TEXTS, Json, Planned, Row
+from .records import TEXTS, EvaluatedMutation, Json, MutationInput, Planned, Row
 
 
 def affected_categories(
@@ -813,3 +815,121 @@ def announce_flags(
 
 
 LISTED_FLAGS: Final = 500
+
+
+RECEIPTS: Final = Receipts("ledger", "operation ID {operation!r} names another ledger change")
+
+
+RECEIPT_ACTOR: Final = "project"
+
+
+def replay(inputs: MutationInput, digest: str) -> MutationResult | None:
+    """Read a receipt on the active transaction, without changing its result."""
+    found = RECEIPTS.find(
+        inputs.db, inputs.project, RECEIPT_ACTOR, inputs.mutation.operation_id, digest
+    )
+    return None if found is None else MutationResult.model_validate({**found, "replayed": True})
+
+
+def persist(
+    evaluated: EvaluatedMutation,
+    digest: str,
+    now: datetime,
+    *,
+    events: EventLog,
+    category_events: EventLog,
+) -> MutationResult:
+    """Write every effect and the receipt on the caller's transaction.
+
+    Late cycle or flag refusals deliberately remain inside this phase; the facade's
+    transaction rolls back revisions, events and all other effects together.
+    """
+    prepared, gated = evaluated.prepared, evaluated.gated
+    inputs, planned, keys = prepared.inputs, prepared.entries, prepared.keys
+    db, project, mutation, author = inputs.db, inputs.project, inputs.mutation, inputs.author
+    role, pinned, provenance = inputs.authority.role, inputs.pinned, inputs.provenance
+    cleared = clear_flags(db, project, mutation, author, role, now, events=events)
+    reopened = reopen_flags(db, project, mutation, author, role, now, events=events)
+    baseline(db, project, affected_categories(db, planned, written=False), now)
+    changed: list[ChangedEntry] = []
+    for p in planned:
+        write_entry(db, project, p, mutation, author, provenance, now, events=events)
+        changed.append(
+            ChangedEntry(
+                entry_id=p.row.entry_id,
+                handle=p.row.handle,
+                revision=p.row.head,
+                status=p.status,
+                created=p.created,
+            )
+        )
+    rules.check_cycles(db, project, planned)
+    work, rejected = record_work(
+        db,
+        project,
+        mutation,
+        author,
+        keys,
+        pinned,
+        provenance,
+        now.isoformat(),
+        events=events,
+    )
+    work += record_reopened(db, project, planned, mutation, author, provenance, now, events=events)
+    raised = flags.raise_flags(db, project, [flag_change(p) for p in planned], now.isoformat())
+    raised += rejected
+    if role == "main":
+        for flag in raised:
+            if flag.entry_id in gated:
+                raise gate.refused(
+                    flag.entry_id,
+                    "flags",
+                    f"the change that establishes {flag.handle} also flags it "
+                    f"({flag.cause}, from {flag.source['handle']}): make the change, "
+                    "reconsider the entry, and establish it after",
+                )
+    announce_flags(
+        db,
+        project,
+        author,
+        "ledger.flags_raised",
+        mutation,
+        [(f.flag_id, f.entry_id, f.handle, f.cause, f.source["handle"]) for f in raised],
+        now,
+        events=events,
+    )
+    frontier_changes(
+        db,
+        project,
+        affected_categories(db, planned),
+        {
+            "operation_id": mutation.operation_id,
+            "author": author.actor,
+            "reason": records.clip(mutation.reason, 500),
+            "entries": [p.row.handle for p in planned if p.row.type == "result"],
+            **({"dominates": linked} if (linked := dominance_changes(db, planned)) else {}),
+        },
+        author,
+        now,
+        events=category_events,
+    )
+    flagged = list(dict.fromkeys(flag.handle for flag in raised))
+    result = MutationResult(
+        operation_id=mutation.operation_id,
+        entries=changed,
+        flagged=flagged[:SHOWN_FLAGGED],
+        flagged_total=len(flagged),
+        flags_cleared=cleared[:SHOWN_FLAGGED],
+        cleared_total=len(cleared),
+        flags_reopened=reopened,
+        work=work,
+    )
+    RECEIPTS.record(
+        db,
+        project,
+        RECEIPT_ACTOR,
+        mutation.operation_id,
+        digest,
+        result.model_dump(mode="json"),
+    )
+    return result

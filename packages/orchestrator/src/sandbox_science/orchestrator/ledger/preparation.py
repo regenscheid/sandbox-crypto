@@ -43,7 +43,7 @@ from .models import (
     WorkInput,
     wrong_link_target,
 )
-from .records import TEXTS, Json, Planned, Row
+from .records import TEXTS, Json, MutationInput, Planned, PreparedMutation, Row
 
 MAX_FIELDS: Final = 65536
 
@@ -652,3 +652,34 @@ def resolve_provenance(
 
 
 _DECIDED: Final = frozenset({"established", "recorded", "in_effect", "rejected", "reversed"})
+
+
+def prepare_mutation(inputs: MutationInput) -> PreparedMutation:
+    """Resolve the mutation against its active transaction without writing entries."""
+    db, project, mutation, author = inputs.db, inputs.project, inputs.mutation, inputs.author
+    role, pinned = inputs.authority.role, inputs.pinned
+    numbers: dict[str, int] = {}
+    planned = [
+        plan_entry(db, project, change, role, numbers, author.session_id)
+        for change in mutation.changes
+    ]
+    keys = {p.change.key: p.row for p in planned if p.created and p.change.key}
+    if len(keys) != sum(1 for p in planned if p.created and p.change.key):
+        raise DocumentError(INVALID_REQUEST, "two created entries share a key")
+    ids = [p.row.entry_id for p in planned]
+    if len(set(ids)) != len(ids):
+        raise DocumentError(INVALID_REQUEST, "a mutation changes an entry once")
+    # An entry the mutation also revises is linked as the mutation leaves it.
+    heads = {p.row.entry_id: p.row.head + 1 for p in planned}
+    for p in planned:
+        if p.change.links is not None:
+            p.links = [
+                resolve_link(db, project, p, link, keys, pinned, heads) for link in p.change.links
+            ]
+            if not p.created and p.links != p.previous:
+                p.changed = [*p.changed, "links"]
+        linker = evidence.Linker(role, author.session_id)
+        resolve_evidence(db, project, p, keys, heads, pinned, linker)
+        if not p.created and not p.changed:
+            raise DocumentError(INVALID_REQUEST, f"the change to {p.row.handle} changes nothing")
+    return PreparedMutation(inputs, planned, keys)

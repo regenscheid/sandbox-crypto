@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -14,12 +15,14 @@ from sandbox_science.orchestrator.documents.errors import (
     POLICY_DENIED,
     DocumentError,
 )
+from sandbox_science.orchestrator.documents.models import Author
 
 from .models import (
     PREFIXES,
     EntryChange,
     EntryLink,
     EvidenceLink,
+    Mutation,
 )
 
 Json = dict[str, Any]
@@ -123,3 +126,33 @@ class Authority:
 
     role: str
     sessions: frozenset[str]
+
+
+@dataclass(frozen=True)
+class MutationInput:
+    """Inputs bound to the facade's active transaction; never a transaction owner."""
+
+    db: sqlite3.Connection
+    project: str
+    mutation: Mutation
+    author: Author
+    authority: Authority
+    pinned: dict[tuple[str, int, str, str | None], str]
+    provenance: Json | None
+
+
+@dataclass(frozen=True)
+class PreparedMutation:
+    """Resolved revisions and new-entry keys, ready for cross-entry rules."""
+
+    inputs: MutationInput
+    entries: list[Planned]
+    keys: dict[str, Row]
+
+
+@dataclass(frozen=True)
+class EvaluatedMutation:
+    """A prepared mutation with the entries that passed the decision gate."""
+
+    prepared: PreparedMutation
+    gated: frozenset[str]

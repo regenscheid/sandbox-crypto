@@ -25,8 +25,7 @@ from .models import (
     EntryLink,
     EvidenceLink,
 )
-from .preparation import fingerprint as fingerprint
-from .records import TEXTS, Json, Planned
+from .records import TEXTS, EvaluatedMutation, Json, Planned, PreparedMutation
 
 
 def check_decisions(db: sqlite3.Connection, planned: list[Planned], role: str) -> set[str]:
@@ -724,3 +723,20 @@ def check_session(sessions: frozenset[str], p: Planned, author: Author) -> None:
         raise records.refused("an agent scopes a decision to its own session, and no other")
     if session is not None and session not in sessions:
         raise DocumentError(NOT_FOUND, f"no session {session} in this project")
+
+
+def evaluate(prepared: PreparedMutation) -> EvaluatedMutation:
+    """Evaluate rules in their established order before persistence begins."""
+    inputs, planned = prepared.inputs, prepared.entries
+    db, project, author = inputs.db, inputs.project, inputs.author
+    role, pinned, provenance = inputs.authority.role, inputs.pinned, inputs.provenance
+    sessions = inputs.authority.sessions
+    check_links(db, planned)
+    check_research(db, planned, author, sessions)
+    for p in planned:
+        preparation.resolve_provenance(db, project, p, author, pinned, provenance)
+    check_dominates(db, project, planned, role)
+    check_quotes(db, planned)
+    check_published(db, planned)
+    gated = check_decisions(db, planned, role)
+    return EvaluatedMutation(prepared, frozenset(gated))

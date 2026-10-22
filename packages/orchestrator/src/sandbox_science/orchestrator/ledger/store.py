@@ -20,11 +20,11 @@ import re
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Final, cast
+from typing import Any, cast
 
 from pydantic import ValidationError
 
-from sandbox_science.orchestrator.control import EventLog, Receipts
+from sandbox_science.orchestrator.control import EventLog
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.errors import (
@@ -39,9 +39,7 @@ from sandbox_science.orchestrator.projects import ProjectError, recorded
 from . import (
     commit,
     evidence,
-    flags,
     frontier,
-    gate,
     preparation,
     queries,
     records,
@@ -49,11 +47,9 @@ from . import (
 )
 from .models import (
     PREFIXES,
-    SHOWN_FLAGGED,
     Category,
     CategoryDefinition,
     CategoryPage,
-    ChangedEntry,
     EntryCitations,
     EntryHistory,
     EntryLink,
@@ -74,8 +70,6 @@ Json = dict[str, Any]
 """Statuses that settle an entry: a repin there needs an anchor (figures, FG-8)."""
 """Each entry's statement, a text revision under the entry's ID."""
 
-RECEIPTS: Final = Receipts("ledger", "operation ID {operation!r} names another ledger change")
-_PROJECT: Final = "project"
 """The one actor of the ledger's receipts: an operation ID names one change in its
 project, whoever retries it, so a shared results file imported from two sessions
 records its lines once (LG-31, LG-36, LG-41)."""
@@ -269,7 +263,9 @@ class Ledger:
         digest = hashlib.sha256(canonical.encode()).hexdigest()
         with self.control.write() as tx:
             db = tx.sql
-            replay = RECEIPTS.find(db, project, _PROJECT, value.operation_id, digest)
+            replay = commit.RECEIPTS.find(
+                db, project, commit.RECEIPT_ACTOR, value.operation_id, digest
+            )
             if replay is not None:
                 return Category.model_validate({**replay, "replayed": True})
             now = self.clock()
@@ -305,8 +301,13 @@ class Ledger:
                 now,
                 events=self.category_events,
             )
-            RECEIPTS.record(
-                db, project, _PROJECT, value.operation_id, digest, category.model_dump(mode="json")
+            commit.RECEIPTS.record(
+                db,
+                project,
+                commit.RECEIPT_ACTOR,
+                value.operation_id,
+                digest,
+                category.model_dump(mode="json"),
             )
             return category
 
@@ -518,14 +519,9 @@ class Ledger:
                 try:
                     results.append(
                         self._apply(
-                            tx.sql,
-                            project,
-                            mutation,
-                            author,
-                            role,
-                            pinned,
-                            provenance,
-                            authority.sessions,
+                            records.MutationInput(
+                                tx.sql, project, mutation, author, authority, pinned, provenance
+                            )
                         )
                     )
                 except DocumentError as error:
@@ -534,152 +530,20 @@ class Ledger:
                 within(tx.sql, results)
             return results
 
-    def _apply(
-        self,
-        db: sqlite3.Connection,
-        project: str,
-        mutation: Mutation,
-        author: Author,
-        role: str,
-        pinned: dict[evidence.Block, str],
-        provenance: Json | None,
-        sessions: frozenset[str],
-    ) -> MutationResult:
-        digest = preparation.fingerprint(mutation)
-        replay = RECEIPTS.find(db, project, _PROJECT, mutation.operation_id, digest)
+    def _apply(self, inputs: records.MutationInput) -> MutationResult:
+        digest = preparation.fingerprint(inputs.mutation)
+        replay = commit.replay(inputs, digest)
         if replay is not None:
-            return MutationResult.model_validate({**replay, "replayed": True})
-        numbers: dict[str, int] = {}
-        planned = [
-            preparation.plan_entry(db, project, change, role, numbers, author.session_id)
-            for change in mutation.changes
-        ]
-        keys = {p.change.key: p.row for p in planned if p.created and p.change.key}
-        if len(keys) != sum(1 for p in planned if p.created and p.change.key):
-            raise DocumentError(INVALID_REQUEST, "two created entries share a key")
-        ids = [p.row.entry_id for p in planned]
-        if len(set(ids)) != len(ids):
-            raise DocumentError(INVALID_REQUEST, "a mutation changes an entry once")
-        # An entry the mutation also revises is linked as the mutation leaves it.
-        heads = {p.row.entry_id: p.row.head + 1 for p in planned}
-        for p in planned:
-            if p.change.links is not None:
-                p.links = [
-                    preparation.resolve_link(db, project, p, link, keys, pinned, heads)
-                    for link in p.change.links
-                ]
-                if not p.created and p.links != p.previous:
-                    p.changed = [*p.changed, "links"]
-            linker = evidence.Linker(role, author.session_id)
-            preparation.resolve_evidence(db, project, p, keys, heads, pinned, linker)
-            if not p.created and not p.changed:
-                raise DocumentError(
-                    INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
-                )
-        rules.check_links(db, planned)
-        rules.check_research(db, planned, author, sessions)
-        for p in planned:
-            preparation.resolve_provenance(db, project, p, author, pinned, provenance)
-        rules.check_dominates(db, project, planned, role)
-        rules.check_quotes(db, planned)
-        rules.check_published(db, planned)
-        gated = rules.check_decisions(db, planned, role)
-        now = self.clock()
-        cleared = commit.clear_flags(db, project, mutation, author, role, now, events=self.events)
-        reopened = commit.reopen_flags(db, project, mutation, author, role, now, events=self.events)
-        commit.baseline(db, project, commit.affected_categories(db, planned, written=False), now)
-        changed: list[ChangedEntry] = []
-        for p in planned:
-            commit.write_entry(
-                db, project, p, mutation, author, provenance, now, events=self.events
-            )
-            changed.append(
-                ChangedEntry(
-                    entry_id=p.row.entry_id,
-                    handle=p.row.handle,
-                    revision=p.row.head,
-                    status=p.status,
-                    created=p.created,
-                )
-            )
-        rules.check_cycles(db, project, planned)
-        work, rejected = commit.record_work(
-            db,
-            project,
-            mutation,
-            author,
-            keys,
-            pinned,
-            provenance,
-            now.isoformat(),
-            events=self.events,
-        )
-        work += commit.record_reopened(
-            db, project, planned, mutation, author, provenance, now, events=self.events
-        )
-        raised = flags.raise_flags(
-            db, project, [commit.flag_change(p) for p in planned], now.isoformat()
-        )
-        raised += rejected
-        if role == "main":
-            for flag in raised:
-                if flag.entry_id in gated:
-                    raise gate.refused(
-                        flag.entry_id,
-                        "flags",
-                        f"the change that establishes {flag.handle} also flags it "
-                        f"({flag.cause}, from {flag.source['handle']}): make the change, "
-                        "reconsider the entry, and establish it after",
-                    )
-        commit.announce_flags(
-            db,
-            project,
-            author,
-            "ledger.flags_raised",
-            mutation,
-            [(f.flag_id, f.entry_id, f.handle, f.cause, f.source["handle"]) for f in raised],
-            now,
-            events=self.events,
-        )
-        commit.frontier_changes(
-            db,
-            project,
-            commit.affected_categories(db, planned),
-            {
-                "operation_id": mutation.operation_id,
-                "author": author.actor,
-                "reason": records.clip(mutation.reason, 500),
-                "entries": [p.row.handle for p in planned if p.row.type == "result"],
-                **(
-                    {"dominates": linked}
-                    if (linked := commit.dominance_changes(db, planned))
-                    else {}
-                ),
-            },
-            author,
-            now,
-            events=self.category_events,
-        )
-        flagged = list(dict.fromkeys(flag.handle for flag in raised))
-        result = MutationResult(
-            operation_id=mutation.operation_id,
-            entries=changed,
-            flagged=flagged[:SHOWN_FLAGGED],
-            flagged_total=len(flagged),
-            flags_cleared=cleared[:SHOWN_FLAGGED],
-            cleared_total=len(cleared),
-            flags_reopened=reopened,
-            work=work,
-        )
-        RECEIPTS.record(
-            db,
-            project,
-            _PROJECT,
-            mutation.operation_id,
+            return replay
+        prepared = preparation.prepare_mutation(inputs)
+        evaluated = rules.evaluate(prepared)
+        return commit.persist(
+            evaluated,
             digest,
-            result.model_dump(mode="json"),
+            self.clock(),
+            events=self.events,
+            category_events=self.category_events,
         )
-        return result
 
     def work(
         self, project: str, reference: str, *, before: int | None = None, limit: int = 50
