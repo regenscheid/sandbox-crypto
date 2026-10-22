@@ -14,10 +14,10 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, Archived, Entry, HistoryTool, body
+from sandbox_science.orchestrator.context.history.archive import CANDIDATES
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
-from sandbox_science.orchestrator.history import Archive, Archived, Entry, HistoryTool, body
-from sandbox_science.orchestrator.history.archive import CANDIDATES
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 
 from .loop_harness import PROJECT, SESSION, TASK, Harness, Reply, call, own

@@ -194,7 +194,7 @@ class Checks:
             " time.sleep(.002)\nelse: raise SystemExit('no linking observed')"
         )
         observer = await asyncio.create_subprocess_exec(
-            str(Path.home() / ".local/opt/openshell-0.1.3/bin/openshell"),
+            str(Path.home() / ".local/opt/openshell-0.1.5/bin/openshell"),
             "sandbox",
             "exec",
             "-n",

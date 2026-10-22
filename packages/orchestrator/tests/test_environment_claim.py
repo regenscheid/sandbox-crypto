@@ -8,7 +8,7 @@ from datetime import timedelta
 
 import pytest
 
-from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.orchestrator.environment_claim import environment_claim
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
@@ -132,3 +132,66 @@ async def test_failed_initial_claim_never_enters_the_root() -> None:
     with pytest.raises(OSError, match="worker unavailable"):
         async with environment_claim(client, CONTEXT, "root", clock=clock):
             raise AssertionError("a root must not start without its claim")
+
+
+class PolicyClient(Client):
+    """A worker whose environment moves to another policy revision mid-claim."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock)
+        self.policy = "sha256:a"
+
+    async def claim_environment(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        if request.seconds and request.context.policy_revision != self.policy:
+            self.calls.append(request)
+            raise WorkerAPIError(ErrorKind.POLICY_DENIED, "environment claim's policy is stale")
+        return await super().claim_environment(request)
+
+
+async def test_a_claim_follows_the_projects_new_policy_and_the_run_goes_on() -> None:
+    clock = FakeClock()
+    client = PolicyClient(clock)
+    project = {"policy": "sha256:a"}
+    followed: list[str] = []
+
+    async def follow() -> str | None:
+        return project["policy"]
+
+    context = CONTEXT.model_copy(update={"policy_revision": "sha256:a"})
+    async with environment_claim(
+        client, context, "root", clock=clock, follow=follow, followed=followed.append
+    ):
+        await eventually(lambda: clock.sleepers == 1)
+        # The operator changes the project's policy, and the environment is revised to it.
+        project["policy"] = client.policy = "sha256:b"
+        clock.advance(30)
+        await eventually(lambda: followed == ["sha256:b"])
+        await eventually(lambda: clock.sleepers == 1)
+        clock.advance(30)
+        await eventually(lambda: client.calls[-1].context.policy_revision == "sha256:b")
+    assert client.calls[-1].seconds == 0
+    assert client.calls[-1].context.policy_revision == "sha256:b"
+
+
+async def test_a_policy_refusal_the_project_does_not_explain_ends_the_run() -> None:
+    clock = FakeClock()
+    client = PolicyClient(clock)
+
+    async def follow() -> str | None:
+        return "sha256:a"  # the project did not move: the environment's change is not its own
+
+    context = CONTEXT.model_copy(update={"policy_revision": "sha256:a"})
+    entered, forever = asyncio.Event(), asyncio.Event()
+
+    async def root() -> None:
+        async with environment_claim(client, context, "root", clock=clock, follow=follow):
+            entered.set()
+            await forever.wait()
+
+    task = asyncio.create_task(root())
+    await entered.wait()
+    await eventually(lambda: clock.sleepers == 1)
+    client.policy = "sha256:other"
+    clock.advance(30)
+    with pytest.raises(WorkerAPIError, match="claim was lost"):
+        await task

@@ -400,7 +400,7 @@ async def interrupt(http, *, restart):
         "    raise SystemExit('no linking observed')\n"
     )
     observer = await asyncio.create_subprocess_exec(
-        Path.home() / ".local/opt/openshell-0.1.3/bin/openshell",
+        Path.home() / ".local/opt/openshell-0.1.5/bin/openshell",
         "sandbox",
         "exec",
         "-n",

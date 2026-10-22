@@ -15,8 +15,8 @@ from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFi
 from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.model_settings import AgentModelRole, ProjectModels
 
-from . import documents
 from .context import json_body
+from .requests import document_answer
 
 
 @dataclass(frozen=True)
@@ -38,23 +38,23 @@ def add_routes(app: web.Application) -> None:
 
 
 async def macros(request: web.Request) -> web.Response:
-    return await documents.answer(
+    return await document_answer(
         request, lambda store: ProjectMacros(store).get(request.match_info["project"])
     )
 
 
 async def change(request: web.Request) -> web.Response:
     value = await json_body(request, "project macro JSON")
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: ProjectMacros(store).change(request.match_info["project"], value, USER),
-        writer=True,
+        access="write",
     )
 
 
 async def file_settings(request: web.Request) -> web.Response:
     """The project's file settings, and the default patterns to start from."""
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: {
             **ProjectFiles(store).get(request.match_info["project"]).model_dump(),
@@ -70,7 +70,7 @@ async def change_files(request: web.Request) -> web.Response:
         settings, replayed = ProjectFiles(store).change(request.match_info["project"], value, USER)
         return {**settings.model_dump(), "replayed": replayed}
 
-    return await documents.answer(request, changed, writer=True)
+    return await document_answer(request, changed, access="write")
 
 
 def _models(request: web.Request) -> ModelConfiguration:
@@ -83,7 +83,7 @@ def _models(request: web.Request) -> ModelConfiguration:
 async def model_settings(request: web.Request) -> web.Response:
     """The three agent roles' selected aliases and efforts, and trusted choices."""
     configured = _models(request)
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: (
             ProjectModels(store)
@@ -107,4 +107,4 @@ async def change_models(request: web.Request) -> web.Response:
         )
         return {**settings.model_dump(mode="json"), "replayed": replayed}
 
-    return await documents.answer(request, changed, writer=True)
+    return await document_answer(request, changed, access="write")

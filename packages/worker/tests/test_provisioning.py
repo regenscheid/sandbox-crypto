@@ -1224,7 +1224,7 @@ def bare_executor(tmp_path: Path) -> tuple[Executor, Sent, provisioning.Config]:
     site.mkdir()
     places = provisioning.Places(str(meta), (str(site),))
     executor.places = places
-    executor.reported = provisioning.baseline(executor.packages, places)
+    executor.admission.reported = provisioning.baseline(executor.packages, places)
     python, script = executor.provisioning.python, executor.provisioning.script
     return executor, sent, provisioning.Config(python, script, str(tmp_path), places)
 
@@ -1234,8 +1234,8 @@ async def test_m6_records_beyond_one_look_come_in_order_and_an_attempts_make_one
     tmp_path: Path,
 ) -> None:
     executor, sent, _ = bare_executor(tmp_path)
-    executor.own("call-x", "exe-x")
-    fingerprints = [executor.reported, *(f"{index:032x}" for index in range(1, 301))]
+    executor.admission.own("call-x", "exe-x")
+    fingerprints = [executor.admission.reported, *(f"{index:032x}" for index in range(1, 301))]
     for index in range(300):
         record = {
             "version": provisioning.RECORD_VERSION,
@@ -1291,7 +1291,7 @@ async def test_l1_a_record_stays_in_the_journal_until_the_worker_has_it(
     monkeypatch.setattr(executor_module.provisioning, "observe", slow_observe)
     queued = Running(execution="exe-cancelled", kind="cell", queued=True)
     task = asyncio.ensure_future(executor.begin(queued, 30))
-    while not executor.observing.locked():
+    while not executor.admission.observing.locked():
         await asyncio.sleep(0.01)
     await asyncio.sleep(0.1)
     task.cancel()  # what op_cancel does for a queued cell

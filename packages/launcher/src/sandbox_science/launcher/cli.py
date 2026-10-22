@@ -343,11 +343,12 @@ def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:
         + ")"
         for project in config.projects
     )
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
     print(
         "\nSandbox Science is running.\n"
         f"  GUI:      http://{config.workspace.listen}/\n"
         f"  Log in:   open the address in {layout.login}, for example with\n"
-        f'            xdg-open "$(cat {layout.login})"\n'
+        f'            {opener} "$(cat {layout.login})"\n'
         "            It works until Sandbox Science stops.\n"
         f"  Projects: {projects}\n"
         f"  Logs:     {layout.logs}\n"

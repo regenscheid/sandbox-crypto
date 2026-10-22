@@ -161,7 +161,7 @@ async def test_general_pilot_is_offered_once_with_unchanged_tools_and_phase_orde
         assert len(calls) == 1
         assert transcript.stopped == "answered"
         assert transcript.tool_records == []
-        pins = transcript.prompt_provenance
+        pins = transcript.context.prompt_provenance
         assert isinstance(pins, PromptPins)
         assert pins.sections[0].version == MAIN_VERSION == "sandbox-main-13"
         assert pins.sections[0] == pin(Section("main", MAIN_VERSION, SYSTEM_PROMPT))
@@ -220,7 +220,7 @@ async def test_old_literal_caller_remains_exact_custom_and_cannot_select_stock(s
             system=original,
         )
         assert len(calls) == 1
-        pins = transcript.prompt_provenance
+        pins = transcript.context.prompt_provenance
         assert isinstance(pins, PromptPins)
         assert pins.sections == (pin(Section("custom", None, original)),)
 
@@ -251,9 +251,9 @@ async def test_failed_run_retains_new_base_pin_without_answer_or_extra_delivery(
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=list(transcript.messages),
+        messages=list(transcript.context.messages),
         tools=list(transcript.tool_records),
-        prompt_provenance=transcript.prompt_provenance,
+        prompt_provenance=transcript.context.prompt_provenance,
     )
     assert len(calls) == 1
     assert record.stopped == "error"

@@ -36,7 +36,9 @@ from sandbox_science.worker.catalog import Catalog
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.identity import execution_digest
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.provisioner import Provisioner, _Op, _Stop
+from sandbox_science.worker.provision_types import Operation as _Op
+from sandbox_science.worker.provision_types import Stop as _Stop
+from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.store import Store
 
 NOW = datetime(2026, 10, 14, tzinfo=UTC)
@@ -358,10 +360,10 @@ async def test_production_resolve_records_version_in_original_turn_without_step_
     try:
         if lost:
             with pytest.raises(_Stop):
-                await provisioner._resolve(op, ("example",), ())
+                await provisioner.stages._resolve(op, ("example",), ())
             assert len(manager.requests) == 1
         else:
-            assert await provisioner._resolve(op, ("example",), ()) == []
+            assert await provisioner.stages._resolve(op, ("example",), ()) == []
             assert [r.operation_id.rsplit(".", 1)[-1] for r in manager.requests] == [
                 "version-conda",
                 "resolve-conda",
@@ -373,7 +375,7 @@ async def test_production_resolve_records_version_in_original_turn_without_step_
             assert op.record.installer_steps[0].observed_version == "2.9.0"
             assert all(s.log_status == "stored" for s in op.record.installer_steps)
             with pytest.raises(WorkerError, match="retained intent"):
-                await provisioner._execute(
+                await provisioner.stages.execute(
                     op,
                     ("micromamba", "--version"),
                     label="version-conda",
@@ -457,7 +459,7 @@ async def test_artifact_write_failure_is_explicit_without_resubmitting(
 
     monkeypatch.setattr(provisioner.installer_logs, "_blob", fail)
     try:
-        await provisioner._installer_version(op, True)
+        await provisioner.stages._installer_version(op, True)
         assert len(manager.requests) == 1
         assert op.record.installer_steps is not None
         [step] = op.record.installer_steps
@@ -467,7 +469,7 @@ async def test_artifact_write_failure_is_explicit_without_resubmitting(
         assert step.observed_version == "2.9.0"
         assert "SYNTHETIC_PRIVATE_EXCEPTION" not in op.record.model_dump_json()
         with pytest.raises(WorkerError, match="retained intent"):
-            await provisioner._installer_version(op, True)
+            await provisioner.stages._installer_version(op, True)
         assert len(manager.requests) == 1
     finally:
         await provisioner.close()

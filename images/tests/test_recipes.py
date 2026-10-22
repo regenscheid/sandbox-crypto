@@ -26,6 +26,8 @@ import yaml
 
 from sandbox_science.policy import PoolCeiling, load_policy
 from sandbox_science.policy.openshell import (
+    BASELINE_READ_ONLY,
+    BASELINE_READ_WRITE,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     FilesystemPolicy,
@@ -43,6 +45,14 @@ SERVICE_PROFILES = ("orchestrator", "mcp-proxy")
 PROFILES = (*RESEARCH_PROFILES, *SERVICE_PROFILES)
 PLATFORMS = ["linux-64", "linux-aarch64"]
 PREFIX = "/opt/sandbox-science"
+SERVICE_FILESYSTEM = FilesystemPolicy(
+    include_workdir=True,
+    read_only=(*BASELINE_READ_ONLY, PREFIX),
+    read_write=BASELINE_READ_WRITE,
+)
+"""A service sandbox's compiled filesystem section: OpenShell's baseline, which the compiler
+lists since its supervisor adds it only where the paths exist on its own host (OpenShell
+v0.1.5), and the prefix to read. No research devices."""
 KERNEL_PACKAGES = {"ipykernel", "jupyter_client", "pyzmq", "zeromq"}
 
 
@@ -289,13 +299,11 @@ def test_the_orchestrators_filesystem_section_reads_the_prefix_only() -> None:
     section = yaml.safe_load((IMAGES / "orchestrator" / "filesystem.yml").read_text())
     filesystem = SandboxFilesystem.model_validate(section)
     assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
-    # The example targets file lists it, and the compiler adds no devices to it.
+    # The example targets file lists it, and the compiler adds the baseline but no devices.
     targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
     assert targets.orchestrator is not None
     assert targets.orchestrator.filesystem == filesystem
-    assert compile_orchestrator(targets.orchestrator).filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=(PREFIX,)
-    )
+    assert compile_orchestrator(targets.orchestrator).filesystem_policy == SERVICE_FILESYSTEM
 
 
 def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
@@ -303,7 +311,8 @@ def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
     filesystem = SandboxFilesystem.model_validate(section)
     assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
     # The example targets file lists it, with the interpreter that runs the proxy's entry point
-    # as the binary, since OpenShell sees that (lab 13); the compiler adds no devices.
+    # as the binary, since OpenShell sees that (lab 13); the compiler adds the baseline but
+    # no devices.
     targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
     assert targets.mcp_proxy.filesystem == filesystem
     assert targets.mcp_proxy.binaries == (checks.PROXY_BINARIES,)
@@ -312,9 +321,7 @@ def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
         targets.mcp_proxy,
         ceiling=PoolCeiling.unrestricted(),
     )
-    assert compiled.policy.filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=(PREFIX,)
-    )
+    assert compiled.policy.filesystem_policy == SERVICE_FILESYSTEM
 
 
 def test_the_landlock_emulation_adds_the_compilers_devices() -> None:

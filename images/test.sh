@@ -33,7 +33,7 @@ if [ -z "$image" ]; then  # the tag build.sh gives
 fi
 docker image inspect "$image" >/dev/null
 
-# OpenShell v0.1.3's baseline for a sandbox whose policy has network rules, and its workdir.
+# OpenShell v0.1.5's baseline for a sandbox whose policy has network rules, and its workdir.
 baseline_ro=(/usr /lib /etc /app /var/log /proc /dev/urandom)
 baseline_rw=(/tmp /dev/null /sandbox)
 # The devices the policy compiler adds (sandbox_science.policy.openshell.SANDBOX_DEVICES_*).
@@ -61,7 +61,7 @@ checks=$(mktemp -d)
 trap 'rm -rf "$checks"' EXIT
 # The worker's in-sandbox files (SANDBOX_FILES in backends.py; a worker test keeps this in step).
 cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$checks/"
-for name in binding_inventory executor provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_setup workspace_prefix; do
+for name in binding_inventory executor executor_lifecycle executor_admission provisioning pdfhelper daemon request_frames capture sandbox_files sandbox_processes sandbox_setup workspace_prefix; do
   cp "$worker/$name.py" "$checks/"
 done
 cp "$worker/shim/sched_self.c" "$checks/"

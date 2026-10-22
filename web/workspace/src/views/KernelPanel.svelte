@@ -16,13 +16,16 @@
     initialState?: PollState<KernelObservation>;
   } = $props();
   let viewState = $state<PollState<KernelObservation>>(untrack(() => initialState));
+  // Read through `$derived`, so only another environment restarts the observations: the
+  // session view makes its kernel scope anew at each poll, and the panel blanked.
+  const environment = $derived(environmentId);
   let mounted = $state(false);
   onMount(() => {
     mounted = true;
   });
   $effect(() => {
     if (!mounted) return;
-    const scope = { projectId, sessionId, environmentId };
+    const scope = { projectId, sessionId, environmentId: environment };
     viewState = initialPoll();
     const poller = new Poller(
       (signal) => readKernels(scope, signal),

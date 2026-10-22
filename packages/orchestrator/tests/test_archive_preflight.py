@@ -8,11 +8,11 @@ import tracemalloc
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history import archive as module
+from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.control import store as stores
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history import archive as module
-from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .test_tool_journal import projects as projects

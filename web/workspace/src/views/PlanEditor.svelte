@@ -207,10 +207,16 @@
 
 <style>
   .plan-editor {
-    margin-block: 1rem;
-    padding: 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: 0.3rem;
+    margin-block: 0.5rem 1rem;
+  }
+  .plan-editor > summary {
+    color: var(--muted);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .plan-editor[open] {
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
   }
   form,
   fieldset {

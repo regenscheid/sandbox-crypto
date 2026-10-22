@@ -300,8 +300,8 @@ async def test_real_managed_revision_consumes_its_journal_before_clean_replaceme
             )
 
     executor = Executor(tmp_path / "project", send, require_workspace_prefix=True)
-    executor.reported = A
-    executor.own("synthetic-owner", "exe-" + "1" * 24)
+    executor.admission.reported = A
+    executor.admission.own("synthetic-owner", "exe-" + "1" * 24)
     executor.packages.record(
         {
             "before": A,
@@ -313,7 +313,7 @@ async def test_real_managed_revision_consumes_its_journal_before_clean_replaceme
     )
     assert executor.packages.pending()
     records, complete = executor.packages.read_records()
-    await executor.report(
+    await executor.admission.report(
         "exe-" + "1" * 24, provisioning.Observation(records, B, complete=complete), None
     )
     assert not executor.packages.pending()
@@ -497,7 +497,7 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
         sent.append(message)
 
     executor = Executor(tmp_path / "project", send, require_workspace_prefix=True)
-    executor.places, executor.reported = places, after
+    executor.places, executor.admission.reported = places, after
     monkeypatch.setattr(
         workspace_prefix,
         "report",
@@ -528,7 +528,7 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
     gate = worker.store.package_gate("env")
     request = {
         "id": 3,
-        "incarnation": executor.package_gate_id,
+        "incarnation": executor.admission.incarnation,
         **gate.fields(),
         "workspace_prefix_restore": channel.hello["workspace_prefix_restore"],
     }
@@ -536,7 +536,7 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
     package.write_text("changed-after-evidence")
     with pytest.raises(ToolError, match="evidence changed"):
         await executor.op_package_gate(request)
-    assert executor.package_mode == "hold"
+    assert executor.admission.mode == "hold"
     package.write_text('{"version":"original"}')
     os.utime(package, ns=(original.st_atime_ns, original.st_mtime_ns))
     attached = [True]
@@ -550,13 +550,13 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
     request["_admission_guard"] = lambda: attached[0]
     with pytest.raises(ToolError, match="controller detached"):
         await executor.op_package_gate(request)
-    assert executor.package_mode == "hold"
-    assert executor.reported == after
+    assert executor.admission.mode == "hold"
+    assert executor.admission.reported == after
     attached[0] = True
     monkeypatch.setattr(workspace_prefix, "report", original_report)
     await executor.op_package_gate(request)
-    assert executor.package_mode == "ready"
-    assert executor.reported == before
+    assert executor.admission.mode == "ready"
+    assert executor.admission.reported == before
     assert worker.revision().fingerprint == before
     from sandbox_science.worker.lifecycle import UNMANAGED
     from sandbox_science.worker.package_admission import PackageAdmission
@@ -585,7 +585,7 @@ async def test_actual_executor_hello_restoration_aligns_only_at_verified_ready_g
     )
     assert await admission.sync("env", cast(ExecutorChannel, RestoredChannel()))
     # The first new kernel's epoch has a known revision without another package event.
-    assert worker.store.kernel_starts.epoch("env", NEXT, executor.package_epoch, before) == 0
+    assert worker.store.kernel_starts.epoch("env", NEXT, executor.admission.epoch, before) == 0
     assert worker.store.workspace_prefix_restore_pending("env") is None
     assert worker.store.workspace_prefix("env") == (IDENTITY, NEXT)
     worker.store.close()

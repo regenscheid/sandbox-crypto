@@ -72,7 +72,12 @@ it('keeps configured, observed, and unknown service states distinct without live
   flushSync();
   expect(target.querySelector('.mcp-detail h2')?.textContent).toBe('archive');
   expect(target.querySelector('.mcp-row')?.getAttribute('aria-pressed')).toBe('true');
-  expect(fetcher).toHaveBeenCalledTimes(1);
+  // Viewing reads the inventory once, and the user's settings; it calls no service.
+  const urls = fetcher.mock.calls.map((call) => String((call as unknown[])[0]));
+  expect(urls.filter((url) => url.endsWith('/mcp-services'))).toHaveLength(1);
+  expect(
+    urls.filter((url) => !/\/(mcp-services|mcp-services\/settings|approvals\/settings)$/.test(url)),
+  ).toEqual([]);
 });
 
 it('checks availability only after an explicit action and never calls a tool', async () => {
@@ -112,7 +117,9 @@ it('checks availability only after an explicit action and never calls a tool', a
   document.body.append(target);
   mounted.push(mount(McpServices, { target, props: { projectId: 'check-p' } }));
   await settle();
-  expect(requests).toHaveLength(1);
+  expect(requests.filter((item) => !item.endsWith('/settings'))).toEqual([
+    'GET /api/v0/projects/check-p/mcp-services',
+  ]);
   [...target.querySelectorAll<HTMLButtonElement>('button')]
     .find((button) => button.textContent === 'Check availability')!
     .click();

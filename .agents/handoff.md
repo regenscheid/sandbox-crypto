@@ -1,6 +1,11 @@
 # Handoff
 
-Updated 2026-10-20. Active work is `k8s`, branched from `dev` at `af0fa0d5`, in the existing implementation worktree. The primary checkout has unrelated state and must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md) and [Kubernetes work](../docs/KUBERNETES.md).
+Updated 2026-10-22. Active work is `k8s-sync`: `k8s` with `origin/dev` (`3918ccd0`) merged in, not pushed. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md) and [Kubernetes work](../docs/KUBERNETES.md). Next is deployment to the owner's cluster.
+
+Earlier dev context: updated 2026-10-21. Work is on `agent-context-refactor` from `origin/dev`
+`391cb7a7`, merged with `1ad689e3`. Services are unchanged. Read [STATUS.md](STATUS.md),
+[BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md), and the
+[context ownership map](../docs/specs/agent-context-refactor.md).
 
 ## Kubernetes continuation
 
@@ -12,7 +17,30 @@ Offline operations now include bounded indexed control-cache maintenance and com
 
 Next: coordinated control/worker/policy/event/binding recovery sets, actual cluster writer fences before PVC release, recorded cluster runtime bootstrap and both-architecture/CNI/Sage/MCP acceptance. Online worker deletion additionally needs pinned downloads. Preserve the pinned snapshot during upstream outages. Mac acceptance remains open. No publication or deployment is authorized. Earlier evidence: [retention report](docs/agent-reports/k8s-retention-2026-10-20.md).
 
-## Accepted scope and current evidence
+## Current refactor
+
+- `context/agent.py` owns working messages, pins, usage and archive-first writes;
+  `context/preparation.py` prepares trusted root/child scopes and retrieval.
+- `context/folding.py` gives the engine context and a call index, independently of
+  Transcript; `FoldLifecycle` retains hook ordering, cleanup and accounting. Hooks
+  read `RunView.context`; Transcript no longer forwards context properties.
+- `context/history/` owns archives, reads/search, folds and inspection. The follow-up
+  protects recent complete call/result units, prioritizes narrative takeaways with
+  retrieval anchors, pages original overview evidence and preflights narrative room.
+- Parallel extractions: `finalization.py` for child persistence/settlement/cleanup,
+  workspace `requests.py` for scoped execution/encoding.
+- Changes are signed. Follow-up: 743 integration and 42 evidence checks passed. First stage:
+  426 targeted, 855 workspace passed. The [report](docs/agent-reports/context-refactor-2026-10-21.md)
+  records baseline WAL/ledger/SIGTERM failures and an unresolved serving timeout;
+  do not claim the whole suite is green or summaries scientifically qualified.
+- No real model calls, service rollout, archive migration or merge into dev.
+  The owner requested publication on `agent-context-refactor`; continue in its
+  separate worktree and preserve the primary checkout and services.
+- Executor lifecycle/admission, ledger preparation/rules/commit and provisioning
+  stages are integrated/reviewed: 826 worker slow passes; baseline fast failures
+  remain. See the [report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
+
+## Earlier accepted scope and evidence
 
 The owner authorized **$150 total for new campaign model tests**, superseding the earlier $75 proposal, and requested all six [completion items](docs/agent-reports/completion-campaign-2026-10-18.md). This is not permission to resume SNOVA or approve extra token grants. Use isolated worktrees and signed commits for implementation.
 

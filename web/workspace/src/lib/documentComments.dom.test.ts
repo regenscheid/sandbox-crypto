@@ -117,3 +117,40 @@ it('keeps a selected comment on its original revision through a newer display an
   expect(posted[0]?.anchor).toEqual({ revision: 4, block: 'b1', start: 0, end: 5 });
   expect(posted[0]?.addressed_to).toBe('s1');
 });
+
+it('addresses an "Ask the agent" comment to its session after the request is consumed', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) =>
+      url.includes('/comments')
+        ? new Response(JSON.stringify({ threads: [], next_after: null }))
+        : new Response(
+            JSON.stringify({ project: { sessions: [{ session_id: 's1', closed_at: null }] } }),
+          ),
+    ),
+  );
+  const root = document.createElement('div');
+  document.body.append(root);
+  // As the page does: consuming the request clears the session along with the anchor.
+  let session: string | null = 's1';
+  component = mount(DocumentComments, {
+    target: root,
+    props: {
+      projectId: 'p1',
+      found: old,
+      requestedAnchor: anchor,
+      get requestedSession() {
+        return session;
+      },
+      consumeAnchor: () => (session = null),
+    },
+  });
+  await settle();
+  expect(root.querySelector('.anchor-quote')?.textContent?.trim()).toBe('Alpha');
+  const body = root.querySelector<HTMLTextAreaElement>('[aria-label="Comment Markdown"]')!;
+  body.value = 'Is this right?';
+  body.dispatchEvent(new Event('input', { bubbles: true }));
+  await settle();
+  expect(commentDrafts.load(scope).draft?.session).toBe('s1');
+  expect(root.textContent).toContain('Post and send request');
+});

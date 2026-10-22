@@ -93,3 +93,27 @@ def test_an_answer_covers_only_what_its_scope_covers() -> None:
     assert approvals.resolve(OTHER_PATH, NOW) == Unrecorded()
     approvals.load([answer(3, 1, APPROVAL, scope="host")])
     assert isinstance(approvals.resolve(OTHER_PATH, NOW), Approved)
+
+
+def test_a_server_answer_covers_every_tool_of_the_server_and_nothing_else() -> None:
+    from sandbox_science.policy.approvals.keys import RequestKey, check_scope
+
+    def key(
+        tool: str, arguments: str = "a" * 64, server: str = "papers", caller: str = "orch"
+    ) -> RequestKey:
+        return RequestKey.mcp("p1", caller, "sha256:p", server, "tools/call", tool, arguments)
+
+    asked = key("search")
+    assert asked.covers(key("fetch", "b" * 64), "server")
+    assert not asked.covers(key("search", server="web"), "server")  # another server
+    assert not asked.covers(key("search", caller="other"), "server")  # another caller
+    assert not asked.covers(
+        RequestKey.mcp("p2", "orch", "sha256:p", "papers", "tools/call", "x", "a" * 64), "server"
+    )  # another project
+    assert not asked.covers(
+        RequestKey.mcp("p1", "orch", "sha256:q", "papers", "tools/call", "x", "a" * 64), "server"
+    )  # another policy revision
+    assert asked.covers(key("search", "b" * 64), "tool")
+    assert not asked.covers(key("fetch"), "tool")
+    assert check_scope("mcp", "server") is None
+    assert check_scope("http", "server") is not None

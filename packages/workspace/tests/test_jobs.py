@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 from aiohttp.test_utils import TestClient
+from pydantic import TypeAdapter
 
 from sandbox_science.contracts import (
     Execution,
@@ -24,6 +25,12 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.domain_contracts import (
+    JobCancellation,
+)
+from sandbox_science.workspace.domain_contracts import (
+    JobListing as WorkspaceJobListing,
+)
 
 TOKEN = "test-secret-workspace-login-0123456789"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
@@ -119,10 +126,15 @@ async def test_views_jobs_wait_checkins_and_cancels(
     assert response.status == 200
     assert response.headers["Cache-Control"] == "no-store"
     payload = await response.json()
+    TypeAdapter(WorkspaceJobListing).validate_python(payload)
     assert payload["jobs"][0]["purpose"] == "lattice search"
     assert payload["jobs"][0]["stdout"] == "<script>untrusted</script>"
     assert payload["waits"][0]["watcher"] is None
     assert payload["waits"][0]["connected"] is True
+    assert "mode" not in payload["waits"][0]
+    assert "started_at" not in payload["waits"][0]
+    assert payload["jobs"][0]["checkin"] is None
+    assert payload["jobs"][0]["error"] is None
     assert worker.queries[0] == worker.context
     response = await client.post(
         "/api/v0/projects/p1/sessions/a/jobs/exe-1/cancel",
@@ -130,6 +142,16 @@ async def test_views_jobs_wait_checkins_and_cancels(
     )
     assert response.status == 200
     assert worker.cancelled == ["exe-1"]
+    cancelled = await response.json()
+    TypeAdapter(JobCancellation).validate_python(cancelled)
+    assert cancelled == {
+        "job_id": "exe-1",
+        "state": "running",
+        "purpose": "lattice search",
+        "submitted_at": worker.execution.submitted_at.isoformat(),
+        "started_at": None,
+        "ended_at": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -218,3 +240,18 @@ async def test_cancellation_requires_login_and_same_origin(
     assert (await client.post(route)).status == 403
     assert (await client.post(route, headers={"Origin": "https://other.example"})).status == 403
     assert worker.cancelled == []
+
+
+@pytest.mark.asyncio
+async def test_retained_job_without_details_keeps_empty_logs(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    worker = Worker(context(state_dir))
+    worker.execution = worker.execution.model_copy(update={"job": None})
+    client = await create(aiohttp_client, state_dir, static_dir, worker)
+    response = await client.get("/api/v0/projects/p1/sessions/a/jobs")
+    assert response.status == 200
+    payload = await response.json()
+    TypeAdapter(WorkspaceJobListing).validate_python(payload)
+    assert payload["jobs"][0]["logs"] == {}
+    assert payload["jobs"][0]["purpose"] == ""

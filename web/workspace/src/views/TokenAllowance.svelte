@@ -11,6 +11,9 @@
   let { path, work, warningTotal }: { path: string; work: string; warningTotal: number | null } =
     $props();
   let pollState = $state<PollState<TokenGrantStatus>>(initialPoll());
+  // Through `$derived`, so only another grant reads again: `work` is a field of the
+  // parent's polled item.
+  const grantFor = $derived(work);
   let refresh = $state(0);
   let reason = $state('Continue this research branch with 10,000,000 more tokens.');
   let busy = $state(false);
@@ -34,7 +37,7 @@
     pollState = initialPoll();
     return new Poller(
       (signal) =>
-        get<TokenGrantStatus>(`${path}/token-grants/${encodeURIComponent(work)}`, { signal }),
+        get<TokenGrantStatus>(`${path}/token-grants/${encodeURIComponent(grantFor)}`, { signal }),
       (value) => {
         pollState = value;
         if (value.data !== null && initialTotal === null) initialTotal = value.data.total_tokens;

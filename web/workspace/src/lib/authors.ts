@@ -20,17 +20,21 @@ export function describeAuthor(author: Author): string {
   }
 }
 
-/** The blocks a revision changed, in words: `changed b3, b4; added b9`. */
-export function describeChanges(changes: {
-  changed: readonly string[];
-  added: readonly string[];
-  moved: readonly string[];
-  removed: readonly string[];
-}): string {
-  const parts: string[] = [];
-  for (const status of ['changed', 'added', 'moved', 'removed'] as const) {
-    const ids = changes[status];
-    if (ids.length > 0) parts.push(`${status} ${ids.join(', ')}`);
+/** Who wrote a revision, briefly, for a list: `Research agent · session main`, `You`. */
+export function authorName(author: Author): string {
+  switch (author.kind) {
+    case 'user':
+      return 'You';
+    case 'import':
+      return 'An import';
+    case 'platform':
+      return 'The platform';
+    case 'worker':
+      return 'Worker code';
+    case 'agent': {
+      const role = !author.role || author.role === 'main' ? 'Research' : author.role;
+      const name = `${role[0]!.toUpperCase()}${role.slice(1)} agent`;
+      return author.session_id ? `${name} · session ${author.session_id}` : name;
+    }
   }
-  return parts.join('; ') || 'no blocks';
 }

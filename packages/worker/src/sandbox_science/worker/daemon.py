@@ -113,7 +113,7 @@ class Daemon:
         self.owner_scope = "ss-daemon-" + address(token, root)[13:] + "-"
         self.executor.owner_prefix = self.owner_scope + self.incarnation + "-"
         if kernel_idle is not None:
-            self.executor.reaper = self.executor.spawn(self.executor.reap_idle_kernels(kernel_idle))
+            self.executor.start_idle_reaper(kernel_idle)
 
     async def write(self, writer: asyncio.StreamWriter, message: Message | bytes) -> None:
         data = message if isinstance(message, bytes) else executor.fit_line(message)

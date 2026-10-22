@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
@@ -43,7 +44,7 @@ def record(transcript: Transcript, *, context: ExecutionContext = CONTEXT) -> Ru
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=list(transcript.messages),
+        messages=list(transcript.context.messages),
         tools=list(transcript.tool_records),
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     )
@@ -136,7 +137,7 @@ async def test_job_delivery_snapshot_excludes_failing_model_call_and_cleanup_pre
         transcript = await run_task(Model(), toolbox, "Continue", run_id="failed")
     assert transcript.failure == "model"
     assert sorted(transcript.delivered_ids("jobs")) == ["exe-1"]
-    assert "exe-2" in json.dumps(transcript.messages)
+    assert "exe-2" in json.dumps(transcript.context.messages)
     assert HOSTILE not in record(transcript).to_json()
 
 
@@ -301,7 +302,9 @@ async def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     projects.open_session("p", "s", dedicated=False)
-    transcript = Transcript(messages=[{"role": "user", "content": "Continue"}])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "user", "content": "Continue"}])
+    )
     transcript.fail("model")
     kept = record(transcript)
     with pytest.raises(ProjectError, match="no session"):
@@ -351,7 +354,7 @@ async def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp
 
 
 def test_legacy_records_and_failure_classification_are_bounded():
-    old = record(Transcript(messages=[])).model_dump(mode="json")
+    old = record(Transcript(context=AgentContext(messages=[]))).model_dump(mode="json")
     old.pop("failure")
     assert RunRecord.model_validate(old).failure is None
     for failure in (HOSTILE, {"message": HOSTILE}, "model" * 10000):

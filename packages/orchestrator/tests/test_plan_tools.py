@@ -356,7 +356,7 @@ async def test_old_read_race_and_failed_model_do_not_clear_current_read_requirem
     result = await run_task(model, tools(f), "Resume", run_id="main-run")
     assert result.failure == "model"
     assert f.adapter.requires_read
-    assert "test-secret-failure-body" not in json.dumps(result.messages)
+    assert "test-secret-failure-body" not in json.dumps(result.context.messages)
 
 
 @pytest.mark.asyncio
@@ -623,7 +623,7 @@ async def test_committed_progress_survives_later_failure_without_fabricating_com
                         "started_at": now,
                         "ended_at": now,
                         "stopped": result.stopped,
-                        "messages": result.messages,
+                        "messages": result.context.messages,
                         "tools": result.tool_records,
                         "final_text": result.final_text,
                     },

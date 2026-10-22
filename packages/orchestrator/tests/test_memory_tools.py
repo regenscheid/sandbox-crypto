@@ -281,7 +281,7 @@ async def test_main_and_delegated_runs_have_the_tools(tmp_path: Path) -> None:
     finally:
         documents.close()
     for finished in (first, second):
-        pins = finished.transcript.prompt_provenance
+        pins = finished.transcript.context.prompt_provenance
         assert pins is not None
         assert {"memory_list", "memory_propose"} <= set(pins.tools.names)
     assert [(p.proposer.run_id, p.proposer.role) for p in proposals] == [

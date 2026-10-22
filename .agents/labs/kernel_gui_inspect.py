@@ -325,7 +325,7 @@ def monitor() -> None:
                 while time.monotonic() < stop_deadline:
                     raw = subprocess.run(  # noqa: S603 -- pinned CLI, validated marked-lab sandbox
                         [
-                            str(Path.home() / ".local/opt/openshell-0.1.3/bin/openshell"),
+                            str(Path.home() / ".local/opt/openshell-0.1.5/bin/openshell"),
                             "sandbox",
                             "get",
                             expected["sandbox"],

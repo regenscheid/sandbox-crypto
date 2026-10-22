@@ -18,17 +18,25 @@
     projectId,
     found,
     requestedAnchor = null,
+    requestedSession = null,
     consumeAnchor,
+    collapse = null,
   }: {
     projectId: string;
     found: DocumentRevision;
     requestedAnchor?: ReaderAnchor | null;
+    /** The session to address a requested comment to: "Ask the agent". */
+    requestedSession?: string | null;
     consumeAnchor: () => void;
+    /** Hide the comments column, where the page offers it. */
+    collapse?: (() => void) | null;
   } = $props();
   const initial = untrack(() => found);
   const id = $derived(found.document.document_id);
   const draftScope = untrack(() => `${projectId}:${initial.document.document_id}`);
   let draft = $state(startComment(initial, commentDrafts.load(draftScope).draft));
+  /** The new-comment form shows once there is something to comment on, or a draft. */
+  let composing = $state(untrack(() => draft.body !== ''));
   let sessions = $state<Session[]>([]);
   let sessionsError = $state<unknown>(null);
   const threads = $state(emptyList<CommentThread, string>());
@@ -66,6 +74,7 @@
   $effect(() => {
     const request = requestedAnchor;
     if (!request) return;
+    const session = requestedSession;
     consumeAnchor();
     if (request.documentId !== id || request.revision !== found.revision.number) return;
     draft.base = request.revision;
@@ -73,11 +82,17 @@
     draft.kind = request.kind;
     draft.math = request.math;
     draft.quote = request.quote;
+    if (session) draft.session = session;
     anchorNote = request.note;
+    composing = true;
     void tick().then(() => commentField?.focus());
   });
+  // Read once a revision: the list's read reads `found`, which the document view gives
+  // anew when it reads the same revision again.
+  const shownRevision = $derived(found.revision.number);
   $effect(() => {
-    void list.reload();
+    void shownRevision;
+    void untrack(() => list.reload());
     api
       .project(projectId)
       .then((project) => {
@@ -100,6 +115,7 @@
     void list.reload();
   }
   function discard() {
+    composing = false;
     draft.body = '';
     anchorNote = '';
     commentDrafts.clear(draftScope);
@@ -112,22 +128,31 @@
   }}
 />
 <section class="comments" aria-label="Document comments">
-  <p class="muted">
-    Select text in the document, then comment here. Choose a session to ask its main agent to act.
-  </p>
-  <details class="delivery-help">
-    <summary>How work requests are delivered</summary>
-    <p>
-      A running run takes it at its next safe point; an open session with no run starts one for it,
-      as a chat message does. A closed session keeps it for its next run: a request does not reopen
-      it.
-    </p>
-  </details>
+  <div class="comments-head">
+    <h3>
+      Comments{#if threads.items.length}<span class="count">{threads.items.length}</span>{/if}
+    </h3>
+    {#if collapse}<button
+        type="button"
+        class="icon-button"
+        aria-label="Hide comments"
+        title="Hide comments"
+        onclick={collapse}>»</button
+      >{/if}
+  </div>
   {#if error}<ErrorMessage {error} />{/if}
   <!-- The sessions a comment may be addressed to; failing to read them hides nothing else. -->
   {#if sessionsError}<ErrorMessage error={sessionsError} />{/if}
-  {#if found.matched && !found.revision.tombstone}
-    <h3>New comment</h3>
+  {#if found.matched && !found.revision.tombstone && !composing}
+    <p class="muted hint">
+      Select text in the document, then choose Comment in the toolbar that appears.
+      <button type="button" class="link-button" onclick={() => (composing = true)}
+        >Comment on a block</button
+      >
+    </p>
+  {/if}
+  {#if found.matched && !found.revision.tombstone && composing}
+    <h4>New comment</h4>
     {#if anchorNote}<p role="status">{anchorNote}</p>{/if}
     {#await anchorDocument}
       <p>Loading anchored revision…</p>
@@ -141,6 +166,9 @@
               ? 'selected text'
               : `block ${draft.block}`}
         </p>
+        {#if draft.kind === 'range' && draft.quote}<blockquote class="anchor-quote">
+            {draft.quote}
+          </blockquote>{/if}
         <label
           >Comment Markdown <textarea
             aria-label="Comment Markdown"
@@ -223,8 +251,10 @@
       </details>{/if}
   {/if}
   <div class="thread-heading">
-    <h3>Threads</h3>
-    <button disabled={threads.loading || posting.busy} onclick={refresh}>Refresh</button>
+    <span class="muted">{threads.items.length ? 'Threads on this revision' : ''}</span>
+    <button class="link-button" disabled={threads.loading || posting.busy} onclick={refresh}
+      >Refresh</button
+    >
   </div>
   {#if threads.items.length === 0 && !threads.loading}<p class="muted">
       No comments on this revision.
@@ -242,6 +272,14 @@
   {#if threads.next}<button disabled={threads.loading} onclick={() => list.more()}
       >Load more threads</button
     >{/if}
+  <details class="delivery-help">
+    <summary>How work requests are delivered</summary>
+    <p>
+      A comment addressed to a session asks its main agent to act. A running run takes it at its
+      next safe point; an open session with no run starts one for it, as a chat message does. A
+      closed session keeps it for its next run: a request does not reopen it.
+    </p>
+  </details>
 </section>
 
 <style>
@@ -250,17 +288,52 @@
   }
   .delivery-help {
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    margin-top: 1rem;
+  }
+  .comments-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .comments-head h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--muted);
+  }
+  .count {
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: var(--border);
+    color: var(--body-text);
+    font-size: 11px;
+  }
+  .hint {
+    font-size: 12px;
+    margin: 0 0 0.5rem;
+  }
+  .hint .link-button {
+    padding: 0;
+    min-height: 0;
+    font-size: 12px;
+  }
+  h4 {
+    margin: 0.25rem 0;
+    font-size: 13px;
   }
   .thread-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    margin-top: 1.5rem;
-  }
-  .thread-heading h3 {
-    margin: 0;
+    margin-top: 1rem;
+    font-size: 12px;
   }
   .anchor-summary {
     color: var(--muted);

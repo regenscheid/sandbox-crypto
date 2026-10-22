@@ -9,7 +9,7 @@ pool_id = "babbage"
 max_artifact_size = 1073741824   # bytes
 
 [openshell]                      # exactly one backend table
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
 python = "/sandbox/mamba/envs/tools/bin/python"
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"

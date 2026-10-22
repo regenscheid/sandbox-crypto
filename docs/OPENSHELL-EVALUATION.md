@@ -2,7 +2,7 @@
 
 Assessed: 2026-10-10. Recommendation: evaluate OpenShell as the first execution backend behind a replaceable workbench adapter. Adoption remains conditional on a measured feasibility spike.
 
-This is the planning assessment of 2026-10-10, kept as written. Since then OpenShell v0.1.3 with the MicroVM driver on babbage has been the only backend in phase 1 (D52, D63), exercised in the babbage labs ([lab reports](../.agents/docs/agent-reports/)). What is built is described in [worker](WORKER.md) and [policy middleware](POLICY-MIDDLEWARE.md); no Kubernetes driver has been tested.
+This is the planning assessment of 2026-10-10, kept as written. Since then OpenShell with the MicroVM driver on babbage has been the only backend in phase 1 (D52, D63), exercised at v0.1.3 in the babbage labs ([lab reports](../.agents/docs/agent-reports/)). What is built is described in [worker](WORKER.md) and [policy middleware](POLICY-MIDDLEWARE.md); no Kubernetes driver has been tested. The project now pins v0.1.5.
 
 ## Verified source baseline
 

@@ -95,7 +95,7 @@ for embedded subcomponents.
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |
 | PyYAML | MIT | Policy file parsing; living documents' front matter |
-| OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.3) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license, and the middleware package declares `MIT AND Apache-2.0` |
+| OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.5) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license, and the middleware package declares `MIT AND Apache-2.0` |
 | grpcio | Apache-2.0 | Policy middleware gRPC server |
 | protobuf | BSD-3-Clause | Policy middleware messages |
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |

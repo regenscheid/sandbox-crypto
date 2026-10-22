@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
-from sandbox_science.orchestrator.history import body
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.projects import RunRecord
 
 from .loop_harness import (

@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.export import EvidenceExport
-from sandbox_science.orchestrator.history.operations import ToolRecord
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
+from sandbox_science.orchestrator.context.history.operations import ToolRecord
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .route_support import ClientFactory, error_of, workspace

@@ -23,7 +23,7 @@ from sandbox_science.orchestrator.worker_client import (
     check_protocol,
 )
 
-from .api import TIMEOUTS, Timeouts
+from .context import TIMEOUTS, Timeouts
 
 MAX_BYTES: Final = 64 * 1024
 T = TypeVar("T", bound=BaseModel)

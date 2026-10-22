@@ -13,6 +13,7 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.cli import main
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.harness import Settings
 from sandbox_science.orchestrator.hooks import Closing, RunView, TurnHook
 from sandbox_science.orchestrator.loop import (
@@ -48,11 +49,15 @@ def last_user(messages: list[dict[str, object]]) -> str:
 
 
 def tool_messages(transcript: Transcript) -> list[str]:
-    return [str(m["content"]) for m in transcript.messages if m["role"] == "tool"]
+    return [str(m["content"]) for m in transcript.context.messages if m["role"] == "tool"]
 
 
 async def test_the_defaults_let_a_run_work_for_thousands_of_turns() -> None:
-    assert (MAX_TURNS, Settings().max_turns, Transcript(messages=[]).max_turns) == (2000,) * 3
+    assert (
+        MAX_TURNS,
+        Settings().max_turns,
+        Transcript(context=AgentContext(messages=[])).max_turns,
+    ) == (2000,) * 3
     with pytest.raises(ValueError, match="max_turns"):
         Settings(max_turns=TURNS_CEILING + 1)
     with pytest.raises(ValueError, match="max_turns"):
@@ -71,7 +76,7 @@ async def test_a_run_at_its_turn_limit_reports_what_it_found() -> None:
         "So far: x is 3; y is still open.",
         None,
     )
-    assert (transcript.turns, len(model.requests), len(transcript.usage)) == (3, 3, 3)
+    assert (transcript.turns, len(model.requests), len(transcript.context.usage)) == (3, 3, 3)
     asked = last_user(model.requests[-1])
     assert asked.startswith(REPORT.text)
     assert json.loads(asked[len(REPORT.text) :]) == {
@@ -79,7 +84,7 @@ async def test_a_run_at_its_turn_limit_reports_what_it_found() -> None:
         "detail": "its turn limit, 2 model calls",
     }
     # The report's tool call did not run: answered, and recorded beside the others.
-    assert transcript.messages[-1]["role"] == "tool"
+    assert transcript.context.messages[-1]["role"] == "tool"
     assert "not_run" in tool_messages(transcript)[-1]
     assert len(transcript.tool_records) == len(tool_messages(transcript)) == 3
     assert transcript.tool_records[-1]["not_run"] == "turn_limit"

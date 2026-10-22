@@ -493,8 +493,9 @@ with synthetic state and no live model, worker or OpenShell VM.
 
 ## Not built
 
-- An artifact's history of revisions and tombstones in the GUI, and a run's page that
-  lists its results, its recorded files and the gaps (RA-37).
+- A run's page that lists its results, its recorded files and the gaps (RA-37). An
+  artifact's history of revisions and tombstones is in the workspace's Artifacts page
+  (`ArtifactInventory.history`).
 - Complete telemetry and snapshotting, link semantics, authenticated feed binding and
   control ingestion of the worker's observations.
 - Imports and MCP binary results, retention drop workflows, observed inputs and kernel

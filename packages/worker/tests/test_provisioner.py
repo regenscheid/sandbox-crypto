@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -30,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 import pytest
 import pytest_asyncio
@@ -73,6 +74,7 @@ from sandbox_science.worker.catalog import Catalog
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.permissions import Permissions, PermissionStoreError
+from sandbox_science.worker.provision_stages import ProvisionStages
 from sandbox_science.worker.provisioner import Governing, Provisioner
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
@@ -396,6 +398,9 @@ async def make_world(
         environments: Any = None,
         clients: tuple[ClientSettings, ...] = (),
         kind: type[Provisioner] = Provisioner,
+        stages: type[ProvisionStages] | None = None,
+        permission_store: type[Permissions] = Permissions,
+        retain: float = 600.0,
     ) -> World:
         prefix = make_prefix(tmp_path)
         index = tmp_path / "index.json"
@@ -441,15 +446,18 @@ async def make_world(
         )
         await manager.start()
         clock = FakeClock(datetime.now(UTC))
+        if stages is not None:
+            monkeypatch.setattr(provisioner_module, "ProvisionStages", stages)
         provisioner = kind(
             manager,
             catalog=Catalog.parse(CATALOG.encode()),
             policies=governed,
-            permissions=Permissions(events),
+            permissions=permission_store(events),
             cache=url,
             restorer=restorer,
             clock=clock,
             poll=0.1,
+            retain=retain,
         )
         await provisioner.start()
         client = await aiohttp_client(
@@ -1185,7 +1193,7 @@ async def test_an_install_whose_executor_is_lost_is_looked_at_again(make_world: 
     assert (await world.queue()).status == "needs_recovery"
 
 
-class Blind(Provisioner):
+class Blind(ProvisionStages):
     """Cannot look at the packages after an install step."""
 
     async def _look(self, op: Any, label: str) -> int | None:
@@ -1195,7 +1203,7 @@ class Blind(Provisioner):
 @pytest.mark.asyncio
 async def test_an_install_whose_effect_is_unseen_needs_recovery(make_world: Factory) -> None:
     # CP-13: what nobody saw may have changed: the environment is marked, never left mixed.
-    world = await make_world(kind=Blind)
+    world = await make_world(stages=Blind)
     done = await world.finished((await world.provision("op-1", conda=["lostlink"]))["provision_id"])
     assert (done.outcome, done.reason, done.stage) == ("needs_recovery", "install_failed", "link")
     assert (done.revision_before, done.revision_after) == (0, None)
@@ -1206,7 +1214,7 @@ async def test_an_install_whose_effect_is_unseen_needs_recovery(make_world: Fact
     assert (await world.queue()).status == "needs_recovery"
 
 
-class IndexMoves(Provisioner):
+class IndexMoves(ProvisionStages):
     """Between the dry run and the install, the index changes as ``moves`` says, as when a
     new build is published."""
 
@@ -1230,7 +1238,7 @@ class AgplDependency(IndexMoves):
 
 @pytest.mark.asyncio
 async def test_the_install_is_pinned_to_the_decided_files(make_world: Factory) -> None:
-    world = await make_world(kind=NewBuild)
+    world = await make_world(stages=NewBuild)
     done = await world.finished((await world.provision("op-1", conda=["pari"]))["provision_id"])
     # The new gmp build is not the decided one: the pinned solve fails, and nothing changed.
     assert (done.outcome, done.reason, done.stage) == ("failed", "install_failed", "resolve")
@@ -1244,7 +1252,7 @@ async def test_the_install_is_pinned_to_the_decided_files(make_world: Factory) -
 @pytest.mark.asyncio
 async def test_an_agpl_package_the_decision_never_saw_needs_recovery(make_world: Factory) -> None:
     # CP-9 refuses before download; were one to come all the same, it is no silent success.
-    world = await make_world(kind=AgplDependency)
+    world = await make_world(stages=AgplDependency)
     done = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
     assert (done.outcome, done.reason, done.stage) == ("needs_recovery", "agpl_license", "link")
     assert done.error is not None
@@ -1260,8 +1268,8 @@ async def test_nothing_to_install_unconfirmed_by_a_lockfile_fails(
     world = await make_world()
     first = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
     assert first.outcome == "completed"
-    world.provisioner.lockfile_wait = 0.2
-    monkeypatch.setattr(world.provisioner.revisions, "lockfile_path", lambda *args: None)
+    world.provisioner.reconciliation.lockfile_wait = 0.2
+    monkeypatch.setattr(world.manager.revisions, "lockfile_path", lambda *args: None)
     again = await world.finished((await world.provision("op-2", conda=["fpylll"]))["provision_id"])
     assert (again.outcome, again.reason, again.stage) == ("failed", "probe_failed", "probe")
     assert [probe.status for probe in again.probes] == ["error"]
@@ -1391,9 +1399,9 @@ class StoreOutOfReach(Permissions):
 async def test_a_withdrawal_that_fails_is_owed_and_the_grant_still_ends(
     make_world: Factory,
 ) -> None:
-    world = await make_world(ESCALATE)
-    permissions = StoreOutOfReach(world.events)
-    world.provisioner.permissions = permissions
+    world = await make_world(ESCALATE, permission_store=StoreOutOfReach)
+    permissions = world.provisioner.permissions
+    assert isinstance(permissions, StoreOutOfReach)
     first = await world.waiting((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
     assert first.permission_request is not None
     world.answer("approve", first.permission_request)
@@ -1473,10 +1481,11 @@ async def test_delete_drain_requires_durable_classification_and_retries_sql_fail
     entered = asyncio.Event()
 
     class PausedInstall(Provisioner):
-        async def _operate(self, op: Any) -> None:
+        async def _operate(self, op: Any) -> Never:
             self._update(op, state=ProvisionState.INSTALLING, revision_before=0)
             entered.set()
             await asyncio.Event().wait()
+            raise AssertionError("fixture must be cancelled")
 
     world = await make_world(kind=PausedInstall)
     world.manager.store.bind_package_gate("env1", "original-synthetic-binding")
@@ -1769,3 +1778,84 @@ async def test_cancelled_changed_upgrade_keeps_cp13_recovery_hold(make_world: Fa
     )
     assert refused["error"]["kind"] == "unavailable"
     assert world.prefix.log.read_bytes() == before
+
+
+@pytest.mark.parametrize("drain", ["close", "forget"])
+async def test_public_terminal_record_releases_turn_while_observation_remains_owned(
+    make_world: Factory, monkeypatch: pytest.MonkeyPatch, drain: str
+) -> None:
+    """A terminal record and queue release do not mean its writer has drained."""
+    world = await make_world()
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    original = Permissions.observation
+    blocked = False
+
+    def observation(self: Permissions, kind: str, payload: dict[str, object]) -> int:
+        nonlocal blocked
+        if kind == "provision.finished" and not blocked:
+            blocked = True
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(10), "fixture writer release deadline"
+        return original(self, kind, payload)
+
+    monkeypatch.setattr(Permissions, "observation", observation)
+    owner: asyncio.Task[None] | None = None
+    try:
+        first = await world.provision("terminal-owner", system=["synthetic-system-package"])
+        await asyncio.wait_for(entered.wait(), 5)
+        terminal = await world.finished(first["provision_id"])
+        assert terminal.outcome == "denied"
+        assert world.store.provision(terminal.provision_id) == terminal
+        assert not (await world.queue()).operations
+        following = await world.provision("next-turn", system=["another-system-package"])
+        assert (await world.finished(following["provision_id"])).outcome == "denied"
+        owner = asyncio.create_task(
+            world.provisioner.close() if drain == "close" else world.provisioner.forget("env1")
+        )
+        await asyncio.sleep(0)
+        assert not owner.done()
+        assert world.store.provision(terminal.provision_id) == terminal
+    finally:
+        release.set()
+        if owner is not None:
+            await owner
+    events = [x for x in world.records() if x.kind == "provision.finished"]
+    assert {x.data()["provision_id"] for x in events} == {
+        first["provision_id"],
+        following["provision_id"],
+    }
+
+
+async def test_public_forget_retries_terminal_write_after_retention_expired(
+    make_world: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drained coroutine whose terminal write failed stays available for recovery."""
+    world = await make_world(retain=0.001)
+    original = Store.update_provision
+    failed_write = asyncio.Event()
+    unavailable = True
+
+    def update(store: Store, record: ProvisionOperation) -> None:
+        if unavailable and record.state is ProvisionState.FINISHED:
+            failed_write.set()
+            raise OSError("synthetic terminal write unavailable")
+        original(store, record)
+
+    monkeypatch.setattr(Store, "update_provision", update)
+    submitted = await world.provision("terminal-write-failure", system=["synthetic-system"])
+    await asyncio.wait_for(failed_write.wait(), 5)
+    with pytest.raises(WorkerError, match="not durably finished"):
+        await world.provisioner.forget("env1")
+    retained = world.provisioner.get(submitted["provision_id"])
+    assert retained.state is not ProvisionState.FINISHED
+    # A public long poll lets the ordinary retirement deadline expire without
+    # inspecting the coordinator's owner dictionary or scheduling private hooks.
+    after_retention = await world.provisioner.wait(retained.provision_id, retained.seq, 0.02)
+    assert after_retention.state is not ProvisionState.FINISHED
+    assert not world.store.provisioning_finished("env1")
+    unavailable = False
+    await world.provisioner.forget("env1")
+    assert world.store.provisioning_finished("env1")
+    assert world.provisioner.get(retained.provision_id).state is ProvisionState.FINISHED

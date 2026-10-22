@@ -12,8 +12,9 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
-from sandbox_science.orchestrator.history.export import EvidenceExport
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import RunRecord
 
@@ -29,7 +30,7 @@ async def test_long_child_loop_retrieval_receipts_and_finalization(tmp_path: Pat
 
     with tree(tmp_path) as found:
         hook = found.hook(finished, cap=2)
-        transcript = Transcript(messages=[])
+        transcript = Transcript(context=AgentContext(messages=[]))
         tracemalloc.start()
         peaks: list[int] = []
         first = ""
@@ -141,7 +142,7 @@ async def test_reused_cli_run_id_keeps_full_attempt_history_and_export_scope(
                 identity = str(json.loads(text)["delegation_id"])
                 identities.append(identity)
                 await hook.call("wait_delegations", {"delegation_ids": [identity]})
-                await hook.model_returned(Transcript(messages=[]))
+                await hook.model_returned(Transcript(context=AgentContext(messages=[])))
         for parent, hook, identity in zip((first, second), hooks, identities, strict=True):
             assert hook.started.scope == hook.received.scope == (PROJECT, SESSION, parent)
             assert list(hook.started) == list(hook.received) == [identity]

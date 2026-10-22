@@ -16,6 +16,7 @@ import type {
   Requested,
   RunEvent,
   RunLease,
+  RunEntry,
 } from './api-types';
 import { formatCost } from './format';
 import { ApiError, get, post } from './http';
@@ -143,7 +144,36 @@ export interface ChatReads {
   /** The session's latest questions to the user, or with `open` its open ones only;
    * without it, the view has none. */
   questions?(open: boolean, signal?: AbortSignal): Promise<QuestionListing>;
+  /** The session's runs; its main ones are shown too, so a run no message names, such as
+   * a resumed or continued one, stays in the conversation after the next one starts. */
+  runs?(signal?: AbortSignal): Promise<readonly RunEntry[]>;
 }
+
+/** Polls between readings of the session's runs, besides when the lease changes. */
+const RUNS_EVERY = 4;
+
+/** Who writes the session's automatic continuations of an open plan (auto_continuation.py). */
+export const CONTINUATION_AUTHOR = 'research-supervisor';
+
+/** The continuation's own words (auto_continuation.py), which a resumed run repeats without
+ * naming its message. */
+const CONTINUATION_TEXT =
+  /^The active research plan \S+ version \d+ remains open after the previous root answered\./;
+
+/**
+ * Whether a run's input is the platform's automatic continuation rather than the user's:
+ * a message its author wrote, or one in its words. The chat folds it to "Continuation".
+ */
+export function isContinuation(
+  text: string,
+  message: string | null,
+  continuations: ReadonlySet<string>,
+): boolean {
+  return (message !== null && continuations.has(message)) || CONTINUATION_TEXT.test(text.trim());
+}
+
+/** A run name's start time, as the service writes it: ``20261022T014900864922Z-run-…``. */
+const STARTED = /^\d{8}T\d{6}\d*Z-/;
 
 /** The most runs the panel shows; earlier ones are in the session's run list. */
 export const MAX_RUNS = 5;
@@ -174,6 +204,8 @@ export class ChatFeed {
    * `stopped` event once it reaps the run. */
   #grace = new Map<string, number>();
   #lease: RunLease | null = null;
+  /** The session's main runs, as last read (``ChatReads.runs``). */
+  #roots: string[] = [];
   #service = false;
   #environment: EnvironmentState | null = null;
   #questions: Question[] = [];
@@ -197,6 +229,7 @@ export class ChatFeed {
     this.#recheck = false;
     // The server answers the environment for the page that holds a queued message.
     let environment: EnvironmentState | null = null;
+    const leased = this.#lease?.run ?? null;
     for (let page = 0; page < PAGES_PER_READ; page++) {
       const listing = await this.reads.messages(after, signal);
       this.#lease = listing.run;
@@ -208,6 +241,22 @@ export class ChatFeed {
     }
     this.#environment = environment;
     if (this.reads.questions) await this.#readQuestions(this.reads.questions, signal);
+    if (
+      this.reads.runs &&
+      (this.#polls % RUNS_EVERY === 1 || (this.#lease?.run ?? null) !== leased)
+    ) {
+      // Only more runs to show: a failed or odd answer keeps the last list, and never
+      // stops the conversation, which the messages and the lease carry on their own.
+      try {
+        const runs: unknown = await this.reads.runs(signal);
+        if (Array.isArray(runs))
+          this.#roots = (runs as RunEntry[])
+            .filter((run) => run?.role === 'main' && run.parent === null)
+            .map((run) => run.name);
+      } catch (caught) {
+        if (signal?.aborted) throw caught;
+      }
+    }
     this.#follow();
     for (const run of this.#runs.values()) {
       if (this.#finished.has(run.run)) continue;
@@ -272,8 +321,9 @@ export class ChatFeed {
   /**
    * The runs to show, rebuilt each poll: the newest `MAX_RUNS` of those the messages name
    * (the run that delivered each, or else the one that last offered it), in the order of
-   * their first message, then the run holding the session. A run kept keeps its events;
-   * one older than the window is not shown again.
+   * their first message, the session's main runs, and the run holding the session. Run
+   * names begin with their start time, so when all do, they are shown in that order. A run
+   * kept keeps its events; one older than the window is not shown again.
    */
   #follow(): void {
     const named: string[] = [];
@@ -281,7 +331,9 @@ export class ChatFeed {
       const run = message.run ?? message.offered;
       if (run !== null && !named.includes(run)) named.push(run);
     }
+    for (const run of this.#roots) if (!named.includes(run)) named.push(run);
     if (this.#lease && !named.includes(this.#lease.run)) named.push(this.#lease.run);
+    if (named.every((run) => STARTED.test(run))) named.sort();
     const shown = new Map<string, WatchedRun>();
     for (const run of named.slice(-MAX_RUNS))
       shown.set(run, this.#runs.get(run) ?? { run, state: 'active', events: [] });
@@ -322,18 +374,34 @@ export class ChatFeed {
 /** One line of the transcript, from a run's events. */
 export type ChatEntry =
   | { kind: 'started'; seq: number; text: string }
-  | { kind: 'user'; seq: number; text: string; pins: Record<string, unknown>[] }
+  | {
+      kind: 'user';
+      seq: number;
+      text: string;
+      pins: Record<string, unknown>[];
+      /** The message the run was given, when it names one. */
+      message: string | null;
+    }
   | {
       kind: 'assistant';
       seq: number;
       text: string;
       /** The text's references to recorded files, as the event pins them (FG-7, F2). */
       pins: Record<string, unknown>[];
-      calls: { name: string; arguments: string }[];
+      /** The tools this model call called; ``id`` is the call's, which a question names. */
+      calls: { id: string; name: string; arguments: string }[];
       /** This model call's tokens, as the gateway reported them; null when not recorded. */
       usage: string | null;
     }
-  | { kind: 'tool'; seq: number; name: string; outcome: string; result: string }
+  | {
+      kind: 'tool';
+      seq: number;
+      /** The call this result answers, by its ID; empty when the event does not say. */
+      call: string;
+      name: string;
+      outcome: string;
+      result: string;
+    }
   | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string };
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -458,6 +526,30 @@ export function tokensText(value: unknown): string | null {
 }
 
 /**
+ * Where a run's questions go in its transcript: each after the entry whose model call
+ * asked it (the `ask_user` call the question names), so that what came later stays below
+ * it. A question whose call is not among the entries, as before its events load, is
+ * `unplaced`, and is shown after the transcript.
+ */
+export function placeQuestions<T extends { tool_call: string }>(
+  entries: readonly ChatEntry[],
+  questions: readonly T[],
+): { after: Map<number, T[]>; unplaced: T[] } {
+  const asked = new Map<string, number>();
+  for (const entry of entries)
+    if (entry.kind === 'assistant')
+      for (const call of entry.calls) if (call.id) asked.set(call.id, entry.seq);
+  const after = new Map<number, T[]>();
+  const unplaced: T[] = [];
+  for (const question of questions) {
+    const seq = asked.get(question.tool_call);
+    if (seq === undefined) unplaced.push(question);
+    else after.set(seq, [...(after.get(seq) ?? []), question]);
+  }
+  return { after, unplaced };
+}
+
+/**
  * The transcript of a run's events, in order. A `model` event (a model call began) shows
  * nothing itself; `thinking` says whether one is in progress.
  */
@@ -479,9 +571,17 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
             ? ` Connector servers unavailable, their listing failed: ${unavailable.join('; ')}. The agent is told, and its first mcp_tools call lists them again.`
             : ''),
       });
-    } else if (kind === 'user') entries.push({ kind: 'user', seq, text: text(data['text']), pins });
+    } else if (kind === 'user')
+      entries.push({
+        kind: 'user',
+        seq,
+        text: text(data['text']),
+        pins,
+        message: typeof data['message_id'] === 'string' ? data['message_id'] : null,
+      });
     else if (kind === 'assistant') {
       const calls = list(data['tool_calls']).map((call) => ({
+        id: text(record(call)['id']),
         name: text(record(call)['name']),
         arguments: text(record(call)['arguments']),
       }));
@@ -497,6 +597,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
       entries.push({
         kind: 'tool',
         seq,
+        call: text(data['call_id']),
         name: text(data['name']) || 'tool',
         outcome: outcomeText(data['outcome']),
         result: text(data['result']),
@@ -507,6 +608,18 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         kind: 'note',
         seq,
         text: `Notices from ${text(data['source'])}: ${ids}.`,
+        problem: false,
+      });
+    } else if (kind === 'waiting' && 'permission_request' in data) {
+      // A connector call held for the user's answer (D76), or the end of that wait.
+      const request = data['permission_request'];
+      entries.push({
+        kind: 'note',
+        seq,
+        text:
+          typeof request === 'number'
+            ? `Waiting for your approval of ${visible(text(data['tool']))} on ${visible(text(data['server']))} (permission request ${request}).`
+            : 'The wait for approval ended.',
         problem: false,
       });
     } else if (kind === 'waiting') {
@@ -546,6 +659,17 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
     }
   }
   return entries;
+}
+
+/** The tool a running run waits on the user's approval for, or null. */
+export function awaitingApproval(run: WatchedRun | null | undefined): string | null {
+  if (run?.state !== 'active') return null;
+  for (let index = run.events.length - 1; index >= 0; index--) {
+    const event = run.events[index]!;
+    if (event.kind !== 'waiting' || !('permission_request' in event.data)) continue;
+    return typeof event.data['permission_request'] === 'number' ? text(event.data['tool']) : null;
+  }
+  return null;
 }
 
 /** Whether the run is in a model call now: active, and its last event began one. */

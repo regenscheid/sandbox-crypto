@@ -46,12 +46,13 @@ connectors are offered only to runs of that project.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, cast
 from urllib.parse import urlsplit
@@ -425,8 +426,18 @@ class Connectors:
         list_seconds: float = LIST_SECONDS,
         about: Mapping[str, str] | None = None,
         shown: Sequence[str] | None = None,
+        disabled: Callable[[], frozenset[str]] | None = None,
+        on_approval: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
     ) -> None:
         self.client, self.servers, self.session = client, tuple(dict.fromkeys(servers)), session
+        self.disabled = disabled
+        self.on_approval = on_approval
+        """Hears that a call waits for the user's answer to its permission request, and
+        that the wait ended (``None``). With it, a call that needs approval waits in place,
+        retried as it was made, until the request is answered or times out; without it,
+        the call fails at once and the agent is told to call it again later."""
+        """The servers the project's user turned off, read again before each call, so a
+        server turned off during a run takes no more of its calls."""
         self.list_seconds = list_seconds
         self.tools: dict[str, ConnectorTool] = {}
         self.about = {
@@ -707,20 +718,59 @@ class Connectors:
         """Call a connector tool: its text for the model, and the record to keep."""
         tool = self.tools[name]
         record: dict[str, Any] = {"connector": tool.server}
-        try:
-            result = await self.client.request(
-                tool.server,
-                "tools/call",
-                {"name": name, "arguments": arguments},
-                session=self.session,
+        if self.disabled is not None and tool.server in await asyncio.to_thread(self.disabled):
+            record["error"] = "connector_disabled"
+            message = (
+                f"The project's user turned off the {tool.server} connector. Do not call its "
+                "tools; carry on without it, and say so if the work needs it."
             )
-        except ConnectorError as error:
-            if error.kind == "no_usable_answer":
-                raise UnknownEffectError(error.kind, error.message) from error
-            record["error"] = error.kind
-            if error.kind == "approval_required" and "request" in error.data:
-                record["permission_request"] = error.data["request"]
-            return dump({"error": {"kind": error.kind, "message": _explain(error)}}), record
+            return dump({"error": {"kind": "connector_disabled", "message": message}}), record
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        waiting: object = None
+        try:
+            while True:
+                try:
+                    result = await self.client.request(
+                        tool.server,
+                        "tools/call",
+                        {"name": name, "arguments": arguments},
+                        session=self.session,
+                    )
+                    break
+                except ConnectorError as error:
+                    request = error.data.get("request")
+                    elapsed = loop.time() - started
+                    if (
+                        error.kind == "approval_required"
+                        and self.on_approval is not None
+                        and isinstance(request, int)
+                        and elapsed < MAX_APPROVAL_WAIT
+                    ):
+                        # The same call again: its arguments' digest names the same request,
+                        # so it proceeds once the user approves it, and is refused if denied.
+                        if waiting is None:
+                            waiting = request
+                            record["permission_request"] = request
+                            await self.on_approval(
+                                {"permission_request": request, "server": tool.server,
+                                 "tool": name}
+                            )  # fmt: skip
+                        await asyncio.sleep(APPROVAL_POLL[0 if elapsed < 60 else 1])
+                        continue
+                    if error.kind == "no_usable_answer":
+                        raise UnknownEffectError(error.kind, error.message) from error
+                    record["error"] = error.kind
+                    if error.kind in _ANSWERED and "request" in error.data:
+                        record["permission_request"] = error.data["request"]
+                    return (
+                        dump({"error": {"kind": error.kind, "message": _explain(error)}}),
+                        record,
+                    )
+        finally:
+            if waiting is not None and self.on_approval is not None:
+                with contextlib.suppress(Exception):
+                    await self.on_approval(None)
         text = _text(result)
         if result.get("isError") is True:
             record["error"] = "tool_error"
@@ -728,13 +778,23 @@ class Connectors:
         return text, record
 
 
+APPROVAL_POLL: Final = (3.0, 10.0)
+"""Seconds between retries of a call that waits for approval: in its first minute, then
+after. Each retry is one more audited call at the proxy."""
+MAX_APPROVAL_WAIT: Final = 2 * 3600.0
+"""The longest a call waits for an answer; the policy's timeout usually ends it first."""
+_ANSWERED: Final = frozenset({"approval_required", "approval_denied", "escalation_timed_out"})
+
+
 def _explain(error: ConnectorError) -> str:
     if error.kind == "approval_required":
         request = error.data.get("request")
         return (
-            f"{error.message}. The MCP proxy holds this call until the operator approves "
+            f"{error.message}. The MCP proxy holds this call until the user approves "
             f"permission request {request}; call it again later with the same arguments."
         )
+    if error.kind == "approval_denied":
+        return f"{error.message}. The user denied this call: do not call it again."
     if error.kind == "no_usable_answer":
         return (
             f"{error.message}. The call was sent, and the server may have done the work: "

@@ -1,7 +1,7 @@
 # Kubernetes operations increment
 
 Status: implementation contract, 2026-10-20. Continues [Kubernetes work](../KUBERNETES.md)
-and D91. The owner authorizes implementation and disposable local qualification,
+and D92. The owner authorizes implementation and disposable local qualification,
 but defers all image publication. Private site values and credentials stay out of
 Git. Nothing here authorizes deletion of a research PVC or mutation of a preserved
 research instance.

@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import codecs
 import contextlib
 import functools
@@ -35,7 +34,6 @@ import os
 import platform
 import re
 import secrets
-import shutil
 import signal
 import socket
 import stat
@@ -46,18 +44,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Protocol, cast
-
-
-async def _owned[T](work: Awaitable[T], cancelled: Callable[[], None] | None = None) -> T:
-    """Cancellation cannot outlive an actual process launch or its cleanup."""
-    task = asyncio.ensure_future(work)
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            if cancelled is not None:
-                cancelled()
-    return task.result()
 
 
 def _sibling(name: str) -> ModuleType:
@@ -83,6 +69,8 @@ if TYPE_CHECKING:
     from . import (
         binding_inventory,
         capture,
+        executor_admission,
+        executor_lifecycle,
         provisioning,
         sandbox_files,
         sandbox_processes,
@@ -96,6 +84,8 @@ if TYPE_CHECKING:
 else:
     binding_inventory = _sibling("binding_inventory")
     capture = _sibling("capture")
+    executor_lifecycle = _sibling("executor_lifecycle")
+    executor_admission = _sibling("executor_admission")
     provisioning = _sibling("provisioning")
     sandbox_files = _sibling("sandbox_files")
     sandbox_processes = _sibling("sandbox_processes")
@@ -105,6 +95,8 @@ else:
     encode_line = sandbox_files.encode_line
     SHARED = sandbox_files.SHARED
     MAX_PATH_BYTES = sandbox_files.MAX_PATH_BYTES
+
+_owned = executor_lifecycle.owned
 
 PROTOCOL = 3
 """The executor's protocol: 3 checks generated restrictions at every binding-bearing
@@ -156,9 +148,7 @@ MAX_SENTINELS = 8
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_SOURCE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
-_COMMAND_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 _BINDING_VALUE_RE = re.compile(r"[^\x00-\x20\x7f;]{1,4096}")
 """A binding's value: a path, without whitespace, control characters or ``;``."""
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -168,7 +158,7 @@ Send = Callable[[Message], Awaitable[None]]
 
 
 class Clock(Protocol):
-    """Time for stopping idle kernels; the worker's tests pass a fake one.
+    """Monotonic admission, execution and lifecycle time; tests pass a fake one.
 
     The same shape as ``sandbox_science.contracts.Clock``, which the executor cannot
     import: it runs with the standard library only.
@@ -189,20 +179,6 @@ class _SystemClock:
 
 class _NotStartedError(Exception):
     """An attempt cancelled before it started: a cell before it reached its kernel."""
-
-
-@dataclass
-class _Change:
-    """A change to the environment's packages, as one ``revision`` event reports it."""
-
-    fingerprint: str
-    managed: bool
-    cause: str | None
-    """The execution that ran its package commands, or after which it was seen."""
-    commands: list[Message] = field(default_factory=list[Message])
-    lockfile: object = None
-    names: list[str] = field(default_factory=list[str])
-    """The journal records it accounts for, which leave the journal once it is sent."""
 
 
 class _BusyError(Exception):
@@ -680,45 +656,51 @@ class Executor:
         # Opt-in only: a local executor must never mark the developer's Python prefix.
         self.clock: Clock = clock or _SystemClock()
         self.captures = capture.Pool(root)
+        self.files = sandbox_files.Requests(root, max_read=MAX_READ, max_list=MAX_LIST)
         self.owner_prefix = ""
         self.kernel_idle = kernel_idle
         """Stop a kernel nobody has used for this many seconds; None keeps them."""
-        self.reaper: asyncio.Task[None] | None = None
         self.send = send
         self.subreaper = subreaper
         self.protected = protected
         """Whether this process adopts orphans, so leftovers are found below it."""
-        self.running: dict[str, Running] = {}
-        self.kernels: dict[tuple[str, str, str], Kernel] = {}
-        """By session, run (empty for the session's own) and language."""
-        self.ended_runs: dict[str, dict[str, None]] = {}
-        """By session, the runs whose kernels were closed, oldest first."""
-        self.tasks: set[asyncio.Task[None]] = set()
-        self.launch_controls: set[asyncio.Task[Any]] = set()
+        self.lifecycle = executor_lifecycle.Lifecycle(
+            self.clock,
+            make_kernel=self.make_kernel,
+            error=ToolError,
+            signal=self.signal_command,
+            leftovers=self.leftovers,
+            collect=end_and_collect,
+            end_descendants=self.end_descendants,
+            close_resources=self.captures.close,
+            languages=tuple(KERNEL_NAMES),
+            max_run_kernels=MAX_RUN_KERNELS,
+            max_ended_runs=MAX_ENDED_RUNS,
+            term_grace=TERM_GRACE,
+            package_grace=PACKAGE_GRACE,
+        )
         self.configured: dict[str, str] = {}
         """Variables from ``configure``, added to every command's and kernel's environment."""
-        self.closing = False
-        self.package_gate_id = "gate-" + secrets.token_hex(12)
-        self.package_generation = -1
-        self.package_mode = "hold"
-        self.package_operation = ""
-        self.package_revision: int | None = None
-        self.package_launch = asyncio.Lock()
-        """Shutting down: attempts it stops are not reported as ended. The worker
-        reports them lost when this connection closes, since it stopped them."""
         # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
         self.packages = provisioning.State(root / ".executor" / "provisioning")
         self.places = provisioning.Places.here()
         self.provisioning: provisioning.Config | None = None
         """None when the wrappers could not be written: package commands then run as they are."""
         self.wrapped: list[str] = []
-        self.observing = asyncio.Lock()
-        """Held while looking at the environment and reporting what changed, so that the
-        worker learns of each revision before any result that shows it."""
-        self.owners: dict[str, list[tuple[float, str]]] = {}
-        """The attempts each call or kernel ran, with when they started, by its OWNER mark."""
-        self.reported = ""
-        self.package_epoch = 0
+        self.admission = executor_admission.Admission(
+            self.clock,
+            closed=lambda: self.lifecycle.closing,
+            error=ToolError,
+            busy=_BusyError,
+            not_started=_NotStartedError,
+            send=send,
+            remove_records=self.packages.remove_records,
+            usable=provisioning.usable,
+            max_lockfile_event=MAX_LOCKFILE_EVENT,
+            max_commands=MAX_COMMANDS,
+            max_owners=MAX_OWNERS,
+            max_runs=MAX_RUNS,
+        )
         self.binding_inventory = binding_inventory.Inventory()
         self.binding_inventory_lock = asyncio.Lock()
         """The packages' fingerprint as the worker knows it, from ``hello`` and the
@@ -726,7 +708,7 @@ class Executor:
         try:
             config = provisioning.Config(sys.executable, str(PROVISIONING), sys.prefix, self.places)
             self.wrapped = provisioning.refresh(self.packages, config, self.tool_path())
-            self.reported = (
+            self.admission.reported = (
                 provisioning.fingerprint(self.places)
                 if require_workspace_prefix
                 else provisioning.baseline(self.packages, self.places)
@@ -734,7 +716,38 @@ class Executor:
             self.provisioning = config
         except OSError as exc:
             print(f"executor: package commands run without turns: {exc}", file=sys.stderr)
-            self.reported = provisioning.fingerprint(self.places)
+            self.admission.reported = provisioning.fingerprint(self.places)
+
+    async def op_package_gate(self, request: Message) -> None:
+        restore = self.restore_prefix if self.require_workspace_prefix else None
+        await self.reply(request, **await self.admission.update(request, restore))
+
+    async def restore_prefix(self, baseline: Message, request: Message) -> None:
+        """Settle a restored prefix's baseline only while its recorded evidence still holds.
+
+        Runs under the launch permit; takes the package shared lock, then observation.
+        """
+        descriptor = self.packages.try_lock(exclusive=False)
+        if descriptor is None:
+            raise ToolError("unavailable", "prefix restoration has an active package turn")
+        try:
+            async with self.admission.observing:
+                prefix = await asyncio.to_thread(workspace_prefix.report, sys.prefix)
+                actual = await asyncio.to_thread(provisioning.fingerprint, self.places)
+                if (
+                    set(baseline) != {"identity", "fingerprint"}
+                    or "error" in prefix
+                    or prefix.get("identity") != baseline.get("identity")
+                    or actual != baseline.get("fingerprint")
+                    or await asyncio.to_thread(self.packages.pending)
+                ):
+                    raise ToolError("unavailable", "prefix restoration evidence changed")
+                self.admission.controller_present(request)
+                if self.admission.reported != actual:
+                    self.admission.epoch += 1
+                    self.admission.reported = actual
+        finally:
+            os.close(descriptor)
 
     # Plumbing.
 
@@ -760,11 +773,12 @@ class Executor:
             chunk = text[start : start + STREAM_CHUNK]
             await self.event(execution, "stream", name=name, text=chunk)
 
+    def start_idle_reaper(self, idle: float) -> None:
+        """Start this connection's owned idle-kernel task."""
+        self.lifecycle.start_idle_reaper(idle)
+
     def spawn(self, coroutine: Awaitable[None]) -> asyncio.Task[None]:
-        task = asyncio.ensure_future(coroutine)
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
-        return task
+        return self.lifecycle.spawn(coroutine)
 
     async def handle(self, request: Message) -> None:
         handlers: dict[str, Callable[[Message], Awaitable[None]]] = {
@@ -806,41 +820,15 @@ class Executor:
             await self.fail(request, ToolError("internal", message))
 
     async def shutdown(self) -> None:
-        """Stop every command and kernel, then anything still running below this process."""
-        await _owned(self.finish_shutdown(asyncio.current_task()))
+        await self.lifecycle.shutdown()
 
-    async def finish_shutdown(self, requester: asyncio.Task[Any] | None) -> None:
-        self.closing = True
-        await self.captures.close()
-        if self.reaper is not None:
-            self.reaper.cancel()
-        running = list(self.running.values())
-        await asyncio.gather(
-            *(self.terminate(item) for item in running if item.process is not None),
-            return_exceptions=True,
-        )
-        for item in running:
-            item.cancel_requested = True
-            if item.task is not None:
-                item.task.cancel()
-        await asyncio.gather(
-            *(item.task for item in running if item.task is not None), return_exceptions=True
-        )
-        controls = [
-            task for task in self.launch_controls if task not in (requester, asyncio.current_task())
-        ]
-        for task in controls:
-            task.cancel()
-        await asyncio.gather(*controls, return_exceptions=True)
-        await asyncio.gather(
-            *(kernel.stop() for kernel in self.kernels.values()), return_exceptions=True
-        )
+    async def end_descendants(self) -> None:
         await asyncio.to_thread(sandbox_processes.end_descendants)
 
     # Paths and environment.
 
     def session(self, request: Message) -> str:
-        return self.session_name(request.get("session"))
+        return self.files.session_name(request.get("session"))
 
     def bindings(
         self, request: Message, env: Mapping[str, str]
@@ -925,34 +913,6 @@ class Executor:
         else:
             yield
 
-    def session_name(self, session: object) -> str:
-        if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
-            raise ToolError("invalid_request", f"invalid session {session!r}")
-        return session
-
-    def session_dir(self, session: object) -> Path:
-        return self.root / "sessions" / self.session_name(session)
-
-    def split(self, session: object, path: object) -> tuple[list[str], list[str]]:
-        """A workspace path's base (its directories below the root) and the rest of it."""
-        if not isinstance(path, str):
-            raise ToolError("invalid_request", "path must be a string")
-        sandbox_files.check_relative(path)
-        if path == SHARED or path.startswith(SHARED + "/"):
-            return [SHARED], path.split("/")[1:]
-        return ["sessions", self.session_name(session)], [] if path == "." else path.split("/")
-
-    def open_base(self, base: Sequence[str]) -> int:
-        """Open the session workspace or the shared area, creating it, through no symlink."""
-        root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        return sandbox_files.walk(root, base, "/".join(base), create=True)
-
-    def directory(self, session: object, path: object) -> Path:
-        """A workspace directory's path, once it is known to exist with no symlink on the way."""
-        base, rest = self.split(session, path)
-        os.close(sandbox_files.walk(self.open_base(base), rest, str(path), create=False))
-        return self.root.joinpath(*base, *rest)
-
     def snapshot(self, session: str) -> tuple[dict[str, tuple[int, int, int]], bool]:
         """The regular files of the session workspace and the shared area.
 
@@ -965,7 +925,7 @@ class Executor:
             ("shared", SHARED + "/", [SHARED]),
         ):
             try:
-                directory = self.open_base(base)
+                directory = self.files.open_base(base)
             except (OSError, ToolError):
                 files.error = True
                 continue
@@ -1013,7 +973,7 @@ class Executor:
         if self.provisioning is not None:
             env.update(provisioning.variables(self.packages, env, self.wrapped))
         env["SANDBOX_SCIENCE_DAEMON_MARK"] = self.owner_prefix
-        env["SESSION_WORKSPACE"] = str(self.session_dir(session))
+        env["SESSION_WORKSPACE"] = str(self.files.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
         return env
 
@@ -1021,22 +981,19 @@ class Executor:
     # reaches the worker as a ``revision`` event before any result that shows it.
 
     async def baseline(self) -> str:
-        """The packages' fingerprint as this executor starts, which ``hello`` reports."""
-        async with self.observing:
+        """The packages' fingerprint as this executor starts, which hello reports."""
+        async with self.admission.observing:
             if self.require_workspace_prefix:
                 # The daemon owns the settled baseline. Reconnecting must not discard
                 # pending package journals or report changes before their replay.
-                return self.reported
-            previous = self.reported
+                return self.admission.reported
             if self.provisioning is None:
-                self.reported = await asyncio.to_thread(provisioning.fingerprint, self.places)
+                fingerprint = await asyncio.to_thread(provisioning.fingerprint, self.places)
             else:
-                self.reported = await asyncio.to_thread(
+                fingerprint = await asyncio.to_thread(
                     provisioning.baseline, self.packages, self.places
                 )
-            if previous and previous != self.reported:
-                self.package_epoch += 1
-            return self.reported
+            return self.admission.baseline(fingerprint)
 
     async def begin(self, running: Running, timeout: float) -> str | None:
         """Wait while a package command changes the environment, then look at it (CP-12).
@@ -1047,7 +1004,7 @@ class Executor:
         """
         if self.provisioning is None:
             return None
-        started = time.monotonic()
+        started = self.clock.monotonic()
         delay = 0.02
         while True:
             try:
@@ -1059,14 +1016,14 @@ class Executor:
                 break
             if running.cancel_requested:
                 raise _NotStartedError
-            waited = time.monotonic() - started
+            waited = self.clock.monotonic() - started
             if waited >= timeout:
                 raise _BusyError(waited, await asyncio.to_thread(self.packages.holding))
-            await asyncio.sleep(min(delay, timeout - waited))
+            await self.clock.sleep(min(delay, timeout - waited))
             delay = min(2 * delay, PACKAGE_POLL)
-        running.waited = time.monotonic() - started
+        running.waited = self.clock.monotonic() - started
         try:
-            await self.observing.acquire()
+            await self.admission.observing.acquire()
         except BaseException:
             os.close(held)
             raise
@@ -1075,17 +1032,21 @@ class Executor:
             for _ in range(MAX_LOOKS):
                 # observe closes the descriptor, in its thread, however this task ends.
                 observed = await asyncio.to_thread(
-                    provisioning.observe, self.packages, self.places, self.reported, descriptor
+                    provisioning.observe,
+                    self.packages,
+                    self.places,
+                    self.admission.reported,
+                    descriptor,
                 )
                 descriptor = None
-                await self.report(running.execution, observed, None)
+                await self.admission.report(running.execution, observed, None)
                 if observed.complete:
                     break
         except OSError as exc:
             print(f"executor: cannot read the package journal: {exc}", file=sys.stderr)
             return None
         finally:
-            self.observing.release()
+            self.admission.observing.release()
         # A manager installed since (pip install uv) gets its wrapper.
         try:
             self.wrapped = await asyncio.to_thread(
@@ -1093,7 +1054,7 @@ class Executor:
             )
         except OSError as exc:
             print(f"executor: cannot write the package wrappers: {exc}", file=sys.stderr)
-        return self.reported
+        return self.admission.reported
 
     async def settle(self, running: Running) -> Message:
         """Report what changed while an attempt ran: the result's ``environment`` fields.
@@ -1103,7 +1064,7 @@ class Executor:
         """
         if self.provisioning is None:
             return {"environment": await asyncio.to_thread(environment_fingerprint)}
-        async with self.observing:
+        async with self.admission.observing:
             observed = provisioning.Observation()
             try:
                 for _ in range(MAX_LOOKS):
@@ -1112,117 +1073,20 @@ class Executor:
                             provisioning.observe,
                             self.packages,
                             self.places,
-                            self.reported,
+                            self.admission.reported,
                             lockfile_wanted=True,
                         )
                     )
-                    await self.report(running.execution, observed, running.execution)
+                    await self.admission.report(running.execution, observed, running.execution)
                     if observed.complete:
                         break
             except OSError as exc:  # research code can break the state directory
                 print(f"executor: cannot read the package lock: {exc}", file=sys.stderr)
                 return {"environment": await asyncio.to_thread(environment_fingerprint)}
-            return {"environment": self.reported, "environment_changing": observed.busy is not None}
-
-    async def report(
-        self, execution: str, observed: provisioning.Observation, cause: str | None
-    ) -> None:
-        """Send a ``revision`` event, as part of ``execution``, for each change, in order.
-
-        The records of one attempt's package commands, one after another, make one
-        managed change, set against that attempt, with its last commands. A change before
-        a record, or one no record accounts for, is unmanaged (CP-4), set against
-        ``cause``: the attempt after which it was seen, if any. The last change of each
-        attempt carries a lockfile, the packages as that attempt left them; the worker
-        keeps one for each attempt. A record leaves the journal once its event is sent,
-        so that one a cancelled attempt did not send is read again by the next. Hold
-        ``observing``.
-        """
-        changes, spare = self.changes(observed, cause)
-        self.packages.remove_records(spare)  # records that changed nothing
-        last = {change.cause: index for index, change in enumerate(changes)}
-        for index, change in enumerate(changes):
-            raw = (
-                change.lockfile
-                if change.cause is not None and last[change.cause] == index
-                else None
-            )
-            lockfile = cast(Message, raw) if isinstance(raw, dict) else None
-            if lockfile is not None:
-                size = len(json.dumps(lockfile, separators=(",", ":")))
-                if size > MAX_LOCKFILE_EVENT:
-                    print(f"executor: a lockfile of {size} bytes is too large", file=sys.stderr)
-                    lockfile = None
-            self.package_epoch += 1
-            await self.event(
-                execution,
-                "revision",
-                fingerprint=change.fingerprint,
-                package_epoch=self.package_epoch,
-                managed=change.managed,
-                cause=change.cause,
-                commands=change.commands[-MAX_COMMANDS:],
-                omitted_commands=max(0, len(change.commands) - MAX_COMMANDS),
-                lockfile=lockfile,
-            )
-            self.reported = change.fingerprint
-            self.packages.remove_records(change.names)
-
-    def changes(
-        self, observed: provisioning.Observation, cause: str | None
-    ) -> tuple[list[_Change], list[str]]:
-        """The changes an observation shows, in order, and the records that changed nothing."""
-        changes: list[_Change] = []
-        spare: list[str] = []
-        reported = self.reported
-        for name, record in observed.records:
-            if not provisioning.usable(record):
-                spare.append(name)
-                continue
-            before, after = str(record["before"]), str(record["after"])
-            if before != reported:  # changed meanwhile by something no record accounts for
-                changes.append(_Change(before, False, cause))
-                reported = before
-            if after == reported:
-                spare.append(name)
-                continue
-            command = {
-                key: record.get(key)
-                for key in ("command", "via", "exit_code", "signal", "started", "ended")
+            return {
+                "environment": self.admission.reported,
+                "environment_changing": observed.busy is not None,
             }
-            who = self.cause(record)
-            if changes and changes[-1].managed and changes[-1].cause == who:
-                change = changes[-1]
-                change.fingerprint = after
-                change.lockfile = record.get("lockfile")
-            else:
-                change = _Change(after, True, who, lockfile=record.get("lockfile"))
-                changes.append(change)
-            change.commands.append(command)
-            change.names.append(name)
-            reported = after
-        if observed.fingerprint is not None and observed.fingerprint != reported:
-            changes.append(_Change(observed.fingerprint, False, cause, lockfile=observed.lockfile))
-        return changes, spare
-
-    def own(self, owner: str, execution: str) -> None:
-        """Remember that ``execution`` runs under ``owner``, a call's or a kernel's mark."""
-        runs = self.owners.pop(owner, [])
-        runs.append((time.time(), execution))
-        self.owners[owner] = runs[-MAX_RUNS:]
-        while len(self.owners) > MAX_OWNERS:
-            del self.owners[next(iter(self.owners))]
-
-    def cause(self, record: Message) -> str | None:
-        """The attempt that ran a package command: the latest of its owner's to start before it."""
-        owner, invoked = record.get("owner"), record.get("invoked")
-        runs = self.owners.get(owner) if isinstance(owner, str) else None
-        if not runs:
-            return None
-        if not isinstance(invoked, int | float) or isinstance(invoked, bool):
-            return runs[-1][1]
-        earlier = [execution for started, execution in runs if started <= invoked]
-        return earlier[-1] if earlier else runs[0][1]
 
     # Operations.
 
@@ -1232,7 +1096,7 @@ class Executor:
             request,
             protocol=PROTOCOL,
             max_request_bytes=MAX_REQUEST,
-            package_gate=self.package_gate_id,
+            package_gate=self.admission.incarnation,
             languages=languages,
             location={
                 "hostname": socket.gethostname(),
@@ -1251,7 +1115,7 @@ class Executor:
             run_kernels=1,
             conditional_kernel_restart=1,
             environment=await self.baseline(),
-            package_epoch=self.package_epoch,
+            package_epoch=self.admission.epoch,
             **(
                 {
                     "workspace_prefix": {
@@ -1267,90 +1131,6 @@ class Executor:
             ),
         )
 
-    async def op_package_gate(self, request: Message) -> None:
-        """ACK a hold only after every launch ordered before it has completed admission."""
-        generation, mode = request.get("generation"), request.get("mode")
-        operation, revision = request.get("operation"), request.get("revision")
-        if (
-            request.get("incarnation") != self.package_gate_id
-            or type(generation) is not int
-            or not 0 <= generation < 2**62
-            or mode not in ("ready", "hold", "needs_recovery")
-            or not isinstance(operation, str)
-            or len(operation) > 128
-            or (operation and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", operation) is None)
-            or (mode == "ready" and operation)
-            or (mode == "needs_recovery" and not operation)
-            or (revision is not None and (type(revision) is not int or not 0 <= revision < 2**62))
-        ):
-            raise ToolError("invalid_request", "invalid package admission identity or state")
-        async with self.package_launch:
-            self.controller_present(request)
-            existing = (
-                self.package_generation,
-                self.package_mode,
-                self.package_operation,
-                self.package_revision,
-            )
-            incoming = (generation, mode, operation, revision)
-            if generation < self.package_generation or (
-                generation == self.package_generation and incoming != existing
-            ):
-                raise ToolError("conflict", "stale package admission generation")
-            restore = request.get("workspace_prefix_restore")
-            if restore is not None:
-                if (
-                    not self.require_workspace_prefix
-                    or mode != "ready"
-                    or not isinstance(restore, dict)
-                ):
-                    raise ToolError("invalid_request", "unexpected prefix restoration baseline")
-                restore = cast(Message, restore)
-                async with self.observing:
-                    descriptor = self.packages.try_lock(exclusive=False)
-                    if descriptor is None:
-                        raise ToolError(
-                            "unavailable", "prefix restoration has an active package turn"
-                        )
-                    try:
-                        prefix = await asyncio.to_thread(workspace_prefix.report, sys.prefix)
-                        actual = await asyncio.to_thread(provisioning.fingerprint, self.places)
-                        if (
-                            set(restore) != {"identity", "fingerprint"}
-                            or "error" in prefix
-                            or prefix.get("identity") != restore.get("identity")
-                            or actual != restore.get("fingerprint")
-                            or await asyncio.to_thread(self.packages.pending)
-                        ):
-                            raise ToolError("unavailable", "prefix restoration evidence changed")
-                        self.controller_present(request)
-                        if self.reported != actual:
-                            self.package_epoch += 1
-                            self.reported = actual
-                    finally:
-                        os.close(descriptor)
-            self.controller_present(request)
-            self.package_generation, self.package_mode = generation, mode
-            self.package_operation, self.package_revision = operation, revision
-        await self.reply(
-            request,
-            incarnation=self.package_gate_id,
-            generation=generation,
-            mode=mode,
-            operation=operation,
-            revision=revision,
-            **(
-                {"package_epoch": self.package_epoch, "environment": self.reported}
-                if restore is not None
-                else {}
-            ),
-        )
-
-    def controller_present(self, request: Message) -> None:
-        guard = request.get("_admission_guard")
-        if callable(guard) and not guard():
-            raise ToolError("unavailable", "controller detached before admission")
-
     async def own_launch[T](self, running: Running, work: Awaitable[T]) -> T:
         """Keep launch serialization through actual work and repeated cancellation."""
         return await _owned(work, lambda: setattr(running, "cancel_requested", True))
@@ -1358,7 +1138,7 @@ class Executor:
     async def start_kernel(
         self, running: Running, kernel: Kernel, timeout: float, work: Callable[[], Awaitable[None]]
     ) -> None:
-        async with self.launch(running, timeout):
+        async with self.admission.launch(running, timeout):
             await self.own_launch(running, self.kernel_birth(running, kernel, timeout, work))
 
     async def kernel_birth(
@@ -1377,26 +1157,26 @@ class Executor:
                 while held is None:
                     if running.cancel_requested:
                         raise _NotStartedError
-                    if time.monotonic() - running.admitted >= timeout:
-                        raise _BusyError(time.monotonic() - running.admitted, None)
+                    if self.clock.monotonic() - running.admitted >= timeout:
+                        raise _BusyError(self.clock.monotonic() - running.admitted, None)
                     try:
                         held = self.packages.try_lock(exclusive=False)
                     except OSError:
                         break  # damaged lock: start is explicitly unknown
                     if held is None:
-                        await asyncio.sleep(0.05)
+                        await self.clock.sleep(0.05)
                 if held is not None:
-                    async with self.observing:
+                    async with self.admission.observing:
                         if running.kind == "cell":
                             for _ in range(MAX_LOOKS):
                                 observed = await asyncio.to_thread(
                                     provisioning.observe,
                                     self.packages,
                                     self.places,
-                                    self.reported,
+                                    self.admission.reported,
                                     os.dup(held),
                                 )
-                                await self.report(running.execution, observed, None)
+                                await self.admission.report(running.execution, observed, None)
                                 if observed.complete:
                                     fingerprint = observed.fingerprint
                                     break
@@ -1406,10 +1186,12 @@ class Executor:
                             fingerprint = await asyncio.to_thread(
                                 provisioning.fingerprint, self.places
                             )
-                        epoch = self.package_epoch if fingerprint == self.reported else None
+                        epoch = (
+                            self.admission.epoch if fingerprint == self.admission.reported else None
+                        )
             if running.cancel_requested:
                 raise _NotStartedError
-            if self.closing or (
+            if self.lifecycle.closing or (
                 (running.kind == "restart" or running.package_operation)
                 and running.controller
                 and not running.controller()
@@ -1431,47 +1213,6 @@ class Executor:
         finally:
             if held is not None:
                 os.close(held)
-
-    @contextlib.asynccontextmanager
-    async def launch(self, running: Running, timeout: float):
-        """Wait without retaining the launch lock; serialize the final launch with hold ACK."""
-        while True:
-            await self.package_launch.acquire()
-            if self.closing:
-                self.package_launch.release()
-                raise ToolError("unavailable", "executor is closing; new launch refused")
-            if (
-                (running.package_operation or running.kind == "restart")
-                and running.controller
-                and not running.controller()
-            ):
-                self.package_launch.release()
-                raise ToolError("unavailable", "provisioning controller detached before launch")
-            if self.package_mode == "needs_recovery":
-                self.package_launch.release()
-                raise ToolError("unavailable", "environment needs_recovery; new work is refused")
-            exempt = (
-                running.package_operation
-                and running.package_operation == self.package_operation
-                and running.package_generation == self.package_generation
-            )
-            if self.package_mode == "ready" or exempt:
-                break
-            self.package_launch.release()
-            if running.cancel_requested:
-                raise _NotStartedError
-            if time.monotonic() - running.admitted >= timeout:
-                raise _BusyError(time.monotonic() - running.admitted, None)
-            await asyncio.sleep(0.05)
-        try:
-            if running.cancel_requested:
-                raise _NotStartedError
-            running.waited = max(running.waited, time.monotonic() - running.admitted)
-            if running.waited >= timeout:
-                raise _BusyError(running.waited, None)
-            yield
-        finally:
-            self.package_launch.release()
 
     async def op_probe(self, request: Message) -> None:
         """Describe this sandbox, and say whether each of the worker's sentinel paths shows here."""
@@ -1529,9 +1270,9 @@ class Executor:
         execution = request.get("execution")
         if not isinstance(execution, str) or not execution:
             raise ToolError("invalid_request", "missing execution id")
-        if execution in self.running:
+        if execution in self.lifecycle.running:
             raise ToolError("conflict", f"execution {execution} is already running")
-        running = Running(execution=execution, kind=kind)
+        running = Running(execution=execution, kind=kind, admitted=self.clock.monotonic())
         inventory = request.get("binding_inventory")
         if inventory is not None and (
             not isinstance(inventory, str) or _SHA256_RE.fullmatch(inventory) is None
@@ -1548,7 +1289,7 @@ class Executor:
             running.controller = lambda: bool(guard())
         if self.owner_prefix:
             running.owner = self.owner_prefix + secrets.token_hex(8)
-        self.running[execution] = running
+        self.lifecycle.accept(running)
         return running
 
     async def op_pdf(self, request: Message) -> None:
@@ -1560,7 +1301,7 @@ class Executor:
     async def op_shell(self, request: Message) -> None:
         session = self.session(request)
         try:
-            cwd = self.directory(session, request.get("cwd", "."))
+            cwd = self.files.directory(session, request.get("cwd", "."))
         except ToolError as error:
             if error.kind != "not_found":
                 raise
@@ -1607,7 +1348,7 @@ class Executor:
         limit: int,
     ) -> None:
         execution = running.execution
-        started = time.monotonic()
+        started = self.clock.monotonic()
         wall_started = time.time()
         captures = {name: Capture(name, limit) for name in ("stdout", "stderr")}
         running.captures = captures
@@ -1635,12 +1376,12 @@ class Executor:
                 return
             if running.kind == "job":
                 logs = await asyncio.to_thread(self.job_logs, session, execution)
-            self.own(running.owner, execution)
+            self.admission.own(running.owner, execution)
             # The process is the executor's child before its pid is in spawned.
             with sandbox_processes.starting_children():
                 try:
                     async with (
-                        self.launch(running, timeout),
+                        self.admission.launch(running, timeout),
                         self.binding_guard(set(running.bindings), running.binding_inventory),
                     ):
                         process = await self.own_launch(
@@ -1731,7 +1472,7 @@ class Executor:
                 os.close(descriptor)
             if running.process is not None:
                 sandbox_processes.spawned.discard(running.process.pid)
-            self.running.pop(execution, None)
+            self.lifecycle.finish(execution)
             observations = written.pop("output_observations", None)
             result = {
                 "exit_code": exit_code,
@@ -1739,7 +1480,7 @@ class Executor:
                 "stdout": captures["stdout"].summary(),
                 "stderr": captures["stderr"].summary(),
                 "error": error,
-                "elapsed_seconds": time.monotonic() - started,
+                "elapsed_seconds": self.clock.monotonic() - started,
                 "sandbox_started": wall_started,
                 "sandbox_ended": time.time(),
                 **written,
@@ -1747,7 +1488,7 @@ class Executor:
             }
             if running.bindings_dropped:
                 result["bindings_dropped"] = list(running.bindings_dropped)
-            if not self.closing:
+            if not self.lifecycle.closing:
                 await self.event(
                     execution, "end", state=state, result=result, output_observations=observations
                 )
@@ -1776,7 +1517,7 @@ class Executor:
     def job_logs(self, session: str, execution: str) -> dict[str, int]:
         """Create two private regular files through held, symlink-free directory FDs."""
         parent = sandbox_files.walk(
-            self.open_base(["sessions", session]), [".jobs"], ".jobs", create=True
+            self.files.open_base(["sessions", session]), [".jobs"], ".jobs", create=True
         )
         descriptors: dict[str, int] = {}
         try:
@@ -1820,7 +1561,7 @@ class Executor:
         execution = request.get("execution")
         if type(execution) is not str or re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid child execution identity")
-        running = self.running.get(execution)
+        running = self.lifecycle.running.get(execution)
         if running is None or running.kind != "job":
             await self.reply(request, found=False)
             return
@@ -1837,33 +1578,14 @@ class Executor:
         await self.reply(request, found=True, cpu_seconds=cpu, memory_bytes=memory, **streams)
 
     async def terminate(self, running: Running) -> None:
-        """SIGTERM to the command and what it started, then SIGKILL after a grace period.
+        await self.lifecycle.terminate(running)
 
-        A package command's wrapper passes its SIGTERM on, so the command gets one only.
-        The grace is for every process of the call, not only its shell, which may end at
-        once and leave the others; a package command still in its turn gets PACKAGE_GRACE.
-        """
-        process = running.process
-        if process is None:
-            return
-        owner, leader = running.owner, running.leader
+    async def signal_command(self, owner: str, leader: sandbox_processes.Leader | None) -> None:
         await asyncio.to_thread(
             lambda: sandbox_processes.signal_processes(
                 without_wrapped(sandbox_processes.owned_processes(owner, leader)), signal.SIGTERM
             )
         )
-        started = time.monotonic()
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(process.wait(), TERM_GRACE)
-        while True:
-            left, in_turn = await asyncio.to_thread(self.leftovers, owner, leader)
-            grace = PACKAGE_GRACE if in_turn else TERM_GRACE
-            if not left or time.monotonic() - started >= grace:
-                break
-            await asyncio.sleep(0.1)
-        if left or process.returncode is None:
-            await end_and_collect(owner, leader)
-        await process.wait()
 
     def leftovers(
         self, owner: str, leader: sandbox_processes.Leader | None
@@ -1874,39 +1596,18 @@ class Executor:
         holder = (self.packages.holding() or {}).get("pid")
         return left, isinstance(holder, int) and any(info.pid == holder for info in left)
 
+    def make_kernel(self, session: str, language: str, run: str | None) -> Kernel:
+        return Kernel(
+            session,
+            language,
+            self.files.directory(session, "."),
+            self.environment(session),
+            last_used=self.clock.monotonic(),
+            run=run,
+        )
+
     def kernel(self, session: str, language: str, run: str | None = None) -> Kernel:
-        """The session's kernel of ``language``, or the run's own, made on first use."""
-        if language not in KERNEL_NAMES:
-            raise ToolError("unsupported", f"no {language!r} kernel here")
-        key = (session, run or "", language)
-        if run is not None and run in self.ended_runs.get(session, {}):
-            raise ToolError("conflict", f"run {run} has ended, and its kernels with it")
-        if key not in self.kernels:
-            in_use = {id(running.kernel) for running in self.running.values()}
-            runs = {
-                kernel.run
-                for kernel in self.kernels.values()
-                if kernel.session == session
-                and kernel.run not in (None, run)
-                and (kernel.manager is not None or id(kernel) in in_use)
-            }
-            if run is not None and len(runs) >= MAX_RUN_KERNELS:
-                raise ToolError(
-                    "unavailable",
-                    f"{MAX_RUN_KERNELS} runs of this session have kernels of their own; "
-                    "one must end first",
-                )
-            cwd = self.directory(session, ".")
-            kernel = Kernel(
-                session,
-                language,
-                cwd,
-                self.environment(session),
-                last_used=self.clock.monotonic(),
-                run=run,
-            )
-            self.kernels[key] = kernel
-        return self.kernels[key]
+        return self.lifecycle.kernel(session, language, run)
 
     def run_name(self, request: Message) -> str | None:
         """The run a request names for its own kernel; ``None`` for the session's."""
@@ -1948,7 +1649,7 @@ class Executor:
         self, running: Running, kernel: Kernel, code: str, timeout: float, limit: int
     ) -> None:
         execution = running.execution
-        started = time.monotonic()
+        started = self.clock.monotonic()
         wall_started = time.time()
         captures = {name: Capture(name, limit) for name in ("stdout", "stderr")}
         outputs: list[Message] = []
@@ -1970,12 +1671,12 @@ class Executor:
                     )
                 if running.cancel_requested:  # asked for while the kernel started
                     raise _NotStartedError
-                self.own(kernel.owner, execution)
+                self.admission.own(kernel.owner, execution)
                 ran_on = kernel.info()
                 state_lost, kernel.state_lost = kernel.state_lost, False
                 before = await asyncio.to_thread(self.snapshot, kernel.session)
                 async with (
-                    self.launch(running, timeout),
+                    self.admission.launch(running, timeout),
                     self.binding_guard(
                         set(running.bindings) | set(kernel.started_bindings),
                         kernel.start_binding_inventory
@@ -2011,7 +1712,7 @@ class Executor:
             result = {"error": {"kind": "internal", "message": message}}
         finally:
             running.queued = False
-            self.running.pop(execution, None)
+            self.lifecycle.finish(execution)
             kernel.last_used = self.clock.monotonic()
             if ran_on is None and kernel.generation:
                 ran_on = kernel.info()
@@ -2021,13 +1722,13 @@ class Executor:
                 outputs=outputs,
                 kernel=ran_on,
                 running_kernels=await self.session_kernels(kernel.session),
-                elapsed_seconds=time.monotonic() - started,
+                elapsed_seconds=self.clock.monotonic() - started,
                 sandbox_started=wall_started,
                 sandbox_ended=time.time(),
             )
             if running.bindings_dropped:
                 result["bindings_dropped"] = list(running.bindings_dropped)
-            if not self.closing:
+            if not self.lifecycle.closing:
                 observations = result.pop("output_observations", None)
                 await self.event(
                     execution, "end", state=state, result=result, output_observations=observations
@@ -2047,12 +1748,11 @@ class Executor:
     ) -> tuple[str, Message]:
         from queue import Empty
 
-        loop = asyncio.get_running_loop()
         # This generation's client and manager, even once a restart replaces the kernel's.
         client, manager = kernel.client, kernel.manager
         if msg_id is None:
             msg_id = client.execute(code, store_history=True, allow_stdin=False)
-        deadline = loop.time() + max(0.0, timeout - running.waited)
+        deadline = self.clock.monotonic() + max(0.0, timeout - running.waited)
         interrupted_at: float | None = None
         timed_out = False
         cell = CellMessages(msg_id, limit, captures, outputs)
@@ -2070,7 +1770,7 @@ class Executor:
                     "error": {"kind": "cancelled", "message": message},
                     "state_lost": True,
                 }
-            now = loop.time()
+            now = self.clock.monotonic()
             if not timed_out and now >= deadline:
                 timed_out = True
                 interrupted_at = now
@@ -2142,166 +1842,49 @@ class Executor:
         )
 
     async def op_cancel(self, request: Message) -> None:
-        running = self.running.get(str(request.get("execution")))
-        if running is None:
-            await self.reply(request, found=False)
-            return
-        running.cancel_requested = True
-        await self.reply(request, found=True)
-        if running.kind in ("shell", "job"):
-            if running.process is not None:
-                self.spawn(self.terminate(running))
-            # Before then, run_shell sees cancel_requested and never starts the command.
-        elif running.queued and running.task is not None:
-            running.task.cancel()  # waiting for its kernel: it leaves the queue
-        # A cell starting or running sees cancel_requested itself: one starting never
-        # runs, and a running one is interrupted by its loop.
+        running = self.lifecycle.request_cancel(str(request.get("execution")))
+        await self.reply(request, found=running is not None)
+        if running is not None:
+            self.lifecycle.cancel(running)
 
     async def op_restart(self, request: Message) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self.launch_controls.add(task)
-        try:
+        with self.lifecycle.control():
             await self.restart_request(request)
-        finally:
-            if task is not None:
-                self.launch_controls.discard(task)
 
     async def restart_request(self, request: Message) -> None:
         session = self.session(request)
         kernel = self.kernel(
             session, str(request.get("language", "python")), self.run_name(request)
         )
-        restart = Running("restart", "restart")
+        restart = Running("restart", "restart", admitted=self.clock.monotonic())
         restart.kernel = kernel
         guard = request.get("_admission_guard")
         if callable(guard):
             restart.controller = lambda: bool(guard())
-        async with kernel.control:
-            await self.package_launch.acquire()
-            try:
-                self.controller_present(request)
-                if self.closing or self.package_mode != "ready":
-                    raise ToolError(
-                        "unavailable", "package admission is closed; kernel restart refused"
-                    )
-                if request.get("only_if_absent") is True and await kernel.alive():
-                    raise ToolError(
-                        "conflict", "kernel became live before conditional recovery restart"
-                    )
-                # The running cell does not hold up a restart: it ends, cancelled.
-                for running in self.running.values():
-                    if running.kernel is kernel and running.started:
-                        running.restarted = True
-                if kernel.manager is not None:
-                    await self.own_launch(restart, kernel.stop())
-                    kernel.state_lost = True
-            finally:
-                self.package_launch.release()
-            _not_retired(kernel)
-            await kernel.ensure_started(lambda work: self.start_kernel(restart, kernel, 180, work))
+        await self.lifecycle.restart(
+            kernel,
+            only_if_absent=request.get("only_if_absent") is True,
+            permit=lambda: self.admission.restart_permit(request),
+            stop=lambda: self.own_launch(restart, kernel.stop()),
+            start=lambda: kernel.ensure_started(
+                lambda work: self.start_kernel(restart, kernel, 180, work)
+            ),
+        )
         await self.reply(request, kernel=kernel.info())
 
     async def reap_idle_kernels(self, idle: float) -> None:
-        """Stop kernels unused for ``idle`` seconds; the session's next cell reports lost state."""
-        interval = max(0.2, min(30.0, idle / 2))
-        while True:
-            await self.clock.sleep(interval)
-            for kernel in tuple(self.kernels.values()):
-                if kernel.manager is None or self.clock.monotonic() - kernel.last_used < idle:
-                    continue
-                async with kernel.control:
-                    busy = any(running.kernel is kernel for running in self.running.values())
-                    if kernel.manager is None or busy:
-                        continue
-                    if self.clock.monotonic() - kernel.last_used < idle:
-                        continue
-                    await kernel.stop()
-                    kernel.state_lost = True
-                print(
-                    f"executor: stopped kernel {kernel.kernel_id} after {idle:.0f} s unused",
-                    file=sys.stderr,
-                )
+        await self.lifecycle.reap_idle_kernels(idle)
 
     async def op_close_session(self, request: Message) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self.launch_controls.add(task)
-        try:
+        with self.lifecycle.control():
             await _owned(self.close_session_request(request))
-        finally:
-            if task is not None:
-                self.launch_controls.discard(task)
 
     async def close_session_request(self, request: Message) -> None:
-        """Stop all session kernels; reply with the kernels it stopped.
-
-        Its running cells end cancelled and its queued ones never start. Each kernel
-        keeps its generation, so the session's next cell starts a new one and reports
-        that earlier state is gone. Shell calls are not affected. Runs' own kernels are
-        retired and forgotten, and their runs remembered as ended, so a late cell is
-        refused rather than starting one again. A request naming a run stops only that
-        run's own kernels; the session's kernels and jobs stay.
-        """
-        session = self.session(request)
-        run = self.run_name(request)
-        stopped: list[Message] = []
-        jobs = [
-            running
-            for running in self.running.values()
-            if running.kind == "job" and running.session == session and run is None
-        ]
-        for running in jobs:
-            running.cancel_requested = True
-        await asyncio.gather(
-            *(self.terminate(running) for running in jobs if running.process is not None)
-        )
-        await asyncio.gather(
-            *(running.task for running in jobs if running.task is not None), return_exceptions=True
-        )
-        for key, kernel in list(self.kernels.items()):
-            if kernel.session != session or (run is not None and kernel.run != run):
-                continue
-            for running in self.running.values():
-                if running.kernel is kernel:
-                    running.cancel_requested = True
-                    if running.started:
-                        running.closing = True
-            async with kernel.control:
-                if kernel.manager is not None:
-                    stopped.append(kernel.info())
-                    await kernel.stop()
-                    kernel.state_lost = True
-                if kernel.run is not None:
-                    kernel.retired = True
-                    self.kernels.pop(key, None)
-                    self.end_run(session, kernel.run)
-        if run is not None:
-            self.end_run(session, run)
+        stopped = await self.lifecycle.close_session(self.session(request), self.run_name(request))
         await self.reply(request, kernels=stopped)
 
-    def end_run(self, session: str, run: str) -> None:
-        """Remember ``run`` as ended, within ``MAX_ENDED_RUNS`` per session."""
-        ended = self.ended_runs.setdefault(session, {})
-        ended.pop(run, None)
-        ended[run] = None
-        while len(ended) > MAX_ENDED_RUNS:
-            del ended[next(iter(ended))]
-
     async def session_kernels(self, session: str) -> list[Message]:
-        """Only this session's live kernels, its own and its runs', in the order of their
-        runs and then the fixed supported-language order."""
-        found: list[Message] = []
-        order = {language: number for number, language in enumerate(KERNEL_NAMES)}
-        keys = sorted(
-            (key for key in self.kernels if key[0] == session),
-            key=lambda key: (key[1], order.get(key[2], len(order))),
-        )
-        for key in keys:
-            kernel = self.kernels[key]
-            if await kernel.alive():
-                found.append(kernel.info())
-        return found
+        return await self.lifecycle.session_kernels(session)
 
     async def op_kernels(self, request: Message) -> None:
         await self.reply(request, kernels=await self.session_kernels(self.session(request)))
@@ -2313,356 +1896,58 @@ class Executor:
         say in a background thread, from an idle one.
         """
         cpu = await asyncio.to_thread(sandbox_processes.cpu_seconds_below, os.getpid())
-        kernels = sum(1 for kernel in self.kernels.values() if kernel.manager is not None)
-        await self.reply(request, cpu_seconds=cpu, kernels=kernels, running=len(self.running))
+        kernels = sum(1 for kernel in self.lifecycle.kernels.values() if kernel.manager is not None)
+        await self.reply(
+            request, cpu_seconds=cpu, kernels=kernels, running=len(self.lifecycle.running)
+        )
 
     async def op_read(self, request: Message) -> None:
-        path = request.get("path")
-        offset = int(request.get("offset", 0))
-        length = min(int(request.get("length", MAX_READ)), MAX_READ)
-        if offset < 0 or length < 0:
-            raise ToolError("invalid_request", "offset and length must not be negative")
-        base, rest = self.split(request.get("session"), path)
-        if not rest:
-            raise ToolError("invalid_request", f"{path!r} is not a regular file")
-        parent = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=False)
-        try:
-            # Without O_NONBLOCK, opening a FIFO would wait for a writer.
-            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-            descriptor = os.open(rest[-1], flags, dir_fd=parent)
-        except FileNotFoundError:
-            raise ToolError("not_found", f"no file {path!r}") from None
-        except OSError as exc:
-            raise sandbox_files.path_refusal(parent, rest[-1], str(path), exc) from exc
-        finally:
-            os.close(parent)
-        # In a thread: hashing a large file takes a while, and must not stall other work.
-        hashed = request.get("hash", True) is not False
-        reply = await asyncio.to_thread(
-            sandbox_files.read_range, descriptor, offset, length, hashed, str(path)
-        )
-        await self.reply(request, **reply)
+        await self.reply(request, **await self.files.read(request))
 
     async def op_capture_read(self, request: Message) -> None:
-        """A bounded read/hash helper; ordinary file reads retain their legacy protocol."""
-        data = {
-            "session": request.get("session"),
-            "path": request.get("path"),
-            "offset": request.get("offset"),
-            "length": request.get("length"),
-            "max_bytes": request.get("max_bytes"),
-            "hash": request.get("hash"),
-        }
-        try:
-            with sandbox_processes.starting_children():
-                result = await self.captures.read(
-                    request.get("capture_id"), data, request.get("timeout")
-                )
-        except asyncio.CancelledError:
-            await self.reply(
-                request,
-                capture_id=request.get("capture_id"),
-                cleaned=True,
-                capture_error={"kind": "cancelled", "message": "capture cancelled after cleanup"},
-            )
-            return
-        except capture.CaptureError as exc:
-            await self.reply(
-                request,
-                capture_id=request.get("capture_id"),
-                cleaned=exc.cleaned,
-                capture_error={"kind": exc.kind, "message": exc.message},
-            )
-            return
-        await self.reply(request, **result, capture_id=request["capture_id"], cleaned=True)
+        with sandbox_processes.starting_children():
+            result = await self.captures.read_request(request)
+        await self.reply(request, **result)
 
     async def op_capture_cancel(self, request: Message) -> None:
-        """End only the named capture helper, with cleanup acknowledged after reap."""
-        capture_id = request.get("capture_id")
-        if not isinstance(capture_id, str) or re.fullmatch(r"cap-[0-9a-f]{24}", capture_id) is None:
-            raise ToolError("invalid_request", "invalid capture ID")
-        await self.captures.cancel(capture_id)
-        await self.reply(request, capture_id=capture_id, cleaned=True)
-
-    def staged(self, request: Message) -> tuple[str, str]:
-        source, snapshot = request.get("source"), request.get("snapshot")
-        if not (isinstance(source, str) and _SOURCE_RE.fullmatch(source)):
-            raise ToolError("invalid_request", f"invalid source {source!r}")
-        if not (isinstance(snapshot, str) and _SHA256_RE.fullmatch(snapshot)):
-            raise ToolError("invalid_request", "snapshot must be a SHA-256")
-        return source, snapshot
+        try:
+            result = await self.captures.cancel_request(request)
+        except capture.CaptureError as exc:
+            raise ToolError(exc.kind, exc.message) from exc
+        await self.reply(request, **result)
 
     async def op_skills_check(self, request: Message) -> None:
-        """Whether a pack is staged as the harness expects it, and with ``seal``, made
-        read-only once it is (docs/specs/skills.md, SK-16)."""
-        source, snapshot = self.staged(request)
-        raw = request.get("files", [])
-        items = cast(list[object], raw) if isinstance(raw, list) else []
-        files = [cast(Message, item) for item in items if isinstance(item, dict)]
-        if not isinstance(raw, list) or len(files) != len(items):
-            raise ToolError("invalid_request", "files must be a list of objects")
-        for item in files:
-            sandbox_files.check_relative(str(item.get("path")))
-        try:
-            found = await asyncio.to_thread(
-                sandbox_files.stage_check,
-                self.root,
-                source,
-                snapshot,
-                files,
-                request.get("seal") is True,
-            )
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
-        raw = request.get("commands", [])
-        names = (
-            [n for n in cast(list[object], raw) if isinstance(n, str)][:256]
-            if isinstance(raw, list)
-            else []
-        )
-        path = self.tool_path()
-        found["commands"] = [
-            n for n in names if _COMMAND_RE.fullmatch(n) and shutil.which(n, path=path)
-        ]
-        raw_bindings = request.get("binding_names", [])
-        candidates = cast(list[object], raw_bindings) if isinstance(raw_bindings, list) else []
-        names = [n for n in candidates if isinstance(n, str)]
-        if (
-            not isinstance(raw_bindings, list)
-            or len(candidates) > 8192
-            or len(names) != len(candidates)
-            or any(len(n) > 128 for n in names)
-        ):
-            raise ToolError("invalid_request", "invalid binding inventory candidates")
+        found, names = await self.files.skills_check(request, self.tool_path())
         try:
             # Staging is observation; package admission repeats the authoritative check.
             async with self.binding_guard(set(names) or {"INVENTORY_QUERY"}):
                 pass
         except ToolError as error:
             if error.kind == "policy_denied" and self.binding_inventory.manifest is not None:
-                found["inventory"] = self.binding_inventory.projection(names, self.package_epoch)
+                found["inventory"] = self.binding_inventory.projection(names, self.admission.epoch)
             else:
                 found["inventory"] = {"state": "unavailable", "coverage": error.message[:2000]}
         else:
-            found["inventory"] = self.binding_inventory.projection(names, self.package_epoch)
+            found["inventory"] = self.binding_inventory.projection(names, self.admission.epoch)
         await self.reply(request, **found)
 
     async def op_skills_put(self, request: Message) -> None:
-        """Write a batch of a pack's files where its snapshot is staged (SK-16)."""
-        source, snapshot = self.staged(request)
-        raw = request.get("files", [])
-        files: list[tuple[str, bytes, bool]] = []
-        for item in cast(list[object], raw) if isinstance(raw, list) else []:
-            fields = cast(Message, item) if isinstance(item, dict) else {}
-            path = sandbox_files.check_relative(str(fields.get("path")))
-            try:
-                content = base64.b64decode(str(fields.get("content_b64", "")), validate=True)
-            except ValueError as exc:
-                raise ToolError("invalid_request", f"{path}: content_b64 is not base64") from exc
-            files.append((path, content, fields.get("executable") is True))
-        try:
-            written = await asyncio.to_thread(
-                sandbox_files.stage_put,
-                self.root,
-                source,
-                snapshot,
-                request.get("reset") is True,
-                files,
-            )
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
-        await self.reply(request, written=written)
+        await self.reply(request, **await self.files.skills_put(request))
 
     async def op_write(self, request: Message) -> None:
-        path = request.get("path")
-        base, rest = self.split(request.get("session"), path)
-        if not rest:
-            raise ToolError("invalid_request", f"{path!r} is a directory")
-        try:
-            content = base64.b64decode(str(request.get("content_b64", "")), validate=True)
-        except ValueError as exc:
-            raise ToolError("invalid_request", "content_b64 is not base64") from exc
-        expected = request.get("expected_sha256")
-        create_only = bool(request.get("create_only", False))
-        if base == [SHARED] and expected is None and not create_only:
-            raise ToolError(
-                "invalid_request", "writes to the shared area need expected_sha256 or create_only"
-            )
-        executable = request.get("executable")
-        try:
-            parent = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=True)
-            reply = await asyncio.to_thread(
-                sandbox_files.write_file,
-                parent,
-                rest[-1],
-                content,
-                expected,
-                create_only,
-                str(path),
-                executable if isinstance(executable, bool) else None,
-                request.get("if_unused") is True,
-            )
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, str(path)) from exc
-        await self.reply(request, **reply)
+        await self.reply(request, **await self.files.write(request))
 
     async def op_shared(self, request: Message) -> None:
-        """The shared area's files with their stamps, and the SHA-256 of some (D79).
-
-        ``hash`` names the files whose contents the worker needs, hashed up to
-        ``hash_limit`` bytes each and ``hash_budget`` bytes in all; larger ones are
-        listed in ``too_large``, and the rest wait for the next scan. ``mark`` replaces
-        the worker's mark of this environment, which the reply carries.
-        """
-        raw: object = request.get("hash", [])
-        named = [path for path in cast(list[object], raw) if isinstance(path, str)]
-        wanted = named[: sandbox_files.MAX_SNAPSHOT]
-        limit = max(0, int(request.get("hash_limit", 0)))
-        budget = max(0, int(request.get("hash_budget", 0)))
-        mark = request.get("mark")
-        reply = await asyncio.to_thread(
-            self.shared_state,
-            wanted,
-            limit,
-            budget,
-            mark if isinstance(mark, str) else None,
-        )
-        await self.reply(request, **reply)
-
-    def shared_state(
-        self,
-        wanted: Sequence[str],
-        limit: int,
-        budget: int,
-        mark: str | None,
-    ) -> Message:
-        if mark is not None:
-            sandbox_files.write_mark(self.root, mark[:256])
-        current = sandbox_files.read_mark(self.root)
-        files, truncated, partial, odd = sandbox_files.scan_shared(self.open_base([SHARED]))
-        digests: dict[str, str] = {}
-        too_large: list[str] = []
-        for path in wanted:
-            stamp = files.get(path)
-            if stamp is None:
-                continue
-            if stamp[1] > limit:
-                too_large.append(path)
-                continue
-            if stamp[1] > budget:
-                continue  # hashed at a later scan
-            try:
-                _, rest = self.split(None, path)
-                parent = sandbox_files.walk(self.open_base([SHARED]), rest[:-1], path, create=False)
-            except (OSError, ToolError):
-                continue
-            try:
-                digest = sandbox_files.stamped_sha256(parent, rest[-1], stamp)
-            except (OSError, ToolError):
-                continue  # gone or replaced meanwhile: compared again next time
-            finally:
-                os.close(parent)
-            if digest is not None:
-                digests[path] = digest
-                budget -= stamp[1]
-        reply: Message = {
-            "files": files,
-            "truncated": truncated,
-            "partial": partial,
-            "odd": odd,
-            "sha256": digests,
-            "too_large": too_large,
-            "mark": current,
-            "now": time.time_ns(),
-        }
-        return reply
+        await self.reply(request, **await self.files.shared(request))
 
     async def op_remove(self, request: Message) -> None:
-        """Remove a regular file in the shared area if it still has the expected SHA-256.
-
-        Directories the removal leaves empty are removed too, up to the shared area.
-        """
-        path = request.get("path")
-        base, rest = self.split(request.get("session"), path)
-        if base != [SHARED] or not rest:
-            raise ToolError("invalid_request", "only files in the shared area are removed")
-        expected = request.get("expected_sha256")
-        if not isinstance(expected, str):
-            raise ToolError("invalid_request", "removing a shared file needs expected_sha256")
-        directories = [self.open_base(base)]
-        try:
-            for name in rest[:-1]:
-                directories.append(
-                    sandbox_files.walk(os.dup(directories[-1]), [name], str(path), create=False)
-                )
-            removed = await asyncio.to_thread(
-                sandbox_files.remove_checked,
-                directories[-1],
-                rest[-1],
-                expected,
-                str(path),
-                if_unused=request.get("if_unused") is True,
-            )
-            if not removed:
-                await self.reply(request, removed=False, busy=True)
-                return
-            for depth in range(len(rest) - 1, 0, -1):
-                try:
-                    os.rmdir(rest[depth - 1], dir_fd=directories[depth - 1])
-                except OSError:
-                    break  # not empty, or not ours to remove
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, str(path)) from exc
-        finally:
-            for directory in directories:
-                os.close(directory)
-        await self.reply(request, removed=True)
+        await self.reply(request, **await self.files.remove(request))
 
     async def op_move(self, request: Message) -> None:
-        """Give a file in the shared area another name there, which must be free (D79).
-
-        The file keeps its inode, so a process still writing to it writes under the new
-        name: the sync moves an environment's version of a file to its conflict copy.
-        """
-        path, target = request.get("path"), request.get("target")
-        base, rest = self.split(None, path)
-        target_base, target_rest = self.split(None, target)
-        if base != [SHARED] or target_base != [SHARED] or not rest or not target_rest:
-            raise ToolError("invalid_request", "only files in the shared area are moved")
-        source = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=False)
-        try:
-            destination = sandbox_files.walk(
-                self.open_base(target_base), target_rest[:-1], str(target), create=True
-            )
-            try:
-                stamp = await asyncio.to_thread(
-                    sandbox_files.move_file,
-                    source,
-                    rest[-1],
-                    destination,
-                    target_rest[-1],
-                    str(path),
-                )
-            except OSError as exc:
-                raise sandbox_files.file_error(exc, str(path)) from exc
-            finally:
-                os.close(destination)
-        finally:
-            os.close(source)
-        await self.reply(request, stamp=stamp)
+        await self.reply(request, **await self.files.move(request))
 
     async def op_list(self, request: Message) -> None:
-        path = request.get("path", ".")
-        base, rest = self.split(request.get("session"), path)
-        try:
-            directory = sandbox_files.walk(self.open_base(base), rest, str(path), create=False)
-        except ToolError as error:
-            if error.kind == "not_found":
-                raise ToolError("not_found", f"no directory {path!r}") from None
-            raise
-        limit = min(int(request.get("limit", MAX_LIST)), MAX_LIST)
-        entries, truncated = await asyncio.to_thread(sandbox_files.list_directory, directory, limit)
-        await self.reply(request, entries=entries, truncated=truncated)
+        await self.reply(request, **await self.files.list(request))
 
     async def op_lockfile(self, request: Message) -> None:
         """The packages installed now: their fingerprint and lockfile (CP-18).
@@ -2881,7 +2166,7 @@ async def serve_stdio(
         root, send, subreaper=subreaper, protected=protected, kernel_idle=kernel_idle
     )
     if kernel_idle is not None:
-        executor.reaper = executor.spawn(executor.reap_idle_kernels(kernel_idle))
+        executor.start_idle_reaper(kernel_idle)
     try:
         while True:
             try:

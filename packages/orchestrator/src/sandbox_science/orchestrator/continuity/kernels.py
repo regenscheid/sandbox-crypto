@@ -183,7 +183,16 @@ class KernelJournal:
                 )
             self._save_snapshot(tx.sql, encoded)
 
-    async def reconcile(self, client: WorkerClient, context: ExecutionContext) -> None:
+    async def reconcile(
+        self, client: WorkerClient, context: ExecutionContext, *, accept_loss: bool = False
+    ) -> None:
+        """Bring the work's kernel back, or refuse to go on without it (RC-11).
+
+        A lost kernel that cannot be rebuilt exactly stops recovery, unless ``accept_loss``:
+        the user's own Resume then goes on with the kernel reported lost. The loss is
+        recorded with what was lost, the work expects no kernel, its next cell starts a
+        clean one, and the resumed agent's view says the kernel stopped and its variables
+        are gone (``KERNEL_LINES``). An automatic Resume never accepts a loss."""
         pending = await threaded(self._pending_restore)
         if pending is not None:
             work, identity, detail, observed_at = pending
@@ -224,15 +233,24 @@ class KernelJournal:
         if len(missing) != 1 or any(
             k.language == next(iter(missing))[0] for k in observation.kernels if k.run == self.scope
         ):
+            if accept_loss:
+                await threaded(self._accept_loss, missing)
+                return
             raise ControlError(
                 CONFLICT, "lost_kernel: saved kernel identity or generation is unavailable"
             )
         language, kernel_id, generation = next(iter(missing))
         if language not in ("python", "sage"):
+            if accept_loss:
+                await threaded(self._accept_loss, missing)
+                return
             raise ControlError(CONFLICT, "lost_kernel: saved kernel language is unavailable")
         typed_language = language
         cells = await threaded(self._replay_cells, language, kernel_id, generation)
         if cells is None:
+            if accept_loss:
+                await threaded(self._accept_loss, missing)
+                return
             raise ControlError(
                 CONFLICT, "lost_kernel: complete replayable cell provenance is unavailable"
             )
@@ -440,6 +458,31 @@ class KernelJournal:
             return None
         work, identity, encoded, observed = rows[0]
         return work, identity, json.loads(encoded), observed
+
+    def _accept_loss(self, missing: set[tuple[str, str, int]]) -> None:
+        """Record the kernels the user accepted as lost, and expect none for the work."""
+        owner = self.owner
+        lost = [
+            {"language": language, "kernel_id": kernel_id, "generation": generation}
+            for language, kernel_id, generation in sorted(missing)
+        ]
+        detail = json.dumps({"lost": lost, "accepted_by": "user"}, separators=(",", ":"))
+        identity = hashlib.sha256(detail.encode()).hexdigest()
+        with self.control.write() as tx:
+            check_owner(tx.sql, owner)
+            tx.sql.execute(
+                "INSERT INTO research_observations VALUES (?,?,?,'kernel_loss_accepted',?,?,?) "
+                "ON CONFLICT(project,session,work,kind,identity) DO NOTHING",
+                (
+                    owner.project,
+                    owner.session,
+                    owner.work,
+                    identity,
+                    SYSTEM_CLOCK.now().timestamp(),
+                    detail,
+                ),
+            )
+            self._save_snapshot(tx.sql, "[]")
 
     def _recompute_acknowledged(self, work: str, since: float, snapshot: str) -> bool:
         owner = self.owner

@@ -92,7 +92,7 @@ def gateway_metadata(**overrides: object) -> ext.PeerMetadata:
     fields: dict[str, object] = {
         "protocol_version": ext.ProtocolVersion(major=1, minor=0),
         "implementation_name": "openshell/gateway",
-        "implementation_version": "0.1.3",
+        "implementation_version": "0.1.5",
         "supported_capabilities": [CONTRACT_CAPABILITY],
         "required_capabilities": [CONTRACT_CAPABILITY],
     }

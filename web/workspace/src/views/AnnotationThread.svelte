@@ -68,7 +68,7 @@
       draft.expected = thread.revision;
     }
   });
-  async function mutate(action: string) {
+  async function mutate(action: 'reply' | 'edit' | 'resolve' | 'reopen') {
     await submit(posting, async () => {
       const result = await guardedWrite(
         'comment',

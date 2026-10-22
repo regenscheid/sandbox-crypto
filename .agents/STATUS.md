@@ -1,6 +1,13 @@
 # Status
 
-Updated 2026-10-20. Kubernetes foundations are on `k8s`, branched from `dev` at `af0fa0d5`; the primary checkout is separate. No cluster was accessed or deployed. Mac runtime qualification remains open. Signed integration, image publication and actual deployment are distinct.
+Updated 2026-10-22. `k8s-sync` merges `origin/dev` (`3918ccd0`) into `k8s` (`5990f3b0`). Dev schema migrations keep versions 74–75; the Kubernetes upload/retention/index migrations are renumbered 76–78, and the Kubernetes decision is D92 (dev's D91 is the context refactor). No cluster was accessed or deployed; image publication remains deferred.
+
+Earlier dev context: updated 2026-10-21. The context-focused refactor is isolated on
+`agent-context-refactor`, based on `origin/dev` at `391cb7a7`, with its later
+recovery update `1ad689e3` merged into this branch.
+The primary checkout and deployed services are unchanged. Context ownership,
+attempt finalization and workspace request execution are implemented and locally
+reviewed; no remote merge or rollout is implied.
 
 ## Kubernetes work
 
@@ -13,6 +20,31 @@ Worker protocol 11 retains exact project-permitted ACK/outbox delivery and offli
 Unpublished trusted app/worker recipes, verified control/worker TLS and private CA clients, admission readiness, owned drain, private credential copying and the offline Kubernetes renderer are implemented. Rendered services have bounded resources, singleton RWO metadata PVCs, per-role SDK discovery, no service-account tokens and explicit NetworkPolicies. Schema/review evidence is clear; actual image/runtime results are in the [operations report](docs/agent-reports/k8s-operations-2026-10-20.md). Coordinated recovery sets, cluster writer fences/PVC release, recorded runtime bootstrap and actual CNI/ARM64 acceptance remain open. No cluster, real credentials or existing service was touched.
 
 ## Phase and focus
+
+The [context ownership refactor](../docs/specs/agent-context-refactor.md) consolidates
+preparation, active state, histories, folding, search and diagnostics under
+`orchestrator/context/`. Root and delegated agents share it. The follow-up removes
+Transcript's forwarding properties and gives folding a context-only interface with
+an ordered lifecycle adapter. New retention protects full recent call/result units;
+narrative prompts prioritize takeaways and retrieval anchors. Overview validation
+pages original text and stops once candidate evidence is proven; enrichment budgets
+actual narrative room before admission. Archive and transport formats are unchanged.
+The follow-up passed 743 integration tests and 42 final evidence/enrichment checks;
+static and repository checks pass. Independent review corrected
+research-state hold detection, numeric arrays and signed values at page boundaries.
+Prior first-stage checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
+unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
+
+Three follow-ups are integrated and independently reviewed: typed capability assembly,
+pure review snapshot planning, and generated document/comment/job contracts with
+focused clients. Combined checks: 804 pass, three ledger failures match the prior
+baseline exactly; 92 final checks, 862 workspace and 2,289 frontend tests pass.
+See the [report](docs/agent-reports/parallel-refactor-2026-10-21.md). The remaining
+executor, ledger and provisioning ownership refactors are integrated and independently
+reviewed. Worker slow tests: 826 passed, 26 skipped; web: 2,289 passed. Fast tier:
+13,782 passed; baseline failures remain, as detailed in the
+[ownership report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
+No merge or rollout is implied.
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 

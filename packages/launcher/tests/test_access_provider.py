@@ -276,6 +276,26 @@ def test_an_openshell_cli_others_control_is_refused(
     assert openshell.called() == []
 
 
+def test_an_installed_homebrew_cli_is_not_in_a_checkout(tmp_path: Path) -> None:
+    # On Apple Silicon, Homebrew's prefix /opt/homebrew is its own git checkout, and the
+    # packages it installs are in its Cellar (Mac test, 2026-10-21).
+    prefix = tmp_path / "homebrew"
+    (prefix / ".git").mkdir(parents=True)
+    (prefix / "Library/Homebrew").mkdir(parents=True)
+    (prefix / "Library/Homebrew/brew.sh").write_text("#!/bin/bash\n")
+    installed = openshell_stand_in(prefix / "Cellar/openshell/0.1.5/bin/openshell")
+    assert access_provider.check_cli(str(installed)) == str(installed.resolve())
+    # Elsewhere in Homebrew's checkout, and in any other checkout, it is refused.
+    tracked = openshell_stand_in(prefix / "Library/Homebrew/openshell")
+    with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
+        access_provider.check_cli(str(tracked))
+    other = tmp_path / "other"
+    (other / ".git").mkdir(parents=True)
+    copied = openshell_stand_in(other / "Cellar/openshell/0.1.5/bin/openshell")
+    with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
+        access_provider.check_cli(str(copied))
+
+
 @pytest.mark.parametrize("mode", [0o640, 0o604, 0o620, 0o644, 0o660])
 def test_a_file_others_may_use_is_refused(
     openshell: Any, tmp_path: Path, mode: int, capsys: pytest.CaptureFixture[str]

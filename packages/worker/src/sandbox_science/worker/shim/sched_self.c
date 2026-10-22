@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 /*
  * pthread_setschedparam for sandboxes whose seccomp filter refuses scheduler
- * calls that name a thread, as OpenShell v0.1.3's does.
+ * calls that name a thread, as OpenShell v0.1.5's does.
  *
  * libzmq sets every thread it starts to its current scheduling parameters with
  * pthread_setschedparam(pthread_self(), ...). glibc turns that into

@@ -209,3 +209,17 @@ async def test_conflicting_message_id_does_not_stop_service(
         )
         await service.auto_continuation_tick()
         assert len(runs.messages("p", "s")) == 1
+
+
+def test_a_plan_whose_every_open_step_is_blocked_waits_for_the_user(projects: ProjectStore):
+    # The agent found no justified step and marked the open steps blocked; the plan stayed
+    # active, so run after run was started to find the same (Mac, 2026-10-21).
+    supervisor, plans = setup(projects)
+    current = plans.current(actor())
+    assert current is not None
+    update(plans, current.head.ref, status="blocked")
+    assert supervisor.queue("p", "s", RUN) is None
+    assert RunState(projects.control).messages("p", "s") == []
+    # Once a step can be worked again, the plan continues.
+    update(plans, current.head.ref, cursor=1, status="in_progress", operation="unblock")
+    assert supervisor.queue("p", "s", RUN) is not None

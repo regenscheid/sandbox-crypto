@@ -28,7 +28,7 @@ A research question can remain open across many process lifetimes. Reaching a li
 | Final persistence | `harness.py:save` validates the complete run record and serializes it for storage. Merely spilling historical messages during a run would not bound this final step. |
 | Worker recovery | The executor can survive worker/bridge disconnection. Recovery must inspect the actual execution and kernel state; an orchestrator restart and the loss of a VM are different events. |
 | Idle suspension | The personal configuration sets `suspend_after = 3600`. `worker/suspend.py` considers worker activity and kernel CPU, without an orchestrator work lease. A long research interval without worker use can therefore stop the VM and lose kernel memory. |
-| Cache layout | `history/view.py:settle` already places the state block before the fold region and raw tail. Every rebuild archives a new state block; its rendered header contains that new archive ID. The Responses adapter supplies a session cache key, which alone does not establish reuse. |
+| Cache layout | `context/history/view.py:settle` already places the state block before the fold region and raw tail. Every rebuild archives a new state block; its rendered header contains that new archive ID. The Responses adapter supplies a session cache key, which alone does not establish reuse. |
 | Skill binding restrictions | `skills/allow.py` holds manually maintained variable names and families. Staging also asks the worker which candidate command names exist; this is a namespace-collision check, not generation of the blocklist from all installed tools. |
 
 These describe the baseline used to design the increments below, not the current branch's behavior.
@@ -38,7 +38,7 @@ These describe the baseline used to design the increments below, not the current
 ### Work and attempts
 
 - RC-1. A durable work identity belongs to its project and session and, for delegated work, to its parent work identity. A run is an execution attempt at that work. Resuming creates a recorded continuation attempt; it does not overwrite an interrupted attempt or make its outcome successful. Reuse existing plan, delegation and ledger identities where possible. The implementation must settle the minimal schema before its migration.
-- RC-2. An attempt records its work identity, predecessor, parent work, role, brief, model configuration, skill pins, policy identity, archive position, known operations, outstanding children, and outcome deliveries. Recovery uses the recorded role and inputs. A newer policy or unavailable dependency is checked and reported; recovery never silently widens authority or changes an independent check into a research task.
+- RC-2. An attempt records its work identity, predecessor, parent work, role, brief, model configuration, skill pins, policy identity, archive position, known operations, outstanding children, and outcome deliveries. Recovery uses the recorded role and inputs. A newer policy or unavailable dependency is checked and reported; recovery never silently widens authority or changes an independent check into a research task. When the project's policy changed since the work began, the user's own Resume continues under the current policy and records that it did; an automatic Resume is refused with that reason ("the project's policy changed since this work began").
 - RC-3. Only one attempt may actively own a work item. Restart and two simultaneous Resume requests claim ownership atomically. The previous attempt is fenced from new effects once its ownership is lost. Existing session ownership and worker operation identities remain in force.
 
 ### Parent and child lifetimes
@@ -58,7 +58,7 @@ These describe the baseline used to design the increments below, not the current
 - RC-10. Persist operation identity and intent before dispatch, and persist results before acknowledging their delivery. Cover the crash windows between those steps explicitly. Reconciliation of model calls does not promise to recover an unavailable response or avoid upstream charges; ambiguous charges remain visible and the current budget is checked before another call.
 - RC-11. Saved files and research records survive independently of process memory. Reattach to a surviving kernel only after verifying its identity and generation. A lost kernel is reported as lost; restore only from an available, recorded checkpoint or recompute explicitly identified work. No promise of live process migration is made. Child-kernel cleanup must account for resumable work rather than using the end of an attempt as the only lifetime boundary.
 - RC-12. Restore pending questions, answers, tool results and child outcomes with their identities and delivery positions. An answer already received is not requested again, and a result already incorporated is not counted twice. The current message queue's Resume behavior alone is not sufficient evidence that this requirement holds.
-- RC-13. Resume respects current policy, available model capabilities, and current spending limits. The original and continuation attempts retain their own configuration and usage records. A deliberate model or skill change is recorded; it is not presented as an exact continuation under the old configuration. Resuming never resets accrued cost or grants a fresh spending allowance by itself.
+- RC-13. Resume respects current policy, available model capabilities, and current spending limits. Before it claims the session's environment, Resume brings the environment to the project's current policy, as a new run's admission does: an environment left on another revision is not a reason to refuse. The original and continuation attempts retain their own configuration and usage records. A deliberate model or skill change is recorded; it is not presented as an exact continuation under the old configuration. Resuming never resets accrued cost or grants a fresh spending allowance by itself.
 
 ### Bounded memory and preserved evidence
 
@@ -446,6 +446,10 @@ discarding kernel state during model-only work. They do not start a stopped VM,
 override explicit deletion or promise recovery of lost kernels.
 
 The worker checks project ownership and the current policy before a grant or renewal.
+A renewal refused because the environment moved to the project's new policy revision
+follows it: the claim takes the project's current revision, the run records that, and the
+root goes on, since the worker enforces the environment's current policy on every effect.
+A policy refusal the project's policy does not explain still stops the root.
 A renewal pins the original sandbox ID and cannot protect a replacement silently.
 The root stops when renewal fails; a crash leaves at most the unexpired claim.
 Release is scoped to the original holder/session and does not release another root's

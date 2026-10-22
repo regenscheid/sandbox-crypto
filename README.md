@@ -26,7 +26,7 @@ The initial research workspace includes living documents with direct user edits 
 
 The first engineering step is a written behavior specification of the CScience features worth keeping, plus a minimal new harness whose tools execute only through the worker API. The harness is built from MIT-compatible components ([licensing](docs/LICENSING.md)); OpenScience Desktop (MIT) is the first code-reuse candidate. The GUI is new as well, kept deliberately small at first.
 
-Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its documented Docker/Podman and Kubernetes drivers fit the intended placements, but adoption requires actual lifecycle, persistence, and isolation checks. The evaluation baseline is [v0.1.3](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.3). OpenShell does not supply the research workflow or automatic scientific review. A trusted monitor should correlate supported request/response inspection with task, tool, and package activity.
+Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its documented Docker/Podman and Kubernetes drivers fit the intended placements, but adoption requires actual lifecycle, persistence, and isolation checks. The pinned release is [v0.1.5](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.5); the evaluation baseline was v0.1.3. OpenShell does not supply the research workflow or automatic scientific review. A trusted monitor should correlate supported request/response inspection with task, tool, and package activity.
 
 ## Read first
 

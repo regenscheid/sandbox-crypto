@@ -296,7 +296,10 @@ class GatewayModel(ABC):
     503, 504, or Cloudflare's 524) is tried again up to ``retries`` times, after
     ``Retry-After`` or ``backoff`` seconds doubling each time, at most a minute, and so
     is another 5xx, or an answer whose response failed (``OverloadedError``), that says
-    the upstream is overloaded; the body of such an error need not be JSON. Only the
+    the upstream is overloaded; the body of such an error need not be JSON. So are a lost
+    connection and an answer cut off before its end, a truncated body or a stream with no
+    final event, whose charge is unknown; an error answer cut off is not, since it may
+    hide a budget refusal. Only the
     HTTP call is tried again, before anything of it is recorded: the turn that results
     names the attempts that failed (``retried``). The client's ``timeout`` is for a
     request of any size; a larger one is allowed more (``REQUEST_BYTES_PER_SECOND``). A
@@ -573,6 +576,9 @@ class GatewayModel(ABC):
                         None,
                         outcome="incomplete response",
                     ) from None
+                except IncompleteStreamError as error:
+                    # A stream cut off before its final event, as a truncated body is.
+                    raise _RetryableError(error, None, outcome="incomplete response") from None
                 except ModelError as error:
                     if 200 <= response.status < 300:  # charged, though too long to read
                         error.cost = reported_cost(response.headers.get(COST_HEADER))
@@ -603,9 +609,13 @@ class GatewayModel(ABC):
             # An exception about a response holds the request, with its Authorization
             # header; only one without it is chained.
             cause = None if hasattr(exc, "request_info") else exc
-            raise ModelError(
-                f"cannot reach the model gateway: {type(exc).__name__}: {exc}"
-            ) from cause
+            error = ModelError(f"cannot reach the model gateway: {type(exc).__name__}: {exc}")
+            if isinstance(exc, aiohttp.ClientConnectionError):
+                # A connection refused, reset or dropped (the gateway's "Server
+                # disconnected"): tried again, as an unavailable upstream is. A dropped
+                # call's charge is unknown, as a truncated answer's is.
+                raise _RetryableError(error, None, outcome="lost connection") from None
+            raise error from cause
 
 
 class OpenAICompatibleModel(GatewayModel):
@@ -892,6 +902,11 @@ class ModelGateway:
             self._session = None
 
 
+class IncompleteStreamError(ModelError):
+    """A streamed answer that ended before its final event: the outcome is unknown, as
+    with a truncated body, and the call is tried again as one would be."""
+
+
 class _RetryableError(Exception):
     def __init__(
         self, error: ModelError, after: float | None, *, outcome: str | None = None
@@ -1080,7 +1095,9 @@ async def read_response_stream(response: aiohttp.ClientResponse, limit: int) -> 
         line(bytes(line_buffer))
     dispatch()
     if terminal is None:
-        raise ModelError("the model gateway's Responses stream ended without a final response")
+        raise IncompleteStreamError(
+            "the model gateway's Responses stream ended without a final response"
+        )
     return terminal
 
 

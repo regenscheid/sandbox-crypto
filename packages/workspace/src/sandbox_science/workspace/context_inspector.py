@@ -10,14 +10,14 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract
 from sandbox_science.contracts.model import Counter
+from sandbox_science.orchestrator.context.history.inspector import OriginalHistory
+from sandbox_science.orchestrator.context.history.inspector_index import InspectorIndex
+from sandbox_science.orchestrator.context.history.timeline import AttemptTimeline
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
-from sandbox_science.orchestrator.history.inspector import OriginalHistory
-from sandbox_science.orchestrator.history.inspector_index import InspectorIndex
-from sandbox_science.orchestrator.history.timeline import AttemptTimeline
 from sandbox_science.orchestrator.projects import ModelUsage, RunName
 
-from . import documents
 from .context import CONTEXT, identifier, session_record
+from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/runs/{run}/context/history"
 _RUN: Final = TypeAdapter[str](RunName)
@@ -189,7 +189,7 @@ async def history(request: web.Request) -> web.Response:
             ),
         ).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 async def attempts(request: web.Request) -> web.Response:
@@ -213,7 +213,7 @@ async def attempts(request: web.Request) -> web.Response:
             next_after=page.next_after,
         ).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 async def timeline(request: web.Request) -> web.Response:
@@ -251,4 +251,4 @@ async def timeline(request: web.Request) -> web.Response:
             more_auxiliary=page.more_auxiliary,
         ).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)

@@ -8,6 +8,8 @@ Routes (docs/specs/pdf-viewer.md, PV-4):
   recently changed first, ten at a time: published and declared results, the other
   recorded files, or both, of a session or a run, with a path that has ``TEXT`` (research
   artifacts, RA-37); and says whether the viewer is on.
+- ``GET /api/v0/projects/{project}/artifacts/{artifact}/revisions?before=N`` lists one
+  artifact's revisions, the newest first, twenty at a time, tombstones included (RA-37).
 - ``GET /api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/viewer
   ?sha256=HEX`` mints a capability for that exact revision of a PDF and answers the viewer's
   URL on the preview origin, which opens it for 10 minutes (PV-3).
@@ -37,13 +39,14 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
-from sandbox_science.contracts.artifact_inventory import ArtifactLink
+from sandbox_science.contracts.artifact_inventory import ArtifactLink, ArtifactRevision
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import api, artifact_downloads
+from . import artifact_downloads
 from .context import CONTEXT, identifier, json_answer
 from .preview import CAPABILITY_SECONDS, DATA, HTML, IMAGES, MAX_IMAGE_BYTES, PDF, SVG, Preview
+from .requests import dumps
 
 PREVIEW: Final = web.AppKey("preview", Preview)
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -71,6 +74,12 @@ class ArtifactEntry(Contract):
     run_id: str
     role: str = "main"
     tool_call: str
+
+
+class RevisionListing(Contract):
+    revisions: list[ArtifactEntry]
+    next_before: int | None
+    """The next page's cursor, a revision number; ``None`` at the end."""
 
 
 class ArtifactListing(Contract):
@@ -120,6 +129,7 @@ def add_routes(app: web.Application) -> None:
     artifact_downloads.add_routes(app)
     base = "/api/v0/projects/{project}/artifacts"
     app.router.add_get(base, listing)
+    app.router.add_get(base + "/{artifact}/revisions", revisions)
     app.router.add_get(base + "/{artifact}/revisions/{revision}/viewer", viewer)
     app.router.add_get(base + "/{artifact}/revisions/{revision}/figure", figure)
     app.router.add_get("/api/v0/projects/{project}/figures/chart", chart)
@@ -163,29 +173,53 @@ async def listing(request: web.Request) -> web.Response:
             contains=contains,
         )
         results = inventory.results(project, [e.reference.artifact_id for e in found_entries])
-        entries = [
-            ArtifactEntry(
-                artifact_id=found.reference.artifact_id,
-                revision=found.reference.revision,
-                path=found.path,
-                sha256=found.reference.sha256,
-                size=found.reference.size,
-                media_type=found.reference.media_type,
-                created_at=found.created_at,
-                result=found.reference.artifact_id in results,
-                deleted=found.deleted,
-                content_retained=found.content_retained,
-                content_note=found.content_note,
-                kind=found.publication.kind,
-                session_id=found.publication.context.session_id,
-                run_id=found.publication.run_id,
-                role=found.publication.role,
-                tool_call=found.publication.tool_call,
-            )
-            for found in found_entries
-        ]
+        entries = [_entry(found, found.reference.artifact_id in results) for found in found_entries]
         answer = ArtifactListing(artifacts=entries, next_before=next_before, viewer=on)
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
+
+    return json_answer(await asyncio.to_thread(read))
+
+
+def _entry(found: ArtifactRevision, result: bool) -> ArtifactEntry:
+    return ArtifactEntry(
+        artifact_id=found.reference.artifact_id,
+        revision=found.reference.revision,
+        path=found.path,
+        sha256=found.reference.sha256,
+        size=found.reference.size,
+        media_type=found.reference.media_type,
+        created_at=found.created_at,
+        result=result,
+        deleted=found.deleted,
+        content_retained=found.content_retained,
+        content_note=found.content_note,
+        kind=found.publication.kind,
+        session_id=found.publication.context.session_id,
+        run_id=found.publication.run_id,
+        role=found.publication.role,
+        tool_call=found.publication.tool_call,
+    )
+
+
+async def revisions(request: web.Request) -> web.Response:
+    """One artifact's revisions, the newest first, twenty at a time (RA-37)."""
+    project = identifier(request, "project")
+    artifact = identifier(request, "artifact")
+    raw_before = request.query.get("before", "")
+    if raw_before and not (raw_before.isascii() and raw_before.isdigit() and len(raw_before) < 10):
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid revision cursor")
+    before = int(raw_before) if raw_before else None
+    context = request.app[CONTEXT]
+
+    def read() -> str:
+        context.projects.get(project)
+        inventory = ArtifactInventory(context.documents)
+        found, next_before = inventory.history(project, artifact, before=before)
+        result = artifact in inventory.results(project, [artifact])
+        answer = RevisionListing(
+            revisions=[_entry(revision, result) for revision in found], next_before=next_before
+        )
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(read))
 
@@ -248,7 +282,7 @@ async def figure(request: web.Request) -> web.Response:
         answer = FigureLink(
             kind=kind, url=url, capability=given, expires_at=expires, media_type=media
         )
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))
 
@@ -293,7 +327,7 @@ async def chart(request: web.Request) -> web.Response:
         expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
         url = f"{preview.origin}/figures/#{urlencode({'w': preview.workspace_origin})}"
         answer = ChartLink(url=url, capabilities=capabilities, expires_at=expires)
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))
 
@@ -314,6 +348,6 @@ async def viewer(request: web.Request) -> web.Response:
         fragment = urlencode({"c": capability, "w": preview.workspace_origin})
         url = f"{preview.origin}/viewer/#{fragment}"
         answer = ViewerLink(url=url, expires_at=expires, path=found.path)
-        return api.dumps(answer.model_dump(mode="json"))
+        return dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))

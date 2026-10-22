@@ -15,6 +15,7 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.chat import ModelBudget, RunChat
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
@@ -42,18 +43,20 @@ def _chat(tmp_path: Path) -> tuple[ProjectStore, RunState, RunChat]:
 
 def _priced(cost: float) -> Transcript:
     """A run whose calls cost ``cost``, as the gateway reported it."""
-    found = Transcript(messages=[{"role": "user", "content": "Go."}])
+    found = Transcript(context=AgentContext(messages=[{"role": "user", "content": "Go."}]))
     found.turns = 1
-    found.usage.append(ModelUsage(model="m", input_tokens=10, output_tokens=1, cost=cost))
+    found.context.usage.append(ModelUsage(model="m", input_tokens=10, output_tokens=1, cost=cost))
     return found
 
 
 def _sized(tokens: int, *, used: int = 0) -> Transcript:
     """A run whose next call sends about ``tokens`` tokens, having used ``used``."""
-    found = Transcript(messages=[{"role": "user", "content": "x" * (4 * tokens)}])
+    found = Transcript(
+        context=AgentContext(messages=[{"role": "user", "content": "x" * (4 * tokens)}])
+    )
     found.turns = 1
     if used:
-        found.usage.append(ModelUsage(model="m", input_tokens=used, output_tokens=0))
+        found.context.usage.append(ModelUsage(model="m", input_tokens=used, output_tokens=0))
     return found
 
 
@@ -132,7 +135,7 @@ async def test_a_child_makes_the_call_its_tokens_leave_room_for_its_report(
     def spread(tokens: int, *, calls: int) -> Transcript:
         """``_sized``, its 40,000 tokens used over ``calls`` calls."""
         found = _sized(tokens)
-        found.usage.extend(
+        found.context.usage.extend(
             ModelUsage(model="m", input_tokens=40_000 // calls, output_tokens=0)
             for _ in range(calls)
         )

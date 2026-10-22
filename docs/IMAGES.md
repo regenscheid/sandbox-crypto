@@ -48,7 +48,7 @@ Every profile follows it; the orchestrator and MCP proxy images differ where [th
 
 ### OpenShell filesystem paths
 
-OpenShell's Landlock baseline lets sandbox processes open only `/usr`, `/lib`, `/etc`, `/app`, `/var/log`, `/proc` and `/dev/urandom` read-only, and `/tmp`, `/dev/null` and the workdir `/sandbox` read-write. The policy compiler adds the devices research code needs ([policy](POLICY.md), "Mapping to enforcement"). Both research images need two more paths, so the OpenShell targets file must list:
+OpenShell's Landlock baseline lets sandbox processes open only `/usr`, `/lib`, `/etc`, `/app`, `/var/log`, `/proc` and `/dev/urandom` read-only, and `/tmp`, `/dev/null` and the workdir `/sandbox` read-write. The policy compiler lists that baseline itself, less `/app`, because OpenShell's supervisor adds only paths that exist on its own host, and requires Landlock (`hard_requirement`), so a sandbox does not start without filesystem confinement. It adds the devices research code needs ([policy](POLICY.md), "Mapping to enforcement"). Both research images need two more paths, so the OpenShell targets file must list:
 
 ```yaml
 sandbox:
@@ -347,6 +347,20 @@ passed all eight pulled-digest container/Landlock checks and all four merges.
 Each shared OCI index was independently inspected and contains exactly
 `linux/amd64` and `linux/arm64`. All four GHCR packages are currently private;
 `crypto-base` remains private as required by D46.
+
+The `VM bootstrap mirror` workflow copies NVIDIA's
+`nvcr.io/nvidia/base/ubuntu:24.04` index, pinned by digest, to
+`ghcr.io/regenscheid/sandbox-crypto/vm-bootstrap:ubuntu-24.04` with
+`skopeo copy --all --preserve-digests`, then checks that GHCR serves the same
+digest and that the package is private. Its first run created the package as
+public, inheriting this public repository's visibility, so the check failed after
+the copy; set the package to private in its GitHub package settings before
+relying on a rerun. It runs when its workflow file changes on
+`dev` or `main`, or by manual dispatch. OpenShell v0.1.5's VM driver sends one
+registry credential to both the bootstrap and sandbox pulls, and nvcr.io rejects
+the GitHub token needed for `crypto-base`, so the Mac helper boots from this
+mirror. To move to a newer NVIDIA image, change the digest in the workflow and in
+`DEFAULT_BOOTSTRAP_IMAGE` in `scripts/mac_local.py`; a test keeps them equal.
 
 ## In OpenShell
 

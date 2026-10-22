@@ -55,6 +55,9 @@ from .supervise import Part, Supervisor, environment, passed
 
 COMMAND = "sandbox-science-mcp-proxy"
 PROXY_CALLER = "mcp-orchestrator"
+OPERATOR_CALLER = "mcp-workspace"
+"""The workspace's token: an operator caller, which reads and answers the project's
+permission requests for its user (D76, owner decision 2026-10-21) and calls no tool."""
 """The run service's token for the proxy, by its file's name in tokens/."""
 PROXY_PORT = 8080
 REMOTE = "/sandbox/mcp-proxy"
@@ -148,9 +151,20 @@ def prepare(config: LauncherConfig, layout: Layout) -> None:
                 "token_sha256": digest,
                 "kind": "orchestrator",
                 "project": config.mcp_project(),
-            }
+            },
         ],
     }
+    if settings(config).approvals:
+        # The workspace's own caller, which answers permission requests and calls no tool;
+        # without approvals the proxy gets the callers an older image knows.
+        cast(list[dict[str, str]], proxy["callers"]).append(
+            {
+                "name": "workspace",
+                "token_sha256": ensure_token(layout.token(OPERATOR_CALLER)),
+                "kind": "operator",
+                "project": config.mcp_project(),
+            }
+        )
     write_private(upload / "proxy.toml", toml.dumps(proxy))
 
 
@@ -234,7 +248,10 @@ async def start(
         "the MCP proxy's policy",
         [str(commands / COMMAND), "compile-policy",
          "--policy", str(found["policy"]), "--ceiling", str(found["ceiling"]),
-         "--targets", str(found["targets"]), "--out", str(compiled)],
+         "--targets", str(found["targets"]), "--out", str(compiled),
+         # Tools the policy escalates by name pass the sandbox's fence, so that the
+         # user's approval in the workspace can let them through the proxy.
+         *(["--admit-escalated"] if mcp.approvals else [])],
         layout.mcp,
         timeout,
         tooling(config),

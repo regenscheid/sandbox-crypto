@@ -424,7 +424,7 @@ async def test_stalled_binary_upload_has_its_own_bounded_deadline(
     import asyncio
     from collections.abc import AsyncIterator
 
-    from sandbox_science.workspace.api import Timeouts
+    from sandbox_science.workspace.context import Timeouts
 
     client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=0.05))
 
@@ -524,7 +524,7 @@ async def test_stalled_original_download_releases_transfer_capacity_without_appe
 
     from aiohttp import ClientPayloadError
 
-    from sandbox_science.workspace.api import Timeouts
+    from sandbox_science.workspace.context import Timeouts
 
     client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=0.1))
     assert (await client.post(UPLOADS, json=body(), headers=origin(client))).status == 200
@@ -553,7 +553,7 @@ async def test_timed_out_store_write_keeps_admission_until_its_thread_finishes(
     import threading
 
     from sandbox_science.orchestrator.uploads import UserUploads
-    from sandbox_science.workspace.api import Timeouts
+    from sandbox_science.workspace.context import Timeouts
 
     client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=0.05))
     started, release = asyncio.Event(), threading.Event()
@@ -607,7 +607,7 @@ async def test_cancelled_binary_admission_disposes_returned_writer(
 
     from sandbox_science.orchestrator.uploads import UserUploads
     from sandbox_science.workspace import uploads
-    from sandbox_science.workspace.api import Timeouts
+    from sandbox_science.workspace.context import Timeouts
 
     route = uploads.uploaded
     first_request = True
@@ -699,7 +699,7 @@ async def test_cancelled_download_acquisition_closes_returned_spool(
 
     from sandbox_science.orchestrator.uploads import UserUploads
     from sandbox_science.workspace import uploads
-    from sandbox_science.workspace.api import Timeouts
+    from sandbox_science.workspace.context import Timeouts
 
     task: asyncio.Task[Any] | None = None
     route = uploads.downloaded

@@ -7,7 +7,9 @@ The worker compares the answer with the same facts about its own host. Evidence
 only lowers the declared tier, never raises it:
 
 - the worker host's boot ID (the same running kernel), or a boot ID either side
-  cannot read, allows tier 1 at most, and only with a seccomp filter,
+  cannot read, allows tier 1 at most (a worker host that is not Linux, such as a
+  Mac running the sandboxes in Linux VMs, has no boot ID, and a sandbox that
+  reports one runs on a Linux kernel, so not on the host's), and only with a seccomp filter,
   no-new-privs and no effective capabilities (the threat model's hardened
   container); otherwise the tier is 0;
 - a visible sentinel, or one the executor cannot check, means tier 0;
@@ -24,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import os
 import secrets
+import sys
 from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,13 +59,24 @@ def host_facts() -> ProbeFacts:
 
 
 def assess(
-    declared: int, host: ProbeFacts, sandbox: ProbeFacts, sentinel: SentinelState
+    declared: int,
+    host: ProbeFacts,
+    sandbox: ProbeFacts,
+    sentinel: SentinelState,
+    *,
+    host_linux: bool = True,
 ) -> Assessment:
-    """Lower ``declared`` to what the evidence allows."""
+    """Lower ``declared`` to what the evidence allows.
+
+    ``host_linux`` says whether the worker host runs a Linux kernel: when it does not,
+    a sandbox reporting a Linux boot ID cannot share the host's kernel.
+    """
     findings: list[str] = []
     tier = declared
     kernel: KernelSharing
-    if host.boot_id is None or sandbox.boot_id is None:
+    if not host_linux and sandbox.boot_id is not None:
+        kernel = "separate"
+    elif host.boot_id is None or sandbox.boot_id is None:
         kernel = "unknown"
         findings.append("no boot ID shows that the sandbox has a kernel of its own")
     elif host.boot_id == sandbox.boot_id:
@@ -130,7 +144,8 @@ async def probe(channel: ExecutorChannel, declared: int, state_dir: Path) -> Ass
         return failed("the executor described its sandbox in an unexpected form")
     except OSError as exc:
         return failed(f"cannot write the sentinel file: {exc}")
-    return assess(declared, host, facts, sentinel_result(reply.get("sentinels"), paths))
+    sentinels = sentinel_result(reply.get("sentinels"), paths)
+    return assess(declared, host, facts, sentinels, host_linux=sys.platform == "linux")
 
 
 @contextlib.contextmanager

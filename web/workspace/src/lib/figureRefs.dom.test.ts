@@ -2,7 +2,7 @@
 // References to recorded files drawn in text (FG-6 to FG-9, FG-12, FG-17): each path image
 // matched in order to its pin, outside code and links; the pin's revision and a newer one,
 // with "Move the pin" where a page may move it; a broken reference with its reason; a
-// type shown as a link; and at most 20 figures a text, the rest drawn on request.
+// type as its file to download; and at most 20 figures a text, the rest drawn on request.
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Markdown from './Markdown.svelte';
@@ -90,6 +90,19 @@ describe('placing references in rendered text', () => {
     expect(placed.filter((p) => p.drawn)).toHaveLength(FIGURES_PER_TEXT);
     expect(placed.slice(FIGURES_PER_TEXT).every((p) => !p.drawn)).toBe(true);
   });
+
+  it('counts only figures toward the limit: files cited as links are never held back', () => {
+    const root = document.createElement('div');
+    const count = FIGURES_PER_TEXT + 5;
+    root.innerHTML = `<p>${Array.from({ length: count }, (_, i) => `![d${i}](d${i}.json)`).join(' ')} ![f](f.png)</p>`;
+    const placed = placeReferences(root, [
+      ...Array.from({ length: count }, (_, i) =>
+        pin(`d${i}.json`, { media_type: 'application/json' }),
+      ),
+      pin('f.png'),
+    ]);
+    expect(placed.every((p) => p.drawn)).toBe(true);
+  });
 });
 
 describe('the renderer', () => {
@@ -143,30 +156,43 @@ describe('the renderer', () => {
     expect(target.querySelector('script, img, button')).toBeNull();
   });
 
-  it('offers no move where the page gives none, and shows a link type as a link', async () => {
+  it('offers no move where the page gives none, and offers a type not drawn as its file', async () => {
     const target = show('![data](d.csv)', [pin('d.csv', { media_type: 'text/csv', latest: 9 })]);
     await settle();
-    expect(target.textContent).toContain('d.csv is shown as a link');
+    // Inline in its sentence: its description links to the file, its path in the title.
+    const file = target.querySelector<HTMLAnchorElement>('a.file-link')!;
+    expect(file.textContent).toBe('data');
+    expect(file.title).toContain('d.csv');
+    expect(file.closest('.figure-reference')!.classList.contains('inline')).toBe(true);
+    expect(file.getAttribute('href')).toMatch(/\/artifacts\/[^/]+\/revisions\/3\/content\?sha256=/);
+    expect(target.textContent).not.toContain('not drawn');
+    // Without a newer revision, the link alone: its revision is in its title.
+    const plain = show('![data](d.csv)', [pin('d.csv', { media_type: 'text/csv' })]);
+    await settle();
+    expect(plain.querySelector('.caption')).toBeNull();
+    // Nothing around it, so punctuation after it follows it directly.
+    expect(plain.querySelector('.figure-reference')!.textContent).toBe('data');
+    expect(plain.querySelector<HTMLAnchorElement>('a.file-link')!.title).toContain('d.csv, r3');
     expect(target.textContent).toContain('r3, newer: r9');
     expect(target.querySelector('button')).toBeNull();
   });
 
   it('shows a figure past the limit as its source, and draws it on a click', async () => {
     const count = FIGURES_PER_TEXT + 1;
-    const source = Array.from({ length: count }, (_, i) => `![f${i}](p${i}.csv)`).join('\n\n');
+    const source = Array.from({ length: count }, (_, i) => `![f${i}](p${i}.png)`).join('\n\n');
     const target = show(
       source,
-      Array.from({ length: count }, (_, i) => pin(`p${i}.csv`, { media_type: 'text/csv' })),
+      Array.from({ length: count }, (_, i) => pin(`p${i}.png`)),
     );
     await settle();
     const draw = [...target.querySelectorAll('button')].filter(
       (b) => b.textContent === 'Draw this figure',
     );
     expect(draw).toHaveLength(1);
-    expect(target.textContent).toContain(`![f${count - 1}](p${count - 1}.csv)`);
+    expect(target.textContent).toContain(`![f${count - 1}](p${count - 1}.png)`);
     draw[0]!.click();
     flushSync();
-    expect(target.textContent).toContain(`p${count - 1}.csv is shown as a link`);
+    expect(target.textContent).not.toContain(`![f${count - 1}](p${count - 1}.png)`);
   });
 });
 

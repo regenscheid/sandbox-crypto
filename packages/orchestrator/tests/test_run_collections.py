@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history.collections import Collection, Members, Slice
+from sandbox_science.orchestrator.context.history.receipts import Receipts
 from sandbox_science.orchestrator.harness import Finished, save
-from sandbox_science.orchestrator.history.collections import Collection, Members, Slice
-from sandbox_science.orchestrator.history.receipts import Receipts
 from sandbox_science.orchestrator.hooks import Notice, TurnHook
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
@@ -107,8 +108,8 @@ async def test_response_receipts_survive_observer_failure_and_are_scoped(
     assert result.stopped == "error"
     assert receipts.page("fixture") == ("notice-1",)
     assert Receipts(projects.control, "p", "s", RUN + "x").page("fixture") == ()
-    assert isinstance(result.messages, Collection)
-    assert result.messages[-1]["content"] == "Done"
+    assert isinstance(result.context.messages, Collection)
+    assert result.context.messages[-1]["content"] == "Done"
 
 
 async def test_compact_final_record_retains_history_reference(
@@ -142,7 +143,7 @@ async def test_compact_final_record_retains_history_reference(
 
 
 def test_scratch_history_preserves_native_messages_and_adapter_state(tmp_path: Path) -> None:
-    from sandbox_science.orchestrator.history.memory import RunMemory
+    from sandbox_science.orchestrator.context.history.memory import RunMemory
     from sandbox_science.orchestrator.model import AssistantMessage
 
     memory = RunMemory.scratch(tmp_path / "scratch.sqlite3", ("p", "s", "r"))
@@ -208,8 +209,8 @@ async def test_tool_collection_persists_only_preview_during_live_observers(
 def test_archive_page_counts_all_retained_payload_fields(
     projects: ProjectStore, field: str
 ) -> None:
-    from sandbox_science.orchestrator.history import Archive, Entry
-    from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
+    from sandbox_science.orchestrator.context.history import Archive, Entry
+    from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 
     archive = Archive(projects.control)
     payload = "x" * (60 * 1024 if field == "adapter_state" else 3 * 1024 * 1024)
@@ -233,22 +234,22 @@ def test_archive_page_counts_all_retained_payload_fields(
 def test_native_payloads_count_toward_active_view_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sandbox_science.orchestrator import loop
-    from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
-    from sandbox_science.orchestrator.history.memory import RunMemory
+    from sandbox_science.orchestrator.context import agent
+    from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
+    from sandbox_science.orchestrator.context.history.memory import RunMemory
     from sandbox_science.orchestrator.loop import Transcript
     from sandbox_science.orchestrator.model import AssistantMessage
 
     # Exercise the accounting without writing over 64 MiB of synthetic evidence.
-    monkeypatch.setattr(loop, "VIEW_BYTES", 9 * 1024 * 1024)
+    monkeypatch.setattr(agent, "VIEW_BYTES", 9 * 1024 * 1024)
     memory = RunMemory.scratch(tmp_path / "native.sqlite3", ("p", "s", "r"))
     try:
         messages = memory.messages([{"role": "system", "content": "Research"}])
         for _ in range(2):
             messages.append(AssistantMessage("tiny", native=b"n" * (5 * 1024 * 1024)))
-        transcript = Transcript(messages=messages, memory=memory)
+        transcript = Transcript(context=AgentContext(messages=messages, memory=memory))
         with pytest.raises(WorkingMemoryLimitError, match="active model payload"):
-            _ = transcript.sent
+            _ = transcript.context.sent
         assert len(messages) == 3
     finally:
         memory.control.close()

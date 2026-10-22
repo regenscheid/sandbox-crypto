@@ -16,12 +16,12 @@ from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.orchestrator.aio import lease, threaded
+from sandbox_science.orchestrator.context.history import Archive, body
+from sandbox_science.orchestrator.context.history.collections import Collection as RunCollection
+from sandbox_science.orchestrator.context.history.snapshot import inline
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
-from sandbox_science.orchestrator.history import Archive, body
-from sandbox_science.orchestrator.history.collections import Collection as RunCollection
-from sandbox_science.orchestrator.history.snapshot import inline
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -881,7 +881,7 @@ class Reviews(TurnHook):
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         if point != "turn":
             return ()
-        await self.controller.safe_point(run.messages)
+        await self.controller.safe_point(run.context.messages)
         return await self._pending()
 
     async def model_returned(self, run: RunView) -> None:
@@ -891,11 +891,11 @@ class Reviews(TurnHook):
     async def observe_tool(self, run: RunView, record: Json) -> None:
         executed = run.tool_records
         call = dict(executed[-1]) if executed else None
-        await self.controller.safe_point(run.messages, tool=record, call=call)
+        await self.controller.safe_point(run.context.messages, tool=record, call=call)
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         controller = self.controller
-        self.result = await controller.terminal(run.messages, answer)
+        self.result = await controller.terminal(run.context.messages, answer)
         if "user_message" in self.result:
             return Closing("stop", stopped="user_message")
         configuration, _ = await asyncio.to_thread(

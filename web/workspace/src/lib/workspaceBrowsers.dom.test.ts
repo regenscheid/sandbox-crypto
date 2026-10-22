@@ -217,23 +217,33 @@ it('filters memory without changing receive order and retains selection on remou
   document.body.append(target);
   let component = mount(MemoryPage, { target, props: { projectId: 'memory-browser' } });
   await settle();
-  expect(
-    [...target.querySelectorAll('.memory-row strong')].map((item) => item.textContent),
-  ).toEqual(['1. mem-1', '2. mem-2']);
+  const rows = () => [...target.querySelectorAll<HTMLElement>('.memory-list > li')];
+  // Each entry in the order agents receive it, numbered by that order.
+  expect(rows().map((row) => row.querySelector('.entry-number')!.textContent)).toEqual(['1', '2']);
   const search = target.querySelector<HTMLInputElement>('input[type="search"]')!;
   search.value = 'Second';
   search.dispatchEvent(new Event('input', { bubbles: true }));
   flushSync();
-  target.querySelector<HTMLButtonElement>('.memory-row')!.click();
+  const visibleRows = () => rows().filter((row) => !row.hidden);
+  expect(visibleRows().map((row) => row.querySelector('.entry-number')!.textContent)).toEqual([
+    '2',
+  ]);
+  visibleRows()[0]!.querySelector<HTMLButtonElement>('.memory-row')!.click();
   flushSync();
-  expect(target.querySelector('.memory-row strong')?.textContent).toBe('2. mem-2');
+  expect(visibleRows()[0]!.querySelector('.entry-detail')?.textContent).toContain('mem-2');
   await unmount(component);
   target.innerHTML = '';
   component = mount(MemoryPage, { target, props: { projectId: 'memory-browser' } });
   mounted.push(component);
   await settle();
   expect(target.querySelector<HTMLInputElement>('input[type="search"]')?.value).toBe('Second');
-  expect(target.querySelector('.memory-row')?.getAttribute('aria-pressed')).toBe('true');
+  expect(visibleRows()[0]!.querySelector('.memory-row')?.getAttribute('aria-expanded')).toBe(
+    'true',
+  );
+  const cleared = target.querySelector<HTMLInputElement>('input[type="search"]')!;
+  cleared.value = '';
+  cleared.dispatchEvent(new Event('input', { bubbles: true }));
+  flushSync();
   expect(target.textContent).toContain('Past agent budget');
   browserState.clear('memory:memory-browser');
 });

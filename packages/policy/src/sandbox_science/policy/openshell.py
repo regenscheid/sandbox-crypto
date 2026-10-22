@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Compile a project policy into NVIDIA OpenShell v0.1.3 network policy.
+"""Compile a project policy into NVIDIA OpenShell v0.1.5 network policy.
 
 Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
 
@@ -19,10 +19,12 @@ Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
 * The orchestrator's own sandbox (Z2 in the threat model) reaches the worker API
   and the model gateway, and nothing else. No project policy applies to it.
 
-A research sandbox's document also carries its filesystem section, which
-OpenShell fixes when the sandbox is created: the devices that research code
-needs beyond OpenShell's baseline paths (pseudo-terminals, shared memory) and
-any paths the deployment's image adds.
+Every document also carries the sections OpenShell fixes when the sandbox is
+created. Its filesystem section lists OpenShell's baseline system paths itself,
+since the supervisor adds them only where they exist on its own host, which is
+macOS for the Mac's VM driver, and the paths the deployment's image adds; a
+research sandbox's also lists the devices research code needs (pseudo-terminals,
+shared memory). Its Landlock section makes that confinement a hard requirement.
 
 Everything the compiler cannot express exactly is reported, and where the
 compiled policy differs from the project policy it is stricter. The compiler
@@ -101,6 +103,17 @@ SANDBOX_DEVICES_READ_WRITE: Final = (
 code needs: pseudo-terminals for pexpect-driven tools such as Sage's GAP, gp and Singular
 interfaces, and ``/dev/shm`` for Python's multiprocessing (lab 5). Without them, Landlock
 refuses every open."""
+
+BASELINE_READ_ONLY: Final = ("/usr", "/lib", "/etc", "/proc", "/var/log", "/dev/urandom")
+BASELINE_READ_WRITE: Final = ("/tmp", "/dev/null")  # noqa: S108 - a Landlock path, not a temporary file
+"""OpenShell's baseline paths for a sandbox with network rules (``PROXY_BASELINE_*`` in its
+supervisor, unchanged from v0.1.3 to v0.1.5), less ``/app``, which the images lack. The
+supervisor adds each one only if it exists where the supervisor runs. With the macOS VM
+driver that is the host, which has no ``/lib`` or ``/proc``, so every compiled section
+lists them itself; on Linux the supervisor then adds nothing it would not have added."""
+
+BASELINE_UNLISTED: Final = 1
+"""Baseline paths the supervisor may still add to a compiled section (``/app``)."""
 
 MAX_FILESYSTEM_PATHS: Final = 256
 """OpenShell's limit on ``read_only`` plus ``read_write`` paths, its baseline included."""
@@ -226,8 +239,8 @@ class NetworkMiddleware(_OpenShellModel):
 class FilesystemPolicy(_OpenShellModel):
     """Paths Landlock lets sandbox processes open, beyond the workdir when it is included.
 
-    OpenShell adds its baseline paths (``/usr``, ``/lib``, ``/etc``, ``/proc``, ``/tmp``,
-    ``/dev/null``, ``/dev/urandom`` and a few more) when a sandbox starts.
+    OpenShell's supervisor adds those of its baseline paths that exist on its host and
+    are not listed when a sandbox with network rules starts; compiled sections list them.
     """
 
     include_workdir: bool = True
@@ -235,20 +248,37 @@ class FilesystemPolicy(_OpenShellModel):
     read_write: tuple[str, ...] = ()
 
 
+class LandlockPolicy(_OpenShellModel):
+    """Whether a sandbox may start when Landlock cannot apply its filesystem section.
+
+    ``best_effort``, OpenShell's default, logs a warning and runs the sandbox without
+    filesystem restrictions when the kernel lacks Landlock or ``restrict_self()`` fails.
+    ``hard_requirement`` refuses to start it. Either way a sandbox, which applies the
+    rules as its own user, skips a listed path that is missing from the image, which can
+    only narrow what it may open (Mac test, 2026-10-21).
+    """
+
+    compatibility: Literal["best_effort", "hard_requirement"]
+
+
+HARD_LANDLOCK: Final = LandlockPolicy(compatibility="hard_requirement")
+
+
 class OpenShellPolicy(_OpenShellModel):
     """An OpenShell policy document.
 
-    Create a sandbox with the whole document. OpenShell fixes the filesystem section
-    then, adding its baseline paths, and refuses a later revision that removes any of
-    them. Apply a revision with ``with_filesystem()`` and the section the sandbox
-    reports (``openshell policy get --base``), with ``policy set``, so that it replaces
-    the sandbox's network sections entirely: an entry left over from an earlier
-    compilation could admit what the policy no longer allows. Landlock and process
+    Create a sandbox with the whole document. OpenShell fixes the filesystem and
+    Landlock sections then, and refuses a later revision that removes a filesystem path
+    or changes the Landlock section. Apply a revision with ``with_static()`` and the
+    sections the sandbox reports (``openshell policy get --base``), with ``policy set``,
+    so that it replaces the sandbox's network sections entirely: an entry left over from
+    an earlier compilation could admit what the policy no longer allows. Process
     settings belong to the environment layer (D48).
     """
 
     version: Literal[1] = 1
     filesystem_policy: FilesystemPolicy | None = None
+    landlock: LandlockPolicy | None = None
     network_policies: dict[str, NetworkPolicy]
     network_middlewares: dict[str, NetworkMiddleware] | None = None
 
@@ -261,9 +291,13 @@ class OpenShellPolicy(_OpenShellModel):
         document = self.model_dump(mode="json", exclude_none=True)
         return yaml.dump(document, Dumper=_Dumper, sort_keys=False, default_flow_style=False)
 
-    def with_filesystem(self, filesystem: FilesystemPolicy) -> OpenShellPolicy:
-        """The document with a running sandbox's filesystem section, for revising it."""
-        return self.model_copy(update={"filesystem_policy": filesystem})
+    def with_static(
+        self, filesystem: FilesystemPolicy, landlock: LandlockPolicy | None
+    ) -> OpenShellPolicy:
+        """The document with a running sandbox's filesystem and Landlock sections, for
+        revising it. A sandbox created before compiled policies had a Landlock section
+        reports none, and keeps none."""
+        return self.model_copy(update={"filesystem_policy": filesystem, "landlock": landlock})
 
 
 _YAML12_NON_STRING_RE: Final = re.compile(
@@ -1034,6 +1068,7 @@ def compile_sandbox(
     return Compiled(
         policy=OpenShellPolicy(
             filesystem_policy=_sandbox_filesystem(target.filesystem),
+            landlock=HARD_LANDLOCK,
             network_policies=network_policies,
             network_middlewares={"sandbox-science-policy": middleware},
         ),
@@ -1051,22 +1086,28 @@ def compile_sandbox(
 
 
 def _sandbox_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:
-    """The research sandbox's filesystem section: the devices it needs plus the image's paths.
+    """The research sandbox's filesystem section: the baseline, the devices it needs and
+    the image's paths."""
+    return _filesystem(
+        (*SANDBOX_DEVICES_READ_ONLY, *extra.read_only),
+        (*SANDBOX_DEVICES_READ_WRITE, *extra.read_write),
+    )
+
+
+def _filesystem(read_only: Iterable[str], read_write: Iterable[str]) -> FilesystemPolicy:
+    """OpenShell's baseline paths and these, the workdir included.
 
     A path listed both ways stays writable. Raises CompileError past OpenShell's limit.
     """
-    read_write = tuple(dict.fromkeys((*SANDBOX_DEVICES_READ_WRITE, *extra.read_write)))
-    read_only = tuple(
-        path
-        for path in dict.fromkeys((*SANDBOX_DEVICES_READ_ONLY, *extra.read_only))
-        if path not in read_write
+    writable = tuple(dict.fromkeys((*BASELINE_READ_WRITE, *read_write)))
+    readable = tuple(
+        path for path in dict.fromkeys((*BASELINE_READ_ONLY, *read_only)) if path not in writable
     )
-    # OpenShell's baseline adds up to nine more paths when the sandbox starts.
-    if len(read_only) + len(read_write) + 9 > MAX_FILESYSTEM_PATHS:
+    if len(readable) + len(writable) + BASELINE_UNLISTED > MAX_FILESYSTEM_PATHS:
         raise CompileError(
             f"the sandbox would have more than {MAX_FILESYSTEM_PATHS} filesystem paths"
         )
-    return FilesystemPolicy(include_workdir=True, read_only=read_only, read_write=read_write)
+    return FilesystemPolicy(include_workdir=True, read_only=readable, read_write=writable)
 
 
 def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
@@ -1111,15 +1152,14 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
         )
     return OpenShellPolicy(
         filesystem_policy=_service_filesystem(target.filesystem),
+        landlock=HARD_LANDLOCK,
         network_policies=network_policies,
     )
 
 
 def _service_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:
-    """The filesystem of a platform service's sandbox: the workdir and its image's paths."""
-    read_write = tuple(dict.fromkeys(extra.read_write))
-    read_only = tuple(path for path in dict.fromkeys(extra.read_only) if path not in read_write)
-    return FilesystemPolicy(include_workdir=True, read_only=read_only, read_write=read_write)
+    """The filesystem of a platform service's sandbox: the baseline and its image's paths."""
+    return _filesystem(extra.read_only, extra.read_write)
 
 
 def _bound_hosts(
@@ -1318,6 +1358,7 @@ def compile_mcp_proxy(
     return Compiled(
         policy=OpenShellPolicy(
             filesystem_policy=_service_filesystem(target.filesystem),
+            landlock=HARD_LANDLOCK,
             network_policies=network_policies,
         ),
         findings=tuple(findings),

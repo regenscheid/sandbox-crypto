@@ -66,6 +66,8 @@ it('renders immutable original and correcting actor while exposing USER-own body
     requests: [],
     view_revision: 1,
     anchor: {
+      sha256: 'test-sha',
+      block_sha256: 'test-block-sha',
       revision: 1,
       block: 'b1',
       math: null,

@@ -33,7 +33,7 @@ from sandbox_science.launcher.config import load_config
 from sandbox_science.orchestrator.projects import ProjectStore
 
 REPO = Path(__file__).resolve().parents[2]
-OS_BIN = Path.home() / ".local/opt/openshell-0.1.3/bin"
+OS_BIN = Path.home() / ".local/opt/openshell-0.1.5/bin"
 PURPOSE = "disposable synthetic recovery acceptance"
 PROJECT = "recovery"
 
@@ -453,7 +453,7 @@ class Lab:
         )
 
     def intent(self, session, tool):
-        from sandbox_science.orchestrator.history.operations import ToolJournal
+        from sandbox_science.orchestrator.context.history.operations import ToolJournal
 
         found = self.read(
             "SELECT run,operation_id FROM tool_intents WHERE project=? "
@@ -546,7 +546,7 @@ class Lab:
         return rows if rows and all(row[2] == "completed" for row in rows) else None
 
     def results(self, session):
-        from sandbox_science.orchestrator.history.operations import ToolJournal
+        from sandbox_science.orchestrator.context.history.operations import ToolJournal
 
         records = self.read(
             "SELECT message_id FROM archive_tool_records WHERE project=? AND session=? ORDER BY rowid",
@@ -717,7 +717,7 @@ print(json.dumps({'pid':pid,'start':stamp}))
         print("PASS durable automatic continuation after saved model-phase failure", flush=True)
 
     def history_result(self, session):
-        from sandbox_science.orchestrator.history import Archive
+        from sandbox_science.orchestrator.context.history import Archive
 
         result = self.results(session)
         assert len(result["works"]) == 3

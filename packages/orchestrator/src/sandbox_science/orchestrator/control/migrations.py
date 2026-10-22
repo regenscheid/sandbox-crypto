@@ -3139,7 +3139,7 @@ def _context_auxiliary_window(schema: Schema) -> None:
 
 def _context_captures(schema: Schema) -> None:
     """Version 72: actual dispatch captures and independent inspector search."""
-    from sandbox_science.orchestrator.history.capture_schema import create
+    from sandbox_science.orchestrator.context.history.capture_schema import create
 
     create(schema)
 
@@ -3154,22 +3154,42 @@ def _project_model_settings(schema: Schema) -> None:
 ) STRICT""")
 
 
+def _project_connector_settings(schema: Schema) -> None:
+    """Version 74: the connectors the user turned off in a project (narrowing only)."""
+    schema.execute("""CREATE TABLE project_connector_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    disabled TEXT NOT NULL CHECK (json_valid(disabled) AND json_type(disabled) = 'array'),
+    author TEXT NOT NULL
+) STRICT""")
+
+
+def _project_approval_settings(schema: Schema) -> None:
+    """Version 75: the connector tool calls the user approved for a whole project."""
+    schema.execute("""CREATE TABLE project_approval_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK(revision>=1),
+    grants TEXT NOT NULL CHECK (json_valid(grants) AND json_type(grants) = 'array'),
+    author TEXT NOT NULL
+) STRICT""")
+
+
 def _external_user_uploads(schema: Schema) -> None:
-    """Version 74: verified external originals and resumable transfer admission."""
+    """Version 76: verified external originals and resumable transfer admission."""
     from sandbox_science.orchestrator.upload_schema import install
 
     install(schema)
 
 
 def _artifact_retention(schema: Schema) -> None:
-    """Version 75: exact worker retention intents share the successful receipt commit."""
+    """Version 77: exact worker retention intents share the successful receipt commit."""
     from sandbox_science.orchestrator.artifact_retention_schema import install
 
     install(schema)
 
 
 def _artifact_reference_indexes(schema: Schema) -> None:
-    """Version 76: bounded reference seeks never scan/sort the entire retained history."""
+    """Version 78: bounded reference seeks never scan/sort the entire retained history."""
     schema.execute("CREATE INDEX artifact_blob_hash ON artifact_revision_blobs(sha256,size)")
     schema.execute("CREATE INDEX upload_blob_hash ON user_upload_blobs(sha256,size)")
 
@@ -3247,6 +3267,8 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _context_auxiliary_window,
     _context_captures,
     _project_model_settings,
+    _project_connector_settings,
+    _project_approval_settings,
     _external_user_uploads,
     _artifact_retention,
     _artifact_reference_indexes,

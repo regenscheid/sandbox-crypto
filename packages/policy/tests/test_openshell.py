@@ -27,6 +27,11 @@ from sandbox_science.policy import (
 )
 from sandbox_science.policy.hosts import floor_reason, is_public
 from sandbox_science.policy.openshell import (
+    BASELINE_READ_ONLY,
+    BASELINE_READ_WRITE,
+    BASELINE_UNLISTED,
+    HARD_LANDLOCK,
+    MAX_FILESYSTEM_PATHS,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     AnyOf,
@@ -35,6 +40,7 @@ from sandbox_science.policy.openshell import (
     CompileError,
     Endpoint,
     FilesystemPolicy,
+    LandlockPolicy,
     McpProxyTarget,
     OpenShellPolicy,
     OrchestratorTarget,
@@ -63,7 +69,7 @@ RANGES = admission_ranges(EXAMPLE, OPEN)
 """The public ranges less the floor's public metadata address, as compiled for EXAMPLE."""
 HEADER = "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {name: test}\n"
 
-# Fields of OpenShell's authored schema (v0.1.3) that the compiler may emit. OpenShell
+# Fields of OpenShell's authored schema (v0.1.5) that the compiler may emit. OpenShell
 # rejects unknown fields, so a typo here would break policy loads.
 ALLOWED_KEYS = {
     "version",
@@ -71,6 +77,8 @@ ALLOWED_KEYS = {
     "include_workdir",
     "read_only",
     "read_write",
+    "landlock",
+    "compatibility",
     "network_policies",
     "name",
     "endpoints",
@@ -831,8 +839,11 @@ def test_example_mcp_proxy_policy() -> None:
     # floor and the ceiling to where a name leads (lab 13).
     assert endpoint.allowed_ips == mcp_server_ranges(OPEN)
     assert compiled.policy.filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=("/opt/sandbox-science",)
+        include_workdir=True,
+        read_only=(*BASELINE_READ_ONLY, "/opt/sandbox-science"),
+        read_write=BASELINE_READ_WRITE,
     )
+    assert compiled.policy.landlock == HARD_LANDLOCK
 
 
 def test_mcp_server_names_reach_only_public_addresses_the_floor_and_ceiling_allow() -> None:
@@ -1200,7 +1211,7 @@ def test_credentials_are_not_bound_where_the_library_forbids() -> None:
     )
 
 
-# OpenShell v0.1.3 refuses a policy whose endpoints are ambiguous
+# OpenShell v0.1.5 refuses a policy whose endpoints are ambiguous
 # (openshell-policy/src/ambiguity.rs): endpoints that overlap on host and port
 # must agree on their connection settings, and where neither has the more
 # specific path, on how requests are handled, including the credential binding.
@@ -1511,8 +1522,30 @@ def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
     assert filesystem is not None
     assert filesystem.include_workdir
     assert {"/dev/ptmx", "/dev/pts", "/dev/shm"} <= set(filesystem.read_write)
-    assert filesystem.read_write == SANDBOX_DEVICES_READ_WRITE
-    assert filesystem.read_only == SANDBOX_DEVICES_READ_ONLY
+    assert filesystem.read_write == (*BASELINE_READ_WRITE, *SANDBOX_DEVICES_READ_WRITE)
+    assert filesystem.read_only == (*BASELINE_READ_ONLY, *SANDBOX_DEVICES_READ_ONLY)
+
+
+@pytest.mark.parametrize("which", ["research", "orchestrator", "mcp-proxy"])
+def test_every_compiled_sandbox_lists_the_baseline_and_requires_landlock(which: str) -> None:
+    # OpenShell's supervisor adds its baseline only where the path exists on its own host.
+    # For the Mac's VM driver that is macOS, which has no /lib or /proc, so a sandbox there
+    # could not read /proc until the compiler listed the baseline (Mac test, 2026-10-21).
+    # With best_effort, OpenShell would run a sandbox whose rules Landlock cannot apply.
+    orchestrator = TARGETS.orchestrator
+    assert orchestrator is not None
+    policy = {
+        "research": lambda: compile_research(EXAMPLE).policy,
+        "orchestrator": lambda: compile_orchestrator(orchestrator),
+        "mcp-proxy": lambda: compile_mcp_proxy(EXAMPLE, TARGETS.mcp_proxy, ceiling=OPEN).policy,
+    }[which]()
+    filesystem = policy.filesystem_policy
+    assert filesystem is not None
+    assert set(BASELINE_READ_ONLY) <= set(filesystem.read_only)
+    assert set(BASELINE_READ_WRITE) <= set(filesystem.read_write)
+    assert {"/lib", "/proc"} <= set(filesystem.read_only)
+    assert policy.landlock == LandlockPolicy(compatibility="hard_requirement")
+    assert yaml.safe_load(policy.to_yaml())["landlock"] == {"compatibility": "hard_requirement"}
 
 
 def test_the_filesystem_section_comes_first_and_revisions_keep_the_live_one() -> None:
@@ -1520,15 +1553,21 @@ def test_the_filesystem_section_comes_first_and_revisions_keep_the_live_one() ->
     assert list(yaml.safe_load(policy.to_yaml())) == [
         "version",
         "filesystem_policy",
+        "landlock",
         "network_policies",
         "network_middlewares",
     ]
-    # OpenShell refuses a revision that drops paths it added at startup (lab, 2026-10-11).
+    # OpenShell refuses a revision that drops paths it added at startup (lab, 2026-10-11)
+    # or changes the Landlock section (validate_static_fields_unchanged).
     live = FilesystemPolicy(read_only=("/dev/random", "/usr"), read_write=("/dev/shm", "/tmp"))
-    revision = policy.with_filesystem(live)
+    revision = policy.with_static(live, HARD_LANDLOCK)
     assert revision.filesystem_policy == live
+    assert revision.landlock == HARD_LANDLOCK
     assert revision.network_policies == policy.network_policies
     assert policy.filesystem_policy != live  # the original is unchanged
+    # A sandbox created before compiled policies had a Landlock section keeps none.
+    legacy = policy.with_static(live, None)
+    assert "landlock" not in yaml.safe_load(legacy.to_yaml())
 
 
 def test_the_image_paths_are_added_and_writable_wins() -> None:
@@ -1542,8 +1581,8 @@ def test_the_image_paths_are_added_and_writable_wins() -> None:
     )
     filesystem = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
     assert filesystem is not None
-    assert filesystem.read_only == ("/dev/random", "/opt/conda")
-    assert filesystem.read_write == (*SANDBOX_DEVICES_READ_WRITE, "/data")
+    assert filesystem.read_only == (*BASELINE_READ_ONLY, "/dev/random", "/opt/conda")
+    assert filesystem.read_write == (*BASELINE_READ_WRITE, *SANDBOX_DEVICES_READ_WRITE, "/data")
 
 
 @pytest.mark.parametrize(
@@ -1570,6 +1609,26 @@ def test_too_many_paths_are_a_compile_error() -> None:
     )
     with pytest.raises(CompileError, match="256 filesystem paths"):
         compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+
+
+def test_the_path_limit_counts_the_listed_baseline_once() -> None:
+    fixed = (
+        len(BASELINE_READ_ONLY)
+        + len(BASELINE_READ_WRITE)
+        + len(SANDBOX_DEVICES_READ_ONLY)
+        + len(SANDBOX_DEVICES_READ_WRITE)
+        + BASELINE_UNLISTED
+    )
+
+    def target(count: int) -> SandboxTarget:
+        paths = tuple(f"/opt/p{i}" for i in range(count))
+        return TARGETS.sandbox.model_copy(
+            update={"filesystem": SandboxFilesystem(read_only=(*paths, "/usr", "/proc"))}
+        )
+
+    compile_sandbox(EXAMPLE, target(MAX_FILESYSTEM_PATHS - fixed), ceiling=OPEN)
+    with pytest.raises(CompileError, match="256 filesystem paths"):
+        compile_sandbox(EXAMPLE, target(MAX_FILESYSTEM_PATHS - fixed + 1), ceiling=OPEN)
 
 
 def test_example_targets_name_no_image_paths() -> None:
@@ -1602,8 +1661,11 @@ def test_the_orchestrator_reaches_only_the_platform_services() -> None:
     assert policy.network_middlewares is None
     # The harness runs from the image's prefix, which Landlock must let it read (lab 9).
     assert policy.filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=("/opt/sandbox-science",)
+        include_workdir=True,
+        read_only=(*BASELINE_READ_ONLY, "/opt/sandbox-science"),
+        read_write=BASELINE_READ_WRITE,
     )
+    assert policy.landlock == HARD_LANDLOCK
     document = yaml.safe_load(policy.to_yaml())
     assert schema_keys(document) <= ALLOWED_KEYS
     assert None not in leaf_values(document)

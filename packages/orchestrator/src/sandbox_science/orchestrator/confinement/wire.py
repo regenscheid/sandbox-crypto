@@ -16,7 +16,11 @@ from typing import Annotated, Any, Literal, cast
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter
 
 from sandbox_science.contracts.model import Contract, Counter, Identifier
-from sandbox_science.orchestrator.history.capture import CapturedRequest, ContextMessage, Origin
+from sandbox_science.orchestrator.context.history.capture import (
+    CapturedRequest,
+    ContextMessage,
+    Origin,
+)
 from sandbox_science.orchestrator.hooks import Effect, Notice, Point
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import (

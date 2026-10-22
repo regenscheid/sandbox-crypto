@@ -87,6 +87,9 @@ def build(tmp_path: Path):
     projects.create("foreign", "minimal", "sha256:" + "a" * 64)
     projects.open_session("foreign", "s", dedicated=False)
     documents = DocumentStore(store_path(tmp_path))
+    # Hand writer ownership to the fixture before the project store can be collected.
+    documents.initialize()
+    projects.close()
     inventory = ArtifactInventory(documents)
     reviews = ReviewStore(documents, artifacts=inventory)
     context = ExecutionContext(
@@ -260,6 +263,7 @@ def test_reproduction_does_not_count_and_restart_does_not_need_callback(state) -
     path = reviews.documents.path
     reviews.documents.close()
     reopened = DocumentStore(path)
+    reopened.initialize()
     try:
         recovered = ReviewStore(reopened)  # inventories are discovered from canonical schema
         result = ingest_artifacts(recovered, "p", "s")

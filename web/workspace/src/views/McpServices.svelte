@@ -5,7 +5,8 @@
   import { browserState } from '../lib/browserState';
   import { post } from '../lib/http';
   import { api } from '../lib/api';
-  import type { McpInventory } from '../lib/api-types';
+  import type { ApprovalSettings, ConnectorSettings, McpInventory } from '../lib/api-types';
+  import { guardedWrite } from '../lib/mutation';
   import { formatTime } from '../lib/format';
   import { projectHref } from '../lib/router';
   import { visible } from '../lib/text';
@@ -80,8 +81,84 @@
     services.find((service) => service.name === selected) ?? filtered[0] ?? null,
   );
 
+  // Which services the user turned off for the project (narrowing only).
+  let settings = $state<ConnectorSettings | null>(null);
+  let toggling = $state(false);
+  let toggleError = $state<unknown>(null);
+  const isOff = (name: string) => settings?.disabled.includes(name) ?? false;
+  async function toggle(name: string) {
+    if (settings === null || toggling) return;
+    const disabled = isOff(name)
+      ? settings.disabled.filter((item) => item !== name)
+      : [...settings.disabled, name];
+    toggling = true;
+    toggleError = null;
+    try {
+      settings = await guardedWrite(
+        'connectors',
+        projectId,
+        { expected: settings.revision, disabled },
+        (change) => api.changeConnectorSettings(projectId, change),
+      );
+    } catch (caught) {
+      toggleError = caught;
+      try {
+        settings = await api.connectorSettings(projectId);
+      } catch {
+        // Keep the first error shown.
+      }
+    } finally {
+      toggling = false;
+    }
+  }
+
+  // The tool calls the user approved for the whole project, which they may take back.
+  let remembered = $state<ApprovalSettings | null>(null);
+  async function forget(server: string, tool: string | null) {
+    if (remembered === null || toggling) return;
+    const grants = remembered.grants.filter(
+      (grant) => !(grant.server === server && (grant.tool ?? null) === tool),
+    );
+    toggling = true;
+    toggleError = null;
+    try {
+      remembered = await guardedWrite(
+        'approvals',
+        projectId,
+        { expected: remembered.revision, grants },
+        (change) => api.changeApprovalSettings(projectId, change),
+      );
+    } catch (caught) {
+      toggleError = caught;
+      try {
+        remembered = await api.approvalSettings(projectId);
+      } catch {
+        // Keep the first error shown.
+      }
+    } finally {
+      toggling = false;
+    }
+  }
+
   async function load() {
     try {
+      api.approvalSettings(projectId).then(
+        (found) => {
+          // A server without these settings answers something else: show none.
+          remembered = Array.isArray(found?.grants) ? found : null;
+        },
+        () => {
+          remembered = null;
+        },
+      );
+      api.connectorSettings(projectId).then(
+        (found) => {
+          settings = Array.isArray(found?.disabled) ? found : null;
+        },
+        (caught) => {
+          toggleError = caught;
+        },
+      );
       const found = await api.mcpServices(projectId);
       shown = found;
       if (selected === null || !found.services.some((service) => service.name === selected))
@@ -103,7 +180,7 @@
 <nav class="trail">
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
 </nav>
-<h1>MCP services</h1>
+<h1>Connectors</h1>
 <p class="muted">
   Configured services and observations from a bounded sample of recorded runs. The most recent
   result shown for a service may not be its latest run. Viewing never invokes a tool. Use Check
@@ -148,7 +225,9 @@
           }}
         >
           <span class="row-top"
-            ><strong>{visible(service.name)}</strong><span class="state"
+            ><strong>{visible(service.name)}</strong>{#if isOff(service.name)}<span class="pill"
+                >Off</span
+              >{/if}<span class="state"
               >{service.observation?.status === 'listed'
                 ? 'Listed before'
                 : service.observation?.status === 'unavailable'
@@ -173,6 +252,47 @@
         <span class="eyebrow">Configured service</span>
         <h2>{visible(current.name)}</h2>
         <p>{current.purpose ? visible(current.purpose) : 'No purpose configured.'}</p>
+        {#if settings}
+          <div class="connector-switch">
+            <span
+              ><strong
+                >{isOff(current.name) ? 'Off for this project' : 'On for this project'}</strong
+              ><small class="muted"
+                >{isOff(current.name)
+                  ? 'Agents in this project are not offered its tools, and their calls to it are refused.'
+                  : "This project's agents can use its tools, as the policy allows."}</small
+              ></span
+            >
+            <button
+              type="button"
+              class:primary-button={isOff(current.name)}
+              disabled={toggling}
+              onclick={() => void toggle(current.name)}
+              >{isOff(current.name) ? 'Turn on' : 'Turn off'}</button
+            >
+          </div>
+          {#if toggleError}<ErrorMessage error={toggleError} />{/if}
+        {/if}
+        {#if remembered}
+          {@const mine = remembered.grants.filter((grant) => grant.server === current.name)}
+          <div class="remembered">
+            <strong>Approved for this project</strong>
+            {#each mine as grant (grant.tool ?? '*')}
+              <div class="remembered-row">
+                <span>{grant.tool ? visible(grant.tool) : 'Any tool the policy asks about'}</span
+                ><button
+                  type="button"
+                  disabled={toggling}
+                  onclick={() => void forget(grant.server, grant.tool ?? null)}>Remove</button
+                >
+              </div>
+            {:else}
+              <small class="muted"
+                >None. Calls the policy asks about wait for your answer in the chat.</small
+              >
+            {/each}
+          </div>
+        {/if}
         <p>
           Proxy: {current.proxy_status ?? 'unknown'}{#if current.proxy_checked_at}
             · observed {formatTime(current.proxy_checked_at)}{/if}.
@@ -322,6 +442,37 @@
 {/if}
 
 <style>
+  .remembered {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 0 12px;
+  }
+  .remembered-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 10px;
+    border: 1px solid var(--border, #ccc);
+    border-radius: 8px;
+  }
+  .connector-switch {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    padding: 12px 14px;
+    margin: 4px 0 12px;
+    border: 1px solid var(--border, #ccc);
+    border-radius: 10px;
+  }
+  .connector-switch > span {
+    flex: 1 1 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
   pre {
     white-space: pre-wrap;
     overflow-wrap: anywhere;

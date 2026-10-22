@@ -116,15 +116,15 @@ class CallerSettings(_Model):
 
     name: Identifier
     token_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
-    kind: Literal["orchestrator", "worker"]
+    kind: Literal["orchestrator", "worker", "operator"]
     project: Identifier
     container: Identifier | None = None
     session: Identifier | None = None
 
     @model_validator(mode="after")
     def _shape(self) -> Self:
-        if self.kind == "orchestrator" and (self.container or self.session):
-            raise ValueError(f"caller {self.name!r}: an orchestrator has no container or session")
+        if self.kind in ("orchestrator", "operator") and (self.container or self.session):
+            raise ValueError(f"caller {self.name!r}: an {self.kind} has no container or session")
         if self.kind == "worker" and self.container is None:
             raise ValueError(f"caller {self.name!r}: a worker token names its container")
         return self

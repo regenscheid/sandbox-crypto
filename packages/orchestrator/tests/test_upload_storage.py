@@ -52,12 +52,12 @@ def held(documents):
         ).fetchall()
 
 
-def test_v73_migration_does_not_rewrite_inline_rows_and_shares_sequence_and_constraints(
+def test_v75_migration_does_not_rewrite_inline_rows_and_shares_sequence_and_constraints(
     tmp_path, monkeypatch
 ):
     with monkeypatch.context() as old:
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[: 73 - migrations.BASELINE + 1])
-        old.setattr(migrations, "VERSION", 73)
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[: 75 - migrations.BASELINE + 1])
+        old.setattr(migrations, "VERSION", 75)
         documents = prepared(tmp_path)
         original = legacy_original(documents)
         with documents.control.read() as tx:

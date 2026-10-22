@@ -106,11 +106,11 @@ def test_sizes_disagreeing_across_sources_fail(indexed, tmp_path):
         reference_page(tmp_path / "ignored")
 
 
-def test_v75_upgrade_preserves_retained_rows_and_only_adds_covering_indexes(tmp_path, monkeypatch):
+def test_v77_upgrade_preserves_retained_rows_and_only_adds_covering_indexes(tmp_path, monkeypatch):
     path = tmp_path / "control.sqlite3"
     with monkeypatch.context() as old:
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[: 75 - migrations.BASELINE + 1])
-        old.setattr(migrations, "VERSION", 75)
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[: 77 - migrations.BASELINE + 1])
+        old.setattr(migrations, "VERSION", 77)
         with closing(DocumentStore(path)) as documents:
             found = install(ArtifactInventory(documents), b"unchanged").revision
             assert found is not None
