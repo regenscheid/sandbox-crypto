@@ -35,9 +35,7 @@ import contextlib
 import logging
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, cast
 
 from pydantic import ValidationError
 
@@ -57,16 +55,13 @@ from sandbox_science.contracts import (
     ProvisionOutcome,
     ProvisionRequest,
     ProvisionState,
-    ResolvedFile,
     ShellRequest,
     new_id,
 )
 from sandbox_science.contracts.provisioning import (
     MAX_CHANGES,
     MAX_FILES,
-    MAX_NOTES,
     MAX_QUEUED,
-    MAX_TEXT,
     InstallerLabel,
     InstallerStep,
     Reason,
@@ -74,9 +69,7 @@ from sandbox_science.contracts.provisioning import (
 )
 from sandbox_science.contracts.revisions import MAX_PROBE_OUTPUT
 from sandbox_science.contracts.worker import MAX_TIMEOUT_SECONDS
-from sandbox_science.policy import Action, HardFloor, LoadedPolicy, PoolCeiling
-from sandbox_science.policy.approvals import VALID_UNTIL, RequestKey
-from sandbox_science.policy.ceiling import effective_resources
+from sandbox_science.policy import Action
 from sandbox_science.policy.reasons import APPROVAL_REQUIRED
 
 from . import installer_records, resolution
@@ -86,6 +79,30 @@ from .identity import execution_digest, provision_digest, same_execution, same_p
 from .manager import ExecutionManager
 from .permissions import Permissions, PermissionStoreError
 from .provision_events import ProvisionEvents
+from .provision_permissions import ProvisionPermissions
+from .provision_types import (
+    DRY_RUN_OUTPUT,
+    DRY_RUN_TIMEOUT,
+    LOOK_TIMEOUT,
+    MAX_WAIT,
+    PERMISSION_POLL,
+    PROBE_ID,
+    STAGES,
+    STEP_OUTPUT,
+    Operation,
+    Stop,
+    append_notes,
+    cancelled,
+    clip,
+    ended_revision,
+    install_timeout,
+    started_revision,
+    step_error,
+    tail,
+)
+from .provision_types import Governing as Governing
+from .provision_types import PolicySource as PolicySource
+from .provision_types import Restorer as Restorer
 from .recovery_fence import check_dispatch, control_context
 from .resolution import Decided, Resolved, ResolveError
 from .revisions import read_lockfile
@@ -95,92 +112,6 @@ _log = logging.getLogger(__name__)
 
 RESERVED_OPERATION: Final = re.compile(r"prv-[0-9a-f]{24}\..*")
 """Execution operation IDs the worker keeps for provisioning steps; clients may not use them."""
-DRY_RUN_TIMEOUT: Final = 900.0
-"""Seconds a dry run may take."""
-INSTALL_TIMEOUT: Final = 3600.0
-"""Seconds an install may take when the policy's resources name no wall time."""
-DRY_RUN_OUTPUT: Final = 16 * 1024 * 1024
-"""Output a dry run may print: its JSON names every package to install."""
-STEP_OUTPUT: Final = 1024 * 1024
-PERMISSION_POLL: Final = 2.0
-"""Seconds between looks at the event store while an operation waits for permission."""
-LOOK_TIMEOUT: Final = 120.0
-"""Seconds a look at the packages may take, after an install step that reported no revision."""
-GRANT_MARGIN: Final = timedelta(minutes=30)
-"""How long a permission request grants beyond its wait and its install's time limit: its
-own deadline (``valid_until``), which holds even if the worker fails to withdraw it."""
-MAX_WAIT: Final = 60.0
-"""The longest a client may ask ``wait`` to wait for a change."""
-ERROR_TEXT: Final = 1500
-"""Characters of a step's output an error quotes."""
-_PROBE_ID: Final = re.compile(r"[^a-z0-9:._-]")
-_STAGES: Final[dict[ProvisionState, Stage]] = {
-    ProvisionState.QUEUED: "queue",
-    ProvisionState.CHECKING: "check",
-    ProvisionState.RESOLVING: "resolve",
-    ProvisionState.AWAITING_PERMISSION: "permission",
-    ProvisionState.INSTALLING: "link",
-    ProvisionState.PROBING: "probe",
-    ProvisionState.FINISHED: "probe",
-}
-
-
-@dataclass(frozen=True, slots=True)
-class Governing:
-    """What decides an environment's packages: its policy revision, the pool's ceiling and
-    floor, and the sandbox the policy middleware knows it by."""
-
-    policy: LoadedPolicy
-    ceiling: PoolCeiling
-    floor: HardFloor
-    sandbox_id: str | None
-
-
-class PolicySource(Protocol):
-    """Finds what governs an environment: the worker's environments (environments.py)."""
-
-    def governing(self, environment_id: str) -> Governing | None: ...
-
-
-class Restorer(Protocol):
-    """Puts an environment back to a revision after a failed install (CP-13). The next
-    slice provides one, from a volume snapshot or by rebuilding from the revision's
-    lockfile; without one, such an operation ends ``needs_recovery``."""
-
-    async def restore(self, environment_id: str, revision: int) -> bool: ...
-
-
-class _Stop(Exception):  # noqa: N818 - it ends an operation, as a return would
-    """How an operation ends: its outcome and the fields it records."""
-
-    def __init__(
-        self,
-        outcome: ProvisionOutcome,
-        reason: Reason | None = None,
-        stage: Stage | None = None,
-        error: ErrorInfo | None = None,
-        next_step: str | None = None,
-        **updates: Any,
-    ) -> None:
-        super().__init__(outcome.value)
-        self.outcome = outcome
-        self.reason = reason
-        self.stage = stage
-        self.error = error
-        self.next_step = next_step
-        self.updates = updates
-
-
-@dataclass
-class _Op:
-    record: ProvisionOperation
-    changed: asyncio.Future[None]
-    turn: asyncio.Event = field(default_factory=asyncio.Event)
-    cancelled: asyncio.Event = field(default_factory=asyncio.Event)
-    step: str | None = None
-    """The execution running for it now."""
-    task: asyncio.Task[None] | None = None
-    files: Decided | None = None
 
 
 class Provisioner:
@@ -219,12 +150,12 @@ class Provisioner:
             self.store, manager.blobs, manager.max_artifact_size
         )
         self.events = ProvisionEvents(permissions)
-        self._ops: dict[str, _Op] = {}
+        self._ops: dict[str, Operation] = {}
         self._queues: dict[str, list[str]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
-        self._owed: set[str] = set()
-        """Operations that ended while their permission requests could not be withdrawn:
-        tried again as each operation ends, and when the worker starts."""
+        self.permission_flow = ProvisionPermissions(
+            permissions, clock, self.poll, self._update, self._observe
+        )
 
     # The API.
 
@@ -322,7 +253,7 @@ class Provisioner:
             installer_steps=(),
         )
         self.store.insert_provision(record, provision_digest(request))
-        op = _Op(record, asyncio.get_running_loop().create_future())
+        op = Operation(record, asyncio.get_running_loop().create_future())
         self._ops[record.provision_id] = op
         queue = self._queues.setdefault(environment_id, [])
         queue.append(record.provision_id)
@@ -463,7 +394,7 @@ class Provisioner:
         task.add_done_callback(self._tasks.discard)
         return task
 
-    def _view(self, op: _Op) -> ProvisionOperation:
+    def _view(self, op: Operation) -> ProvisionOperation:
         """The record as clients see it, with its place in the queue while it waits."""
         record = op.record
         if record.state is not ProvisionState.QUEUED:
@@ -472,7 +403,7 @@ class Provisioner:
         position = queue.index(record.provision_id) if record.provision_id in queue else None
         return record.model_copy(update={"queue_position": position})
 
-    def _update(self, op: _Op, **changes: Any) -> None:
+    def _update(self, op: Operation, **changes: Any) -> None:
         """Change the operation's record, store it, and wake whoever waits on it."""
         record = _validated(op.record, **changes, seq=op.record.seq + 1)
         self.store.update_provision(record)
@@ -480,7 +411,7 @@ class Provisioner:
         changed, op.changed = op.changed, asyncio.get_running_loop().create_future()
         changed.set_result(None)
 
-    def _release(self, op: _Op) -> None:
+    def _release(self, op: Operation) -> None:
         """Give the environment's turn to the next operation."""
         environment_id = op.record.request.context.environment_id
         queue = self._queues.get(environment_id, [])
@@ -525,13 +456,13 @@ class Provisioner:
         if interrupted is not None:
             raise interrupted
 
-    async def _run(self, op: _Op) -> None:
+    async def _run(self, op: Operation) -> None:
         interrupted: asyncio.CancelledError | None = None
         try:
             try:
                 await self._observe(op.record, "provision.requested")
                 if not await self._take_turn(op):
-                    raise _Stop(
+                    raise Stop(
                         ProvisionOutcome.FAILED,
                         "cancelled",
                         "queue",
@@ -541,7 +472,7 @@ class Provisioner:
                         next_step="Nothing was installed.",
                     )
                 await self._operate(op)
-            except _Stop as stop:
+            except Stop as stop:
                 await self._end(op, stop)
         except asyncio.CancelledError as error:
             interrupted = error
@@ -554,9 +485,7 @@ class Provisioner:
                 message="the worker failed during this operation; its executions and "
                 "the environment's revisions tell what happened",
             )
-            failed = _Stop(
-                ProvisionOutcome.FAILED, "install_failed", _STAGES[op.record.state], error
-            )
+            failed = Stop(ProvisionOutcome.FAILED, "install_failed", STAGES[op.record.state], error)
             try:
                 if op.record.state is ProvisionState.INSTALLING:
                     failed = self._unseen_install(
@@ -565,7 +494,7 @@ class Provisioner:
                 await self._end(op, failed)
             except Exception:
                 _log.exception("could not record the end of %s", op.record.provision_id)
-                await self._close(
+                await self.permission_flow.close(
                     op.record.provision_id, op.record.permission_request, "its operation failed"
                 )
         finally:
@@ -581,7 +510,7 @@ class Provisioner:
         if interrupted is not None:
             raise interrupted
 
-    async def _take_turn(self, op: _Op) -> bool:
+    async def _take_turn(self, op: Operation) -> bool:
         """Wait for the environment's turn; False if the operation was cancelled first."""
         if not op.turn.is_set():
             waits = [
@@ -595,13 +524,13 @@ class Provisioner:
                     wait.cancel()
         return op.turn.is_set() and not op.cancelled.is_set()
 
-    async def _operate(self, op: _Op) -> None:
+    async def _operate(self, op: Operation) -> None:
         request = op.record.request
         environment_id = request.context.environment_id
         try:
             self.manager.package_admission(environment_id)
         except WorkerError as exc:
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "environment_changed",
                 "queue",
@@ -618,7 +547,7 @@ class Provisioner:
         )
         if request.system:
             names = ", ".join(request.system)
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.DENIED,
                 "base_image_change_required",
                 "resolve",
@@ -639,7 +568,7 @@ class Provisioner:
         )
         if refusal is not None:
             rule = refusal.rule or refusal.layer
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.DENIED,
                 "policy_denied",
                 "resolve",
@@ -655,7 +584,7 @@ class Provisioner:
         self._update(op, files=decided.files)
         self._refuse(decided, governing)
         if decided.with_action(Action.ESCALATE):
-            await self._permission(op, governing, decided)
+            await self.permission_flow.request(op, governing, decided)
         governing = self._unchanged(op)
         before, after = await self._install(op, governing, conda, decided)
         await self._settle(op, governing, capability, decided, before, after)
@@ -663,7 +592,7 @@ class Provisioner:
     def _governing(self, environment_id: str) -> Governing:
         governing = self.policies.governing(environment_id) if self.policies is not None else None
         if governing is None:
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "policy_changed",
                 "resolve",
@@ -674,11 +603,11 @@ class Provisioner:
             )
         return governing
 
-    def _unchanged(self, op: _Op) -> Governing:
+    def _unchanged(self, op: Operation) -> Governing:
         """What governs the environment now, if it is still the policy the decision used."""
         governing = self._governing(op.record.request.context.environment_id)
         if governing.policy.digest != op.record.policy:
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "policy_changed",
                 "permission",
@@ -695,7 +624,7 @@ class Provisioner:
 
     async def _execute(
         self,
-        op: _Op,
+        op: Operation,
         argv: Sequence[str],
         *,
         label: str,
@@ -707,7 +636,7 @@ class Provisioner:
         names the operation; a change to the packages is the operation's only when the
         step's own package commands made it (managed), as only the install's do."""
         if op.cancelled.is_set():
-            raise _cancelled(stage)
+            raise cancelled(stage)
         check_dispatch()
         if label in installer_records.LABELS:
             if any(step.label == label for step in op.record.installer_steps or ()):
@@ -755,7 +684,7 @@ class Provisioner:
         finally:
             op.step = None
 
-    def _installer_step(self, op: _Op, step: InstallerStep) -> None:
+    def _installer_step(self, op: Operation, step: InstallerStep) -> None:
         previous = op.record.installer_steps or ()
         self._update(
             op,
@@ -766,7 +695,7 @@ class Provisioner:
             ),
         )
 
-    async def _installer_log(self, op: _Op, execution: Execution, label: str) -> None:
+    async def _installer_log(self, op: Operation, execution: Execution, label: str) -> None:
         pending = next(step for step in op.record.installer_steps or () if step.label == label)
         try:
             prepared = installer_records.prepare(op.record, execution, label)
@@ -801,7 +730,7 @@ class Provisioner:
             )
             self._update(
                 op,
-                notes=_notes(
+                notes=append_notes(
                     op.record.notes,
                     "A sanitized installer log is unavailable. Original execution facts remain; "
                     "do not repeat the installer to recreate it.",
@@ -812,7 +741,7 @@ class Provisioner:
         if interrupted is not None:
             raise interrupted
 
-    async def _installer_version(self, op: _Op, conda: bool) -> None:
+    async def _installer_version(self, op: Operation, conda: bool) -> None:
         label = "version-conda" if conda else "version-pip"
         execution = await self._execute(
             op,
@@ -823,9 +752,9 @@ class Provisioner:
             limit=4096,
         )
         if execution.state is ExecutionState.CANCELLED or op.cancelled.is_set():
-            raise _cancelled("resolve")
+            raise cancelled("resolve")
         if execution.state in (ExecutionState.LOST, ExecutionState.TIMED_OUT):
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "resolve_failed",
                 "resolve",
@@ -836,7 +765,7 @@ class Provisioner:
                 ),
             )
 
-    async def _check(self, op: _Op, name: str, capability: CapabilitySpec) -> None:
+    async def _check(self, op: Operation, name: str, capability: CapabilitySpec) -> None:
         """End ``already_satisfied`` if the capability's probes pass at the current revision:
         recorded there already, or run now (CP-2)."""
         environment_id = op.record.request.context.environment_id
@@ -852,7 +781,7 @@ class Provisioner:
                 (probe.probe, probe.version) for probe in recorded if probe.status == "passed"
             }
             if passing >= wanted:
-                raise _Stop(
+                raise Stop(
                     ProvisionOutcome.ALREADY_SATISFIED,
                     probes=tuple(recorded),
                     revision_before=current.revision,
@@ -863,12 +792,12 @@ class Provisioner:
             for index, probe in enumerate(capability.probes)
         ]
         if op.cancelled.is_set():
-            raise _cancelled("check")
+            raise cancelled("check")
         self.revisions.record_probes(environment_id, results)
         self._update(op, probes=(*op.record.probes, *results))
         if results and all(result.status == "passed" for result in results):
             revision = results[-1].revision
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.ALREADY_SATISFIED,
                 revision_before=revision,
                 revision_after=revision,
@@ -876,7 +805,7 @@ class Provisioner:
         self._update(op, state=ProvisionState.RESOLVING)
 
     async def _probe(
-        self, op: _Op, capability: str, probe: ProbeSpec, label: str, stage: Stage
+        self, op: Operation, capability: str, probe: ProbeSpec, label: str, stage: Stage
     ) -> ProbeResult:
         """Run one probe as an execution and judge its output (CP-21). A probe cancelled, or
         not run because the operation was, is an ``error``: the caller decides what that
@@ -915,15 +844,15 @@ class Provisioner:
             kind=probe.kind,
             status=status,
             # Unstarted, it ran at no revision: the one noted at dispatch is not proof.
-            revision=_started_revision(execution) if execution.started_at is not None else None,
+            revision=started_revision(execution) if execution.started_at is not None else None,
             execution_id=execution.execution_id,
-            output=_tail(output, MAX_PROBE_OUTPUT),
+            output=tail(output, MAX_PROBE_OUTPUT),
             duration_seconds=result.elapsed_seconds if result is not None else 0.0,
             operation=op.record.provision_id,
             recorded_at=self.clock.now(),
         )
 
-    def _unrun(self, op: _Op, capability: str, probe: ProbeSpec, why: str) -> ProbeResult:
+    def _unrun(self, op: Operation, capability: str, probe: ProbeSpec, why: str) -> ProbeResult:
         """A probe that never ran, so at no revision."""
         return ProbeResult(
             capability=capability,
@@ -936,7 +865,9 @@ class Provisioner:
             recorded_at=self.clock.now(),
         )
 
-    async def _resolve(self, op: _Op, conda: Sequence[str], pip: Sequence[str]) -> list[Resolved]:
+    async def _resolve(
+        self, op: Operation, conda: Sequence[str], pip: Sequence[str]
+    ) -> list[Resolved]:
         """Dry runs in the sandbox: the exact files the install would bring (CP-7)."""
         resolved: list[Resolved] = []
         if conda or pip:
@@ -966,20 +897,20 @@ class Provisioner:
                 limit=DRY_RUN_OUTPUT,
             )
             if execution.state is ExecutionState.CANCELLED or op.cancelled.is_set():
-                raise _cancelled("resolve")
+                raise cancelled("resolve")
             result = execution.result
             stdout = result.stdout if result is not None else None
             if execution.state is not ExecutionState.SUCCEEDED or stdout is None:
-                raise _Stop(
+                raise Stop(
                     ProvisionOutcome.FAILED,
                     "resolve_failed",
                     "resolve",
-                    _step_error(execution, "the dry run"),
+                    step_error(execution, "the dry run"),
                     next_step="The request could not be resolved. Check the names and versions "
                     "(conda-forge's, for Conda specs), then request it again.",
                 )
             if stdout.truncated:
-                raise _Stop(
+                raise Stop(
                     ProvisionOutcome.FAILED,
                     "resolve_failed",
                     "resolve",
@@ -992,14 +923,14 @@ class Provisioner:
                 # Up to 16 MiB of untrusted JSON: read in a thread, off the event loop.
                 resolved += await asyncio.to_thread(parse, stdout.text, self.cache)
             except ResolveError as exc:
-                raise _Stop(
+                raise Stop(
                     ProvisionOutcome.FAILED,
                     "resolve_failed",
                     "resolve",
                     ErrorInfo(kind=ErrorKind.INVALID_REQUEST, message=str(exc)),
                 ) from None
         if len(resolved) > MAX_FILES:
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "resolve_failed",
                 "resolve",
@@ -1012,7 +943,7 @@ class Provisioner:
             )
         return resolved
 
-    async def _upgrade_targets(self, op: _Op, specs: Sequence[str]) -> None:
+    async def _upgrade_targets(self, op: Operation, specs: Sequence[str]) -> None:
         """An upgrade names already installed targets; unknown history is no fallback."""
         environment = op.record.request.context.environment_id
         current = self.store.revision(environment)
@@ -1032,7 +963,7 @@ class Provisioner:
             or self.store.revision(environment) != current
             or any(resolution.spec_name(spec)[1] not in installed for spec in specs)
         ):
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "resolve_failed",
                 "resolve",
@@ -1044,7 +975,7 @@ class Provisioner:
             )
 
     async def _nothing_to_install(
-        self, op: _Op, request: ProvisionRequest, capability: CapabilitySpec | None
+        self, op: Operation, request: ProvisionRequest, capability: CapabilitySpec | None
     ) -> None:
         """End an operation whose dry runs found nothing to install."""
         environment_id = request.context.environment_id
@@ -1052,7 +983,7 @@ class Provisioner:
         revision = current.revision if current is not None else None
         at = f"revision {revision}" if revision is not None else "the current revision"
         if capability is not None:
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "probe_failed",
                 "probe",
@@ -1071,7 +1002,7 @@ class Provisioner:
         unseen = [check for check in checks if check.status != "passed"]
         if unseen:
             names = ", ".join(f"{check.probe} ({check.status})" for check in unseen)
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "probe_failed",
                 "probe",
@@ -1086,7 +1017,7 @@ class Provisioner:
                 revision_before=revision,
                 revision_after=revision,
             )
-        raise _Stop(
+        raise Stop(
             ProvisionOutcome.ALREADY_SATISFIED,
             probes=(*op.record.probes, *checks),
             revision_before=revision,
@@ -1102,7 +1033,7 @@ class Provisioner:
                 f"{file.ecosystem} package {file.name} {file.version} ({file.license or 'AGPL'})"
                 for file in refused
             )
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.DENIED,
                 "agpl_license",
                 "resolve",
@@ -1117,7 +1048,7 @@ class Provisioner:
         if denied:
             first = decided.decisions[denied[0]]
             file = decided.files[denied[0]]
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.DENIED,
                 "policy_denied",
                 "resolve",
@@ -1130,194 +1061,8 @@ class Provisioner:
                 "policy, or find another package.",
             )
 
-    async def _permission(self, op: _Op, governing: Governing, decided: Decided) -> None:
-        """Ask once for the exact resolved file set, and wait for the answer (CP-8)."""
-        request = op.record.request
-        escalated = [decided.decisions[index] for index in decided.with_action(Action.ESCALATE)]
-        if self.permissions is None or governing.sandbox_id is None:
-            raise _Stop(
-                ProvisionOutcome.DENIED,
-                "permission_unavailable",
-                "permission",
-                ErrorInfo(
-                    kind=ErrorKind.POLICY_DENIED,
-                    message=f"the policy asks for permission to download {len(escalated)} "
-                    "package files, and this worker cannot record permission requests",
-                ),
-            )
-        timeout = min(
-            (decision.escalation.timeout for decision in escalated if decision.escalation),
-            default=governing.policy.policy.escalation.timeout,
-        )
-        key = RequestKey.packages(
-            governing.sandbox_id, governing.policy.digest, op.record.provision_id, decided.paths
-        )
-        payload: dict[str, object] = {
-            "sandbox_id": governing.sandbox_id,
-            "project_id": request.context.project_id,
-            "environment_id": request.context.environment_id,
-            "provision_id": op.record.provision_id,
-            "policy": {
-                "name": governing.policy.policy.metadata.name,
-                "digest": governing.policy.digest,
-            },
-            "rule": escalated[0].rule,
-            "reason": f"install {len(decided.files)} package files",
-            # The agent's words, as text the store can hold whatever the client sent.
-            "purpose": request.purpose[:500].encode("utf-8", "replace").decode("utf-8"),
-            "escalation": {"timeout_seconds": int(timeout.total_seconds()), "on_timeout": "deny"},
-            "asked": _asked(request),
-            VALID_UNTIL: (
-                self.clock.now()
-                + timeout
-                + timedelta(seconds=_install_timeout(governing))
-                + GRANT_MARGIN
-            ).isoformat(timespec="seconds"),
-            "files": [
-                {"path": path, **_described(file)}
-                for path, file in zip(decided.paths, decided.files, strict=True)
-            ],
-        }
-        try:
-            check_dispatch()
-            seq = self.permissions.request_record(key, payload)
-        except PermissionStoreError as exc:
-            raise _Stop(
-                ProvisionOutcome.DENIED,
-                "permission_unavailable",
-                "permission",
-                ErrorInfo(kind=ErrorKind.UNAVAILABLE, message=str(exc)),
-            ) from None
-        try:
-            await asyncio.to_thread(self.permissions.refresh)
-        except PermissionStoreError as exc:
-            _log.warning("permission request %d: %s", seq, exc)
-        minutes = max(1, round(timeout.total_seconds() / 60))
-        self._update(
-            op,
-            state=ProvisionState.AWAITING_PERMISSION,
-            outcome=ProvisionOutcome.AWAITING_PERMISSION,
-            permission_request=seq,
-            next_step=f"Permission request {seq} asks to download the {len(decided.files)} "
-            "package files listed. On the pool host, the user reviews them with "
-            f"`sandbox-science-policy-middleware pending --request {seq}`, then approves the "
-            f"request (`approve --request {seq}`) or denies it. The operation installs once "
-            f"it is approved, and ends denied if it is refused or nobody answers within "
-            f"{minutes} minutes.",
-        )
-        _log.info("provisioning %s waits for permission request %d", op.record.provision_id, seq)
-        deadline = self.clock.now() + timeout
-        await self._observe(op.record, "provision.awaiting_permission")
-        await self._await_answer(op, seq, self.permissions, deadline, timeout)
-
-    async def _await_answer(
-        self,
-        op: _Op,
-        seq: int,
-        permissions: Permissions,
-        deadline: datetime,
-        timeout: timedelta,
-    ) -> None:
-        """Wait for the answer, until ``deadline``: its own, so that a store the worker can
-        no longer read cannot hold the environment's turn for ever."""
-        while True:
-            if op.cancelled.is_set():
-                await self._withdraw(seq, "the operation was cancelled")
-                raise _Stop(
-                    ProvisionOutcome.FAILED,
-                    "cancelled",
-                    "permission",
-                    ErrorInfo(kind=ErrorKind.CANCELLED, message="cancelled while it waited"),
-                    next_step="Nothing was installed; the permission request was withdrawn.",
-                )
-            try:
-                await asyncio.to_thread(permissions.refresh)
-            except PermissionStoreError as exc:
-                _log.warning("provisioning %s: %s", op.record.provision_id, exc)
-            answer = permissions.answer(seq)
-            now = self.clock.now()
-            if answer is not None and answer.kind == "approval":
-                if answer.expires is not None and answer.expires <= now:
-                    raise _Stop(
-                        ProvisionOutcome.DENIED,
-                        "permission_timed_out",
-                        "permission",
-                        ErrorInfo(
-                            kind=ErrorKind.POLICY_DENIED,
-                            message=f"the approval of permission request {seq} expired before "
-                            "the install",
-                        ),
-                    )
-                self._update(op, outcome=None, next_step=None)
-                return
-            if answer is not None:
-                raise _Stop(
-                    ProvisionOutcome.DENIED,
-                    "permission_denied",
-                    "permission",
-                    ErrorInfo(
-                        kind=ErrorKind.POLICY_DENIED,
-                        message=f"permission request {seq} was denied",
-                    ),
-                    next_step="The user refused these packages. Do not ask again for them "
-                    "unless the user says so.",
-                )
-            if now >= deadline:
-                await self._withdraw(seq, "nobody answered it in time")
-                minutes = max(1, round(timeout.total_seconds() / 60))
-                raise _Stop(
-                    ProvisionOutcome.DENIED,
-                    "permission_timed_out",
-                    "permission",
-                    ErrorInfo(
-                        kind=ErrorKind.POLICY_DENIED,
-                        message=f"nobody answered permission request {seq} within {minutes} "
-                        "minutes",
-                    ),
-                    next_step="Ask the user about it, then request the install again.",
-                )
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(op.cancelled.wait(), self.poll)
-
-    async def _withdraw(self, seq: int, reason: str) -> None:
-        """Close a permission request for good, as its wait ends; its operation's end closes
-        it again if this fails."""
-        if self.permissions is None:
-            return
-        try:
-            await asyncio.to_thread(self.permissions.withdraw, seq, reason, self.clock.now())
-        except PermissionStoreError as exc:
-            _log.warning("could not withdraw permission request %d: %s", seq, exc)
-
-    async def _close(self, provision_id: str, seq: int | None, reason: str) -> None:
-        """Close every permission request of an operation that ends, and those still owed
-        by operations before it; one that cannot be closed now stays owed."""
-        if self.permissions is None:
-            return
-        for owed in sorted(self._owed - {provision_id}):
-            try:
-                await asyncio.to_thread(
-                    self.permissions.withdraw_operations,
-                    [owed],
-                    "its operation ended",
-                    self.clock.now(),
-                )
-                self._owed.discard(owed)
-            except PermissionStoreError:
-                break  # the store is still out of reach
-        if seq is None and provision_id not in self._owed:
-            return  # it asked nothing: a request a stop cut short is closed at the next start
-        try:
-            await asyncio.to_thread(
-                self.permissions.close_operation, provision_id, seq, reason, self.clock.now()
-            )
-            self._owed.discard(provision_id)
-        except PermissionStoreError as exc:
-            self._owed.add(provision_id)
-            _log.warning("could not close the permission requests of %s: %s", provision_id, exc)
-
     async def _install(
-        self, op: _Op, governing: Governing, conda: Sequence[str], decided: Decided
+        self, op: Operation, governing: Governing, conda: Sequence[str], decided: Decided
     ) -> tuple[int | None, int | None]:
         """Install in the environment's turn, as an execution, under the policy's wall time
         (CP-10, CP-14); return the revisions before and after. A request names Conda or pip
@@ -1347,7 +1092,7 @@ class Provisioner:
                 pip_files = [file for file in decided.files if file.ecosystem == "pypi"]
                 label, argv = "install-pip", resolution.pip_install(pip_files)
         except ValueError as exc:
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "resolve_failed",
                 "resolve",
@@ -1359,7 +1104,7 @@ class Provisioner:
         try:
             await self.manager.sync_package_gate(environment_id)
         except WorkerError as exc:
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.FAILED,
                 "install_failed",
                 "download",
@@ -1371,10 +1116,10 @@ class Provisioner:
             argv,
             label=label,
             stage="download",
-            timeout=_install_timeout(governing),
+            timeout=install_timeout(governing),
             limit=STEP_OUTPUT,
         )
-        started, after = _started_revision(execution), _ended_revision(execution)
+        started, after = started_revision(execution), ended_revision(execution)
         uncertain = after is None and (
             execution.started_at is not None or execution.state is ExecutionState.LOST
         )
@@ -1387,11 +1132,11 @@ class Provisioner:
         self._update(op, revision_before=before, revision_after=after)
         if execution.state is not ExecutionState.SUCCEEDED:
             cancelled = execution.state is ExecutionState.CANCELLED or op.cancelled.is_set()
-            error = _step_error(execution, "the install")
+            error = step_error(execution, "the install")
             await self._failed_install(op, error, cancelled, before, after, uncertain)
         return before, after
 
-    def _authorize(self, op: _Op, request: ShellRequest) -> None:
+    def _authorize(self, op: Operation, request: ShellRequest) -> None:
         """Let the manager run ``request`` as a step of ``op``; once is enough."""
         provision_id = op.record.provision_id
         if not same_execution(
@@ -1401,7 +1146,7 @@ class Provisioner:
                 provision_id, request.operation_id, execution_digest(request)
             )
 
-    async def _look(self, op: _Op, label: str) -> int | None:
+    async def _look(self, op: Operation, label: str) -> int | None:
         """The environment's revision now, from a step that does nothing: an execution's
         start reports the packages' fingerprint. None if it could not start."""
         request = ShellRequest(
@@ -1425,12 +1170,12 @@ class Provisioner:
         # dispatch is the old one, so a look that never started tells nothing.
         if execution.state is not ExecutionState.SUCCEEDED or execution.started_at is None:
             return None
-        ended = _ended_revision(execution)
-        return ended if ended is not None else _started_revision(execution)
+        ended = ended_revision(execution)
+        return ended if ended is not None else started_revision(execution)
 
     async def _failed_install(
         self,
-        op: _Op,
+        op: Operation,
         error: ErrorInfo,
         cancelled: bool,
         before: int | None,
@@ -1460,7 +1205,7 @@ class Provisioner:
             )
         if changed and before is not None and after is not None:
             if self.restorer is not None and await self.restorer.restore(environment_id, before):
-                raise _Stop(
+                raise Stop(
                     ProvisionOutcome.ROLLED_BACK,
                     reason,
                     stage,
@@ -1468,7 +1213,7 @@ class Provisioner:
                     next_step=f"The environment is back at the packages of revision {before}.",
                 )
             good = self._mark(environment_id, op.record.provision_id, before)
-            raise _Stop(
+            raise Stop(
                 ProvisionOutcome.NEEDS_RECOVERY,
                 "environment_changed",
                 stage,
@@ -1491,7 +1236,7 @@ class Provisioner:
                 "Nothing was installed: the install could not link the decided builds, as when "
                 "the index changed since the dry run. Request the install again."
             )
-        raise _Stop(ProvisionOutcome.FAILED, reason, stage, error, next_step=next_step)
+        raise Stop(ProvisionOutcome.FAILED, reason, stage, error, next_step=next_step)
 
     def _unseen_install(
         self,
@@ -1500,7 +1245,7 @@ class Provisioner:
         reason: Reason,
         error: ErrorInfo,
         stage: Stage = "link",
-    ) -> _Stop:
+    ) -> Stop:
         """How an install ends whose effect nobody saw (``what`` says why): it may have
         changed the packages, so the environment needs recovery from the last revision
         known good (CP-13)."""
@@ -1511,7 +1256,7 @@ class Provisioner:
             record.provision_id,
             before if before is not None else record.planned_revision,
         )
-        return _Stop(
+        return Stop(
             ProvisionOutcome.NEEDS_RECOVERY,
             reason,
             stage,
@@ -1519,10 +1264,10 @@ class Provisioner:
             next_step=self._recovery_step(
                 environment_id, f"{what[:1].upper()}{what[1:]}: it may have changed packages.", good
             ),
-            notes=_notes(record.notes, f"{what}, so the packages may have changed"),
+            notes=append_notes(record.notes, f"{what}, so the packages may have changed"),
         )
 
-    def _cut_short(self, record: ProvisionOperation, how: str) -> _Stop:
+    def _cut_short(self, record: ProvisionOperation, how: str) -> Stop:
         """How an operation ends that the worker's stop or restart cut short (``how``):
         ``failed``, or ``needs_recovery`` if it was installing."""
         error = ErrorInfo(
@@ -1533,7 +1278,7 @@ class Provisioner:
             return self._unseen_install(
                 record, f"the worker {how} during its install", "worker_restarted", error
             )
-        return _Stop(ProvisionOutcome.FAILED, "worker_restarted", _STAGES[record.state], error)
+        return Stop(ProvisionOutcome.FAILED, "worker_restarted", STAGES[record.state], error)
 
     def _unchanged_install(self, record: ProvisionOperation) -> bool:
         """Whether an install the worker cut short is known to have changed nothing: its end
@@ -1576,7 +1321,7 @@ class Provisioner:
 
     async def _settle(
         self,
-        op: _Op,
+        op: Operation,
         governing: Governing,
         capability: CapabilitySpec | None,
         decided: Decided,
@@ -1622,10 +1367,10 @@ class Provisioner:
             if agpl:
                 # Refused before download is the rule (CP-9): one came all the same.
                 good = self._mark(environment_id, op.record.provision_id, before)
-                listed = ", ".join(_clip(name, 80) for name in agpl[:5])
+                listed = ", ".join(clip(name, 80) for name in agpl[:5])
                 if len(agpl) > 5:
                     listed += f" and {len(agpl) - 5} more"
-                raise _Stop(
+                raise Stop(
                     ProvisionOutcome.NEEDS_RECOVERY,
                     "agpl_license",
                     "link",
@@ -1641,7 +1386,7 @@ class Provisioner:
                         good,
                     ),
                     changes=tuple(changes),
-                    notes=_notes((), *notes),
+                    notes=append_notes((), *notes),
                 )
         if capability is not None and request.capability is not None:
             probes = [
@@ -1663,16 +1408,16 @@ class Provisioner:
                 f"The install completed, and what it installed stays, but {names} did not "
                 "pass (CP-23). Read the probes' output; nothing was uninstalled."
             )
-        raise _Stop(
+        raise Stop(
             ProvisionOutcome.COMPLETED,
-            next_step=_clip(next_step) if next_step is not None else None,
+            next_step=clip(next_step) if next_step is not None else None,
             changes=tuple(changes),
             probes=(*op.record.probes, *probes),
-            notes=_notes((), *notes),
+            notes=append_notes((), *notes),
         )
 
     async def _version_checks(
-        self, op: _Op, request: ProvisionRequest, revision: int | None
+        self, op: Operation, request: ProvisionRequest, revision: int | None
     ) -> list[ProbeResult]:
         lockfile = (
             await self._lockfile(request.context.environment_id, revision)
@@ -1683,7 +1428,7 @@ class Provisioner:
 
     def _lockfile_checks(
         self,
-        op: _Op,
+        op: Operation,
         request: ProvisionRequest,
         lockfile: Lockfile | None,
         revision: int | None,
@@ -1702,7 +1447,7 @@ class Provisioner:
                 status, output = "passed", f"{name} {version}"
             checks.append(
                 ProbeResult(
-                    probe=_PROBE_ID.sub("-", f"installed:{kind}:{name}")[:128],
+                    probe=PROBE_ID.sub("-", f"installed:{kind}:{name}")[:128],
                     kind="import_check",
                     status=status,
                     revision=revision,
@@ -1729,7 +1474,7 @@ class Provisioner:
 
     # Ending.
 
-    def _fields(self, record: ProvisionOperation, stop: _Stop) -> dict[str, Any]:
+    def _fields(self, record: ProvisionOperation, stop: Stop) -> dict[str, Any]:
         """The record's fields once ``stop`` ends it."""
         completed = stop.outcome in (ProvisionOutcome.COMPLETED, ProvisionOutcome.ALREADY_SATISFIED)
         fields: dict[str, Any] = {
@@ -1738,7 +1483,7 @@ class Provisioner:
             "reason": stop.reason,
             "stage": None if completed else stop.stage,
             "error": stop.error,
-            "next_step": _clip(stop.next_step) if stop.next_step is not None else None,
+            "next_step": clip(stop.next_step) if stop.next_step is not None else None,
             "ended_at": self.clock.now(),
             "queue_position": None,
             **stop.updates,
@@ -1747,14 +1492,16 @@ class Provisioner:
         if marked is not None and marked[1] != record.provision_id:
             good = f": revision {marked[2]} is the last known good" if marked[2] is not None else ""
             note = f"the environment needs recovery since operation {marked[1]}{good}"
-            fields["notes"] = _notes(fields.get("notes", record.notes), note)
+            fields["notes"] = append_notes(fields.get("notes", record.notes), note)
         return fields
 
-    async def _end(self, op: _Op, stop: _Stop) -> None:
+    async def _end(self, op: Operation, stop: Stop) -> None:
         """Close the operation's permission requests for good, whatever the outcome, so its
         grant ends with it; then record the end, which clients see."""
         reason = f"its operation ended {stop.outcome.value}"
-        await self._close(op.record.provision_id, op.record.permission_request, reason)
+        await self.permission_flow.close(
+            op.record.provision_id, op.record.permission_request, reason
+        )
         self._update(op, **self._fields(op.record, stop))
         self.manager.refresh_package_gate(op.record.request.context.environment_id)
         _log.info(
@@ -1764,7 +1511,7 @@ class Provisioner:
             f" at {stop.stage} ({stop.reason})" if op.record.stage is not None else "",
         )
 
-    def _stopped(self, op: _Op) -> None:
+    def _stopped(self, op: Operation) -> None:
         """Record an operation the worker's shutdown cut short, and close its permission
         request. The worker is stopping, so both happen here, without waiting."""
         if op.record.state is ProvisionState.FINISHED:
@@ -1793,86 +1540,6 @@ def _validated(record: ProvisionOperation, **changes: Any) -> ProvisionOperation
         raise
 
 
-def _asked(request: ProvisionRequest) -> str:
-    """What an operation asks for, as its permission request shows the operator."""
-    if request.capability is not None:
-        return f"the capability {request.capability}"
-    if request.conda:
-        return "Conda: " + ", ".join(request.conda)
-    return "pip: " + ", ".join(request.pip)
-
-
-def _clip(text: str, limit: int = MAX_TEXT) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _notes(notes: Sequence[str], *more: str) -> tuple[str, ...]:
-    """Notes as a record holds them: each at most MAX_TEXT characters, the newest 32."""
-    return tuple(_clip(note) for note in (*notes, *more) if note)[-MAX_NOTES:]
-
-
-def _cancelled(stage: Stage) -> _Stop:
-    return _Stop(
-        ProvisionOutcome.FAILED,
-        "cancelled",
-        stage,
-        ErrorInfo(kind=ErrorKind.CANCELLED, message="cancelled on request"),
-        next_step="Nothing was installed.",
-    )
-
-
-def _started_revision(execution: Execution) -> int | None:
-    location = execution.location
-    text = location.environment_revision if location is not None else None
-    return int(text) if text is not None and text.isdigit() else None
-
-
-def _ended_revision(execution: Execution) -> int | None:
-    result = execution.result
-    text = result.environment_revision if result is not None else None
-    return int(text) if text is not None and text.isdigit() else None
-
-
-def _tail(text: str, limit: int) -> str:
-    return text if len(text) <= limit else "…" + text[-(limit - 1) :]
-
-
-def _step_error(execution: Execution, what: str) -> ErrorInfo:
-    """Why a step failed, with the end of its output, which is where package managers say."""
-    result = execution.result
-    stderr = result.stderr.text if result is not None and result.stderr is not None else ""
-    stdout = result.stdout.text if result is not None and result.stdout is not None else ""
-    error = result.error if result is not None else None
-    if execution.state is ExecutionState.TIMED_OUT:
-        kind, summary = ErrorKind.TIMED_OUT, f"{what} ran out of time"
-    elif execution.state is ExecutionState.CANCELLED:
-        kind, summary = ErrorKind.CANCELLED, f"{what} was cancelled"
-    elif error is not None and result is not None and result.exit_code is None:
-        kind, summary = error.kind, f"{what} failed: {error.message[:300]}"
-    else:
-        code = result.exit_code if result is not None else None
-        kind, summary = ErrorKind.EXCEPTION, f"{what} exited with {code}"
-    if APPROVAL_REQUIRED in stderr or APPROVAL_REQUIRED in stdout:
-        kind = ErrorKind.POLICY_DENIED
-    detail = _tail((stderr.strip() + "\n" + stdout.strip()).strip(), ERROR_TEXT)
-    return ErrorInfo(kind=kind, message=f"{summary}: {detail}" if detail else summary)
-
-
-def _described(file: ResolvedFile) -> dict[str, object]:
-    """A resolved file as a permission request lists it, for the operator."""
-    return {
-        key: value
-        for key, value in file.model_dump(
-            include={"ecosystem", "name", "version", "build", "channel", "subdir", "file"}
-            | {"sha256", "license", "action", "rule"}
-        ).items()
-        if value is not None
-    }
-
-
-def _install_timeout(governing: Governing) -> float:
-    """The install's time limit: the policy's wall time under the pool's cap (CP-14)."""
-    resources, _ = effective_resources(governing.policy.policy, governing.ceiling)
-    if resources.wall_time is None:
-        return INSTALL_TIMEOUT
-    return min(resources.wall_time.total_seconds(), float(MAX_TIMEOUT_SECONDS))
+# Historical private test imports; production collaborators use the named values.
+_Op = Operation
+_Stop = Stop
