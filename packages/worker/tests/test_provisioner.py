@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -1769,3 +1770,51 @@ async def test_cancelled_changed_upgrade_keeps_cp13_recovery_hold(make_world: Fa
     )
     assert refused["error"]["kind"] == "unavailable"
     assert world.prefix.log.read_bytes() == before
+
+
+@pytest.mark.parametrize("drain", ["close", "forget"])
+async def test_public_terminal_record_releases_turn_while_observation_remains_owned(
+    make_world: Factory, monkeypatch: pytest.MonkeyPatch, drain: str
+) -> None:
+    """A terminal record and queue release do not mean its writer has drained."""
+    world = await make_world()
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    original = Permissions.observation
+    blocked = False
+
+    def observation(self: Permissions, kind: str, payload: dict[str, object]) -> int:
+        nonlocal blocked
+        if kind == "provision.finished" and not blocked:
+            blocked = True
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(10), "fixture writer release deadline"
+        return original(self, kind, payload)
+
+    monkeypatch.setattr(Permissions, "observation", observation)
+    owner: asyncio.Task[None] | None = None
+    try:
+        first = await world.provision("terminal-owner", system=["synthetic-system-package"])
+        await asyncio.wait_for(entered.wait(), 5)
+        terminal = await world.finished(first["provision_id"])
+        assert terminal.outcome == "denied"
+        assert world.store.provision(terminal.provision_id) == terminal
+        assert not (await world.queue()).operations
+        following = await world.provision("next-turn", system=["another-system-package"])
+        assert (await world.finished(following["provision_id"])).outcome == "denied"
+        owner = asyncio.create_task(
+            world.provisioner.close() if drain == "close" else world.provisioner.forget("env1")
+        )
+        await asyncio.sleep(0)
+        assert not owner.done()
+        assert world.store.provision(terminal.provision_id) == terminal
+    finally:
+        release.set()
+        if owner is not None:
+            await owner
+    events = [x for x in world.records() if x.kind == "provision.finished"]
+    assert {x.data()["provision_id"] for x in events} == {
+        first["provision_id"],
+        following["provision_id"],
+    }
