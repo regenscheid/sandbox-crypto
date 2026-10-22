@@ -78,6 +78,22 @@ class Lifecycle:
     def finish(self, execution: str) -> None:
         self.running.pop(execution, None)
 
+    def request_cancel(self, execution: str) -> Running | None:
+        """Mark accepted work before its cancellation acknowledgement is sent."""
+        running = self.running.get(execution)
+        if running is not None:
+            running.cancel_requested = True
+        return running
+
+    def cancel(self, running: Running) -> None:
+        """Apply cancellation after the protocol coordinator acknowledged it."""
+        if running.kind in ("shell", "job"):
+            if running.process is not None:
+                self.spawn(self.terminate(running))
+        elif running.queued and running.task is not None:
+            running.task.cancel()
+        # Launch checks the flag before starting; an active cell interrupts itself.
+
     def start_idle_reaper(self, idle: float) -> None:
         if self.reaper is None:
             self.reaper = self.spawn(self.reap_idle_kernels(idle))

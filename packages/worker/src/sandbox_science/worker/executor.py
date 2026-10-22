@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import codecs
 import contextlib
 import functools
@@ -35,7 +34,6 @@ import os
 import platform
 import re
 import secrets
-import shutil
 import signal
 import socket
 import stat
@@ -148,9 +146,7 @@ MAX_SENTINELS = 8
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_SOURCE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 _BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
-_COMMAND_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 _BINDING_VALUE_RE = re.compile(r"[^\x00-\x20\x7f;]{1,4096}")
 """A binding's value: a path, without whitespace, control characters or ``;``."""
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -655,6 +651,7 @@ class Executor:
         self.root = root
         self.clock: Clock = clock or _SystemClock()
         self.captures = capture.Pool(root)
+        self.files = sandbox_files.Requests(root, max_read=MAX_READ, max_list=MAX_LIST)
         self.owner_prefix = ""
         self.kernel_idle = kernel_idle
         """Stop a kernel nobody has used for this many seconds; None keeps them."""
@@ -694,7 +691,6 @@ class Executor:
             send=send,
             remove_records=self.packages.remove_records,
             usable=provisioning.usable,
-            max_looks=MAX_LOOKS,
             max_lockfile_event=MAX_LOCKFILE_EVENT,
             max_commands=MAX_COMMANDS,
             max_owners=MAX_OWNERS,
@@ -795,7 +791,7 @@ class Executor:
     # Paths and environment.
 
     def session(self, request: Message) -> str:
-        return self.session_name(request.get("session"))
+        return self.files.session_name(request.get("session"))
 
     def bindings(
         self, request: Message, env: Mapping[str, str]
@@ -880,34 +876,6 @@ class Executor:
         else:
             yield
 
-    def session_name(self, session: object) -> str:
-        if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
-            raise ToolError("invalid_request", f"invalid session {session!r}")
-        return session
-
-    def session_dir(self, session: object) -> Path:
-        return self.root / "sessions" / self.session_name(session)
-
-    def split(self, session: object, path: object) -> tuple[list[str], list[str]]:
-        """A workspace path's base (its directories below the root) and the rest of it."""
-        if not isinstance(path, str):
-            raise ToolError("invalid_request", "path must be a string")
-        sandbox_files.check_relative(path)
-        if path == SHARED or path.startswith(SHARED + "/"):
-            return [SHARED], path.split("/")[1:]
-        return ["sessions", self.session_name(session)], [] if path == "." else path.split("/")
-
-    def open_base(self, base: Sequence[str]) -> int:
-        """Open the session workspace or the shared area, creating it, through no symlink."""
-        root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        return sandbox_files.walk(root, base, "/".join(base), create=True)
-
-    def directory(self, session: object, path: object) -> Path:
-        """A workspace directory's path, once it is known to exist with no symlink on the way."""
-        base, rest = self.split(session, path)
-        os.close(sandbox_files.walk(self.open_base(base), rest, str(path), create=False))
-        return self.root.joinpath(*base, *rest)
-
     def snapshot(self, session: str) -> tuple[dict[str, tuple[int, int, int]], bool]:
         """The regular files of the session workspace and the shared area.
 
@@ -920,7 +888,7 @@ class Executor:
             ("shared", SHARED + "/", [SHARED]),
         ):
             try:
-                directory = self.open_base(base)
+                directory = self.files.open_base(base)
             except (OSError, ToolError):
                 files.error = True
                 continue
@@ -968,7 +936,7 @@ class Executor:
         if self.provisioning is not None:
             env.update(provisioning.variables(self.packages, env, self.wrapped))
         env["SANDBOX_SCIENCE_DAEMON_MARK"] = self.owner_prefix
-        env["SESSION_WORKSPACE"] = str(self.session_dir(session))
+        env["SESSION_WORKSPACE"] = str(self.files.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
         return env
 
@@ -1279,7 +1247,7 @@ class Executor:
     async def op_shell(self, request: Message) -> None:
         session = self.session(request)
         try:
-            cwd = self.directory(session, request.get("cwd", "."))
+            cwd = self.files.directory(session, request.get("cwd", "."))
         except ToolError as error:
             if error.kind != "not_found":
                 raise
@@ -1495,7 +1463,7 @@ class Executor:
     def job_logs(self, session: str, execution: str) -> dict[str, int]:
         """Create two private regular files through held, symlink-free directory FDs."""
         parent = sandbox_files.walk(
-            self.open_base(["sessions", session]), [".jobs"], ".jobs", create=True
+            self.files.open_base(["sessions", session]), [".jobs"], ".jobs", create=True
         )
         descriptors: dict[str, int] = {}
         try:
@@ -1578,7 +1546,7 @@ class Executor:
         return Kernel(
             session,
             language,
-            self.directory(session, "."),
+            self.files.directory(session, "."),
             self.environment(session),
             last_used=self.clock.monotonic(),
             run=run,
@@ -1820,20 +1788,10 @@ class Executor:
         )
 
     async def op_cancel(self, request: Message) -> None:
-        running = self.lifecycle.running.get(str(request.get("execution")))
-        if running is None:
-            await self.reply(request, found=False)
-            return
-        running.cancel_requested = True
-        await self.reply(request, found=True)
-        if running.kind in ("shell", "job"):
-            if running.process is not None:
-                self.spawn(self.terminate(running))
-            # Before then, run_shell sees cancel_requested and never starts the command.
-        elif running.queued and running.task is not None:
-            running.task.cancel()  # waiting for its kernel: it leaves the queue
-        # A cell starting or running sees cancel_requested itself: one starting never
-        # runs, and a running one is interrupted by its loop.
+        running = self.lifecycle.request_cancel(str(request.get("execution")))
+        await self.reply(request, found=running is not None)
+        if running is not None:
+            self.lifecycle.cancel(running)
 
     async def op_restart(self, request: Message) -> None:
         with self.lifecycle.control():
@@ -1865,9 +1823,10 @@ class Executor:
 
     async def op_close_session(self, request: Message) -> None:
         with self.lifecycle.control():
-            stopped = await _owned(
-                self.lifecycle.close_session(self.session(request), self.run_name(request))
-            )
+            await _owned(self.close_session_request(request))
+
+    async def close_session_request(self, request: Message) -> None:
+        stopped = await self.lifecycle.close_session(self.session(request), self.run_name(request))
         await self.reply(request, kernels=stopped)
 
     async def session_kernels(self, session: str) -> list[Message]:
@@ -1889,123 +1848,22 @@ class Executor:
         )
 
     async def op_read(self, request: Message) -> None:
-        path = request.get("path")
-        offset = int(request.get("offset", 0))
-        length = min(int(request.get("length", MAX_READ)), MAX_READ)
-        if offset < 0 or length < 0:
-            raise ToolError("invalid_request", "offset and length must not be negative")
-        base, rest = self.split(request.get("session"), path)
-        if not rest:
-            raise ToolError("invalid_request", f"{path!r} is not a regular file")
-        parent = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=False)
-        try:
-            # Without O_NONBLOCK, opening a FIFO would wait for a writer.
-            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-            descriptor = os.open(rest[-1], flags, dir_fd=parent)
-        except FileNotFoundError:
-            raise ToolError("not_found", f"no file {path!r}") from None
-        except OSError as exc:
-            raise sandbox_files.path_refusal(parent, rest[-1], str(path), exc) from exc
-        finally:
-            os.close(parent)
-        # In a thread: hashing a large file takes a while, and must not stall other work.
-        hashed = request.get("hash", True) is not False
-        reply = await asyncio.to_thread(
-            sandbox_files.read_range, descriptor, offset, length, hashed, str(path)
-        )
-        await self.reply(request, **reply)
+        await self.reply(request, **await self.files.read(request))
 
     async def op_capture_read(self, request: Message) -> None:
-        """A bounded read/hash helper; ordinary file reads retain their legacy protocol."""
-        data = {
-            "session": request.get("session"),
-            "path": request.get("path"),
-            "offset": request.get("offset"),
-            "length": request.get("length"),
-            "max_bytes": request.get("max_bytes"),
-            "hash": request.get("hash"),
-        }
-        try:
-            with sandbox_processes.starting_children():
-                result = await self.captures.read(
-                    request.get("capture_id"), data, request.get("timeout")
-                )
-        except asyncio.CancelledError:
-            await self.reply(
-                request,
-                capture_id=request.get("capture_id"),
-                cleaned=True,
-                capture_error={"kind": "cancelled", "message": "capture cancelled after cleanup"},
-            )
-            return
-        except capture.CaptureError as exc:
-            await self.reply(
-                request,
-                capture_id=request.get("capture_id"),
-                cleaned=exc.cleaned,
-                capture_error={"kind": exc.kind, "message": exc.message},
-            )
-            return
-        await self.reply(request, **result, capture_id=request["capture_id"], cleaned=True)
+        with sandbox_processes.starting_children():
+            result = await self.captures.read_request(request)
+        await self.reply(request, **result)
 
     async def op_capture_cancel(self, request: Message) -> None:
-        """End only the named capture helper, with cleanup acknowledged after reap."""
-        capture_id = request.get("capture_id")
-        if not isinstance(capture_id, str) or re.fullmatch(r"cap-[0-9a-f]{24}", capture_id) is None:
-            raise ToolError("invalid_request", "invalid capture ID")
-        await self.captures.cancel(capture_id)
-        await self.reply(request, capture_id=capture_id, cleaned=True)
-
-    def staged(self, request: Message) -> tuple[str, str]:
-        source, snapshot = request.get("source"), request.get("snapshot")
-        if not (isinstance(source, str) and _SOURCE_RE.fullmatch(source)):
-            raise ToolError("invalid_request", f"invalid source {source!r}")
-        if not (isinstance(snapshot, str) and _SHA256_RE.fullmatch(snapshot)):
-            raise ToolError("invalid_request", "snapshot must be a SHA-256")
-        return source, snapshot
+        try:
+            result = await self.captures.cancel_request(request)
+        except capture.CaptureError as exc:
+            raise ToolError(exc.kind, exc.message) from exc
+        await self.reply(request, **result)
 
     async def op_skills_check(self, request: Message) -> None:
-        """Whether a pack is staged as the harness expects it, and with ``seal``, made
-        read-only once it is (docs/specs/skills.md, SK-16)."""
-        source, snapshot = self.staged(request)
-        raw = request.get("files", [])
-        items = cast(list[object], raw) if isinstance(raw, list) else []
-        files = [cast(Message, item) for item in items if isinstance(item, dict)]
-        if not isinstance(raw, list) or len(files) != len(items):
-            raise ToolError("invalid_request", "files must be a list of objects")
-        for item in files:
-            sandbox_files.check_relative(str(item.get("path")))
-        try:
-            found = await asyncio.to_thread(
-                sandbox_files.stage_check,
-                self.root,
-                source,
-                snapshot,
-                files,
-                request.get("seal") is True,
-            )
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
-        raw = request.get("commands", [])
-        names = (
-            [n for n in cast(list[object], raw) if isinstance(n, str)][:256]
-            if isinstance(raw, list)
-            else []
-        )
-        path = self.tool_path()
-        found["commands"] = [
-            n for n in names if _COMMAND_RE.fullmatch(n) and shutil.which(n, path=path)
-        ]
-        raw_bindings = request.get("binding_names", [])
-        candidates = cast(list[object], raw_bindings) if isinstance(raw_bindings, list) else []
-        names = [n for n in candidates if isinstance(n, str)]
-        if (
-            not isinstance(raw_bindings, list)
-            or len(candidates) > 8192
-            or len(names) != len(candidates)
-            or any(len(n) > 128 for n in names)
-        ):
-            raise ToolError("invalid_request", "invalid binding inventory candidates")
+        found, names = await self.files.skills_check(request, self.tool_path())
         try:
             # Staging is observation; package admission repeats the authoritative check.
             async with self.binding_guard(set(names) or {"INVENTORY_QUERY"}):
@@ -2020,221 +1878,22 @@ class Executor:
         await self.reply(request, **found)
 
     async def op_skills_put(self, request: Message) -> None:
-        """Write a batch of a pack's files where its snapshot is staged (SK-16)."""
-        source, snapshot = self.staged(request)
-        raw = request.get("files", [])
-        files: list[tuple[str, bytes, bool]] = []
-        for item in cast(list[object], raw) if isinstance(raw, list) else []:
-            fields = cast(Message, item) if isinstance(item, dict) else {}
-            path = sandbox_files.check_relative(str(fields.get("path")))
-            try:
-                content = base64.b64decode(str(fields.get("content_b64", "")), validate=True)
-            except ValueError as exc:
-                raise ToolError("invalid_request", f"{path}: content_b64 is not base64") from exc
-            files.append((path, content, fields.get("executable") is True))
-        try:
-            written = await asyncio.to_thread(
-                sandbox_files.stage_put,
-                self.root,
-                source,
-                snapshot,
-                request.get("reset") is True,
-                files,
-            )
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
-        await self.reply(request, written=written)
+        await self.reply(request, **await self.files.skills_put(request))
 
     async def op_write(self, request: Message) -> None:
-        path = request.get("path")
-        base, rest = self.split(request.get("session"), path)
-        if not rest:
-            raise ToolError("invalid_request", f"{path!r} is a directory")
-        try:
-            content = base64.b64decode(str(request.get("content_b64", "")), validate=True)
-        except ValueError as exc:
-            raise ToolError("invalid_request", "content_b64 is not base64") from exc
-        expected = request.get("expected_sha256")
-        create_only = bool(request.get("create_only", False))
-        if base == [SHARED] and expected is None and not create_only:
-            raise ToolError(
-                "invalid_request", "writes to the shared area need expected_sha256 or create_only"
-            )
-        executable = request.get("executable")
-        try:
-            parent = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=True)
-            reply = await asyncio.to_thread(
-                sandbox_files.write_file,
-                parent,
-                rest[-1],
-                content,
-                expected,
-                create_only,
-                str(path),
-                executable if isinstance(executable, bool) else None,
-                request.get("if_unused") is True,
-            )
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, str(path)) from exc
-        await self.reply(request, **reply)
+        await self.reply(request, **await self.files.write(request))
 
     async def op_shared(self, request: Message) -> None:
-        """The shared area's files with their stamps, and the SHA-256 of some (D79).
-
-        ``hash`` names the files whose contents the worker needs, hashed up to
-        ``hash_limit`` bytes each and ``hash_budget`` bytes in all; larger ones are
-        listed in ``too_large``, and the rest wait for the next scan. ``mark`` replaces
-        the worker's mark of this environment, which the reply carries.
-        """
-        raw: object = request.get("hash", [])
-        named = [path for path in cast(list[object], raw) if isinstance(path, str)]
-        wanted = named[: sandbox_files.MAX_SNAPSHOT]
-        limit = max(0, int(request.get("hash_limit", 0)))
-        budget = max(0, int(request.get("hash_budget", 0)))
-        mark = request.get("mark")
-        reply = await asyncio.to_thread(
-            self.shared_state,
-            wanted,
-            limit,
-            budget,
-            mark if isinstance(mark, str) else None,
-        )
-        await self.reply(request, **reply)
-
-    def shared_state(
-        self,
-        wanted: Sequence[str],
-        limit: int,
-        budget: int,
-        mark: str | None,
-    ) -> Message:
-        if mark is not None:
-            sandbox_files.write_mark(self.root, mark[:256])
-        current = sandbox_files.read_mark(self.root)
-        files, truncated, partial, odd = sandbox_files.scan_shared(self.open_base([SHARED]))
-        digests: dict[str, str] = {}
-        too_large: list[str] = []
-        for path in wanted:
-            stamp = files.get(path)
-            if stamp is None:
-                continue
-            if stamp[1] > limit:
-                too_large.append(path)
-                continue
-            if stamp[1] > budget:
-                continue  # hashed at a later scan
-            try:
-                _, rest = self.split(None, path)
-                parent = sandbox_files.walk(self.open_base([SHARED]), rest[:-1], path, create=False)
-            except (OSError, ToolError):
-                continue
-            try:
-                digest = sandbox_files.stamped_sha256(parent, rest[-1], stamp)
-            except (OSError, ToolError):
-                continue  # gone or replaced meanwhile: compared again next time
-            finally:
-                os.close(parent)
-            if digest is not None:
-                digests[path] = digest
-                budget -= stamp[1]
-        reply: Message = {
-            "files": files,
-            "truncated": truncated,
-            "partial": partial,
-            "odd": odd,
-            "sha256": digests,
-            "too_large": too_large,
-            "mark": current,
-            "now": time.time_ns(),
-        }
-        return reply
+        await self.reply(request, **await self.files.shared(request))
 
     async def op_remove(self, request: Message) -> None:
-        """Remove a regular file in the shared area if it still has the expected SHA-256.
-
-        Directories the removal leaves empty are removed too, up to the shared area.
-        """
-        path = request.get("path")
-        base, rest = self.split(request.get("session"), path)
-        if base != [SHARED] or not rest:
-            raise ToolError("invalid_request", "only files in the shared area are removed")
-        expected = request.get("expected_sha256")
-        if not isinstance(expected, str):
-            raise ToolError("invalid_request", "removing a shared file needs expected_sha256")
-        directories = [self.open_base(base)]
-        try:
-            for name in rest[:-1]:
-                directories.append(
-                    sandbox_files.walk(os.dup(directories[-1]), [name], str(path), create=False)
-                )
-            removed = await asyncio.to_thread(
-                sandbox_files.remove_checked,
-                directories[-1],
-                rest[-1],
-                expected,
-                str(path),
-                if_unused=request.get("if_unused") is True,
-            )
-            if not removed:
-                await self.reply(request, removed=False, busy=True)
-                return
-            for depth in range(len(rest) - 1, 0, -1):
-                try:
-                    os.rmdir(rest[depth - 1], dir_fd=directories[depth - 1])
-                except OSError:
-                    break  # not empty, or not ours to remove
-        except OSError as exc:
-            raise sandbox_files.file_error(exc, str(path)) from exc
-        finally:
-            for directory in directories:
-                os.close(directory)
-        await self.reply(request, removed=True)
+        await self.reply(request, **await self.files.remove(request))
 
     async def op_move(self, request: Message) -> None:
-        """Give a file in the shared area another name there, which must be free (D79).
-
-        The file keeps its inode, so a process still writing to it writes under the new
-        name: the sync moves an environment's version of a file to its conflict copy.
-        """
-        path, target = request.get("path"), request.get("target")
-        base, rest = self.split(None, path)
-        target_base, target_rest = self.split(None, target)
-        if base != [SHARED] or target_base != [SHARED] or not rest or not target_rest:
-            raise ToolError("invalid_request", "only files in the shared area are moved")
-        source = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=False)
-        try:
-            destination = sandbox_files.walk(
-                self.open_base(target_base), target_rest[:-1], str(target), create=True
-            )
-            try:
-                stamp = await asyncio.to_thread(
-                    sandbox_files.move_file,
-                    source,
-                    rest[-1],
-                    destination,
-                    target_rest[-1],
-                    str(path),
-                )
-            except OSError as exc:
-                raise sandbox_files.file_error(exc, str(path)) from exc
-            finally:
-                os.close(destination)
-        finally:
-            os.close(source)
-        await self.reply(request, stamp=stamp)
+        await self.reply(request, **await self.files.move(request))
 
     async def op_list(self, request: Message) -> None:
-        path = request.get("path", ".")
-        base, rest = self.split(request.get("session"), path)
-        try:
-            directory = sandbox_files.walk(self.open_base(base), rest, str(path), create=False)
-        except ToolError as error:
-            if error.kind == "not_found":
-                raise ToolError("not_found", f"no directory {path!r}") from None
-            raise
-        limit = min(int(request.get("limit", MAX_LIST)), MAX_LIST)
-        entries, truncated = await asyncio.to_thread(sandbox_files.list_directory, directory, limit)
-        await self.reply(request, entries=entries, truncated=truncated)
+        await self.reply(request, **await self.files.list(request))
 
     async def op_lockfile(self, request: Message) -> None:
         """The packages installed now: their fingerprint and lockfile (CP-18).

@@ -179,11 +179,14 @@ def test_source_error_and_path_omission_remain_explicit_without_new_io(
 ) -> None:
     value = object.__new__(executor.Executor)
     value.root = tmp_path
+    value.files = sandbox_files.Requests(
+        tmp_path, max_read=executor.MAX_READ, max_list=executor.MAX_LIST
+    )
 
     def denied(_base: object) -> int:
         raise OSError("synthetic unavailable directory")
 
-    monkeypatch.setattr(value, "open_base", denied)
+    monkeypatch.setattr(value.files, "open_base", denied)
     before, _ = value.snapshot("missing")
     assert isinstance(before, sandbox_files.SnapshotFiles)
     assert before.error
@@ -563,6 +566,9 @@ async def test_derived_projection_exception_does_not_change_legacy_files(
 ) -> None:
     value = object.__new__(executor.Executor)
     value.root = tmp_path
+    value.files = sandbox_files.Requests(
+        tmp_path, max_read=executor.MAX_READ, max_list=executor.MAX_LIST
+    )
     (tmp_path / "sessions/s1").mkdir(parents=True)
     (tmp_path / "shared").mkdir()
     before = value.snapshot("s1")

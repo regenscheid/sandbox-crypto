@@ -53,7 +53,6 @@ class Admission:
         send: Callable[[Message], Awaitable[None]],
         remove_records: Callable[[Iterable[str]], None],
         usable: Callable[[Message], bool],
-        max_looks: int,
         max_lockfile_event: int,
         max_commands: int,
         max_owners: int,
@@ -67,7 +66,6 @@ class Admission:
         self.send = send
         self.remove_records = remove_records
         self.usable = usable
-        self.max_looks = max_looks
         self.max_lockfile_event = max_lockfile_event
         self.max_commands = max_commands
         self.max_owners = max_owners

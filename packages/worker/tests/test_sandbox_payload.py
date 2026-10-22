@@ -7,6 +7,7 @@ its siblings (by path, never by package), and those two, lazily, where it needs 
 from __future__ import annotations
 
 import ast
+import json
 import re
 import shutil
 import subprocess
@@ -225,3 +226,26 @@ def test_a_sibling_is_loaded_from_its_file_and_never_left_half_built(tmp_path: P
     broken = tmp_path / "sandbox_files.py"
     broken.write_text(broken.read_text() + "\nraise OSError('disk hiccup')\n")
     assert run_shipped(tmp_path) == "failed disk hiccup True"
+
+
+@pytest.mark.slow
+def test_standalone_payload_preserves_file_error_identity(tmp_path: Path) -> None:
+    """Collaborators share the loaded file module's ToolError, even without the package."""
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for path in SANDBOX_FILES:
+        shutil.copy(path, payload)
+    request = {"id": 1, "op": "read", "session": "s1", "path": "../outside"}
+    completed = subprocess.run(
+        [sys.executable, "-I", str(payload / "executor.py"), "--stdio", "--root", str(root)],
+        input=json.dumps(request) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    reply = json.loads(completed.stdout)
+    assert reply["ok"] is False
+    assert reply["error"]["kind"] == "invalid_request"

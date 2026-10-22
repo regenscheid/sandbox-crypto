@@ -320,7 +320,7 @@ async def test_hold_ack_waits_for_actual_launch_and_double_cancel_drain(tmp_path
 
     async def launch() -> int:
         async with guest.executor.admission.launch(running, 10):
-            return await guest.executor.admission.own_launch(running, actual())
+            return await guest.executor.own_launch(running, actual())
 
     host = asyncio.create_task(launch())
     await entered.wait()

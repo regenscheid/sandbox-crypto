@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Public executor protocol guarantees across lifecycle/admission changes."""
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -109,4 +110,35 @@ async def test_admission_deadline_uses_the_injected_clock(
             import os
 
             os.close(held)
+        await executor.shutdown()
+
+
+async def test_close_keeps_its_acknowledgement_owned_through_cancellation(tmp_path: Path) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    messages: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        if message.get("id") == 1:
+            entered.set()
+            await release.wait()
+        messages.append(message)
+
+    executor = Executor(tmp_path, send)
+    closing = asyncio.create_task(
+        executor.handle({"id": 1, "op": "close_session", "session": "s1", "run": "r1"})
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        for _ in range(2):
+            closing.cancel()
+            await asyncio.sleep(0)
+        assert not closing.done()
+        release.set()
+        await asyncio.wait_for(closing, 5)
+        assert messages[0]["ok"]
+        await executor.handle({"id": 2, "op": "restart", "session": "s1", "run": "r1"})
+        assert messages[-1]["error"]["kind"] == "conflict"
+    finally:
+        release.set()
+        await asyncio.gather(closing, return_exceptions=True)
         await executor.shutdown()

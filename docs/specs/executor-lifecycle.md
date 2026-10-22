@@ -1,10 +1,18 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Executor lifecycle and package admission
 
-The executor is a protocol coordinator. Its lifecycle owner tracks accepted work,
-kernels, ended runs, control requests and shutdown. Package admission owns the gate,
-launch permits and package observations. File and capture request adapters use the
-existing bounded implementations. Every collaborator shipped beside the executor
+`Executor` is the protocol coordinator. `executor_lifecycle.Lifecycle` tracks accepted
+work, kernels, ended runs, cancellation, control requests and shutdown. Its resource
+callbacks name individual operations; it never holds an executor backreference.
+`executor_admission.Admission` owns gate generations, launch permits, observation
+serialization, revision publication and journal consumption. The coordinator supplies
+package observations, while the admission owner advances their reported state.
+
+`sandbox_files.Requests` takes the workspace root and bounds, validates file and
+staged-skill requests, and returns payloads using the existing descriptor-based file
+operations. `capture.Pool` owns capture request validation and cleanup payloads.
+`Executor` frames replies and performs authoritative binding admission and inventory
+projection after the staging adapter returns. Every collaborator shipped beside the executor
 uses the standard library only; Jupyter remains an optional lazy kernel dependency.
 
 ## Observable guarantees
@@ -51,7 +59,8 @@ real-time meaning. Async I/O wait timeouts remain enforced by the event loop.
 ## Verification
 
 Public protocol characterization covers gate generations, run retirement and session
-isolation. Existing run-close races, recovery-gate cancellation/ACK tests, executor
+isolation. Standalone payload execution checks that a file refusal retains its public
+error kind, including when the worker package is absent. Existing run-close races, recovery-gate cancellation/ACK tests, executor
 process tests and payload import/manifest checks remain required. Fake-clock tests
 cover held admission without real polling delays. No protocol or policy changes are
 part of this refactor. There are no open design questions.
