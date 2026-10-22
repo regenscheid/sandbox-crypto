@@ -1554,8 +1554,6 @@ class Harness:
         role = admitted.request.role
         delegated = role == "delegated"
         bundles: list[caps.Capability] = []
-        if delegations is not None:
-            bundles.append(caps.delegations(delegations))
         jobs = JobTools(
             self.client,
             context,
@@ -1608,12 +1606,13 @@ class Harness:
                 context,
                 languages=languages,
                 features=features,
-                capabilities=(caps.task if delegated else caps.main)(bundles),
-                delegated=delegated,
+                capabilities=caps.main(bundles),
                 connectors=connectors,
             )
         if prepared is None:
             raise ValueError("stateful tools require prepared agent context")
+        if delegations is not None:
+            bundles.append(caps.delegations(delegations))
         accepts, why = await self._images(alias)
         viewer = None
         if accepts:

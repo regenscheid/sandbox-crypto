@@ -20,7 +20,9 @@ receive only capabilities constructed from their admitted scope; delegated check
 additionally receive only read effects from document, ledger and memory tools.
 Trusted role factories enforce this selection. The existing `Toolbox` keyword
 constructor remains an adapter for direct callers, including its role denials.
-No agent text selects a factory or broadens a scope.
+No agent text selects a factory or broadens a scope. Stateless runs preserve their
+legacy offer: worker tools, feature-enabled jobs and eligible connectors only, with
+no delegation controller or delegated Toolbox role flag.
 
 A bundle owning a closeable registers its cleanup with the harness exit stack as
 soon as the resource is made. Setup failure therefore closes resources already

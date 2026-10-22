@@ -24,7 +24,7 @@ from sandbox_science.orchestrator.harness import (
 )
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathchecks.jobs import Checker
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.run_inputs import RunInputs
 from sandbox_science.orchestrator.runstate import RunState
@@ -247,3 +247,33 @@ async def test_unsettled_delegated_kernels_survive_until_explicit_stop(tmp_path:
     finally:
         documents.close()
     assert worker.closed == ["left-behind", "run-2"]
+
+
+@pytest.mark.parametrize("parent", [None, "parent-run"])
+async def test_stateless_runs_keep_the_legacy_unoffered_tool_response(parent: str | None) -> None:
+    outcomes: list[ToolOutcome] = []
+
+    class Captured(Sink):
+        async def tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None:
+            outcomes.append(outcome)
+
+    model = ScriptedModel(
+        [
+            ModelTurn(None, (ToolCall("call-1", "ask_user", "{}"),)),
+            ModelTurn("Answered."),
+        ]
+    )
+    harness = Harness(
+        cast(WorkerClient, Worker()),
+        Role(model, "scripted"),
+        settings=Settings(min_isolation_tier=None),
+    )
+    finished = await harness.run(
+        RunRequest("p", "s", "Go", environment="env", parent=parent), Captured()
+    )
+    assert finished.transcript.stopped == "answered"
+    assert finished.hooks == ()
+    assert len(outcomes) == 1
+    assert outcomes[0].record["error"] == "invalid_request"
+    assert "there is no tool named" in outcomes[0].text
+    assert "not_permitted_for_role" not in outcomes[0].text
