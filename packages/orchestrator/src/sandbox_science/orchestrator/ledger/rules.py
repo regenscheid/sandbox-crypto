@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
-from typing import NoReturn
+from typing import NoReturn, cast
 
 from sandbox_science.orchestrator.documents.comment_bodies import sha
 from sandbox_science.orchestrator.documents.errors import (
@@ -13,11 +14,13 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 
-from . import gate, preparation, queries
+from . import evidence, frontier, gate, preparation, queries, records
 from .models import (
     DECIDED,
+    PREFIXES,
     SET_ASIDE,
     EntryLink,
+    EvidenceLink,
 )
 from .preparation import fingerprint as fingerprint
 from .records import TEXTS, Json, Planned
@@ -254,3 +257,271 @@ def unsettles(before: Json, after: Json) -> bool:
     but caveats added. A caveat qualifies a settled entry; dropping one strengthens it."""
     kept = [{k: v for k, v in f.items() if k != "caveats"} for f in (before, after)]
     return kept[0] != kept[1] or not set(before.get("caveats", ())) <= set(after.get("caveats", ()))
+
+
+def check_quotes(db: sqlite3.Connection, planned: list[Planned]) -> None:
+    """A quote names what it quotes as the reference reads at the revision it pins
+    (LG-8, CR-4): a PDF quote, the reference's PDF, pinned by its SHA-256; an ePrint
+    quote, the reference's ePrint identifier. The reference may be one the same
+    change records or revises."""
+    by_id = {p.row.entry_id: p for p in planned}
+    for p in planned:
+        if p.evidence is None:
+            continue
+        kept: list[EvidenceLink] = []
+        for link in p.evidence:
+            if link.target != "quote" or link.locator is None or "named" in link.locator:
+                kept.append(link)
+                continue
+            kept.append(quoted(db, by_id, p, link))
+        p.evidence = kept
+
+
+def quoted(
+    db: sqlite3.Connection, by_id: dict[str, Planned], p: Planned, link: EvidenceLink
+) -> EvidenceLink:
+    """``link``, a new quote, with what it quotes named from its reference's fields."""
+    assert link.locator is not None  # noqa: S101 - a quote has one
+    assert link.revision is not None  # noqa: S101 - and pins its reference
+    reference = by_id.get(link.target_id)
+    stored = db.execute(
+        "SELECT head FROM ledger_entries WHERE entry_id=?", (link.target_id,)
+    ).fetchone()
+    if reference is not None and (stored is None or link.revision > stored[0]):
+        fields: Json = reference.fields  # the revision the change makes
+    else:
+        row = db.execute(
+            "SELECT fields FROM ledger_revisions WHERE entry_id=? AND revision=?",
+            (link.target_id, link.revision),
+        ).fetchone()
+        fields = {} if row is None else json.loads(row[0])
+    locator = dict(link.locator)
+    handle = link.handle or link.target_id
+    if locator["source"] == "pdf":
+        pdf = fields.get("pdf")
+        if not isinstance(pdf, dict):
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle} quotes a PDF of {handle}, which names none: give the "
+                "reference its pdf, or quote the ePrint",
+            )
+        locator["named"] = {"artifact_id": pdf["artifact_id"], "revision": pdf["revision"]}
+        return link.model_copy(update={"locator": locator, "sha256": pdf["sha256"]})
+    identifiers = cast(Json, fields.get("identifiers") or {})
+    eprint = identifiers.get("eprint")
+    if not eprint:
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{p.row.handle} quotes an ePrint of {handle}, which names none: give the "
+            "reference its eprint identifier, or quote its PDF",
+        )
+    locator["named"] = {"eprint": eprint}
+    return link.model_copy(update={"locator": locator})
+
+
+def check_published(db: sqlite3.Connection, planned: list[Planned]) -> None:
+    """A published claim or result cites its reference through a ``supports`` link of
+    type ``source_claim`` (LG-15), which may be to a reference the same change
+    records."""
+    made = {p.row.entry_id for p in planned if p.row.type == "reference"}
+    for p in planned:
+        if p.row.origin != "published" or (not p.created and p.evidence is None):
+            continue
+        targets = {link.target_id for link in p.evidence or () if link.target in ("entry", "quote")}
+        references = made | {
+            entry
+            for (entry,) in db.execute(
+                "SELECT entry_id FROM ledger_entries WHERE type='reference' AND entry_id IN "  # noqa: S608 - placeholders only
+                f"({','.join('?' * len(targets))})",
+                tuple(targets),
+            )
+        }
+        if not evidence.cites_reference(p.evidence or [], references):
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle} is published: it cites its reference with a supports "
+                "link of type source_claim",
+            )
+
+
+def check_dominates(
+    db: sqlite3.Connection, project: str, planned: list[Planned], role: str
+) -> None:
+    """A ``dominates`` link a change adds (LG-22): the user's or the main agent's,
+    between two results of one category, both eligible as the change leaves them,
+    where the rule cannot compare them."""
+    by_id = {p.row.entry_id: p for p in planned}
+    for p in planned:
+        for link in records.links_added(p, "dominates"):
+            if role == "delegated":
+                raise records.refused("a delegated agent records no dominates link")
+            other = by_id.get(link.target_id)
+            if other is not None:
+                target = (other.row.handle, other.row.origin, other.status, other.fields)
+            else:
+                row = db.execute(
+                    "SELECT e.type,e.number,e.origin,r.status,r.fields FROM ledger_entries e "
+                    "JOIN ledger_revisions r ON r.entry_id=e.entry_id AND r.revision=e.head "
+                    "WHERE e.entry_id=?",
+                    (link.target_id,),
+                ).fetchone()
+                target = (f"{PREFIXES[row[0]]}-{row[1]}", row[2], row[3], json.loads(row[4]))
+            handle, origin, status, fields = target
+            for name, entry, of, now in (
+                (p.row.handle, p.row.entry_id, p.row.origin, p.status),
+                (handle, link.target_id, origin, status),
+            ):
+                if not frontier.is_eligible(db, entry, of, now):
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{name} is not eligible for the frontier: a dominates link is "
+                        "between recorded published or established project results",
+                    )
+            name = p.fields.get("category")
+            category = None if name is None else frontier.read(db, project, name)
+            if category is None or fields.get("category") != name:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{p.row.handle} and {handle} are not results of one frontier category",
+                )
+            if frontier.comparable(category, p.fields, fields):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"the frontier compares {p.row.handle} and {handle} itself: their "
+                    "conditions are equal and their measures numbers",
+                )
+
+
+def check_cycles(db: sqlite3.Connection, project: str, planned: list[Planned]) -> None:
+    """Once a change is written, no ``dominates`` link it added lies on a cycle of
+    results that dominate one another, by links or by the rule (the review's M2), as
+    the frontier reads them: a disputed result as the revision before, and only the
+    results it holds eligible."""
+    added = {
+        (p.row.entry_id, link.target_id): p
+        for p in planned
+        for link in records.links_added(p, "dominates")
+    }
+    if not added:
+        return
+    names = {p.fields.get("category") for p in added.values()} - {None}
+    for name in sorted(str(n) for n in names):
+        category = frontier.read(db, project, name)
+        if category is None:
+            continue
+        for link in frontier.view(db, project, category).void_links:
+            p = added.get((link.entry_id, queries.entry_id(db, project, link.target)))
+            if p is not None and link.void == frontier.CYCLE:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{link.handle} dominating {link.target} closes a cycle: "
+                    f"{link.target} already dominates {link.handle}, by dominates links "
+                    "or by the rule, through the results between, as the frontier "
+                    "reads them",
+                )
+
+
+def check_links(db: sqlite3.Connection, planned: list[Planned]) -> None:
+    """What holds once the change commits (LG-5, LG-30). ``supersedes`` and
+    ``split_into`` links never lead back to their holder. An entry is superseded
+    exactly while a current revision supersedes it, so a supersedes link and its
+    target becoming superseded commit together, and so do the link's removal and the
+    target leaving superseded; an entry that is superseded supersedes nothing new. An
+    issue is split exactly while it holds split_into links."""
+    by_id = {p.row.entry_id: p for p in planned}
+    final = {
+        p.row.entry_id: p.links
+        if p.links is not None
+        else queries.links(db, p.row.entry_id, p.row.head)
+        for p in planned
+    }
+
+    def targets(entry: str, kind: str) -> list[str]:
+        if entry in final:
+            return [
+                link.target_id
+                for link in final[entry]
+                if link.kind == kind and link.target == "entry"
+            ]
+        return [row[0] for row in db.execute(queries.TARGETS, (entry, kind))]
+
+    def holders(entry: str, kind: str) -> list[str]:
+        stored = [row[0] for row in db.execute(queries.HOLDERS, (entry, kind))]
+        return [holder for holder in stored if holder not in final] + [
+            holder for holder in final if entry in targets(holder, kind)
+        ]
+
+    def status(entry: str) -> str:
+        if entry in by_id:
+            return by_id[entry].status
+        return db.execute(
+            "SELECT r.status FROM ledger_entries e JOIN ledger_revisions r ON "
+            "r.entry_id=e.entry_id AND r.revision=e.head WHERE e.entry_id=?",
+            (entry,),
+        ).fetchone()[0]
+
+    def handle(entry: str) -> str:
+        if entry in by_id:
+            return by_id[entry].row.handle
+        kind, number = db.execute(
+            "SELECT type,number FROM ledger_entries WHERE entry_id=?", (entry,)
+        ).fetchone()
+        return f"{PREFIXES[kind]}-{number}"
+
+    superseding: list[str] = []
+    for p in planned:
+        for link in [
+            *records.links_added(p, "supersedes"),
+            *records.links_added(p, "split_into"),
+        ]:
+            seen: set[str] = set()
+            reached = [link.target_id]
+            while reached:
+                entry = reached.pop()
+                if entry == p.row.entry_id:
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{p.row.handle} {link.kind} {link.handle}, "
+                        f"which already leads back to {p.row.handle}",
+                    )
+                if entry not in seen:
+                    seen.add(entry)
+                    reached.extend(targets(entry, link.kind))
+        for link in records.links_added(p, "supersedes"):
+            if p.status == "superseded":
+                raise DocumentError(
+                    INVALID_REQUEST, f"{p.row.handle} is superseded and supersedes nothing new"
+                )
+            if status(link.target_id) != "superseded":
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{link.handle} becomes superseded in the change that supersedes it",
+                )
+        superseding += [link.target_id for link in records.links_dropped(p, "supersedes")]
+    moved = [p.row.entry_id for p in planned if "status" in p.changed]
+    for entry in dict.fromkeys([*moved, *superseding]):
+        if by_id.get(entry) is not None and by_id[entry].row.type not in ("claim", "result"):
+            continue
+        held = holders(entry, "supersedes")
+        if status(entry) == "superseded" and not held:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{handle(entry)} is superseded only while an entry supersedes it",
+            )
+        if status(entry) != "superseded" and held:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{handle(entry)} stays superseded while {handle(held[0])} supersedes it",
+            )
+    for p in planned:
+        if p.row.type != "issue" or ("status" not in p.changed and p.change.links is None):
+            continue
+        split = bool(targets(p.row.entry_id, "split_into"))
+        if p.status == "split" and not split:
+            raise DocumentError(
+                INVALID_REQUEST, f"{p.row.handle} names the issues it is split into"
+            )
+        if p.status != "split" and split:
+            raise DocumentError(
+                INVALID_REQUEST, f"{p.row.handle} holds split_into links only while split"
+            )
