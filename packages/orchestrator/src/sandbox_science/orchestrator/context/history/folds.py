@@ -57,15 +57,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, MutableSequence, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import Awaitable, Callable, MutableSequence, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import accumulate, chain
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, KernelInfo
 from sandbox_science.orchestrator.aio import threaded
-from sandbox_science.orchestrator.hooks import RunView, TurnHook
+from sandbox_science.orchestrator.context.folding import FoldPoint
 from sandbox_science.orchestrator.notices import FOLD_ENRICH, FOLD_OVERVIEW
 from sandbox_science.orchestrator.plan_tools import NAMES as PLAN_NAMES
 from sandbox_science.orchestrator.tokens import chars_per_token, estimate, view_tokens
@@ -87,7 +86,6 @@ from .view import Earlier, Unit, View, session_view, settle, spanned
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.digest import Rendered
-    from sandbox_science.orchestrator.loop import Transcript
     from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
     from sandbox_science.orchestrator.projects import ModelUsage
 
@@ -129,10 +127,8 @@ class _Running:
     """A merge's parts, oldest first; its ``record`` is the overview as code built it."""
 
 
-class Folder(TurnHook):
-    """A main run's folds. Its summary is the run record's ``folds``."""
-
-    name = "folds"
+class Folder:
+    """An agent's fold engine, independent of execution and hook lifecycle policy."""
 
     def __init__(
         self,
@@ -252,30 +248,24 @@ class Folder(TurnHook):
     def tripped(self) -> bool:
         return self.weak >= BREAKER
 
-    def per_token(self, run: RunView) -> float:
+    def per_token(self, point: FoldPoint) -> float:
         return chars_per_token(
             chain(
                 self.calls,
-                run.usage.recent() if isinstance(run.usage, UsageCollection) else run.usage,
+                point.context.usage.recent()
+                if isinstance(point.context.usage, UsageCollection)
+                else point.context.usage,
             )
         )
 
-    def tokens(self, run: RunView) -> int:
+    def tokens(self, point: FoldPoint) -> int:
         """The view's tokens before the next call (CM-28)."""
-        return view_tokens(run.size, run.usage[run.since :], self.per_token(run))
+        return view_tokens(
+            point.context.size, point.context.usage[point.context.since :], self.per_token(point)
+        )
 
-    def lease(self) -> AbstractAsyncContextManager[None]:
-        return self._held()
-
-    @asynccontextmanager
-    async def _held(self) -> AsyncGenerator[None]:
-        """A fold still running when the run ends is cancelled with it (CM-24a)."""
-        try:
-            yield
-        finally:
-            await self._settle_running()
-
-    async def _settle_running(self) -> None:
+    async def finish_background(self) -> None:
+        """Cancel unfinished enrichment and join its accounting and canonical save."""
         running = self.running
         if running is None or running.task is None:
             return
@@ -288,10 +278,10 @@ class Folder(TurnHook):
             with contextlib.suppress(BaseException):
                 await running.saving
 
-    async def before_call(self, transcript: Transcript) -> bool:
+    async def before_call(self, point: FoldPoint) -> bool:
         if self.geometry is None:
-            per_token = self.per_token(transcript)
-            system = len(dump([transcript.messages[0]])) + transcript.tools_chars
+            per_token = self.per_token(point)
+            system = len(dump([point.context.messages[0]])) + point.context.tools_chars
             found = geometry(
                 self.ceiling, estimate(system, per_token), self.chunk, self.start.shares
             )
@@ -299,47 +289,47 @@ class Folder(TurnHook):
             if (why := found.refused()) is not None:
                 return self._stop("start", why)
             if abs(found.scale - self.start.scale) > 1e-6:
-                await self._rebuild(transcript)  # the budgets shrink with λ
-            if self.switched is not None and not await self._switch(transcript):
+                await self._rebuild(point)  # the budgets shrink with λ
+            if self.switched is not None and not await self._switch(point):
                 return False
         if self.running is not None and self.running.kept is not None:
-            await self._finish(transcript, self.tokens(transcript))
+            await self._finish(point, self.tokens(point))
         if self.view.stop is not None:  # before any fold, merge or call (CM-45)
             return self._research_state()
-        wall, size = self.geometry.wall, self.tokens(transcript)
+        wall, size = self.geometry.wall, self.tokens(point)
         if size > wall and self.running is not None:
-            await self._wait(transcript, size)
-            size = self.tokens(transcript)
-        while size > wall and await self._fold(transcript, size):
-            size = self.tokens(transcript)
-        while size > wall and await self._merge(transcript, size):  # no time for a call
-            size = self.tokens(transcript)
+            await self._wait(point, size)
+            size = self.tokens(point)
+        while size > wall and await self._fold(point, size):
+            size = self.tokens(point)
+        while size > wall and await self._merge(point, size):  # no time for a call
+            size = self.tokens(point)
         running = self.running
         if size > self.geometry.trigger and running is not None and running.parts:
             # A fold is due: the merge's call gives way, its overview built by code, so
             # that the fold's narrative is written (they touch different records).
             if running.task is not None:
                 running.task.cancel()
-            await self._finish(transcript, size)
-            size = self.tokens(transcript)
+            await self._finish(point, size)
+            size = self.tokens(point)
         if self.view.stop is not None:
             return self._research_state()
         if size > self.geometry.trigger and self.running is None and not self.tripped:
             if self.model is None:
-                await self._fold(transcript, size)
+                await self._fold(point, size)
             else:
-                await self._begin(transcript)
-            size = self.tokens(transcript)
+                await self._begin(point)
+            size = self.tokens(point)
         if self.view.stop is not None:
             return self._research_state()
         if self.running is None and size <= wall:
-            due, over = self._due(transcript)
+            due, over = self._due(point)
             await self._over(over)
             if due and self.model is None:
-                await self._merges(transcript)
+                await self._merges(point)
             elif due:
-                await self._begin_merge(transcript, due)
-            size = self.tokens(transcript)
+                await self._begin_merge(point, due)
+            size = self.tokens(point)
         if self.view.stop is not None:  # decisions the view cannot show (CM-45)
             return self._research_state()
         if size <= wall:
@@ -348,29 +338,29 @@ class Folder(TurnHook):
             return self._stop("breaker", f"three weak folds, and the view is {size:,} tokens")
         return self._stop("irreducible", f"nothing left to fold, and the view is {size:,} tokens")
 
-    async def overflow(self, transcript: Transcript) -> bool:
+    async def overflow(self, point: FoldPoint) -> bool:
         self.overflows += 1
-        self._cap(transcript)
+        self._cap(point)
         if self.overflows == 1:
-            size = self.tokens(transcript)
+            size = self.tokens(point)
             if self.running is not None:  # its span, skeleton-only now unless it is ready
                 merging = bool(self.running.parts)
                 if self.running.task is not None:
                     self.running.task.cancel()
-                await self._finish(transcript, size)
+                await self._finish(point, size)
                 if not merging:
-                    await self._merges(transcript)
+                    await self._merges(point)
                     return True
-                size = self.tokens(transcript)
-            if await self._fold(transcript, size):
-                await self._merges(transcript)  # merges built by code, if they are due
+                size = self.tokens(point)
+            if await self._fold(point, size):
+                await self._merges(point)  # merges built by code, if they are due
                 return True
         return self._stop("overflow", "the gateway refused the call for its length")
 
-    def _cap(self, transcript: Transcript) -> None:
+    def _cap(self, point: FoldPoint) -> None:
         """After a context error: the ceiling no larger than the largest input the model
         took in this run, which it is known to take (CM-43)."""
-        largest = max((usage.input_tokens or 0 for usage in transcript.usage), default=0)
+        largest = max((usage.input_tokens or 0 for usage in point.context.usage), default=0)
         largest = max(largest, self.learned or 0)
         if self.geometry is None or not largest or largest >= self.geometry.ceiling:
             return
@@ -384,7 +374,8 @@ class Folder(TurnHook):
             "run %s caps its ceiling at %d tokens after a context error", self.run, largest
         )
 
-    async def model_returned(self, run: RunView) -> None:
+    async def response_returned(self) -> None:
+        """A committed answer ends the current sequence of context refusals."""
         self.overflows = 0
 
     def _research_state(self) -> bool:
@@ -396,13 +387,13 @@ class Folder(TurnHook):
         _log.warning("run %s stops for its context (%s): %s", self.run, reason, detail)
         return False
 
-    async def _span(self, transcript: Transcript) -> tuple[FoldRecord, list[Archived]] | None:
+    async def _span(self, point: FoldPoint) -> tuple[FoldRecord, list[Archived]] | None:
         """The next span and its record as code builds it, or ``None``: nothing to fold,
         or a record that fails its checks, which changes nothing. A record too large for
         its share is built again of half its span, down to one unit (CM-20)."""
         if self.tripped or self.geometry is None:
             return None
-        shape, per_token = self.geometry, self.per_token(transcript)
+        shape, per_token = self.geometry, self.per_token(point)
         view = await threaded(self._view, per_token)
         taken = span(view.units, shape, per_token)
         record, rows = None, []
@@ -424,39 +415,39 @@ class Folder(TurnHook):
     def _reads(self, messages: Sequence[str]) -> list[tuple[str, Read]]:
         return Register(self.archive.control).of_messages(self.context.project_id, messages)
 
-    async def _fold(self, transcript: Transcript, before: int) -> bool:
+    async def _fold(self, point: FoldPoint, before: int) -> bool:
         """One skeleton-only fold of the raw tail's oldest span, applied; whether one was."""
-        found = await self._span(transcript)
+        found = await self._span(point)
         if found is None:
             return False
         record, rows = found
-        kept = await self._keep(record, self.per_token(transcript))
-        await self._applied(transcript, before, kept, rows)
+        kept = await self._keep(record, self.per_token(point))
+        await self._applied(point, before, kept, rows)
         return True
 
     async def _begin(
-        self, transcript: Transcript, model: ChatModel | None = None, *, now: bool = False
+        self, point: FoldPoint, model: ChatModel | None = None, *, now: bool = False
     ) -> None:
         """A fold whose narrative the enrichment call writes while the run goes on; or,
         ``now``, written by ``model`` and applied before the run goes on (CM-31)."""
         model = model or self.model
-        found = await self._span(transcript)
+        found = await self._span(point)
         if found is None or model is None or self.geometry is None:
             return
         record, rows = found
-        per_token = self.per_token(transcript)
+        per_token = self.per_token(point)
         running = _Running(record, tuple(rows))
-        before = self.tokens(transcript)
+        before = self.tokens(point)
         running.progress.baseline_input_tokens = before
         running.task = asyncio.create_task(
-            self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
+            self._enrich(running, model, list(point.context.sent), self.specs(), per_token)
         )
         self.running = running
         await self._event({"state": "started", "span": _positions_of(rows)})
         if now:
-            await self._settled(transcript, running, before)
+            await self._settled(point, running, before)
 
-    async def _settled(self, transcript: Transcript, running: _Running, before: int) -> None:
+    async def _settled(self, point: FoldPoint, running: _Running, before: int) -> None:
         """``running`` waited for, at most until the refit's deadline, then applied: as
         archived if it was ready, or as code built it."""
         if running.task is not None:
@@ -464,9 +455,9 @@ class Folder(TurnHook):
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(asyncio.shield(running.task), max(0.0, left or 0.0))
             running.task.cancel()
-        await self._finish(transcript, before)
+        await self._finish(point, before)
 
-    async def _switch(self, transcript: Transcript) -> bool:
+    async def _switch(self, point: FoldPoint) -> bool:
         """The view refitted to this run's geometry before its first call, when the
         session's last main run was on another model with a larger ceiling (CM-31):
         folds, then merges, until the view is under the trigger, their narratives by
@@ -478,31 +469,31 @@ class Folder(TurnHook):
         alias, ceiling = switched
         if ceiling <= self.geometry.ceiling:
             return True
-        before = size = self.tokens(transcript)
+        before = size = self.tokens(point)
         await self._event({"state": "refit", "from": alias, "ceiling": ceiling, "tokens": size})
         self.deadline = self.clock.monotonic() + self.wait
         while size > self.geometry.trigger and self.view.stop is None:
             if self._former() is not None:
-                await self._begin(transcript, self._former(), now=True)
+                await self._begin(point, self._former(), now=True)
             else:
-                await self._fold(transcript, size)
-            after = self.tokens(transcript)
+                await self._fold(point, size)
+            after = self.tokens(point)
             await self._event({"state": "refit_step", "step": "fold", "tokens": after})
             if after >= size:
                 break
             size = after
-        while self.view.stop is None and (due := self._due(transcript)[0]):
+        while self.view.stop is None and (due := self._due(point)[0]):
             count = len(self.view.records)
             if self._former() is not None:
-                await self._begin_merge(transcript, due, self._former(), now=True)
+                await self._begin_merge(point, due, self._former(), now=True)
             else:
-                await self._merge(transcript, size)
-            size = self.tokens(transcript)
+                await self._merge(point, size)
+            size = self.tokens(point)
             await self._event({"state": "refit_step", "step": "merge", "tokens": size})
             if len(self.view.records) >= count:
                 break
         self.deadline = None
-        size = self.tokens(transcript)
+        size = self.tokens(point)
         self.refitted = {"from": alias, "ceiling": ceiling, "before": before, "after": size}
         if size <= self.geometry.wall and self.view.stop is None:
             return True
@@ -601,7 +592,7 @@ class Folder(TurnHook):
         running.saving = asyncio.create_task(save())
         await asyncio.shield(running.saving)
 
-    async def _wait(self, transcript: Transcript, before: int) -> None:
+    async def _wait(self, point: FoldPoint, before: int) -> None:
         """Past the wall: the running fold, at most ``wait`` seconds, then applied, or its
         span skeleton-only (CM-24); the wait is a ``fold`` event."""
         running = self.running
@@ -609,7 +600,7 @@ class Folder(TurnHook):
         assert running.task is not None  # noqa: S101 - every running fold has its task
         if running.parts:  # a merge: no time for its call at the wall, so code's (CM-21c)
             running.task.cancel()
-            await self._finish(transcript, before)
+            await self._finish(point, before)
             return
         began = self.clock.monotonic()
         await self._event({"state": "waiting"})
@@ -618,9 +609,9 @@ class Folder(TurnHook):
         running.task.cancel()
         waited = round(self.clock.monotonic() - began, 3)
         await self._event({"state": "waited", "seconds": waited, "ready": running.kept is not None})
-        await self._finish(transcript, before)
+        await self._finish(point, before)
 
-    async def _finish(self, transcript: Transcript, before: int) -> None:
+    async def _finish(self, point: FoldPoint, before: int) -> None:
         """The running fold applied: as archived if it is ready, or its span
         skeleton-only."""
         running, self.running = self.running, None
@@ -631,7 +622,7 @@ class Folder(TurnHook):
                     await task
         self._count_cancelled(running)
         if running.kept is not None:
-            await self._applied(transcript, before, running.kept, running.rows, running.done)
+            await self._applied(point, before, running.kept, running.rows, running.done)
             return
         if running.done is None:
             done = Enriched(running.record, (), "it was not ready")
@@ -639,8 +630,8 @@ class Folder(TurnHook):
             done = replace(
                 running.done, record=running.record, failed=running.done.failed or "it was not kept"
             )
-        kept = await self._keep(running.record, self.per_token(transcript))
-        await self._applied(transcript, before, kept, running.rows, done)
+        kept = await self._keep(running.record, self.per_token(point))
+        await self._applied(point, before, kept, running.rows, done)
 
     async def _keep(self, record: FoldRecord, per_token: float) -> tuple[Archived, FoldRecord]:
         """``record`` archived with the stubs it makes of the raw tail after it now; an
@@ -671,7 +662,7 @@ class Folder(TurnHook):
 
     async def _applied(
         self,
-        transcript: Transcript,
+        point: FoldPoint,
         before: int,
         kept: tuple[Archived, FoldRecord],
         rows: Sequence[Archived],
@@ -679,12 +670,12 @@ class Folder(TurnHook):
     ) -> None:
         """The view rebuilt with the archived fold ``kept``; its event."""
         row, record = kept
-        await self._rebuild(transcript)
-        freed = before - self.tokens(transcript)
+        await self._rebuild(point)
+        freed = before - self.tokens(point)
         # Folds before the run's first call catch up on a session folded little or not at
         # all, such as one from before folds: the breaker counts the run's own (CM-44).
         # A merge frees only the region's room, and is no fold the breaker counts.
-        if transcript.usage and not record.parts:
+        if point.context.usage and not record.parts:
             self.weak = self.weak + 1 if freed < WEAK * before else 0
         calls = [usage.model_dump(mode="json") for usage in (done.calls if done else ())]
         made: Json = {
@@ -734,7 +725,7 @@ class Folder(TurnHook):
             return Rendered(found)
         return found
 
-    def _due(self, transcript: Transcript) -> tuple[list[tuple[str, FoldRecord]], bool]:
+    def _due(self, point: FoldPoint) -> tuple[list[tuple[str, FoldRecord]], bool]:
         """The records to merge now, oldest first (CM-21), and whether the region would
         pass its budget even so. The first-level ones, when three or more total 0.4 of a
         chunk; else, while the region would pass its budget, the two oldest if merging
@@ -743,7 +734,7 @@ class Folder(TurnHook):
         bring it under, and spilling markers is step (f2b)'s."""
         if self.geometry is None:
             return [], False
-        per_token, records = self.per_token(transcript), list(self.view.records)
+        per_token, records = self.per_token(point), list(self.view.records)
         first = [(fold, record) for fold, record in records if record.level == 1]
         size = sum(estimate(len(record.text(fold)), per_token) for fold, record in first)
         if len(first) >= MIN_PARTS and size >= FIRST_SHARE * self.geometry.chunk:
@@ -791,28 +782,28 @@ class Folder(TurnHook):
              "chars": self.view.wanted, "budget_tokens": self.geometry.region}
         )  # fmt: skip
 
-    async def _merge(self, transcript: Transcript, before: int) -> bool:
+    async def _merge(self, point: FoldPoint, before: int) -> bool:
         """One merge that is due, built by code and applied (CM-21c); whether one was."""
-        due, _ = self._due(transcript)
+        due, _ = self._due(point)
         if not due or self.geometry is None:
             return False
-        per_token = self.per_token(transcript)
+        per_token = self.per_token(point)
         record = merge(due, int(self.geometry.record * per_token))
         if (why := verify(record, [found for _, found in due])) is not None:
             await self._rejected(record, why)
             return False
         kept = await self._keep(record, per_token)
-        await self._applied(transcript, before, kept, ())
+        await self._applied(point, before, kept, ())
         return True
 
-    async def _merges(self, transcript: Transcript) -> None:
+    async def _merges(self, point: FoldPoint) -> None:
         """Every merge that is due, built by code: each leaves one record fewer."""
-        while await self._merge(transcript, self.tokens(transcript)):
+        while await self._merge(point, self.tokens(point)):
             pass
 
     async def _begin_merge(
         self,
-        transcript: Transcript,
+        point: FoldPoint,
         due: list[tuple[str, FoldRecord]],
         model: ChatModel | None = None,
         *,
@@ -823,7 +814,7 @@ class Folder(TurnHook):
         model = model or self.model
         if model is None or self.geometry is None:
             return
-        per_token = self.per_token(transcript)
+        per_token = self.per_token(point)
         record = merge(due, int(self.geometry.record * per_token))
         if (why := verify(record, [found for _, found in due])) is not None:
             await self._rejected(record, why)
@@ -838,10 +829,10 @@ class Folder(TurnHook):
             run=self.run if self.parent is not None else None,
         )
         running = _Running(record, tuple(rows), parts=tuple(due))
-        before = self.tokens(transcript)
+        before = self.tokens(point)
         running.progress.baseline_input_tokens = before
         running.task = asyncio.create_task(
-            self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
+            self._enrich(running, model, list(point.context.sent), self.specs(), per_token)
         )
         self.running = running
         await self._event(
@@ -853,7 +844,7 @@ class Folder(TurnHook):
             }
         )
         if now:
-            await self._settled(transcript, running, before)
+            await self._settled(point, running, before)
 
     async def _rejected(self, record: FoldRecord, why: str) -> None:
         _log.warning("run %s rejects a merge: %s", self.run, why)
@@ -862,10 +853,10 @@ class Folder(TurnHook):
             {"state": "rejected", "span": span, "parts": list(record.parts), "reason": why}
         )
 
-    async def _rebuild(self, transcript: Transcript) -> None:
+    async def _rebuild(self, point: FoldPoint) -> None:
         """The view rebuilt from the archive, sent from now on, its state block with the
         research state as it is now (CM-26)."""
-        per_token = self.per_token(transcript)
+        per_token = self.per_token(point)
         digest = await threaded(self._digested, per_token)
         view = await threaded(self._view, per_token, digest)
         view = await settle(
@@ -878,10 +869,10 @@ class Folder(TurnHook):
             patience=self.patience,
             clock=self.clock,
         )
-        transcript.rebuild(view.messages)
+        point.context.rebuild(view.messages)
         self.view = view
         if len(self.rebuilds) < 100:
-            self.rebuilds.append({"call": transcript.turns, **view.summary()})
+            self.rebuilds.append({"call": point.call_index, **view.summary()})
         if self.refit is not None:
             self.refit(view)
         await self._rendered(view)
