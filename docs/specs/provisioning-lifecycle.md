@@ -13,16 +13,18 @@ operation tasks, startup classification, terminal recording, cancellation, and
 drain on close or environment removal. Only the coordinator updates an operation
 record. Collaborators request updates through its update callback.
 
-Stage execution resolves and decides the requested files, executes sandbox steps,
-and records installer artifacts. Permission interaction owns exact-file requests,
+`provision_stages.py` resolves and decides the requested files, executes sandbox steps,
+and records installer artifacts. `provision_permissions.py` owns exact-file requests,
 answer polling, deadlines, withdrawal, and retries of withdrawals owed by ended
-operations. Post-install reconciliation owns revision observation, recovery
+operations. `provision_reconciliation.py` owns revision observation, recovery
 classification, package changes and capability/version checks. These are concrete
 provisioning collaborators, not a reusable workflow framework or mixins.
 
-The stage runner returns a completion value containing outcome, reason, stage,
+The stage runner returns a `Completion` value containing outcome, reason, stage,
 error, next step and record updates. A successful installer returns the before and
-after revisions together. Permission approval returns the request identity.
+after revisions together as `Installed`. Permission approval returns the request
+identity as `PermissionGrant`. These internal values and typed update, observation
+and probe callbacks live in `provision_types.py`.
 Reconciliation returns a completion value; early denials and failed steps use the
 same completion representation. The coordinator alone turns it into a terminal
 record and wakes record waiters.

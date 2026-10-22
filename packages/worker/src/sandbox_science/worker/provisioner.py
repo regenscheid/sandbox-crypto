@@ -60,13 +60,13 @@ from .catalog import Catalog
 from .errors import WorkerError
 from .identity import provision_digest, same_provision
 from .manager import ExecutionManager
-from .permissions import Permissions, PermissionStoreError
+from .permissions import Permissions
 from .provision_events import ProvisionEvents
 from .provision_permissions import ProvisionPermissions
 from .provision_reconciliation import ProvisionReconciliation
 from .provision_stages import ProvisionStages
+from .provision_types import MAX_WAIT as MAX_WAIT
 from .provision_types import (
-    MAX_WAIT,
     PERMISSION_POLL,
     STAGES,
     Completion,
@@ -106,16 +106,13 @@ class Provisioner:
     ) -> None:
         self.manager = manager
         self.store = manager.store
-        self.revisions = manager.revisions
         self.catalog = catalog
         self.policies = policies
         self.permissions = permissions
-        self.cache = cache
-        self.restorer = restorer
         self.clock = clock
         """Stamps the operations' records and times permission deadlines."""
-        self.poll = seconds("poll", poll)
-        self.lockfile_wait = seconds("lockfile_wait", lockfile_wait)
+        poll = seconds("poll", poll)
+        lockfile_wait = seconds("lockfile_wait", lockfile_wait)
         """Seconds an operation waits for a revision's lockfile to arrive."""
         self.retain = seconds("retain", retain)
         """Seconds a finished operation stays in memory for clients still waiting on it."""
@@ -127,11 +124,11 @@ class Provisioner:
         self._queues: dict[str, list[str]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self.permission_flow = ProvisionPermissions(
-            permissions, clock, self.poll, self._update, self._observe
+            permissions, clock, poll, self._update, self._observe
         )
 
         self.reconciliation = ProvisionReconciliation(
-            manager, restorer, clock, self.lockfile_wait, self._update
+            manager, restorer, clock, lockfile_wait, self._update
         )
 
         self.stages = ProvisionStages(
@@ -157,18 +154,7 @@ class Provisioner:
         permission requests are withdrawn, those a crash left unnoted included, and an
         install cut short leaves its environment needing recovery (CP-13)."""
         unfinished = self.store.unfinished_provisions()
-        if self.permissions is not None:
-            # Nothing runs yet: no request of an operation this worker knows may stay open,
-            # whether a crash, a stop or a failed withdrawal left it.
-            try:
-                await asyncio.to_thread(
-                    self.permissions.withdraw_operations,
-                    self.store.provision_ids(),
-                    "the worker restarted",
-                    self.clock.now(),
-                )
-            except PermissionStoreError as exc:
-                _log.warning("could not withdraw the permission requests left open: %s", exc)
+        await self.permission_flow.restart(self.store.provision_ids())
         for index, record in enumerate(unfinished):
             stop = self.reconciliation.cut_short(record, "restarted").completion
             finished = _validated(record, **self._fields(record, stop), seq=record.seq + 1)
@@ -561,15 +547,7 @@ class Provisioner:
         request. The worker is stopping, so both happen here, without waiting."""
         if op.record.state is ProvisionState.FINISHED:
             return
-        if self.permissions is not None:
-            # A request still being written is closed when the worker starts again.
-            with contextlib.suppress(PermissionStoreError):
-                self.permissions.close_operation(
-                    op.record.provision_id,
-                    op.record.permission_request,
-                    "the worker stopped",
-                    self.clock.now(),
-                )
+        self.permission_flow.stopped(op.record)
         with contextlib.suppress(Exception):
             self._update(
                 op,

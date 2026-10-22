@@ -70,7 +70,8 @@ from sandbox_science.worker.environments import (
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.provisioner import Provisioner, _Op
+from sandbox_science.worker.provision_types import Operation as _Op
+from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.settings import (
     ClientSettings,
     EnvironmentSettings,

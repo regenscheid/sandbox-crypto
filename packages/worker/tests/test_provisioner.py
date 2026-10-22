@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 import pytest
 import pytest_asyncio
@@ -399,6 +399,7 @@ async def make_world(
         clients: tuple[ClientSettings, ...] = (),
         kind: type[Provisioner] = Provisioner,
         stages: type[ProvisionStages] | None = None,
+        permission_store: type[Permissions] = Permissions,
     ) -> World:
         prefix = make_prefix(tmp_path)
         index = tmp_path / "index.json"
@@ -450,7 +451,7 @@ async def make_world(
             manager,
             catalog=Catalog.parse(CATALOG.encode()),
             policies=governed,
-            permissions=Permissions(events),
+            permissions=permission_store(events),
             cache=url,
             restorer=restorer,
             clock=clock,
@@ -1265,8 +1266,8 @@ async def test_nothing_to_install_unconfirmed_by_a_lockfile_fails(
     world = await make_world()
     first = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
     assert first.outcome == "completed"
-    world.provisioner.lockfile_wait = 0.2
-    monkeypatch.setattr(world.provisioner.revisions, "lockfile_path", lambda *args: None)
+    world.provisioner.reconciliation.lockfile_wait = 0.2
+    monkeypatch.setattr(world.manager.revisions, "lockfile_path", lambda *args: None)
     again = await world.finished((await world.provision("op-2", conda=["fpylll"]))["provision_id"])
     assert (again.outcome, again.reason, again.stage) == ("failed", "probe_failed", "probe")
     assert [probe.status for probe in again.probes] == ["error"]
@@ -1396,9 +1397,9 @@ class StoreOutOfReach(Permissions):
 async def test_a_withdrawal_that_fails_is_owed_and_the_grant_still_ends(
     make_world: Factory,
 ) -> None:
-    world = await make_world(ESCALATE)
-    permissions = StoreOutOfReach(world.events)
-    world.provisioner.permissions = permissions
+    world = await make_world(ESCALATE, permission_store=StoreOutOfReach)
+    permissions = world.provisioner.permissions
+    assert isinstance(permissions, StoreOutOfReach)
     first = await world.waiting((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
     assert first.permission_request is not None
     world.answer("approve", first.permission_request)
@@ -1478,10 +1479,11 @@ async def test_delete_drain_requires_durable_classification_and_retries_sql_fail
     entered = asyncio.Event()
 
     class PausedInstall(Provisioner):
-        async def _operate(self, op: Any) -> None:
+        async def _operate(self, op: Any) -> Never:
             self._update(op, state=ProvisionState.INSTALLING, revision_before=0)
             entered.set()
             await asyncio.Event().wait()
+            raise AssertionError("fixture must be cancelled")
 
     world = await make_world(kind=PausedInstall)
     world.manager.store.bind_package_gate("env1", "original-synthetic-binding")

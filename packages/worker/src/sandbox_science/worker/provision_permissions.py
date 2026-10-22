@@ -6,12 +6,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sandbox_science.contracts import (
     Clock,
     ErrorInfo,
     ErrorKind,
+    ProvisionOperation,
     ProvisionOutcome,
     ProvisionState,
 )
@@ -54,6 +56,31 @@ class ProvisionPermissions:
         self._update = update
         self._observe = observe
         self._owed: set[str] = set()
+
+    async def restart(self, provision_ids: Sequence[str]) -> None:
+        """Withdraw requests left open before any restarted operation is classified."""
+        if self.permissions is None:
+            return
+        try:
+            await asyncio.to_thread(
+                self.permissions.withdraw_operations,
+                provision_ids,
+                "the worker restarted",
+                self.clock.now(),
+            )
+        except PermissionStoreError as exc:
+            _log.warning("could not withdraw the permission requests left open: %s", exc)
+
+    def stopped(self, record: ProvisionOperation) -> None:
+        """Close synchronously during shutdown; startup closes an interrupted write."""
+        if self.permissions is not None:
+            with contextlib.suppress(PermissionStoreError):
+                self.permissions.close_operation(
+                    record.provision_id,
+                    record.permission_request,
+                    "the worker stopped",
+                    self.clock.now(),
+                )
 
     async def request(
         self, op: Operation, governing: Governing, decided: Decided
