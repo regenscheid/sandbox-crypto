@@ -263,7 +263,7 @@ async def test_disk_write_failure_ends_job_and_preserves_bounded_output(
     await instance.op_package_gate(
         {
             "id": 0,
-            "incarnation": instance.package_gate_id,
+            "incarnation": instance.admission.incarnation,
             "generation": 0,
             "mode": "ready",
             "operation": "",
@@ -285,7 +285,7 @@ async def test_disk_write_failure_ends_job_and_preserves_bounded_output(
             "limit": 1024,
         }
     )
-    running_job = instance.running[execution]
+    running_job = instance.lifecycle.running[execution]
     assert running_job.task is not None
     await asyncio.wait_for(running_job.task, 15)
     end = next(event for event in events if event.get("event") == "end")

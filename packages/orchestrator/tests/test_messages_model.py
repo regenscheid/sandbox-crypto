@@ -25,7 +25,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.orchestrator import cli
-from sandbox_science.orchestrator.history import Archive, entry_of
+from sandbox_science.orchestrator.context.history import Archive, entry_of
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.messages import (
     BINDING_BETA,

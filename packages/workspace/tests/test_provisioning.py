@@ -20,8 +20,8 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace import provisioning, provisioning_client
-from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.context import TIMEOUTS, Timeouts
 
 TOKEN = "test-secret-provisioning-workspace-login-0123456789"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]

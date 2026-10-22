@@ -9,6 +9,9 @@ from datetime import UTC, datetime
 import pytest
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
 from sandbox_science.orchestrator.continuity.grants import TokenGrantRequest, TokenGrants
@@ -22,8 +25,6 @@ from sandbox_science.orchestrator.continuity.resources import (
 )
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.hooks import Closing, Notice, TurnHook
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
@@ -115,10 +116,10 @@ async def test_parent_actions_are_durable_and_token_grants_do_not_change(project
     decide(requests, parent, warning, action=action)
     projects.control.close()
     hook = Resources(requests, child, turns=5, tokens=20_000_000, delegated=True)
-    assert (await hook.halt(Transcript(messages=[]))) == (
+    assert (await hook.halt(Transcript(context=AgentContext(messages=[])))) == (
         "resource_pause" if action == "pause" else None
     )
-    assert (await hook.last_call(Transcript(messages=[]))) == (
+    assert (await hook.last_call(Transcript(context=AgentContext(messages=[])))) == (
         "resource_report" if action == "report" else None
     )
     assert TokenGrants(projects.control).total("p", "s", CHILD, 20_000_000) == 20_000_000

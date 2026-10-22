@@ -24,6 +24,7 @@ from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
 from . import api
 from .context import CONTEXT, identifier, json_body
+from .requests import dumps
 
 
 class NewSession(Contract):
@@ -58,7 +59,7 @@ async def create(request: web.Request) -> web.Response:
             opened = store.open_session(project, wanted.session_id, dedicated=False)
         finally:
             store.close()
-        return api.dumps(api.SessionView.of(opened).model_dump(mode="json"))
+        return dumps(api.SessionView.of(opened).model_dump(mode="json"))
 
     text = await asyncio.to_thread(write)
     return web.Response(

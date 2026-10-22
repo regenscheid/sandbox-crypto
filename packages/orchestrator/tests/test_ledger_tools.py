@@ -62,13 +62,14 @@ class Files:
 
 
 @pytest.fixture
-def state(tmp_path: Path) -> Path:
+def state(tmp_path: Path) -> Iterator[Path]:
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     projects.open_session("p", "s", dedicated=False)
     projects.open_session("p", "s2", dedicated=True)
+    # Keep WAL sidecars present for immutable readers used by the ledger tools.
+    yield tmp_path
     projects.close()
-    return tmp_path
 
 
 @pytest.fixture

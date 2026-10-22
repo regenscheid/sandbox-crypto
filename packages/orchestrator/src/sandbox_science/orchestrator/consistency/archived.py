@@ -16,9 +16,9 @@ from __future__ import annotations
 from collections.abc import MutableSequence, Sequence
 from typing import Any, cast
 
+from sandbox_science.orchestrator.context.history.archive import HEADER, Archive, Archived
+from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history.archive import HEADER, Archive, Archived
-from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.projects import run_id_of
 

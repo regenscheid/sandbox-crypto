@@ -1,6 +1,55 @@
 # Backlog
 
-Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). Current development is consolidated on local `dev`; implementation, runtime qualification and deployment are distinct. Older PR/branch references record historical delivery evidence.
+## Context-focused refactor (2026-10-21)
+
+- [x] Consolidate context/history/folding/retrieval and diagnostics under `orchestrator/context/`.
+- [x] Extract shared `AgentContext` active state and scope-bound preparation for root/children.
+- [x] Extract fresh/resumed child finalization with explicit persistence and cleanup outcomes.
+- [x] Extract workspace request execution and remove duplicate store registrations.
+- [x] Complete integrated checks and record the [independent review and validation results](docs/agent-reports/context-refactor-2026-10-21.md): 426 targeted and 855 workspace tests pass; broad-suite baseline failures remain explicitly recorded.
+- [x] Repair the ledger/category/provenance fixtures that close the last control-store
+  writer before read-only authority checks; preserve the production WAL guard.
+- [ ] Investigate the earlier intermittent SIGTERM stopped-event failure and unresolved
+  serving subprocess timeout. Both also reproduced during this pass; see the ownership report below.
+- [ ] Repair the remaining baseline WAL/fixture/schema and image-policy expectations
+  recorded in the [ownership report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md),
+  without weakening production checks. Artifact-review writer ownership is corrected.
+- [ ] Later review candidates: generated contracts for API domains beyond
+  documents, comments and jobs.
+
+- [x] Remove Transcript's context forwarding facade and decouple the shared fold engine through `FoldPoint` and `FoldLifecycle`; preserve local/confined hook order and research-state holds.
+- [x] Implement and independently review recent-context retention, bounded overview evidence validation and upfront enrichment budgeting; the 743-test integration selection passes on this branch. Publication is separate from merging and runtime qualification.
+- [ ] Qualify takeaway preservation with real multi-fold continuity probes; deterministic tests do not establish scientific recall quality.
+
+### Parallel follow-up authorized 2026-10-21
+
+- [x] Assemble tool entries and required ordered hooks through explicit capabilities,
+  retaining role restrictions, reserved names, effects and cleanup ownership.
+- [x] Extract review evidence selection/budgeting into a typed snapshot planner;
+  retain transactional rechecks, immutable pins, watermarks and dispatch ordering.
+- [x] Generate document/comment/job API contracts and typed write unions; organize
+  their clients by domain while preserving transport and omission/null behavior.
+- [x] Independently review all three paths and integrate on this branch: 804 combined
+  checks pass with three exact prior-baseline ledger failures; 92 final checks,
+  862 workspace tests and 2,289 frontend tests pass. See the
+  [report](docs/agent-reports/parallel-refactor-2026-10-21.md). Worker lifecycle is covered
+  by the following pass; publication does not imply merging or deployment.
+
+### Remaining priority refactors authorized 2026-10-21
+
+- [x] Executor lifecycle and admission: one process/kernel owner, explicit launch
+  coordination, complete the clock seam and preserve the stdlib-only payload.
+- [x] Ledger ownership: separate queries, mutation preparation, rules and persistence
+  while the public facade retains one transaction and atomic replay receipts.
+- [x] Provisioning lifecycle: centralize operation ownership and notification, separate
+  permission and reconciliation stages, preserve queue release versus final observation.
+- [x] Implement and locally validate all three on `agent-context-refactor`; public
+  characterization and independent source review pass. Preserve the
+  [evidence and limits](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
+- [x] Retain a drained provisioning owner after a failed terminal save so a later
+  environment-removal request can retry without restarting the worker.
+
+Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev`; implementation, runtime qualification and deployment are distinct.
 
 ## Research continuity after the SNOVA acceptance run
 

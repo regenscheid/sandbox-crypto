@@ -7,12 +7,13 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.history import Archive, Entry, RunArchive
-from sandbox_science.orchestrator.history.collections import Collection
-from sandbox_science.orchestrator.history.geometry import Geometry
-from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
-from sandbox_science.orchestrator.history.memory import RunMemory
-from sandbox_science.orchestrator.history.view import session_view
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history import Archive, Entry, RunArchive
+from sandbox_science.orchestrator.context.history.collections import Collection
+from sandbox_science.orchestrator.context.history.geometry import Geometry
+from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
+from sandbox_science.orchestrator.context.history.memory import RunMemory
+from sandbox_science.orchestrator.context.history.view import session_view
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import AssistantMessage
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -29,8 +30,8 @@ def test_live_and_rebuilt_context_exclude_echoes_but_archive_keeps_exact_origina
             project_id="p", session_id="s", environment_id=session.environment_id
         )
         memory = RunMemory.archived(RunArchive(archive, context, run="run-test", parent=None))
-        transcript = Transcript(messages=memory.messages([]), memory=memory)
-        assert isinstance(transcript.messages, Collection)
+        transcript = Transcript(context=AgentContext(messages=memory.messages([]), memory=memory))
+        assert isinstance(transcript.context.messages, Collection)
         originals = []
         for index in range(40):
             output = [
@@ -55,8 +56,8 @@ def test_live_and_rebuilt_context_exclude_echoes_but_archive_keeps_exact_origina
             )
             row = archive.append("p", "s", "run-test", entry)
             originals.append((row.message_id, native))
-            transcript.messages.append_encoded({"archive_message": row.message_id})
-        sent = transcript.sent
+            transcript.context.messages.append_encoded({"archive_message": row.message_id})
+        sent = transcript.context.sent
         assert len(sent) == 40
         native_bytes = 0
         for message in sent:
@@ -89,9 +90,9 @@ def test_actual_replay_content_still_hits_working_ceiling(tmp_path: Path):
             {"output": [{"type": "reasoning", "encrypted_content": "x" * 35000000}]}
         ).encode()
         message = AssistantMessage("result", native=native, native_format="responses")
-        run = Transcript(messages=[message, message], memory=memory)
+        run = Transcript(context=AgentContext(messages=[message, message], memory=memory))
         with pytest.raises(WorkingMemoryLimitError, match="active model payload"):
-            _ = run.sent
+            _ = run.context.sent
     finally:
         memory.control.close()
 

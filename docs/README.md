@@ -89,6 +89,8 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Monitoring](MONITORING.md) | Trusted monitoring and automatic provisioning |
 | [MCP connectors](MCP-CONNECTORS.md) | MCP authentication and the MCP proxy |
 | [Orchestrator prompts](ORCHESTRATOR-PROMPTS.md) | The prompt inventory, and proposed prompts and planning design |
+| [Attempt finalization](ATTEMPT-FINALIZATION.md) | Shared checkpoint, persistence, settlement and cleanup protocol |
+| [Agent context ownership](specs/agent-context-refactor.md) | Shared context preparation, state, history, folding and retrieval |
 
 ## Historical
 

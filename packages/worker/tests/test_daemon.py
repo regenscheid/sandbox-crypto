@@ -690,7 +690,7 @@ async def server(tmp_path: Path) -> AsyncIterator[daemon.Daemon]:
             instance.writer.close()
             await instance.writer.wait_closed()
         await instance.executor.shutdown()
-        await asyncio.gather(*list(instance.executor.tasks), return_exceptions=True)
+        await asyncio.gather(*list(instance.executor.lifecycle.tasks), return_exceptions=True)
 
 
 async def raw_request(writer: asyncio.StreamWriter, number: int, **fields: Any) -> None:
@@ -1356,7 +1356,7 @@ async def test_replaced_controller_cannot_dispatch_already_buffered_shutdown(
         old_gate.set()  # Deliver the old reader's buffered result after replacement.
         await asyncio.wait_for(old_task, 3)
         assert not instance.stop.is_set()
-        assert not instance.executor.closing
+        assert not instance.executor.lifecycle.closing
     finally:
         old_task.cancel()
         if new_task is not None:
@@ -1380,7 +1380,7 @@ async def test_shutdown_exits_even_when_acknowledgement_is_lost(
     monkeypatch.setattr(server, "write", fail_ack)
     await raw_request(writer, 91, op="daemon_shutdown")
     await asyncio.wait_for(server.stop.wait(), 3)
-    assert server.executor.closing
+    assert server.executor.lifecycle.closing
     assert await asyncio.wait_for(reader.readline(), 3) == b""
     writer.close()
     await writer.wait_closed()

@@ -19,6 +19,8 @@ from typing import Any, Final
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation import hook
 from sandbox_science.orchestrator.delegation.fence import ChildFence
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd, Delegations
@@ -29,7 +31,6 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import DELEGATIONS
@@ -827,7 +828,9 @@ async def test_parent_cannot_finish_when_child_outcome_was_not_saved(
     try:
         async with made.lease():
             text, _ = await made.call("delegate", BRIEF)
-            closing = asyncio.create_task(made.closing(Transcript(messages=[]), "Done."))
+            closing = asyncio.create_task(
+                made.closing(Transcript(context=AgentContext(messages=[])), "Done.")
+            )
             for count, seconds in enumerate((0.5, 1.0), start=1):
                 await eventually(lambda count=count: len(writes) == count and clock.sleepers == 1)
                 clock.advance(seconds)
@@ -884,7 +887,7 @@ async def test_a_halt_with_children_running_keeps_its_reason(tmp_path: Path) -> 
     try:
         async with made.lease():
             await made.call("delegate", BRIEF)
-            transcript = Transcript(messages=[], halted="budget")
+            transcript = Transcript(context=AgentContext(messages=[]), halted="budget")
             transcript.room = False
             closing = await made.closing(transcript, "An answer.")
             assert (closing.action, closing.stopped) == ("retry", "budget")
@@ -924,7 +927,9 @@ async def test_parent_closing_waits_for_all_children_and_remains_interruptible(
         async with made.lease():
             for _ in free:
                 await made.call("delegate", BRIEF)
-            closing = asyncio.create_task(made.closing(Transcript(messages=[]), "An answer."))
+            closing = asyncio.create_task(
+                made.closing(Transcript(context=AgentContext(messages=[])), "An answer.")
+            )
             await entered.wait()
             await eventually(lambda: len(started) == 2)
             assert not closing.done()

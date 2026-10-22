@@ -105,7 +105,7 @@ async def test_accepted_entries_reach_the_next_agent(runs: Runs) -> None:
     accept = {"operation_id": "accept", "action": "accept", "proposal": "prop-1"}
     runs.model.before = lambda: runs.memory.change("p", accept, USER)
     first = await runs.run(RunRequest("p", "s", "Go", run_id="run-1"))
-    pins = first.transcript.prompt_provenance
+    pins = first.transcript.context.prompt_provenance
     assert pins is not None
     assert pins.memory is not None
     assert (pins.memory.version, pins.memory.entries, pins.memory.left_out) == (1, ("mem-1@1",), 0)
@@ -120,10 +120,10 @@ async def test_accepted_entries_reach_the_next_agent(runs: Runs) -> None:
         delegation="dlg-1", memory_version=pins.memory.version,
     )  # fmt: skip
     second = await runs.run(child)
-    assert second.transcript.prompt_provenance is not None
-    assert second.transcript.prompt_provenance.memory == pins.memory
+    assert second.transcript.context.prompt_provenance is not None
+    assert second.transcript.context.prompt_provenance.memory == pins.memory
     # The child's own system prompt holds the very section its root was given.
-    sections = second.transcript.prompt_provenance.sections
+    sections = second.transcript.context.prompt_provenance.sections
     assert [s for s in sections if s.id == "memory"] == [
         s for s in pins.sections if s.id == "memory"
     ]
@@ -132,8 +132,8 @@ async def test_accepted_entries_reach_the_next_agent(runs: Runs) -> None:
     )
     assert "Install with provision." not in runs.model.systems[1]
     third = await runs.run(RunRequest("p", "s", "Go on.", run_id="run-3"))
-    assert third.transcript.prompt_provenance is not None
-    later = third.transcript.prompt_provenance.memory
+    assert third.transcript.context.prompt_provenance is not None
+    later = third.transcript.context.prompt_provenance.memory
     assert later is not None
     assert (later.version, later.entries) == (2, ("mem-1@1", "mem-2@1"))
     assert "Install with provision." in runs.model.systems[-1]
@@ -144,7 +144,7 @@ async def test_a_long_memory_is_given_whole_entries_up_to_the_bound(runs: Runs) 
     were left out."""
     runs.add(*(f"Note {index:02d}. " + "x" * 991 for index in range(20)))
     finished = await runs.run(RunRequest("p", "s", "Go", run_id="run-1"))
-    pins = finished.transcript.prompt_provenance
+    pins = finished.transcript.context.prompt_provenance
     assert pins is not None
     assert pins.memory is not None
     assert (len(pins.memory.entries), pins.memory.left_out) == (13, 7)
@@ -163,7 +163,7 @@ async def test_a_long_memory_is_given_whole_entries_up_to_the_bound(runs: Runs) 
 
 async def test_an_empty_memory_gives_no_section_but_is_pinned(runs: Runs) -> None:
     finished = await runs.run(RunRequest("p", "s", "Go", run_id="run-1"))
-    pins = finished.transcript.prompt_provenance
+    pins = finished.transcript.context.prompt_provenance
     assert pins is not None
     assert [section.id for section in pins.sections] == ["main", "planning"]
     assert pins.memory is not None

@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.delegation.outcome import Outcome, parse_task
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
@@ -92,7 +93,7 @@ async def test_a_file_the_child_did_not_make_is_refused_once(delegating: Harness
 async def test_a_deleted_file_is_no_result() -> None:
     """A file a later call deleted has a tombstone as its latest revision: no result."""
     outcome = Outcome(task=True)
-    run = Transcript(messages=[])
+    run = Transcript(context=AgentContext(messages=[]))
     entry = {"path": "table.txt", "artifact_id": "artifact-1", "revision": 1, "sha256": "ab" * 32}
     for deleted in (False, True):
         files = [

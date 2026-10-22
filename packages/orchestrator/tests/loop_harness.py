@@ -32,9 +32,9 @@ from sandbox_science.orchestrator import cli, mathchecks
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.notices import FOLD_ENRICH

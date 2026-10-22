@@ -24,7 +24,7 @@ from aiohttp.test_utils import TestServer
 
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
-from sandbox_science.orchestrator.history import Archive
+from sandbox_science.orchestrator.context.history import Archive
 from sandbox_science.orchestrator.model import (
     CHAT_COMPLETIONS,
     AssistantMessage,

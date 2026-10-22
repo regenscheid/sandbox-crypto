@@ -17,8 +17,8 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -41,8 +41,8 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import Language
 
-from .agent_messages import CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC, AgentMailbox
-from .aio import threaded
+from . import capabilities as caps
+from .agent_messages import AgentMailbox
 from .artifact_publisher import ArtifactPublisher
 from .connectors import (
     MAX_LOAD,
@@ -50,39 +50,30 @@ from .connectors import (
     MAX_QUERY,
     Connectors,
 )
-from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
-from .delegation import specs as delegation_specs
-from .delegation.tracks import EFFECTS as TRACK_EFFECTS
-from .delegation.tracks import SPECS as TRACK_SPECS
-from .documents import annotation_tools
+from .consistency.controller import ReviewController
+from .context.history import HistoryTool
 from .documents.errors import DocumentError
-from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
-from .documents.tool import SPECS as DOCUMENT_SPECS
+from .documents.tool import DocumentTool, with_notices
 from .effects import UnknownEffectError
-from .history import SPECS as HISTORY_SPECS
-from .history import HistoryTool
-from .hooks import Effect, Notice, TurnHook
-from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, STOP_AT_FAILURE, JobNotices, JobTools
+from .hooks import Effect, TurnHook
+from .jobs import BACKGROUND, STOP_AT_FAILURE, JobTools
 from .kernel_check import KernelCheck
-from .ledger.tool import LEDGER_EFFECTS, LedgerTool
-from .ledger.tool import PROPOSALS as LEDGER_PROPOSALS
-from .ledger.tool import SPECS as LEDGER_SPECS
-from .mathchecks.controller import MathChecks, MathController
-from .memory_tools import MEMORY_EFFECTS, MemoryTool
-from .memory_tools import SPECS as MEMORY_SPECS
+from .ledger.tool import LedgerTool
+from .mathchecks.controller import MathController
+from .memory_tools import MemoryTool
 from .model import ToolCall, ToolSpec
-from .plan_tools import SPECS as PLAN_SPECS
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
-from .question_tool import EFFECTS as QUESTION_EFFECTS
-from .question_tool import SPECS as QUESTION_SPECS
 from .question_tool import QuestionTool
-from .recording import FileRecorder, RecordedFiles, Written, with_recorded
-from .resource_hooks import SPEC as RESOURCE_SPEC
+from .recording import FileRecorder, Written, with_recorded
 from .resource_hooks import Resources
-from .skills.tool import SPEC as SKILL_SPEC
 from .skills.tool import SkillTool
-from .view_image import SPEC as VIEW_IMAGE
+from .tool_entry import Handler as Handler
+from .tool_entry import Request as Request
+from .tool_entry import ToolEntry as ToolEntry
+from .tool_entry import ToolOutcome as ToolOutcome
+from .tool_entry import group as _group
+from .tool_entry import plain as _plain
 from .view_image import ImageViewer
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -361,82 +352,6 @@ SPECS: Final = (
 )
 
 
-@dataclass
-class ToolOutcome:
-    """What the model sees, and what the transcript keeps."""
-
-    text: str
-    record: dict[str, Any] = field(default_factory=dict[str, Any])
-    whole: bool = False
-    """The result must reach the model as it is, with no notices riding on it."""
-    written: Written | None = None
-    """The files the call changed, which the run's recorder records (RA-27)."""
-    saved: dict[str, str] = field(default_factory=dict[str, str])
-    """The texts saved whole behind a sample, by path (Shell 5), which the session's
-    archive keeps beside the result (docs/specs/context-management.md, CM-6)."""
-    image: tuple[Notice, str] | None = None
-    """An image ``view_image`` gives the model, and its token: the loop adds its framed
-    message after the turn's results (docs/specs/figures.md, FG-37)."""
-
-
-@dataclass(frozen=True)
-class Request:
-    """One tool call as its handler gets it; ``args`` is empty for a raw entry."""
-
-    call: ToolCall
-    args: dict[str, Any]
-    operation: str
-    model: str | None
-
-
-Handler = Callable[[Request], Awaitable[ToolOutcome]]
-
-
-@dataclass(frozen=True)
-class ToolEntry:
-    """An offered tool: its spec, its handler, and the effect class a gate reads."""
-
-    spec: ToolSpec
-    effect: Effect
-    handler: Handler
-    raw: bool = False
-    """The handler parses the call's arguments itself."""
-    bound: bool = False
-    """The result is bounded like a file's or an execution's text."""
-    whole: bool = False
-    """The result reaches the model as it is, with no notices riding on it."""
-
-
-def _group(
-    specs: Sequence[ToolSpec],
-    run: Callable[[str, Request], Awaitable[tuple[str, dict[str, Any]]]],
-    effects: Mapping[str, Effect],
-    **flags: bool,
-) -> list[ToolEntry]:
-    """A group's entries, whose ``run`` answers a call with text and a record. A tool
-    ``effects`` does not name is an effect, so a new tool is gated until classified."""
-
-    async def handler(name: str, request: Request) -> ToolOutcome:
-        return ToolOutcome(*await run(name, request))
-
-    return [
-        ToolEntry(spec, effects.get(spec.name, "effect"), partial(handler, spec.name), **flags)
-        for spec in specs
-    ]
-
-
-async def _view(viewer: ImageViewer, request: Request) -> ToolOutcome:
-    viewed = await viewer.call(request.args, request.operation)
-    image = None
-    if viewed.notice is not None and viewed.token is not None:
-        image = (viewed.notice, viewed.token)
-    return ToolOutcome(viewed.text, viewed.record, image=image)
-
-
-def _plain(handler: Callable[[dict[str, Any], str], Awaitable[ToolOutcome]]) -> Handler:
-    return lambda request: handler(request.args, request.operation)
-
-
 def operation_id(prefix: str, call: ToolCall) -> str:
     """A worker operation ID for a tool call: stable, path-safe and at most 128 characters.
 
@@ -494,36 +409,10 @@ def mcp_tools_spec(index: str) -> ToolSpec:
 
 
 def _harness_tool_names() -> frozenset[str]:
-    from .consistency.controller import AUTHOR_SPECS
-
-    specs = (
-        *SPECS,
-        FIND_ARTIFACTS,
-        SAGE,
-        *PDF_SPECS,
-        ADMIT_HOSTS,
-        *PROVISION_SPECS,
-        *JOB_SPECS,
-        *DOCUMENT_SPECS,
-        *annotation_tools.SPECS,
-        *AUTHOR_SPECS,
-        *PLAN_SPECS,
-        *LEDGER_SPECS,
-        LEDGER_PROPOSALS,
-        *MEMORY_SPECS,
-        *delegation_specs.SPECS,
-        RESOURCE_SPEC,
-        CHILD_SPEC,
-        PARENT_SPEC,
-        STATUS_SPEC,
-        WAIT_SPEC,
-        *TRACK_SPECS,
-        *QUESTION_SPECS,
-        SKILL_SPEC,
-        *HISTORY_SPECS,
-        VIEW_IMAGE,
+    specs = (*SPECS, FIND_ARTIFACTS, SAGE, *PDF_SPECS, ADMIT_HOSTS, *PROVISION_SPECS)
+    return (
+        caps.RESERVED_NAMES | frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
     )
-    return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
 
 
 HARNESS_TOOL_NAMES: Final = _harness_tool_names()
@@ -541,7 +430,7 @@ class Toolbox:
         *,
         languages: Sequence[Language] = ("python",),
         features: Sequence[str] = (),
-        output_chars: int = 20000,
+        output_chars: int = caps.DEFAULT_OUTPUT_CHARS,
         documents: DocumentTool | None = None,
         jobs: JobTools | None = None,
         reviews: ReviewController | None = None,
@@ -566,6 +455,7 @@ class Toolbox:
         history: HistoryTool | None = None,
         images: ImageViewer | None = None,
         image_offer: Mapping[str, Any] | None = None,
+        capabilities: caps.CapabilitySet | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate, question or connector tool, is refused with
@@ -573,37 +463,82 @@ class Toolbox:
         of the documents, the ledger and the memory, beside its compute and file tools: it
         changes no entry, document or memory (PD-34, LG-13, as the coordinator tightened
         them on 2026-10-15)."""
+        if delegated and connectors is not None:
+            raise ValueError("a delegated run gets no connector tools")
+        if delegated and questions is not None:
+            raise ValueError("a delegated run cannot ask the user")
+        if capabilities is None:
+            # Compatibility for direct callers. Production binds scoped domains in
+            # the harness, rather than passing a second set of service options.
+            bundles: list[caps.Capability] = []
+
+            def add[T](service: T | None, bind: Callable[[T], caps.Capability]) -> None:
+                if service is not None:
+                    bundles.append(bind(service))
+
+            add(documents, caps.documents)
+            add(reviews, caps.reviews)
+            add(plans, caps.plans)
+            add(ledger, caps.ledger)
+            add(memory, caps.memory)
+            add(tracks, caps.tracks)
+            add(delegations, caps.delegations)
+            add(resources, caps.resources)
+            add(mailbox, caps.mailbox)
+            add(skills, caps.skills)
+            add(history, caps.history)
+            add(images, caps.images)
+            add(questions, caps.questions)
+            add(math_checks, caps.math)
+            add(recorder, caps.files)
+            add(artifacts, caps.artifacts)
+            bundles.append(caps.jobs(jobs if BACKGROUND in features else None))
+            capabilities = caps.CapabilitySet(tuple(bundles))
+            # Legacy direct callers could explicitly provide review/plan controllers
+            # even for a delegated run; only its record filtering is adapted here.
+            if check:
+                capabilities = caps.record_reads(capabilities)
         self.client = client
         self.context = context
         self.output_chars = output_chars
         self.languages = tuple(languages)
-        self.reviews = reviews
-        self.math_checks = math_checks
-        self.documents = documents
-        self.jobs = jobs if BACKGROUND in features else None
-        self.artifacts = artifacts
-        self.plans = plans
+        self.reviews = capabilities.service(caps.REVIEWS)
+        self.math_checks = capabilities.service(caps.MATH)
+        self.documents = capabilities.service(caps.DOCUMENTS)
+        self.jobs = capabilities.service(caps.JOBS)
+        self.artifacts = capabilities.service(caps.ARTIFACTS)
+        self.plans = capabilities.service(caps.PLANS)
+        self.recorder = capabilities.service(caps.FILES)
+        self.delegations = capabilities.service(caps.DELEGATIONS)
+        self.mailbox = capabilities.service(caps.MAILBOX)
+        self.resources = capabilities.service(caps.RESOURCES)
+        self.questions = capabilities.service(caps.QUESTIONS)
+        self.skills = capabilities.service(caps.SKILLS)
+        self.delegated = delegated
         self.check_kernels = check_kernels
         self.sweep_left_kernels = sweep_left_kernels
-        """The kernel check also closes the run kernels the session's earlier runs left
-        (PD-40), at its first observation of a connected executor."""
-        self.recorder = recorder
-        """Records the files calls write as artifact revisions (RA-27); ``None`` without
-        an artifact inventory."""
         self.kernel_run = kernel_run
-        """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
-        session's, which main runs share."""
-        self.delegations = delegations
-        self.mailbox = mailbox
-        self.resources = resources
-        self.questions = questions
-        self.delegated = delegated
-        if delegated and connectors is not None:
-            # PD-16: a delegated run is offered no connector tool, and no index of them.
-            raise ValueError("a delegated run gets no connector tools")
-        if delegated and questions is not None:
-            # PD-41: a delegated run that needs the user ends blocked instead.
+        if delegated and self.questions is not None:
             raise ValueError("a delegated run cannot ask the user")
+
+        def kernels() -> TurnHook:
+            keep = self.delegations.live if self.delegations is not None else None
+            return KernelCheck(
+                self.client,
+                self.context,
+                run=self.kernel_run,
+                sweep=self.sweep_left_kernels,
+                keep=keep,
+            )
+
+        capabilities = replace(
+            capabilities,
+            bundles=(
+                *(b for b in capabilities.bundles if b.name != caps.KERNELS.name),
+                caps.KERNELS.bind(kernels),
+            ),
+        )
+        self.capabilities = capabilities.with_hook_slots()
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
@@ -649,129 +584,11 @@ class Toolbox:
         if PROVISIONING in features:
             specs.extend(PROVISION_SPECS)
         entries = [ToolEntry(spec, *worker[spec.name]) for spec in specs]
-        if (job_tools := self.jobs) is not None:
-            entries += _group(
-                JOB_SPECS,
-                lambda name, call: job_tools.handlers[name](call.args, call.operation),
-                JOB_EFFECTS,
-                bound=True,
-            )
-        if documents is not None:
-            entries += self._records(
-                check,
-                documents.specs,
-                lambda name, call: documents.call(
-                    name,
-                    call.args,
-                    operation=call.operation,
-                    call_id=call.call.id,
-                    model=call.model,
-                ),
-                DOCUMENT_EFFECTS,
-            )
-        if reviews is not None:
-            entries += _group(
-                reviews.specs,
-                lambda name, call: reviews.author_call(
-                    name, call.args, call.operation, model=call.model
-                ),
-                REVIEW_EFFECTS,
-                bound=True,
-            )
-        if plans is not None:
-            entries += _group(
-                plans.specs,
-                lambda name, call: plans.call(
-                    name, call.call.arguments, call_id=call.call.id, model=call.model
-                ),
-                {spec.name: "plan" for spec in plans.specs},
-                raw=True,
-                whole=True,
-            )
-        if ledger is not None:
-            entries += self._records(
-                check,
-                ledger.specs,
-                lambda name, call: ledger.call(
-                    name,
-                    call.args,
-                    operation=call.operation,
-                    call_id=call.call.id,
-                    model=call.model,
-                ),
-                LEDGER_EFFECTS,
-            )
-        if memory is not None:
-            entries += self._records(
-                check,
-                memory.specs,
-                lambda name, call: memory.call(
-                    name,
-                    call.args,
-                    operation=call.operation,
-                    call_id=call.call.id,
-                    model=call.model,
-                ),
-                MEMORY_EFFECTS,
-            )
-        if tracks is not None:
-            entries += _group(
-                tracks.specs,
-                lambda name, call: threaded(
-                    tracks.call, name, call.args, operation=call.operation, model=call.model
-                ),
-                TRACK_EFFECTS,
-            )
-        if delegations is not None:
-            entries += _group(
-                delegations.specs,
-                lambda name, call: delegations.call(name, call.args, operation=call.operation),
-                delegation_specs.EFFECTS,
-            )
-        if resources is not None:
-            entries += _group(
-                resources.specs,
-                lambda name, call: resources.call(name, call.args, call.operation),
-                {spec.name: "read" for spec in resources.specs},
-            )
-        if mailbox is not None:
-            entries += _group(
-                mailbox.specs,
-                lambda name, call: mailbox.call(name, call.args, call.operation),
-                {spec.name: "read" for spec in mailbox.specs},
-            )
-        self.skills = skills
-        """The run's skills: their system-message section and the ``skills`` tool."""
+        entries.extend(self.capabilities.entries)
         if self.jobs is not None:
             self.jobs.bindings = lambda: self._bindings({})
-            self.jobs.binding_inventory = self._binding_inventory  # a job carries them too
-        if skills is not None:
-            entries += _group(
-                skills.specs,
-                lambda _, call: skills.call(call.args, call_id=call.call.id, model=call.model),
-                {SKILL_SPEC.name: "read"},
-                whole=True,  # a body is never cut, as a notice riding on it would (_attach)
-            )
-        if history is not None:
-            # A retrieval reaches the model whole: its pages say where the next begins.
-            entries += _group(
-                history.specs,
-                lambda name, call: history.call(name, call.args),
-                {spec.name: "read" for spec in history.specs},
-                whole=True,
-            )
+            self.jobs.binding_inventory = self._binding_inventory
         self.image_offer = None if image_offer is None else dict(image_offer)
-        """Whether the run was offered ``view_image``, and why, for its record (FG-33)."""
-        if images is not None:
-            entries.append(ToolEntry(VIEW_IMAGE, "read", partial(_view, images)))
-        if questions is not None:
-            entries += _group(
-                questions.specs,
-                lambda _, call: questions.call(
-                    call.args, operation=call.operation, call_id=call.call.id
-                ),
-                QUESTION_EFFECTS,
-            )
         self.connectors = connectors
         """The run's connector tools: indexed in ``mcp_tools``, and offered once loaded."""
         self.deferred: dict[str, ToolEntry] = {}
@@ -788,18 +605,6 @@ class Toolbox:
             raise ValueError(f"two offered tools have one name: {', '.join(taken)}")
         self.revision = 0
         """Counts the loads of connector tools, which change what a model call carries."""
-
-    @staticmethod
-    def _records(
-        check: bool,
-        specs: Sequence[ToolSpec],
-        run: Callable[[str, Request], Awaitable[tuple[str, dict[str, Any]]]],
-        effects: Mapping[str, Effect],
-    ) -> list[ToolEntry]:
-        """The documents', the ledger's or the memory's tools; for a check, their reads."""
-        return [
-            entry for entry in _group(specs, run, effects) if not check or entry.effect == "read"
-        ]
 
     def _defer(self, connectors: Connectors, names: set[str]) -> None:
         """Index the connector tools not yet indexed. A connector tool is never offered
@@ -1005,40 +810,15 @@ class Toolbox:
 
     def turn_hooks(self) -> tuple[TurnHook, ...]:
         """New hooks for this run's notice sources, in the order they reach the model."""
-        hooks: list[TurnHook] = []
-        if self.documents is not None:
-            hooks.append(WorkRequests(self.documents))
-        if self.jobs is not None:
-            hooks.append(JobNotices(self.jobs, max_chars=self.output_chars // 4))
-        if self.delegations is not None:
-            hooks.append(self.delegations)
-        if self.mailbox is not None:
-            hooks.append(self.mailbox)
-        if self.resources is not None:
-            hooks.append(self.resources)
-        if self.questions is not None:
-            hooks.append(self.questions)
-        if self.plans is not None:
-            hooks.append(Plans(self.plans))
-        if self.reviews is not None:
-            hooks.append(Reviews(self.reviews))
-        if self.math_checks is not None:
-            hooks.append(MathChecks(self.math_checks))
-        if self.check_kernels:
-            # The sweep leaves the kernels of the run's own running children (PD-37).
-            keep = self.delegations.live if self.delegations is not None else None
-            hooks.append(
-                KernelCheck(
-                    self.client,
-                    self.context,
-                    run=self.kernel_run,
-                    sweep=self.sweep_left_kernels,
-                    keep=keep,
-                )
-            )
-        if self.recorder is not None:
-            hooks.append(RecordedFiles(self.recorder))
-        return tuple(hooks)
+
+        def current(name: str, default: object) -> object | None:
+            if name == caps.KERNELS.name:
+                return default if self.check_kernels else None
+            # Direct callers have always been able to replace public controllers
+            # before constructing hooks. Their entries remain the original offer.
+            return cast(object | None, getattr(self, name, default))
+
+        return self.capabilities.turn_hooks(current, output_chars=self.output_chars)
 
     async def _call(
         self,

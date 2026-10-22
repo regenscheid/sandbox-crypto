@@ -54,9 +54,9 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, new_id
 from sandbox_science.orchestrator.aio import held, threaded
+from sandbox_science.orchestrator.context.history.collections import Collection, Members
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history.collections import Collection, Members
 from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ToolSpec
@@ -888,7 +888,7 @@ class Delegations(TurnHook):
         self.returned.clear()
         await self._prune()
         self.turns_left = run.turns_left
-        self.foreground_tokens = sum(call_tokens(usage) for usage in run.usage)
+        self.foreground_tokens = sum(call_tokens(usage) for usage in run.context.usage)
         await self._remaining_tokens()
 
     async def _remaining_tokens(self) -> None:

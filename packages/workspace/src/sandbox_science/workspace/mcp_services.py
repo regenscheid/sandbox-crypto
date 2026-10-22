@@ -30,10 +30,9 @@ from sandbox_science.orchestrator.connector_settings import ProjectConnectors
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
-from . import documents
-from .api import dumps
 from .context import CONTEXT, identifier, json_answer, json_body, no_query
 from .mcp_metadata import AvailabilityCheck, MetadataClient
+from .requests import document_answer, dumps
 
 PATH: Final = "/api/v0/projects/{project}/mcp-services"
 MAX_SESSIONS: Final = 8
@@ -105,7 +104,7 @@ async def settings(request: web.Request) -> web.Response:
     """Which configured services the project's user turned off."""
     project = identifier(request, "project")
     configured = _configured(request, project)
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: ProjectConnectors(store).get(project, configured).model_dump(mode="json"),
     )
@@ -123,7 +122,7 @@ async def change_settings(request: web.Request) -> web.Response:
         )
         return {**answer.model_dump(mode="json"), "replayed": replayed}
 
-    return await documents.answer(request, write, writer=True)
+    return await document_answer(request, write, access="write")
 
 
 def _observations(

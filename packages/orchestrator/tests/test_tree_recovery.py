@@ -832,7 +832,7 @@ async def test_legacy_missing_alias_blocks_before_new_model_dispatch(tmp_path: P
 
 
 async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path: Path):
-    from sandbox_science.orchestrator.history.operations import ToolJournal
+    from sandbox_science.orchestrator.context.history.operations import ToolJournal
     from sandbox_science.orchestrator.model import ToolCall
     from sandbox_science.orchestrator.questions import Answer, Questions
 
@@ -863,7 +863,10 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
     from sandbox_science.orchestrator.run_inputs import RunInputs, StartingInputs
 
     async def original_pins(run):
-        if run.prompt_provenance is not None and run.prompt_provenance.role == "main":
+        if (
+            run.context.prompt_provenance is not None
+            and run.context.prompt_provenance.role == "main"
+        ):
             inputs = RunInputs(state.projects.control)
             try:
                 inputs.get("p", "s", RUN)
@@ -874,7 +877,7 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
                         context=context,
                         request=Blueprints(state.projects.control).get("p", "s", RUN).request,
                         configuration={},
-                        pins=run.prompt_provenance,
+                        pins=run.context.prompt_provenance,
                     )
                 )
 

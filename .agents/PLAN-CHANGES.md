@@ -1,5 +1,15 @@
 # Plan changes
 
+## 2026-10-21
+
+- Implement the remaining high and medium-high executor, ledger and provisioning ownership refactors in parallel, preserving public protocols, atomic receipts and cancellation ownership. Independent review also found and corrected retention of failed provisioning saves; [verification](docs/agent-reports/priority-ownership-refactor-2026-10-21.md) separates local checks from deployment.
+
+- The owner authorized three parallel refactors: capability assembly, pure review snapshot planning and generated document/comment/job contracts with focused clients. All are integrated and independently reviewed on `agent-context-refactor`; [validation](docs/agent-reports/parallel-refactor-2026-10-21.md) retains three exact baseline ledger failures. Worker executor lifecycle follows in the ownership pass above.
+- Continue the isolated context refactor with a context-only fold engine, preserving ordered hook cleanup; retain whole recent units, prioritize retrievable research takeaways, and page original evidence for overview validation ([contract](../docs/specs/agent-context-refactor.md#folding-retention-policy), D91 amended).
+- Follow the owner's development refactoring review in an isolated worktree from fetched `origin/dev` (`391cb7a7`): consolidate `orchestrator/context/` around shared active state and scoped history preparation, retaining the existing folding engine ([ownership](../docs/specs/agent-context-refactor.md)).
+- Pursue attempt finalization and workspace request execution as independent parallel refactors. Keep worker lifecycle and capability decomposition for later work; no running service or archive migration is part of this branch.
+- These three extractions are implemented and independently reviewed locally. Integrated targeted and workspace validation passes; existing broad-suite failures and the fixture lifetime corrections are recorded in the [validation report](docs/agent-reports/context-refactor-2026-10-21.md).
+
 ## 2026-10-19
 
 - Replace the multi-terminal Mac `crypto-base` instructions with a TOML-driven helper for install, direct-GHCR MicroVM Sage smoke, and later foreground application launch. The helper checks that the chosen volume is mounted before writing large state and leaves Docker's current store untouched; native Mac acceptance is still open ([Mac qualification](../docs/MAC-ARM64.md#mac-microvm-crypto-base-test), D63).

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Verify a stored-evidence download in bounded memory, without interpreting its content.
 
-Run ``uv run python -m sandbox_science.orchestrator.history.verify_export FILE``.
+Run ``uv run python -m sandbox_science.orchestrator.context.history.verify_export FILE``.
 Checksums detect corruption/truncation; they do not authenticate who supplied a file.
 """
 

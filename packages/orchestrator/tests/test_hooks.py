@@ -40,7 +40,7 @@ def call() -> ModelTurn:
 
 
 def tool_result(transcript: Transcript) -> str:
-    return next(str(m["content"]) for m in transcript.messages if m["role"] == "tool")
+    return next(str(m["content"]) for m in transcript.context.messages if m["role"] == "tool")
 
 
 class AtTool(TurnHook):
@@ -164,7 +164,7 @@ async def test_save_acknowledges_every_source_from_the_record(
         ended_at=now,
         stopped=transcript.stopped,
         final_text=transcript.final_text,
-        messages=list(transcript.messages),
+        messages=list(transcript.context.messages),
         tools=[],
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     ).model_dump(mode="json")
@@ -296,7 +296,7 @@ async def test_a_closing_the_run_has_no_room_for_adds_nothing_after_the_answer(
     hook = Asks("a", action)
     transcript = await run_task(model, toolbox(), "go", run_id="r", max_turns=1, hooks=[hook])
     assert transcript.final_text == "answer"
-    assert transcript.messages[-1] == {"role": "assistant", "content": "answer"}
+    assert transcript.context.messages[-1] == {"role": "assistant", "content": "answer"}
     assert transcript.delivered_ids("a") == frozenset()
 
 
@@ -379,7 +379,7 @@ async def test_a_gate_refuses_tool_calls_by_their_effect_class() -> None:
     model = ScriptedModel([ModelTurn(None, calls), ModelTurn("done")])
     transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[fence])
     shell, listing = (
-        json.loads(str(m["content"])) for m in transcript.messages if m["role"] == "tool"
+        json.loads(str(m["content"])) for m in transcript.context.messages if m["role"] == "tool"
     )
     assert shell["error"] == {"kind": "conflict", "message": "fenced"}
     assert listing["error"]["kind"] == "internal"  # it ran, against no worker

@@ -21,7 +21,7 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.control.errors import CONFLICT, NOT_FOUND
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.environment_claim import environment_claim
-from sandbox_science.orchestrator.harness import Admitted, RunRequest, save, tier_in_effect
+from sandbox_science.orchestrator.harness import Admitted, RunRequest, tier_in_effect
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import run_id_of, run_name
 from sandbox_science.orchestrator.run_inputs import RunInputs
@@ -265,23 +265,7 @@ class Recovery:
                 stop=self.stop,
                 wait_children=lambda: self.wait_children(work_id),
             )
-            settlement = (
-                await self.harness.checkpoint_child(finished)
-                if admitted.request.delegation is not None
-                else None
-            )
-            await save(
-                finished.fields(),
-                finished.status,
-                finished.hooks,
-                projects=self.stores.projects,
-                error=self.sink.error,
-            )
-            if settlement is not None:
-                await settlement.settle(
-                    self.project, self.session, run_name(finished.started_at, finished.run_id)
-                )
-                await self.harness.release_child(finished)
+            await self.harness.finalize(finished, error=self.sink.error)
             return True
         except asyncio.CancelledError:
             await threaded(self.records.block, self.project, self.session, work_id, "interrupted")

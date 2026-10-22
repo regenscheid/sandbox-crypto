@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
 from sandbox_science.orchestrator.delegation.outcome import Outcome, Target, parse, result_of
 from sandbox_science.orchestrator.delegation.records import Delegation, Ending
@@ -102,7 +103,7 @@ async def test_a_result_stands_only_for_a_run_that_ended_with_it(
 ) -> None:
     """A valid answer, then a response round and a limit, keeps no result."""
     outcome = Outcome(TARGET)
-    closing = await outcome.closing(Transcript(messages=[]), REPORT)
+    closing = await outcome.closing(Transcript(context=AgentContext(messages=[])), REPORT)
     assert closing.action == "accept"
     assert outcome.result is not None
     assert (result_of(outcome, stopped, failed) is not None) == kept

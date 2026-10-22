@@ -50,7 +50,6 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 from .app import create_app
 from .approvals import ApprovalClient
 from .context import CONTEXT
-from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
 from .mcp_metadata import MetadataClient
 from .mcp_services import ServiceConfig
@@ -487,7 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         # The writer brings the control store to the current schema now, so that the
         # read-only views can read it, or the server does not start, saying why.
-        app[WRITER].initialize()
+        app[CONTEXT].writer.initialize()
     except DocumentError as exc:
         print(f"error: {exc.message}", file=sys.stderr)
         return 1

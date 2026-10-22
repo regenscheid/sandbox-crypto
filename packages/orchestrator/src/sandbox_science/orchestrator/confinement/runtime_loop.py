@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
@@ -12,7 +12,8 @@ from typing import Any, cast
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned
-from sandbox_science.orchestrator.history.memory import RunMemory
+from sandbox_science.orchestrator.context.folding import FoldPoint, Folds
+from sandbox_science.orchestrator.context.history.memory import RunMemory
 from sandbox_science.orchestrator.hooks import (
     Appended,
     Closing,
@@ -24,7 +25,7 @@ from sandbox_science.orchestrator.hooks import (
     RunView,
     TurnHook,
 )
-from sandbox_science.orchestrator.loop import Folds, Transcript, run_task
+from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import Message, ModelGateway, ToolCall, ToolSpec
 from sandbox_science.orchestrator.plan_tools import Plans, PlanTools
 from sandbox_science.orchestrator.skills.tool import SkillTool
@@ -60,14 +61,14 @@ from .wire import (
 
 def state(run: Transcript) -> LoopState:
     return LoopState(
-        system=WireMessage.of(run.messages[0]),
+        system=WireMessage.of(run.context.messages[0]),
         turns=run.turns,
         max_turns=run.max_turns,
-        max_input_chars=run.max_input_chars,
-        tools_chars=run.tools_chars,
-        usage_count=len(run.usage),
-        last_usage=run.usage[-1] if run.usage else None,
-        message_count=len(run.messages),
+        max_input_chars=run.context.max_input_chars,
+        tools_chars=run.context.tools_chars,
+        usage_count=len(run.context.usage),
+        last_usage=run.context.usage[-1] if run.context.usage else None,
+        message_count=len(run.context.messages),
         tool_count=len(run.tool_records),
         delivered={},
         offered={},
@@ -81,10 +82,10 @@ def state(run: Transcript) -> LoopState:
         halted=run.halted,
         failure=run.failure,
         phase=run.phase,
-        base=run.base,
-        since=run.since,
+        base=run.context.base,
+        since=run.context.since,
         overflowed=run.overflowed,
-        prompt_provenance=run.prompt_provenance,
+        prompt_provenance=run.context.prompt_provenance,
     )
 
 
@@ -259,29 +260,34 @@ class RemoteLog(MessageLog):
 
 
 class RemoteFolds(Folds):
-    def __init__(self, channel: Channel, attempt: str) -> None:
-        self.channel, self.attempt = channel, attempt
+    def __init__(
+        self, channel: Channel, attempt: str, current_state: Callable[[], LoopState]
+    ) -> None:
+        self.channel, self.attempt, self.current_state = channel, attempt, current_state
 
-    async def apply(self, kind: Capability, run: Transcript) -> bool:
+    async def apply(self, kind: Capability, point: FoldPoint) -> bool:
         result = typed(
             FoldReply,
             await self.channel.request(
-                kind, payload(FoldRequest(attempt=self.attempt, state=state(run))), timeout=1800
+                kind,
+                payload(FoldRequest(attempt=self.attempt, state=self.current_state())),
+                timeout=1800,
             ),
         )
-        run.rebuilt = (
+        point.context.restore(
             [message.message() for message in result.rebuilt]
             if result.rebuilt is not None
-            else None
+            else None,
+            base=result.base,
+            since=result.since,
         )
-        run.base, run.since = result.base, result.since
         return result.proceed
 
-    async def before_call(self, transcript: Transcript) -> bool:
-        return await self.apply(Capability.FOLD_BEFORE, transcript)
+    async def before_call(self, point: FoldPoint) -> bool:
+        return await self.apply(Capability.FOLD_BEFORE, point)
 
-    async def overflow(self, transcript: Transcript) -> bool:
-        return await self.apply(Capability.FOLD_OVERFLOW, transcript)
+    async def overflow(self, point: FoldPoint) -> bool:
+        return await self.apply(Capability.FOLD_OVERFLOW, point)
 
 
 class RuntimeLoops:
@@ -334,7 +340,9 @@ class RuntimeLoops:
                 memory=given.memory,
                 role=given.role,
                 log=log,
-                folds=RemoteFolds(self.channel, given.attempt) if given.folding else None,
+                folds=RemoteFolds(self.channel, given.attempt, lambda: state(log.run))
+                if given.folding
+                else None,
                 memory_store=memory,
                 on_started=log.started,
                 on_tool=log.observed_tool,

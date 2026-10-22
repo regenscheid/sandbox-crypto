@@ -75,15 +75,17 @@ async def test_actual_model_inputs_keep_control_reads_and_job_recovery_scoped(
         assert transcript.stopped == "answered"
         assert len(model.requests) == len(model.offered) == 2
         assert len(transcript.tool_records) == 1
-        assert isinstance(transcript.prompt_provenance, PromptPins)
+        assert isinstance(transcript.context.prompt_provenance, PromptPins)
         for messages, offered in zip(model.requests, model.offered, strict=True):
             (system,) = [message for message in messages if message["role"] == "system"]
             guidance = str(system["content"])
             assert (
                 pin(Section("main", None, guidance)).sha256
-                == transcript.prompt_provenance.sections[0].sha256
+                == transcript.context.prompt_provenance.sections[0].sha256
             )
-            assert transcript.prompt_provenance.tools.names == tuple(tool.name for tool in offered)
+            assert transcript.context.prompt_provenance.tools.names == tuple(
+                tool.name for tool in offered
+            )
             assert all(word in guidance for word in ("worker", "control", "evidence", "unisolated"))
             assert "Every tool" not in guidance
             assert "never on the machine" not in guidance

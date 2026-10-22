@@ -11,6 +11,8 @@ import pytest
 from pydantic import ValidationError
 
 from sandbox_science.contracts import SYSTEM_CLOCK
+from sandbox_science.orchestrator.context.history import Archive
+from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.plans import Plans
@@ -20,8 +22,6 @@ from sandbox_science.orchestrator.continuity.resolutions import RecoveryControls
 from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
-from sandbox_science.orchestrator.history import Archive
-from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.projects import ModelUsage
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient

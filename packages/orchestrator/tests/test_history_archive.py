@@ -17,13 +17,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.control import (
-    ControlError,
-    ControlStore,
-    migrations,
-    require_search,
-)
-from sandbox_science.orchestrator.history import (
+from sandbox_science.orchestrator.context.history import (
     HEADER,
     Archive,
     Archived,
@@ -31,6 +25,12 @@ from sandbox_science.orchestrator.history import (
     RunArchive,
     escape,
     header,
+)
+from sandbox_science.orchestrator.control import (
+    ControlError,
+    ControlStore,
+    migrations,
+    require_search,
 )
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.model import AssistantMessage

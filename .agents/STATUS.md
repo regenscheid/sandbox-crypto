@@ -1,8 +1,38 @@
 # Status
 
-Updated 2026-10-19. Development is on `dev` in `/home/andy/.cache/pt/dev-local`; the primary checkout is separate. The completion campaign is integrated, and the portability work is pushed to `origin/dev` with shared images in GHCR. Signed local integration, registry publication and deployment into personal services are distinct.
+Updated 2026-10-21. The context-focused refactor is isolated on
+`agent-context-refactor`, based on `origin/dev` at `391cb7a7`, with its later
+recovery update `1ad689e3` merged into this branch.
+The primary checkout and deployed services are unchanged. Context ownership,
+attempt finalization and workspace request execution are implemented and locally
+reviewed; no remote merge or rollout is implied.
 
 ## Phase and focus
+
+The [context ownership refactor](../docs/specs/agent-context-refactor.md) consolidates
+preparation, active state, histories, folding, search and diagnostics under
+`orchestrator/context/`. Root and delegated agents share it. The follow-up removes
+Transcript's forwarding properties and gives folding a context-only interface with
+an ordered lifecycle adapter. New retention protects full recent call/result units;
+narrative prompts prioritize takeaways and retrieval anchors. Overview validation
+pages original text and stops once candidate evidence is proven; enrichment budgets
+actual narrative room before admission. Archive and transport formats are unchanged.
+The follow-up passed 743 integration tests and 42 final evidence/enrichment checks;
+static and repository checks pass. Independent review corrected
+research-state hold detection, numeric arrays and signed values at page boundaries.
+Prior first-stage checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
+unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
+
+Three follow-ups are integrated and independently reviewed: typed capability assembly,
+pure review snapshot planning, and generated document/comment/job contracts with
+focused clients. Combined checks: 804 pass, three ledger failures match the prior
+baseline exactly; 92 final checks, 862 workspace and 2,289 frontend tests pass.
+See the [report](docs/agent-reports/parallel-refactor-2026-10-21.md). The remaining
+executor, ledger and provisioning ownership refactors are integrated and independently
+reviewed. Worker slow tests: 826 passed, 26 skipped; web: 2,289 passed. Fast tier:
+13,782 passed; baseline failures remain, as detailed in the
+[ownership report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
+No merge or rollout is implied.
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 

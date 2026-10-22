@@ -39,9 +39,9 @@ from sandbox_science.orchestrator.connectors import (
     ProxyClient,
     check_proxy,
 )
+from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents.agent_text import hidden_characters
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name

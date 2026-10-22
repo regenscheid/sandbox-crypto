@@ -15,7 +15,7 @@ from aiohttp import web
 
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.orchestrator.projects import ProjectStore
-from sandbox_science.workspace.api import Timeouts
+from sandbox_science.workspace.context import Timeouts
 
 from .test_provisioning import ClientFactory, Peer, ServerFactory, create, url
 

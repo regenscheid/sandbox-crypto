@@ -35,9 +35,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 if TYPE_CHECKING:
+    from .context.folding import ContextView
     from .model import Message, ModelTurn, ToolCall
     from .projects import ModelUsage, RunRecord
-    from .prompts import PromptPins
     from .tools import ToolOutcome
 
 Point = Literal["start", "turn", "tool"]
@@ -139,10 +139,10 @@ class MessageLog(Protocol):
 
 
 class RunView(Protocol):
-    """What a hook may read of the run in progress."""
+    """Execution state and the read-only conversation a hook may inspect."""
 
     @property
-    def messages(self) -> Sequence[Message]: ...
+    def context(self) -> ContextView: ...
 
     @property
     def turns(self) -> int:
@@ -153,22 +153,8 @@ class RunView(Protocol):
     def turns_left(self) -> int: ...
 
     @property
-    def prompt_provenance(self) -> PromptPins | None: ...
-
-    @property
     def tool_records(self) -> Sequence[dict[str, Any]]:
         """One record per tool call so far, as the run's record keeps them."""
-        ...
-
-    @property
-    def usage(self) -> Sequence[ModelUsage]:
-        """Each answered model call's usage, in order."""
-        ...
-
-    @property
-    def since(self) -> int:
-        """The calls made before the view was last rebuilt: ``usage[since:]`` are those
-        that measured it as it is."""
         ...
 
     @property
@@ -184,12 +170,6 @@ class RunView(Protocol):
     @property
     def can_respond(self) -> bool:
         """Whether a turn and a response round remain."""
-        ...
-
-    @property
-    def size(self) -> int:
-        """What the next model call would send, in characters, tool schemas included:
-        after a fold, the view it rebuilt and what was added since."""
         ...
 
     @property

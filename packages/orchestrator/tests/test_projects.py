@@ -23,9 +23,9 @@ from sandbox_science.contracts import (
     ExecutionContext,
 )
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.context.history.view import recorded_words
 from sandbox_science.orchestrator.control import migrations, store_path
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.history.view import recorded_words
 from sandbox_science.orchestrator.projects import (
     RUN_READ_BYTES,
     ProjectError,

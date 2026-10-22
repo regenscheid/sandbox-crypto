@@ -11,6 +11,7 @@ import type {
   PatchPreview,
   PatchRecord,
 } from './api';
+import type { DocumentRequestApplyPatch, DocumentRequestDecline } from './api-types';
 import { textDiff, type Change } from './approval';
 
 /** Newest first: the history lists revisions and patches as the store keeps them, oldest first. */
@@ -24,7 +25,7 @@ export function reviewable(patch: PatchRecord): boolean {
 }
 
 /** The change that applies a previewed patch against the revision it was previewed on. */
-export function applyPatch(preview: PatchPreview): Record<string, unknown> {
+export function applyPatch(preview: PatchPreview): Omit<DocumentRequestApplyPatch, 'operation_id'> {
   const patchId = preview.patch.patch_id;
   return {
     action: 'apply_patch',
@@ -40,7 +41,7 @@ export function patchApplied(result: DocumentChange): boolean {
 }
 
 /** The change that declines an agent's suggestion: the document stays as it is (LD-20). */
-export function declineSuggestion(patchId: string): Record<string, unknown> {
+export function declineSuggestion(patchId: string): DocumentRequestDecline {
   return { action: 'decline', patch_id: patchId };
 }
 
@@ -83,7 +84,7 @@ export function patchState(state: string): string {
   return words[state] ?? state;
 }
 
-type Block = Pick<DocumentRevision['blocks'][number], 'id' | 'kind' | 'source'>;
+type Block = Pick<DocumentRevision['blocks'][number], 'id' | 'kind'> & { source?: string | null };
 
 /** One passage that differs between two revisions, under the heading it falls in. */
 export interface PassageChange {

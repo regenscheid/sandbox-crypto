@@ -7,7 +7,7 @@ import base64
 import json
 from pathlib import Path
 
-from sandbox_science.orchestrator.history.collections import Collection
+from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .route_support import ClientFactory, error_of, workspace

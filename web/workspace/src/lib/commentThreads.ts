@@ -6,6 +6,11 @@
  */
 import type { CommentBodySource, CommentChange, CommentEntry, CommentThread } from './api';
 import type { BodyCorrectionDraft, ReplyDraft } from './drafts';
+import type {
+  CommentRequestReplyComment,
+  CommentRequestResolveComment,
+  CommentRequestEditBody,
+} from './api-types';
 import type { Page } from './pagedList';
 
 /**
@@ -13,18 +18,23 @@ import type { Page } from './pagedList';
  * and its base revision; resolving or reopening is based on the revision shown.
  */
 export function threadChange(
-  action: string,
+  action: 'reply' | 'edit' | 'resolve' | 'reopen',
   thread: CommentThread,
   draft: ReplyDraft,
-): Record<string, unknown> {
-  const writing = action === 'reply' || action === 'edit';
+):
+  | Omit<CommentRequestReplyComment, 'operation_id'>
+  | Omit<CommentRequestResolveComment, 'operation_id'> {
   const { body, session } = draft;
-  return {
-    action,
-    thread: thread.thread_id,
-    expected: writing ? draft.expected : thread.revision,
-    ...(writing ? { body, ...(session ? { addressed_to: session } : {}) } : {}),
-  };
+  const common = { thread: thread.thread_id };
+  return action === 'reply' || action === 'edit'
+    ? {
+        action,
+        ...common,
+        expected: draft.expected,
+        body,
+        ...(session ? { addressed_to: session } : {}),
+      }
+    : { action, ...common, expected: thread.revision };
 }
 
 /** The reply draft after its text was posted: empty, on the revision the post made. */
@@ -80,7 +90,7 @@ export function bodyCorrection(
   thread: string,
   entry: string,
   draft: BodyCorrectionDraft,
-): Record<string, unknown> {
+): Omit<CommentRequestEditBody, 'operation_id'> {
   const { expected, base, sha256, body } = draft;
   return { action: 'edit_body', thread, entry, expected, base, sha256, body };
 }
