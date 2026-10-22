@@ -1,5 +1,10 @@
 # Plan changes
 
+## 2026-10-21
+
+- Follow the owner's development refactoring review in an isolated worktree from fetched `origin/dev` (`391cb7a7`): consolidate `orchestrator/context/` around shared active state and scoped history preparation, retaining the existing folding engine ([ownership](../docs/specs/agent-context-refactor.md)).
+- Pursue attempt finalization and workspace request execution as independent parallel refactors. Keep worker lifecycle and capability decomposition for later work; no running service or archive migration is part of this branch.
+
 ## 2026-10-19
 
 - Replace the multi-terminal Mac `crypto-base` instructions with a TOML-driven helper for install, direct-GHCR MicroVM Sage smoke, and later foreground application launch. The helper checks that the chosen volume is mounted before writing large state and leaves Docker's current store untouched; native Mac acceptance is still open ([Mac qualification](../docs/MAC-ARM64.md#mac-microvm-crypto-base-test), D63).

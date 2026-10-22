@@ -1,8 +1,19 @@
 # Status
 
-Updated 2026-10-19. Development is on `dev` in `/home/andy/.cache/pt/dev-local`; the primary checkout is separate. The completion campaign is integrated, and the portability work is pushed to `origin/dev` with shared images in GHCR. Signed local integration, registry publication and deployment into personal services are distinct.
+Updated 2026-10-21. The context-focused refactor is isolated on
+`codex/context-lifecycle-refactor`, based on fetched `origin/dev` at `391cb7a7`.
+The primary checkout and deployed services are unchanged. Context ownership,
+attempt finalization and workspace request execution are being integrated and
+verified locally; no remote merge or rollout is implied.
 
 ## Phase and focus
+
+The [context ownership refactor](../docs/specs/agent-context-refactor.md) consolidates
+preparation, active state, histories, folding, search and diagnostics under
+`orchestrator/context/`. Root and delegated agents share this machinery. Parallel
+work extracts attempt finalization and workspace request execution. Archive formats,
+transport schemas and role policy remain compatible. Implementation and independent
+review are complete; integrated validation is in progress.
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 

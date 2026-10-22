@@ -582,7 +582,7 @@ metadata remain unchanged; a missing final checksum means an incomplete download
 Verify a downloaded file offline, without loading it all into memory:
 
 ```bash
-uv run python -m sandbox_science.orchestrator.history.verify_export run.evidence.ndjson
+uv run python -m sandbox_science.orchestrator.context.history.verify_export run.evidence.ndjson
 ```
 
 The manifest names the project/session/run and per-table row cutoffs and counts.

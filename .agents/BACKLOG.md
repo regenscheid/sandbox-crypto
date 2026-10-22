@@ -1,5 +1,15 @@
 # Backlog
 
+## Context-focused refactor (2026-10-21)
+
+- [x] Consolidate context/history/folding/retrieval and diagnostics under `orchestrator/context/`.
+- [x] Extract shared `AgentContext` active state and scope-bound preparation for root/children.
+- [x] Extract fresh/resumed child finalization with explicit persistence and cleanup outcomes.
+- [x] Extract workspace request execution and remove duplicate store registrations.
+- [ ] Complete integrated checks and record the independent review results.
+- [ ] Later review candidates: worker lifecycle/executor splitting, capability bundles and
+  the remaining generated API/domain-contract work. These are outside this focused branch.
+
 Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). Current development is consolidated on local `dev`; implementation, runtime qualification and deployment are distinct. Older PR/branch references record historical delivery evidence.
 
 ## Research continuity after the SNOVA acceptance run

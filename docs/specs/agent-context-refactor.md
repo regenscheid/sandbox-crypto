@@ -44,3 +44,31 @@ initial context preparation.
 Attempt finalization and workspace request execution are parallel changes from
 the same review. They have separate commits and implementation owners. Worker
 lifecycle, capability bundles and the remaining candidates remain later work.
+
+## Reading the implementation
+
+| Responsibility | Owner |
+| --- | --- |
+| Scope, initial root/child view, digest and constraints, reconstruction after Resume | `context/preparation.py`, `HistoryScope` and `PreparedContext` |
+| Working messages, replay input, prompt pins, usage, fold offsets and archive-first appends | `context/agent.py`, `AgentContext` |
+| Background folding and enrichment, overflow handling and learned ceilings | `context/history/folds.py` and `enrich.py` |
+| Complete archived messages, bounded reads, search and descendant visibility | `context/history/archive.py` and `tool.py` |
+| Captured dispatch composition, timeline and inspector indexes | `context/history/capture.py`, `timeline.py` and `inspector.py` |
+| Turn scheduling, tools, accepted answers and delivery decisions | `loop.py`, `Transcript` composed with `AgentContext` |
+
+The loop's existing hook properties are forwarding views; they do not keep another
+copy of context state. Internal callers construct `Transcript(context=AgentContext(...))`.
+`AgentContext.start` initializes archive-backed or confined scratch collections;
+`append` commits before exposing a message, `complete` carries prompt pins to the
+model, `record_reply` records answered usage, and `rebuild`/`restore` replace the
+working view while retaining original history.
+
+`PreparedContext` supplies the folder, message log and history tool from one
+admitted scope. Model-role selection and tool assembly remain harness responsibilities.
+The folder still participates in the ordered hook leases: its background work is
+settled before the loop copies final summaries. Store lifetime stays with its
+existing caller. Root preparation now passes the configured clock into the folder,
+as child preparation already did; the production default remains the system clock.
+
+This refactor changes no database version, archive wire format, model prompt text,
+or confined protocol schema. It does not launch research or migrate running services.

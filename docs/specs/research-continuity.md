@@ -28,7 +28,7 @@ A research question can remain open across many process lifetimes. Reaching a li
 | Final persistence | `harness.py:save` validates the complete run record and serializes it for storage. Merely spilling historical messages during a run would not bound this final step. |
 | Worker recovery | The executor can survive worker/bridge disconnection. Recovery must inspect the actual execution and kernel state; an orchestrator restart and the loss of a VM are different events. |
 | Idle suspension | The personal configuration sets `suspend_after = 3600`. `worker/suspend.py` considers worker activity and kernel CPU, without an orchestrator work lease. A long research interval without worker use can therefore stop the VM and lose kernel memory. |
-| Cache layout | `history/view.py:settle` already places the state block before the fold region and raw tail. Every rebuild archives a new state block; its rendered header contains that new archive ID. The Responses adapter supplies a session cache key, which alone does not establish reuse. |
+| Cache layout | `context/history/view.py:settle` already places the state block before the fold region and raw tail. Every rebuild archives a new state block; its rendered header contains that new archive ID. The Responses adapter supplies a session cache key, which alone does not establish reuse. |
 | Skill binding restrictions | `skills/allow.py` holds manually maintained variable names and families. Staging also asks the worker which candidate command names exist; this is a namespace-collision check, not generation of the blocklist from all installed tools. |
 
 These describe the baseline used to design the increments below, not the current branch's behavior.
