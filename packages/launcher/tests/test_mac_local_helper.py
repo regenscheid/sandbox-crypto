@@ -6,7 +6,9 @@ from __future__ import annotations
 import errno
 import importlib.util
 import re
+import shutil
 import sys
+import tempfile
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -96,9 +98,16 @@ def test_long_vm_socket_path_is_rejected_before_writing(
 
 
 def test_vm_socket_storage_probe_cleans_up_on_supported_volume(tmp_path: Path) -> None:
-    chosen = replace(settings(tmp_path), root=tmp_path)
-    mac.check_vm_socket_storage(chosen)
-    assert list((tmp_path / "vm/run").iterdir()) == []
+    # A Unix socket's path holds at most 104 bytes on macOS, and pytest's temporary
+    # directory there is longer than that with the probe's name: a short root, as a
+    # real volume's is.
+    root = Path(tempfile.mkdtemp(prefix="ss-", dir="/tmp"))
+    try:
+        chosen = replace(settings(tmp_path), root=root)
+        mac.check_vm_socket_storage(chosen)
+        assert list((root / "vm/run").iterdir()) == []
+    finally:
+        shutil.rmtree(root)
 
 
 def test_vm_socket_storage_probe_reports_unsupported_volume(
