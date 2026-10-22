@@ -172,6 +172,22 @@ class View:
     cells: Mapping[str, tuple[Json, ...]] = field(default_factory=dict[str, tuple[Json, ...]])
     """Each earlier run's kernels, as its cells reported them."""
 
+    def recent_ids(self, floor: int) -> frozenset[str]:
+        """Protect a suffix of complete raw units covering ``floor`` estimated tokens.
+
+        Keep the whole unit crossing the boundary, including every result of its
+        calls. A short tail stays whole; a large newest unit is never cut to fit.
+        Only the existing rendered units are measured, without loading more history.
+        """
+        remaining = floor * self.per_token
+        protected: set[str] = set()
+        for unit in reversed(self.units):
+            if remaining <= 0:
+                break
+            protected.update(part.row.message_id for part in unit if part.row is not None)
+            remaining -= sum(part.chars for part in unit)
+        return frozenset(protected)
+
     @property
     def messages(self) -> tuple[Json, ...]:
         return tuple(
