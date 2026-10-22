@@ -1,7 +1,8 @@
 # Status
 
 Updated 2026-10-21. The context-focused refactor is isolated on
-`agent-context-refactor`, based on fetched `origin/dev` at `391cb7a7`.
+`agent-context-refactor`, based on `origin/dev` at `391cb7a7`, with its later
+recovery update `1ad689e3` merged into this branch.
 The primary checkout and deployed services are unchanged. Context ownership,
 attempt finalization and workspace request execution are implemented and locally
 reviewed; no remote merge or rollout is implied.
@@ -16,9 +17,10 @@ an ordered lifecycle adapter. New retention protects full recent call/result uni
 narrative prompts prioritize takeaways and retrieval anchors. Overview validation
 pages original text and stops once candidate evidence is proven; enrichment budgets
 actual narrative room before admission. Archive and transport formats are unchanged.
-Final focused integration validation is in progress; independent review corrected
-research-state hold detection and numeric-array evidence scanning. Prior first-stage
-checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
+The follow-up passed 743 integration tests and 42 final evidence/enrichment checks;
+static and repository checks pass. Independent review corrected
+research-state hold detection, numeric arrays and signed values at page boundaries.
+Prior first-stage checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
 unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.

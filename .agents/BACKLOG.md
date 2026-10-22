@@ -15,7 +15,7 @@
   the remaining generated API/domain-contract work. These are outside this focused branch.
 
 - [x] Remove Transcript's context forwarding facade and decouple the shared fold engine through `FoldPoint` and `FoldLifecycle`; preserve local/confined hook order and research-state holds.
-- [ ] Finish recent-context retention, bounded overview evidence validation and upfront enrichment budgeting, then review and test the integrated paths.
+- [x] Implement and independently review recent-context retention, bounded overview evidence validation and upfront enrichment budgeting; the 743-test integration selection passes on this branch. Publication is separate from merging and runtime qualification.
 - [ ] Qualify takeaway preservation with real multi-fold continuity probes; deterministic tests do not establish scientific recall quality.
 
 Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev`; implementation, runtime qualification and deployment are distinct.

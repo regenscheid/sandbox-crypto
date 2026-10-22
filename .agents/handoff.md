@@ -2,7 +2,7 @@
 
 Updated 2026-10-21. Current work is the isolated branch
 `agent-context-refactor` in the attached `agent-context-refactor` worktree,
-based on fetched `origin/dev` at `391cb7a7`. The primary checkout, `dev`
+based on `origin/dev` at `391cb7a7`, then merged with `1ad689e3`. The primary checkout, `dev`
 and deployed services are unchanged. Read [STATUS.md](STATUS.md),
 [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md), and the
 [context ownership map](../docs/specs/agent-context-refactor.md).
@@ -19,8 +19,8 @@ and deployed services are unchanged. Read [STATUS.md](STATUS.md),
   retrieval anchors, pages original overview evidence and preflights narrative room.
 - Parallel extractions: `finalization.py` for child persistence/settlement/cleanup,
   workspace `requests.py` for scoped execution/encoding.
-- All changes are signed. Current follow-up validation is in progress. First-stage
-  tests: 426 targeted, 855 workspace passed. The [report](docs/agent-reports/context-refactor-2026-10-21.md)
+- Changes are signed. Follow-up: 743 integration and 42 evidence checks passed. First stage:
+  426 targeted, 855 workspace passed. The [report](docs/agent-reports/context-refactor-2026-10-21.md)
   records baseline WAL/ledger/SIGTERM failures and an unresolved serving timeout;
   do not claim the whole suite is green or summaries scientifically qualified.
 - No real model calls, service rollout, archive migration or merge into dev.

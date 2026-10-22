@@ -1,7 +1,8 @@
 # Agent context ownership
 
-The 2026-10-21 refactor starts from remote `dev` at `391cb7a7`, following the
-owner's development refactoring review. Both main and delegated agents already
+The 2026-10-21 refactor starts from remote `dev` at `391cb7a7`, with the subsequent
+`dev` recovery update `1ad689e3` merged into this branch, following the owner's
+development refactoring review. Both main and delegated agents already
 fold through the shared `Folder` engine. This work consolidates ownership of
 that behavior. The follow-up separates the folding engine from execution and
 refines retention without changing the archive or folding record formats.
@@ -104,10 +105,12 @@ code fallback without a paid summarizer attempt.
 
 ## Local verification
 
-The integrated context/finalization suite passed 426 tests; the full workspace suite
-passed 855. Ruff, formatting, strict Pyright, generated API/protocol checks, test tiers,
-repository hygiene and license checks passed. Independent agents reviewed context
-and finalization; the integrating agent reviewed workspace request behavior.
+The first integrated context/finalization suite passed 426 tests; the full workspace
+suite passed 855. The follow-up passed 743 tests covering context, confinement, resume,
+changed consumers and the research-state hold path. Independent agents reviewed the
+engine boundary and evidence validation, including fixes for large numeric arrays
+and signed values split across pages. The integrating agent reviewed the delivered
+code and ran the combined checks. Final validation details are in the report below.
 
 Broad testing also exposed pre-existing dev fixture and SIGTERM failures. The
 [validation report](../../.agents/docs/agent-reports/context-refactor-2026-10-21.md)
