@@ -10,11 +10,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import TypeAdapter
 
 from sandbox_science.orchestrator.agent_messages import AgentMessageStore
 from sandbox_science.orchestrator.continuity.child_settlement import ChildSettlement
 from sandbox_science.orchestrator.continuity.plans import Plans
 from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.delegation.hook import ChildEnd
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.ledger import Ledger
@@ -38,8 +40,18 @@ import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
+from contextlib import nullcontext
 
 from sandbox_science.orchestrator import harness
+from sandbox_science.orchestrator.continuity.recovery import Recovery
+from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
+from sandbox_science.orchestrator.harness import Admitted, Finished, Harness, RunRequest, Stores
+from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.harness import Role
+from sandbox_science.orchestrator.runstate import RunState
+from pydantic import TypeAdapter
 from sandbox_science.orchestrator.agent_messages import AgentMailbox, AgentMessageStore
 from sandbox_science.orchestrator.continuity.child_settlement import ChildSettlement
 from sandbox_science.orchestrator.continuity.records import WorkRecords
@@ -48,6 +60,7 @@ from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 
 root, state, boundary, run = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+caller = sys.argv[5]
 assert Path(harness.__file__).resolve().is_relative_to(root)
 projects = ProjectStore(state)
 
@@ -56,19 +69,21 @@ async def crash():
         documents = DocumentStore(store_path(state), producer="crash-test")
         ledger = Ledger(documents)
         settlement = ChildSettlement(projects.control, ledger)
-        target, method = ledger, "change"
-    else:
+        target, method = (ledger if caller == "save" else Ledger), "change"
+    if boundary != "ledger" or caller != "save":
         record = RunRecord.model_validate_json((state / "final-record.json").read_text())
         messages = AgentMessageStore(projects.control)
         mailbox = AgentMailbox(
             messages, record.context, run=run, delegation=record.delegation,
             may_message_child=False,
         )
-        target, method = {
+        save_target = {
             "record": (projects, "save_run"),
             "acknowledgement": (messages, "acknowledge"),
             "finish": (WorkRecords, "finish"),
-        }[boundary]
+        }
+        if boundary != "ledger":
+            target, method = save_target[boundary]
 
     original = getattr(target, method)
 
@@ -77,7 +92,74 @@ async def crash():
         os._exit(86)
 
     with patch.object(target, method, committed):
-        if boundary == "ledger":
+        if caller != "save":
+            outcome = TypeAdapter(ChildEnd).validate_json(
+                (state / "child-outcome.json").read_text()
+            )
+
+            class Completed(Finished):
+                def fields(self):
+                    return record.model_dump(mode="json")
+
+            finished = Completed(
+                record.run_id, record.context, record.task, record.started_at,
+                Transcript(messages=[], stopped="answered", final_text=record.final_text),
+                hooks=(mailbox,), parent=record.parent, delegation=record.delegation,
+            )
+
+            class PreparedHarness(Harness):
+                async def start(self, admitted, sink, **kwargs):
+                    return finished
+
+                def child_outcome(self, completed, status):
+                    return outcome
+
+            class Worker:
+                async def close_session(self, context, *, run=None):
+                    pass
+
+            documents = DocumentStore(store_path(state), producer="crash-test")
+            prepared = PreparedHarness(
+                Worker(), Role(ScriptedModel([ModelTurn("unused")]), "scripted"),
+                stores=Stores(projects, documents, JobState(state), RunState(projects.control)),
+            )
+            request = RunRequest("p", "s", "Fixture")
+            parent_record = projects.run("p", "s", record.parent)
+            parent = Admitted(
+                request, parent_record.run_id, record.context, (), (), True,
+                parent_record.started_at,
+            )
+            if caller == "fresh":
+                await prepared.run_child(
+                    parent, None,
+                    Child(
+                        record.delegation, record.run_id, record.started_at, "Fixture", 1, 1, None
+                    ),
+                    asyncio.Event(),
+                )
+            else:
+                recovery = Recovery(prepared, "p", "s", "fixture")
+                recovery.started, recovery.epoch = True, 0
+                recovery.run_name = record.parent
+                recovery.sink = type("Sink", (), {"error": print})()
+
+                async def ready():
+                    return (run,)
+
+                async def admitted(work):
+                    return Admitted(
+                        RunRequest(
+                            "p", "s", "Fixture", parent=record.parent, delegation=record.delegation
+                        ),
+                        record.run_id, record.context, (), (), True, record.started_at,
+                    )
+
+                # Isolate the public branch's finalization protocol; full Resume
+                # preparation and ownership are exercised in test_tree_recovery.
+                recovery.plans.authority = lambda *args: nullcontext()
+                recovery.next, recovery.prepare = ready, admitted
+                assert await recovery.branch(run)
+        elif boundary == "ledger":
             await settlement.settle("p", "s", run)
         else:
             errors = []
@@ -92,7 +174,7 @@ asyncio.run(crash())
 """
 
 
-def crash_after_commit(state: Path, boundary: str) -> None:
+def crash_after_commit(state: Path, boundary: str, caller: str = "save") -> None:
     # The shared development interpreter can have another editable checkout. Pin
     # every workspace source here, and verify the imported harness in the child.
     environment = os.environ.copy()
@@ -100,7 +182,7 @@ def crash_after_commit(state: Path, boundary: str) -> None:
         str(path) for path in sorted((ROOT / "packages").glob("*/src"))
     )
     result = subprocess.run(
-        [sys.executable, "-c", CRASH, str(ROOT), str(state), boundary, CHILD],
+        [sys.executable, "-c", CRASH, str(ROOT), str(state), boundary, CHILD, caller],
         env=environment,
         capture_output=True,
         text=True,
@@ -110,9 +192,17 @@ def crash_after_commit(state: Path, boundary: str) -> None:
     assert result.returncode == CRASH_STATUS, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("boundary", ["record", "acknowledgement", "finish"])
+@pytest.mark.parametrize(
+    ("caller", "boundary"),
+    [
+        (caller, boundary)
+        for caller in ("save", "fresh", "resumed")
+        for boundary in ("record", "acknowledgement", "finish", "ledger")
+        if (caller, boundary) != ("save", "ledger")
+    ],
+)
 async def test_hard_death_during_final_save_retains_truthful_delivery_and_outcome(
-    tmp_path: Path, boundary: str
+    tmp_path: Path, boundary: str, caller: str
 ) -> None:
     state, documents, _, _, _, child, outcome = tree(tmp_path, saved=False, finished=False)
     try:
@@ -130,11 +220,12 @@ async def test_hard_death_during_final_save_retains_truthful_delivery_and_outcom
             }
         )
         (tmp_path / "final-record.json").write_text(final.to_json())
+        (tmp_path / "child-outcome.json").write_bytes(TypeAdapter(ChildEnd).dump_json(outcome))
     finally:
         documents.close()
         state.projects.close()
 
-    crash_after_commit(tmp_path, boundary)
+    crash_after_commit(tmp_path, boundary, caller)
 
     projects = ProjectStore(tmp_path)
     documents = DocumentStore(store_path(tmp_path), producer="recovery-test")
@@ -149,17 +240,19 @@ async def test_hard_death_during_final_save_retains_truthful_delivery_and_outcom
         )
         works = WorkRecords(projects.control)
         assert works.get("p", "s", CHILD).state == (
-            "completed" if boundary == "finish" else "running"
+            "completed" if boundary in ("finish", "ledger") else "running"
         )
         records = DelegationRecords(projects.control)
-        assert records.get("p", "s", child.delegation_id).ended is None
+        assert records.get("p", "s", child.delegation_id).ended == (
+            "returned" if boundary == "ledger" else None
+        )
         settlement = ChildSettlement(projects.control, Ledger(documents))
         assert settlement.page("p", "s") == (CHILD,)
 
         await settlement.drain("p", "s")
         kept = records.get("p", "s", child.delegation_id)
         assert kept.report == outcome.final_text
-        if boundary == "finish":
+        if boundary in ("finish", "ledger"):
             assert kept.ended == "returned"
             assert kept.result == outcome.result
             assert kept.errors == outcome.errors
