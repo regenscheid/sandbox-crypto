@@ -10,12 +10,16 @@ changing stored schemas, operation fingerprints, result shapes or authorization.
   transaction, including replay lookup, every mutation and its `within` callback.
 - Queries accept the caller's SQLite connection and return values. They never
   acquire a transaction or hold a store/facade reference.
-- Preparation resolves entry identities, expected revisions, links, evidence and
-  provenance against that same connection. A prepared mutation explicitly names
-  its entries and new-entry keys; it has no authority to commit itself.
+- `MutationInput` carries the active connection, project, normalized mutation,
+  author, authorized role, resolved block IDs and import provenance. Preparation
+  resolves entry identities, expected revisions, links and evidence into a
+  `PreparedMutation`, which explicitly names its entries and new-entry keys.
+  Provenance resolution follows the structural rules, preserving refusal order.
 - Domain rules evaluate the prepared mutation against the transaction's current
-  state. They retain the existing evidence, flags, gate, frontier and provenance
-  implementations, and receive explicit inputs rather than shared facade fields.
+  state and return an `EvaluatedMutation` with the entries that passed the gate.
+  They retain the existing evidence, flags, gate, frontier and provenance
+  implementations. Decision session membership reads the project's `sessions`
+  rows on the supplied connection, without opening another project-store reader.
 - Commit writes revisions, statements, links, evidence, flags, work, frontier
   history, events and the replay receipt on the supplied connection. Post-write
   validations remain inside this transaction, so a refusal rolls all of them back.
@@ -34,7 +38,8 @@ block IDs are explicit mutation inputs, never ambient mutable ledger state.
 
 Public characterization tests cover callback visibility, rollback of revisions,
 flags, work, frontier history, events and receipts, retry after rollback, replay
-without duplicate writes, and several mutations sharing the transaction. Existing
+without duplicate writes, several mutations sharing the transaction, and rejection
+of a missing session or a session belonging to another project. Existing
 ledger suites retain authority, provenance, evidence, cycles and concurrent-writer
 coverage. Fold-proposal acceptance retains its existing public tests. Read-only
 fixture writers must remain alive while immutable WAL readers use their sidecars;

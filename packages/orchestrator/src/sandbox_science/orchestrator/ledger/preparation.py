@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Transaction-scoped ledger  The caller owns the transaction."""
+"""Normalize mutation inputs and resolve entries, evidence and provenance."""
 
 from __future__ import annotations
 
@@ -46,6 +46,12 @@ from .models import (
 from .records import TEXTS, Json, MutationInput, Planned, PreparedMutation, Row
 
 MAX_FIELDS: Final = 65536
+"""An entry's fields, as UTF-8 JSON, are at most this many bytes."""
+
+SETTLED_STATUSES: Final = frozenset(
+    {"established", "recorded", "in_effect", "rejected", "reversed"}
+)
+"""A repin at a settled status needs an anchor (figures, FG-8)."""
 
 
 def first_status(kind: str, origin: str | None) -> str:
@@ -630,7 +636,7 @@ def resolve_provenance(
         p.created
         or {"statement", "fields"} & set(p.changed)
         # A pin moved on a decided entry changes what it shows, as content does.
-        or ("pins" in p.changed and p.status_before in _DECIDED)
+        or ("pins" in p.changed and p.status_before in SETTLED_STATUSES)
         or (
             p.row.type == "decision"
             and "status" in p.changed
@@ -651,13 +657,10 @@ def resolve_provenance(
     anchoring.check(db, project, p.basis or "", p.anchors, held, texts, p.row.handle)
 
 
-_DECIDED: Final = frozenset({"established", "recorded", "in_effect", "rejected", "reversed"})
-
-
 def prepare_mutation(inputs: MutationInput) -> PreparedMutation:
     """Resolve the mutation against its active transaction without writing entries."""
     db, project, mutation, author = inputs.db, inputs.project, inputs.mutation, inputs.author
-    role, pinned = inputs.authority.role, inputs.pinned
+    role, pinned = inputs.role, inputs.pinned
     numbers: dict[str, int] = {}
     planned = [
         plan_entry(db, project, change, role, numbers, author.session_id)

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Transaction-scoped ledger queries. No function opens a transaction."""
+"""Materialize ledger reads on the caller's SQLite transaction."""
 
 from __future__ import annotations
 
@@ -48,6 +48,28 @@ from .models import (
 from .records import TEXTS, Row
 
 Json = dict[str, Any]
+
+
+ID: Final = re.compile(r"entry-[0-9a-f]{24}")
+
+HANDLE: Final = re.compile(r"(I|C|R|A|D|T|REF)-([1-9][0-9]{0,8})")
+
+TYPES: Final = {prefix: kind for kind, prefix in PREFIXES.items()}
+
+REVISION: Final = (
+    "SELECT r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
+    "r.basis,r.anchors,r.pins FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
+)
+
+CURRENT: Final = (
+    "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id AND l.revision=e.head "
+)
+
+HOLDERS: Final = f"SELECT l.entry_id {CURRENT}WHERE l.target='entry' AND l.target_id=? AND l.kind=?"
+
+TARGETS: Final = f"SELECT l.target_id {CURRENT}WHERE l.entry_id=? AND l.kind=? AND l.target='entry'"
+
+INCOMING: Final = 200
 
 
 def find(db: sqlite3.Connection, project: str, reference: str) -> Row:
@@ -186,35 +208,6 @@ def incoming_links(
     return links, total
 
 
-ID: Final = re.compile(r"entry-[0-9a-f]{24}")
-
-
-HANDLE: Final = re.compile(r"(I|C|R|A|D|T|REF)-([1-9][0-9]{0,8})")
-
-
-TYPES: Final = {prefix: kind for kind, prefix in PREFIXES.items()}
-
-
-REVISION: Final = (
-    "SELECT r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
-    "r.basis,r.anchors,r.pins FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
-)
-
-
-CURRENT: Final = (
-    "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id AND l.revision=e.head "
-)
-
-
-HOLDERS: Final = f"SELECT l.entry_id {CURRENT}WHERE l.target='entry' AND l.target_id=? AND l.kind=?"
-
-
-TARGETS: Final = f"SELECT l.target_id {CURRENT}WHERE l.entry_id=? AND l.kind=? AND l.target='entry'"
-
-
-INCOMING: Final = 200
-
-
 def stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> EntryLink:
     kind, target, target_id, revision, block, note = row
     handle = session = None
@@ -290,8 +283,6 @@ def entry_history(
 ) -> EntryHistory:
     """An entry's revisions, newest first, before revision ``before``; on the first
     page, the flags cleared on it, latest first, with who cleared them and why."""
-    if not 1 <= limit <= 200:
-        raise DocumentError(INVALID_REQUEST, "a page holds 1 to 200 revisions")
     row = find(db, project, reference)
     rows = db.execute(
         "SELECT r.revision,r.title,r.status,r.statement,r.author,r.reason,"
@@ -357,10 +348,6 @@ def entry_page(
 ) -> EntryPage:
     """The project's entries in the order they were made, optionally of one type or
     one current status, after the entry ``after``."""
-    if kind is not None and kind not in PREFIXES:
-        raise DocumentError(INVALID_REQUEST, "unknown entry type")
-    if not 1 <= limit <= 200:
-        raise DocumentError(INVALID_REQUEST, "a page holds 1 to 200 entries")
     start = 0
     if after is not None:
         start = db.execute(
@@ -407,8 +394,6 @@ def entry_view(
 ) -> EntryView:
     """An entry at ``revision`` (its current one by default); at its current revision,
     the links other entries hold to it, from the ``incoming_after``-th on."""
-    if incoming_after < 0:
-        raise DocumentError(INVALID_REQUEST, "incoming_after is a count of links")
     row = find(db, project, reference)
     number = row.head if revision is None else revision
     found = db.execute(REVISION, (row.entry_id, number)).fetchone()
@@ -457,8 +442,6 @@ def work_page(
 ) -> WorkPage:
     """The work records on an entry, newest first, as many as ``limit`` (1 to 100)
     before position ``before``, with where the next page begins (LG-6)."""
-    if not 1 <= limit <= 100 or (before is not None and before < 1):
-        raise DocumentError(INVALID_REQUEST, "invalid work page")
     row = find(db, project, reference)
     found = db.execute(
         "SELECT record_id,position,entry_revision,tried,ending,detail,refs,part_of,"
@@ -562,8 +545,6 @@ def category_page(
     db: sqlite3.Connection, project: str, *, after: str | None = None, limit: int = 50
 ) -> CategoryPage:
     """The project's frontier categories, in the order they were defined (LG-18)."""
-    if not 1 <= limit <= 100:
-        raise DocumentError(INVALID_REQUEST, "a page holds 1 to 100 categories")
     return frontier.listing(db, project, after, limit)
 
 
@@ -677,3 +658,14 @@ def mark(db: sqlite3.Connection, project: str) -> tuple[int, int]:
         (project,),
     ).fetchone()
     return (int(count), int(newest))
+
+
+def has_session(db: sqlite3.Connection, project: str, session: str) -> bool:
+    """Whether the active transaction contains the decision's project session."""
+    return (
+        db.execute(
+            "SELECT 1 FROM sessions WHERE project_id=? AND session_id=?",
+            (project, session),
+        ).fetchone()
+        is not None
+    )

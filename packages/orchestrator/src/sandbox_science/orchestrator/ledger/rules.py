@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Transaction-scoped ledger rules. The caller owns the transaction."""
+"""Evaluate cross-entry research rules against prepared mutation values."""
 
 from __future__ import annotations
 
@@ -530,7 +530,7 @@ def check_links(db: sqlite3.Connection, planned: list[Planned]) -> None:
 
 
 def check_research(
-    db: sqlite3.Connection, planned: list[Planned], author: Author, sessions: frozenset[str]
+    db: sqlite3.Connection, project: str, planned: list[Planned], author: Author
 ) -> None:
     """The research state's rules (CM-10), as the change leaves its entries: a
     contradiction concerns the two sides, at least, that disagree; a decision's reopen
@@ -582,7 +582,7 @@ def check_research(
             continue
         check_condition(db, p, links, by_id)
         check_kept(db, p, author, deciding)
-        check_session(sessions, p, author)
+        check_session(db, project, p, author)
         named = [p.fields.get(k) for k in ("excluded_scope", "assessment")]
         before = [p.fields_before.get(k) for k in ("excluded_scope", "assessment")]
         if named != before and any(named):
@@ -713,7 +713,7 @@ def check_kept(db: sqlite3.Connection, p: Planned, author: Author, deciding: lis
         )
 
 
-def check_session(sessions: frozenset[str], p: Planned, author: Author) -> None:
+def check_session(db: sqlite3.Connection, project: str, p: Planned, author: Author) -> None:
     """A decision scoped to a session names one of the project's; an agent scopes a
     decision to its own session, or takes its own session's scope off, and no other."""
     session, before = p.fields.get("session"), p.fields_before.get("session")
@@ -721,7 +721,7 @@ def check_session(sessions: frozenset[str], p: Planned, author: Author) -> None:
         return
     if author.kind != "user" and {session, before} - {None, author.session_id}:
         raise records.refused("an agent scopes a decision to its own session, and no other")
-    if session is not None and session not in sessions:
+    if session is not None and not queries.has_session(db, project, session):
         raise DocumentError(NOT_FOUND, f"no session {session} in this project")
 
 
@@ -729,10 +729,9 @@ def evaluate(prepared: PreparedMutation) -> EvaluatedMutation:
     """Evaluate rules in their established order before persistence begins."""
     inputs, planned = prepared.inputs, prepared.entries
     db, project, author = inputs.db, inputs.project, inputs.author
-    role, pinned, provenance = inputs.authority.role, inputs.pinned, inputs.provenance
-    sessions = inputs.authority.sessions
+    role, pinned, provenance = inputs.role, inputs.pinned, inputs.provenance
     check_links(db, planned)
-    check_research(db, planned, author, sessions)
+    check_research(db, project, planned, author)
     for p in planned:
         preparation.resolve_provenance(db, project, p, author, pinned, provenance)
     check_dominates(db, project, planned, role)

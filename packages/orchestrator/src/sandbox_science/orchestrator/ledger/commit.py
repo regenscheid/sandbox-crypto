@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Transaction-scoped ledger commit. The caller owns the transaction."""
+"""Persist evaluated ledger changes and receipts on the caller's transaction."""
 
 from __future__ import annotations
 
@@ -38,6 +38,14 @@ from .models import (
     WorkReference,
 )
 from .records import TEXTS, EvaluatedMutation, Json, MutationInput, Planned, Row
+
+LISTED_FLAGS: Final = 500
+"""The flags one change's event lists; it counts the rest."""
+
+RECEIPTS: Final = Receipts("ledger", "operation ID {operation!r} names another ledger change")
+
+RECEIPT_ACTOR: Final = "project"
+"""Operation IDs are project-wide, so imports from two sessions replay once."""
 
 
 def affected_categories(
@@ -814,15 +822,6 @@ def announce_flags(
     )
 
 
-LISTED_FLAGS: Final = 500
-
-
-RECEIPTS: Final = Receipts("ledger", "operation ID {operation!r} names another ledger change")
-
-
-RECEIPT_ACTOR: Final = "project"
-
-
 def replay(inputs: MutationInput, digest: str) -> MutationResult | None:
     """Read a receipt on the active transaction, without changing its result."""
     found = RECEIPTS.find(
@@ -847,7 +846,7 @@ def persist(
     prepared, gated = evaluated.prepared, evaluated.gated
     inputs, planned, keys = prepared.inputs, prepared.entries, prepared.keys
     db, project, mutation, author = inputs.db, inputs.project, inputs.mutation, inputs.author
-    role, pinned, provenance = inputs.authority.role, inputs.pinned, inputs.provenance
+    role, pinned, provenance = inputs.role, inputs.pinned, inputs.provenance
     cleared = clear_flags(db, project, mutation, author, role, now, events=events)
     reopened = reopen_flags(db, project, mutation, author, role, now, events=events)
     baseline(db, project, affected_categories(db, planned, written=False), now)

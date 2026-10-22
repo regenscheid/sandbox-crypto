@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Transaction-scoped ledger records. No function opens a transaction."""
+"""Explicit ledger rows, prepared mutations and transaction-scoped inputs."""
 
 from __future__ import annotations
 
@@ -121,14 +121,6 @@ def validation_error(error: ValidationError) -> str:
 
 
 @dataclass(frozen=True)
-class Authority:
-    """The authorized role and project sessions captured before a mutation batch."""
-
-    role: str
-    sessions: frozenset[str]
-
-
-@dataclass(frozen=True)
 class MutationInput:
     """Inputs bound to the facade's active transaction; never a transaction owner."""
 
@@ -136,7 +128,7 @@ class MutationInput:
     project: str
     mutation: Mutation
     author: Author
-    authority: Authority
+    role: str
     pinned: dict[tuple[str, int, str, str | None], str]
     provenance: Json | None
 

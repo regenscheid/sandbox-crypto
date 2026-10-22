@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: MIT
-"""The project ledger's entries, revisions and links in the control store
-(docs/specs/ledger.md).
+"""Public ledger facade and transaction owner (docs/specs/ledger-ownership.md).
 
-A mutation creates or revises one or more entries, all or nothing, under an operation
-ID whose receipt replays its first result (LG-30, LG-31). Each revision names the
-expected revision it follows; a stale one is a conflict naming the current revision,
-and nothing is rebased. Each change commits with its event (LG-33). Who may change
-what follows LG-13: the user anything, the main agent any entry, a delegated agent
-only new entries in their first status; code in the sandbox nothing. Statuses that
-only a decision sets (LG-4) and the links and published entries that need evidence
-or the frontier are refused until those are built.
+Queries, preparation, rule evaluation and persistence receive explicit connections
+or transaction-scoped mutation values. Only this facade acquires transactions;
+the batch, its replay receipts and the fold-acceptance callback commit together.
 """
 
 from __future__ import annotations
@@ -67,24 +61,9 @@ from .preparation import fingerprint as fingerprint
 
 Json = dict[str, Any]
 
-"""Statuses that settle an entry: a repin there needs an anchor (figures, FG-8)."""
-"""Each entry's statement, a text revision under the entry's ID."""
-
-"""The one actor of the ledger's receipts: an operation ID names one change in its
-project, whoever retries it, so a shared results file imported from two sessions
-records its lines once (LG-31, LG-36, LG-41)."""
-
-"""An entry's fields, as UTF-8 JSON, are at most this many bytes."""
-
-"""The links entries' current revisions hold."""
-"""A read shows as many links to an entry as this."""
-
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-"""The flags one change's event lists; it counts the rest."""
 
 
 class Ledger:
@@ -235,7 +214,7 @@ class Ledger:
             value = CategoryDefinition.model_validate(raw)
         except ValidationError as error:
             raise DocumentError(INVALID_REQUEST, records.validation_error(error)) from None
-        if self._authority(project, author).role == "delegated":
+        if self._authority(project, author) == "delegated":
             raise records.refused("a delegated agent defines no frontier category")
         if author.kind != "user":
             # Agents read categories again and the user decides on them: an agent's text
@@ -476,8 +455,7 @@ class Ledger:
         as the line of a results file (LG-41). ``within`` runs in the same change, after
         them, and refuses it all by raising: so a fold's proposal is marked accepted, or
         nothing is written (CM-15)."""
-        authority = self._authority(project, author)
-        role = authority.role
+        role = self._authority(project, author)
         if role != "user":
             kept: list[tuple[Mutation, Json | None]] = []
             for mutation, provenance in mutations:
@@ -520,7 +498,7 @@ class Ledger:
                     results.append(
                         self._apply(
                             records.MutationInput(
-                                tx.sql, project, mutation, author, authority, pinned, provenance
+                                tx.sql, project, mutation, author, role, pinned, provenance
                             )
                         )
                     )
@@ -551,6 +529,8 @@ class Ledger:
         """The work records on an entry, newest first, as many as ``limit`` (1 to 100)
         before position ``before``, with where the next page begins (LG-6)."""
         self._project(project)
+        if not 1 <= limit <= 100 or (before is not None and before < 1):
+            raise DocumentError(INVALID_REQUEST, "invalid work page")
         with self.control.read() as tx:
             return queries.work_page(tx.sql, project, reference, before=before, limit=limit)
 
@@ -601,21 +581,20 @@ class Ledger:
             author,
         )
 
-    def _authority(self, project: str, author: Author) -> records.Authority:
-        """The role LG-13 gives ``author``: ``user``, ``main`` or ``delegated``. Code in
-        the sandbox, imports, the platform and other agent roles change nothing."""
+    def _authority(self, project: str, author: Author) -> str:
+        """The LG-13 role authorized for this project before mutation preflight."""
         self._project(project)
         try:
             sessions = recorded(self.documents.path.parent, project).sessions
         except ProjectError:
             raise DocumentError(NOT_FOUND, "no such ledger project") from None
         if author.kind == "user":
-            return records.Authority("user", frozenset(sessions))
+            return "user"
         if author.kind != "agent" or author.role not in ("main", "delegated"):
             raise records.refused(f"a {author.role or author.kind} does not change the ledger")
         if author.session_id not in sessions:
             raise DocumentError(NOT_FOUND, "the agent's session is not in this project")
-        return records.Authority(cast(str, author.role), frozenset(sessions))
+        return cast(str, author.role)
 
     @staticmethod
     def _project(project: str) -> None:

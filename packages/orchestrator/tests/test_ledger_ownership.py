@@ -6,11 +6,12 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from sandbox_science.orchestrator.control import EventLog
-from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
+from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore, store_path
 from sandbox_science.orchestrator.ledger import Ledger, Mutation
 from sandbox_science.orchestrator.ledger.models import MutationResult
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -20,6 +21,9 @@ from sandbox_science.orchestrator.projects import ProjectStore
 def ledger(tmp_path: Path) -> Iterator[Ledger]:
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("p", "local", dedicated=False)
+    projects.create("q", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("q", "foreign", dedicated=False)
     documents = DocumentStore(store_path(tmp_path))
     yield Ledger(documents)
     documents.close()
@@ -151,7 +155,7 @@ def test_batch_preparation_sees_prior_writes_and_callback_runs_on_replay(ledger:
         assert db.execute("SELECT head FROM ledger_entries").fetchone() == (2,)
         callbacks.append([r.replayed for r in results])
 
-    batch = [(first, None), (second, None)]
+    batch: list[tuple[Mutation, dict[str, Any] | None]] = [(first, None), (second, None)]
     assert [r.entries[0].revision for r in ledger.apply("p", batch, USER, within=accepted)] == [
         1,
         2,
@@ -163,3 +167,25 @@ def test_batch_preparation_sees_prior_writes_and_callback_runs_on_replay(ledger:
         (2, "done"),
         (1, "todo"),
     ]
+
+
+@pytest.mark.parametrize("session", ["missing", "foreign"])
+def test_decision_scope_rejects_missing_and_other_project_sessions(
+    ledger: Ledger, session: str
+) -> None:
+    decision = {
+        "type": "decision",
+        "title": "Scope",
+        "statement": "Use this session.",
+        "fields": {"session": session},
+    }
+    raw = {"operation_id": "scope", "reason": "Set scope.", "changes": [decision]}
+    with pytest.raises(DocumentError, match=f"no session {session} in this project") as refused:
+        ledger.change("p", raw, USER)
+    assert refused.value.kind == "not_found"
+    assert ledger.entries("p").entries == []
+    accepted = ledger.change(
+        "p", {**raw, "changes": [{**decision, "fields": {"session": "local"}}]}, USER
+    )
+    assert not accepted.replayed
+    assert ledger.entry("p", "D-1").fields == {"session": "local"}

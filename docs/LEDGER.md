@@ -120,6 +120,35 @@ A flag stays until the user or the main agent clears it with a reason; a delegat
 - Flags from document blocks and math spans, from blocks bound to entries (LD-34) and from newer artifact revisions (LG-28); work records' place in the issue list and the history (LG-34), their review, and executions as their references.
 - The project-wide history view, open findings beside a status on cards and rows, moving cards; the export (LG-39; the pack's import is not planned); naming the execution that wrote a results file. The entry view's gate and decisions panel, from the gate read, is built too, and so is the frontier view: the categories, and each category's frontier with its groups a page at a time, the main agent's revision of it, the look-alike warning, the unverified and disputed marks, the candidates in windows of the newest, what dominates each dominated result, by the rule or by a link, the links that count for nothing, the user's drop of a link, the user's confirmation of an unverified result by a check, the history and the best known at a time. The board and the issue list, each with its entries' counts of open flags, and the entry view with its evidence, the findings anchored to it, its open flags with the user's clearing, its history with the cleared flags and the user's reopening, and its work records are built ([workspace](WORKSPACE.md#views)).
 
+## Implementation ownership
+
+`ledger/store.py` keeps the public `Ledger` API and owns transaction acquisition.
+Its collaborators use the supplied SQLite connection; none holds a facade or opens,
+commits or rolls back a transaction. [The ownership specification](specs/ledger-ownership.md)
+sets out this boundary.
+
+| Module | Responsibility |
+| --- | --- |
+| `queries.py` | Materialize entry pages, revisions, citations, gate views, work and frontier views; resolve stored identities and links on the caller's snapshot |
+| `preparation.py` | Normalize agent inputs, resolve expected revisions and new handles, pin links and evidence, and resolve provenance |
+| `rules.py` | Evaluate cross-entry links, decisions, evidence, research-state restrictions and frontier rules against the prepared mutation |
+| `commit.py` | Persist statements, revisions, links, evidence, work, flags, frontier changes, events and replay receipts on the caller's connection |
+| `records.py` | Carry explicit transaction-scoped inputs, prepared revisions and evaluated gate results between these owners |
+
+An `apply` batch takes one write transaction. Each mutation first checks its receipt,
+then produces a `PreparedMutation`, evaluates its rules and persists its effects.
+The next mutation sees the preceding mutation's writes. Decision session membership
+is checked in that same transaction against the project's sessions, without opening
+a second project-store reader. Post-write cycle and flag checks can still refuse the
+whole batch.
+
+The `within` callback runs on that connection after all results, including replayed
+results and an empty batch. Fold-proposal acceptance uses this seam. Any exception
+rolls back the entries, flags, work, frontier changes, events and receipts together,
+including the callback's writes. Public transaction characterization is in
+`test_ledger_ownership.py`; the existing ledger and fold-proposal tests cover the
+domain rules and acceptance path.
+
 ## Tables
 
 | Table | Holds |
