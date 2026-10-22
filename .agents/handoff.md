@@ -1,9 +1,7 @@
 # Handoff
 
-Updated 2026-10-21. Current work is the isolated branch
-`agent-context-refactor` in the attached `agent-context-refactor` worktree,
-based on `origin/dev` at `391cb7a7`, then merged with `1ad689e3`. The primary checkout, `dev`
-and deployed services are unchanged. Read [STATUS.md](STATUS.md),
+Updated 2026-10-21. Work is on `agent-context-refactor` from `origin/dev`
+`391cb7a7`, merged with `1ad689e3`. Services are unchanged. Read [STATUS.md](STATUS.md),
 [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md), and the
 [context ownership map](../docs/specs/agent-context-refactor.md).
 
@@ -26,8 +24,9 @@ and deployed services are unchanged. Read [STATUS.md](STATUS.md),
 - No real model calls, service rollout, archive migration or merge into dev.
   The owner requested publication on `agent-context-refactor`; continue in its
   separate worktree and preserve the primary checkout and services.
-- Capabilities, snapshot planner and API contracts integrated/reviewed:
-  [evidence](docs/agent-reports/parallel-refactor-2026-10-21.md).
+- Executor lifecycle/admission, ledger preparation/rules/commit and provisioning
+  stages are integrated/reviewed: 826 worker slow passes; baseline fast failures
+  remain. See the [report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
 
 ## Earlier accepted scope and evidence
 

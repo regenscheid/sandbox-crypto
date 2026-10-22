@@ -27,7 +27,12 @@ Three follow-ups are integrated and independently reviewed: typed capability ass
 pure review snapshot planning, and generated document/comment/job contracts with
 focused clients. Combined checks: 804 pass, three ledger failures match the prior
 baseline exactly; 92 final checks, 862 workspace and 2,289 frontend tests pass.
-See the [report](docs/agent-reports/parallel-refactor-2026-10-21.md). No merge or rollout.
+See the [report](docs/agent-reports/parallel-refactor-2026-10-21.md). The remaining
+executor, ledger and provisioning ownership refactors are integrated and independently
+reviewed. Worker slow tests: 826 passed, 26 skipped; web: 2,289 passed. Fast tier:
+13,782 passed; baseline failures remain, as detailed in the
+[ownership report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
+No merge or rollout is implied.
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 
