@@ -6,11 +6,14 @@
 - [x] Extract shared `AgentContext` active state and scope-bound preparation for root/children.
 - [x] Extract fresh/resumed child finalization with explicit persistence and cleanup outcomes.
 - [x] Extract workspace request execution and remove duplicate store registrations.
-- [ ] Complete integrated checks and record the independent review results.
+- [x] Complete integrated checks and record the [independent review and validation results](docs/agent-reports/context-refactor-2026-10-21.md): 426 targeted and 855 workspace tests pass; broad-suite baseline failures remain explicitly recorded.
+- [ ] Repair the existing dev test fixtures that close the last control-store writer
+  before read-only authority checks; investigate the ledger category assertion and
+  intermittent SIGTERM stopped-event failure. Do not weaken the production WAL guard.
 - [ ] Later review candidates: worker lifecycle/executor splitting, capability bundles and
   the remaining generated API/domain-contract work. These are outside this focused branch.
 
-Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). Current development is consolidated on local `dev`; implementation, runtime qualification and deployment are distinct. Older PR/branch references record historical delivery evidence.
+Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev` as requested; implementation, runtime qualification and deployment are distinct. Older PR/branch references record historical delivery evidence.
 
 ## Research continuity after the SNOVA acceptance run
 

@@ -1,8 +1,31 @@
 # Handoff
 
-Updated 2026-10-19. Use local `dev` in `/home/andy/.cache/pt/dev-local`; implementation is integrated through signed `5a238f10`. `/home/andy/Git_Projects/sandbox-crypto` is a separate checkout whose unrelated state must be preserved. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-21. Current work is the isolated branch
+`codex/context-lifecycle-refactor` in the attached `agent-context-refactor` worktree,
+based on fetched `origin/dev` at `391cb7a7`. The primary checkout, remote branches
+and deployed services are unchanged. Read [STATUS.md](STATUS.md),
+[BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md), and the
+[context ownership map](../docs/specs/agent-context-refactor.md).
 
-## Accepted scope and current evidence
+## Current refactor
+
+- `orchestrator/context/agent.py`: shared mutable conversation owner;
+  `context/preparation.py`: trusted scope, reconstruction, folder/log/history tool;
+  `context/history/`: full archive, search/reads, folding and inspector implementation.
+- `finalization.py`: common fresh/resumed child persistence and settlement, followed
+  by retryable terminal-kernel cleanup. `harness.save` remains a compatible export.
+- Workspace `requests.py`: common scoped threaded request execution/encoding;
+  `WorkspaceContext` is the only store registration.
+- All changes are signed local commits. Independent context/finalization review
+  found no actionable issues. Public characterization caught an eager optional
+  kernel-observation lookup; it is now deferred as before. Targeted tests: 426 pass;
+  workspace: 855 pass; static checks pass. Broad dev WAL/ledger/SIGTERM failures remain
+  ([evidence](docs/agent-reports/context-refactor-2026-10-21.md)); do not claim the
+  entire suite is green.
+- No real model calls, paid research, live services, archive migration, remote push
+  or merge were part of this refactor. Continue in this separate worktree.
+
+## Earlier accepted scope and evidence
 
 The owner authorized **$150 total for new campaign model tests**, superseding the earlier $75 proposal, and requested all six [completion items](docs/agent-reports/completion-campaign-2026-10-18.md). This is not permission to resume SNOVA or approve extra token grants. Root coordinates live labs, spend, final reports and acceptance; implementation agents use isolated worktrees and signed local commits.
 

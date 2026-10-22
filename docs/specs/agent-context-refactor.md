@@ -72,3 +72,15 @@ as child preparation already did; the production default remains the system cloc
 
 This refactor changes no database version, archive wire format, model prompt text,
 or confined protocol schema. It does not launch research or migrate running services.
+
+## Local verification
+
+The integrated context/finalization suite passed 426 tests; the full workspace suite
+passed 855. Ruff, formatting, strict Pyright, generated API/protocol checks, test tiers,
+repository hygiene and license checks passed. Independent agents reviewed context
+and finalization; the integrating agent reviewed workspace request behavior.
+
+Broad testing also exposed pre-existing dev fixture and SIGTERM failures. The
+[validation report](../../.agents/docs/agent-reports/context-refactor-2026-10-21.md)
+distinguishes those from corrected integration failures and records the remaining
+qualification limits. No live gateway, OpenShell process or paid model was used.

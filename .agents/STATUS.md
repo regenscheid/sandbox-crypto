@@ -3,8 +3,8 @@
 Updated 2026-10-21. The context-focused refactor is isolated on
 `codex/context-lifecycle-refactor`, based on fetched `origin/dev` at `391cb7a7`.
 The primary checkout and deployed services are unchanged. Context ownership,
-attempt finalization and workspace request execution are being integrated and
-verified locally; no remote merge or rollout is implied.
+attempt finalization and workspace request execution are implemented and locally
+reviewed; no remote merge or rollout is implied.
 
 ## Phase and focus
 
@@ -13,7 +13,10 @@ preparation, active state, histories, folding, search and diagnostics under
 `orchestrator/context/`. Root and delegated agents share this machinery. Parallel
 work extracts attempt finalization and workspace request execution. Archive formats,
 transport schemas and role policy remain compatible. Implementation and independent
-review are complete; integrated validation is in progress.
+review are complete. Integrated targeted tests pass (426), as does the full workspace
+suite (855). Static, schema and hygiene checks pass. Broad testing also reproduced
+existing dev failures; this branch does not claim an entirely green suite
+([validation and limits](docs/agent-reports/context-refactor-2026-10-21.md)).
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 
