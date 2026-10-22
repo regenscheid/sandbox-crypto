@@ -55,10 +55,11 @@ def ledger(tmp_path: Path) -> Iterator[Ledger]:
     projects.open_session("p", "s", dedicated=False)
     projects.create("q", "minimal", "sha256:" + "a" * 64)
     projects.open_session("q", "t", dedicated=False)
-    projects.close()
+    # Keep the writer alive while immutable project readers use its WAL sidecars.
     documents = DocumentStore(store_path(tmp_path))
     yield Ledger(documents)
     documents.close()
+    projects.close()
 
 
 def said(
@@ -476,16 +477,14 @@ def test_a_store_of_the_version_before_shows_no_basis(tmp_path: Path) -> None:
     from .control_versions import older_store
 
     current = ProjectStore(tmp_path / "current")
+    documents = DocumentStore(store_path(tmp_path / "current"))
     try:
         current.create("p", "minimal", "sha256:" + "a" * 64)
         current.open_session("p", "s", dedicated=False)
-    finally:
-        current.close()
-    documents = DocumentStore(store_path(tmp_path / "current"))
-    try:
         change(Ledger(documents), NEW["issue"], op="made", author=USER)
     finally:
         documents.close()
+        current.close()
     target = tmp_path / "old"
     target.mkdir()
     before = 50  # the version before 51, which keeps bases and anchors
