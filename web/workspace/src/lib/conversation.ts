@@ -32,7 +32,7 @@ export interface WorkStep {
 export type Pins = Extract<ChatEntry, { kind: 'user' }>['pins'];
 
 export type TranscriptItem =
-  | { kind: 'user'; seq: number; at: string; text: string; pins: Pins }
+  | { kind: 'user'; seq: number; at: string; text: string; pins: Pins; message: string | null }
   | { kind: 'reply'; seq: number; at: string; text: string; pins: Pins }
   | { kind: 'work'; seq: number; from: string; to: string; steps: WorkStep[] }
   | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string };
@@ -66,6 +66,7 @@ export function foldTranscript(
         at: at(entry.seq),
         text: entry.text,
         pins: entry.pins,
+        message: entry.message,
       });
     } else if (entry.kind === 'assistant') {
       if (entry.calls.length === 0) {

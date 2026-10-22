@@ -13,6 +13,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import {
+    CONTINUATION_AUTHOR,
     ChatFeed,
     chatApi,
     forgetMessage,
@@ -133,6 +134,14 @@
     ).watch();
   });
   const transcript = $derived(chat?.runs.flatMap((run) => run.events) ?? []);
+  /** The session's automatic continuations, which the conversation shows folded. */
+  const continuations = $derived(
+    new Set(
+      (chat?.messages ?? [])
+        .filter((message) => message.author === CONTINUATION_AUTHOR)
+        .map((message) => message.message_id),
+    ),
+  );
   async function answerPermission(
     request: PendingApproval,
     decision: 'once' | 'project' | 'server' | 'deny',
@@ -258,6 +267,7 @@
           {now}
           {subagents}
           {showAgents}
+          {continuations}
         />
       {/each}
       <ChatWaiting messages={waiting} {starting} />

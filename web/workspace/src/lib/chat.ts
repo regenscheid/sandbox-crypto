@@ -152,6 +152,26 @@ export interface ChatReads {
 /** Polls between readings of the session's runs, besides when the lease changes. */
 const RUNS_EVERY = 4;
 
+/** Who writes the session's automatic continuations of an open plan (auto_continuation.py). */
+export const CONTINUATION_AUTHOR = 'research-supervisor';
+
+/** The continuation's own words (auto_continuation.py), which a resumed run repeats without
+ * naming its message. */
+const CONTINUATION_TEXT =
+  /^The active research plan \S+ version \d+ remains open after the previous root answered\./;
+
+/**
+ * Whether a run's input is the platform's automatic continuation rather than the user's:
+ * a message its author wrote, or one in its words. The chat folds it to "Continuation".
+ */
+export function isContinuation(
+  text: string,
+  message: string | null,
+  continuations: ReadonlySet<string>,
+): boolean {
+  return (message !== null && continuations.has(message)) || CONTINUATION_TEXT.test(text.trim());
+}
+
 /** A run name's start time, as the service writes it: ``20261022T014900864922Z-run-…``. */
 const STARTED = /^\d{8}T\d{6}\d*Z-/;
 
@@ -354,7 +374,14 @@ export class ChatFeed {
 /** One line of the transcript, from a run's events. */
 export type ChatEntry =
   | { kind: 'started'; seq: number; text: string }
-  | { kind: 'user'; seq: number; text: string; pins: Record<string, unknown>[] }
+  | {
+      kind: 'user';
+      seq: number;
+      text: string;
+      pins: Record<string, unknown>[];
+      /** The message the run was given, when it names one. */
+      message: string | null;
+    }
   | {
       kind: 'assistant';
       seq: number;
@@ -544,7 +571,14 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
             ? ` Connector servers unavailable, their listing failed: ${unavailable.join('; ')}. The agent is told, and its first mcp_tools call lists them again.`
             : ''),
       });
-    } else if (kind === 'user') entries.push({ kind: 'user', seq, text: text(data['text']), pins });
+    } else if (kind === 'user')
+      entries.push({
+        kind: 'user',
+        seq,
+        text: text(data['text']),
+        pins,
+        message: typeof data['message_id'] === 'string' ? data['message_id'] : null,
+      });
     else if (kind === 'assistant') {
       const calls = list(data['tool_calls']).map((call) => ({
         id: text(record(call)['id']),

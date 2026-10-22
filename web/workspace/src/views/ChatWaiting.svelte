@@ -6,7 +6,7 @@
   ChatPanel.svelte.
 -->
 <script lang="ts">
-  import { messageState, type ChatMessage } from '../lib/chat';
+  import { CONTINUATION_AUTHOR, messageState, type ChatMessage } from '../lib/chat';
   import { splitAttachments } from '../lib/uploads';
   import FileChips from './FileChips.svelte';
 
@@ -21,11 +21,20 @@
   <ul class="waiting-messages">
     {#each messages as message (message.message_id)}
       {@const split = splitAttachments(message.text)}
-      <li class="bubble">
-        <span class="meta">{messageState(message)}</span>
-        <span class="text">{split.text}</span>
-        <FileChips files={split.files} />
-      </li>
+      {#if message.author === CONTINUATION_AUTHOR}
+        <li class="continuation">
+          <details>
+            <summary>{messageState(message)} · Continuation</summary>
+            <span class="text">{split.text}</span>
+          </details>
+        </li>
+      {:else}
+        <li class="bubble">
+          <span class="meta">{messageState(message)}</span>
+          <span class="text">{split.text}</span>
+          <FileChips files={split.files} />
+        </li>
+      {/if}
     {/each}
   </ul>
 {/if}
@@ -45,5 +54,21 @@
     display: block;
     font-size: 12px;
     color: var(--muted);
+  }
+  .continuation {
+    align-self: flex-end;
+    max-width: 80%;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: right;
+  }
+  .continuation summary {
+    cursor: pointer;
+  }
+  .continuation .text {
+    display: block;
+    margin-top: 6px;
+    text-align: left;
+    color: var(--body-text);
   }
 </style>

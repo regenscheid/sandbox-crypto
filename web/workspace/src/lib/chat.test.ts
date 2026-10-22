@@ -7,6 +7,8 @@ import ChatWaiting from '../views/ChatWaiting.svelte';
 import type { EnvironmentState, EventPage, MessageListing } from './api-types';
 import { ApiError } from './http';
 import {
+  CONTINUATION_AUTHOR,
+  isContinuation,
   chatEntries,
   ChatFeed,
   foldText,
@@ -406,7 +408,7 @@ describe('the transcript of a run', () => {
     ]);
     expect(entries).toEqual([
       { kind: 'started', seq: 1, text: 'Run r1 started, answering 1 message.' },
-      { kind: 'user', seq: 2, text: '<b>What</b> is $x$?', pins: [] },
+      { kind: 'user', seq: 2, text: '<b>What</b> is $x$?', pins: [], message: 'm1' },
       {
         kind: 'assistant',
         seq: 4,
@@ -801,5 +803,22 @@ describe('runs no message names', () => {
       },
     });
     expect((await feed.read()).runs.map((run) => run.run)).toEqual([RESUMED]);
+  });
+});
+
+describe("the platform's continuations", () => {
+  const PROMPT =
+    'The active research plan plan-87654bc97a123dd7c168639e version 2 remains open after ' +
+    'the previous root answered. Read the current plan, recent child outcomes, documents ' +
+    'and artifacts, then pursue the next justified research step.';
+
+  it("are told from the user's messages by their author, or by their words", () => {
+    // Shown folded to "Continuation" (owner, 2026-10-21). A resumed run repeats the
+    // prompt without naming its message, so its words are known too.
+    expect(isContinuation('Go on', 'msg-auto', new Set(['msg-auto']))).toBe(true);
+    expect(isContinuation(PROMPT, null, new Set())).toBe(true);
+    expect(isContinuation('Go on', 'msg-user', new Set(['msg-auto']))).toBe(false);
+    expect(isContinuation(`Please explain: ${PROMPT}`, null, new Set())).toBe(false);
+    expect(CONTINUATION_AUTHOR).toBe('research-supervisor');
   });
 });

@@ -7,6 +7,7 @@
   import {
     awaitingApproval,
     chatEntries,
+    isContinuation,
     placeQuestions,
     thinking,
     type WatchedRun,
@@ -17,6 +18,7 @@
   import { splitAttachments } from '../lib/uploads';
   import FileChips from './FileChips.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
+  import Icon from './Icon.svelte';
   import WorkGroup from './WorkGroup.svelte';
   let {
     run,
@@ -27,6 +29,7 @@
     now = Date.now(),
     subagents = null,
     showAgents = null,
+    continuations = new Set(),
   }: {
     run: WatchedRun;
     projectId?: string | null;
@@ -38,6 +41,8 @@
     now?: number;
     subagents?: string | null;
     showAgents?: (() => void) | null;
+    /** The IDs of the session's automatic continuation messages, shown folded. */
+    continuations?: ReadonlySet<string>;
   } = $props();
   const entries = $derived(chatEntries(run.events));
   const placed = $derived(placeQuestions(entries, questions));
@@ -64,7 +69,19 @@
 
 <ol class="transcript">
   {#each items as item, index (item.seq + item.kind)}
-    {#if item.kind === 'user'}
+    {#if item.kind === 'user' && isContinuation(item.text, item.message, continuations)}
+      <!-- The platform's own prompt to go on with an open plan: folded, as steps are. -->
+      <li class="continuation">
+        <details>
+          <summary
+            ><Icon name="chevron" size={14} class="chevron" /><span>Continuation</span></summary
+          >
+          <div class="continuation-text">
+            <Markdown source={item.text} pins={item.pins} {projectId} />
+          </div>
+        </details>
+      </li>
+    {:else if item.kind === 'user'}
       {@const split = splitAttachments(item.text)}
       <li class="bubble user-message">
         <h3 class="sr-only">You</h3>

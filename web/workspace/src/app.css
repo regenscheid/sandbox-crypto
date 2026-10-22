@@ -1407,6 +1407,41 @@ h2 {
   font-size: 13px;
   color: var(--muted);
 }
+/* The platform's automatic continuation of an open plan: folded on the user's side. */
+.transcript .continuation {
+  display: flex;
+  justify-content: flex-end;
+}
+.continuation > details {
+  max-width: 80%;
+}
+.continuation > details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  float: right;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--muted);
+  font-size: 13px;
+  list-style: none;
+  cursor: pointer;
+}
+.continuation > details > summary::-webkit-details-marker {
+  display: none;
+}
+.continuation > details > summary:hover {
+  background: var(--subtle);
+}
+.continuation-text {
+  clear: both;
+  padding: 10px 14px;
+  margin-top: 6px;
+  border-radius: 16px;
+  background: var(--subtle);
+}
 .transcript-note.problem {
   color: var(--failed);
 }
