@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from datetime import UTC, datetime
 from typing import Any, Final
 
 from sandbox_science.orchestrator.documents.errors import (
@@ -16,10 +17,15 @@ from sandbox_science.orchestrator.documents.errors import (
 from sandbox_science.orchestrator.documents.pins import newer
 from sandbox_science.orchestrator.figurechecks import results as figure_results
 
-from . import evidence, standing
+from . import evidence, frontier, gate, standing
 from .models import (
     PREFIXES,
+    SHOWN_CHECKS,
+    Category,
+    CategoryPage,
+    CitationCheckView,
     ClearedFlag,
+    EntryCitations,
     EntryFinding,
     EntryFlag,
     EntryHistory,
@@ -28,7 +34,16 @@ from .models import (
     EntryRevision,
     EntrySummary,
     EntryView,
+    FrontierHistory,
+    FrontierPast,
+    FrontierView,
+    GateClause,
+    GateDecision,
+    GateView,
+    QuoteChecks,
     Standing,
+    WorkPage,
+    WorkRecord,
 )
 from .records import TEXTS, Row
 
@@ -430,3 +445,235 @@ def entry_view(
         pins=newer(db, project, json.loads(found[10] or "[]")),
         figure_checks=figure_results(db, "statement", row.entry_id, number),
     )
+
+
+def work_page(
+    db: sqlite3.Connection,
+    project: str,
+    reference: str,
+    *,
+    before: int | None = None,
+    limit: int = 50,
+) -> WorkPage:
+    """The work records on an entry, newest first, as many as ``limit`` (1 to 100)
+    before position ``before``, with where the next page begins (LG-6)."""
+    if not 1 <= limit <= 100 or (before is not None and before < 1):
+        raise DocumentError(INVALID_REQUEST, "invalid work page")
+    row = find(db, project, reference)
+    found = db.execute(
+        "SELECT record_id,position,entry_revision,tried,ending,detail,refs,part_of,"
+        "author,reason,operation_id,provenance,created,assesses,verdict,basis,anchors "
+        "FROM ledger_work "
+        "WHERE entry_id=? AND position<? ORDER BY position DESC LIMIT ?",
+        (row.entry_id, before or 2**62, limit + 1),
+    ).fetchall()
+    handles: dict[str, str] = {}
+
+    def handle(entry: str) -> str:
+        if entry not in handles:
+            handles[entry] = find(db, project, entry).handle
+        return handles[entry]
+
+    (status,) = db.execute(
+        "SELECT status FROM ledger_revisions WHERE entry_id=? AND revision=?",
+        (row.entry_id, row.head),
+    ).fetchone()
+    settled = standing.obstructed(db, row.entry_id) if status == "obstructed" else None
+    records = [
+        WorkRecord(
+            record_id=r[0],
+            position=r[1],
+            entry_id=row.entry_id,
+            handle=row.handle,
+            entry_revision=r[2],
+            tried=r[3],
+            ending=r[4],
+            limit=(detail := json.loads(r[5])).get("limit"),
+            produced=[handle(e) for e in detail.get("produced", [])],
+            assesses=r[13],
+            verdict=r[14],
+            references=json.loads(r[6]),
+            part_of=r[7],
+            author=json.loads(r[8]),
+            reason=r[9],
+            operation_id=r[10],
+            provenance=None if r[11] is None else json.loads(r[11]),
+            created=r[12],
+            standing=standing.of_work(r[4], detail.get("limit"), r[0], settled),
+            decision=handle(detail["decision"]) if "decision" in detail else None,
+            basis=r[15],
+            anchors=json.loads(r[16] or "[]"),
+        )
+        for r in found[:limit]
+    ]
+    more = len(found) > limit
+    return WorkPage(
+        entry_id=row.entry_id,
+        handle=row.handle,
+        records=records,
+        next_before=records[-1].position if more else None,
+    )
+
+
+def frontier_view(
+    db: sqlite3.Connection, project: str, name: str, *, candidates_before: int | None = None
+) -> FrontierView:
+    """A category's frontier as its results read now (LG-20, LG-21, LG-23), its
+    candidates newest first, made before result ``candidates_before``."""
+    found = frontier.read(db, project, name)
+    if found is None:
+        raise DocumentError(NOT_FOUND, f"no frontier category {name}")
+    return frontier.view(db, project, found, candidates_before=candidates_before)
+
+
+def frontier_past(db: sqlite3.Connection, project: str, name: str, at: datetime) -> FrontierPast:
+    """A category's best known results as they were at ``at`` (LG-24)."""
+    category_view(db, project, name)
+    if at.tzinfo is None:
+        raise DocumentError(INVALID_REQUEST, "a time names its zone")
+    return frontier.past(db, project, name, at.astimezone(UTC).isoformat())
+
+
+def frontier_history(
+    db: sqlite3.Connection, project: str, name: str, *, before: int | None = None, limit: int = 50
+) -> FrontierHistory:
+    """A category's frontier changes, newest first (LG-24)."""
+    category_view(db, project, name)
+    if not 1 <= limit <= 100:
+        raise DocumentError(INVALID_REQUEST, "a page holds 1 to 100 changes")
+    return frontier.history(db, project, name, before, limit)
+
+
+def category_view(
+    db: sqlite3.Connection, project: str, name: str, revision: int | None = None
+) -> Category:
+    """A frontier category at ``revision``, its current one by default."""
+    found = frontier.read(db, project, name, revision)
+    if found is None:
+        raise DocumentError(
+            NOT_FOUND,
+            f"no frontier category {name}"
+            + ("" if revision is None else f" at revision {revision}"),
+        )
+    return found
+
+
+def category_page(
+    db: sqlite3.Connection, project: str, *, after: str | None = None, limit: int = 50
+) -> CategoryPage:
+    """The project's frontier categories, in the order they were defined (LG-18)."""
+    if not 1 <= limit <= 100:
+        raise DocumentError(INVALID_REQUEST, "a page holds 1 to 100 categories")
+    return frontier.listing(db, project, after, limit)
+
+
+def gate_view(db: sqlite3.Connection, project: str, reference: str) -> GateView:
+    """The gate for ``reference`` as it reads now (LG-17): each clause as the main
+    agent's decision to establish it would meet it, with why, and the decisions that
+    affect it. A read: it changes nothing, and takes no write lock."""
+    row = find(db, project, reference)
+    status, statement, fields = db.execute(
+        "SELECT status,statement,fields FROM ledger_revisions WHERE entry_id=? AND revision=?",
+        (row.entry_id, row.head),
+    ).fetchone()
+    decisions = [
+        GateDecision(
+            entry_id=found[0],
+            handle=f"{PREFIXES['decision']}-{found[1]}",
+            title=found[2],
+            status=found[3],
+            revision=found[4],
+            author=json.loads(found[5]),
+        )
+        for found in db.execute(
+            "SELECT e.entry_id,e.number,r.title,r.status,r.revision,r.author "
+            f"{CURRENT}JOIN ledger_revisions r ON r.entry_id=e.entry_id "
+            "AND r.revision=e.head WHERE l.kind='affects' AND l.target='entry' "
+            "AND l.target_id=? ORDER BY e.position DESC LIMIT 50",
+            (row.entry_id,),
+        )
+    ]
+    applies = row.type in ("claim", "result") and row.origin == "project"
+    found_clauses: list[GateClause] = []
+    if applies:
+        held = evidence.stored(db, row.entry_id, row.head)
+        written = TEXTS.read(db, row.entry_id, statement, full=False)
+        now = gate.material(
+            json.loads(fields),
+            statement,
+            links(db, row.entry_id, row.head),
+            held,
+            None if written is None else written["sha256"],
+        )
+        found_clauses = [
+            GateClause.model_validate({"clause": clause, "holds": holds, "reason": reason})
+            for clause, holds, reason in gate.clauses(
+                db, row.entry_id, row.handle, held, now, row.head
+            )
+        ]
+    return GateView(
+        entry_id=row.entry_id,
+        handle=row.handle,
+        revision=row.head,
+        status=status,
+        applies=applies,
+        holds=applies and all(clause.holds for clause in found_clauses),
+        clauses=found_clauses,
+        decisions=decisions,
+    )
+
+
+def entry_citations(
+    db: sqlite3.Connection, project: str, reference: str, revision: int | None = None
+) -> EntryCitations:
+    """The consistency reviewer's checks of each quote revision ``revision`` (the
+    current one by default) of ``reference`` holds (CR-4): newest first, as many as
+    ``SHOWN_CHECKS`` with their count, each saying whether it checked that revision's
+    material. A read: it changes nothing."""
+    row = find(db, project, reference)
+    shown = row.head if revision is None else revision
+    if not 1 <= shown <= row.head:
+        raise DocumentError(NOT_FOUND, f"{row.handle} has no revision {shown}")
+    material = gate.examined(db, row.entry_id, {shown}).get(shown)
+    digest = None if material is None else gate.fingerprint(material)
+    quotes: list[QuoteChecks] = []
+    for link in evidence.stored(db, row.entry_id, shown):
+        if link.target != "quote":
+            continue
+        (total,) = db.execute(
+            "SELECT count(*) FROM citation_checks WHERE entry_id=? AND evidence_id=?",
+            (row.entry_id, link.evidence_id),
+        ).fetchone()
+        checks = [
+            CitationCheckView(
+                check_id=found[0],
+                review_id=found[1],
+                session=found[2],
+                entry_revision=found[3],
+                verdict=found[4],
+                explanation=found[5],
+                created=datetime.fromtimestamp(found[6], UTC),
+                source=found[7],
+                matches=found[8] == digest,
+            )
+            for found in db.execute(
+                "SELECT c.check_id,c.review_id,r.session,c.entry_revision,c.verdict,"
+                "c.explanation,c.created,c.source,c.material FROM citation_checks c "
+                "JOIN review_runs r ON r.review_id=c.review_id WHERE c.entry_id=? "
+                "AND c.evidence_id=? ORDER BY c.created DESC, c.rowid DESC LIMIT ?",
+                (row.entry_id, link.evidence_id, SHOWN_CHECKS),
+            )
+        ]
+        quotes.append(QuoteChecks(evidence_id=link.evidence_id, checks=checks, total=total))
+    return EntryCitations(entry_id=row.entry_id, handle=row.handle, revision=shown, quotes=quotes)
+
+
+def mark(db: sqlite3.Connection, project: str) -> tuple[int, int]:
+    """A mark of ``project``'s ledger that any change moves: its revisions' count and
+    newest row. A store without a ledger yet has (0, 0)."""
+    count, newest = db.execute(
+        "SELECT count(*), coalesce(max(r.rowid), 0) FROM ledger_revisions r "
+        "JOIN ledger_entries e ON e.entry_id = r.entry_id WHERE e.project = ?",
+        (project,),
+    ).fetchone()
+    return (int(count), int(newest))

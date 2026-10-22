@@ -55,7 +55,6 @@ from .models import (
     NO_CONDITION,
     PREFIXES,
     SET_ASIDE,
-    SHOWN_CHECKS,
     SHOWN_FLAGGED,
     STATUSES,
     THIS_SESSION,
@@ -65,7 +64,6 @@ from .models import (
     CategoryDefinition,
     CategoryPage,
     ChangedEntry,
-    CitationCheckView,
     EntryChange,
     EntryCitations,
     EntryHistory,
@@ -77,17 +75,13 @@ from .models import (
     FrontierHistory,
     FrontierPast,
     FrontierView,
-    GateClause,
-    GateDecision,
     GateView,
     LinkInput,
     Mutation,
     MutationResult,
-    QuoteChecks,
     ReferenceFields,
     WorkInput,
     WorkPage,
-    WorkRecord,
     WorkReference,
     wrong_link_target,
 )
@@ -196,12 +190,7 @@ class Ledger:
         if self.control.missing:
             return (0, 0)
         with self.control.read() as tx:
-            count, newest = tx.sql.execute(
-                "SELECT count(*), coalesce(max(r.rowid), 0) FROM ledger_revisions r "
-                "JOIN ledger_entries e ON e.entry_id = r.entry_id WHERE e.project = ?",
-                (project,),
-            ).fetchone()
-        return (int(count), int(newest))
+            return queries.mark(tx.sql, project)
 
     def history(
         self, project: str, reference: str, *, before: int | None = None, limit: int = 50
@@ -223,45 +212,7 @@ class Ledger:
         material. A read: it changes nothing."""
         self._project(project)
         with self.control.read() as tx:
-            db = tx.sql
-            row = queries.find(db, project, reference)
-            shown = row.head if revision is None else revision
-            if not 1 <= shown <= row.head:
-                raise DocumentError(NOT_FOUND, f"{row.handle} has no revision {shown}")
-            material = gate.examined(db, row.entry_id, {shown}).get(shown)
-            digest = None if material is None else gate.fingerprint(material)
-            quotes: list[QuoteChecks] = []
-            for link in evidence.stored(db, row.entry_id, shown):
-                if link.target != "quote":
-                    continue
-                (total,) = db.execute(
-                    "SELECT count(*) FROM citation_checks WHERE entry_id=? AND evidence_id=?",
-                    (row.entry_id, link.evidence_id),
-                ).fetchone()
-                checks = [
-                    CitationCheckView(
-                        check_id=found[0],
-                        review_id=found[1],
-                        session=found[2],
-                        entry_revision=found[3],
-                        verdict=found[4],
-                        explanation=found[5],
-                        created=datetime.fromtimestamp(found[6], UTC),
-                        source=found[7],
-                        matches=found[8] == digest,
-                    )
-                    for found in db.execute(
-                        "SELECT c.check_id,c.review_id,r.session,c.entry_revision,c.verdict,"
-                        "c.explanation,c.created,c.source,c.material FROM citation_checks c "
-                        "JOIN review_runs r ON r.review_id=c.review_id WHERE c.entry_id=? "
-                        "AND c.evidence_id=? ORDER BY c.created DESC, c.rowid DESC LIMIT ?",
-                        (row.entry_id, link.evidence_id, SHOWN_CHECKS),
-                    )
-                ]
-                quotes.append(QuoteChecks(evidence_id=link.evidence_id, checks=checks, total=total))
-        return EntryCitations(
-            entry_id=row.entry_id, handle=row.handle, revision=shown, quotes=quotes
-        )
+            return queries.entry_citations(tx.sql, project, reference, revision)
 
     def gate(self, project: str, reference: str) -> GateView:
         """The gate for ``reference`` as it reads now (LG-17): each clause as the main
@@ -269,58 +220,7 @@ class Ledger:
         affect it. A read: it changes nothing, and takes no write lock."""
         self._project(project)
         with self.control.read() as tx:
-            db = tx.sql
-            row = queries.find(db, project, reference)
-            status, statement, fields = db.execute(
-                "SELECT status,statement,fields FROM ledger_revisions "
-                "WHERE entry_id=? AND revision=?",
-                (row.entry_id, row.head),
-            ).fetchone()
-            decisions = [
-                GateDecision(
-                    entry_id=found[0],
-                    handle=f"{PREFIXES['decision']}-{found[1]}",
-                    title=found[2],
-                    status=found[3],
-                    revision=found[4],
-                    author=json.loads(found[5]),
-                )
-                for found in db.execute(
-                    "SELECT e.entry_id,e.number,r.title,r.status,r.revision,r.author "
-                    f"{queries.CURRENT}JOIN ledger_revisions r ON r.entry_id=e.entry_id "
-                    "AND r.revision=e.head WHERE l.kind='affects' AND l.target='entry' "
-                    "AND l.target_id=? ORDER BY e.position DESC LIMIT 50",
-                    (row.entry_id,),
-                )
-            ]
-            applies = row.type in ("claim", "result") and row.origin == "project"
-            found_clauses: list[GateClause] = []
-            if applies:
-                held = evidence.stored(db, row.entry_id, row.head)
-                written = TEXTS.read(db, row.entry_id, statement, full=False)
-                now = gate.material(
-                    json.loads(fields),
-                    statement,
-                    queries.links(db, row.entry_id, row.head),
-                    held,
-                    None if written is None else written["sha256"],
-                )
-                found_clauses = [
-                    GateClause.model_validate({"clause": clause, "holds": holds, "reason": reason})
-                    for clause, holds, reason in gate.clauses(
-                        db, row.entry_id, row.handle, held, now, row.head
-                    )
-                ]
-        return GateView(
-            entry_id=row.entry_id,
-            handle=row.handle,
-            revision=row.head,
-            status=status,
-            applies=applies,
-            holds=applies and all(clause.holds for clause in found_clauses),
-            clauses=found_clauses,
-            decisions=decisions,
-        )
+            return queries.gate_view(tx.sql, project, reference)
 
     def categories(
         self, project: str, *, after: str | None = None, limit: int = 50
@@ -332,38 +232,27 @@ class Ledger:
         if self.control.missing:
             return CategoryPage(categories=[], next_after=None)
         with self.control.read() as tx:
-            return frontier.listing(tx.sql, project, after, limit)
+            return queries.category_page(tx.sql, project, after=after, limit=limit)
 
     def category(self, project: str, name: str, revision: int | None = None) -> Category:
         """A frontier category at ``revision``, its current one by default."""
         self._project(project)
         with self.control.read() as tx:
-            found = frontier.read(tx.sql, project, name, revision)
-        if found is None:
-            raise DocumentError(
-                NOT_FOUND,
-                f"no frontier category {name}"
-                + ("" if revision is None else f" at revision {revision}"),
-            )
-        return found
+            return queries.category_view(tx.sql, project, name, revision)
 
     def frontier_history(
         self, project: str, name: str, *, before: int | None = None, limit: int = 50
     ) -> FrontierHistory:
         """A category's frontier changes, newest first (LG-24)."""
-        self.category(project, name)
-        if not 1 <= limit <= 100:
-            raise DocumentError(INVALID_REQUEST, "a page holds 1 to 100 changes")
+        self._project(project)
         with self.control.read() as tx:
-            return frontier.history(tx.sql, project, name, before, limit)
+            return queries.frontier_history(tx.sql, project, name, before=before, limit=limit)
 
     def frontier_past(self, project: str, name: str, at: datetime) -> FrontierPast:
         """A category's best known results as they were at ``at`` (LG-24)."""
-        self.category(project, name)
-        if at.tzinfo is None:
-            raise DocumentError(INVALID_REQUEST, "a time names its zone")
+        self._project(project)
         with self.control.read() as tx:
-            return frontier.past(tx.sql, project, name, at.astimezone(UTC).isoformat())
+            return queries.frontier_past(tx.sql, project, name, at)
 
     def frontier(
         self, project: str, name: str, *, candidates_before: int | None = None
@@ -372,11 +261,7 @@ class Ledger:
         candidates newest first, made before result ``candidates_before``."""
         self._project(project)
         with self.control.read() as tx:
-            db = tx.sql
-            found = frontier.read(db, project, name)
-            if found is None:
-                raise DocumentError(NOT_FOUND, f"no frontier category {name}")
-            return frontier.view(db, project, found, candidates_before=candidates_before)
+            return queries.frontier_view(tx.sql, project, name, candidates_before=candidates_before)
 
     # Changes.
 
@@ -1212,64 +1097,8 @@ class Ledger:
         """The work records on an entry, newest first, as many as ``limit`` (1 to 100)
         before position ``before``, with where the next page begins (LG-6)."""
         self._project(project)
-        if not 1 <= limit <= 100 or (before is not None and before < 1):
-            raise DocumentError(INVALID_REQUEST, "invalid work page")
         with self.control.read() as tx:
-            db = tx.sql
-            row = queries.find(db, project, reference)
-            found = db.execute(
-                "SELECT record_id,position,entry_revision,tried,ending,detail,refs,part_of,"
-                "author,reason,operation_id,provenance,created,assesses,verdict,basis,anchors "
-                "FROM ledger_work "
-                "WHERE entry_id=? AND position<? ORDER BY position DESC LIMIT ?",
-                (row.entry_id, before or 2**62, limit + 1),
-            ).fetchall()
-            handles: dict[str, str] = {}
-
-            def handle(entry: str) -> str:
-                if entry not in handles:
-                    handles[entry] = queries.find(db, project, entry).handle
-                return handles[entry]
-
-            (status,) = db.execute(
-                "SELECT status FROM ledger_revisions WHERE entry_id=? AND revision=?",
-                (row.entry_id, row.head),
-            ).fetchone()
-            settled = standing.obstructed(db, row.entry_id) if status == "obstructed" else None
-            records = [
-                WorkRecord(
-                    record_id=r[0],
-                    position=r[1],
-                    entry_id=row.entry_id,
-                    handle=row.handle,
-                    entry_revision=r[2],
-                    tried=r[3],
-                    ending=r[4],
-                    limit=(detail := json.loads(r[5])).get("limit"),
-                    produced=[handle(e) for e in detail.get("produced", [])],
-                    assesses=r[13],
-                    verdict=r[14],
-                    references=json.loads(r[6]),
-                    part_of=r[7],
-                    author=json.loads(r[8]),
-                    reason=r[9],
-                    operation_id=r[10],
-                    provenance=None if r[11] is None else json.loads(r[11]),
-                    created=r[12],
-                    standing=standing.of_work(r[4], detail.get("limit"), r[0], settled),
-                    decision=handle(detail["decision"]) if "decision" in detail else None,
-                    basis=r[15],
-                    anchors=json.loads(r[16] or "[]"),
-                )
-                for r in found[:limit]
-            ]
-        more = len(found) > limit
-        return WorkPage(
-            entry_id=row.entry_id,
-            handle=row.handle,
-            records=records,
-            next_before=records[-1].position if more else None,
-        )
+            return queries.work_page(tx.sql, project, reference, before=before, limit=limit)
 
     def _plan(
         self,
