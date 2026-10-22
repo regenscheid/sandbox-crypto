@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, Entry, RunArchive
 from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.context.history.geometry import Geometry
@@ -29,7 +30,7 @@ def test_live_and_rebuilt_context_exclude_echoes_but_archive_keeps_exact_origina
             project_id="p", session_id="s", environment_id=session.environment_id
         )
         memory = RunMemory.archived(RunArchive(archive, context, run="run-test", parent=None))
-        transcript = Transcript(messages=memory.messages([]), memory=memory)
+        transcript = Transcript(context=AgentContext(messages=memory.messages([]), memory=memory))
         assert isinstance(transcript.messages, Collection)
         originals = []
         for index in range(40):
@@ -89,7 +90,7 @@ def test_actual_replay_content_still_hits_working_ceiling(tmp_path: Path):
             {"output": [{"type": "reasoning", "encrypted_content": "x" * 35000000}]}
         ).encode()
         message = AssistantMessage("result", native=native, native_format="responses")
-        run = Transcript(messages=[message, message], memory=memory)
+        run = Transcript(context=AgentContext(messages=[message, message], memory=memory))
         with pytest.raises(WorkingMemoryLimitError, match="active model payload"):
             _ = run.sent
     finally:

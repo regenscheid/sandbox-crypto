@@ -13,6 +13,7 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.cli import main
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.harness import Settings
 from sandbox_science.orchestrator.hooks import Closing, RunView, TurnHook
 from sandbox_science.orchestrator.loop import (
@@ -52,7 +53,11 @@ def tool_messages(transcript: Transcript) -> list[str]:
 
 
 async def test_the_defaults_let_a_run_work_for_thousands_of_turns() -> None:
-    assert (MAX_TURNS, Settings().max_turns, Transcript(messages=[]).max_turns) == (2000,) * 3
+    assert (
+        MAX_TURNS,
+        Settings().max_turns,
+        Transcript(context=AgentContext(messages=[])).max_turns,
+    ) == (2000,) * 3
     with pytest.raises(ValueError, match="max_turns"):
         Settings(max_turns=TURNS_CEILING + 1)
     with pytest.raises(ValueError, match="max_turns"):

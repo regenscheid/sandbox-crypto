@@ -269,12 +269,13 @@ class RemoteFolds(Folds):
                 kind, payload(FoldRequest(attempt=self.attempt, state=state(run))), timeout=1800
             ),
         )
-        run.rebuilt = (
+        run.context.restore(
             [message.message() for message in result.rebuilt]
             if result.rebuilt is not None
-            else None
+            else None,
+            base=result.base,
+            since=result.since,
         )
-        run.base, run.since = result.base, result.since
         return result.proceed
 
     async def before_call(self, transcript: Transcript) -> bool:

@@ -22,6 +22,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.continuity.resources import (
     Action,
@@ -388,7 +389,11 @@ async def test_nested_grant_refreshes_fold_usage_after_awaited_admission(tmp_pat
         lead.over_budget = gate
         async with lead.lease():
             await lead.model_returned(
-                Transcript(messages=[], usage=[ModelUsage(input_tokens=20000, output_tokens=0)])
+                Transcript(
+                    context=AgentContext(
+                        messages=[], usage=[ModelUsage(input_tokens=20000, output_tokens=0)]
+                    )
+                )
             )
             text, _ = await lead.call("delegate", {"task": "Do a part."})
             assert json.loads(text)["limits"]["tokens"] == 35000
@@ -433,11 +438,15 @@ async def test_a_delegated_runs_children_get_at_most_the_tokens_it_has_left(
                 text, _ = await lead.call("delegate", {"task": "Do a part."})
                 assert json.loads(text)["limits"]["tokens"] == 80_000
                 used = ModelUsage(input_tokens=30_000, output_tokens=1_000)
-                await lead.model_returned(Transcript(messages=[], usage=[used]))
+                await lead.model_returned(
+                    Transcript(context=AgentContext(messages=[], usage=[used]))
+                )
                 text, _ = await lead.call("delegate", {"task": "Do another."})
                 assert json.loads(text)["limits"]["tokens"] == 49_000
                 spent = ModelUsage(input_tokens=79_000, output_tokens=1_000)
-                await lead.model_returned(Transcript(messages=[], usage=[spent]))
+                await lead.model_returned(
+                    Transcript(context=AgentContext(messages=[], usage=[spent]))
+                )
                 with pytest.raises(WorkerAPIError) as refused:
                     await lead.call("delegate", {"task": "One more."})
                 assert refused.value.message == (
@@ -473,7 +482,7 @@ async def test_no_run_reads_or_takes_another_parents_outcome(tmp_path: Path) -> 
         root = found.hook(unused)
         for read in (sibling, part):
             await root.call("delegation_status", {"delegation_id": read.delegation_id})
-        await root.model_returned(Transcript(messages=[]))
+        await root.model_returned(Transcript(context=AgentContext(messages=[])))
         now = datetime.now(UTC)
         saved = RunRecord.model_validate(
             {
@@ -496,7 +505,7 @@ async def test_no_run_reads_or_takes_another_parents_outcome(tmp_path: Path) -> 
         # Once the lead ends, its notice names the outcome it never received.
         lead_id = made(1, ROOT, CHILD).delegation_id
         records.end(PROJECT, SESSION, lead_id, Ending("limit_reached", "turn_limit"))
-        (notice,) = await root.notices("turn", Transcript(messages=[]))
+        (notice,) = await root.notices("turn", Transcript(context=AgentContext(messages=[])))
         (shown,) = cast(list[dict[str, Any]], notice.payload)
         assert (shown["delegation_id"], shown["unreceived"]) == (lead_id, [part.delegation_id])
         # Nor does a delegated run take one of the root's.

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
@@ -108,7 +109,7 @@ async def test_continuation_hook_offers_only_prior_attempt_children(projects: Pr
         max_turns=10,
         offer=False,
     )
-    notices = await hook.notices("start", Transcript(messages=[]))
+    notices = await hook.notices("start", Transcript(context=AgentContext(messages=[])))
     assert len(notices) == 1
     assert notices[0].ids == (own.delegation_id,)
 

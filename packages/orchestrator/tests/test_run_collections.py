@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history.collections import Collection, Members, Slice
 from sandbox_science.orchestrator.context.history.receipts import Receipts
 from sandbox_science.orchestrator.harness import Finished, save
@@ -246,7 +247,7 @@ def test_native_payloads_count_toward_active_view_ceiling(
         messages = memory.messages([{"role": "system", "content": "Research"}])
         for _ in range(2):
             messages.append(AssistantMessage("tiny", native=b"n" * (5 * 1024 * 1024)))
-        transcript = Transcript(messages=messages, memory=memory)
+        transcript = Transcript(context=AgentContext(messages=messages, memory=memory))
         with pytest.raises(WorkingMemoryLimitError, match="active model payload"):
             _ = transcript.sent
         assert len(messages) == 3

@@ -20,6 +20,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
@@ -293,7 +294,7 @@ def folder(archive: Archive, top: int, chunk: int) -> tuple[Folder, Transcript]:
     view = session_view(archive, CONTEXT, geometry=start)
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=top, chunk=chunk)
     system = {"role": "system", "content": "s" * 400}
-    return made, Transcript(messages=[system, *view.messages])
+    return made, Transcript(context=AgentContext(messages=[system, *view.messages]))
 
 
 async def test_three_weak_folds_trip_the_breaker(archive: Archive) -> None:
@@ -727,7 +728,9 @@ class Run:
     def __init__(self, archive: Archive, name: str, made: Folder, system: int) -> None:
         self.archive, self.name, self.made = archive, name, made
         self.transcript = Transcript(
-            messages=[{"role": "system", "content": "s" * system}, *made.view.messages]
+            context=AgentContext(
+                messages=[{"role": "system", "content": "s" * system}, *made.view.messages]
+            )
         )
         self.calls = 0
 
@@ -1188,7 +1191,9 @@ async def test_past_the_wall_a_fold_not_ready_in_time_folds_skeleton_only(
         events.append(data)
 
     made.events = write
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     assert await made.before_call(transcript)  # past the trigger: the fold begins
     assert made.running is not None
     assert [e["state"] for e in events] == ["started"]
@@ -1397,7 +1402,9 @@ async def wall_run(archive: Archive, model: object) -> tuple[Folder, Transcript,
         events.append(data)
 
     made.events = write
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     assert await made.before_call(transcript)
     transcript.messages.append({"role": "user", "content": "x" * 40_000})
     assert await made.before_call(transcript)
@@ -1457,7 +1464,9 @@ async def test_run_end_counts_only_a_dispatched_fold_once(archive: Archive, stag
         model=cast(Any, Waiting()),
         admit=admit,
     )
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     async with made.lease():
         assert await made.before_call(transcript)
         await asyncio.wait_for(entered.wait(), 1)
@@ -1556,7 +1565,9 @@ async def test_journaled_fold_never_adds_identityless_cancel_estimate(
         archive, CONTEXT, run="r", view=view, start=start, ceiling=48_000,
         chunk=10_000, model=model,
     )  # fmt: skip
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     async with made.lease():
         assert await made.before_call(transcript)
         await asyncio.wait_for(entered.wait(), 1)
@@ -1578,7 +1589,9 @@ async def test_fold_response_cancelled_during_validation_has_no_input_estimate(
         entered.set()
         await asyncio.sleep(3600)
 
-    monkeypatch.setattr("sandbox_science.orchestrator.context.history.enrich.threaded", waiting_check)
+    monkeypatch.setattr(
+        "sandbox_science.orchestrator.context.history.enrich.threaded", waiting_check
+    )
     model = ScriptedModel([ModelTurn(answer_with("A supported result remains open."))])
     progress = EnrichmentProgress()
     spent: list[ModelUsage] = []
@@ -1648,7 +1661,9 @@ async def test_a_fold_whose_archiving_failed_counts_its_calls_once(archive: Arch
         raise OSError("the archive is gone")
 
     made._keep = unkept  # type: ignore[method-assign]
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     assert await made.before_call(transcript)
     running = made.running
     assert running is not None

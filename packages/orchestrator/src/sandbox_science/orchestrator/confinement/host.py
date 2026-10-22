@@ -14,6 +14,7 @@ from typing import Any, cast
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned, threaded
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.context.history.log import RunArchive
 from sandbox_science.orchestrator.context.history.retention import fits
@@ -136,12 +137,14 @@ class Prepared:
                 )
             memory = RunMemory.archived(self.log)
             self.shadow = Transcript(
-                memory=memory,
-                messages=memory.messages(
-                    [state.system.message(), *(m.message() for m in given.history)]
+                context=AgentContext(
+                    memory=memory,
+                    messages=memory.messages(
+                        [state.system.message(), *(m.message() for m in given.history)]
+                    ),
+                    usage=memory.usage(),
                 ),
                 tool_records=memory.tools(),
-                usage=memory.usage(),
             )
         run = self.shadow
         if len(run.messages) != state.message_count or len(run.tool_records) != state.tool_count:
@@ -150,13 +153,26 @@ class Prepared:
             run.usage.append(state.last_usage)
         if len(run.usage) != state.usage_count:
             raise TransportError("conflict", "runtime usage is not contiguous")
-        omitted = {"system", "message_count", "tool_count", "usage_count", "last_usage"}
+        omitted = {
+            "system",
+            "message_count",
+            "tool_count",
+            "usage_count",
+            "last_usage",
+            "max_input_chars",
+            "tools_chars",
+            "base",
+            "since",
+        }
         for name, value in state.model_dump(exclude=omitted).items():
             if name not in {"delivered", "offered", "prompt_provenance"}:
                 setattr(run, name, value)
         if state.delivered or state.offered:
             raise TransportError("invalid_request", "historical receipts do not cross loop state")
-        run.prompt_provenance = state.prompt_provenance
+        run.context.max_input_chars = state.max_input_chars
+        run.context.tools_chars = state.tools_chars
+        run.context.restore(run.rebuilt, base=state.base, since=state.since)
+        run.context.prompt_provenance = state.prompt_provenance
         return run
 
     async def call(self, kind: Capability, value: JsonValue) -> JsonValue:

@@ -14,6 +14,7 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, Entry, Folder, FoldRecord
 from sandbox_science.orchestrator.context.history.bound import _short, bound
 from sandbox_science.orchestrator.context.history.folds import CONSOLIDATE
@@ -242,7 +243,9 @@ async def test_decisions_that_do_not_fit_stop_the_run_with_research_state(archiv
     assert view.stop is not None
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=4_000, chunk=1_000)
     made.per_token = lambda run: 1.0  # type: ignore[method-assign]
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     assert not await made.before_call(transcript)
     assert made.stopped == "research_state"
     assert made.detail is not None
@@ -333,7 +336,9 @@ async def test_a_stopped_view_starts_no_enrichment(archive: Archive) -> None:
     made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=40_000,
                   chunk=4_000, model=cast(Any, model))  # fmt: skip
     made.per_token = lambda run: 1.0  # type: ignore[method-assign]
-    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+    )
     assert not await made.before_call(transcript)
     assert made.stopped == "research_state"
     assert (made.running, model.calls, made.folds) == (None, 0, [])

@@ -20,6 +20,7 @@ from sandbox_science.orchestrator.confinement.models import (
 )
 from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.harness import Role
 from sandbox_science.orchestrator.hooks import RunView, TurnHook
@@ -263,7 +264,9 @@ def test_loop_metadata_never_iterates_historical_delivery_membership() -> None:
         def __iter__(self):
             raise AssertionError("historical identities must stay behind the capability")
 
-    transcript = Transcript(messages=[{"role": "system", "content": "bounded"}])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "system", "content": "bounded"}])
+    )
     transcript.delivered["jobs"] = Historical()
     transcript.offered["jobs"] = Historical()
     wire = state(transcript)

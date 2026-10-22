@@ -15,6 +15,7 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.chat import ModelBudget, RunChat
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
@@ -42,7 +43,7 @@ def _chat(tmp_path: Path) -> tuple[ProjectStore, RunState, RunChat]:
 
 def _priced(cost: float) -> Transcript:
     """A run whose calls cost ``cost``, as the gateway reported it."""
-    found = Transcript(messages=[{"role": "user", "content": "Go."}])
+    found = Transcript(context=AgentContext(messages=[{"role": "user", "content": "Go."}]))
     found.turns = 1
     found.usage.append(ModelUsage(model="m", input_tokens=10, output_tokens=1, cost=cost))
     return found
@@ -50,7 +51,9 @@ def _priced(cost: float) -> Transcript:
 
 def _sized(tokens: int, *, used: int = 0) -> Transcript:
     """A run whose next call sends about ``tokens`` tokens, having used ``used``."""
-    found = Transcript(messages=[{"role": "user", "content": "x" * (4 * tokens)}])
+    found = Transcript(
+        context=AgentContext(messages=[{"role": "user", "content": "x" * (4 * tokens)}])
+    )
     found.turns = 1
     if used:
         found.usage.append(ModelUsage(model="m", input_tokens=used, output_tokens=0))

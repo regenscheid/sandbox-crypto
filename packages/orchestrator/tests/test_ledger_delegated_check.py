@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import WriteFileRequest
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.delegation.outcome import Outcome, Proof, Target, proof_reads
 from sandbox_science.orchestrator.delegation.prompt import brief_text, check_task
@@ -480,7 +481,7 @@ WHOLE: list[dict[str, Any]] = [
 
 async def observed(records: list[dict[str, Any]]) -> Outcome:
     outcome = Outcome(Target("entry-9", "C-9", 1, proof_reads(PROOFS)))
-    run = Transcript(messages=[])
+    run = Transcript(context=AgentContext(messages=[]))
     for record in records:
         await outcome.observe_tool(run, record)
     return outcome
@@ -583,7 +584,7 @@ async def test_a_proof_file_larger_than_one_read_shows_is_read_in_ranges(harness
     link = evidence(1, target="artifact", target_id="artifact-1", revision=1, sha256=SHA)
     link = link.model_copy(update={"sha256": hashlib.sha256(data).hexdigest()})
     outcome = Outcome(Target("entry-9", "C-9", 1, proof_reads([link])))
-    run = Transcript(messages=[])
+    run = Transcript(context=AgentContext(messages=[]))
     entry = {"entry": "entry-9", "revision": 1, "complete": True, "evidence": [link.evidence_id]}
     await outcome.observe_tool(run, {"ledger": "ledger_read", "read": entry})
     context = harness.context()

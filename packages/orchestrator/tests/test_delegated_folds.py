@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, Entry, geometry, session_view
 from sandbox_science.orchestrator.context.history.delegated import delegated_folder
 from sandbox_science.orchestrator.context.history.geometry import DEFAULT_SHARES
@@ -65,7 +66,11 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
         shares=DEFAULT_SHARES,
         model=narrator if narrative else None,
     )
-    transcript = Transcript([{"role": "system", "content": "s" * 400}, *made.view.messages])
+    transcript = Transcript(
+        context=AgentContext(
+            messages=[{"role": "system", "content": "s" * 400}, *made.view.messages]
+        )
+    )
     first = None
     for batch in range(3):
         for n in range(200):
@@ -115,7 +120,11 @@ async def test_scoped_folds_survive_reopen_without_other_agents_context(
             chunk=32_000,
             shares=DEFAULT_SHARES,
         )
-        resumed = Transcript([{"role": "system", "content": "s" * 400}, *rebuilt.view.messages])
+        resumed = Transcript(
+            context=AgentContext(
+                messages=[{"role": "system", "content": "s" * 400}, *rebuilt.view.messages]
+            )
+        )
         assert await rebuilt.before_call(resumed)
         assert brief in json.dumps(resumed.sent)
         assert all(text not in json.dumps(resumed.sent) for text in forbidden)

@@ -18,6 +18,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.context.history.archive import Archived
 from sandbox_science.orchestrator.context.history.folds import Folder
@@ -412,7 +413,9 @@ async def test_a_folds_enrichment_proposals_are_kept_as_it_is_archived(tmp_path:
             events.append(data)
 
         made.events = write
-        transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+        transcript = Transcript(
+            context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+        )
         assert await made.before_call(transcript)
         transcript.messages.append({"role": "user", "content": "x" * 40_000})
         assert await made.before_call(transcript)

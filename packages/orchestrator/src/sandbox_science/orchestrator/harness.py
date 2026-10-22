@@ -24,7 +24,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Literal, Protocol, cast
+from typing import Final, Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -50,35 +50,22 @@ from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
 from .connector_settings import ProjectConnectors
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
-from .consistency.findings import Findings
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .consistency.store import ReviewStore
+from .context.agent import AgentContext
 from .context.history import (
     CEILING,
-    Archive,
-    Folder,
-    HistoryTool,
-    Judge,
-    Register,
-    RunArchive,
     View,
     ViewMeter,
     ceiling,
-    geometry,
-    ledger_cites,
-    ledger_entries,
-    ledger_works,
-    recorded_words,
-    register_reads,
-    session_view,
-    settle,
 )
-from .context.history.delegated import FoldAllowance, delegated_folder
+from .context.history.delegated import FoldAllowance
 from .context.history.geometry import DEFAULT_SHARES, Shares
 from .context.history.limits import WorkingMemoryLimitError
 from .context.history.receipts import Receipts
 from .context.history.retention import fits
 from .context.history.snapshot import inline
+from .context.preparation import FoldLimits, HistoryScope, PreparedContext, prepare_context
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
 from .continuity.grants import TokenGrants
@@ -95,7 +82,6 @@ from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .delegation.tracks import TrackTools, grant
-from .digest import Digest, Rendered, constraints_block, render
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .environment_claim import environment_claim
@@ -105,7 +91,6 @@ from .jobs import JobTools
 from .jobstate import JobState
 from .kernel_check import KernelCheck
 from .ledger import Ledger
-from .ledger.proposals import FoldProposals
 from .ledger.tool import LedgerTool
 from .loop import (
     MAX_INPUT_CHARS,
@@ -134,7 +119,6 @@ from .model import (
 )
 from .model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from .model_settings import AgentModelRole, AgentModelSelection, ProjectModels
-from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
     ProjectError,
@@ -159,7 +143,6 @@ from .skills.derive import VERSION as PASS_VERSION
 from .skills.discovery import SkillDiscovery
 from .skills.embeddings import SkillVectors
 from .skills.staging import Stager
-from .tokens import chars_per_token
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .view_image import ImageViewer
 from .worker_client import WorkerAPIError, WorkerClient
@@ -915,8 +898,9 @@ class Harness:
                         await stack.enter_async_context(self.prepare_attempt(admitted))
                     memory = await self.memory(admitted)
                     allowance = self._fold_allowance(admitted)
-                    folder = await self._folder(admitted, allowance=allowance)
-                    view = folder.view if folder is not None else None
+                    prepared = await self._prepare_context(admitted, allowance=allowance)
+                    folder = prepared.folder if prepared is not None else None
+                    view = prepared.view if prepared is not None else None
                     if view is not None:
                         # The session's view is the earlier conversation (CM-29).
                         request = dataclasses.replace(admitted.request, history=view.messages)
@@ -939,6 +923,7 @@ class Harness:
                         memory,
                         delegations,
                         stop,
+                        prepared=prepared,
                     )
                     if toolbox.mailbox is not None:
                         child_wake = (
@@ -999,19 +984,8 @@ class Harness:
                         folder.events = functools.partial(chat.write, "fold")
                         folder.refit = functools.partial(_refit, toolbox, discovery)
                         folder.specs = lambda: toolbox.specs
-                    log = None
+                    log = prepared.log if prepared is not None else None
                     if self.stores is not None and chat is not None:
-                        # Each message is kept in the session's archive as it is added (CM-4).
-                        archive = Archive(self.stores.projects.control, clock=self.clock)
-                        log = RunArchive(
-                            archive,
-                            admitted.context,
-                            run=chat.run,
-                            parent=chat.parent,
-                            message_ids=request.message_ids
-                            or ((operator_ref(chat.run),) if request.operator else ()),
-                            clock=self.clock,
-                        )
                         resolved = dataclasses.replace(
                             request,
                             run_id=admitted.run_id,
@@ -1068,7 +1042,7 @@ class Harness:
             elif interruption.error is not None:
                 raise interruption.error from None
             elif isinstance(error, WorkingMemoryLimitError):
-                transcript = transcript or Transcript(messages=[])
+                transcript = transcript or Transcript(context=AgentContext(messages=[]))
                 transcript.stopped = "memory_limit"
                 transcript.summaries["memory"] = {"blocked": str(error)}
             elif not isinstance(error, Exception) or transcript is None:
@@ -1102,126 +1076,52 @@ class Harness:
             tokens=request.tokens,
         )
 
-    async def _folder(
+    async def _prepare_context(
         self, admitted: Admitted, *, allowance: FoldAllowance | None = None
-    ) -> Folder | None:
-        """A main run's folds, with stores (CM-24, CM-29), holding the view of its session
-        it starts with: the earlier messages of its session from the archive, folded as
-        its records say, after a state block that holds the research-state digest
-        (CM-16, CM-26). Children use their own attempt-scoped folder; no stores, no folds."""
+    ) -> PreparedContext | None:
+        """Resolve role policy, then prepare the attempt's scoped history together."""
         stores, request, context = self.stores, admitted.request, admitted.context
         if stores is None:
             return None
-        if request.parent is not None:
-            block = await threaded(
-                self._task_block, stores, context.project_id, context.session_id, request
-            )
-            return await delegated_folder(
-                Archive(stores.projects.control, clock=self.clock, chain=True),
-                context,
-                run=run_name(admitted.started_at, admitted.run_id),
-                parent=request.parent,
-                brief=request.task,
-                constraints=block,
-                ceiling=await self._ceiling(self.role(request)),
-                chunk=self.settings.chunk,
-                shares=self.settings.shares,
-                clock=self.clock,
-                model=self._child_narrator(request, context),
-                allowance=allowance or self._fold_allowance(admitted),
-            )
+        role = self.role(request)
         project, session = context.project_id, context.session_id
-        main = self.role(request)
-        archive = Archive(stores.projects.control, clock=self.clock)
+
+        def former(alias: str) -> ChatModel | None:
+            if self.gateway is None or self.settings.skeleton_only:
+                return None
+            return cached_for(self.gateway.model(alias, role="fold").for_former(), project, session)
+
         name = run_name(admitted.started_at, admitted.run_id)
-        calls = await threaded(stores.projects.usage, project, session, main.alias)
-        runs = await threaded(stores.projects.unarchived_runs, project, session)
-        earlier = functools.partial(recorded_words, stores.projects, stores.runs, project, session)
-        settings = self.settings
-        top = await self._ceiling(main)
-        start = geometry(top, 0, settings.chunk, settings.shares)  # no system message yet
-        per_token = chars_per_token(calls)
-        ledger = Ledger(stores.documents)
-        digest = functools.partial(self._digest, stores, project, session)
-        found = await threaded(digest, int(start.digest * per_token))
-        # Which folded markers are retired, by the ledger and the read register (CM-21a).
-        judge = Judge(
-            ledger_entries(ledger, project),
-            register_reads(Register(archive.control), project),
-            ledger_works(ledger, project),
-            ledger_cites(ledger, project),
-        )
-        view = await threaded(
-            session_view,
-            archive,
-            context,
-            geometry=start,
-            per_token=per_token,
-            runs=runs,
-            earlier=earlier,
-            judge=judge,
-            digest=found,
-            consolidating=request.consolidate,
-        )
-        kernels = None
-        if view.cells:  # whether the kernels its cells ran in still run (CM-29c)
-            try:
-                kernels = (await self.client.observe_kernels(context)).kernels
-            except Exception as error:  # unknown, then: the run goes on
-                _log.warning("the kernels could not be observed for the view: %r", error)
-        view = await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
-
-        def exists(handle: str) -> bool:
-            try:
-                ledger.entry(project, handle)
-            except (DocumentError, ValueError):
-                return False
-            return True
-
-        # The session's last main run on another model: this one refits to its own
-        # geometry first, that model writing the refit's narratives (CM-31).
-        switched = await threaded(_switched, stores.projects, project, session, main.alias)
-        former = None
-        if switched is not None and self.gateway is not None and not settings.skeleton_only:
-            former = cached_for(
-                self.gateway.model(switched[0], role="fold").for_former(), project, session
-            )
-        made = Folder(
-            archive,
-            context,
-            run=name,
-            view=view,
-            start=start,
-            ceiling=top,
-            chunk=settings.chunk,
-            calls=calls,
-            runs=runs,
-            earlier=earlier,
-            kernels=kernels,
-            digest=digest,
-            model=self._narrator(project, session, request),
-            exists=exists,
-            judge=judge,
-            consolidating=request.consolidate,
-            switched=switched,
-            former=former,
-            carried=await threaded(_carried, stores.projects, project, session),
+        return await prepare_context(
+            HistoryScope(
+                context,
+                name,
+                request.parent,
+                request.message_ids or ((operator_ref(name),) if request.operator else ()),
+            ),
+            projects=stores.projects,
+            documents=stores.documents,
+            run_state=stores.runs,
+            limits=FoldLimits(
+                await self._ceiling(role),
+                self.settings.chunk,
+                self.settings.shares,
+                request.consolidate,
+            ),
+            alias=role.alias,
+            brief=request.task,
+            delegation=request.delegation,
+            narrator=(
+                self._child_narrator(request, context)
+                if request.parent is not None
+                else self._narrator(project, session, request)
+            ),
+            former_model=former,
+            learned=self._learned,
+            observe_kernels=self.client.observe_kernels,
+            allowance=allowance or self._fold_allowance(admitted),
             clock=self.clock,
         )
-        # The ceiling a context error capped, carried to later runs: this service's, or
-        # the session's last main run's on the alias, as its record keeps it (CM-43).
-        alias = main.alias
-        made.learned = self._learned.get(alias)
-        if made.learned is None:
-            made.learned = await threaded(_learned, stores.projects, project, session, alias)
-
-        def learn(cap: int) -> None:
-            self._learned[alias] = cap
-
-        made.on_cap = learn
-        # A fold's proposals are checked against its span and kept apart (CM-15).
-        made.propose = functools.partial(FoldProposals(ledger).propose, project, session, name)
-        return made
 
     async def _ceiling(self, role: Role | None = None) -> int:
         """MAIN's ceiling C (CM-27): the role's, capped by the model's limit: the setting's
@@ -1284,46 +1184,6 @@ class Harness:
         if self.settings.max_input_chars is not None:
             return self.settings.max_input_chars
         return FOLDING_CHARS if folding else MAX_INPUT_CHARS
-
-    def _digest(self, stores: Stores, project: str, session: str, budget: int) -> Rendered | None:
-        """The research-state digest a main run's state block holds (CM-16), within
-        ``budget`` characters, its third of the state block (CM-27), framed, with the
-        handles and lines it shows, which the fold region's short forms are checked
-        against (CM-21b); ``None`` when the research state is empty."""
-        ledger = Ledger(stores.documents)
-        digest = Digest(
-            ledger,
-            proposals=FoldProposals(ledger),
-            plans=SessionPlans(stores.documents),
-            questions=Questions(stores.documents, clock=self.clock),
-            delegations=DelegationRecords(stores.documents, clock=self.clock),
-            findings=Findings(ReviewStore(stores.documents)),
-        )
-        try:
-            found = render(digest.sections(project, session), budget)
-        except DocumentError as error:  # a project the ledger does not know yet
-            _log.warning("no digest for %s/%s: %s", project, session, error)
-            return None
-        if not found.text:
-            return None
-        return dataclasses.replace(found, text=DIGEST.text + "\n" + found.text)
-
-    def _task_block(
-        self, stores: Stores, project: str, session: str, request: RunRequest
-    ) -> str | None:
-        """A delegated task's state block: the user's standing constraints, each with the
-        user's words beside it (CM-37a). A check gets none, nor anything else."""
-        if request.delegation is None:
-            return None
-        records = DelegationRecords(stores.documents, clock=self.clock)
-        try:
-            if records.get(project, session, request.delegation).kind != "task":
-                return None
-            lines = Digest(Ledger(stores.documents)).constraints(project, session)
-        except (ControlError, DocumentError) as error:  # no record of it: no constraints
-            _log.warning("no state block for delegated run %s: %s", request.run_id, error)
-            return None
-        return TASK_CONSTRAINTS.text + "\n" + constraints_block(lines) if lines else None
 
     def _limits(self, request: RunRequest) -> dict[str, JsonValue]:
         """The limits a run runs under, as its record keeps them (PD-29)."""
@@ -1679,6 +1539,8 @@ class Harness:
         memory: Snapshot | None = None,
         delegations: Delegations | None = None,
         stop: asyncio.Event | None = None,
+        *,
+        prepared: PreparedContext | None,
     ) -> Toolbox:
         """The run's tools; ``on_close`` takes what closes each part the run made,
         ``memory`` is the project memory the run was given, which its reviewer is too, and
@@ -1748,6 +1610,8 @@ class Harness:
                 jobs=jobs,
                 connectors=connectors,
             )
+        if prepared is None:
+            raise ValueError("stateful tools require prepared agent context")
         accepts, why = await self._images(alias)
         viewer = None
         if accepts:
@@ -1935,12 +1799,7 @@ class Harness:
             tracks=tracks,
             skills=skills,
             # Main reads its session; delegated runs read their own subtree (CM-37).
-            history=HistoryTool(
-                Archive(stores.projects.control, clock=self.clock, chain=True),
-                context,
-                run=run_name(admitted.started_at, admitted.run_id),
-                delegated=delegated,
-            ),
+            history=prepared.retrieval,
             images=viewer,
             image_offer={"offered": accepts, "why": why},
         )
@@ -1969,75 +1828,6 @@ class Harness:
         if alias not in accepts:
             return False, "not_described"
         return accepts[alias], "gateway" if accepts[alias] else "gateway_says_no"
-
-
-def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> int | None:
-    """The ceiling the session's last main run on ``alias`` capped after a context
-    error, as its record keeps it (``summaries.folds.capped``), if it did."""
-    for entry in projects.iter_runs(project, session, newest_first=True):
-        if entry.role != "main":
-            continue
-        try:
-            record = projects.run(project, session, entry.name)
-        except ProjectError as error:
-            if error.kind is ErrorKind.UNSUPPORTED:
-                raise  # Do not discard persisted fold/model constraints at a read bound.
-            return None
-        folds = record.summaries.get("folds")
-        capped = folds.get("capped") if isinstance(folds, dict) else None
-        return capped if record.alias == alias and type(capped) is int else None
-    return None
-
-
-def _carried(projects: ProjectStore, project: str, session: str) -> tuple[str, str] | None:
-    """The session's last main run that began folding, and the fold it kept for the next
-    run's start (``summaries.folds.kept``, CM-24a), if it kept one."""
-    for entry in projects.iter_runs(project, session, newest_first=True):
-        if entry.role != "main":
-            continue
-        try:
-            record = projects.run(project, session, entry.name)
-        except ProjectError as error:
-            if error.kind is ErrorKind.UNSUPPORTED:
-                raise  # Do not discard persisted fold/model constraints at a read bound.
-            return None
-        folds = record.summaries.get("folds")
-        if not isinstance(folds, dict):  # it stopped before its first call
-            continue
-        kept = folds.get("kept")
-        return (entry.name, kept) if isinstance(kept, str) else None
-    return None
-
-
-def _switched(
-    projects: ProjectStore, project: str, session: str, alias: str
-) -> tuple[str, int] | None:
-    """The alias and the ceiling of the session's last main run that folded, when it was
-    on another alias than ``alias``, as its record keeps them (CM-31); or, when that run
-    refused a switch, the alias and ceiling it refused to switch from, so that every run
-    names the switch until one on the new alias goes on."""
-    for entry in projects.iter_runs(project, session, newest_first=True):
-        if entry.role != "main":
-            continue
-        try:
-            record = projects.run(project, session, entry.name)
-        except ProjectError as error:
-            if error.kind is ErrorKind.UNSUPPORTED:
-                raise  # Do not discard persisted fold/model constraints at a read bound.
-            return None
-        folds = record.summaries.get("folds")
-        shape = folds.get("geometry") if isinstance(folds, dict) else None
-        found = shape.get("ceiling") if isinstance(shape, dict) else None
-        if type(found) is not int:
-            continue
-        refit = cast(dict[str, Any], folds).get("refit") if isinstance(folds, dict) else None
-        if isinstance(refit, dict) and cast(dict[str, Any], refit).get("refused"):
-            earlier = cast(dict[str, Any], refit).get("from")
-            size = cast(dict[str, Any], refit).get("ceiling")
-            if isinstance(earlier, str) and type(size) is int and earlier != alias:
-                return earlier, size
-        return (record.alias, found) if record.alias and record.alias != alias else None
-    return None
 
 
 def _refit(toolbox: Toolbox, discovery: SkillDiscovery | None, view: View) -> None:

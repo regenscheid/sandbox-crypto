@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 
 from sandbox_science.orchestrator.chat import ModelBudget, RunChat
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.context.history.delegated import FoldAllowance
 from sandbox_science.orchestrator.continuity.models import ModelIntents
@@ -67,7 +68,9 @@ async def test_child_folds_reserve_reporting_room_and_count_inflight_tokens(proj
     state = RunState(projects.control)
     chat = RunChat(state, CONTEXT, run=CHILD, run_id="child", task="Write a report")
     budget = ModelBudget(chat, tokens=12000, auxiliary_tokens=allowance.additional)
-    transcript = Transcript([{"role": "user", "content": "A" * 12000}])
+    transcript = Transcript(
+        context=AgentContext(messages=[{"role": "user", "content": "A" * 12000}])
+    )
     assert await budget.halt(transcript) is None
     assert await allowance.admit([{"role": "user", "content": "B" * 4000}], [])
     assert 5000 < await allowance.additional() < 5200

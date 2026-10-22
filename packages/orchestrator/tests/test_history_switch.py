@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import (
     Archive,
     Entry,
@@ -57,7 +58,13 @@ def switching(
         events.append(data)
 
     made.events = write
-    return made, Transcript(messages=[{"role": "system", "content": "s"}, *view.messages]), events
+    return (
+        made,
+        Transcript(
+            context=AgentContext(messages=[{"role": "system", "content": "s"}, *view.messages])
+        ),
+        events,
+    )
 
 
 async def test_a_switch_to_a_smaller_model_refits_the_view_under_its_trigger(
