@@ -26,6 +26,10 @@ JOURNAL: Final = "runtime-credentials.json"
 """The issue journal's name in control's state directory."""
 MAX_REQUEST_BYTES: Final = 1024
 MAX_JOURNAL_BYTES: Final = 16 * 1024 * 1024
+KEPT_ISSUES: Final = 256
+"""The journal keeps the latest issues only: the latest is what replays, and the window
+refuses the manager's recent requests as superseded. A request older than the window is
+treated as new, which mints fresh values and revokes, never handing out older ones."""
 
 RequestId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
 
@@ -203,6 +207,9 @@ class RuntimeCredentials:
         self._save((*self._journal.issues[:-1], issue))
 
     def _save(self, issues: tuple[Issue, ...]) -> None:
-        journal = Journal(issues=issues)
+        # Bounded, so control never refuses to start on its own history; generations
+        # are 96 random bits, so one beyond the window being current again is negligible
+        # beside the retained ones and the generation file that are still checked.
+        journal = Journal(issues=issues[-KEPT_ISSUES:])
         _publish(self._journal_file, journal.model_dump_json().encode())
         self._journal = journal

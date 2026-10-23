@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from sandbox_science.orchestrator.confinement.credentials import (
     JOURNAL,
+    KEPT_ISSUES,
     CredentialsError,
     Issued,
     RuntimeCredentials,
@@ -153,6 +154,24 @@ def test_no_generation_is_ever_reissued(tmp_path: Path) -> None:
         "runtime-" + "03" * 12
     )
     assert generations == []
+
+
+def test_the_journal_keeps_a_bounded_window_of_issues(tmp_path: Path) -> None:
+    issuer = credentials(tmp_path)
+    requests = [f"{number:032x}" for number in range(KEPT_ISSUES + 44)]
+    issued = [issuer.issue(request, occupied=False) for request in requests][-1]
+    journal = json.loads((tmp_path / "state" / JOURNAL).read_text())["issues"]
+    assert len(journal) == KEPT_ISSUES
+    assert [issue["request"] for issue in journal] == requests[-KEPT_ISSUES:]
+    assert issuer.issue(requests[-1], occupied=False) == issued  # the latest still replays
+    with pytest.raises(CredentialsError) as older:
+        issuer.issue(requests[-KEPT_ISSUES], occupied=False)  # still in the window
+    assert older.value.kind == "superseded"
+    restarted = credentials(tmp_path)
+    assert len(json.loads((tmp_path / "state" / JOURNAL).read_text())["issues"]) == KEPT_ISSUES
+    fresh = restarted.issue(requests[0], occupied=False)  # beyond it: fresh values only
+    assert fresh.generation not in {issue["generation"] for issue in journal}
+    assert fresh.token != issued.token
 
 
 def test_the_configured_placeholder_generation_is_never_issued(tmp_path: Path) -> None:
