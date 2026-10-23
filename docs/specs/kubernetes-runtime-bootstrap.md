@@ -312,14 +312,13 @@ CLI; (4) renderer and image; (5) live acceptance.
 4. The manager reconnects automatically to the same recorded sandbox; replacing it
    still needs `recover_infrastructure` and the 10-attempt bound (KRB-17).
 
-Remaining owner questions:
+Accepted trade-offs (owner, 2026-10-22), for the first deployment:
 
 - R1. The manager's gateway certificate can do anything on the gateway, including to
   the worker's sandboxes. OpenShell can confine it to one workspace only if the gateway
   turns on OIDC roles (for example through Authentik), which also changes how the
-  worker and you sign in. Recommendation: accept for the first deployment and put
-  gateway roles on the backlog.
+  worker and you sign in. Accepted; gateway roles are on the backlog.
 - R2. Kubernetes cannot tell the runtime's traffic from any other sandbox's on this
   gateway, so every sandbox can reach control's runtime port; each sandbox's own
   OpenShell rules and the runtime token still stop them. The alternative is a separate
-  gateway for the runtime. Recommendation: accept, and prove the refusal live.
+  gateway for the runtime. Accepted; live acceptance proves the refusal (KRB-27).
