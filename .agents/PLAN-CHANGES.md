@@ -2,6 +2,7 @@
 
 ## 2026-10-22
 
+- Owner decisions on cluster delivery: job sandboxes sized 6 cores/16 GiB and 12 cores/32 GiB with package replay and drain protection; the runtime manager gets its own pod, starts first by `kubectl exec` and reconnects automatically, with on-demand starts later; the web GUI will go through the cluster load balancer with authentication.
 - Record the multi-user direction (D94, owner): each mutually trusted group (one person, or collaborators in the same sessions) gets a complete instance in its own namespace, sharing only cluster infrastructure; nothing is built now.
 - Add job sandboxes (D93, owner): big background jobs get a new, job-sized sandbox pod inside the cluster and control environment, so 24-hour-plus and large-memory work spreads across nodes; design before implementation.
 - Revise the Kubernetes isolation plan (D43/D92, owner, later 2026-10-22): Talos 1.13's Kata extension provides only the Cloud Hypervisor handler `kata` (needs GICv3), so all sandboxes run under `kata` on amd64 nodes at tier 3 in one pool; mixed-tier pools are deferred and Raspberry Pi nodes host trusted services until Talos 1.14's `kata-qemu`. Docs and examples follow OpenShell 0.1.5 ([isolation](../docs/KUBERNETES.md#sandbox-isolation)).

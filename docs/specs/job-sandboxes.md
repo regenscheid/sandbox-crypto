@@ -261,5 +261,19 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
    SageMath 10.9 and g6k, which the owner needs; only packages installed later in the
    session are missing until package copying lands.
 
-Questions 2 (concurrency) and 3 (wait for room) keep their recommendations until the
-owner confirms them.
+2. Concurrency: one big job per project and two in the whole cluster, as recommended.
+3. Waiting for room: 30 minutes, as recommended.
+
+Two changes follow from the owner's review:
+
+- **Packages are replayed, in the first increment.** Before the job's command runs, the
+  worker installs the session's recorded package changes in the job sandbox at their
+  recorded versions, through the package cache and the session's policy, so the job sees
+  the packages the session tested with. Copying installed bytes stays a later
+  optimization if replay is too slow. This supersedes "base image's packages only" in
+  question 7 and the first increment.
+- **Planned restarts wait for job sandboxes.** Job sandbox pods carry a label (OpenShell
+  0.1.5 allowed pod labels), and the deployment ships a PodDisruptionBudget for it, so
+  a node drain waits for a running job instead of evicting it. Unplanned loss (crash,
+  power, hardware) still marks the job `lost`. Whether `talosctl upgrade` honours
+  PodDisruptionBudgets as `kubectl drain` does is unverified.
