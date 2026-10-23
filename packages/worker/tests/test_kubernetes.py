@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import tomllib
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -115,3 +116,77 @@ def test_workspace_prefix_requirement_defaults_safe_and_never_enters_driver_json
     for invalid in (0, 1, "true", None):
         with pytest.raises(ValidationError):
             KubernetesProfile.model_validate({**values, "require_workspace_prefix": invalid})
+
+
+# The Kubernetes caller driver config as OpenShell v0.1.5 parses it
+# (crates/openshell-driver-kubernetes/src/driver.rs, KubernetesSandboxDriverConfig
+# and its nested structs): every struct is `deny_unknown_fields`, so one key outside
+# this tree makes the gateway refuse the sandbox. `None` marks a free-form map or
+# list whose contents are not keyed by the schema. The CLI wraps it in "kubernetes".
+OPENSHELL_0_1_5_DRIVER_CONFIG: dict[str, object] = {
+    "pod": {
+        "node_selector": None,
+        "runtime_class_name": None,
+        "tolerations": None,
+        "priority_class_name": None,
+    },
+    "containers": {
+        "agent": {"resources": {"requests": None, "limits": None}, "volume_mounts": None}
+    },
+    "volumes": None,
+}
+
+
+def _unaccepted_paths(document: object, allowed: object, path: str = "") -> list[str]:
+    if allowed is None:
+        return []
+    if not isinstance(document, dict) or not isinstance(allowed, dict):
+        return [path or "<root>"]
+    found: list[str] = []
+    for key, value in cast(dict[str, object], document).items():
+        if key not in allowed:
+            found.append(f"{path}/{key}")
+        else:
+            found += _unaccepted_paths(
+                value, cast(dict[str, object], allowed)[key], f"{path}/{key}"
+            )
+    return found
+
+
+def test_driver_json_uses_only_keys_openshell_0_1_5_accepts() -> None:
+    raw = tomllib.loads((ROOT / "examples/kubernetes/worker-placement.toml").read_text())
+    settings = EnvironmentSettings.model_validate(raw["openshell"]["environments"])
+    for placement in [profile(), *settings.kubernetes.values()]:
+        document = json.loads(placement.driver_json(Resources()))
+        assert set(document) == {"kubernetes"}
+        assert _unaccepted_paths(document["kubernetes"], OPENSHELL_0_1_5_DRIVER_CONFIG) == []
+        pod = document["kubernetes"]["pod"]
+        assert all(isinstance(v, str) for v in pod["node_selector"].values())
+        assert set(pod) <= {"node_selector", "runtime_class_name"}
+
+
+def test_the_schema_check_rejects_keys_openshell_0_1_5_would() -> None:
+    document = json.loads(profile().driver_json(Resources()))["kubernetes"]
+    document["pod"]["nodeSelector"] = {}
+    document["containers"]["agent"]["resources"]["claims"] = []
+    assert set(_unaccepted_paths(document, OPENSHELL_0_1_5_DRIVER_CONFIG)) == {
+        "/pod/nodeSelector",
+        "/containers/agent/resources/claims",
+    }
+
+
+def test_example_files_name_the_kata_runtime_class_and_gateway_settings() -> None:
+    raw = tomllib.loads((ROOT / "examples/kubernetes/worker-placement.toml").read_text())
+    settings = EnvironmentSettings.model_validate(raw["openshell"]["environments"])
+    assert {p.runtime_class_name for p in settings.kubernetes.values()} == {"kata"}
+    assert {p.node_selector["kubernetes.io/arch"] for p in settings.kubernetes.values()} == {
+        "amd64"
+    }
+    gateway = tomllib.loads((ROOT / "examples/kubernetes/gateway-driver.toml").read_text())
+    driver = gateway["openshell"]["drivers"]["kubernetes"]
+    assert driver["allow_driver_config"] is True
+    assert driver["default_runtime_class_name"] == "kata"
+    assert driver["resource_admission"]["enabled"] is True
+    runtime_class = (ROOT / "examples/kubernetes/runtimeclass-kata.yaml").read_text()
+    assert "handler: kata\n" in runtime_class
+    assert 'openshell.ai/sandbox-attachable: "true"' in runtime_class

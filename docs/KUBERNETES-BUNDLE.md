@@ -14,7 +14,10 @@ state locks. All containers run as UID/GID 1000 with fsGroup 1000, no added Linu
 capabilities, no privilege escalation, a read-only root filesystem and default
 seccomp. No application service account token, RBAC, privileged Pod, host path,
 runtime agent loop or research process is generated. Install and qualify OpenShell
-separately with its own required gateway authority and isolation tier.
+separately with its own required gateway authority and isolation tier. The gateway
+needs `allow_driver_config = true` with resource admission on, and each RuntimeClass
+and PVC a profile names must carry the `openshell.ai/sandbox-attachable` labels
+([gateway settings](KUBERNETES.md#gateway-settings-for-profile-placement)).
 
 A first UID-1000 init container mounts only that Pod's data PVC and creates the
 fixed missing state directories: `control` for the application, `worker` and

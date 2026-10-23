@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Merge this illustrative fragment into a PRIVATE worker/launcher config.
-# Requires a Kubernetes OpenShell gateway permitting approved driver configuration.
-# Replace paths/images/runtime class/labels with your deployment's values.
+# Requires a Kubernetes OpenShell gateway permitting approved driver configuration
+# (gateway-driver.toml) and the RuntimeClass in runtimeclass-kata.yaml.
+# Replace paths/images/labels with your deployment's values.
+# For now every sandbox runs under Kata (tier 3) on amd64 nodes, so each profile
+# pins amd64 and one worker pool declaring tier 3 serves them all (D43).
 [openshell.environments]
 policy_store = "/var/lib/sandbox-science/policy"
 targets = "/etc/sandbox-science/targets.yaml"
@@ -9,10 +12,10 @@ ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
 profiles = { minimal = "registry.example.invalid/research/minimal:pinned", crypto-base = "registry.example.invalid/research/crypto-base:pinned" }
 
 # Pin architecture for recovery of retained native packages. Capacity is independent.
-# Separate approved profiles can share a multiarch image and select amd64 or arm64.
+# Profiles can share a multiarch image; arm64 nodes cannot run `kata` yet (GICv2).
 [openshell.environments.kubernetes.minimal]
-node_selector = { "kubernetes.io/arch" = "arm64" }
-runtime_class_name = "example-sandboxed"
+node_selector = { "kubernetes.io/arch" = "amd64" }
+runtime_class_name = "kata"
 
 [openshell.environments.kubernetes.minimal.requests]
 cpu_millicores = 1000
@@ -26,7 +29,7 @@ ephemeral_storage_mib = 1024
 
 [openshell.environments.kubernetes.crypto-base]
 node_selector = { "kubernetes.io/arch" = "amd64", "research.example.org/capacity" = "large" }
-runtime_class_name = "example-sandboxed"
+runtime_class_name = "kata"
 
 [openshell.environments.kubernetes.crypto-base.requests]
 cpu_millicores = 2000

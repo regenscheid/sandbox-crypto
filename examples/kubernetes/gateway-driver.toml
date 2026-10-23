@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+# Illustrative OpenShell v0.1.5 gateway fragment (gateway TOML, not worker config)
+# for profile placement. Helm: server.drivers.kubernetes.allowDriverConfig,
+# server.drivers.kubernetes.resourceAdmission.enabled and server.defaultRuntimeClassName.
+[openshell.drivers.kubernetes]
+# Caller driver config is off by default since 0.1.0; the worker sends profiles through it.
+allow_driver_config = true
+# Applied to sandbox pods whose request names no RuntimeClass.
+default_runtime_class_name = "kata"
+
+[openshell.drivers.kubernetes.resource_admission]
+# Every RuntimeClass, PriorityClass and PVC a profile names must carry
+# openshell.ai/sandbox-attachable="true" (PVCs also the -workspace label).
+enabled = true

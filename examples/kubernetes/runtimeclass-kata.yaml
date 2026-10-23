@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# Illustrative: the Kata RuntimeClass OpenShell sandboxes run under (D43, tier 3).
+# Talos 1.13's kata-containers extension provides only the Cloud Hypervisor
+# handler `kata`; it needs GICv3, so label only Kata-capable amd64 nodes.
+# Replace the placeholder node label with your site's.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata
+  labels:
+    # OpenShell v0.1.5 admits a RuntimeClass or PriorityClass by this fixed label
+    # alone. PVCs a profile names also need
+    # openshell.ai/sandbox-attachable-workspace: "<openshell workspace name>".
+    openshell.ai/sandbox-attachable: "true"
+handler: kata
+overhead:
+  podFixed:
+    memory: 130Mi
+    cpu: 250m
+scheduling:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+    example.org/kata-capable: "true"
