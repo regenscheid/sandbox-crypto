@@ -60,9 +60,10 @@ to the control protocol, generation fencing or attempt model.
   hostname. No new ingress is added.
 - KRB-5. **Kata placement.** Create with `--driver-config-json` from the operator's
   runtime profile: an `amd64` node selector, the Kata `runtime_class_name` and
-  resources. The gateway enables `allow_driver_config`; the RuntimeClass carries
-  `openshell.ai/sandbox-attachable=true` and
-  `openshell.ai/sandbox-attachable-workspace=<ws>`. The renderer refuses a runtime
+  resources. The gateway enables `allow_driver_config`; the RuntimeClass, shared
+  infrastructure to OpenShell 0.1.5's admission, carries
+  `openshell.ai/sandbox-attachable=true` ([gateway settings](../KUBERNETES.md#gateway-settings-for-profile-placement)).
+  The renderer refuses a runtime
   profile without a RuntimeClass (tier 3 only; Q4). The exact driver JSON is recorded
   with ownership; a replacement reuses it unless an explicit request names another.
 
