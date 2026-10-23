@@ -43,3 +43,29 @@ prepare_image_build() {
     --build-arg "REVISION=$revision" --build-arg "VERSION=$short" \
     --build-arg "LICENSES=$image_licenses")
 }
+
+# Adds the trusted service targets' extra inputs to image_args: the hashed requirements exported
+# from uv.lock for the profile's packages and the narrow named build contexts. Local builds
+# (build_trusted.sh) and registry publication (publish_arch.sh) share it, so both build the
+# same image from the same inputs.
+prepare_trusted_inputs() {
+  local profile=$1 package
+  local requirements=()
+  for package in "${packages[@]}"; do
+    requirements+=(--package "sandbox-science-$package")
+  done
+  requirements+=(--extra s3)
+  uv --directory "$image_here/.." export --locked --no-dev --no-emit-workspace \
+    --no-header --no-annotate "${requirements[@]}" \
+    --output-file "$image_work/requirements.txt" >/dev/null
+  image_args+=(--build-context "trusted-inputs=$image_work"
+    --build-context "workspace-web=$image_here/../web/workspace"
+    --build-context "repository-tools=$image_here/../scripts")
+  if [ "$profile" = trusted-app ]; then
+    # The notice generator reads ../../LICENSE from web/workspace. Send that exact
+    # authoritative file without exposing the full checkout as a Docker context.
+    mkdir "$image_work/repository-license"
+    cp "$image_here/../LICENSE" "$image_work/repository-license/LICENSE"
+    image_args+=(--build-context "repository-license=$image_work/repository-license")
+  fi
+}

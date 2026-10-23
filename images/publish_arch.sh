@@ -8,7 +8,7 @@ profile=${1:-}
 repository=${2:-}
 run_token=${3:-}
 case $profile in
-  minimal | crypto-base | orchestrator | mcp-proxy) ;;
+  minimal | crypto-base | orchestrator | mcp-proxy | trusted-app | trusted-worker) ;;
   *) echo "publish_arch.sh: unknown profile" >&2; exit 2 ;;
 esac
 case $repository in
@@ -49,6 +49,10 @@ case "$(uname -m):$arch" in
   *) echo "publish_arch.sh: the build must run on native $arch hardware" >&2; exit 2 ;;
 esac
 
+case $profile in
+  trusted-app | trusted-worker) prepare_trusted_inputs "$profile" ;;
+esac
+
 tag="$repository:$short-$arch-run$run_token"
 docker buildx build "${image_args[@]}" --tag "$tag" --push \
   --metadata-file "$image_work/metadata.json" "$image_here"
@@ -66,5 +70,8 @@ PY
 reference="$repository@$digest"
 docker buildx imagetools inspect "$reference" >/dev/null
 docker pull "$reference"
-NETWORK=0 "$here/test.sh" "$profile" "$reference"
+case $profile in
+  trusted-app | trusted-worker) "$here/test_trusted.sh" "$profile" "$reference" ;;
+  *) NETWORK=0 "$here/test.sh" "$profile" "$reference" ;;
+esac
 printf 'qualified image: %s\n' "$reference"

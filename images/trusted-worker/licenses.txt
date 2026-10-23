@@ -1,4 +1,4 @@
-# The licenses in the unpublished trusted worker image: the pinned Conda bootstrap,
+# The licenses in the trusted worker image: the pinned Conda bootstrap,
 # hashed Python wheels, native OpenShell CLI and the Ubuntu packages
 # (LicenseRef-Ubuntu-archive). build_trusted.sh joins them into the image's
 # org.opencontainers.image.licenses label; the build fails when they differ from the image's.

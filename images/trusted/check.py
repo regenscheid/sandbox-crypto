@@ -5,11 +5,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import importlib.metadata
 import importlib.resources
 import json
+import shutil
 import subprocess
 from pathlib import Path
+
+OPENSHELL_VERSION_OUTPUT = "openshell 0.1.5"
 
 
 def command(*args: str) -> str:
@@ -67,6 +71,13 @@ async def application() -> None:
         "sandbox-science-artifacts",
     ):
         command(cli, "--help")
+    importlib.import_module("sandbox_science.launcher")
+    importlib.import_module("sandbox_science.policy")
+    if command("openshell", "--version").strip() != OPENSHELL_VERSION_OUTPUT:
+        raise ValueError("application CLI does not match the pinned OpenShell release")
+    # The runtime manager's console script arrives with its module; check it once present.
+    if shutil.which("sandbox-science-runtime-manager") is not None:
+        command("sandbox-science-runtime-manager", "--help")
 
 
 def main() -> None:
@@ -96,7 +107,7 @@ def main() -> None:
             "sandbox-science-package-cache",
         ):
             command(cli, "--help")
-        if command("openshell", "--version").strip() != "openshell 0.1.3":
+        if command("openshell", "--version").strip() != OPENSHELL_VERSION_OUTPUT:
             raise ValueError("worker CLI does not match the pinned OpenShell release")
         command("ssh", "-V")
         command("git", "--version")

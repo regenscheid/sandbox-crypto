@@ -30,7 +30,7 @@ for embedded subcomponents.
 
 | Component | License | Tier / action |
 | --- | --- | --- |
-| OpenShell | Apache-2.0 | Trusted runtime boundary; unpublished trusted-worker recipe bundles the exact native v0.1.3 CLI and upstream LICENSE, independently of gateway/driver installation |
+| OpenShell | Apache-2.0 | Trusted runtime boundary; trusted-worker and trusted-app recipes bundle the exact native v0.1.5 CLI and upstream LICENSE, independently of gateway/driver installation |
 | kubernetes-sigs/agent-sandbox | Apache-2.0 | Tier 1 dependency candidate |
 | gVisor, Kata Containers | Apache-2.0 | Runtime candidates |
 | Podman, Lima | Apache-2.0 | Local runtime candidates |

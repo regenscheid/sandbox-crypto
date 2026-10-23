@@ -11,7 +11,7 @@ recipe_packages() {
   case $1 in
     orchestrator) packages=(contracts orchestrator) ;;
     mcp-proxy) packages=(contracts policy event-store mcp-proxy) ;;
-    trusted-app) packages=(contracts orchestrator workspace) ;;
+    trusted-app) packages=(contracts policy launcher orchestrator workspace) ;;
     trusted-worker) packages=(contracts policy event-store worker policy-middleware package-cache) ;;
     *) packages=() ;;
   esac

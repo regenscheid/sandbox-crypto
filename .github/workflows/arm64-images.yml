@@ -3,6 +3,9 @@ name: arm64 image qualification
 
 # Native Linux ARM64 validates the image recipe before trying the Mac's OpenShell runtime.
 # crypto-base is opt-in because its large Conda/Sage layers may exhaust a standard runner.
+# Publishing builds each profile natively per architecture, tests the pushed digest, and joins
+# the two digests into one tag. Scopes: all (six profiles, needs crypto_base), trusted (the
+# Kubernetes service images trusted-app and trusted-worker), minimal (registry smoke test).
 on:
   pull_request:
     paths:
@@ -19,9 +22,9 @@ on:
         type: boolean
         default: false
       publish_scope:
-        description: Publish all profiles or only minimal for a registry smoke test
+        description: Publish all profiles, only the trusted service images, or only minimal for a registry smoke test
         type: choice
-        options: [all, minimal]
+        options: [all, trusted, minimal]
         default: all
 
 permissions:
@@ -67,16 +70,27 @@ jobs:
   publish-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
     runs-on: ubuntu-24.04
+    outputs:
+      profiles: ${{ steps.scope.outputs.profiles }}
     steps:
       - name: Validate publication scope
+        id: scope
         env:
           PUBLISH_SCOPE: ${{ inputs.publish_scope }}
           CRYPTO_BASE: ${{ inputs.crypto_base }}
         run: |
-          if [ "$PUBLISH_SCOPE" = all ] && [ "$CRYPTO_BASE" != true ]; then
-            echo 'Publishing all profiles requires crypto_base=true; choose minimal for a smoke test.' >&2
-            exit 1
-          fi
+          case "$PUBLISH_SCOPE" in
+            all)
+              if [ "$CRYPTO_BASE" != true ]; then
+                echo 'Publishing all profiles requires crypto_base=true; choose trusted or minimal.' >&2
+                exit 1
+              fi
+              profiles='["minimal","orchestrator","mcp-proxy","crypto-base","trusted-app","trusted-worker"]' ;;
+            trusted) profiles='["trusted-app","trusted-worker"]' ;;
+            minimal) profiles='["minimal"]' ;;
+            *) echo 'unknown publication scope' >&2; exit 1 ;;
+          esac
+          echo "profiles=$profiles" >> "$GITHUB_OUTPUT"
 
   publish-platform:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
@@ -87,7 +101,7 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        profile: ${{ fromJSON(inputs.publish_scope == 'minimal' && '["minimal"]' || '["minimal","orchestrator","mcp-proxy","crypto-base"]') }}
+        profile: ${{ fromJSON(needs.publish-inputs.outputs.profiles) }}
         arch: [amd64, arm64]
     permissions:
       contents: read
@@ -132,13 +146,13 @@ jobs:
 
   merge-platforms:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
-    needs: publish-platform
+    needs: [publish-inputs, publish-platform]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        profile: ${{ fromJSON(inputs.publish_scope == 'minimal' && '["minimal"]' || '["minimal","orchestrator","mcp-proxy","crypto-base"]') }}
+        profile: ${{ fromJSON(needs.publish-inputs.outputs.profiles) }}
     permissions:
       contents: read
       packages: write

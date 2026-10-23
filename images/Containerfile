@@ -25,9 +25,9 @@ ARG LATTICE_ESTIMATOR_COMMIT=53da5982597709ba0fdf94ea37a84d822310fd84
 ARG NODE_VERSION=24.22.0
 ARG NODE_SHA256_AMD64=cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008
 ARG NODE_SHA256_ARM64=fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143
-ARG OPENSHELL_VERSION=0.1.3
-ARG OPENSHELL_SHA256_AMD64=ed08ea7874c47f22d6e5dcc4b27d9ef1ef5d2060f83035b35ff725d5160830a3
-ARG OPENSHELL_SHA256_ARM64=07687dacefc52bc73b01943f5b58f7a5082c1ceaa228461b9a2a78023b8057c0
+ARG OPENSHELL_VERSION=0.1.5
+ARG OPENSHELL_SHA256_AMD64=ca1ad6e6fbb4a6cd407e95763391b8ecff02912e7d9c467e7ca22696fe80af69
+ARG OPENSHELL_SHA256_ARM64=30c949b4ac07a9c8245c1248eb82e4eb241615134fcabf3c9bf30dec7d00addf
 
 # micromamba's release binary for the target architecture, checked against its published SHA-256.
 FROM scratch AS micromamba-amd64
@@ -384,7 +384,7 @@ RUN --mount=type=bind,from=trusted-openshell,source=/openshell.tar.gz,target=/tm
     mkdir /openshell && tar -xzf /tmp/openshell.tar.gz -C /openshell && \
     test -x /openshell/openshell
 ADD --checksum=sha256:d07c0367e2861e7fe70fa1b679f879f4fa2f9138ade4457d44ecf8b2e135bb45 \
-    https://raw.githubusercontent.com/NVIDIA/OpenShell/e1f3c82caa3ed3b65de22889ae7ef32a774878ef/LICENSE /openshell/LICENSE
+    https://raw.githubusercontent.com/NVIDIA/OpenShell/bdb956f2cd65a635f1294fccf1d138d263bf650f/LICENSE /openshell/LICENSE
 
 FROM trusted-python AS trusted-web-build
 USER root
@@ -410,19 +410,24 @@ RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss
     python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
         -r /run/ss-build/requirements.txt && \
     python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
-        sandbox-science-contracts sandbox-science-orchestrator sandbox-science-workspace && \
-    python -m pip check && sandbox-science-control --help && sandbox-science-workspace --help
+        sandbox-science-contracts sandbox-science-policy sandbox-science-launcher \
+        sandbox-science-orchestrator sandbox-science-workspace && \
+    python -m pip check && sandbox-science-control --help && sandbox-science-workspace --help && \
+    python -c 'import sandbox_science.launcher, sandbox_science.policy'
 USER root
 COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
 COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
 COPY --from=trusted-node-unpack /node/bin/node /usr/local/bin/node
 COPY --from=trusted-node-unpack /node/LICENSE /usr/share/licenses/node/LICENSE
+COPY --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
+COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
 COPY --from=trusted-web-build /build/web/workspace/dist /usr/share/sandbox-science/workspace
 COPY --from=trusted-web-build /build/web/workspace/dist-math /usr/share/sandbox-science/math
 ARG UBUNTU_IMAGE
 ARG UBUNTU_SNAPSHOT
 ARG MICROMAMBA_VERSION
 ARG NODE_VERSION
+ARG OPENSHELL_VERSION
 ARG REVISION=unknown
 ARG VERSION=unknown
 ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
@@ -432,11 +437,12 @@ RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/run/ss-build/co
     --mount=type=bind,source=common/image_report.py,target=/run/ss-build/image_report.py \
     --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/run/ss-build/check_licenses.py \
     --mount=type=bind,source=trusted/record.py,target=/run/ss-build/record.py \
-    find /sandbox -mindepth 1 -delete && node --version && \
+    find /sandbox -mindepth 1 -delete && node --version && openshell --version && \
     python -B /run/ss-build/record.py --profile trusted-app --revision "${REVISION}" \
         --source-url "${SOURCE_URL}" --base-image "${UBUNTU_IMAGE}" \
         --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" --micromamba "${MICROMAMBA_VERSION}" \
         --source "nodejs|${NODE_VERSION}|MIT|https://nodejs.org/|upstream binary" \
+        --source "openshell|${OPENSHELL_VERSION}|Apache-2.0|https://github.com/NVIDIA/OpenShell|upstream binary" \
         --expect-licenses "${LICENSES}"
 USER 1000:1000
 WORKDIR /sandbox

@@ -1,12 +1,14 @@
 # Base profile images
 
-Separate unpublished [trusted service targets](../images/trusted/README.md) prepare
-the Kubernetes control/workspace and worker/middleware services. Use
+Separate [trusted service targets](../images/trusted/README.md) prepare
+the Kubernetes control/workspace/runtime-manager (`trusted-app`) and worker/middleware
+(`trusted-worker`) services; both carry the OpenShell CLI v0.1.5. Use
 `images/build_trusted.sh trusted-app|trusted-worker`, which only loads locally;
 `images/test_trusted.sh` checks an existing local image without network or pulls.
-These targets retain distinct build profiles and are absent from publication
-workflows. Recipes and deterministic tests do not establish native ARM64 or
-Kubernetes runtime qualification.
+They keep distinct build profiles and are published like the other profiles
+([arm64](#arm64)): `publish_scope=trusted` (or `all`) of the manual image workflow.
+Recipes and deterministic tests do not establish native ARM64 or Kubernetes runtime
+qualification.
 
 Research sandboxes start from one of two standard base profiles (D46, D22). The orchestrator's own sandbox starts from a third image, `orchestrator`, which has the harness installed, and the MCP proxy's from a fourth, `mcp-proxy`, which has the proxy installed and a command that keeps it running. Their recipes are in `images/`: one `Containerfile` with a target per profile, a Conda environment and lockfile per profile, and scripts to lock, build and test them. The worker maps each research profile to an image (`[openshell.environments] profiles`, [worker](WORKER.md#environments)). This page is the contract the images follow, and how to build and check them.
 
@@ -303,17 +305,22 @@ platform into the local store for development and never pushes it.
 
 The selected destination is GHCR under this repository's namespace:
 `ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual image workflow's
-`publish` mode uses native Linux AMD64 and ARM64 runners for every profile. Each
+`publish` mode uses native Linux AMD64 and ARM64 runners for every profile
+(the research and service profiles by `images/test.sh`, the two trusted service
+profiles `trusted-app` and `trusted-worker` by `images/test_trusted.sh`). Each
 runner creates a `docker-container` Buildx builder and builds directly to a
 run-specific GHCR architecture tag using BuildKit's registry exporter. It pulls
 the resulting immutable digest and checks that exact image in container and
-Landlock modes. The merge job starts only after all eight
+Landlock modes. The merge job starts only after all of the
 build-and-check jobs pass. It resolves the run-specific tags to immutable digests,
 checks platform, profile and recipe revision, and creates one two-platform tag per
 profile in GitHub Actions. The manual `publish_scope=minimal` mode runs only the
-two native minimal builds and their merge as a registry smoke test. Selecting
-all profiles without confirming `crypto_base=true` fails input validation before
-any publication job starts. Pull-request jobs remain read-only and cannot publish.
+two native minimal builds and their merge as a registry smoke test, and
+`publish_scope=trusted` runs only the trusted service images (four builds, two
+merges) without `crypto_base`. `all` covers all six profiles; selecting it
+without confirming `crypto_base=true` fails input validation before any
+publication job starts. The trusted packages are not private-checked: new GHCR
+packages are private, and a cluster reads them with a pull secret. Pull-request jobs remain read-only and cannot publish.
 
 New GHCR packages default to private. Before pushing or merging `crypto-base`,
 the workflow checks that the package's GitHub visibility is private. An architecture

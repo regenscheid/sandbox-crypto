@@ -1,5 +1,5 @@
-# The licenses in the unpublished trusted application image: the pinned Conda bootstrap,
-# hashed Python wheels (including S3 support), native Node and the Ubuntu packages
+# The licenses in the trusted application image: the pinned Conda bootstrap,
+# hashed Python wheels (including S3 support), native Node, the OpenShell CLI and the Ubuntu packages
 # (LicenseRef-Ubuntu-archive). build_trusted.sh joins them into the image's
 # org.opencontainers.image.licenses label; the build fails when they differ from the image's.
 # Not permissive, and accepted as the base distribution's runtime libraries (docs/IMAGES.md):

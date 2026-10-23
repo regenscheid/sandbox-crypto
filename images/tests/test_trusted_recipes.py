@@ -43,14 +43,31 @@ def test_trusted_build_rejects_export_options_before_invoking_tools(
 
 
 @pytest.mark.parametrize("profile", PROFILES)
-def test_publication_entrypoint_refuses_unpublished_service_profiles(profile: str) -> None:
+def test_publication_entrypoint_accepts_trusted_profiles_but_checks_the_repository(
+    profile: str,
+) -> None:
     done = subprocess.run(
         ["bash", str(IMAGES / "publish_arch.sh"), profile, "registry.example/image", "1"],
         capture_output=True,
         text=True,
     )
     assert done.returncode == 2
-    assert "unknown profile" in done.stderr
+    assert "unknown profile" not in done.stderr
+    assert f"ending in /{profile}" in done.stderr
+
+
+def test_publication_wiring_covers_trusted_profiles() -> None:
+    publish = (IMAGES / "publish_arch.sh").read_text()
+    assert 'prepare_trusted_inputs "$profile"' in publish
+    assert 'test_trusted.sh" "$profile" "$reference"' in publish
+    assert "--push" in publish
+    index = (IMAGES / "publish_index.py").read_text()
+    workflow = (IMAGES.parent / ".github/workflows/arm64-images.yml").read_text()
+    for profile in PROFILES:
+        assert f'"{profile}"' in index
+        assert f'"{profile}"' in workflow
+    assert "options: [all, trusted, minimal]" in workflow
+    assert "needs.publish-inputs.outputs.profiles" in workflow
 
 
 @pytest.mark.parametrize("profile", PROFILES)
@@ -135,8 +152,7 @@ def test_revision_covers_locks_packages_and_all_runtime_inputs(profile: str) -> 
             "../web/workspace/package-lock.json",
             "../web/workspace/vite.figurecheck.config.ts",
         } <= inputs
-        assert "orchestrator" in packages
-        assert "workspace" in packages
+        assert {"orchestrator", "workspace", "launcher", "policy"} <= set(packages)
     else:
         assert {"worker", "policy-middleware", "package-cache", "policy", "event-store"} <= set(
             packages
@@ -148,7 +164,7 @@ def test_revision_covers_locks_packages_and_all_runtime_inputs(profile: str) -> 
 def test_trusted_native_pins_and_build_contexts_are_explicit() -> None:
     arguments = _containerfile_args()
     assert arguments["NODE_VERSION"].startswith("24.")
-    assert arguments["OPENSHELL_VERSION"] == "0.1.3"
+    assert arguments["OPENSHELL_VERSION"] == "0.1.5"
     for product in ("NODE", "OPENSHELL"):
         for architecture in ("AMD64", "ARM64"):
             assert re.fullmatch(r"[0-9a-f]{64}", arguments[f"{product}_SHA256_{architecture}"])
@@ -167,6 +183,14 @@ def test_trusted_native_pins_and_build_contexts_are_explicit() -> None:
     assert "npm run build:math" in stages["trusted-web-build"]
     assert "/usr/share/sandbox-science/math" in stages["trusted-app"]
     assert "/usr/share/sandbox-science/workspace" in stages["trusted-app"]
+    for profile in PROFILES:  # the runtime manager drives the same pinned CLI as the worker
+        assert (
+            "trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell"
+            in (stages[profile])
+        )
+        assert "openshell --version" in stages[profile]
+    assert "sandbox-science-launcher" in stages["trusted-app"]
+    assert "sandbox-science-policy" in stages["trusted-app"]
     assert "apt_install.sh" not in stages["trusted-python"]
     assert "apt_install.sh" in stages["trusted-worker"]
     assert "openssh-client" in stages["trusted-worker"]
