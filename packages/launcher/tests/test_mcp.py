@@ -413,3 +413,17 @@ async def test_other_failures_never_count_as_absence(tmp_path: Path, said: str) 
     with pytest.raises(OpenShellError, match="openshell sandbox get failed") as raised:
         await saying(tmp_path, said).sandbox("ss-orch-0123456789")
     assert not isinstance(raised.value, SandboxMissingError)
+
+
+@pytest.mark.parametrize("answer", ["null", "[]", '"ss-orch-0123456789"'])
+async def test_a_successful_lookup_of_another_shape_is_not_absence(
+    tmp_path: Path, answer: str
+) -> None:
+    script = tmp_path / "openshell"
+    script.write_text(f"#!{sys.executable}\nprint({answer!r})\n")
+    script.chmod(0o755)
+    cli = object.__new__(OpenShell)
+    cli.cli, cli.env = str(script), dict(os.environ)
+    with pytest.raises(OpenShellError, match="no sandbox record") as raised:
+        await cli.sandbox("ss-orch-0123456789")
+    assert not isinstance(raised.value, SandboxMissingError)
