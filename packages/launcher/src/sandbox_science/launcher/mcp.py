@@ -67,10 +67,21 @@ DEAD_PHASES = {"Error", "Deleting", "Completed"}
 UPLOADS = ("pool-ceiling.yaml", "policy.yaml", "proxy.toml")
 """In this order: the proxy starts once ``proxy.toml`` is there."""
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_FRAME = re.compile(r"[\s\u2500-\u257f\u00d7]+")
+"""Whitespace and the box drawing miette frames and wraps a report with."""
+_MISSING = re.compile(r'(?:message|self): "sandbox not found"')
+"""The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
+the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
+answers, such as a missing service endpoint, gateway or file, do not match."""
 
 
 class OpenShellError(LauncherError):
     """An OpenShell command failed; its message is the end of what it said."""
+
+
+class SandboxMissingError(OpenShellError):
+    """The gateway answered that no sandbox has the name: proof of absence, unlike any
+    other failure, which says nothing about whether the sandbox exists."""
 
 
 class OpenShell:
@@ -94,8 +105,11 @@ class OpenShell:
                 await process.wait()
             raise
         if process.returncode != 0:
-            said = _ANSI.sub("", errors.decode("utf-8", errors="replace")).strip()[-500:]
-            raise OpenShellError(f"openshell {' '.join(args[:2])} failed: {said}")
+            said = _ANSI.sub("", errors.decode("utf-8", errors="replace")).strip()
+            # Classify the whole report: the status leads it, and the end is what is kept.
+            missing = _MISSING.search(_FRAME.sub(" ", said)) is not None
+            error = SandboxMissingError if missing else OpenShellError
+            raise error(f"openshell {' '.join(args[:2])} failed: {said[-500:]}")
         return output.decode("utf-8", errors="replace")
 
     async def json(self, *args: str) -> object:
@@ -105,11 +119,12 @@ class OpenShell:
         """The sandbox's record, or None when there is none."""
         try:
             found = await self.json("sandbox", "get", name)
-        except OpenShellError as exc:
-            if "not found" in str(exc).lower():
-                return None
-            raise
-        return cast(dict[str, Any], found) if isinstance(found, dict) else None
+        except SandboxMissingError:
+            return None
+        if not isinstance(found, dict):
+            # Only the gateway's NotFound proves absence; an answer of another shape does not.
+            raise OpenShellError("openshell sandbox get returned no sandbox record")
+        return cast(dict[str, Any], found)
 
 
 def tooling(config: LauncherConfig) -> dict[str, str]:

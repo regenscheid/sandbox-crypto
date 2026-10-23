@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import signal
 import socket
+import sys
 import time
 import tomllib
 from pathlib import Path
@@ -19,6 +21,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.launcher.config import load_config
+from sandbox_science.launcher.mcp import OpenShell, OpenShellError, SandboxMissingError
 from sandbox_science.launcher.state import Layout
 
 from .conftest import free_port
@@ -365,3 +368,62 @@ def test_a_killed_launchers_sandbox_is_deleted_by_down(mcp: dict[str, Any]) -> N
     stopped = launcher.command("down")
     assert f"deleted the sandbox {sandbox} an earlier launcher made" in stopped.stdout
     assert sandboxes(mcp["state"]) == {}
+
+
+MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
+"""How OpenShell 0.1.5's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
+
+
+def saying(tmp_path: Path, said: str) -> OpenShell:
+    """An ``openshell`` whose every command fails with ``said`` on stderr."""
+    script = tmp_path / "openshell"
+    script.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write({said!r})\nsys.exit(1)\n")
+    script.chmod(0o755)
+    cli = object.__new__(OpenShell)
+    cli.cli, cli.env = str(script), dict(os.environ)
+    return cli
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "\x1b[31mError:\x1b[0m   \u00d7 " + MISSING,
+        MISSING + ", metadata: " + "x" * 600,
+        "  \u00d7 status: 'Some requested entity was not found', self: \"sandbox not\n  │ found\"",
+        "code: 'Some requested entity was not found', message: \"sandbox not found\"",
+    ],
+)
+async def test_only_the_gateways_not_found_for_the_name_means_absent(
+    tmp_path: Path, said: str
+) -> None:
+    assert await saying(tmp_path, said).sandbox("ss-orch-0123456789") is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "status: 'Some requested entity was not found', self: \"service endpoint not found\"",
+        "error: gateway 'babbage' not found",
+        "error: /home/user/.config/openshell/client.pem: file not found",
+        "Error: sandbox ss-orch-0123456789 not found",
+        "error: the gateway is not reachable",
+    ],
+)
+async def test_other_failures_never_count_as_absence(tmp_path: Path, said: str) -> None:
+    with pytest.raises(OpenShellError, match="openshell sandbox get failed") as raised:
+        await saying(tmp_path, said).sandbox("ss-orch-0123456789")
+    assert not isinstance(raised.value, SandboxMissingError)
+
+
+@pytest.mark.parametrize("answer", ["null", "[]", '"ss-orch-0123456789"'])
+async def test_a_successful_lookup_of_another_shape_is_not_absence(
+    tmp_path: Path, answer: str
+) -> None:
+    script = tmp_path / "openshell"
+    script.write_text(f"#!{sys.executable}\nprint({answer!r})\n")
+    script.chmod(0o755)
+    cli = object.__new__(OpenShell)
+    cli.cli, cli.env = str(script), dict(os.environ)
+    with pytest.raises(OpenShellError, match="no sandbox record") as raised:
+        await cli.sandbox("ss-orch-0123456789")
+    assert not isinstance(raised.value, SandboxMissingError)
