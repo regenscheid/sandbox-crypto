@@ -129,7 +129,10 @@ class OpenShell:
             found = await self.json("sandbox", "get", name)
         except SandboxMissingError:
             return None
-        return cast(dict[str, Any], found) if isinstance(found, dict) else None
+        if not isinstance(found, dict):
+            # Only the gateway's NotFound proves absence; an answer of another shape does not.
+            raise OpenShellError("openshell sandbox get returned no sandbox record")
+        return cast(dict[str, Any], found)
 
 
 def tooling(config: LauncherConfig) -> dict[str, str]:
