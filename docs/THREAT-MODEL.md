@@ -10,7 +10,7 @@ Prompt injection from consumed papers is a lesser concern. It remains one way an
 
 ## Scope and assumptions
 
-- Single trusted user (D15). Multi-tenant hosting is out of scope; adding it would require revisiting every tier below.
+- Single trusted user (D15). Multi-tenant hosting is out of scope; adding it would require revisiting every tier below. Several users on one cluster each get a complete instance of their own (D94), so this assumption holds within each instance; shared cluster infrastructure (nodes, OpenShell gateway, object store, model gateway) must keep users apart with per-user workspaces, buckets and keys.
 - Code inside a research sandbox is **untrusted by default**, whatever its origin: agent-written, downloaded or installed.
 - The orchestrator runs trusted code but performs **agent-selected actions** (tool calls, MCP calls, model requests), so its outbound actions are governed like a worker's (D47).
 - External services are mostly reached through MCP (D58). Workers that need API keys receive them through a secrets manager that keeps raw keys out of the sandbox (D57).

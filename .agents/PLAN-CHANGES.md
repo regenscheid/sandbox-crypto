@@ -2,6 +2,7 @@
 
 ## 2026-10-22
 
+- Record the multi-user direction (D94, owner): each user gets a complete instance in its own namespace, sharing only cluster infrastructure; nothing is built now.
 - Add job sandboxes (D93, owner): big background jobs get a new, job-sized sandbox pod inside the cluster and control environment, so 24-hour-plus and large-memory work spreads across nodes; design before implementation.
 - Revise the Kubernetes isolation plan (D43/D92, owner, later 2026-10-22): Talos 1.13's Kata extension provides only the Cloud Hypervisor handler `kata` (needs GICv3), so all sandboxes run under `kata` on amd64 nodes at tier 3 in one pool; mixed-tier pools are deferred and Raspberry Pi nodes host trusted services until Talos 1.14's `kata-qemu`. Docs and examples follow OpenShell 0.1.5 ([isolation](../docs/KUBERNETES.md#sandbox-isolation)).
 - Amend D43/D92 for the Kubernetes cluster: OpenShell 0.1.x cannot run under gVisor (mandatory Landlock and seccomp user notification), so the cluster uses Kata at tier 3 on KVM nodes and owner-accepted plain runc at tier 1 elsewhere, as separate worker pools ([isolation](../docs/KUBERNETES.md#sandbox-isolation)).
