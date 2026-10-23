@@ -5,6 +5,7 @@ Date: 2026-10-11. Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.
 | Spec | Status | Built, as described in |
 | --- | --- | --- |
 | [Kubernetes operations](kubernetes-operations.md) | Implementation contract (2026-10-20), live cluster qualification open | [Kubernetes work](../KUBERNETES.md), [offline bundle](../KUBERNETES-BUNDLE.md), [worker checkpoints](../WORKER.md#offline-complete-workspace-checkpoints) |
+| [Kubernetes runtime bootstrap](kubernetes-runtime-bootstrap.md) | Draft design (2026-10-22); owner questions open | Not built: the in-cluster `runtime-manager` that creates, attaches to and replaces the agent runtime sandbox ([bundle gate](../KUBERNETES-BUNDLE.md#render-inspect-then-qualify-separately)) |
 | [Tools](tools.md) | Approved as drafted (2026-10-14) | Built: [worker](../WORKER.md), [background jobs](../BACKGROUND-JOBS.md) |
 | [PDF sources](pdf-sources.md) | Approved as drafted (2026-10-14) | Built: [worker](../WORKER.md#pdfs) |
 | [PDF viewer](pdf-viewer.md) | Approved (2026-10-14) | Built: [workspace](../WORKSPACE.md#the-pdf-viewers-origin); annotations stored on a PDF (RA-21) are not built |
