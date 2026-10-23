@@ -213,7 +213,10 @@ Default-deny policies select only this bundle's trusted Pods. Additive allow rul
 permit app-to-worker TCP 8100, approved `network.runtimes` to control TCP 8443 and
 approved `network.supervisors` to middleware TCP 50051. Cache TCP 8090 requires both
 `secrets.cache` and nonempty `network.sandboxes`. These are approved peer selectors,
-not a promise that arbitrary OpenShell Pods have the template's labels.
+not a promise that arbitrary OpenShell Pods have the template's labels. Sandbox traffic leaves through each sandbox's OpenShell supervisor Pod, so
+`network.runtimes` must select supervisor Pods; their labels are fixed by OpenShell, so
+the rule admits every supervisor of the gateway, and the runtime token decides which
+connection control accepts ([runtime bootstrap](specs/kubernetes-runtime-bootstrap.md)).
 
 Every peer uses either a canonical non-default CIDR or explicit namespace labels
 with optional Pod labels. Empty selectors and `0.0.0.0/0` / `::/0` are refused. DNS

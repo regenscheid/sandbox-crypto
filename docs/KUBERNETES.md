@@ -102,10 +102,14 @@ longer allows. gVisor is therefore not a tier-2 option here.
   arm64 nodes host trusted service pods only, never sandboxes. After a Talos 1.14
   upgrade, `kata-qemu` on CM5 would allow arm64 sandboxes (unqualified; needs KVM
   on the Pi kernel and the arm64 images); the arm64 profile pins stay as they are.
-- **Tier 1, plain runc.** D43 still accepts it for nodes without KVM, running in
-  OpenShell's combined topology without a sandboxed RuntimeClass (Landlock,
-  seccomp and network controls apply; the workload shares the node kernel). It is
-  unused for now.
+- **Tier 1, plain runc.** D43 still accepts it for nodes without KVM: the workload
+  Pod runs without a sandboxed RuntimeClass (Landlock, seccomp and network controls
+  apply; the workload shares the node kernel). It is unused for now.
+- **Two Pods per sandbox.** In OpenShell 0.1.5 every Kubernetes sandbox is a workload
+  Pod plus a separate supervisor Pod that holds the gateway session and enforces
+  network policy ([OpenShell setup](https://docs.nvidia.com/openshell/kubernetes/setup)).
+  The RuntimeClass and node selector apply to the workload Pod; the supervisor Pod
+  runs under the cluster's default runtime.
 - **Pools.** With every sandbox on Kata, one worker pool declaring tier 3
   suffices, and every profile's `runtime_class_name` is `kata` with an amd64
   node selector. Mixing tiers (separate pools, each declaring its own tier and
