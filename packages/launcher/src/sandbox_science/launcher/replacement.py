@@ -11,23 +11,47 @@ import secrets
 import signal
 import time
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from sandbox_science.contracts.model import Contract, Counter
 
 from . import instance, orchestrator
 from .config import LauncherConfig, LauncherError
-from .infrastructure import InfrastructureRecovery, RecoveryState
+from .infrastructure import InfrastructureRecovery, RecoveryState, launcher_recovery
 from .state import Layout, check_private, write_private
 from .supervise import Supervisor, start_time
 
 
 class Request(Contract):
+    """A replacement request for one owner: the host launcher by its process ID, start
+    time and boot, or a process without a stable one by its random ``instance``."""
+
     nonce: str = Field(pattern=r"^replacement-[0-9a-f]{32}$")
-    pid: Counter
-    started: Counter
-    boot: str = Field(min_length=1, max_length=128)
+    pid: Counter | None = None
+    started: Counter | None = None
+    boot: str | None = Field(default=None, min_length=1, max_length=128)
+    instance: str | None = Field(default=None, pattern=r"^instance-[0-9a-f]{32}$")
+
+    @model_validator(mode="after")
+    def _one_owner(self) -> Self:
+        process = (self.pid, self.started, self.boot)
+        named = None not in process if self.instance is None else process == (None, None, None)
+        if not named:
+            raise ValueError("a replacement request names exactly one owner")
+        return self
+
+    def owned_by(self, owner: str | None = None) -> bool:
+        """Whether the request names this process: by its instance ``owner`` when it has
+        one, else as the host launcher."""
+        if owner is not None:
+            return self.instance is not None and secrets.compare_digest(self.instance, owner)
+        return self.instance is None and (self.pid, self.started, self.boot) == (
+            os.getpid(),
+            start_time(os.getpid()),
+            instance.boot_id(),
+        )
 
 
 class Result(Contract):
@@ -71,7 +95,7 @@ def request(config: LauncherConfig) -> int:
             started=found.started,
             boot=found.boot,
         )
-        write_private(path(layout, "request"), selected.model_dump_json() + "\n")
+        write_private(path(layout, "request"), selected.model_dump_json(exclude_none=True) + "\n")
         os.kill(found.pid, signal.SIGUSR2)
         deadline = time.monotonic() + config.start_timeout + 2 * config.stop_timeout + 10
         while instance.launcher_alive(found):
@@ -101,7 +125,7 @@ async def watch(
     config: LauncherConfig, layout: Layout, supervisor: Supervisor, requested: asyncio.Event
 ) -> str | None:
     """Supervise host processes while serializing explicit and automatic replacement."""
-    recovery = InfrastructureRecovery(config, layout, supervisor)
+    recovery = launcher_recovery(config, layout, supervisor)
     watching = asyncio.create_task(supervisor.watch())
     managing = asyncio.create_task(_manage(config, layout, supervisor, requested, recovery))
     try:
@@ -145,11 +169,7 @@ async def _manage(
         error: str | None = None
         try:
             selected = read_request(layout)
-            if (selected.pid, selected.started, selected.boot) != (
-                os.getpid(),
-                start_time(os.getpid()),
-                instance.boot_id(),
-            ):
+            if not selected.owned_by():
                 raise LauncherError("runtime replacement belongs to another launcher generation")
             print("replacing the orchestrator; control and workspace remain available", flush=True)
             await orchestrator.replace(config, layout, supervisor)

@@ -3,13 +3,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import secrets
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import urlopen
 
 from sandbox_science.policy.openshell import (
     OrchestratorTarget,
@@ -18,12 +16,10 @@ from sandbox_science.policy.openshell import (
     compile_orchestrator,
 )
 
-from . import mcp, parts
+from . import mcp, parts, runtime_owner
 from .config import LauncherConfig, LauncherError, OrchestratorConfig
 from .state import Layout, private_dir, write_private
 from .supervise import Part, Supervisor, passed
-
-REMOTE = "/sandbox/runtime"
 
 
 def configured(config: LauncherConfig) -> OrchestratorConfig:
@@ -39,72 +35,19 @@ def _directory(layout: Layout) -> Path:
     return private_dir(layout.root / "orchestrator")
 
 
-def recorded(layout: Layout) -> tuple[str, str | None] | None:
-    path = layout.root / "orchestrator" / "sandbox.json"
-    try:
-        value = cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
-    except FileNotFoundError:
-        return None
-    return str(value["name"]), cast(str | None, value["id"])
+def _ownership(layout: Layout) -> runtime_owner.FileOwnership:
+    return runtime_owner.FileOwnership(layout.root / "orchestrator" / "sandbox.json")
 
 
-def _record(layout: Layout, name: str, identity: str | None) -> None:
-    write_private(
-        _directory(layout) / "sandbox.json", json.dumps({"name": name, "id": identity}) + "\n"
-    )
+def recorded(layout: Layout) -> runtime_owner.Owned | None:
+    return _ownership(layout).read()
 
 
 async def delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
     """Retain uncertain ownership; only confirmed original-identity deletion permits replacement."""
-    task = asyncio.create_task(_delete_recorded(config, layout))
-    cancelled = False
-    while True:
-        try:
-            result = await asyncio.shield(task)
-            break
-        except asyncio.CancelledError:
-            cancelled = True
-            if task.done():
-                result = task.result()
-                break
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
-
-
-async def _delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
-    prior = recorded(layout)
-    if prior is None:
-        return False
-    name, identity = prior
-    cli = mcp.OpenShell(config)
-    document = await cli.sandbox(name)
-    if identity is None:
-        observed = document.get("id") if document is not None else None
-        if not isinstance(observed, str) or not observed:
-            raise LauncherError(
-                "orchestrator creation outcome is unknown; "
-                "original name retained for reconciliation"
-            )
-        identity = observed
-        _record(layout, name, identity)
-    if document is not None:
-        if document.get("id") != identity:
-            raise LauncherError("orchestrator identity changed; replacement deletion refused")
-        await cli.run("sandbox", "delete", name)
-    deadline = asyncio.get_running_loop().time() + config.stop_timeout
-    while (document := await cli.sandbox(name)) is not None:
-        if document.get("id") != identity:
-            raise LauncherError(
-                "orchestrator identity changed during deletion; ownership record retained"
-            )
-        if asyncio.get_running_loop().time() >= deadline:
-            raise LauncherError(
-                "orchestrator deletion was not confirmed; ownership record retained"
-            )
-        await asyncio.sleep(0.5)
-    (_directory(layout) / "sandbox.json").unlink()
-    return True
+    return await runtime_owner.delete_recorded(
+        _ownership(layout), mcp.OpenShell(config), timeout=config.stop_timeout
+    )
 
 
 def reachable(url: str) -> str:
@@ -220,20 +163,18 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
             if alias
         )
     )
-    agent = {
-        "control_url": reachable(control_url) + "/control",
-        "token_file": REMOTE + "/runtime.token",
-        "model_url": reachable(model.url),
-        "model_key_file": REMOTE + "/model.key",
-        "models": aliases,
-        "apis": model.api,
-        "reasoning_effort": model.effective_efforts(),
-        "embedding": config.skills.embedding_model,
-        "thinking_replay": model.thinking_replay.model_dump(mode="json")
+    agent = runtime_owner.agent_settings(
+        control_url=reachable(control_url),
+        model_url=reachable(model.url),
+        models=aliases,
+        apis=model.api,
+        reasoning_effort=model.effective_efforts(),
+        embedding=config.skills.embedding_model,
+        thinking_replay=model.thinking_replay.model_dump(mode="json")
         if model.thinking_replay
         else None,
-        "generation": generation,
-    }
+        generation=generation,
+    )
     write_private(directory / "control.json", json.dumps(host) + "\n")
     write_private(upload / "runtime.json", json.dumps(agent) + "\n")
     return directory, upload
@@ -268,31 +209,11 @@ async def replace(config: LauncherConfig, layout: Layout, supervisor: Supervisor
     """Explicit runtime replacement preserves control/UI and never creates Resume intent."""
     await supervisor.stop_part("agent-runtime")
     await delete_recorded(config, layout)
-    runtime = configured(config)
-    deadline = asyncio.get_running_loop().time() + config.stop_timeout
-    while await asyncio.to_thread(_occupied, f"http://{runtime.control_listen}/health"):
-        if asyncio.get_running_loop().time() >= deadline:
-            raise LauncherError(
-                "old runtime control connection did not settle; replacement refused"
-            )
-        await asyncio.sleep(0.1)
+    await runtime_owner.wait_unoccupied(
+        f"http://{configured(config).control_listen}/health", timeout=config.stop_timeout
+    )
     directory, upload = prepare(config, layout)
     await _agent(config, layout, supervisor, directory, upload)
-
-
-def _occupied(url: str) -> bool:
-    with urlopen(url, timeout=2) as response:  # noqa: S310 - fixed loopback configuration
-        body = response.read(4097)
-    if len(body) > 4096:
-        raise LauncherError("control readiness exceeded its byte bound")
-    value = cast(dict[str, Any], json.loads(body))
-    if (
-        value.get("ready") is not True
-        or not isinstance(value.get("runtime_connected"), bool)
-        or not isinstance(value.get("runtime_draining", False), bool)
-    ):
-        raise LauncherError("control readiness is incompatible with runtime replacement")
-    return value["runtime_connected"] or value.get("runtime_draining", False)
 
 
 async def _agent(
@@ -300,64 +221,27 @@ async def _agent(
 ) -> None:
     runtime = configured(config)
     cli = mcp.OpenShell(config)
-    name = "ss-orch-" + secrets.token_hex(5)
-    if await cli.sandbox(name) is not None:
-        raise LauncherError("orchestrator random sandbox name is already in use")
-    _record(layout, name, None)
-    await cli.run(
-        "sandbox",
-        "create",
-        "--name",
-        name,
-        "--from",
-        runtime.image,
-        "--policy",
-        str(directory / "policy.yaml"),
-        "--no-auto-providers",
-        "--detach",
-        "--",
-        "sleep",
-        "infinity",
+    owned = await runtime_owner.create_owned(
+        _ownership(layout),
+        cli,
+        image=runtime.image,
+        policy=directory / "policy.yaml",
         timeout=config.start_timeout,
     )
-    deadline = asyncio.get_running_loop().time() + config.start_timeout
-    while True:
-        found = await cli.sandbox(name)
-        identity = found.get("id") if found is not None else None
-        if isinstance(identity, str) and identity:
-            previous = recorded(layout)
-            if previous is not None and previous[1] not in (None, identity):
-                raise LauncherError("orchestrator identity changed during startup")
-            _record(layout, name, identity)
-        phase = found.get("phase") if found is not None else None
-        if phase == "Ready" and isinstance(identity, str) and identity:
-            break
-        if phase in mcp.DEAD_PHASES or asyncio.get_running_loop().time() >= deadline:
-            raise LauncherError("orchestrator sandbox did not become ready; ownership retained")
-        await asyncio.sleep(0.5)
-    shell = ["sandbox", "exec", "-n", name, "--no-tty", "--no-login-shell", "--"]
-    await cli.run(*shell, "mkdir", "-p", REMOTE)
-    for source, remote in (
-        (layout.token("runtime-control"), "runtime.token"),
-        (config.model.api_key_file, "model.key"),
-        (upload / "runtime.json", "runtime.json"),
-    ):
-        await cli.run(
-            "sandbox", "upload", "--no-git-ignore", name, str(source), REMOTE + "/" + remote
-        )
-    await cli.run(*shell, "chmod", "600", REMOTE + "/runtime.token", REMOTE + "/model.key")
+    await runtime_owner.install(
+        cli,
+        owned.name,
+        (
+            (layout.token("runtime-control"), "runtime.token"),
+            (config.model.api_key_file, "model.key"),
+            (upload / "runtime.json", "runtime.json"),
+        ),
+        private=("runtime.token", "model.key"),
+    )
     await supervisor.start(
         Part(
             "agent-runtime",
-            [
-                cli.cli,
-                *shell,
-                runtime.python,
-                "-m",
-                "sandbox_science.orchestrator.confinement.runtime",
-                "--settings",
-                REMOTE + "/runtime.json",
-            ],
+            runtime_owner.exec_argv(cli.cli, owned.name, runtime.python),
             directory,
             ready_line="confined agent runtime ready",
             required=False,
