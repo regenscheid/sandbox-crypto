@@ -401,6 +401,7 @@ async def test_connection_checks_loss_before_ready_and_rechecks_exact_restoratio
     class Backend:
         name = "openshell"
         isolation_tier = 0
+        node_kernel_releases = ()
 
         async def prepare(self, environment_id):
             pass

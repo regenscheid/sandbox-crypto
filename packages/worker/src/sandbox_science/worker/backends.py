@@ -165,6 +165,11 @@ class Backend(Protocol):
     def isolation_tier(self) -> int: ...
 
     @property
+    def node_kernel_releases(self) -> tuple[str, ...]:
+        """Patterns for the releases of the nodes' own kernels, for the isolation probe."""
+        ...
+
+    @property
     def daemon(self) -> bool:
         """Whether executors run under a sandbox daemon that outlives the worker."""
         ...
@@ -227,6 +232,10 @@ class LocalBackend:
     @property
     def isolation_tier(self) -> int:
         return 0
+
+    @property
+    def node_kernel_releases(self) -> tuple[str, ...]:
+        return ()
 
     @property
     def daemon(self) -> bool:
@@ -524,6 +533,10 @@ class OpenShellBackend:
     @property
     def isolation_tier(self) -> int:
         return self.settings.isolation_tier
+
+    @property
+    def node_kernel_releases(self) -> tuple[str, ...]:
+        return self.settings.node_kernel_releases
 
     @property
     def daemon(self) -> bool:

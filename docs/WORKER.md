@@ -228,6 +228,7 @@ Each backend declares an isolation tier ([threat model](THREAT-MODEL.md#isolatio
 
 Evidence only lowers the declared tier, never raises it:
 - **Kernel.** The worker host's boot ID means the same running kernel: tier 1 at most, and 1 only if the executor runs under a seccomp filter with no-new-privs and no effective capabilities (the threat model's hardened container), else 0. A boot ID that either side cannot read counts the same way, so tiers 2 and 3 need a kernel of their own.
+- **Node kernels.** On Kubernetes the worker and its sandboxes usually run on different nodes, so a plain container's boot ID differs from the worker's. The optional `node_kernel_releases` setting lists the operator's patterns for the nodes' own kernel releases (case-sensitive fnmatch, such as `*-talos`; a Kata guest kernel is Kata's own build and matches none). A sandbox whose kernel release matches one runs on a node's kernel, and the kernel rule above applies: tier 1 at most, 0 without the hardened container. A release that is missing or not a plausible one (more than 64 characters, or characters other than letters, digits and `._+~-`) counts the same way while patterns are set. Without patterns the release is not evidence. The `kernel` field still reports the boot-ID comparison; the findings name the matched release and pattern.
 - **Files.** A sentinel file the sandbox can see, or one it cannot check for, means tier 0.
 - **Failure.** If the probe fails, the tier is 0, never the declared one.
 
@@ -236,7 +237,7 @@ Results and capabilities report the tier in effect (`isolation_tier`), the decla
 What the probe cannot do:
 - **Prove tier 3.** Nothing seen from inside one sandbox shows that it has a VM to itself rather than sharing one with other sandboxes. A declared tier 3 stands when nothing contradicts it.
 - **Withstand a hostile sandbox.** A compromised sandbox can give the answers a well-isolated one would. Since answers only lower the tier, the probe catches a misconfigured backend, such as a container driver declared as a VM, not a hostile sandbox.
-- **See beyond the worker's host.** It compares the sandbox with the worker's host only.
+- **See beyond the worker's host.** It compares the sandbox with the worker's host only, plus, where the operator lists them, the node kernel releases. A node whose kernel matches no pattern, or a VM whose guest kernel imitates a node's release, goes unnoticed.
 
 ## Running under OpenShell
 
@@ -768,6 +769,7 @@ python = "/opt/sandbox-science/bin/python"   # with ipykernel and jupyter_client
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"   # where the executor and its helpers are uploaded (the default)
 isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it
+node_kernel_releases = ["*-talos"]   # optional: the nodes' own kernel releases (fnmatch); a sandbox on one is tier 1 at most
 sched_shim = true                    # validate and preload the sandbox's native scheduler shim
 cc = "cc"                            # same-architecture Linux fallback compiler for older images
 package_cache = "http://host.openshell.internal:8090"   # the package cache, as sandboxes reach it

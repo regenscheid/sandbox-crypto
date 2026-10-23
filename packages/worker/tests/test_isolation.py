@@ -116,6 +116,108 @@ def test_a_linux_sandbox_on_a_host_of_another_kernel_has_one_of_its_own() -> Non
     assert assess(3, mac, VM, "visible", host_linux=False).tier == 0
 
 
+# Node kernels: on Kubernetes the worker and the sandbox usually run on different nodes,
+# so a plain container shows a boot ID of its own; its kernel release gives it away.
+
+NODES = ("*-talos",)
+ON_A_NODE = VM.model_copy(update={"kernel_release": "6.18.42-talos"})
+"""A hardened container on another node's kernel (plain runc)."""
+IN_KATA = VM.model_copy(update={"kernel_release": "6.18.35"})
+"""A sandbox in a Kata VM, whose guest kernel is Kata's own build."""
+
+
+def test_without_node_patterns_the_release_is_not_evidence() -> None:
+    assessment = assess(3, HOST, ON_A_NODE, "hidden")
+    assert assessment.tier == 3
+    assert assessment.evidence.findings == ()
+
+
+def test_a_node_kernel_allows_tier_1_at_most() -> None:
+    assessment = assess(3, HOST, ON_A_NODE, "hidden", node_kernels=("*-azure", *NODES))
+    assert assessment.tier == 1
+    # The boot ID still compares the sandbox with the worker host only.
+    assert assessment.evidence.kernel == "separate"
+    assert assessment.evidence.findings == (
+        "the sandbox runs on a node's kernel (release 6.18.42-talos matches *-talos)",
+    )
+    assert assess(1, HOST, ON_A_NODE, "hidden", node_kernels=NODES).tier == 1
+    assert assess(0, HOST, ON_A_NODE, "hidden", node_kernels=NODES).tier == 0
+
+
+@pytest.mark.parametrize(
+    ("update", "finding"),
+    [
+        ({"seccomp": "disabled"}, "the executor runs without a seccomp filter"),
+        ({"no_new_privs": None}, "the executor runs without no-new-privs"),
+        (
+            {"capabilities": "00000000a80425fb"},
+            "the executor runs with capabilities 00000000a80425fb",
+        ),
+    ],
+)
+def test_a_node_kernel_needs_the_hardened_container_for_tier_1(
+    update: dict[str, object], finding: str
+) -> None:
+    sandbox = ON_A_NODE.model_copy(update=update)
+    assessment = assess(3, HOST, sandbox, "hidden", node_kernels=NODES)
+    assert assessment.tier == 0
+    assert finding in assessment.evidence.findings
+
+
+def test_a_kernel_that_matches_no_node_pattern_keeps_the_declared_tier() -> None:
+    assessment = assess(3, HOST, IN_KATA, "hidden", node_kernels=NODES)
+    assert assessment.tier == 3
+    assert assessment.evidence.findings == ()
+    # Patterns match the whole release, with case.
+    for release in ("6.18.42-talos-kata", "6.18.42-TALOS"):
+        sandbox = VM.model_copy(update={"kernel_release": release})
+        assert assess(3, HOST, sandbox, "hidden", node_kernels=NODES).tier == 3
+
+
+@pytest.mark.parametrize(
+    "release",
+    [None, "", "6.18.42-talos" + "x" * 60, "6.18.42 talos", "6.18.42-talos\n", "6.18/-talos"],
+)
+def test_no_valid_release_counts_as_a_node_kernel(release: str | None) -> None:
+    sandbox = VM.model_copy(update={"kernel_release": release})
+    assessment = assess(3, HOST, sandbox, "hidden", node_kernels=NODES)
+    assert assessment.tier == 1
+    assert assessment.evidence.findings == (
+        "the sandbox reports no valid kernel release to compare with the nodes' kernels",
+    )
+    unhardened = sandbox.model_copy(update={"seccomp": None})
+    assert assess(3, HOST, unhardened, "hidden", node_kernels=NODES).tier == 0
+    # Without patterns, the release is not evidence at all.
+    assert assess(3, HOST, sandbox, "hidden").tier == 3
+
+
+def test_node_kernels_and_boot_ids_lower_the_tier_together() -> None:
+    on_the_host = HARDENED.model_copy(update={"kernel_release": "6.18.42-talos"})
+    assessment = assess(3, HOST, on_the_host, "hidden", node_kernels=NODES)
+    assert assessment.tier == 1
+    assert assessment.evidence.kernel == "shared"
+    assert assessment.evidence.findings == (
+        "the sandbox runs on the worker host's kernel (same boot ID)",
+        "the sandbox runs on a node's kernel (release 6.18.42-talos matches *-talos)",
+    )
+    # The hardening rule applies once, whichever evidence brought the tier down.
+    unhardened = on_the_host.model_copy(update={"no_new_privs": False})
+    lowered = assess(3, HOST, unhardened, "hidden", node_kernels=NODES)
+    assert lowered.tier == 0
+    assert lowered.evidence.findings.count("the executor runs without no-new-privs") == 1
+    # A Kata release does not undo what the boot ID shows.
+    shared = HARDENED.model_copy(update={"kernel_release": "6.18.35"})
+    assert assess(3, HOST, shared, "hidden", node_kernels=NODES).tier == 1
+    # A Mac worker host cannot compare boot IDs; the release still counts.
+    mac = HOST.model_copy(update={"boot_id": None})
+    assert assess(3, mac, ON_A_NODE, "hidden", host_linux=False, node_kernels=NODES).tier == 1
+    assert assess(3, mac, IN_KATA, "hidden", host_linux=False, node_kernels=NODES).tier == 3
+
+
+def test_a_node_kernel_does_not_hide_the_sentinel() -> None:
+    assert assess(3, HOST, ON_A_NODE, "visible", node_kernels=NODES).tier == 0
+
+
 @pytest.mark.parametrize("sentinel", ["visible", "unknown"])
 def test_the_worker_files_must_be_out_of_sight(sentinel: SentinelState) -> None:
     assessment = assess(3, HOST, VM, sentinel)
@@ -192,6 +294,36 @@ async def test_a_sandbox_with_its_own_kernel_and_files_keeps_its_tier(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_the_probe_compares_the_release_with_the_node_patterns(tmp_path: Path) -> None:
+    def answer(sandbox: ProbeFacts) -> Callable[[list[str]], Message]:
+        return lambda paths: {
+            "facts": sandbox.model_dump(),
+            "sentinels": dict.fromkeys(paths, "absent"),
+        }
+
+    on_a_node = await probe(FakeChannel(answer(ON_A_NODE)), 3, tmp_path, NODES)
+    assert on_a_node.tier == 1
+    assert on_a_node.evidence.sandbox == ON_A_NODE
+    assert (await probe(FakeChannel(answer(IN_KATA)), 3, tmp_path, NODES)).tier == 3
+    assert (await probe(FakeChannel(answer(ON_A_NODE)), 3, tmp_path)).tier == 3
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_release_is_a_failed_probe(tmp_path: Path) -> None:
+    def answer(paths: list[str]) -> Message:
+        facts = {**ON_A_NODE.model_dump(), "kernel_release": "6.18.42-talos" + "x" * 300}
+        return {"facts": facts, "sentinels": dict.fromkeys(paths, "absent")}
+
+    assessment = await probe(FakeChannel(answer), 3, tmp_path, NODES)
+    assert assessment.tier == 0
+    assert assessment.evidence.error is not None
+
+
+def test_the_executor_reports_the_running_kernels_release() -> None:
+    assert sandbox_setup.probe_facts()["kernel_release"] == os.uname().release
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "answer",
     [
@@ -245,3 +377,21 @@ def test_the_openshell_backend_must_declare_its_tier(tmp_path: Path) -> None:
     settings = load_settings(_settings(tmp_path, "[openshell]\nisolation_tier = 2"))
     assert settings.openshell is not None
     assert settings.openshell.isolation_tier == 2
+
+
+def test_node_kernel_patterns_are_optional_and_checked(tmp_path: Path) -> None:
+    def openshell(patterns: str) -> Path:
+        return _settings(
+            tmp_path, f"[openshell]\nisolation_tier = 3\nnode_kernel_releases = {patterns}"
+        )
+
+    settings = load_settings(_settings(tmp_path, "[openshell]\nisolation_tier = 3"))
+    assert settings.openshell is not None
+    assert settings.openshell.node_kernel_releases == ()
+    settings = load_settings(openshell('["*-talos", "6.1[0-9].*"]'))
+    assert settings.openshell is not None
+    assert settings.openshell.node_kernel_releases == ("*-talos", "6.1[0-9].*")
+    too_many = ", ".join(f'"*-node{index}"' for index in range(17))
+    for patterns in ('[""]', '["* talos"]', '["*-talos\\n"]', f'["{"x" * 65}"]', f"[{too_many}]"):
+        with pytest.raises(SettingsError, match="node_kernel_releases"):
+            load_settings(openshell(patterns))

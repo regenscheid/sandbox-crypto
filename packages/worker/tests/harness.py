@@ -454,6 +454,8 @@ class HostileBackend:
     def isolation_tier(self) -> int:
         return 0
 
+    node_kernel_releases: tuple[str, ...] = ()
+
 
 class Harness(WorkerApi):
     """A worker under test: its manager, store and HTTP API, on one state directory.

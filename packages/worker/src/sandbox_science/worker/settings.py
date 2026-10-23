@@ -14,6 +14,7 @@ python = "/sandbox/mamba/envs/tools/bin/python"
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"
 isolation_tier = 3               # required: the tier the driver gives (3 for the VM driver)
+node_kernel_releases = ["*-talos"]   # optional: the nodes' own kernels; a match caps the tier at 1
 package_cache = "http://host.openshell.internal:8090"   # the cache as sandboxes reach it
 env = {XDG_CONFIG_HOME = "~/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}   # logical environment -> sandbox name
@@ -139,6 +140,10 @@ class EnvironmentSettings(_Model):
         return self
 
 
+NodeKernelPattern = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._+~*?\[\]!-]{1,64}$")]
+"""A kernel release pattern: release characters and fnmatch's ``*?[]!``."""
+
+
 class OpenShellBackendSettings(_Model):
     """Runs the executor in OpenShell sandboxes through the ``openshell`` CLI."""
 
@@ -151,6 +156,10 @@ class OpenShellBackendSettings(_Model):
     isolation_tier: Annotated[int, Field(ge=1, le=3)]
     """The tier the gateway's driver gives (D43), with no default: a deployment must say.
     The worker's probe can lower it, never raise it."""
+    node_kernel_releases: tuple[NodeKernelPattern, ...] = Field(default=(), max_length=16)
+    """Patterns (fnmatch, case-sensitive) for the kernel releases of the nodes sandboxes run
+    on, such as ``*-talos``. A sandbox that reports a matching release, or none while patterns
+    are set, shares a node's kernel: tier 1 at most, as for the worker host's boot ID."""
     sched_shim: bool = True
     """Preload a shim that lets libzmq (Jupyter) start under OpenShell's seccomp filter."""
     cc: str = "cc"

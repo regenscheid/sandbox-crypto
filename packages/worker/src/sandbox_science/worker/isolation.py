@@ -12,6 +12,9 @@ only lowers the declared tier, never raises it:
   reports one runs on a Linux kernel, so not on the host's), and only with a seccomp filter,
   no-new-privs and no effective capabilities (the threat model's hardened
   container); otherwise the tier is 0;
+- a kernel release that matches one of the operator's node kernel patterns (a
+  sandbox on another Kubernetes node shows a boot ID of its own even in a plain
+  container), or no valid release while patterns are set, counts the same way;
 - a visible sentinel, or one the executor cannot check, means tier 0;
 - a failed probe means tier 0.
 
@@ -25,10 +28,12 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import secrets
 import sys
 from collections.abc import Generator, Sequence
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Final, cast
 
@@ -43,6 +48,8 @@ from .errors import WorkerError
 
 PROBE_TIMEOUT: Final = 30.0
 MAX_ERROR: Final = 300
+_KERNEL_RELEASE: Final = re.compile(r"[A-Za-z0-9._+~-]{1,64}")
+"""A release as ``uname`` gives it: Linux holds at most 64 characters."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,11 +72,13 @@ def assess(
     sentinel: SentinelState,
     *,
     host_linux: bool = True,
+    node_kernels: Sequence[str] = (),
 ) -> Assessment:
     """Lower ``declared`` to what the evidence allows.
 
     ``host_linux`` says whether the worker host runs a Linux kernel: when it does not,
-    a sandbox reporting a Linux boot ID cannot share the host's kernel.
+    a sandbox reporting a Linux boot ID cannot share the host's kernel. ``node_kernels``
+    are the operator's patterns for the releases of the nodes' own kernels.
     """
     findings: list[str] = []
     tier = declared
@@ -84,7 +93,10 @@ def assess(
         findings.append("the sandbox runs on the worker host's kernel (same boot ID)")
     else:
         kernel = "separate"
-    if kernel != "separate":
+    on_node = _node_kernel(sandbox.kernel_release, node_kernels)
+    if on_node is not None:
+        findings.append(on_node)
+    if kernel != "separate" or on_node is not None:
         tier = min(tier, 1)
         if sandbox.seccomp != "filter":
             findings.append("the executor runs without a seccomp filter")
@@ -111,6 +123,22 @@ def assess(
     return Assessment(tier, evidence)
 
 
+def _node_kernel(release: str | None, patterns: Sequence[str]) -> str | None:
+    """Why the sandbox may run on a node's own kernel, or ``None`` if nothing says so.
+
+    The boot ID only compares the sandbox with the worker's host, and on Kubernetes the
+    two usually run on different nodes; a release the nodes' kernels give fills that gap.
+    """
+    if not patterns:
+        return None
+    if release is None or not _KERNEL_RELEASE.fullmatch(release):
+        return "the sandbox reports no valid kernel release to compare with the nodes' kernels"
+    for pattern in patterns:
+        if fnmatchcase(release, pattern):
+            return f"the sandbox runs on a node's kernel (release {release} matches {pattern})"
+    return None
+
+
 def _no_capabilities(capabilities: str | None) -> bool:
     """Whether ``CapEff`` (hex) is readable and empty."""
     try:
@@ -131,7 +159,12 @@ def failed(error: str) -> Assessment:
     return Assessment(0, evidence)
 
 
-async def probe(channel: ExecutorChannel, declared: int, state_dir: Path) -> Assessment:
+async def probe(
+    channel: ExecutorChannel,
+    declared: int,
+    state_dir: Path,
+    node_kernels: Sequence[str] = (),
+) -> Assessment:
     """Ask a newly started executor about its sandbox, and assess the declared tier."""
     try:
         with sentinel_file(state_dir / "probe") as paths:
@@ -145,7 +178,14 @@ async def probe(channel: ExecutorChannel, declared: int, state_dir: Path) -> Ass
     except OSError as exc:
         return failed(f"cannot write the sentinel file: {exc}")
     sentinels = sentinel_result(reply.get("sentinels"), paths)
-    return assess(declared, host, facts, sentinels, host_linux=sys.platform == "linux")
+    return assess(
+        declared,
+        host,
+        facts,
+        sentinels,
+        host_linux=sys.platform == "linux",
+        node_kernels=node_kernels,
+    )
 
 
 @contextlib.contextmanager

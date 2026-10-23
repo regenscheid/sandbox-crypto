@@ -245,7 +245,9 @@ class EnvironmentConnections:
             await self.hooks.sync_package_gate(environment_id, channel)
             hostname, languages, features = describe(environment_id, channel.hello)
             declared = self.backend.isolation_tier
-            isolation = await probe(channel, declared, self.state_dir)
+            isolation = await probe(
+                channel, declared, self.state_dir, self.backend.node_kernel_releases
+            )
         except BaseException:
             # Never leave an executor running unused, even when the open is cancelled,
             # as a capture's deadline can; the shutdown outlasts further cancels.
