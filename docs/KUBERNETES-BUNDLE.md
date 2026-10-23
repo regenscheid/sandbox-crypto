@@ -216,8 +216,9 @@ Configure the actual service settings using the existing
   `/private/manager-control.token` (whose digest is control's
   `runtime-manager-token.sha256`), `control_models_file` `/private/control-models.json`
   (a copy of `control.json`, or its model part) and `model_key_file`
-  `/private/model.key`. `openshell.env` must set `XDG_CONFIG_HOME` to `/private/xdg`,
-  since the manager passes the CLI only that and its standard environment. `image`
+  `/private/model.key`. `openshell.env.XDG_CONFIG_HOME` defaults to `/private/xdg`,
+  where the profile is mounted; the manager passes the CLI only `openshell.env` and
+  its standard environment. `image`
   and `revision` are the `orchestrator` runtime image's digest and source revision
   (matching `control.json`'s `image_revision`), `policy` the runtime sandbox's
   OpenShell target (control's runtime Service, the model gateway) and `runtime` its

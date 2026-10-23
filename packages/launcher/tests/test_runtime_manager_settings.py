@@ -192,3 +192,14 @@ async def test_answers_are_bounded_and_checked(
             await asyncio.to_thread(manager.issue, "a" * 32)
     finally:
         await runner.cleanup()
+
+
+def test_the_cli_finds_its_gateway_profile_where_the_bundle_mounts_it(tmp_path: Path) -> None:
+    settings = RuntimeManagerSettings.model_validate(document(tmp_path))
+    assert settings.openshell.env == {"XDG_CONFIG_HOME": "/private/xdg"}
+    given = {"cli": "openshell", "env": {"OPENSHELL_GATEWAY": "g"}}
+    settings = RuntimeManagerSettings.model_validate(document(tmp_path, openshell=given))
+    assert settings.openshell.env == {"XDG_CONFIG_HOME": "/private/xdg", "OPENSHELL_GATEWAY": "g"}
+    given = {"env": {"XDG_CONFIG_HOME": "/elsewhere"}}
+    settings = RuntimeManagerSettings.model_validate(document(tmp_path, openshell=given))
+    assert settings.openshell.env == {"XDG_CONFIG_HOME": "/elsewhere"}  # explicit wins

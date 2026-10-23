@@ -39,6 +39,8 @@ from sandbox_science.policy.model import Resources
 from sandbox_science.policy.openshell import OrchestratorTarget
 
 DEFAULT_STATE = Path("/var/lib/sandbox-science/runtime")
+DEFAULT_XDG_CONFIG_HOME = "/private/xdg"
+"""Where the bundle mounts the CLI's gateway profile (``kubernetes_bundle.XDG``)."""
 _SETTINGS_BYTES = 64 * 1024
 _KATA = re.compile(r"kata(?:-[a-z0-9]+)*")
 """Kata Containers' RuntimeClass names: ``kata``, ``kata-qemu``, ``kata-clh`` and so on."""
@@ -49,8 +51,16 @@ class ManagerOpenShell(Contract):
     """The OpenShell CLI as the manager runs it, at the gateway's release."""
 
     cli: str = Field(default="openshell", min_length=1, max_length=4096)
-    env: dict[str, str] = Field(default_factory=dict[str, str], max_length=64)
-    """What the CLI needs to reach the gateway, such as ``XDG_CONFIG_HOME``."""
+    env: dict[str, str] = Field(
+        default_factory=dict[str, str], max_length=64, validate_default=True
+    )
+    """What the CLI needs to reach the gateway. ``XDG_CONFIG_HOME``, where it finds the
+    gateway's profile, is ``DEFAULT_XDG_CONFIG_HOME`` unless given."""
+
+    @field_validator("env")
+    @classmethod
+    def _xdg(cls, value: dict[str, str]) -> dict[str, str]:
+        return {"XDG_CONFIG_HOME": DEFAULT_XDG_CONFIG_HOME, **value}
 
 
 class ControlModels(BaseModel):
