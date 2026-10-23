@@ -126,7 +126,9 @@ match args:
             sys.exit(1)
         found = load()["sandboxes"].get(name)
         if found is None:
-            print(f"\x1b[31mError:\x1b[0m sandbox {name} not found", file=sys.stderr)
+            # As OpenShell 0.1.5 reports the gateway's NotFound (tonic 0.14's status).
+            said = "status: 'Some requested entity was not found', self: \"sandbox not found\""
+            print(f"\x1b[31mError:\x1b[0m   \u00d7 {said}", file=sys.stderr)
             sys.exit(1)
         print(json.dumps({"name": name, **found}))
     case [

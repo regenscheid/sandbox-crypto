@@ -65,6 +65,7 @@ from sandbox_science.worker.environments import (
     Admission,
     EnvironmentRecords,
     Environments,
+    SandboxMissingError,
     new_sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
@@ -158,7 +159,7 @@ if command == ["sandbox", "create"]:
     out = "created"
 elif command == ["sandbox", "get"]:
     if state.get("fail_get"):
-        fail("synthetic gateway unavailable")
+        fail(state.get("get_error", "synthetic gateway unavailable"))
     name = argv[2]
     if name not in sandboxes:
         fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
@@ -925,6 +926,42 @@ async def test_policy_add_stores_revisions_for_environments(
     broken = tmp_path / "broken.yaml"
     broken.write_text("kind: ProjectPolicy\n")
     assert main(["policy", "add", "--settings", str(settings), str(broken)]) == 1
+
+
+MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
+"""How OpenShell 0.1.5's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        MISSING,
+        MISSING + ", metadata: " + "x" * 600,
+        "status: 'Some requested entity was not found', self: \"sandbox not\n  │ found\"",
+    ],
+)
+async def test_only_the_gateways_not_found_for_the_name_means_absent(
+    setup: Setup, said: str
+) -> None:
+    setup.fake.update(fail_get=True, get_error=said)
+    assert await setup.environments.cli.sandbox("missing") is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "status: 'Some requested entity was not found', self: \"service endpoint not found\"",
+        "gateway 'babbage' not found",
+        "error: /home/user/.config/openshell/client.pem: file not found",
+        "sandbox research-1 not found",
+        "synthetic gateway unavailable",
+    ],
+)
+async def test_other_failures_never_count_as_absence(setup: Setup, said: str) -> None:
+    setup.fake.update(fail_get=True, get_error=said)
+    with pytest.raises(WorkerError, match="openshell sandbox get failed") as raised:
+        await setup.environments.cli.sandbox("missing")
+    assert not isinstance(raised.value, SandboxMissingError)
 
 
 async def test_sandbox_names_fit_openshells_limit_and_are_random() -> None:
