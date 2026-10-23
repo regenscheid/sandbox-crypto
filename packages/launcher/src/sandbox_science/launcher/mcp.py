@@ -45,6 +45,7 @@ import re
 import secrets
 import shutil
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -90,6 +91,13 @@ class OpenShell:
     def __init__(self, config: LauncherConfig) -> None:
         self.cli = config.openshell.cli
         self.env = {**environment(), **tooling(config)}
+
+    @classmethod
+    def at(cls, cli: str, env: Mapping[str, str]) -> OpenShell:
+        """The CLI without a launcher config, as the runtime manager runs it."""
+        shell = cls.__new__(cls)
+        shell.cli, shell.env = cli, {**environment(), **env}
+        return shell
 
     async def run(self, *args: str, timeout: float = 120.0) -> str:
         process = await asyncio.create_subprocess_exec(

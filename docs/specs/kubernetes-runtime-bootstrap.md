@@ -1,6 +1,9 @@
 # Kubernetes runtime bootstrap
 
-Status: Design with owner decisions (2026-10-22); not built. It closes the gate in
+Status: Design with owner decisions (2026-10-22). Stages 1 to 3 are built (the
+ownership extraction, control's credential endpoint, and the manager against a fake
+OpenShell CLI; see [the manager as built](#the-manager-as-built)); the renderer, image
+and live acceptance are not. It closes the gate in
 [the offline bundle](../KUBERNETES-BUNDLE.md#render-inspect-then-qualify-separately)
 that says "cluster runtime bootstrap is an unimplemented gate". It applies
 [orchestrator confinement](orchestrator-confinement.md#launcher-and-replacement),
@@ -292,6 +295,40 @@ CLI; (4) renderer and image; (5) live acceptance.
   whether a gateway restart orphans the runtime, and revocation ending it; explicit
   replace, then a user Resume while a child computation continues in its surviving
   workload sandbox (RC-F20); confirmed teardown. Fixtures do not count.
+
+## The manager as built
+
+`sandbox_science.launcher.runtime_manager` (stage 3): `settings`
+(`RuntimeManagerSettings`), `control` (the credentials client), `records` (the PVC
+files), `manager` (`serve`) and `operations` (the operator's requests and `main`), with
+the `sandbox-science-runtime-manager` script. Where the design left a choice:
+
+- **Settings** are `runtime-manager.json`, named by `--settings`, else
+  `$SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS`, else
+  `/etc/sandbox-science/runtime-manager/runtime-manager.json`, so `request …` needs no
+  flag in the Pod. They carry the runtime's policy as an `OrchestratorTarget`, which the
+  manager compiles to `policy.yaml` at each create, and the Kata profile as a
+  `KubernetesProfile` (`runtime_class_name` `kata` or `kata-*`, `amd64` pinned).
+  `control_url` and `manager_url` are explicit `https://host:port` origins on the same
+  host. `control_models_file` may be the whole `control.json`: keys outside the model
+  part are ignored.
+- **Requests** reuse the replacement request and receipt, bound to the serving
+  process's `instance` nonce, which `status.json` names with its PID; the command
+  writes `request.json`, sends SIGUSR2 and waits for `result.json`, one request at a
+  time (`request.lock`). `request stop` requires `--delete`; a stop that keeps the
+  sandbox is SIGTERM. `request status` reads the files and needs no serving process.
+- **Placement.** `sandbox.json` keeps the image, revision and driver JSON with its
+  digest. Recovery's replacement reuses the recorded driver JSON; an explicit
+  `request replace` or `bootstrap` uses the configured profile.
+- **Credentials.** `credentials.json` holds the request ID and whether an exec was
+  started with its values. Only a request no exec used is replayed after a restart;
+  otherwise the manager asks anew, which revokes any survivor. On 410 it makes one new
+  request; on 409 it waits for `/health` to show no runtime, within `stop_timeout`, and
+  retries the same request. The token reaches the sandbox from a private temporary file
+  removed after upload.
+- **Bounds.** An automatic attempt starts only while control's health answers, so a
+  control restart does not consume the budget. A gateway error (never absence) counts
+  as an attempt, and ten of them block, as the table above says.
 
 ## Blockers in existing code
 
