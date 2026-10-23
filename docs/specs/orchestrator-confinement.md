@@ -251,6 +251,31 @@ These passive probes create no stores, sandboxes, model calls or recovery intent
 Readiness must not depend on runtime connection: the runtime needs the Service
 before connecting. Probes expose no project, credential or prompt data.
 
+On the cluster, control issues runtime credentials itself
+([runtime bootstrap](kubernetes-runtime-bootstrap.md#credential-handoff-control-is-the-authority),
+KRB-6 and KRB-7). This is off unless `control.json` names
+`manager_token_sha256_file`: a private file holding the lowercase SHA-256 hex of the
+runtime manager's bearer token, reread per request. It then requires
+`generation_file`, and control opens a second listener at `manager_listen` (default
+`127.0.0.1:8444`; non-loopback requires `tls`, whose certificate it shares) serving
+only `GET /health` and `POST /runtime/credentials`; the runtime listener does not
+serve the latter. `/health` on both listeners gains `control_instance`, a random value
+per process. At startup control writes a fresh unissued token to
+`runtime_token_file` (a memory volume) and marks the last issue superseded, which
+revokes any runtime. The issue journal `runtime-credentials.json` in `state_dir`
+keeps each request ID, state, generation and token digest, never a token.
+
+The request is `{"request": "<32 lowercase hex>"}` with the manager's bearer token,
+at most 1 KiB. A wrong or missing token answers 404. Replaying the latest issued
+request answers 200 with the same `{"generation", "token"}` while both files still
+hold them. An older or superseded request answers 410 `superseded`. A new request
+(or a retry of the latest unissued one) first replaces the token, then answers 409
+`occupied` while a runtime is connected or draining; otherwise control mints a
+`runtime-<24hex>` generation never journaled before and a 32-byte hex token, writes
+the generation file, the token file and then the journal, and answers 200. A
+malformed body answers 400 (413 if too large) `invalid_request`, and shutdown 503
+`unavailable`.
+
 SIGTERM stops admission and closes the active WebSocket while owned admitted
 effects and service cleanup drain. Successful retained effects keep their original
 identities; socket shutdown does not stop research sandboxes, submit a replacement

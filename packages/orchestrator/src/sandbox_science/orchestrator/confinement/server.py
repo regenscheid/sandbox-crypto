@@ -7,13 +7,14 @@ import argparse
 import asyncio
 import hashlib
 import hmac
+import secrets
 import stat
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 from aiohttp import WSCloseCode, web
-from pydantic import Field, JsonValue, field_validator, model_validator
+from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.connectors import ProxyClient
@@ -40,6 +41,15 @@ from sandbox_science.orchestrator.skills.embeddings import SkillVectors
 from sandbox_science.orchestrator.skills.store import SkillStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .credentials import (
+    JOURNAL,
+    MAX_REQUEST_BYTES,
+    CredentialsError,
+    CredentialsRequest,
+    RefusalKind,
+    Refused,
+    RuntimeCredentials,
+)
 from .embeddings import CallbackEmbedder
 from .endpoints import ServerTLS, bind_address, loopback
 from .host import HostLoops
@@ -112,8 +122,10 @@ class ControlSettings(Contract):
     metadata: ModelAlias | None = None
     checks: CheckSettings | None = None
     image_revision: str = Field(min_length=1, max_length=128)
+    manager_listen: str = "127.0.0.1:8444"
+    manager_token_sha256_file: Path | None = None
 
-    @field_validator("listen")
+    @field_validator("listen", "manager_listen")
     @classmethod
     def valid_listen(cls, value: str) -> str:
         bind_address(value)
@@ -123,6 +135,14 @@ class ControlSettings(Contract):
     def remote_tls(self) -> ControlSettings:
         if not loopback(self.listen) and self.tls is None:
             raise ValueError("a non-loopback control bind requires TLS")
+        if self.manager_token_sha256_file is None:
+            return self  # no manager listener: the host launcher's control is unchanged
+        if not loopback(self.manager_listen) and self.tls is None:
+            raise ValueError("a non-loopback manager bind requires TLS")
+        if bind_address(self.manager_listen)[1] == bind_address(self.listen)[1]:
+            raise ValueError("the manager listener needs a port of its own")
+        if self.generation_file is None:
+            raise ValueError("control-issued credentials require generation_file")
         return self
 
 
@@ -142,16 +162,66 @@ def private_token(path: Path) -> str:
     return private_credential(path, minimum=32, maximum=256)
 
 
+def private_digest(path: Path) -> str:
+    digest = private_credential(path, minimum=64, maximum=64)
+    if any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("credential digest must be lowercase SHA-256 hex")
+    return digest
+
+
+def _manager_app(
+    digest_file: Path,
+    lifecycle: ControlLifecycle,
+    credentials: RuntimeCredentials,
+    health: Callable[[web.Request], Awaitable[web.Response]],
+) -> web.Application:
+    """The runtime manager's listener: health and credential issue, nothing else."""
+    app = web.Application(client_max_size=MAX_REQUEST_BYTES)
+
+    def refused(status: int, kind: RefusalKind, message: str) -> web.Response:
+        body = Refused(error=kind, message=message)
+        return web.json_response(body.model_dump(mode="json"), status=status)
+
+    async def issue(request: web.Request) -> web.Response:
+        header = request.headers.get("Authorization", "")
+        supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
+        # Reread per request so the Secret can rotate; compare digests, never tokens.
+        expected = private_digest(digest_file)
+        if not hmac.compare_digest(hashlib.sha256(supplied.encode()).hexdigest(), expected):
+            raise web.HTTPNotFound()
+        try:
+            body = await request.read()
+        except web.HTTPRequestEntityTooLarge:
+            return refused(413, "invalid_request", "credentials request exceeds its byte bound")
+        try:
+            asked = CredentialsRequest.model_validate_json(body)
+        except ValidationError:
+            return refused(400, "invalid_request", 'expected {"request": "<32 hex>"}')
+        if lifecycle.draining:
+            return refused(503, "unavailable", "control service is draining")
+        try:
+            issued = credentials.issue(asked.request, occupied=lifecycle.occupied)
+        except CredentialsError as error:
+            return refused(409 if error.kind == "occupied" else 410, error.kind, str(error))
+        return web.json_response(issued.model_dump(mode="json"))
+
+    app.router.add_get("/health", health)
+    app.router.add_post("/runtime/credentials", issue)
+    return app
+
+
 def create_app(settings: ControlSettings) -> web.Application:
     """Create a service that admits only the launcher's current scoped runtime token."""
     app = web.Application(client_max_size=MAX_FRAME_BYTES)
     lifecycle = ControlLifecycle()
+    # A new value per process lets the manager see a control restart in /health.
+    instance = secrets.token_hex(16) if settings.manager_token_sha256_file else None
 
     async def health(request: web.Request) -> web.Response:
-        return web.json_response(
-            lifecycle.health(),
-            headers={CONTROL_HEADER: str(CONTROL_PROTOCOL)},
-        )
+        status: dict[str, bool | int | str] = dict(lifecycle.health())
+        if instance is not None:
+            status["control_instance"] = instance
+        return web.json_response(status, headers={CONTROL_HEADER: str(CONTROL_PROTOCOL)})
 
     async def ready(request: web.Request) -> web.Response:
         response = await health(request)
@@ -429,6 +499,30 @@ def create_app(settings: ControlSettings) -> web.Application:
     app.router.add_get("/ready", ready)
     app.router.add_get("/control", control)
     app.on_shutdown.append(lifecycle.shutdown)
+    digest_file, generation_file = settings.manager_token_sha256_file, settings.generation_file
+    if digest_file is not None and generation_file is not None:
+        credentials = RuntimeCredentials(
+            settings.state_dir / JOURNAL,
+            settings.runtime_token_file,
+            generation_file,
+            placeholder=settings.generation,
+        )
+        manager = web.AppRunner(_manager_app(digest_file, lifecycle, credentials, health))
+
+        async def start_manager(app: web.Application) -> None:
+            # Revoke before either listener accepts: a restart ends the old runtime.
+            credentials.start()
+            private_digest(digest_file)
+            await manager.setup()
+            host, port = bind_address(settings.manager_listen)
+            ssl = settings.tls.context() if settings.tls is not None else None
+            await web.TCPSite(manager, host, port, ssl_context=ssl).start()
+
+        async def stop_manager(app: web.Application) -> None:
+            await manager.cleanup()
+
+        app.on_startup.append(start_manager)
+        app.on_cleanup.append(stop_manager)
     return app
 
 
