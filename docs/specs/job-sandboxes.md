@@ -248,3 +248,18 @@ profiles should carry. No mounting of one sandbox's disk in another. No automati
    if the session installed `g6k` after it started, the big job lacks it unless its
    script installs it (still under your policy), and the result says so.
    Recommendation: yes; copying the session's packages comes next.
+
+### Owner answers (2026-10-22)
+
+1. Sizes for the home cluster: **medium** 6 cores and 16 GiB; **large** 12 cores and
+   32 GiB. The owner sets no time limit per size, so each uses the 7-day ceiling above.
+4. Node upgrades: no automatic blocking; the owner checks running jobs before restarting
+   a node.
+5. Failed sandboxes: kept 3 days, at most 2 per project, as recommended.
+6. Copy-back: 4 GiB per job, tentatively.
+7. Packages: a job starts from its session's profile image. `crypto-base` already ships
+   SageMath 10.9 and g6k, which the owner needs; only packages installed later in the
+   session are missing until package copying lands.
+
+Questions 2 (concurrency) and 3 (wait for room) keep their recommendations until the
+owner confirms them.
