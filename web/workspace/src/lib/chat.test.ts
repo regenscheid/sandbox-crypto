@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { createRawSnippet } from 'svelte';
 import { render } from 'svelte/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatRun from '../views/ChatRun.svelte';
@@ -6,6 +7,8 @@ import ChatWaiting from '../views/ChatWaiting.svelte';
 import type { EnvironmentState, EventPage, MessageListing } from './api-types';
 import { ApiError } from './http';
 import {
+  CONTINUATION_AUTHOR,
+  isContinuation,
   chatEntries,
   ChatFeed,
   foldText,
@@ -18,6 +21,7 @@ import {
   messageState,
   PAGE,
   pendingMessages,
+  placeQuestions,
   sendMessage,
   startingText,
   stoppedText,
@@ -404,16 +408,23 @@ describe('the transcript of a run', () => {
     ]);
     expect(entries).toEqual([
       { kind: 'started', seq: 1, text: 'Run r1 started, answering 1 message.' },
-      { kind: 'user', seq: 2, text: '<b>What</b> is $x$?', pins: [] },
+      { kind: 'user', seq: 2, text: '<b>What</b> is $x$?', pins: [], message: 'm1' },
       {
         kind: 'assistant',
         seq: 4,
         text: 'Let me check.',
         pins: [],
-        calls: [{ name: 'python', arguments: '{"code": "1"}' }],
+        calls: [{ id: 'c1', name: 'python', arguments: '{"code": "1"}' }],
         usage: 'model-a: 1,200 input and 34 output tokens',
       },
-      { kind: 'tool', seq: 5, name: 'python', outcome: 'succeeded, exit code 0', result: '1' },
+      {
+        kind: 'tool',
+        seq: 5,
+        call: '',
+        name: 'python',
+        outcome: 'succeeded, exit code 0',
+        result: '1',
+      },
       { kind: 'note', seq: 6, text: 'Notices from jobs: j1.', problem: false },
       { kind: 'note', seq: 7, text: 'Waiting for all of jobs j1.', problem: false },
       { kind: 'note', seq: 8, text: 'The wait for jobs ended.', problem: false },
@@ -445,10 +456,10 @@ describe('the transcript of a run', () => {
     } as never;
     const body = render(ChatRun, { props: { run } }).body;
     expect(body).not.toContain('no state recorded');
-    const summaries = [...body.matchAll(/<summary>(.*?)<\/summary>/g)].map((m) =>
-      (m[1] ?? '').replace(/<!--.*?-->/g, '').replace(/<\/?code>/g, ''),
+    const heads = [...body.matchAll(/<div class="call-head">(.*?)<\/div>/g)].map((m) =>
+      (m[1] ?? '').replace(/<!--.*?-->/g, '').replace(/<\/?(code|span)[^>]*>/g, ''),
     );
-    expect(summaries).toEqual(['plan_create', 'python: succeeded, exit code 0']);
+    expect(heads).toEqual(['plan_create', 'python · succeeded, exit code 0']);
   });
 
   it('takes no field of the wrong type, and says how a run stopped', () => {
@@ -677,13 +688,13 @@ describe('the messages waiting for a run', () => {
     const body = html([queued], startingText({ lease: null, environment: 'creating' }, [queued]));
     expect(body).toContain('role="status"');
     expect(body).toContain('Starting the environment');
-    expect(body).toContain('Queued:');
+    expect(body).toContain('Queued');
     expect(body).toContain('What is $2^{64}');
   });
 
   it('says nothing more than the state of each message when the server has no news', () => {
     const body = html([message(1, 'queued')], null);
-    expect(body).toContain('Queued:');
+    expect(body).toContain('Queued');
     expect(body).not.toContain('role="status"');
     expect(html([])).toBe(html([], null)); // no list for no messages
     expect(html([])).not.toContain('<ul');
@@ -696,5 +707,118 @@ describe('the messages waiting for a run', () => {
     ]);
     expect(body).not.toContain('<img');
     expect(body.match(/&lt;img src=x onerror=alert\(1\)/g)).toHaveLength(2); // the text and the reason
+  });
+});
+
+describe('answered questions in the transcript', () => {
+  const asked = event(2, 'assistant', {
+    text: null,
+    tool_calls: [{ id: 'call-ask', name: 'ask_user', arguments: '{}' }],
+  });
+  const later = [
+    event(3, 'tool', { name: 'ask_user', call_id: 'call-ask', result: 'answered' }),
+    event(4, 'user', { text: 'Can you continue the research?' }),
+    event(5, 'assistant', { text: 'Yes, continuing.', tool_calls: [] }),
+  ];
+  const question = { question_id: 'q1', tool_call: 'call-ask' };
+  const elsewhere = { question_id: 'q2', tool_call: 'call-not-loaded' };
+
+  it('places each after the entry whose call asked it, and keeps the rest apart', () => {
+    const entries = chatEntries([event(1, 'user', { text: 'start' }), asked, ...later]);
+    const { after, unplaced } = placeQuestions(entries, [question, elsewhere]);
+    expect([...after]).toEqual([[2, [question]]]);
+    expect(unplaced).toEqual([elsewhere]);
+  });
+
+  it('renders an answered question before what came after it (Mac, 2026-10-21)', () => {
+    // The panel once drew a run's answered questions after its whole transcript, so the
+    // last thing on the page never changed while the run went on above it.
+    const run = { run: 'r1', state: 'active', events: [asked, ...later] } as never;
+    const shown = createRawSnippet((q: () => { question_id: string }) => ({
+      render: () => `<p>Question ${q().question_id}</p>`,
+    }));
+    const body = render(ChatRun, {
+      props: { run, questions: [question, elsewhere], question: shown },
+    }).body;
+    const at = (needle: string) => body.indexOf(needle);
+    expect(at('Question q1')).toBeGreaterThan(at('ask_user'));
+    expect(at('Question q1')).toBeLessThan(at('Can you continue the research?'));
+    expect(at('Question q2')).toBeGreaterThan(at('Yes, continuing.'));
+  });
+});
+
+describe('runs no message names', () => {
+  // A resumed run and the session's automatic continuation of its plan carry no message
+  // of the user's: the chat showed each only while it held the session (Mac, 2026-10-21).
+  const RESUMED = '20261022T014900864922Z-run-resumed';
+  const NEXT = '20261022T015836336042Z-run-next';
+  const ASKED = '20261021T200000000000Z-run-asked';
+
+  it('keeps a finished continuation in the conversation, in the order the runs started', async () => {
+    const { state } = server();
+    let roots = [ASKED, RESUMED];
+    const feed = new ChatFeed({
+      messages: async (after) => ({
+        messages: state.messages.filter((item) => item.number > after),
+        run: state.lease ? { run: state.lease, started_at: '', renewed_at: '' } : null,
+        service: true,
+        environment: null,
+      }),
+      events: async (run) => ({ state: run === NEXT ? 'active' : 'ended', events: [] }),
+      runs: async () =>
+        roots.map((name) => ({ name, run_id: name, started_at: '', role: 'main', parent: null })),
+    });
+    state.messages = [message(1, 'delivered', ASKED)];
+    state.lease = RESUMED;
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([ASKED, RESUMED]);
+    // The resumed run ends, and the next one takes the session.
+    roots = [ASKED, RESUMED, NEXT];
+    state.lease = NEXT;
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([ASKED, RESUMED, NEXT]);
+  });
+
+  it('shows no delegated run as part of the conversation', async () => {
+    const feed = new ChatFeed({
+      messages: async () => ({ messages: [], run: null, service: true, environment: null }),
+      events: async () => ({ state: 'ended', events: [] }),
+      runs: async () => [
+        { name: RESUMED, run_id: 'a', started_at: '', role: 'main', parent: null },
+        { name: NEXT, run_id: 'b', started_at: '', role: 'delegated', parent: RESUMED },
+      ],
+    });
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([RESUMED]);
+  });
+
+  it('carries on without the run list when it cannot be read', async () => {
+    const feed = new ChatFeed({
+      messages: async () => ({
+        messages: [message(1, 'delivered', RESUMED)],
+        run: null,
+        service: true,
+        environment: null,
+      }),
+      events: async () => ({ state: 'ended', events: [] }),
+      runs: async () => {
+        throw new Error('the session could not be read');
+      },
+    });
+    expect((await feed.read()).runs.map((run) => run.run)).toEqual([RESUMED]);
+  });
+});
+
+describe("the platform's continuations", () => {
+  const PROMPT =
+    'The active research plan plan-87654bc97a123dd7c168639e version 2 remains open after ' +
+    'the previous root answered. Read the current plan, recent child outcomes, documents ' +
+    'and artifacts, then pursue the next justified research step.';
+
+  it("are told from the user's messages by their author, or by their words", () => {
+    // Shown folded to "Continuation" (owner, 2026-10-21). A resumed run repeats the
+    // prompt without naming its message, so its words are known too.
+    expect(isContinuation('Go on', 'msg-auto', new Set(['msg-auto']))).toBe(true);
+    expect(isContinuation(PROMPT, null, new Set())).toBe(true);
+    expect(isContinuation('Go on', 'msg-user', new Set(['msg-auto']))).toBe(false);
+    expect(isContinuation(`Please explain: ${PROMPT}`, null, new Set())).toBe(false);
+    expect(CONTINUATION_AUTHOR).toBe('research-supervisor');
   });
 });

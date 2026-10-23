@@ -97,7 +97,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             answer.add_argument(
                 "--scope",
                 choices=ALL_SCOPES,
-                help="call (the default), or tool: the tool with any arguments",
+                help=(
+                    "call (the default); tool: the tool with any arguments; "
+                    "server: any escalated tool of the server"
+                ),
             )
             answer.add_argument("--for", dest="hours", type=float, default=8.0, help="hours")
     args = parser.parse_args(argv)
@@ -193,6 +196,11 @@ def _answer(path: Path, *, approve: bool, seq: int, scope: str | None, hours: fl
     )
 
 
+async def _append_answer(events: EventStore, kind: str, payload: dict[str, object]) -> int:
+    """Append an operator caller's approval or denial, as the command line would."""
+    return (await events.append_async(kind, OPERATOR, payload)).seq
+
+
 def _serve(settings: Settings) -> int:
     ceiling = load_ceiling(settings.ceiling)
     floor = HardFloor(frozenset(settings.admin_hosts))
@@ -221,6 +229,7 @@ def _serve(settings: Settings) -> int:
             credentials=settings.credentials,
             environ=os.environ,
             requests=partial(_read_records, settings.event_store_path),
+            answers=lambda kind, payload: _append_answer(events, kind, payload),
         )
         await asyncio.to_thread(proxy.prime_approvals)
         app = proxy.application(max_body_bytes=settings.max_body_bytes)

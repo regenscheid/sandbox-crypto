@@ -306,14 +306,14 @@ def test_no_insert_replaces_a_record_and_an_entry_holds_a_bounded_number(
 ) -> None:
     """Hardening from the review: INSERT OR REPLACE cannot rewrite a record, and an
     entry holds at most MAX_ENTRY_WORK records."""
-    from sandbox_science.orchestrator.ledger import store as ledger_store
+    from sandbox_science.orchestrator.ledger import commit as ledger_commit
 
     change(ledger, NEW["issue"])
     item = {"entry": "I-1", "tried": "x", "ending": "limit", "limit": "time"}
     work(ledger, item)
     with pytest.raises(sqlite3.IntegrityError, match="append-only"), ledger.control.write() as tx:
         tx.sql.execute("INSERT OR REPLACE INTO ledger_work SELECT * FROM ledger_work")
-    monkeypatch.setattr(ledger_store, "MAX_ENTRY_WORK", 2)
+    monkeypatch.setattr(ledger_commit, "MAX_ENTRY_WORK", 2)
     work(ledger, item, op="w-2")
     with pytest.raises(DocumentError, match="holds 2 work records"):
         work(ledger, item, op="w-3")

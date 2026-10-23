@@ -26,8 +26,8 @@ from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.skills import SkillSettings, SkillStore
 from sandbox_science.orchestrator.skills.derive import VERSION as PASS_VERSION
 
-from . import documents
 from .context import json_body
+from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/skills"
 METADATA: Final = web.AppKey("skills_metadata", str)
@@ -193,7 +193,7 @@ async def skills(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "the skills read takes no parameters")
     project = request.match_info["project"]
     alias = request.app.get(METADATA)
-    return await documents.answer(request, lambda store: _read(store, project, alias))
+    return await document_answer(request, lambda store: _read(store, project, alias))
 
 
 async def settings(request: web.Request) -> web.Response:
@@ -215,4 +215,4 @@ async def settings(request: web.Request) -> web.Response:
         )
         return _settings(found).model_dump(mode="json")
 
-    return await documents.answer(request, changed, writer=True)
+    return await document_answer(request, changed, access="write")

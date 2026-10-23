@@ -71,6 +71,7 @@ from sandbox_science.policy.openshell import (
     Compiled,
     CompileError,
     FilesystemPolicy,
+    LandlockPolicy,
     admission_refusal,
     compile_sandbox,
     load_targets,
@@ -109,6 +110,12 @@ SANDBOX_PREFIX: Final = "ss-"
 MAX_SANDBOX_NAME: Final = 19
 """OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_FRAME: Final = re.compile(r"[\s\u2500-\u257f\u00d7]+")
+"""Whitespace and the box drawing miette frames and wraps a report with."""
+_MISSING: Final = re.compile(r'(?:message|self): "sandbox not found"')
+"""The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
+the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
+answers, such as a missing service endpoint, gateway or file, do not match."""
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLICY_TIMEOUT: Final = 120
 _DEAD_PHASES: Final = frozenset({"Error", "Deleting", "Completed"})
@@ -148,12 +155,17 @@ def printable(text: str, limit: int = 255) -> str:
 def new_sandbox_name() -> str:
     """A fresh OpenShell sandbox name: the prefix and 64 random bits, in 19 characters.
 
-    OpenShell v0.1.3 takes at most 19 characters, a DNS label without the ``--`` it uses
+    OpenShell v0.1.5 takes at most 19 characters, a DNS label without the ``--`` it uses
     between the segments of routable names. A name derived from the environment ID left
     room for only 32 bits of a hash, so a client could choose an ID whose name was
     another project's sandbox (review of D78). The record keeps the name.
     """
     return f"{SANDBOX_PREFIX}{secrets.token_hex((MAX_SANDBOX_NAME - len(SANDBOX_PREFIX)) // 2)}"
+
+
+class SandboxMissingError(WorkerError):
+    """The gateway answered that no sandbox has the name: proof of absence, unlike any
+    other failure, which says nothing about whether the sandbox exists."""
 
 
 class OpenShellCli:
@@ -196,7 +208,10 @@ class OpenShellCli:
             raise
         if process.returncode != 0:
             text = _ANSI.sub("", (errors or output).decode("utf-8", "replace")).strip()
-            raise WorkerError(
+            # Classify the whole report: the status leads it, and the end is what is kept.
+            missing = _MISSING.search(_FRAME.sub(" ", text)) is not None
+            error = SandboxMissingError if missing else WorkerError
+            raise error(
                 ErrorKind.UNAVAILABLE, f"openshell {' '.join(args[:2])} failed: {text[-500:]}"
             )
         return output.decode("utf-8", "replace")
@@ -214,10 +229,8 @@ class OpenShellCli:
         """The sandbox's description, or None when the gateway has no sandbox by that name."""
         try:
             document = await self.json("sandbox", "get", name)
-        except WorkerError as error:
-            if "not found" in error.message:
-                return None
-            raise
+        except SandboxMissingError:
+            return None
         if not isinstance(document, dict):
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox get returned no object")
         return cast(dict[str, object], document)
@@ -1195,10 +1208,10 @@ class Environments:
         return compiled, settled
 
     async def _set_policy(self, info: EnvironmentInfo, revision: str, compiled: Compiled) -> None:
-        """Replace the sandbox's network sections, keeping the filesystem section it reports."""
-        live = await self._live_filesystem(info.sandbox)
+        """Replace the sandbox's network sections, keeping the static sections it reports."""
+        filesystem, landlock = await self._live_static(info.sandbox)
         check_dispatch()
-        document = compiled.policy.with_filesystem(live)
+        document = compiled.policy.with_static(filesystem, landlock)
         path = self._write(info.environment_id, revision, document.to_yaml())
         await self.cli.run(
             "policy", "set", info.sandbox, "--policy", str(path),
@@ -1297,21 +1310,25 @@ class Environments:
                 )
             await asyncio.sleep(self.poll_seconds)
 
-    async def _live_filesystem(self, name: str) -> FilesystemPolicy:
+    async def _live_static(self, name: str) -> tuple[FilesystemPolicy, LandlockPolicy | None]:
+        """The filesystem and Landlock sections OpenShell fixed when it created the sandbox."""
         document = await self.cli.json("policy", "get", name, "--base")
         policy = (
             cast(dict[str, object], document).get("policy") if isinstance(document, dict) else None
         )
-        section = (
-            cast(dict[str, object], policy).get("filesystem_policy")
-            if isinstance(policy, dict)
-            else None
-        )
+        sections = cast(dict[str, object], policy) if isinstance(policy, dict) else {}
         try:
-            return FilesystemPolicy.model_validate(section)
+            filesystem = FilesystemPolicy.model_validate(sections.get("filesystem_policy"))
         except ValidationError as exc:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE, f"sandbox {name} reported no usable filesystem section"
+            ) from exc
+        landlock = sections.get("landlock")
+        try:
+            return filesystem, None if landlock is None else LandlockPolicy.model_validate(landlock)
+        except ValidationError as exc:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE, f"sandbox {name} reported an unusable Landlock section"
             ) from exc
 
     def _write(self, owner: str, revision: str, text: str) -> Path:

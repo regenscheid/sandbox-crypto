@@ -1,0 +1,181 @@
+# SPDX-License-Identifier: MIT
+name: arm64 image qualification
+
+# Native Linux ARM64 validates the image recipe before trying the Mac's OpenShell runtime.
+# crypto-base is opt-in because its large Conda/Sage layers may exhaust a standard runner.
+on:
+  pull_request:
+    paths:
+      - images/**
+      - .github/workflows/arm64-images.yml
+  workflow_dispatch:
+    inputs:
+      crypto_base:
+        description: Build and test the large crypto-base image on native ARM64
+        type: boolean
+        default: false
+      publish:
+        description: Build, test, and publish shared AMD64/ARM64 tags (all profiles require crypto_base)
+        type: boolean
+        default: false
+      publish_scope:
+        description: Publish all profiles or only minimal for a registry smoke test
+        type: choice
+        options: [all, minimal]
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.publish }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # revision.sh needs the last commit that changed each profile's inputs
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest -q images/tests/test_recipes.py
+      - run: docker version && docker buildx version && test "$(uname -m)" = aarch64
+      - run: images/build.sh minimal
+      - run: NETWORK=0 images/test.sh minimal
+      - run: images/build.sh orchestrator
+      - run: NETWORK=0 images/test.sh orchestrator
+      - run: images/build.sh mcp-proxy
+      - run: NETWORK=0 images/test.sh mcp-proxy
+
+  crypto-base:
+    if: ${{ inputs.crypto_base && !inputs.publish }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: docker version && docker buildx version && test "$(uname -m)" = aarch64
+      - run: df -h / /var/lib/docker && docker system df && images/build.sh crypto-base
+      - run: NETWORK=0 images/test.sh crypto-base
+
+  publish-inputs:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate publication scope
+        env:
+          PUBLISH_SCOPE: ${{ inputs.publish_scope }}
+          CRYPTO_BASE: ${{ inputs.crypto_base }}
+        run: |
+          if [ "$PUBLISH_SCOPE" = all ] && [ "$CRYPTO_BASE" != true ]; then
+            echo 'Publishing all profiles requires crypto_base=true; choose minimal for a smoke test.' >&2
+            exit 1
+          fi
+
+  publish-platform:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    needs: publish-inputs
+    runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        profile: ${{ fromJSON(inputs.publish_scope == 'minimal' && '["minimal"]' || '["minimal","orchestrator","mcp-proxy","crypto-base"]') }}
+        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: |
+          docker version && docker buildx version
+          case "${{ matrix.arch }}:$(uname -m)" in
+            amd64:x86_64 | arm64:aarch64) ;;
+            *) echo 'image job is not on its native architecture' >&2; exit 1 ;;
+          esac
+      - name: Publish and test architecture digest
+        env:
+          BUILDER: ss-native-publish
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          if [ "$PROFILE" = crypto-base ]; then
+            package="${REPOSITORY#*/}%2Fcrypto-base"
+            visibility=$(gh api "/users/${REPOSITORY%%/*}/packages/container/$package" --jq .visibility)
+            test "$visibility" = private || { echo 'crypto-base package is not private' >&2; exit 1; }
+            export PRIVATE_REGISTRY_CONFIRMED=1
+          fi
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          export DOCKER_CONFIG="$config"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker buildx create --name "$BUILDER" --driver docker-container --use
+          docker buildx inspect "$BUILDER" --bootstrap
+          images/publish_arch.sh "$PROFILE" "ghcr.io/$REPOSITORY/$PROFILE" "$GITHUB_RUN_ID"
+
+  merge-platforms:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    needs: publish-platform
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(inputs.publish_scope == 'minimal' && '["minimal"]' || '["minimal","orchestrator","mcp-proxy","crypto-base"]') }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Join tested platform digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          . images/revision.sh
+          recipe_revision "$PROFILE"
+          case "$revision" in *-dirty) echo 'refusing a dirty recipe' >&2; exit 1;; esac
+          private=()
+          if [ "$PROFILE" = crypto-base ]; then
+            package="${REPOSITORY#*/}%2Fcrypto-base"
+            visibility=$(gh api "/users/${REPOSITORY%%/*}/packages/container/$package" --jq .visibility)
+            test "$visibility" = private || { echo 'crypto-base package is not private' >&2; exit 1; }
+            private=(--private-registry-confirmed)
+          fi
+          config=$(mktemp -d)
+          trap 'rm -rf "$config"' EXIT
+          export DOCKER_CONFIG="$config"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          repository="ghcr.io/$REPOSITORY/$PROFILE"
+          digest_for() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' |
+              python3 -c 'import json, re, sys; digest=json.load(sys.stdin).get("digest", ""); assert re.fullmatch(r"sha256:[0-9a-f]{64}", digest); print(digest)'
+          }
+          amd64=$(digest_for "$repository:$short-amd64-run$GITHUB_RUN_ID")
+          arm64=$(digest_for "$repository:$short-arm64-run$GITHUB_RUN_ID")
+          python3 images/publish_index.py "$PROFILE" "$repository:$short" \
+            "$repository@$amd64" "$repository@$arm64" "${private[@]}" --dry-run
+          python3 images/publish_index.py "$PROFILE" "$repository:$short" \
+            "$repository@$amd64" "$repository@$arm64" "${private[@]}"

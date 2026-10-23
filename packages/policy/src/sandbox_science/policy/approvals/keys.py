@@ -17,7 +17,9 @@ KEY_FIELDS: Final[dict[str, tuple[str, ...]]] = {
 }
 SCOPES: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     "http": {"request": (), "host": ("path",)},
-    "mcp": {"call": (), "tool": ("arguments",)},
+    # ``server`` covers every escalated call of the server's method for the project: the
+    # policy still decides which calls escalate, so it never reaches a denied tool.
+    "mcp": {"call": (), "tool": ("arguments",), "server": ("tool", "arguments")},
     "packages": {"files": ()},
 }
 """For each kind, each scope and the key fields it leaves out."""

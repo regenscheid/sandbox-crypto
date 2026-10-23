@@ -513,7 +513,7 @@ def private_settings() -> Any:
         set(os.environ) - allowed
         or any(os.environ.get(k) != v for k, v in expected_env.items())
         or settings.openshell.env != expected_env
-        or settings.openshell.cli != str(Path.home() / ".local/opt/openshell-0.1.3/bin/openshell")
+        or settings.openshell.cli != str(Path.home() / ".local/opt/openshell-0.1.5/bin/openshell")
         or settings.openshell.python != "/opt/sandbox-science/bin/python"
         or settings.openshell.isolation_tier != 3
         or settings.openshell.package_cache != "http://host.openshell.internal:8090"

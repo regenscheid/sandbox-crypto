@@ -48,8 +48,8 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .app import create_app
+from .approvals import ApprovalClient
 from .context import CONTEXT
-from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
 from .mcp_metadata import MetadataClient
 from .mcp_services import ServiceConfig
@@ -301,6 +301,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.add_argument(
         "--mcp-proxy-token-file", type=Path, help="host-only proxy caller token path"
     )
+    command.add_argument(
+        "--mcp-operator-token-file",
+        type=Path,
+        help="the proxy operator token, with which the user answers held tool calls",
+    )
     agents = command.add_argument_group(
         "agent models", "trusted project choices for main, delegated and reviewer roles"
     )
@@ -432,11 +437,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mcp_service and args.mcp_project is None:
         parser.error("--mcp-service needs --mcp-project")
     for item in args.mcp_service:
-        name, separator, purpose = item.partition("=")
-        if not separator or any(found.name == name for found in mcp_inventory):
+        # Not `name`: that is the viewer's host name, used below.
+        service, separator, purpose = item.partition("=")
+        if not separator or any(found.name == service for found in mcp_inventory):
             parser.error("--mcp-service needs a unique NAME=PURPOSE")
         try:
-            mcp_inventory.append(ServiceConfig(name=name, purpose=purpose))
+            mcp_inventory.append(ServiceConfig(name=service, purpose=purpose))
         except ValueError:
             parser.error("--mcp-service needs a valid service name and purpose")
     metadata = None
@@ -447,6 +453,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             metadata = MetadataClient(args.mcp_proxy, args.mcp_proxy_token_file.read_text().strip())
         except (OSError, UnicodeError, ValueError):
             parser.error("cannot configure MCP metadata source")
+    answers = None
+    if args.mcp_operator_token_file is not None:
+        if args.mcp_proxy is None or args.mcp_project is None:
+            parser.error("--mcp-operator-token-file needs --mcp-proxy and --mcp-project")
+        try:
+            answers = ApprovalClient(
+                args.mcp_proxy, args.mcp_operator_token_file.read_text().strip()
+            )
+        except (OSError, UnicodeError, ValueError):
+            parser.error("cannot read the MCP operator token")
     try:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
@@ -461,6 +477,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_project=args.mcp_project,
             mcp_inventory=tuple(mcp_inventory),
             mcp_metadata=metadata,
+            mcp_approvals=answers,
             model_configuration=model_configuration,
         )
     except OSError as exc:
@@ -469,7 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         # The writer brings the control store to the current schema now, so that the
         # read-only views can read it, or the server does not start, saying why.
-        app[WRITER].initialize()
+        app[CONTEXT].writer.initialize()
     except DocumentError as exc:
         print(f"error: {exc.message}", file=sys.stderr)
         return 1

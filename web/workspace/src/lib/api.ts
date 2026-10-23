@@ -19,6 +19,12 @@ import type {
   HistoryPage,
   HistoryChunk,
   ArtifactListing,
+  RevisionListing,
+  ConnectorSettings,
+  AnswerResult,
+  ApprovalSettings,
+  Grant,
+  PendingListing,
   Category,
   FoldProposalList,
   FrontierAnswer,
@@ -53,9 +59,11 @@ import type {
 } from './api-types';
 import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
 import { artifactQuery, NO_FILTER } from './artifactFiles';
-import type { ServerBlock } from './attach';
 import type { CategoryBody } from './frontierForm';
 import { ApiError, get, post } from './http';
+import { documentApi } from './documentApi';
+import { commentApi } from './commentApi';
+import { jobApi } from './jobApi';
 import { signOut } from './session';
 
 export { ApiError };
@@ -74,50 +82,6 @@ export interface MacroContext {
   known?: boolean;
   key?: string;
   problems?: string[];
-}
-
-export interface BackgroundJob {
-  job_id: string;
-  state: string;
-  purpose: string;
-  expected_progress: string;
-  elapsed_seconds: number;
-  exit_code: number | null;
-  stdout: string;
-  stderr: string;
-  cpu_seconds: number | null;
-  memory_bytes: number | null;
-  logs: { stdout: string; stderr: string };
-  worker_restart: string;
-  error?: string | null;
-  checkin?: JobCheckin | null;
-}
-
-export interface JobCheckin {
-  job_id: string;
-  alias: string;
-  model: string | null;
-  at: string;
-  state: 'fine' | 'needs_attention';
-  note: string;
-}
-
-export interface JobWait {
-  run_id: string;
-  state: 'waiting';
-  job_ids: string[];
-  mode: 'all' | 'first';
-  started_at: string;
-  watcher: string | null;
-  checkins: JobCheckin[];
-  connected: boolean;
-}
-
-export interface JobListing {
-  enabled: boolean;
-  jobs: BackgroundJob[];
-  truncated: boolean;
-  waits: JobWait[];
 }
 
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
@@ -233,249 +197,40 @@ export interface MathRepairAnswer {
   cached?: boolean;
 }
 
-/** Who wrote a revision (living documents, LD-10): a user, an agent run, worker code,
- * an import or the platform, with what identifies each. */
-export interface Author {
-  kind: 'user' | 'agent' | 'worker' | 'import' | 'platform';
-  user?: string;
-  session_id?: string;
-  run_id?: string;
-  role?: string;
-  model?: string;
-  alias?: string;
-  tool_call?: string;
-  import_id?: string;
-  service?: string;
-  worker_binding?: string;
-  environment_id?: string;
-  incarnation?: string;
-  execution_id?: string;
-  attempt_id?: string;
-}
-
-export interface DocumentInfo {
-  document_id: string;
-  project_id: string;
-  scope: 'project' | 'session';
-  session_id: string | null;
-  name: string;
-  title: string;
-  created_at: string;
-  created_by: Author;
-  created_session: string | null;
-  takes_suggestions: boolean;
-  /** The current revision. */
-  head: number;
-  deleted: boolean;
-}
-
-/** A warning on a revision's math or front matter (LD-30). */
-export interface DocumentWarning {
-  kind: string;
-  block?: string;
-  math?: string;
-  message: string;
-}
-
-export interface RevisionInfo {
-  document_id: string;
-  number: number;
-  created_at: string;
-  author: Author;
-  accepted_by: Author | null;
-  session_id: string | null;
-  base: number | null;
-  parent: number | null;
-  reason: string;
-  patch_id: string | null;
-  tombstone: boolean;
-  normalized: { converted?: Record<string, number>; kept?: { tex: string; why: string }[] };
-  warnings: DocumentWarning[];
-  parser: Record<string, string>;
-}
-
-/** A revision as the document view shows it. */
-export interface DocumentRevision {
-  document: DocumentInfo;
-  revision: RevisionInfo;
-  text: string;
-  /** The front matter's title and macros, as the server read them. */
-  title: string | null;
-  macros: Record<string, string>;
-  macro_context?: MacroContext;
-  /** False when the server could not parse the revision as its block map was made. */
-  matched: boolean;
-  blocks: (ServerBlock & {
-    parent: string | null;
-    structural: string | null;
-    attrs: Record<string, Json>;
-    source?: string | null;
-  })[];
-  removed: { id: string; kind: string }[];
-  removed_math: { id: string; block: string }[];
-  /** Its references to recorded files, each pinned, with a newer revision as `latest`, or
-   * with why it is not (`unresolved`; figures, FG-8, FG-9). Older servers send none. */
-  pins?: Record<string, unknown>[];
-  /** The checks of its figures, when this revision was checked as the current one: each
-   * figure's place and result (figures, FG-23). Older servers send none. */
-  figure_checks?: Record<string, unknown>[];
-}
-
-export interface HistoryRevision {
-  number: number;
-  created_at: string;
-  author: Author;
-  accepted_by: Author | null;
-  reason: string;
-  base: number | null;
-  parent: number | null;
-  patch_id: string | null;
-  tombstone: boolean;
-  normalized: boolean;
-  warnings: number;
-  changed: string[];
-  added: string[];
-  moved: string[];
-  removed: string[];
-}
-
-export interface PatchRecord {
-  patch_id: string;
-  created_at: string;
-  author: Author;
-  base: number;
-  reason: string;
-  state: string;
-  operations?: Json[];
-  revision?: number | null;
-  decided_at?: string | null;
-  decided_by?: Author | null;
-}
-
-/** Who changed what (LD-11). */
-export interface DocumentHistory {
-  document: DocumentInfo;
-  revisions: HistoryRevision[];
-  /** For each block, the revisions that changed it. */
-  blocks: Record<string, { revision: number; status: string; author: Author }[]>;
-  patches: PatchRecord[];
-}
-
-export interface DocumentChange {
-  outcome: string;
-  document_id: string;
-  revision: number;
-  patch_id: string | null;
-  message: string;
-  conflicts: {
-    block?: string;
-    math?: string;
-    now?: string;
-    at_base?: string;
-    changed_by?: { revision: number; author: Author }[];
-  }[];
-  unnamed: string[];
-}
-
-export interface PatchPreview {
-  patch: PatchRecord;
-  base: number;
-  current: string;
-  proposed: string | null;
-  allowed: boolean;
-  message?: string | null;
-  unnamed: string[];
-}
-
-/** Immutable anchor context, projected onto the selected document revision. */
-export interface CommentAnchor {
-  revision: number;
-  block: string;
-  math: string | null;
-  start: number | null;
-  end: number | null;
-  kind: 'block' | 'math' | 'range';
-  quote: string;
-  quote_truncated: boolean;
-  before: string;
-  after: string;
-}
-export interface CommentBodySource {
-  entry_id: string;
-  revision?: number;
-  sha256?: string;
-  body?: string;
-  author?: Author | null;
-  original_author?: Author;
-  held?: string;
-}
-export interface CommentEntry {
-  entry_id: string;
-  number: number;
-  kind: 'create' | 'reply' | 'edit' | 'edit_body' | 'resolve' | 'reopen';
-  author: Author;
-  body: string;
-  created_at: number;
-  body_source?: CommentBodySource;
-  payload: {
-    revision?: number;
-    changed_blocks?: string[];
-    outside_anchor?: string[];
-    changed_blocks_total?: number;
-    changed_blocks_truncated?: boolean;
-    outside_anchor_total?: number;
-    outside_anchor_truncated?: boolean;
-    addressed_to?: string;
-    request_id?: string;
-    anchor?: Record<string, unknown>;
-    entry?: string;
-    base?: number;
-    sha256?: string;
-    body_revision?: number;
-  };
-}
-export interface CommentThread {
-  thread_id: string;
-  anchor: CommentAnchor;
-  opener: Author;
-  created_at: number;
-  revision: number;
-  status: 'open' | 'resolved';
-  entries_before: number | null;
-  entries: CommentEntry[];
-  requests: {
-    request_id: string;
-    session_id: string;
-    entry_id: string;
-    state: 'queued' | 'delivered' | 'responded';
-    delivered_run: string | null;
-    responded_entry: string | null;
-  }[];
-  view_revision: number;
-  attachment: {
-    status: 'current' | 'moved' | 'stale' | 'orphaned';
-    quote: string;
-    current: string | null;
-  };
-}
-export interface CommentListing {
-  threads: CommentThread[];
-  next_after: string | null;
-}
-export interface CommentChange {
-  thread_id: string;
-  entry_id: string;
-  revision: number;
-  request_id: string | null;
-  outcome: string;
-  replayed?: boolean;
-}
+export type {
+  DocumentAuthor as Author,
+  BackgroundJob,
+  JobCheckin,
+  JobWait,
+  JobListing,
+  DocumentInfo,
+  DocumentWarning,
+  RevisionInfo,
+  DocumentRevision,
+  HistoryRevision,
+  PatchRecord,
+  DocumentHistory,
+  DocumentChange,
+  PatchPreview,
+  CommentAnchor,
+  CommentBodySource,
+  CommentEntry,
+  CommentThread,
+  CommentListing,
+  CommentChange,
+  DocumentChangeRequest,
+  CommentChangeRequest,
+  JobCancellation,
+} from './api-types';
 
 /**
  * The most a page of the artifact list can be: ten entries, each path up to 4,096 bytes
  * of characters sent as escapes. A workspace test keeps this at or above that bound.
  */
 export const ARTIFACT_LISTING_MAX_BYTES = 256 * 1024;
+
+/** The most a page of one artifact's revisions can be: twenty such entries. */
+export const ARTIFACT_REVISIONS_MAX_BYTES = 512 * 1024;
 
 const part = encodeURIComponent;
 
@@ -522,6 +277,9 @@ export interface MessageFieldChunk {
 }
 
 export const api = {
+  ...documentApi,
+  ...commentApi,
+  ...jobApi,
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
     post<MacroContext>(`/projects/${part(project)}/macros`, value),
@@ -530,10 +288,9 @@ export const api = {
     get<ProjectAnswer>(`/projects/${part(project)}`, { signal }).then((found) => found.project),
   session: (project: string, session: string, signal?: AbortSignal) =>
     get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`, { signal }),
-  jobs: (project: string, session: string, signal?: AbortSignal) =>
-    get<JobListing>(`/projects/${part(project)}/sessions/${part(session)}/jobs`, { signal }),
-  cancelJob: (project: string, session: string, job: string) =>
-    post(`/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/cancel`, {}),
+  /** Open a new session in the project's shared environment; a name it has is a conflict. */
+  createSession: (project: string, session: string) =>
+    post<SessionView>(`/projects/${part(project)}/sessions`, { session_id: session }),
   /** The session's runs, running ones included, and its delegations (PD-42). */
   runTree: (project: string, session: string, signal?: AbortSignal) =>
     get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`, { signal }),
@@ -662,38 +419,6 @@ export const api = {
       `/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}/history/chunks?` +
         new URLSearchParams({ collection, position: String(position), offset: String(offset) }),
     ),
-  documents: (project: string, signal?: AbortSignal) =>
-    get<{ documents: DocumentInfo[] }>(`/projects/${part(project)}/documents`, { signal }).then(
-      (found) => found.documents,
-    ),
-  document: (project: string, document: string, revision: number | null = null) =>
-    get<DocumentRevision>(
-      `/projects/${part(project)}/documents/${part(document)}` +
-        (revision === null ? '' : `?revision=${revision}`),
-    ),
-  changeDocument: (project: string, document: string, change: Record<string, unknown>) =>
-    post<DocumentChange>(`/projects/${part(project)}/documents/${part(document)}/changes`, change),
-  comments: (project: string, document: string, revision: number, after: string | null = null) =>
-    get<CommentListing>(
-      `/projects/${part(project)}/documents/${part(document)}/comments?revision=${revision}` +
-        (after === null ? '' : `&after=${part(after)}`),
-    ),
-  commentThread: (
-    project: string,
-    document: string,
-    thread: string,
-    before: number | null = null,
-  ) =>
-    get<CommentThread>(
-      `/projects/${part(project)}/documents/${part(document)}/comments/${part(thread)}` +
-        (before === null ? '' : `?before=${before}`),
-    ),
-  changeComment: (project: string, document: string, change: Record<string, unknown>) =>
-    post<CommentChange>(`/projects/${part(project)}/documents/${part(document)}/comments`, change),
-  previewPatch: (project: string, document: string, patch: string) =>
-    get<PatchPreview>(
-      `/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`,
-    ),
   /** The project's artifacts of one group, the most recently changed first, a page at a
    * time, and whether the viewer is on. */
   artifacts: (
@@ -705,6 +430,13 @@ export const api = {
     get<ArtifactListing>(
       `/projects/${part(project)}/artifacts?${artifactQuery(group, filter, before)}`,
       { maxBytes: ARTIFACT_LISTING_MAX_BYTES },
+    ),
+  /** One artifact's revisions, the newest first, twenty at a time (RA-37). */
+  artifactRevisions: (project: string, artifact: string, before: number | null = null) =>
+    get<RevisionListing>(
+      `/projects/${part(project)}/artifacts/${part(artifact)}/revisions` +
+        (before === null ? '' : `?before=${before}`),
+      { maxBytes: ARTIFACT_REVISIONS_MAX_BYTES },
     ),
   /** The project's settings for the files its executions write, with the defaults. */
   fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),
@@ -907,6 +639,33 @@ export const api = {
   skills: (project: string) => get<ProjectSkills>(`/projects/${part(project)}/skills`),
   /** Safe configured MCP service identity and bounded historical run observations. */
   mcpServices: (project: string) => get<McpInventory>(`/projects/${part(project)}/mcp-services`),
+  /** The session's connector tool calls the MCP proxy holds for the user's answer. */
+  permissionRequests: (project: string, session: string, signal?: AbortSignal) =>
+    get<PendingListing>(
+      `/projects/${part(project)}/sessions/${part(session)}/permission-requests`,
+      { signal },
+    ),
+  answerPermission: (
+    project: string,
+    seq: number,
+    decision: 'once' | 'project' | 'server' | 'deny',
+  ) =>
+    post<AnswerResult>(`/projects/${part(project)}/permission-requests/${seq}/answer`, {
+      decision,
+    }),
+  approvalSettings: (project: string) =>
+    get<ApprovalSettings>(`/projects/${part(project)}/approvals/settings`),
+  changeApprovalSettings: (
+    project: string,
+    change: { expected: number; grants: Grant[]; operation_id: string },
+  ) => post<ApprovalSettings>(`/projects/${part(project)}/approvals/settings`, change),
+  /** Which configured connectors the project's user turned off. */
+  connectorSettings: (project: string) =>
+    get<ConnectorSettings>(`/projects/${part(project)}/mcp-services/settings`),
+  changeConnectorSettings: (
+    project: string,
+    change: { expected: number; disabled: string[]; operation_id: string },
+  ) => post<ConnectorSettings>(`/projects/${part(project)}/mcp-services/settings`, change),
   /** The user's change of the always-loaded and excluded skills, at `expected`. */
   changeSkillSettings: (project: string, change: SkillSettingsChange) =>
     post<SkillSettingsView>(`/projects/${part(project)}/skills/settings`, change),
@@ -925,8 +684,6 @@ export const api = {
   /** The user's change of the memory, with its operation ID. */
   changeMemory: (project: string, change: Record<string, unknown>) =>
     post<MemoryChange>(`/projects/${part(project)}/memory`, change),
-  history: (project: string, document: string) =>
-    get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),
   /** Ends the page's session at once, even when the server cannot be told. */
   async logout(): Promise<void> {

@@ -6,9 +6,11 @@
 # Tags sandbox-science/<profile>:<short SHA of the last commit that changed the build's inputs>
 # (with -dirty when they have uncommitted changes; revision.sh) and prints the tag, the image
 # digest, its size and the build time. It loads the image into the local image store and never
-# pushes: crypto-base contains GPL tools and is never published (D46). For orchestrator and
+# pushes: crypto-base contains GPL tools and can only be copied to a verified private registry
+# under D46. For orchestrator and
 # mcp-proxy it first builds the wheels of the repository's packages they install from this
-# checkout with uv. PLATFORM selects the platform (default linux/amd64); BUILDER a buildx builder.
+# checkout with uv. PLATFORM selects the platform (default: the host's Linux architecture);
+# BUILDER selects a buildx builder.
 set -euo pipefail
 
 profile=${1:-}
@@ -30,44 +32,20 @@ for option in "$@"; do
 done
 
 here=$(cd "$(dirname "$0")" && pwd)
-# shellcheck source=revision.sh
-. "$here/revision.sh"
-recipe_revision "$profile"
+# shellcheck source=common/build_recipe.sh
+. "$here/common/build_recipe.sh"
+prepare_image_build "$profile"
 tag="sandbox-science/$profile:$short"
-licenses=$(python3 "$here/common/image_report.py" label "$here/$profile/licenses.txt")
-
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
-builder=()
-[ -z "${BUILDER:-}" ] || builder=(--builder "$BUILDER")
-
 started=$(date +%s)
-contexts=(--build-context "binding-inventory=$here/../packages/worker/src/sandbox_science/worker")
-recipe_packages "$profile"
-if [ ${#packages[@]} -gt 0 ]; then
-  # The packages the image installs, as wheels, from the same files the revision covers.
-  for package in "${packages[@]}"; do
-    uv --directory "$here/.." build --package "sandbox-science-$package" --wheel \
-      --no-create-gitignore --out-dir "$work/wheels"
-  done
-  contexts+=(--build-context "wheels=$work/wheels")
-fi
-docker buildx build "${builder[@]}" \
-  --platform "${PLATFORM:-linux/amd64}" \
-  --file "$here/Containerfile" \
-  --target "$profile" \
-  "${contexts[@]}" \
-  --build-arg REVISION="$revision" \
-  --build-arg VERSION="$short" \
-  --build-arg LICENSES="$licenses" \
+docker buildx build "${image_args[@]}" \
   --tag "$tag" \
   --load \
-  --metadata-file "$work/metadata.json" \
+  --metadata-file "$image_work/metadata.json" \
   "$@" \
   "$here"
 elapsed=$(($(date +%s) - started))
 
-digest=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("containerimage.digest", "unknown"))' "$work/metadata.json")
+digest=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("containerimage.digest", "unknown"))' "$image_work/metadata.json")
 size=$(docker image inspect --format '{{.Size}}' "$tag")
 echo "image:  $tag"
 echo "digest: $digest"

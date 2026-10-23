@@ -172,6 +172,22 @@ class View:
     cells: Mapping[str, tuple[Json, ...]] = field(default_factory=dict[str, tuple[Json, ...]])
     """Each earlier run's kernels, as its cells reported them."""
 
+    def recent_ids(self, floor: int) -> frozenset[str]:
+        """Protect a suffix of complete raw units covering ``floor`` estimated tokens.
+
+        Keep the whole unit crossing the boundary, including every result of its
+        calls. A short tail stays whole; a large newest unit is never cut to fit.
+        Only the existing rendered units are measured, without loading more history.
+        """
+        remaining = floor * self.per_token
+        protected: set[str] = set()
+        for unit in reversed(self.units):
+            if remaining <= 0:
+                break
+            protected.update(part.row.message_id for part in unit if part.row is not None)
+            remaining -= sum(part.chars for part in unit)
+        return frozenset(protected)
+
     @property
     def messages(self) -> tuple[Json, ...]:
         return tuple(
@@ -603,18 +619,22 @@ class ViewMeter(TurnHook):
 
     def tokens(self, run: RunView) -> int:
         """The view's tokens before the run's next call."""
-        return view_tokens(run.size, run.usage[run.since :], self.view.per_token)
+        return view_tokens(
+            run.context.size, run.context.usage[run.context.since :], self.view.per_token
+        )
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Any]:
-        if isinstance(run.messages, Collection) and not isinstance(self.calls, Collection):
-            self.calls = Collection[Json](run.messages.control, run.messages.scope, "view_calls")
+        if isinstance(run.context.messages, Collection) and not isinstance(self.calls, Collection):
+            self.calls = Collection[Json](
+                run.context.messages.control, run.context.messages.scope, "view_calls"
+            )
         if point == "turn":
             self.estimated = self.tokens(run)
         return ()
 
     async def model_returned(self, run: RunView) -> None:
         if len(self.calls) < 100:
-            reported = run.usage[-1].input_tokens if run.usage else None
+            reported = run.context.usage[-1].input_tokens if run.context.usage else None
             self.calls.append({"estimated": self.estimated, "reported": reported})
 
     def summary(self) -> object | None:

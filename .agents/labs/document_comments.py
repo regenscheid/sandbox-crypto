@@ -196,7 +196,7 @@ async def respond(root: Path) -> None:
         ended_at=datetime.now(UTC),
         stopped=transcript.stopped,
         final_text=transcript.final_text,
-        messages=transcript.messages,
+        messages=transcript.context.messages,
         tools=transcript.tool_records,
         work_request_ids=transcript.work_request_ids,
     )

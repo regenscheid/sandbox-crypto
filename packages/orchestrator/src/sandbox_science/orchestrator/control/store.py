@@ -242,6 +242,21 @@ class ControlStore:
             db = self._readonly()
             try:
                 migrations.check(self.path, db, readonly=True)
+            except ControlError as error:
+                db.close()
+                # A WAL store without its -wal and -shm, as a writer's clean close leaves it
+                # on Linux, opens read-only where SQLite may make them; where it may not
+                # (macOS, a read-only directory), say what is missing rather than calling
+                # the file something else.
+                if error.kind == UNAVAILABLE and self._without_wal_files():
+                    name = self.path.name
+                    raise ControlError(
+                        UNAVAILABLE,
+                        f"{name} is in WAL mode but {name}-wal and {name}-shm are missing, "
+                        "as when the store is copied without them: open it once with the "
+                        "harness or the workspace, which recreate them, or copy them with it",
+                    ) from None
+                raise
             except BaseException:
                 db.close()
                 raise
@@ -252,6 +267,17 @@ class ControlStore:
                 # opening it to write could switch its journal or replay a crashed WAL.
                 probe = self._readonly()
                 try:
+                    migrations.check(self.path, probe, readonly=False)
+                except ControlError as error:
+                    # A WAL store copied without its -wal and -shm opens read-only only
+                    # as immutable where SQLite may not make them (macOS); with no -wal
+                    # there is nothing it could miss. Only then: on Linux the files are
+                    # also missing for a moment after another process's clean close,
+                    # and an immutable read of a store being written reads it torn.
+                    if error.kind != UNAVAILABLE or not self._without_wal_files():
+                        raise
+                    probe.close()
+                    probe = self._readonly(immutable=True)
                     migrations.check(self.path, probe, readonly=False)
                 finally:
                     probe.close()
@@ -271,9 +297,23 @@ class ControlStore:
         self._db = db
         return db
 
-    def _readonly(self) -> sqlite3.Connection:
+    def _without_wal_files(self) -> bool:
+        """Whether the file is in WAL mode with neither its -wal nor its -shm file beside
+        it, which SQLite cannot open read-only: it would have to create the -shm."""
+        try:
+            with self.path.open("rb") as stream:
+                header = stream.read(20)
+        except OSError:
+            return False
+        # Bytes 18 and 19 of the header are the file format's write and read versions;
+        # 2 means WAL.
+        return header[18:20] == b"\x02\x02" and not any(
+            self.path.with_name(self.path.name + suffix).exists() for suffix in ("-wal", "-shm")
+        )
+
+    def _readonly(self, *, immutable: bool = False) -> sqlite3.Connection:
         return sqlite3.connect(
-            self.path.resolve().as_uri() + "?mode=ro",
+            self.path.resolve().as_uri() + ("?mode=ro&immutable=1" if immutable else "?mode=ro"),
             uri=True,
             timeout=self.timeout,
             isolation_level=None,

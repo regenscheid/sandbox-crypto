@@ -274,3 +274,22 @@ export function filesView(delegation: Pick<Delegation, 'files'>): FilesView | nu
     gaps,
   };
 }
+
+/** An agent's name in words: the research agent, a check by the entry it checks, or a
+ * subagent by the first line of its task. */
+export function agentName(
+  run: Pick<TreeRun, 'role'>,
+  delegation: Pick<Delegation, 'brief' | 'kind'> | null,
+): string {
+  if (run.role === 'main') return 'Research agent';
+  const brief = delegation ? briefView(delegation) : null;
+  if (delegation?.kind === 'check')
+    return brief?.entry ? `Check of ${brief.entry.handle}` : 'Independent check';
+  if (!brief?.task) return 'Subagent';
+  const line =
+    brief.task
+      .split('\n')
+      .find((part) => part.trim())
+      ?.trim() ?? '';
+  return line.length > 70 ? `${line.slice(0, 69)}…` : line;
+}

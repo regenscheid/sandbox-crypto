@@ -9,6 +9,7 @@ dependencies = [
     "sandbox-science-contracts",
     "sandbox-science-policy",
     "pydantic>=2.9",
+    "psutil>=7.2.2; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

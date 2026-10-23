@@ -27,13 +27,13 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator import service as service_module
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
+from sandbox_science.orchestrator.context.history import Folder, body
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import Harness as Core
 from sandbox_science.orchestrator.harness import Role, Settings, Stores
 from sandbox_science.orchestrator.harness import admit as harness_admit
-from sandbox_science.orchestrator.history import Folder, body
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import MAX_TURNS
@@ -926,6 +926,11 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         original = names(harness)[0]
         assert works.request(PROJECT, SESSION, original) is not None
         await ended(harness, 3)
+        await eventually(
+            lambda: not runs(harness).leased(PROJECT, SESSION),
+            timeout=20,
+            describe="the completed run to release its session lease",
+        )
         assert states(harness)["m-1"] == "held"
         assert works.get(PROJECT, SESSION, original).current != original
         assert runs(harness).messages(PROJECT, SESSION)[0].reason == "research_state"
@@ -939,6 +944,12 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         assert await service.waiting_work() == ()
         post(harness, "m-3", "Help consolidate again.")
         await service.tick()
+        # Admission may finish after the tick returns; only a later tick removes it.
+        await eventually(
+            lambda: (PROJECT, SESSION) in service.active,
+            timeout=20,
+            describe="the consolidation run to be admitted",
+        )
         active = service.active[(PROJECT, SESSION)]
         assert active.task is not None
         await asyncio.wait_for(asyncio.shield(active.task), timeout=20)

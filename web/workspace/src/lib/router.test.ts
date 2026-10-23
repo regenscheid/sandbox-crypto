@@ -64,7 +64,6 @@ describe('routes', () => {
     ['#/projects/p1/documents/doc-1/revisions/0', { view: 'missing' }],
     ['#/projects/p1/documents/doc-1/revisions/x', { view: 'missing' }],
     ['#/projects/p1/documents/doc-1/revisions', { view: 'missing' }],
-    ['#/projects/p1/documents', { view: 'missing' }],
     ['#/projects/p1/documents/doc-1/elsewhere', { view: 'missing' }],
     [
       `#/projects/p1/artifacts/art-1/revisions/2/${SHA}`,
@@ -82,6 +81,9 @@ describe('routes', () => {
     ['#/projects/p1/artifacts/art-1/revisions/2/abc', { view: 'missing' }],
     ['#/projects/p1/artifacts/art-1/revisions/2', { view: 'missing' }],
     ['#/projects/p1/memory', { view: 'memory', project: 'p1' }],
+    ['#/projects/p1/documents', { view: 'documents', project: 'p1' }],
+    ['#/projects/p1/artifacts', { view: 'artifacts', project: 'p1' }],
+    ['#/projects/p1/settings/', { view: 'settings', project: 'p1' }],
     ['#/projects/p1/memory/', { view: 'memory', project: 'p1' }],
     ['#/projects/p1/memory/mem-1', { view: 'missing' }],
     ['#/projects/p1/ledger', { view: 'ledger', project: 'p1' }],

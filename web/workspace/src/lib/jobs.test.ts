@@ -8,6 +8,11 @@ import { JobCancels, jobElapsed, jobsPoller } from './jobs';
 import type { PollPhase, PollState } from './poller';
 
 const job: BackgroundJob = {
+  error: null,
+  written_files: [],
+  written_files_truncated: false,
+  platform_notices: [],
+  checkin: null,
   job_id: 'exe-1',
   state: 'running',
   purpose: '<script>attack</script>',

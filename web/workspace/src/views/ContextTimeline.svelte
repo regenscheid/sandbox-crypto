@@ -10,11 +10,17 @@
   } from '../lib/api-types';
   import { contextUsage } from '../lib/contextUsage';
   import { formatTime } from '../lib/format';
-  import { initialPoll, Poller, type PollState } from '../lib/poller';
+  import { initialPoll, Poller, POLL_DEADLINE_MS, type PollState } from '../lib/poller';
   import { messageHref } from '../lib/router';
   import { visible } from '../lib/text';
 
   let { project, session, run }: { project: string; session: string; run: string } = $props();
+  // The attempt, read through `$derived` so only another name restarts the timeline: a
+  // prop such as `run={run.name}` reads its parent's object, which each poll of the run
+  // tree replaces with an equal one, and the chart blanked while it read again.
+  const projectName = $derived(project);
+  const sessionName = $derived(session);
+  const runName = $derived(run);
   let answers = $state<TimelineAnswer[]>([]);
   let folds = $state<TimelineFold[]>([]);
   let auxiliary = $state<TimelineAuxiliary[]>([]);
@@ -49,9 +55,9 @@
   }
 
   $effect(() => {
-    const attemptProject = project,
-      attemptSession = session,
-      attemptRun = run;
+    const attemptProject = projectName,
+      attemptSession = sessionName,
+      attemptRun = runName;
     answers = [];
     folds = [];
     auxiliary = [];
@@ -101,7 +107,7 @@
         coverage = page.coverage;
         loaded = true;
       },
-      { intervalMs: 5000, deadlineMs: 15000 },
+      { intervalMs: 5000, deadlineMs: POLL_DEADLINE_MS },
     );
     owner = current;
     const stop = current.watch();

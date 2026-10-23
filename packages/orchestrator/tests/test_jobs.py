@@ -167,7 +167,7 @@ async def test_wait_calls_no_main_model_until_job_ends(tmp_path: Path) -> None:
     # answer has its summary only.
     (record,) = transcript.tool_records
     assert [e["state"] for e in record["executions"]] == ["succeeded"]
-    assert "_ended_executions" not in transcript.messages[-2]["content"]
+    assert "_ended_executions" not in transcript.context.messages[-2]["content"]
 
 
 @pytest.mark.asyncio
@@ -314,7 +314,7 @@ async def test_last_turn_job_notice_keeps_answer_and_waits_for_next_run(tmp_path
     )
     assert transcript.stopped == "answered"
     assert transcript.final_text == "final answer"
-    assert transcript.messages[-1] == {"role": "assistant", "content": "final answer"}
+    assert transcript.context.messages[-1] == {"role": "assistant", "content": "final answer"}
     assert sorted(transcript.delivered_ids("jobs")) == []
     # Nothing acknowledged the notice, so the next run delivers it.
     notices = await tools(worker, tmp_path).notices()

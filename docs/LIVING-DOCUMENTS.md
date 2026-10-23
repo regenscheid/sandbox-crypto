@@ -32,6 +32,8 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | `project_macro_revisions`, `project_macro_heads` | Immutable bounded USER definitions and the current setting revision |
 | `project_file_settings` | Each project's settings for the files its executions write, when the user changed them: `all` or `results`, its ignore patterns, its revision and author (version 21; [projects and sessions](PROJECTS-AND-SESSIONS.md#files-executions-write)) |
 | `project_model_settings` | Each project's USER-selected main, delegated and reviewer aliases and reasoning efforts, with revision and author; aliases are interpreted only through the deployment's trusted model catalog (version 73; [model profiles](MODEL-PROFILES.md)) |
+| `project_connector_settings` | Each project's configured MCP servers the user turned off, with revision and author: narrowing only, since a name the launcher does not configure is refused; a run does not offer a server turned off and refuses its calls (version 74; [MCP connectors](MCP-CONNECTORS.md)) |
+| `project_approval_settings` | Each project's remembered approvals of connector tool calls, a server and a tool or any escalated tool of the server, with revision and author; the workspace gives the MCP proxy each one again when a call it covers is held (version 75; [MCP connectors](MCP-CONNECTORS.md#approvals-in-the-workspace)) |
 | `text_revisions` | Immutable revisions of versioned Markdown texts, by kind: each comment opening or reply body (`comment`, with the entry that recorded the revision; [comment math](COMMENT-MATH.md)) each MAIN fix/rebut explanation (`response`, with its finding and decision revision; [finding prose math](FINDING-PROSE-MATH.md)), and each ledger entry's statement (`statement`; [ledger](LEDGER.md)). Each revision keeps its body and hash, its block map, the proved owner of each block, its identity counters and floor, why its identity is held if it is, and the project macro revision an explanation was saved with |
 | `ledger_entries`, `ledger_revisions`, `ledger_links`, `ledger_evidence`, `ledger_flags` | The project ledger's entries, their revisions, each revision's links and evidence, and the flags for reconsideration; the link kind `reopen_on` and the flag cause `reopen_condition` (version 47), and each revision's basis and anchors (version 51) ([ledger](LEDGER.md)) |
 | `ledger_work` | Work records on issues, claims and results: what was tried and how it ended, with pinned references; append-only (version 34); the ending `reopened` (version 47) and each record's basis and anchors (version 51; [ledger](LEDGER.md)) |
@@ -230,7 +232,7 @@ A patch parses the text again after each operation and carries the IDs over; one
 
 ## Not built
 
-- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents.
+- Rich-text editing, automatic source conflict merging, and restoring deleted documents.
 - Annotation sidecar export and anchors for artifact types other than living documents (RA-21/RA-23).
 - References to documents, PDF anchors and ledger entries, figures shown in the GUI, and ledger bindings (LD-31 to LD-34; the figures build plan's F3 and later steps), and exports (LD-35 to LD-38). References to recorded files are pinned ([references to recorded files](#references-to-recorded-files)).
 - Document files in every environment and direct edits of them (LD-3, LD-49 to LD-51). The `ss-doc` helper (LD-52) was withdrawn on 2026-10-14: code in a sandbox has no route to the platform.

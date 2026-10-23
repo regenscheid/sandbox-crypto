@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -122,9 +123,12 @@ def _database(path: Path, version: int, application: int = 0, *, wal: bool = Tru
 
 
 def _kept(before: dict[str, str], path: Path) -> bool:
-    """Whether each file that was there before is unchanged."""
+    """Whether each file that was there before is unchanged, but the -shm: SQLite's
+    shared-memory index, which any open rewrites. macOS's SQLite keeps it after a clean
+    close, where Linux's removes it."""
     after = _files(path)
-    return {name: after.get(name) for name in before} == before
+    data = [name for name in before if not name.endswith("-shm")]
+    return {name: after.get(name) for name in data} == {name: before[name] for name in data}
 
 
 def _refused(path: Path, match: str) -> ControlError:
@@ -709,3 +713,60 @@ def test_subscribers_run_once_each_in_the_change_that_records_their_event(
         with pytest.raises(ControlError, match="change it records"):
             store.notify(tx, ControlEvent(5, "saved", "read", None, {}))
     store.close()
+
+
+def _copied_without_wal_files(tmp_path: Path) -> Path:
+    """A current store with one run, backed up to a new file, as a store is copied from a
+    live instance: the copy is in WAL mode with no -wal or -shm (babbage to the Mac,
+    2026-10-21)."""
+    original = _store(tmp_path / "original.sqlite3")
+    with original.write() as tx:
+        tx.sql.execute("INSERT INTO job_runs(project) VALUES ('copied')")
+    source = sqlite3.connect(original.path)
+    copy = tmp_path / "copy" / "control.sqlite3"
+    copy.parent.mkdir()
+    target = sqlite3.connect(copy)
+    source.backup(target)
+    target.close()
+    source.close()
+    original.close()
+    assert copy.read_bytes()[18:20] == b"\x02\x02"
+    assert sorted(found.name for found in copy.parent.iterdir()) == ["control.sqlite3"]
+    return copy
+
+
+def test_a_wal_store_copied_without_its_files_opens_for_writing(tmp_path: Path) -> None:
+    copy = _copied_without_wal_files(tmp_path)
+    store = _store(copy)
+    with store.read() as tx:
+        assert _runs(tx.sql) == [("copied",)]
+    store.close()
+    # The writer recreated the files a reader needs.
+    reader = _store(copy, readonly=True)
+    with reader.read() as tx:
+        assert _runs(tx.sql) == [("copied",)]
+    reader.close()
+
+
+def test_a_reader_says_what_is_missing_from_a_copied_wal_store(tmp_path: Path) -> None:
+    copy = _copied_without_wal_files(tmp_path)
+    before = _files(copy)
+    # Where SQLite may not make the files. Linux's makes them in a writable directory and
+    # the copy reads (as after a writer's clean close there); macOS's never does.
+    copy.parent.chmod(0o555)
+    try:
+        reader = _store(copy, readonly=True)
+        with (
+            pytest.raises(
+                ControlError,
+                match=re.escape("control.sqlite3-wal and control.sqlite3-shm are missing"),
+            ) as raised,
+            reader.read(),
+        ):
+            pass
+        reader.close()
+    finally:
+        copy.parent.chmod(0o755)
+    assert raised.value.kind == "unavailable"
+    assert "not a control store" not in str(raised.value)
+    assert _files(copy) == before

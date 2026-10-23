@@ -268,7 +268,7 @@ class Guest:
         await self.executor.op_package_gate(
             {
                 "id": generation,
-                "incarnation": self.executor.package_gate_id,
+                "incarnation": self.executor.admission.incarnation,
                 "generation": generation,
                 "mode": mode,
                 "operation": operation,
@@ -285,24 +285,24 @@ async def test_guest_starts_closed_and_exact_exemption_does_not_unlock_ordinary(
     guest = Guest(tmp_path)
     ordinary = executor.Running("ordinary", "shell")
     with pytest.raises(executor._BusyError):
-        async with guest.executor.launch(ordinary, 0.01):
+        async with guest.executor.admission.launch(ordinary, 0.01):
             pytest.fail("bootstrap gate opened itself")
     await guest.gate(1, "hold", "prv-first")
     exempt = executor.Running(
         "install", "shell", package_operation="prv-first", package_generation=1
     )
-    async with guest.executor.launch(exempt, 1):
+    async with guest.executor.admission.launch(exempt, 1):
         pass
     with pytest.raises(executor._BusyError):
-        async with guest.executor.launch(executor.Running("other", "shell"), 0.01):
+        async with guest.executor.admission.launch(executor.Running("other", "shell"), 0.01):
             pytest.fail("an installer exemption unlocked ordinary work")
     await guest.gate(2, "hold", "prv-second")
     with pytest.raises(executor._BusyError):
-        async with guest.executor.launch(exempt, 0.01):
+        async with guest.executor.admission.launch(exempt, 0.01):
             pytest.fail("old exemption crossed a new generation")
     await guest.gate(3, "needs_recovery", "prv-second")
     with pytest.raises(executor.ToolError, match="needs_recovery"):
-        async with guest.executor.launch(exempt, 1):
+        async with guest.executor.admission.launch(exempt, 1):
             pytest.fail("recovery admitted a stale installer")
 
 
@@ -319,7 +319,7 @@ async def test_hold_ack_waits_for_actual_launch_and_double_cancel_drain(tmp_path
         return 42
 
     async def launch() -> int:
-        async with guest.executor.launch(running, 10):
+        async with guest.executor.admission.launch(running, 10):
             return await guest.executor.own_launch(running, actual())
 
     host = asyncio.create_task(launch())
@@ -335,7 +335,7 @@ async def test_hold_ack_waits_for_actual_launch_and_double_cancel_drain(tmp_path
     assert await host == 42
     await hold
     assert running.cancel_requested
-    assert guest.executor.package_mode == "hold"
+    assert guest.executor.admission.mode == "hold"
 
 
 @pytest.mark.asyncio
@@ -343,15 +343,15 @@ async def test_stale_controller_waiting_on_launch_lock_cannot_release_hold(tmp_p
     guest = Guest(tmp_path)
     await guest.gate(1, "hold", "prv-first")
     attached = True
-    await guest.executor.package_launch.acquire()
+    await guest.executor.admission.launch_lock.acquire()
     release = asyncio.create_task(guest.gate(2, "ready", _admission_guard=lambda: attached))
     await asyncio.sleep(0)
     attached = False
-    guest.executor.package_launch.release()
+    guest.executor.admission.launch_lock.release()
     with pytest.raises(executor.ToolError, match="detached"):
         await release
-    assert guest.executor.package_mode == "hold"
-    assert guest.executor.package_generation == 1
+    assert guest.executor.admission.mode == "hold"
+    assert guest.executor.admission.generation == 1
 
 
 @pytest.mark.asyncio
@@ -382,7 +382,7 @@ async def test_snapshot_waiter_cannot_spawn_after_recovery_ack(
         await guest.gate(1, "hold", "prv-first")
         await guest.gate(2, "needs_recovery", "prv-first")
         release.set()
-        await asyncio.wait_for(asyncio.gather(*guest.executor.tasks), 5)
+        await asyncio.wait_for(asyncio.gather(*guest.executor.lifecycle.tasks), 5)
         ended = [item for item in guest.messages if item.get("event") == "end"][-1]
         assert ended["state"] == "failed"
         assert ended["result"]["error"]["kind"] == "unavailable"
@@ -399,7 +399,7 @@ async def test_gate_wait_uses_original_timeout_budget(tmp_path: Path) -> None:
     running = executor.Running("waiting", "shell")
 
     async def launch() -> float:
-        async with guest.executor.launch(running, 1):
+        async with guest.executor.admission.launch(running, 1):
             return running.waited
 
     pending = asyncio.create_task(launch())
@@ -455,7 +455,7 @@ async def test_restart_launch_is_owned_by_shutdown_and_cannot_outlive_it(
             return {}
 
     kernel = Kernel()
-    guest.executor.kernels[("s1", "", "python")] = kernel  # pyright: ignore
+    guest.executor.lifecycle.kernels[("s1", "", "python")] = kernel  # pyright: ignore
     monkeypatch.setattr(guest.executor, "kernel", lambda *_: kernel)
     monkeypatch.setattr(sandbox_processes, "end_descendants", lambda: None)
     restart = asyncio.create_task(guest.executor.op_restart({"id": 1, "session": "s1"}))
@@ -471,7 +471,7 @@ async def test_restart_launch_is_owned_by_shutdown_and_cannot_outlive_it(
     assert kernel.manager is None
     assert kernel.stops == 1
     with pytest.raises(executor.ToolError, match="closing"):
-        async with guest.executor.launch(executor.Running("late", "shell"), 1):
+        async with guest.executor.admission.launch(executor.Running("late", "shell"), 1):
             pytest.fail("a launch escaped shutdown")
 
 

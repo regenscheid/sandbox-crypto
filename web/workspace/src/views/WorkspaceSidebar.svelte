@@ -8,12 +8,28 @@
     memoryHref,
     mcpHref,
     skillsHref,
+    documentsHref,
+    artifactsHref,
+    settingsHref,
     type Route,
   } from '../lib/router';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
+  import BrandMark from './BrandMark.svelte';
+  import Icon, { type IconName } from './Icon.svelte';
   import PollStatus from './PollStatus.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
-  let { route, close }: { route: Route; close: () => void } = $props();
+  let {
+    route,
+    close,
+    hide = null,
+    logout = null,
+  }: {
+    route: Route;
+    close: () => void;
+    /** Hide the navigation, where the page offers it. */
+    hide?: (() => void) | null;
+    logout?: (() => void) | null;
+  } = $props();
   const projects = api.projects();
   const projectId = $derived('project' in route ? route.project : null);
   const sessionId = $derived('session' in route ? route.session : null);
@@ -32,21 +48,110 @@
     return poller.watch();
   });
   let search = $state('');
+  // A new session: its name, suggested from the sessions the project has.
+  let naming = $state(false);
+  let newName = $state('');
+  let creating = $state(false);
+  let failure = $state<unknown>(null);
+  function startNaming() {
+    const taken = new Set(current.data?.sessions.map((s) => s.session_id) ?? []);
+    let number = taken.size + 1;
+    while (taken.has(`session-${number}`)) number += 1;
+    newName = `session-${number}`;
+    failure = null;
+    naming = true;
+  }
+  async function createSession(event: SubmitEvent) {
+    event.preventDefault();
+    if (!projectId || creating) return;
+    creating = true;
+    failure = null;
+    try {
+      const opened = await api.createSession(projectId, newName.trim());
+      naming = false;
+      location.hash = sessionHref(projectId, opened.session_id);
+      close();
+    } catch (error) {
+      failure = error;
+    } finally {
+      creating = false;
+    }
+  }
+  const sessions = $derived(
+    [...(current.data?.sessions ?? [])]
+      .reverse()
+      .filter((s) => s.session_id.toLowerCase().includes(search.toLowerCase())),
+  );
+  const links = $derived<{ label: string; href: string; icon: IconName; current: boolean }[]>(
+    projectId
+      ? [
+          {
+            label: 'Overview',
+            href: projectHref(projectId),
+            icon: 'overview',
+            current: route.view === 'project',
+          },
+          {
+            label: 'Documents',
+            href: documentsHref(projectId),
+            icon: 'document',
+            current:
+              route.view === 'documents' || route.view === 'document' || route.view === 'history',
+          },
+          {
+            label: 'Artifacts',
+            href: artifactsHref(projectId),
+            icon: 'artifact',
+            current: route.view === 'artifacts' || route.view === 'pdf',
+          },
+          {
+            label: 'Ledger',
+            href: ledgerHref(projectId),
+            icon: 'ledger',
+            current: route.view === 'ledger' || route.view === 'entry',
+          },
+          {
+            label: 'Memory',
+            href: memoryHref(projectId),
+            icon: 'memory',
+            current: route.view === 'memory',
+          },
+          {
+            label: 'Skills',
+            href: skillsHref(projectId),
+            icon: 'skill',
+            current: route.view === 'skills',
+          },
+          {
+            label: 'Connectors',
+            href: mcpHref(projectId),
+            icon: 'connector',
+            current: route.view === 'mcp',
+          },
+        ]
+      : [],
+  );
 </script>
 
 <nav class="workspace-sidebar" aria-label="Workspace navigation">
-  <a class="workspace-brand" href="#/" onclick={close}
-    ><span class="brand-mark">S</span>Sandbox Science</a
-  >
-  <div class="sidebar-section">
-    <span class="eyebrow">Workspace</span>
-    <a href="#/" aria-current={route.view === 'projects' ? 'page' : undefined} onclick={close}
-      >All projects</a
+  <div class="sidebar-top">
+    <a class="workspace-brand" href="#/" onclick={close}
+      ><BrandMark /><span>Cryptography Atlas</span></a
     >
-    {#await projects then listed}
-      <label class="sr-only" for="project-choice">Choose project</label>
-      <select
+    {#if hide}<button
+        class="nav-toggle"
+        type="button"
+        aria-label="Hide navigation"
+        aria-controls="workspace-navigation"
+        aria-expanded="true"
+        onclick={hide}><Icon name="sidebar" /></button
+      >{/if}
+  </div>
+  {#await projects then listed}
+    <label class="project-choice"
+      ><span>Project</span><select
         id="project-choice"
+        aria-label="Choose project"
         value={projectId ?? ''}
         onchange={(event) => {
           if (event.currentTarget.value) {
@@ -60,68 +165,76 @@
           {#if !('error' in project)}<option value={project.project_id}>{project.project_id}</option
             >{/if}
         {/each}
-      </select>
-    {:catch error}<ErrorMessage {error} />{/await}
-  </div>
+      </select></label
+    >
+  {:catch error}<ErrorMessage {error} />{/await}
   {#if projectId}
-    <div class="sidebar-section">
-      <span class="eyebrow">Research</span>
-      <a
-        href={projectHref(projectId)}
-        onclick={close}
-        aria-current={route.view === 'project' ? 'page' : undefined}>Project overview</a
-      >
-      <a
-        href={ledgerHref(projectId)}
-        onclick={close}
-        aria-current={route.view === 'ledger' || route.view === 'entry' ? 'page' : undefined}
-        >Research ledger</a
-      >
-      <a
-        href={memoryHref(projectId)}
-        onclick={close}
-        aria-current={route.view === 'memory' ? 'page' : undefined}>Project memory</a
-      >
-      <a
-        href={skillsHref(projectId)}
-        onclick={close}
-        aria-current={route.view === 'skills' ? 'page' : undefined}>Skills</a
-      >
-      <a
-        href={mcpHref(projectId)}
-        onclick={close}
-        aria-current={route.view === 'mcp' ? 'page' : undefined}>MCP services</a
-      >
-    </div>
     <div class="sidebar-section sessions">
       <span class="eyebrow">Sessions</span>
-      <input
-        type="search"
-        aria-label="Search sessions"
-        placeholder="Search sessions…"
-        bind:value={search}
-      />
+      {#if (current.data?.sessions.length ?? 0) > 6}<input
+          type="search"
+          aria-label="Search sessions"
+          placeholder="Search sessions…"
+          bind:value={search}
+        />{/if}
       <PollStatus phase={current.phase} hasData={current.data !== null} what="Sessions" />
-      {#if current.data}{@const project = current.data}
-        {#if project}
-          {#each [...project.sessions]
-            .reverse()
-            .filter((s) => s.session_id
-                .toLowerCase()
-                .includes(search.toLowerCase())) as session (session.session_id)}
-            <a
-              href={sessionHref(projectId, session.session_id)}
-              onclick={close}
-              aria-current={sessionId === session.session_id ? 'page' : undefined}
-            >
-              <span class="session-dot" class:closed={session.closed_at !== null}></span>
-              <span class="session-name">{session.session_id}</span>
-              {#if session.closed_at}<span class="muted">Closed</span>{/if}
-            </a>
-          {:else}<p class="muted">{search ? 'No matching sessions.' : 'No sessions yet.'}</p>{/each}
-        {/if}
+      {#if current.data}
+        {#each sessions as session (session.session_id)}
+          <a
+            href={sessionHref(projectId, session.session_id)}
+            onclick={close}
+            aria-current={sessionId === session.session_id ? 'page' : undefined}
+          >
+            <span class="session-dot" class:closed={session.closed_at !== null}></span>
+            <span class="session-name">{session.session_id}</span>
+            {#if session.closed_at}<span class="muted">Closed</span>{/if}
+          </a>
+        {:else}<p class="muted">{search ? 'No matching sessions.' : 'No sessions yet.'}</p>{/each}
+      {/if}
+      {#if naming}
+        <form class="new-session" onsubmit={createSession}>
+          <label for="new-session-name" class="sr-only">New session name</label>
+          <input
+            id="new-session-name"
+            bind:value={newName}
+            maxlength="128"
+            pattern="[A-Za-z0-9][A-Za-z0-9._\-]*"
+            title="Letters, digits, '.', '_' and '-', starting with a letter or digit"
+            required
+          />
+          <div class="new-session-actions">
+            <button type="submit" class="primary-button" disabled={creating}
+              >{creating ? 'Opening…' : 'Open'}</button
+            ><button type="button" onclick={() => (naming = false)}>Cancel</button>
+          </div>
+          <p class="muted">Runs in the project's shared environment.</p>
+          {#if failure}<ErrorMessage error={failure} />{/if}
+        </form>
+      {:else}
+        <button type="button" class="new-session-button" onclick={startNaming}
+          ><Icon name="plus" size={14} />New session</button
+        >
       {/if}
     </div>
+    <div class="sidebar-section">
+      <span class="eyebrow">Project</span>
+      {#each links as link (link.label)}
+        <a href={link.href} onclick={close} aria-current={link.current ? 'page' : undefined}
+          ><Icon name={link.icon} /><span class="session-name">{link.label}</span></a
+        >
+      {/each}
+    </div>
   {/if}
-  <div class="sidebar-footer"><span class="session-dot"></span>Research workspace</div>
+  <div class="sidebar-footer">
+    {#if projectId}<a
+        href={settingsHref(projectId)}
+        onclick={close}
+        aria-current={route.view === 'settings' ? 'page' : undefined}
+        ><Icon name="settings" />Settings</a
+      >{/if}
+    <a href="#/" onclick={close} aria-current={route.view === 'projects' ? 'page' : undefined}
+      ><Icon name="projects" />All projects</a
+    >
+    {#if logout}<button type="button" onclick={logout}><Icon name="logout" />Log out</button>{/if}
+  </div>
 </nav>

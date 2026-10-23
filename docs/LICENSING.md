@@ -45,6 +45,7 @@ for embedded subcomponents.
 | TeX Live (Ubuntu packages), qpdf | LPPL-1.3c, GPL and others; Apache-2.0 | Tier 3, in the `crypto-base` image |
 | miniforge installer | BSD-3-Clause (bundled packages carry their own licenses) | Use conda-forge only; avoid Anaconda `defaults` (commercial terms) |
 | jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol: the executor's kernels in the sandbox, and the worker's `kernels` extra for its local backend |
+| psutil (launcher on macOS) | BSD-3-Clause | Reads kernel process creation times and session membership for launcher recovery; declared only on Darwin |
 | pyzmq, traitlets, jupyter-core, comm, ipython, ipython-pygments-lexers, matplotlib-inline, prompt-toolkit, psutil, nest-asyncio2; tornado, asttokens; debugpy, jedi, parso, executing, pure-eval, stack-data, platformdirs, six, wcwidth; pexpect, ptyprocess; python-dateutil | BSD-3-Clause (nest-asyncio2: BSD); Apache-2.0; MIT; ISC; Apache-2.0 OR BSD-3-Clause | Required by jupyter_client and ipykernel. appnope (BSD, macOS only) and colorama (BSD-3-Clause, Windows only) are locked too |
 | KaTeX code/CSS | MIT, with React-derived Apache-2.0 helpers | Math rendering in the workspace GUI (D65, D80) and the isolated math-check bundle (D82). Complete checked primary and embedded notices accompany both distributions, using the same pinned inputs |
 | Existing unmodified KaTeX fonts and glyph-derived SVG assets | SIL OFL-1.1, as recorded in the distributed fonts and KaTeX source | Asset-only terms: the GUI ships the exact font bytes and embedded glyph paths with their precise copyright/reserved-name statements and complete pinned official OFL text. The isolated math bundle includes the glyph paths and their exact source attribution/OFL body, without font files. This does not add OFL to the platform-code dependency allowlist |
@@ -92,7 +93,7 @@ for embedded subcomponents.
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |
 | PyYAML | MIT | Policy file parsing; living documents' front matter |
-| OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.3) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license, and the middleware package declares `MIT AND Apache-2.0` |
+| OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.5) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license, and the middleware package declares `MIT AND Apache-2.0` |
 | grpcio | Apache-2.0 | Policy middleware gRPC server |
 | protobuf | BSD-3-Clause | Policy middleware messages |
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |

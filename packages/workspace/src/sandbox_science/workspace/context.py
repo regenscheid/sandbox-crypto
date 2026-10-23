@@ -3,9 +3,9 @@
 
 ``create_app`` sets one ``WorkspaceContext`` as ``CONTEXT``. A route reads it from
 ``request.app[CONTEXT]``, checks the IDs in its path, reads a write's body with
-``json_body`` or ``read_body``, does its work in a thread or through the worker under a
-timeout, and answers JSON with ``json_answer``. Failures are
-raised and answered by the guard through ``errors``.
+``json_body`` or ``read_body``, uses ``requests`` for scoped store work in a thread
+and JSON responses, or reaches the worker under a timeout. Failures are raised and
+answered by the guard through ``errors``.
 """
 
 from __future__ import annotations
@@ -24,10 +24,34 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, SessionRecord
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .api import Timeouts
 from .errors import TooLargeError
 
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
+
+
+MAX_RUN_BYTES: Final = 64 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Timeouts:
+    """Seconds the workspace waits for its reads and for the worker."""
+
+    call: float = 6.0
+    """A kernel, plan, plan-edit, ledger read or provisioning request as a whole."""
+    upload: float = 300.0
+    """One upload or attachment delivery, including transfer admission; observations stay short."""
+    comparison: float = 10.0
+    """A lockfile comparison or a revision's package page as a whole."""
+    worker_call: float = 5.0
+    """One provisioning observation from the worker."""
+    worker_comparison: float = 9.0
+    """One comparison or package page from the worker, within its eight-second budget."""
+    environment: float = 2.0
+    """The worker's record of an environment, which the chat reads at every poll while a
+    message waits for its run: it never holds the chat up for long."""
+
+
+TIMEOUTS: Final = Timeouts()
 
 
 @dataclass(frozen=True)
@@ -40,6 +64,7 @@ class WorkspaceContext:
     worker: WorkerClient | None
     job_state: JobState | None
     timeouts: Timeouts
+    max_run_bytes: int = MAX_RUN_BYTES
     uploads: asyncio.Lock = field(default_factory=asyncio.Lock)
     """One upload, original download or delivery is materialized at a time across tabs."""
 

@@ -66,10 +66,11 @@ def ledger(tmp_path: Path) -> Iterator[Ledger]:
     projects.open_session("p", "s", dedicated=False)
     projects.create("q", "minimal", "sha256:" + "a" * 64)
     projects.open_session("q", "t", dedicated=False)
-    projects.close()
+    # Immutable project readers need the writer's WAL sidecars through teardown.
     documents = DocumentStore(store_path(tmp_path))
     yield Ledger(documents)
     documents.close()
+    projects.close()
 
 
 def change(

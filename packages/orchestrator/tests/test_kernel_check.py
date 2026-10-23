@@ -89,7 +89,7 @@ async def test_a_package_change_from_another_session_is_told_once_per_revision()
     box = Toolbox(cast(WorkerClient, worker), CONTEXT, check_kernels=True)
     model = Model([turn(), turn(), turn(), ModelTurn("done")])
     transcript = await run_task(model, box, "go", run_id="r")
-    told = kernel_notices(transcript.messages)
+    told = kernel_notices(transcript.context.messages)
     # Revision 2 is told once, though two turns saw it; revision 3 once more. The Sage
     # kernel's start is unknown, so it is never told about.
     assert [[(n["kernel_id"], n["current_revision"]) for n in notice] for notice in told] == [
@@ -105,7 +105,7 @@ async def test_an_unavailable_observation_tells_nothing_and_the_run_goes_on() ->
     worker.current = None
     box = Toolbox(cast(WorkerClient, worker), CONTEXT, check_kernels=True)
     transcript = await run_task(ScriptedModel([ModelTurn("done")]), box, "go", run_id="r")
-    assert (transcript.final_text, kernel_notices(transcript.messages)) == ("done", [])
+    assert (transcript.final_text, kernel_notices(transcript.context.messages)) == ("done", [])
 
 
 async def test_each_run_is_told_again_while_a_kernel_predates_the_packages() -> None:
@@ -115,7 +115,7 @@ async def test_each_run_is_told_again_while_a_kernel_predates_the_packages() -> 
     first = await run_task(ScriptedModel([ModelTurn("one")]), box, "go", run_id="r1")
     second = await run_task(ScriptedModel([ModelTurn("two")]), box, "go", run_id="r2")
     assert first.delivered_ids("kernels") == second.delivered_ids("kernels")
-    assert len(kernel_notices(second.messages)) == 1
+    assert len(kernel_notices(second.context.messages)) == 1
 
 
 async def test_runs_without_the_check_observe_no_kernels() -> None:
@@ -134,7 +134,7 @@ async def test_a_run_is_told_only_about_the_kernels_its_cells_use() -> None:
         box = Toolbox(cast(WorkerClient, worker), CONTEXT, check_kernels=True, kernel_run=run)
         transcript = await run_task(ScriptedModel([ModelTurn("done")]), box, "go", run_id="r")
         told[run] = [
-            n["kernel_id"] for notice in kernel_notices(transcript.messages) for n in notice
+            n["kernel_id"] for notice in kernel_notices(transcript.context.messages) for n in notice
         ]
     assert told == {None: ["kernel-python"], "child": ["kernel-child"]}
 

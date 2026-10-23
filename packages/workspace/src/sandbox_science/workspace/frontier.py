@@ -37,9 +37,9 @@ from sandbox_science.orchestrator.ledger.models import (
 )
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import documents
 from .context import identifier, json_body
 from .ledger import matched, query_of, read_answer
+from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/frontier"
 _NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -285,4 +285,4 @@ async def define(request: web.Request) -> web.Response:
     def defined(store: DocumentStore) -> dict[str, object]:
         return Ledger(store).define_category(project, raw, USER).model_dump(mode="json")
 
-    return await documents.answer(request, defined, writer=True)
+    return await document_answer(request, defined, access="write")

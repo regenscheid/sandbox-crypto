@@ -207,7 +207,7 @@ async def test_shared_commit_cannot_wait_in_a_thread_across_epoch_change(
         store.close()
 
 
-async def test_policy_commit_rechecks_after_live_filesystem_observation(
+async def test_policy_commit_rechecks_after_live_static_observation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from types import SimpleNamespace
@@ -222,12 +222,12 @@ async def test_policy_commit_rechecks_after_live_filesystem_observation(
     async def observe(sandbox):
         observing.set()
         await release.wait()
-        return {}
+        return {}, None
 
     def write(*args):
         pytest.fail("superseded policy admission must not prepare a policy write")
 
-    monkeypatch.setattr(environments, "_live_filesystem", observe)
+    monkeypatch.setattr(environments, "_live_static", observe)
     monkeypatch.setattr(environments, "_write", write)
     try:
         with store.recovery_fences.bind(owner(1)):

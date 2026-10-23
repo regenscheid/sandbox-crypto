@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""Idempotent continuation of an answered root whose research plan remains active."""
+"""Idempotent continuation of an answered root whose research plan remains active.
+
+A plan continues only while one of its steps can still be worked: pending or in progress.
+When the agent has marked every unfinished step blocked, as it does when no justified step
+remains, the session waits for the user instead of starting run after run that rereads the
+plan and finds nothing to do (Mac, 2026-10-21); a plan has no status of its own for that.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,7 @@ from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import run_id_of
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import (
+    CompactPlan,
     PlanAuthority,
     PlanScope,
     PlanSummary,
@@ -76,6 +83,19 @@ class AutoContinuation:
         )
 
     @staticmethod
+    def _workable(plan: CompactPlan | None) -> bool:
+        """Whether a step can still be worked: its current status pending or in progress. A
+        step changed since its latest progress counts as pending, as the plan view shows it."""
+        if plan is None:
+            return False
+        for step in plan.steps:
+            latest = step.latest
+            current = latest.status if latest is not None and step.matches_current_step else None
+            if current in (None, "pending", "in_progress"):
+                return True
+        return False
+
+    @staticmethod
     def _message(plan: PlanSummary) -> str:
         ref = plan.head
         return (
@@ -111,6 +131,8 @@ class AutoContinuation:
         plan = self.plans.summary(authority)
         if plan is None or plan.status != "active":
             return None
+        if not self._workable(self.plans.compact_current(authority)):
+            return None
         identity = json.dumps(self._identity(plan), separators=(",", ":"))
         message_id = new_id("msg")
         content = self._message(plan)
@@ -123,6 +145,7 @@ class AutoContinuation:
                 current is not None
                 and current == plan
                 and current.status == "active"
+                and self._workable(self.plans.compact_in(db, authority))
                 and db.execute(
                     "SELECT 1 FROM research_observations WHERE project=? AND session=? "
                     "AND kind='auto_continue' AND identity=?",
@@ -207,6 +230,7 @@ class AutoContinuation:
                     and current is not None
                     and current.status == "active"
                     and self._identity(current) == pinned
+                    and self._workable(self.plans.compact_in(db, authority))
                 )
                 if not valid:
                     db.execute(

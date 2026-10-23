@@ -3,7 +3,28 @@
   import { api, ApiError, type RunRecord } from '../lib/api';
   import ContextInspector from './ContextInspector.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
-  let { project, session, run }: { project: string; session: string; run: string } = $props();
+  let {
+    project,
+    session,
+    run,
+    compact = false,
+    primary = false,
+    label = 'Context management…',
+    tab = 'timeline',
+    scope = 'attempt',
+  }: {
+    project: string;
+    session: string;
+    run: string;
+    /** A quiet link-like button, as in an agent's card. */
+    compact?: boolean;
+    /** The page's main action, as in the Context tab. */
+    primary?: boolean;
+    label?: string;
+    /** Where the inspector opens: its section, and this attempt or the whole agent. */
+    tab?: 'timeline' | 'folds' | 'context' | 'history';
+    scope?: 'attempt' | 'agent';
+  } = $props();
   let record = $state<RunRecord | null>(null);
   let opened = $state(false);
   let loading = $state(false);
@@ -27,8 +48,13 @@
   }
 </script>
 
-<button type="button" aria-disabled={loading} aria-busy={loading} onclick={() => void open()}
-  >{loading ? 'Loading context…' : 'Context management…'}</button
+<button
+  type="button"
+  class:link-button={compact}
+  class:primary-button={primary}
+  aria-disabled={loading}
+  aria-busy={loading}
+  onclick={() => void open()}>{loading ? 'Loading context…' : label}</button
 >
 {#if error}<ErrorMessage {error} />{/if}
 {#if opened}<ContextInspector
@@ -36,5 +62,7 @@
     runName={run}
     {project}
     {session}
+    initialTab={tab}
+    initialScope={scope}
     close={() => (opened = false)}
   />{/if}

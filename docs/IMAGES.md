@@ -4,8 +4,8 @@ Research sandboxes start from one of two standard base profiles (D46, D22). The 
 
 | Profile | Contents | Licensing |
 | --- | --- | --- |
-| `minimal` | Ubuntu 24.04; Python 3.14 with ipykernel and jupyter_client; micromamba for runtime installs | Permissive, apart from the base distribution's runtime libraries; the project could publish it (tier 2 in [licensing](LICENSING.md)). It is not published yet |
-| `crypto-base` | The same, plus SageMath 10.9 with its `sagemath` kernel, fpylll, fplll, PARI, FLINT, G6K, lattice-estimator, conda-forge's C and C++ compilers, TeX Live 2023 (`latexmk`, `pdflatex`), poppler-utils, qpdf, pdf_oxide and git | Contains GPL tools. The recipe is MIT; the image is built privately and never published (D46) |
+| `minimal` | Ubuntu 24.04; Python 3.14 with ipykernel and jupyter_client; micromamba for runtime installs | Permissive, apart from the base distribution's runtime libraries; its AMD64 variant is currently in a private GHCR package (tier 2 in [licensing](LICENSING.md)) |
+| `crypto-base` | The same, plus SageMath 10.9 with its `sagemath` kernel, fpylll, fplll, PARI, FLINT, G6K, lattice-estimator, conda-forge's C and C++ compilers, TeX Live 2023 (`latexmk`, `pdflatex`), poppler-utils, qpdf, pdf_oxide and git | Contains GPL tools. The recipe is MIT; the image is built privately and may be copied only to a verified private registry (D46) |
 | `orchestrator` | Ubuntu 24.04; Python 3.14 with aiohttp, pydantic, PyYAML and the Markdown parser of living documents (markdown-it-py, mdit-py-plugins); the harness (`sandbox-science-harness`) and its contracts, built from this repository. No kernels ([below](#the-orchestrator-image)) | Permissive like `minimal`, which the build checks the same way; the harness is MIT |
 | `mcp-proxy` | Ubuntu 24.04; Python 3.14 with aiohttp, pydantic and PyYAML; the MCP proxy (`sandbox-science-mcp-proxy`) with the contracts, the policy library and the event store, built from this repository; a launcher, `mcp-proxy-run`, as the sandbox's command. No kernels ([below](#the-mcp-proxy-image)) | Permissive like `minimal`, which the build checks the same way; the proxy is MIT |
 
@@ -31,7 +31,7 @@ Every profile follows it; the orchestrator and MCP proxy images differ where [th
 - **No image policy.** The images carry no `/etc/openshell/policy.yaml`; the worker always supplies the policy.
 - **Record.** `/usr/share/sandbox-science/image.json` names the profile, the recipe's revision, the base image, the Ubuntu snapshot, the micromamba release, the lockfile's SHA-256 and the trees built from source. It lists every Conda, pip and Ubuntu package with its version and license. The Conda lockfile is beside it. Restoring and rebuilding environments (D22, D48) can start from these.
 - **Labels.**
-  - `org.opencontainers.image.source`: the repository;
+- `org.opencontainers.image.source`: the repository, except on `crypto-base` to prevent automatic access inheritance for its private GHCR package;
   - `org.opencontainers.image.revision`: the recipe's commit, the last to change what the build reads, with `-dirty` for uncommitted changes there;
   - `org.opencontainers.image.version`: its short form, also the tag;
   - `org.opencontainers.image.licenses`: the licenses in `images/<profile>/licenses.txt`, joined into one SPDX expression;
@@ -40,7 +40,7 @@ Every profile follows it; the orchestrator and MCP proxy images differ where [th
 
 ### OpenShell filesystem paths
 
-OpenShell's Landlock baseline lets sandbox processes open only `/usr`, `/lib`, `/etc`, `/app`, `/var/log`, `/proc` and `/dev/urandom` read-only, and `/tmp`, `/dev/null` and the workdir `/sandbox` read-write. The policy compiler adds the devices research code needs ([policy](POLICY.md), "Mapping to enforcement"). Both research images need two more paths, so the OpenShell targets file must list:
+OpenShell's Landlock baseline lets sandbox processes open only `/usr`, `/lib`, `/etc`, `/app`, `/var/log`, `/proc` and `/dev/urandom` read-only, and `/tmp`, `/dev/null` and the workdir `/sandbox` read-write. The policy compiler lists that baseline itself, less `/app`, because OpenShell's supervisor adds only paths that exist on its own host, and requires Landlock (`hard_requirement`), so a sandbox does not start without filesystem confinement. It adds the devices research code needs ([policy](POLICY.md), "Mapping to enforcement"). Both research images need two more paths, so the OpenShell targets file must list:
 
 ```yaml
 sandbox:
@@ -149,6 +149,11 @@ G6K has no conda-forge package. The build compiles it with the environment's com
 
   Tier 2 admits the system libraries the base distribution requires ([licensing](LICENSING.md)); these are them.
 - **crypto-base** contains GPL tools (SageMath, PARI, fpylll, G6K, GCC, …). The recipe and lockfiles are MIT; the image stays on the machines that build it and in a private registry. `build.sh` refuses to push.
+  Its OCI metadata deliberately omits `org.opencontainers.image.source` so a new private GHCR
+  package does not automatically inherit read permissions from this public source repository.
+  The image's provenance report still records the source URL and revision. Verify package
+  visibility and an unauthenticated pull denial after its first architecture upload and
+  before adding further manifests or the shared index.
 - **orchestrator** is checked like minimal, including the harness's two packages, which pip installs. Its only packages that are not permissive are the same runtime libraries of conda-forge's Python: the GCC runtime, `readline` and `ld_impl` (no `keyutils`, since it has no ZeroMQ). The harness's contracts are MIT and its orchestrator package `MIT AND Apache-2.0`, as their `pyproject.toml` declare them and the `record` check expects, and aiohttp, pydantic, the Markdown parser (markdown-it-py, mdit-py-plugins, mdurl), PyYAML and their dependencies are under Apache-2.0, MIT, BSD-3-Clause and PSF-2.0 (tier 1 in [licensing](LICENSING.md)).
 - **mcp-proxy** is checked the same way, including its four packages from this repository, all MIT. Its packages are the orchestrator image's but for the Markdown parser, all MIT, so its licenses are the orchestrator image's: the same runtime libraries are its only packages that are not permissive.
 - **The license label.** `images/<profile>/licenses.txt` lists the license expressions in the image: its Conda packages, the Python packages pip installed, the trees built from source, and `LicenseRef-Ubuntu-archive` for the Ubuntu packages. `build.sh` joins them into the `org.opencontainers.image.licenses` label. When a new lockfile changes them, the build fails and prints the new lines for the file. License names that are not SPDX identifiers become `LicenseRef-…` values.
@@ -169,7 +174,7 @@ images/build.sh mcp-proxy
 
   `recipe_packages` in `revision.sh` lists each profile's packages, for the tag and for `build.sh`. Changes to the scripts, the tests, another profile or anything else leave the tag alone. The script prints the tag, the image digest, its size and the build time. It never pushes.
 - **orchestrator and mcp-proxy** need `uv`: `build.sh` first builds their wheels into a temporary directory, which it removes afterwards.
-- **Options.** Further arguments go to `docker buildx build`, such as `--no-cache` or `--build-arg G6K_MARCH_AMD64=x86-64-v2`. `PLATFORM` sets the platform (default `linux/amd64`) and `BUILDER` a buildx builder.
+- **Options.** Further arguments go to `docker buildx build`, such as `--no-cache` or `--build-arg G6K_MARCH_AMD64=x86-64-v2`. `PLATFORM` selects `linux/amd64` or `linux/arm64` (by default the host architecture), and `BUILDER` selects a buildx builder. The Mac builds Linux ARM64 images, not native macOS images.
 - **Rebuilds** install the same packages; they are not bit-for-bit identical.
 
 Sizes, as built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver):
@@ -267,19 +272,76 @@ What the checks show about the paths:
 
 ## arm64
 
-The recipe builds for `linux/arm64` too, but no arm64 image has been built or tested. What it already has:
+Native Linux ARM64 [qualification runs](https://github.com/regenscheid/sandbox-crypto/actions/runs/39331529252) built and tested all four profiles, including `crypto-base` with Sage and G6K, in container and Landlock modes with network disabled. This validates those images on that runner, not the Mac OpenShell runtime. The recipe has:
 
 - the micromamba release and its SHA-256 for linux-aarch64;
 - lockfiles that cover linux-aarch64: the same packages and versions as linux-64, apart from the compilers' architecture-named packages and two minor version differences (charset-normalizer, libglib) where a build was missing;
 - pdf_oxide's aarch64 wheel hash;
-- a G6K build for the target, compiled natively per architecture (D63) and aimed at `armv8.2-a`, the Raspberry Pi 5's Cortex-A76.
+- a G6K build for the target, compiled natively per architecture (D63) and aimed at `armv8.2-a`, the Raspberry Pi 5's Cortex-A76. Pinned G6K includes the x86-only `immintrin.h` unconditionally even though it has a generic SIMD path, and gives its generic vectors explicit alignment that GCC 15's AArch64 argument ABI rejects. The ARM64 build applies the exact-match `patch-g6k-arm64.py` adjustment before configure; the AMD64 source is unchanged.
 
-What arm64 still needs:
+All four profiles now have published two-platform tags. `build.sh` loads one
+platform into the local store for development and never pushes it.
 
-- **A build.** On an arm64 host, such as a Raspberry Pi 5 node or the Mac, or under QEMU emulation, where compiling G6K and unpacking about 400 packages is slow.
-- **Ubuntu's ports archive.** Ubuntu serves arm64 packages from `ports.ubuntu.com`. On 2026-10-11 the snapshot service answered `https://snapshot.ubuntu.com/ubuntu-ports/…` with 401, so arm64 may need another way to pin Ubuntu packages, such as exact versions in `apt-packages.txt`.
-- **A multi-platform image.** It needs a registry or an OCI layout to hold both architectures under one tag; `build.sh` loads one platform into the local store.
-- **The tests**, run on an arm64 host.
+The selected destination is GHCR under this repository's namespace:
+`ghcr.io/regenscheid/sandbox-crypto/<profile>`. The manual image workflow's
+`publish` mode uses native Linux AMD64 and ARM64 runners for every profile. Each
+runner creates a `docker-container` Buildx builder and builds directly to a
+run-specific GHCR architecture tag using BuildKit's registry exporter. It pulls
+the resulting immutable digest and checks that exact image in container and
+Landlock modes. The merge job starts only after all eight
+build-and-check jobs pass. It resolves the run-specific tags to immutable digests,
+checks platform, profile and recipe revision, and creates one two-platform tag per
+profile in GitHub Actions. The manual `publish_scope=minimal` mode runs only the
+two native minimal builds and their merge as a registry smoke test. Selecting
+all profiles without confirming `crypto_base=true` fails input validation before
+any publication job starts. Pull-request jobs remain read-only and cannot publish.
+
+New GHCR packages default to private. Before pushing or merging `crypto-base`,
+the workflow checks that the package's GitHub visibility is private. An architecture
+digest may name an OCI index containing one image plus a provenance attestation.
+`publish_index.py` resolves only its image leaf, accepts attestations bound to that
+leaf, and verifies that the shared tag contains exactly the AMD64 and ARM64 images.
+For manual recovery, with registry access configured, inspect a proposed index from
+already-pushed digests:
+
+```bash
+python3 images/publish_index.py crypto-base ghcr.io/regenscheid/sandbox-crypto/crypto-base:REVISION \
+  ghcr.io/regenscheid/sandbox-crypto/crypto-base@sha256:AMD64_DIGEST \
+  ghcr.io/regenscheid/sandbox-crypto/crypto-base@sha256:ARM64_DIGEST \
+  --private-registry-confirmed --dry-run
+```
+
+Run the same command without `--dry-run` to create the shared tag. The script
+checks both source architectures, the profile and matching recipe revision labels,
+then verifies the published index contains exactly those two digests. It refuses
+`crypto-base` without an explicit confirmation that the destination package is
+private. The operator must verify registry access before using this manual command;
+Docker cannot infer privacy from a name. The prior `--load` then `docker push`
+ARM64 path uploaded its layers but received `unknown blob` or HTTP 500 while
+finalizing the manifest, even for an isolated minimal-image retry. The first
+Actions publication attempt also returned HTTP 500 on both native architectures:
+the default Buildx `docker` driver still used Docker's daemon push path. The
+workflow now requires the `docker-container` driver for publication. The
+[minimal smoke run](https://github.com/regenscheid/sandbox-crypto/actions/runs/39348114450)
+verified its direct registry export; the [full publication run](https://github.com/regenscheid/sandbox-crypto/actions/runs/39348347538)
+passed all eight pulled-digest container/Landlock checks and all four merges.
+Each shared OCI index was independently inspected and contains exactly
+`linux/amd64` and `linux/arm64`. All four GHCR packages are currently private;
+`crypto-base` remains private as required by D46.
+
+The `VM bootstrap mirror` workflow copies NVIDIA's
+`nvcr.io/nvidia/base/ubuntu:24.04` index, pinned by digest, to
+`ghcr.io/regenscheid/sandbox-crypto/vm-bootstrap:ubuntu-24.04` with
+`skopeo copy --all --preserve-digests`, then checks that GHCR serves the same
+digest and that the package is private. Its first run created the package as
+public, inheriting this public repository's visibility, so the check failed after
+the copy; set the package to private in its GitHub package settings before
+relying on a rerun. It runs when its workflow file changes on
+`dev` or `main`, or by manual dispatch. OpenShell v0.1.5's VM driver sends one
+registry credential to both the bootstrap and sandbox pulls, and nvcr.io rejects
+the GitHub token needed for `crypto-base`, so the Mac helper boots from this
+mirror. To move to a newer NVIDIA image, change the digest in the workflow and in
+`DEFAULT_BOOTSTRAP_IMAGE` in `scripts/mac_local.py`; a test keeps them equal.
 
 ## In OpenShell
 
@@ -292,9 +354,8 @@ Every image has run in OpenShell VM sandboxes on babbage, under the compiled pol
 
 ## Not yet done
 
-- **arm64 images** (above).
-- **A private registry** for crypto-base, and for multi-platform images. OpenShell's VM driver can create sandboxes from images in the local Docker store, so babbage needs none yet.
-- **An SBOM** in a standard format (SPDX or CycloneDX) before `minimal` is published. The image record lists every package and license, but in its own format.
+- **Mac OpenShell acceptance.** The shared tags are published and verified on native Linux runners; a real Mac MicroVM lifecycle and Resume test remains open.
+- **An SBOM** in a standard format (SPDX or CycloneDX) before a general release. The published `minimal` tag does not yet include one; the image record lists every package and license, but in its own format.
 - **Restore and rebuild.** The record and lockfile are there; capturing an environment's changes and rebuilding it from the lockfile belong to the environment manager (W3, D48).
 
 Research images also contain `/usr/share/sandbox-science/binding-inventory.json`, a

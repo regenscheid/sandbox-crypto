@@ -210,3 +210,49 @@ async def test_explicit_metadata_check_is_same_origin_and_does_not_execute_tools
     assert (
         await anonymous.post(path + "/papers/check", json={}, headers=origin(anonymous))
     ).status == 401
+
+
+async def test_the_user_turns_a_configured_connector_off_and_back_on(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        mcp_project="p1",
+        mcp_inventory=(
+            ServiceConfig(name="papers", purpose="Retrieve research papers"),
+            ServiceConfig(name="web", purpose="Fetch web pages"),
+        ),
+    )
+    path = "/api/v0/projects/p1/mcp-services/settings"
+    origin = {"Origin": str(client.make_url("/")).rstrip("/")}
+    first = await (await client.get(path)).json()
+    assert (first["revision"], first["configured"], first["disabled"]) == (0, ["papers", "web"], [])
+
+    async def change(body: dict[str, object], status: int = 200) -> Any:
+        response = await client.post(path, json=body, headers=origin)
+        assert response.status == status, await response.text()
+        return await response.json()
+
+    off = await change({"expected": 0, "disabled": ["web"], "operation_id": "off-1"})
+    assert (off["revision"], off["disabled"], off["replayed"]) == (1, ["web"], False)
+    again = await change({"expected": 0, "disabled": ["web"], "operation_id": "off-1"})
+    assert (again["revision"], again["replayed"]) == (1, True)
+    await change({"expected": 0, "disabled": [], "operation_id": "on-1"}, status=409)
+    on = await change({"expected": 1, "disabled": [], "operation_id": "on-1"})
+    assert (on["revision"], on["disabled"]) == (2, [])
+    # Narrowing only: a service the launcher does not configure cannot be named.
+    refused = await change(
+        {"expected": 2, "disabled": ["elsewhere"], "operation_id": "x"}, status=400
+    )
+    assert "not a configured connector" in refused["error"]["message"]
+    await change({"expected": 2, "disabled": ["web"], "operation_id": "y", "author": 1}, 400)
+    for headers in ({}, {"Origin": "https://untrusted.invalid"}):
+        response = await client.post(
+            path, json={"expected": 2, "disabled": ["web"], "operation_id": "z"}, headers=headers
+        )
+        assert response.status == 403
+    # Another project has no configured connectors to turn off.
+    other = await (await client.get("/api/v0/projects/p2/mcp-services/settings")).json()
+    assert other["configured"] == []

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from './http';
-import { Poller, type PollOptions, type PollState } from './poller';
+import { Poller, POLL_DEADLINE_MS, type PollOptions, type PollState } from './poller';
 import { signOut } from './session';
 
 interface Data {
@@ -127,6 +127,49 @@ describe('visible polling', () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(read).toHaveBeenCalledTimes(2);
     expect(states.at(-1)?.phase).toBe('unsupported');
+  });
+});
+
+describe('poke', () => {
+  it('reads at once when idle, and right after a read in flight, not at the interval', async () => {
+    vi.useFakeTimers();
+    const pending = deferred<Data>();
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ n: 1 })
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue({ n: 3 });
+    const { poller } = poll(read, { intervalMs: 5000 });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
+    poller.poke(); // the second read is in flight: it may have missed the write
+    expect(read).toHaveBeenCalledTimes(2);
+    pending.resolve({ n: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(read).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(4);
+  });
+
+  it('does nothing while hidden or stopped', async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockResolvedValue({ n: 1 });
+    const { poller } = poll(read);
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).not.toHaveBeenCalled();
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0);
+    poller.stop();
+    poller.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -298,4 +341,10 @@ describe('sign-out', () => {
     stopLate();
     vi.unstubAllGlobals();
   });
+});
+
+it('waits long enough for a workspace a busy host slows down', () => {
+  // An investigation's computations often keep the host's CPUs busy; at 8 s, a slow read
+  // showed as "unavailable" (Mac, 2026-10-21).
+  expect(POLL_DEADLINE_MS).toBeGreaterThanOrEqual(30_000);
 });

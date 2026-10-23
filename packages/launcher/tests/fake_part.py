@@ -36,6 +36,7 @@ import os
 import re
 import signal
 import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -53,6 +54,16 @@ name, args = sys.argv[1], sys.argv[2:]
 behaviour = json.loads(os.environ.get("FAKE_PARTS", "{}")).get(name, "")
 
 
+class NoDNSHTTPServer(ThreadingHTTPServer):
+    """A local test server must not wait for a runner's reverse DNS lookup."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
 def note(text: str) -> None:
     with Path(os.environ["FAKE_JOURNAL"]).open("a") as journal:
         journal.write(f"{name} {text}\n")
@@ -63,6 +74,9 @@ def option(flag: str) -> str:
 
 
 def stopped(*_: object) -> None:
+    # A Darwin watcher and its supervisor can deliver TERM during the same
+    # shutdown. A second signal must not re-enter the journal write.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     note("stop")
     sys.exit(0)
 
@@ -173,7 +187,7 @@ def serve(
     listener = None
     if address is not None and api is not None:
         host, port = address.rsplit(":", 1)
-        server = ThreadingHTTPServer((host, int(port)), api)
+        server = NoDNSHTTPServer((host, int(port)), api)
         threading.Thread(target=server.serve_forever, daemon=True).start()
     elif address is not None:
         host, port = address.rsplit(":", 1)
@@ -264,7 +278,7 @@ match (name, args[:2]):
         serve(None, [f"serving the sessions of {option('--state-dir')}"], stream=sys.stderr)
     case ("sandbox-science-mcp-proxy", ["compile-policy", *_]):
         Path(option("--out")).write_text("# compiled\n")
-        note("compile-policy")
+        note("compile-policy" + (" --admit-escalated" if "--admit-escalated" in args else ""))
     case ("sandbox-science-workspace", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:

@@ -441,8 +441,15 @@ class WorkRecords:
                 (reason[:1000], project, session, request),
             )
 
-    def interrupt(self, project: str, session: str, root: str) -> None:
-        """Record process loss without pretending incomplete work is done or stopped."""
+    def interrupt(
+        self, project: str, session: str, root: str, *, detail: str | None = None
+    ) -> None:
+        """Record process loss without pretending incomplete work is done or stopped.
+
+        ``detail``, the error that ended a Resume, is kept in its request's reason for the
+        user; the work's own reason stays ``interrupted``, which automatic recovery reads.
+        """
+        reason = "interrupted" if detail is None else f"interrupted: {detail}"[:1000]
         with self.control.write() as tx:
             tx.sql.execute(
                 "UPDATE research_work SET state='paused',reason='interrupted' "
@@ -450,9 +457,9 @@ class WorkRecords:
                 (project, session, root),
             )
             tx.sql.execute(
-                "UPDATE research_resumes SET status='blocked',reason='interrupted' "
+                "UPDATE research_resumes SET status='blocked',reason=? "
                 "WHERE project=? AND session=? AND root=? AND status='running'",
-                (project, session, root),
+                (reason, project, session, root),
             )
 
     def page(self, project: str, session: str, root: str, *, after: str = "") -> list[Work]:

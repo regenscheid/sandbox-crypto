@@ -1381,7 +1381,7 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
         "ended_at": now,
         "stopped": transcript.stopped,
         "final_text": transcript.final_text,
-        "messages": transcript.messages,
+        "messages": transcript.context.messages,
         "tools": transcript.tool_records,
         "delivered": {"reviews": sorted(transcript.delivered_ids("reviews"))},
         "summaries": transcript.summaries,

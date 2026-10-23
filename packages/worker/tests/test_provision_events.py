@@ -37,7 +37,9 @@ from sandbox_science.worker.provision_events import (
     checked_payload,
     project,
 )
-from sandbox_science.worker.provisioner import Provisioner, _Op, _Stop
+from sandbox_science.worker.provision_types import Operation as _Op
+from sandbox_science.worker.provision_types import Stop as _Stop
+from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.store import Store
 
 NOW = datetime(2026, 10, 14, tzinfo=UTC)

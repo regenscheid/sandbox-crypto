@@ -7,13 +7,14 @@ import pytest
 
 from sandbox_science.contracts.artifact_inventory import ArtifactPublicationSource
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
+from sandbox_science.orchestrator.context.agent import AgentContext
+from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
 from sandbox_science.orchestrator.continuity.resource_policy import continuation_allowed
 from sandbox_science.orchestrator.continuity.resources import ResourceApprovalRequest
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.hooks import Closing, Notice, TurnHook
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
@@ -52,12 +53,12 @@ async def test_time_warns_and_pauses_at_safe_point_without_call_then_parent_exte
     clock = FakeClock()
     hook = Resources(store, child, turns=300, tokens=20_000_000, delegated=True, clock=clock)
     clock.advance(8)
-    assert await hook.halt(Transcript(messages=[])) is None
+    assert await hook.halt(Transcript(context=AgentContext(messages=[]))) is None
     warning = store.pending(parent)[0]
     assert warning.resource == "elapsed_seconds"
     assert warning.used == 8
     clock.advance(2)
-    assert await hook.halt(Transcript(messages=[])) == "resource_time"
+    assert await hook.halt(Transcript(context=AgentContext(messages=[]))) == "resource_time"
     model = ScriptedModel([])
 
     async def unused(request):
@@ -69,12 +70,12 @@ async def test_time_warns_and_pauses_at_safe_point_without_call_then_parent_exte
     assert result.turns == 0
     assert result.stopped == "resource_time"
     assert decide(store, parent, warning, action="extend_time").total == 30
-    assert await hook.halt(Transcript(messages=[])) is None
+    assert await hook.halt(Transcript(context=AgentContext(messages=[]))) is None
     assert store.pending(parent) == []
     with projects.control.read() as tx:
         assert continuation_allowed(tx.sql, child, "resource_time")
     clock.advance(20)
-    assert await hook.halt(Transcript(messages=[])) == "resource_time"
+    assert await hook.halt(Transcript(context=AgentContext(messages=[]))) == "resource_time"
     with pytest.raises(ControlError, match="ceiling"):
         decide(store, parent, store.pending(parent)[0], action="extend_time", operation="next")
 
@@ -204,7 +205,9 @@ async def test_hard_retention_pressure_is_visible_not_renewable(projects):
     inventory = ArtifactInventory(documents, limits=ArtifactLimits(project_bytes=8))
     try:
         hook = Resources(store, child, turns=300, tokens=None, delegated=True, inventory=inventory)
-        assert await hook.halt(Transcript(messages=[])) == "resource_retention"
+        assert (
+            await hook.halt(Transcript(context=AgentContext(messages=[]))) == "resource_retention"
+        )
         request = store.pending(parent)[0]
         assert request.scope == "project"
         assert request.resource == "retention_bytes"

@@ -13,11 +13,11 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.export import EvidenceExport
+from sandbox_science.orchestrator.context.history.operations import ToolJournal, ToolRecord
+from sandbox_science.orchestrator.context.history.verify_export import verify
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.export import EvidenceExport
-from sandbox_science.orchestrator.history.operations import ToolJournal, ToolRecord
-from sandbox_science.orchestrator.history.verify_export import verify
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -158,8 +158,8 @@ def test_export_empty_strings_and_binary_fields(projects: ProjectStore) -> None:
 
 
 def test_export_preserves_collection_rows_and_response_receipts(projects: ProjectStore) -> None:
-    from sandbox_science.orchestrator.history.collections import Collection
-    from sandbox_science.orchestrator.history.usage import AnsweredUsage
+    from sandbox_science.orchestrator.context.history.collections import Collection
+    from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 
     from .test_model_usage_journal import START, USAGE
 

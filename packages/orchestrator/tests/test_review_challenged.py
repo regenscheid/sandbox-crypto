@@ -97,7 +97,7 @@ async def one_answer(reviews: ReviewStore, run: str) -> Transcript:
 def said(transcript: Transcript, framing: str) -> list[str]:
     return [
         str(m["content"])
-        for m in transcript.messages
+        for m in transcript.context.messages
         if m.get("role") == "user" and str(m.get("content", "")).startswith(framing)
     ]
 

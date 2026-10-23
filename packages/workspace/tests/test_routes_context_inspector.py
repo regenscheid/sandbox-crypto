@@ -6,10 +6,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.testing import FakeClock
@@ -388,7 +388,7 @@ async def test_auxiliary_timeline_snapshot_rechecks_equal_time_intents_and_late_
 async def test_captured_context_live_parts_chunks_and_scope_are_authenticated(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
-    from sandbox_science.orchestrator.history.capture import request
+    from sandbox_science.orchestrator.context.history.capture import request
 
     projects = ProjectStore(state_dir)
     run = "20261018T120000000000Z-run-captured"

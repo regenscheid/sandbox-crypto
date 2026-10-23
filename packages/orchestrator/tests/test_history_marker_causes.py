@@ -12,8 +12,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
-from sandbox_science.orchestrator.history import (
+from sandbox_science.orchestrator.context.history import (
     Archive,
     Archived,
     Entry,
@@ -21,9 +20,10 @@ from sandbox_science.orchestrator.history import (
     ledger_cites,
     ledger_works,
 )
-from sandbox_science.orchestrator.history.markers import Held, Work
-from sandbox_science.orchestrator.history.overview import merge
-from sandbox_science.orchestrator.history.skeleton import skeleton
+from sandbox_science.orchestrator.context.history.markers import Held, Work
+from sandbox_science.orchestrator.context.history.overview import merge
+from sandbox_science.orchestrator.context.history.skeleton import skeleton
+from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
 from sandbox_science.orchestrator.ledger import Ledger
 
 from .loop_harness import PROJECT, SESSION

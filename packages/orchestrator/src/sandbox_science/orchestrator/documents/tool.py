@@ -103,6 +103,15 @@ _OPERATION = {
     "additionalProperties": False,
 }
 
+_CITING: Final = (
+    " Cite a recorded file as ![what it is](path), such as ![reproduction script]"
+    "(shared/snova/singular_plane.sage): it is pinned to the file's revision and shown "
+    "as a link that downloads it. A plain [text](address) link works only for http, "
+    "https and mailto addresses; any other shows as its raw Markdown. Name another "
+    "document by its title in words."
+)
+"""How a document cites files (figures spec, FG-6), said where agents write text."""
+
 SPECS: Final = (
     ToolSpec(
         "document_list",
@@ -155,7 +164,7 @@ SPECS: Final = (
         "Create a living document: Markdown with LaTeX math, $...$ inline and $$...$$ "
         "displayed, optional YAML front matter with title and macros, and theorem-like "
         "blocks as '::: lemma' to ':::'. scope 'project' makes a project document, "
-        "'session' one of this session's workbook.",
+        "'session' one of this session's workbook." + _CITING,
         {
             "type": "object",
             "properties": {
@@ -177,7 +186,8 @@ SPECS: Final = (
         "with the same operation_id returns the first result. If someone changed what you "
         "touch after your base revision, nothing is written: you get a conflict with both "
         "versions, so read the document again and patch the new revision. A patch that "
-        "would change blocks it does not name, as an unclosed code fence would, is refused.",
+        "would change blocks it does not name, as an unclosed code fence would, is refused."
+        + _CITING,
         {
             "type": "object",
             "properties": {

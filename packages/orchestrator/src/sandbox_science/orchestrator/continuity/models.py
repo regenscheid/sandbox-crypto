@@ -10,9 +10,9 @@ from dataclasses import replace
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, new_id
 from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.context.history import capture
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
-from sandbox_science.orchestrator.history import capture
 from sandbox_science.orchestrator.model import (
     ChatModel,
     GatewayBudgetError,

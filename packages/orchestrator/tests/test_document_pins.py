@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,8 @@ import pytest_asyncio
 
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import USER, Author, DocumentError, DocumentStore
-from sandbox_science.orchestrator.documents.tool import DocumentTool
+from sandbox_science.orchestrator.documents.pins import text_references
+from sandbox_science.orchestrator.documents.tool import _CITING, SPECS, DocumentTool
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ScriptedModel
 from sandbox_science.orchestrator.tools import Toolbox
@@ -270,3 +272,17 @@ async def test_the_agent_reads_and_moves_pins(
     assert shown["files"] == [{"path": "plots/t.svg", "revision": 1, "latest": 2}]
     assert (patched["outcome"], patched["revision"]) == ("applied", 2)
     assert [entry["revision"] for entry in store.revision("p1", document).pins] == [2]
+
+
+def test_the_citing_guidance_agents_read_matches_what_is_pinned() -> None:
+    """The document tools tell agents how to cite a file (FG-6); its example is a file
+    reference and a plain link to a path is not, so the guidance says what the parser does."""
+    for name in ("document_create", "document_patch"):
+        assert _CITING in next(spec for spec in SPECS if spec.name == name).description
+    # Its template, then its example: the example is what the parser pins.
+    template, example = re.findall(r"!\[[^\]]*\]\([^)]*\)", _CITING)
+    assert template == "![what it is](path)"
+    assert [ref.path for ref in text_references(example, "x")] == [
+        "shared/snova/singular_plane.sage"
+    ]
+    assert text_references("[script](shared/snova/singular_plane.sage)", "x") == []

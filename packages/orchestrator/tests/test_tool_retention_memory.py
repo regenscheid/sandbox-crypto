@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.harness import Finished, save
-from sandbox_science.orchestrator.history import Archive, RunArchive
+from sandbox_science.orchestrator.context.history import Archive, RunArchive
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ToolCall, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name

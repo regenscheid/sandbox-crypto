@@ -78,6 +78,8 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Roadmap](ROADMAP.md) | Milestones M0 to M5 and delivery phases |
 | [Implementation plan](IMPLEMENTATION-PLAN.md) | Work packages W0 to W6, shared contracts and component ownership |
 | [Architecture](ARCHITECTURE.md) | Component architecture and placement |
+| [Apple Silicon qualification](MAC-ARM64.md) | Native ARM64 images, Mac supervision and OpenShell gates, and the mixed Kubernetes follow-on |
+| [Mac setup](MAC-SETUP.md) | Prerequisites, mounted-volume config, the Sage MicroVM test, and later full-launch settings |
 | [Execution plan](EXECUTION-PLAN.md) | Execution and deployment requirements and first decisions |
 | [Projects and sessions](PROJECTS-AND-SESSIONS.md) | Project, session and environment ownership |
 | [Product](PRODUCT.md) | Product requirements and acceptance criteria |
@@ -87,6 +89,8 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Monitoring](MONITORING.md) | Trusted monitoring and automatic provisioning |
 | [MCP connectors](MCP-CONNECTORS.md) | MCP authentication and the MCP proxy |
 | [Orchestrator prompts](ORCHESTRATOR-PROMPTS.md) | The prompt inventory, and proposed prompts and planning design |
+| [Attempt finalization](ATTEMPT-FINALIZATION.md) | Shared checkpoint, persistence, settlement and cleanup protocol |
+| [Agent context ownership](specs/agent-context-refactor.md) | Shared context preparation, state, history, folding and retrieval |
 
 ## Historical
 

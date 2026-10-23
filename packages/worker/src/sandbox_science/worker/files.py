@@ -184,6 +184,10 @@ class Files:
         async with self.connections.using(request.context.environment_id) as channel:
             reply = await channel.request(
                 "skills_check",
+                # A fresh executor may need to scan the installed tool inventory.
+                # This is bounded but can exceed the ordinary small-tool deadline
+                # on a cold disk, particularly in large research images.
+                reply_timeout=240.0,
                 source=request.source,
                 snapshot=request.snapshot,
                 files=[file.model_dump(mode="json") for file in request.files],

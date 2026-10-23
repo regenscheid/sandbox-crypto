@@ -4,12 +4,12 @@
 from datetime import UTC, datetime
 
 from sandbox_science.contracts import ExecutionContext, new_id
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.continuity.resources import ResourceRequests
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
-from sandbox_science.orchestrator.history import Archive, Entry
-from sandbox_science.orchestrator.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 

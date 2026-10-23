@@ -105,11 +105,12 @@ jobs:
           --timeout=${{ matrix.test_timeout }} --timeout-method=thread
           -o faulthandler_timeout=${{ matrix.stack_dump }} ${{ matrix.selection }}
 
-  # The whole suite, serially and unfiltered, on every supported Python.
+  # The suite runs serially on every supported Python. Process-heavy staging modules
+  # remain in their isolated jobs below so executor contention cannot stall this runner.
   full:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -123,8 +124,39 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run pytest --durations=50
+      - run: >-
+          uv run pytest --durations=50
+          --ignore=packages/orchestrator/tests/test_skills_staging.py
+          --ignore=packages/worker/tests/test_skill_staging.py
       - run: uv run python scripts/check_licenses.py
+
+  full-staging:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+        stage:
+          - name: orchestrator
+            selection: packages/orchestrator/tests/test_skills_staging.py
+          - name: worker
+            selection: packages/worker/tests/test_skill_staging.py
+    name: full staging (${{ matrix.python }}, ${{ matrix.stage.name }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: >-
+          scripts/ci_pytest.sh 1200 slow -n 1 --dist=load --durations=25
+          --timeout=300 --timeout-method=thread -o faulthandler_timeout=280
+          ${{ matrix.stage.selection }}
 
   # Nightly: the slow tier ten times, in parallel, to measure how often its tests flake.
   repeat:
@@ -144,6 +176,36 @@ jobs:
           scripts/ci_pytest.sh 4800 slow -n auto --count 10
           -o tmp_path_retention_policy=failed --timeout=300 --timeout-method=thread
           -o faulthandler_timeout=280
+          --ignore=packages/orchestrator/tests/test_skills_staging.py
+          --ignore=packages/worker/tests/test_skill_staging.py
+
+  repeat-staging:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+        stage:
+          - name: orchestrator
+            selection: packages/orchestrator/tests/test_skills_staging.py
+          - name: worker
+            selection: packages/worker/tests/test_skill_staging.py
+    name: repeat staging (${{ matrix.python }}, ${{ matrix.stage.name }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: >-
+          scripts/ci_pytest.sh 2400 slow -n 1 --dist=load --count 10
+          --timeout=300 --timeout-method=thread -o faulthandler_timeout=280
+          ${{ matrix.stage.selection }}
 
   # The workspace GUI (D80): packages from the lockfile, without install scripts.
   web:

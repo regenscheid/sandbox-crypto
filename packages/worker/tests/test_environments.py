@@ -65,12 +65,14 @@ from sandbox_science.worker.environments import (
     Admission,
     EnvironmentRecords,
     Environments,
+    SandboxMissingError,
     new_sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.provisioner import Provisioner, _Op
+from sandbox_science.worker.provision_types import Operation as _Op
+from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.settings import (
     ClientSettings,
     EnvironmentSettings,
@@ -156,7 +158,7 @@ if command == ["sandbox", "create"]:
     out = "created"
 elif command == ["sandbox", "get"]:
     if state.get("fail_get"):
-        fail("synthetic gateway unavailable")
+        fail(state.get("get_error", "synthetic gateway unavailable"))
     name = argv[2]
     if name not in sandboxes:
         fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
@@ -199,6 +201,8 @@ elif command == ["policy", "set"]:
     )
     if not kept:
         fail("message: \"filesystem policy cannot be removed on a live sandbox\"")
+    if box["policy"].get("landlock") != policy.get("landlock"):
+        fail("landlock policy cannot be changed on a live sandbox (applied at startup)")
     box["policy"], box["version"] = policy, box["version"] + 1
     out = "set"
 elif command == ["rule", "get"]:
@@ -480,6 +484,25 @@ async def test_a_revision_carries_the_live_filesystem_section_and_rebinds(setup:
     assert setup.environments.store.binding(info.sandbox_id) == revision
     await setup.environments.revise("env-1", revision)
     assert len(setup.fake.calls("policy", "set")) == 1
+
+
+async def test_a_revision_keeps_the_live_landlock_section(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    state = setup.fake.read()
+    box = state["sandboxes"][info.sandbox]
+    assert box["policy"]["landlock"] == {"compatibility": "hard_requirement"}
+    # A sandbox created before compiled policies carried a Landlock section has none, and
+    # OpenShell refuses a revision that adds one.
+    del box["policy"]["landlock"]
+    setup.fake.write(state)
+    revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
+    await setup.environments.revise("env-1", revision)
+    revised = setup.fake.read()["sandboxes"][info.sandbox]["policy"]
+    assert "landlock" not in revised
+    assert (
+        revised["network_middlewares"]["sandbox-science-policy"]["config"]["policy"]["digest"]
+        == revision
+    )
 
 
 async def test_a_revision_with_other_providers_is_refused(setup: Setup) -> None:
@@ -808,8 +831,45 @@ async def test_policy_add_stores_revisions_for_environments(
     assert main(["policy", "add", "--settings", str(settings), str(broken)]) == 1
 
 
+MISSING = "status: 'Some requested entity was not found', self: \"sandbox not found\""
+"""How OpenShell 0.1.5's CLI (tonic 0.14) shows the gateway's NotFound for a name."""
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        MISSING,
+        MISSING + ", metadata: " + "x" * 600,
+        "status: 'Some requested entity was not found', self: \"sandbox not\n  │ found\"",
+    ],
+)
+async def test_only_the_gateways_not_found_for_the_name_means_absent(
+    setup: Setup, said: str
+) -> None:
+    setup.fake.update(fail_get=True, get_error=said)
+    assert await setup.environments.cli.sandbox("missing") is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "status: 'Some requested entity was not found', self: \"service endpoint not found\"",
+        "gateway 'babbage' not found",
+        "error: /home/user/.config/openshell/client.pem: file not found",
+        "sandbox research-1 not found",
+        "synthetic gateway unavailable",
+    ],
+)
+async def test_other_failures_never_count_as_absence(setup: Setup, said: str) -> None:
+    setup.fake.update(fail_get=True, get_error=said)
+    with pytest.raises(WorkerError, match="openshell sandbox get failed") as raised:
+        await setup.environments.cli.sandbox("missing")
+    assert not isinstance(raised.value, SandboxMissingError)
+
+
 async def test_sandbox_names_fit_openshells_limit_and_are_random() -> None:
-    # OpenShell v0.1.3 refuses names over 19 characters (lab 12), and uses "--" itself.
+    # OpenShell refuses names over 19 characters (v0.1.3 in lab 12, unchanged in v0.1.5),
+    # and uses "--" itself.
     # A name derived from the ID had room for 32 bits of a hash, so another ID could be
     # found to share it (review of D78); 64 random bits cannot be matched.
     names = {new_sandbox_name() for _ in range(1000)}

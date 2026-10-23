@@ -14,7 +14,8 @@ sessions = ["main", { id = "scratch", dedicated = true }]
 # skills = ["crypto"]
 
 [model]
-url = "https://litellm-api.npages.org/v1"
+# Replace this reserved example endpoint in your private config; do not commit your gateway URL.
+url = "https://gateway.example.invalid/v1"
 name = "sandbox-orchestrator"
 # Reviews and the workspace's math repairs, the job watcher's check-ins on long jobs, and
 # delegated runs; one alias may serve the main agent and these. A gateway that serves
@@ -87,7 +88,7 @@ static = "../web/workspace/dist"
 
 # The worker's [openshell] table (docs/WORKER.md), for the lab .agents/labs/lab_up.sh brings up.
 [openshell]
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
 python = "/opt/sandbox-science/bin/python"
 isolation_tier = 3
 package_cache = "http://host.openshell.internal:8090"

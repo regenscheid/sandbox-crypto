@@ -30,8 +30,8 @@ from sandbox_science.orchestrator.memory import (
 )
 from sandbox_science.orchestrator.projects import ProjectError
 
-from . import documents
 from .context import json_body
+from .requests import document_answer
 
 PATH: Final = "/api/v0/projects/{project}/memory"
 _ENTRY: Final = re.compile(r"mem-[1-9][0-9]{0,8}")
@@ -74,7 +74,7 @@ def _query(request: web.Request, allowed: frozenset[str] = frozenset()) -> dict[
 
 async def memory(request: web.Request) -> web.Response:
     _query(request)
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: MemoryAnswer(
             memory=ProjectMemory(store).memory(request.match_info["project"]), bound=GIVEN_CHARS
@@ -84,7 +84,7 @@ async def memory(request: web.Request) -> web.Response:
 
 async def proposals(request: web.Request) -> web.Response:
     _query(request)
-    return await documents.answer(
+    return await document_answer(
         request,
         lambda store: MemoryProposals(
             proposals=ProjectMemory(store).proposals(request.match_info["project"])
@@ -106,7 +106,7 @@ async def history(request: web.Request) -> web.Response:
         )
         return MemoryHistory(history=found).model_dump(mode="json")
 
-    return await documents.answer(request, read)
+    return await document_answer(request, read)
 
 
 async def change(request: web.Request) -> web.Response:
@@ -119,4 +119,4 @@ async def change(request: web.Request) -> web.Response:
         )
         return result.model_dump(mode="json")
 
-    return await documents.answer(request, changed, writer=True)
+    return await document_answer(request, changed, access="write")

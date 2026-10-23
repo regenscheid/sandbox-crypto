@@ -51,6 +51,7 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from . import (
     api,
+    approvals,
     artifacts,
     chat,
     context_inspector,
@@ -68,10 +69,20 @@ from . import (
     project_settings,
     provisioning,
     reviews,
+    session_opening,
     skills,
     uploads,
 )
-from .context import CONTEXT, WorkspaceContext, json_body, listener, own_hosts
+from .context import (
+    CONTEXT,
+    MAX_RUN_BYTES,
+    TIMEOUTS,
+    Timeouts,
+    WorkspaceContext,
+    json_body,
+    listener,
+    own_hosts,
+)
 from .errors import json_error
 from .mathrepair import (
     MathRepairService,
@@ -199,17 +210,18 @@ def create_app(
     *,
     login_token: str,
     check_host: bool = True,
-    max_run_bytes: int = api.MAX_RUN_BYTES,
+    max_run_bytes: int = MAX_RUN_BYTES,
     math_repair: MathRepairService | None = None,
     document_store: DocumentStore | None = None,
     job_worker: WorkerClient | None = None,
     job_state: JobState | None = None,
-    timeouts: api.Timeouts = api.TIMEOUTS,
+    timeouts: Timeouts = TIMEOUTS,
     preview: Preview | None = None,
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
     mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
     mcp_metadata: MetadataClient | None = None,
+    mcp_approvals: approvals.ApprovalClient | None = None,
     model_configuration: project_settings.ModelConfiguration | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
@@ -327,10 +339,6 @@ def create_app(
             stack.callback(writer.close)
 
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
-    app[api.STORE] = store
-    app[api.MAX_RUN] = max_run_bytes
-    app[documents.DOCUMENTS] = document_store
-    app[documents.WRITER] = writer
     if skills_metadata is not None:
         app[skills.METADATA] = skills_metadata
     app[mcp_services.CONFIGURATION] = mcp_services.Configuration(
@@ -345,6 +353,7 @@ def create_app(
         worker=job_worker,
         job_state=job_state,
         timeouts=timeouts,
+        max_run_bytes=max_run_bytes,
     )
     if preview is not None:
         app[artifacts.PREVIEW] = preview
@@ -370,8 +379,14 @@ def create_app(
         mcp_services,
         messages,
         uploads,
+        session_opening,
+        approvals,
     ):
         feature.add_routes(app)
+    if mcp_approvals is not None:
+        if mcp_project is None:
+            raise ValueError("MCP approvals need an explicit project scope")
+        approvals.configure(app, mcp_project, mcp_approvals)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)

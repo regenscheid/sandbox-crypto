@@ -681,7 +681,7 @@ async def test_closing_only_delivery_success_and_final_turn_pending(stores) -> N
         )
         assert sorted(transcript.delivered_ids("math")) == []
         assert not any(
-            "Mechanical math findings" in str(m.get("content")) for m in transcript.messages
+            "Mechanical math findings" in str(m.get("content")) for m in transcript.context.messages
         )
         assert MathNotices(reviews).pending("p", "s", "next", set())
         MathNotices(reviews).release("p", "s", "next")
@@ -941,7 +941,7 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
         "stopped": "error" if failure else "answered",
         "failure": failure,
         "final_text": None if failure else "Read warning.",
-        "messages": transcript.messages,
+        "messages": transcript.context.messages,
         "tools": [],
         "delivered": {"math": sorted(transcript.delivered_ids("math"))},
     }
@@ -1189,7 +1189,7 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
         "ended_at": now,
         "stopped": "error",
         "failure": transcript.failure,
-        "messages": transcript.messages,
+        "messages": transcript.context.messages,
         "tools": transcript.tool_records,
         "delivered": {source: sorted(ids) for source, ids in transcript.delivered.items()},
     }

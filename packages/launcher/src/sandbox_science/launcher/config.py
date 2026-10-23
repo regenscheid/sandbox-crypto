@@ -11,7 +11,8 @@ sessions = ["main"]
 skills = ["crypto"]
 
 [model]
-url = "https://litellm-api.npages.org/v1"
+# Example only: put the real endpoint in a private config outside the checkout.
+url = "https://gateway.example.invalid/v1"
 name = "sandbox-orchestrator"
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 
@@ -30,7 +31,7 @@ git = "https://github.com/OWNER/REPO"   # or archive = "pack.tar.gz"
 ref = "main"                            # optional: the default branch otherwise
 
 [openshell]
-cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
 python = "/opt/sandbox-science/bin/python"
 isolation_tier = 3
 
@@ -487,6 +488,11 @@ class McpProxyConfig(_Strict):
     within OpenShell's 19 characters."""
     listen: Listen = "127.0.0.1:18080"
     """Where the forward to the proxy listens, for the run service."""
+    approvals: bool = True
+    """Whether the user answers the project's escalated tool calls in the workspace's
+    chat: the proxy sandbox's fence admits the tools the policy escalates by name, and
+    the proxy holds each call until its permission request is approved (D76). Off, an
+    escalated tool is refused at the fence, whatever the answer."""
     provider_env_file: ConfigPath | None = None
     """The owner's file with the Cloudflare Access service token of the provider
     ``crypto-research-mcp``. With it, ``up`` registers the provider from the file, in a

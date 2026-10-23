@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import type { CommentRequestCreateComment, CommentRequestAnchorInput } from './api-types';
 import type { DocumentRevision } from './api';
 import type { CommentDraft } from './drafts';
 /** Python and the contract count Unicode code points, rather than UTF-16 units. */
@@ -8,10 +9,10 @@ export function commentAnchor(
   kind: string,
   math: string,
   quote: string,
-): Record<string, unknown> {
+): CommentRequestAnchorInput {
   const item = found.blocks.find((item) => item.id === block);
   if (!item) throw new Error('Choose a block in the anchored revision.');
-  const result: Record<string, unknown> = { revision: found.revision.number, block };
+  const result: CommentRequestAnchorInput = { revision: found.revision.number, block };
   if (kind === 'math') {
     if (!item.math.some((span) => span.id === math))
       throw new Error('Choose a formula in this block.');
@@ -59,7 +60,7 @@ export function anchorOnShown(draft: CommentDraft, found: DocumentRevision): Com
 export function newComment(
   anchored: DocumentRevision,
   draft: CommentDraft,
-): Record<string, unknown> {
+): Omit<CommentRequestCreateComment, 'operation_id'> {
   const { block, kind, math, quote, body, session } = draft;
   return {
     action: 'create',

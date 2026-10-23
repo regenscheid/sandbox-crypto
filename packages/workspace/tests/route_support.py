@@ -38,8 +38,9 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
-from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
+from sandbox_science.workspace.approvals import ApprovalClient
+from sandbox_science.workspace.context import TIMEOUTS, Timeouts
 from sandbox_science.workspace.mcp_metadata import MetadataClient
 from sandbox_science.workspace.mcp_services import ServiceConfig
 
@@ -494,6 +495,7 @@ async def workspace(
     mcp_project: str | None = None,
     mcp_inventory: tuple[ServiceConfig, ...] = (),
     mcp_metadata: MetadataClient | None = None,
+    mcp_approvals: ApprovalClient | None = None,
 ) -> TestClient[Any, Any]:
     """The workspace app under test, optionally connected to a worker and logged in."""
     worker = WorkerClient(worker_url, WORKER_TOKEN) if worker_url is not None else None
@@ -509,6 +511,7 @@ async def workspace(
             mcp_project=mcp_project,
             mcp_inventory=mcp_inventory,
             mcp_metadata=mcp_metadata,
+            mcp_approvals=mcp_approvals,
         )
     )
     if login:

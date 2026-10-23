@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass
 from typing import Any, Final, cast
 
@@ -212,10 +213,16 @@ def stub(row: Archived, call: Mapping[str, Any] | None) -> Json:
     return message
 
 
-def stubbed(rows: Sequence[Archived], kept: Sequence[str] = ()) -> tuple[str, ...]:
+def stubbed(
+    rows: Sequence[Archived],
+    kept: Sequence[str] = (),
+    *,
+    protected: AbstractSet[str] = frozenset(),
+) -> tuple[str, ...]:
     """The tool results among ``rows`` that a fold applied now stubs: those longer than
     ``STUB_CHARS``, older than the newest ``STUBS_KEPT``, but retrievals, and but those
-    already ``kept`` as stubs."""
+    already ``kept`` as stubs or protected by the recent raw-context floor. Originals
+    remain in the archive; these IDs only select pointers in the working view."""
     results = [row for row in rows if row.entry.kind == "tool_result"]
     older = results[:-STUBS_KEPT] if len(results) > STUBS_KEPT else []
     return tuple(
@@ -224,4 +231,5 @@ def stubbed(rows: Sequence[Archived], kept: Sequence[str] = ()) -> tuple[str, ..
         if len(row.entry.content or "") > STUB_CHARS
         and row.entry.source not in ("history_search", "history_read")
         and row.message_id not in kept
+        and row.message_id not in protected
     )

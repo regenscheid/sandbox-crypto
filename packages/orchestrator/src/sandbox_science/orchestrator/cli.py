@@ -64,6 +64,8 @@ from .cli_skills import add_parser as add_skills_parser
 from .cli_skills import embedding_alias, skills
 from .connectors import ProxyClient, check_proxy
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
+from .context.history import CEILING
+from .context.history.geometry import Shares
 from .control import ControlError
 from .documents import DocumentError, DocumentStore, store_path
 from .figurecheck import FigureChecker
@@ -80,8 +82,6 @@ from .harness import (
     closing,
     save,
 )
-from .history import CEILING
-from .history.geometry import Shares
 from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, MAX_TURNS, TURNS_CEILING, Interruption
 from .mathcheck import MathChecker

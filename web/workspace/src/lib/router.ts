@@ -54,6 +54,9 @@ export type Route =
   | { view: 'memory'; project: string }
   | { view: 'skills'; project: string }
   | { view: 'mcp'; project: string }
+  | { view: 'documents'; project: string }
+  | { view: 'artifacts'; project: string }
+  | { view: 'settings'; project: string }
   | { view: 'message'; project: string; message: string }
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
@@ -92,6 +95,9 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts.length === 3 && parts[2] === 'skills') return { view: 'skills', project };
   if (parts.length === 3 && parts[2] === 'mcp') return { view: 'mcp', project };
+  if (parts.length === 3 && parts[2] === 'documents') return { view: 'documents', project };
+  if (parts.length === 3 && parts[2] === 'artifacts') return { view: 'artifacts', project };
+  if (parts.length === 3 && parts[2] === 'settings') return { view: 'settings', project };
   if (parts.length === 4 && parts[2] === 'messages') {
     const message = parts[3]!;
     return MESSAGE_ID.test(message) ? { view: 'message', project, message } : { view: 'missing' };
@@ -179,6 +185,20 @@ export function projectHref(project: string): string {
 
 export function mcpHref(project: string): string {
   return `${projectHref(project)}/mcp`;
+}
+
+/** The project's documents, beside the one chosen. */
+export function documentsHref(project: string): string {
+  return `${projectHref(project)}/documents`;
+}
+
+/** Every file the project's runs recorded, results first. */
+export function artifactsHref(project: string): string {
+  return `${projectHref(project)}/artifacts`;
+}
+
+export function settingsHref(project: string): string {
+  return `${projectHref(project)}/settings`;
 }
 
 export function sessionHref(project: string, session: string): string {

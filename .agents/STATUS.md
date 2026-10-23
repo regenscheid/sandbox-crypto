@@ -1,8 +1,38 @@
 # Status
 
-Updated 2026-10-19. Development is local `dev` in `/home/andy/.cache/pt/dev-local`; the completion implementation is integrated through signed `5a238f10`. The primary checkout is separate. Signed local integration, disposable acceptance and deployment into personal services are distinct.
+Updated 2026-10-21. The context-focused refactor is isolated on
+`agent-context-refactor`, based on `origin/dev` at `391cb7a7`, with its later
+recovery update `1ad689e3` merged into this branch.
+The primary checkout and deployed services are unchanged. Context ownership,
+attempt finalization and workspace request execution are implemented and locally
+reviewed; no remote merge or rollout is implied.
 
 ## Phase and focus
+
+The [context ownership refactor](../docs/specs/agent-context-refactor.md) consolidates
+preparation, active state, histories, folding, search and diagnostics under
+`orchestrator/context/`. Root and delegated agents share it. The follow-up removes
+Transcript's forwarding properties and gives folding a context-only interface with
+an ordered lifecycle adapter. New retention protects full recent call/result units;
+narrative prompts prioritize takeaways and retrieval anchors. Overview validation
+pages original text and stops once candidate evidence is proven; enrichment budgets
+actual narrative room before admission. Archive and transport formats are unchanged.
+The follow-up passed 743 integration tests and 42 final evidence/enrichment checks;
+static and repository checks pass. Independent review corrected
+research-state hold detection, numeric arrays and signed values at page boundaries.
+Prior first-stage checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
+unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
+
+Three follow-ups are integrated and independently reviewed: typed capability assembly,
+pure review snapshot planning, and generated document/comment/job contracts with
+focused clients. Combined checks: 804 pass, three ledger failures match the prior
+baseline exactly; 92 final checks, 862 workspace and 2,289 frontend tests pass.
+See the [report](docs/agent-reports/parallel-refactor-2026-10-21.md). The remaining
+executor, ledger and provisioning ownership refactors are integrated and independently
+reviewed. Worker slow tests: 826 passed, 26 skipped; web: 2,289 passed. Fast tier:
+13,782 passed; baseline failures remain, as detailed in the
+[ownership report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
+No merge or rollout is implied.
 
 The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
 
@@ -11,11 +41,13 @@ The owner authorized **$150 aggregate new model-testing spend** for the six-item
 - **Context and diagnostics:** live and saved attempts have a bounded recent timeline, provider cache counters and a separate auxiliary-call snapshot. Visible dispatch composition is captured with its admitted intent, immutable prompt/source provenance and bounded UTF-8 text reads. Oversized diagnostic omissions do not prevent model execution. Original-history indexing includes retained retrieval echoes, exact substring verification and explicit incomplete coverage; same-work continuations remain separate from children/siblings. Incremental blob reads bound large-body work. Pending-index metadata scans still grow with scoped history. Fold retries/fallbacks retain bounded diagnostic receipts without treating estimates as measured context occupancy.
 - **Workspace:** Skills, safe MCP structural schemas and applicable policy, explicit dated availability checks, Memory accepted/proposal/detail/history views, Overview and session Plan/Agents/Activity refinements are integrated. Page viewing does not execute MCP tools or probe upstream services. Drafts retain revisions and warn when browser storage cannot preserve them across reloads. Authenticated synthetic browser checks passed MCP available → unavailable → restored with **zero tool calls**, Memory draft navigation/save, captured-context chunk paging and original-history partial → complete indexing across continuations. These are browser/runtime checks, not real-model scientific acceptance.
 - **Agent profiles:** Project settings independently select trusted deployment aliases and reasoning effort for the orchestrator, delegated agents and consistency reviewer. A new tree freezes these choices; its children and ordinary Resume retain them. The reviewer defaults to Luna/medium in the qualified lab, while research roles use Sol/max. The browser cannot supply endpoints, adapters or credentials.
+- **Portability:** Native Linux AMD64 and ARM64 runners build, publish and test immutable image digests for `minimal`, `orchestrator`, `mcp-proxy` and `crypto-base`, then merge each profile into one two-platform GHCR tag. `crypto-base` is private. The Mac launcher has native CI coverage, but a real Mac OpenShell MicroVM lifecycle and Resume run remains open. Standard-format SBOMs remain a pre-release item.
 
 ## Verification boundaries
 
 - Frozen web suite: **2,239 passed**; Svelte/TypeScript, Prettier, production and math builds pass.
 - Frozen Python suite at `5a238f10`: **14,524 passed, 50 skipped** in 695.18 seconds with two known malformed-fixture serializer warnings. Ruff, format and strict Pyright are clean. The isolated image is `sandbox-science/orchestrator:5a238f10`, digest `sha256:e748cdd5cc5aacea44a6de6cc96e7bf5b19c942881a9cad3a04c689a26054996`; its container/Landlock checks passed 17 cases.
+- Native image [publication run 39348347538](https://github.com/regenscheid/sandbox-crypto/actions/runs/39348347538) passed eight architecture build/pull/runtime-check jobs and four merges; independent registry inspection confirmed exactly `linux/amd64` and `linux/arm64` on every shared tag. All four GHCR packages are currently private.
 - The live Sol/max root and child recovered through one orchestrator Resume, ran concurrently, exchanged updated instructions and a final handback, and finished `completed/answered` without a replacement child or repeated reference calculation. The parent consumed the child's full history, updated the plan, ledger and eleven-revision living document, and settled two Luna/medium evidence-strength findings as `confirmed fixed`.
 - Real folds applied across child and resumed-root attempts. Two oversize records needed exactly one bounded repair call; the other applied narratives passed on their first attempt. Saved diagnostics retain the reason and sizes. Final numeric GF(16) and GF(32) grades passed every oracle check.
 - Campaign model spend was **$24.56566378 observed**, $0 reserved and no unpriced usage, within the $150 authorization. Five historical reviewer intents remain visibly unsettled rather than treated as zero. The terminal reviewer found no inconsistency in the checked GF(32) claims but remained correctly `inconclusive` because it did not independently reproduce them.
@@ -23,4 +55,4 @@ The owner authorized **$150 aggregate new model-testing spend** for the six-item
 
 Earlier [OpenShell recovery/endurance acceptance](docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md) completed a separate 3,600-second Sage job with 249,063,436 verified batches and full owned teardown. That historical synthetic-model lab does not substitute for the current campaign's final receipts or scientific quality. Four local subprocess-death tests also cover final-record commit, mailbox ACK, work completion and child ledger/settlement handback.
 
-No current implementation is claimed pushed or deployed into the personal or preserved SNOVA services. SNOVA remains preserved; its owner-stopped monitor must not be recreated implicitly. The campaign did not perform a physical host reboot, qualify arbitrary interpreter-state restoration or turn the bounded consistency review into an independent scientific reproduction. Broader scientific continuity, cache-layout comparisons and other open work remain in [BACKLOG.md](BACKLOG.md).
+The portability code is pushed to `dev` and its images are published in GHCR; neither was deployed into the personal or preserved SNOVA services. SNOVA remains preserved; its owner-stopped monitor must not be recreated implicitly. The campaign did not perform a physical host reboot, qualify arbitrary interpreter-state restoration or turn the bounded consistency review into an independent scientific reproduction. Broader scientific continuity, cache-layout comparisons and other open work remain in [BACKLOG.md](BACKLOG.md).

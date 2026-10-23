@@ -1,4 +1,4 @@
-# OpenShell v0.1.3 provider profile for a Cloudflare Access service token, such as the
+# OpenShell v0.1.5 provider profile for a Cloudflare Access service token, such as the
 # one crypto-research-mcp's Access application admits (docs/MCP-CONNECTORS.md).
 #
 # It has no endpoints: the project policy's MCP server entry names the host, and the

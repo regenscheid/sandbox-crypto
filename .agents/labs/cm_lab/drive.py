@@ -57,8 +57,8 @@ from sandbox_science.contracts import (
 from sandbox_science.launcher import parts
 from sandbox_science.launcher.config import LauncherConfig, load_config
 from sandbox_science.launcher.state import Layout
-from sandbox_science.orchestrator.history.geometry import ceiling as capped
-from sandbox_science.orchestrator.history.geometry import geometry
+from sandbox_science.orchestrator.context.history.geometry import ceiling as capped
+from sandbox_science.orchestrator.context.history.geometry import geometry
 from sandbox_science.orchestrator.messages import MAX_TOKENS
 from sandbox_science.orchestrator.model import ModelGateway
 from sandbox_science.orchestrator.projects import ProjectStore, ensure_environment, environment_id

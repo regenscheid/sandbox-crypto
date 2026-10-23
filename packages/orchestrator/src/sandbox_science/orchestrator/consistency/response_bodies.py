@@ -37,7 +37,7 @@ from sandbox_science.orchestrator.documents.project_macros import (
     response_view,
 )
 
-from .store import RECEIPTS, agent_text, digest, dump, identifier
+from .values import RECEIPTS, agent_text, digest, dump, identifier
 
 if TYPE_CHECKING:
     from .store import ReviewStore

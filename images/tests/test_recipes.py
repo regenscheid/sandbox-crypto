@@ -26,6 +26,8 @@ import yaml
 
 from sandbox_science.policy import PoolCeiling, load_policy
 from sandbox_science.policy.openshell import (
+    BASELINE_READ_ONLY,
+    BASELINE_READ_WRITE,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     FilesystemPolicy,
@@ -43,6 +45,14 @@ SERVICE_PROFILES = ("orchestrator", "mcp-proxy")
 PROFILES = (*RESEARCH_PROFILES, *SERVICE_PROFILES)
 PLATFORMS = ["linux-64", "linux-aarch64"]
 PREFIX = "/opt/sandbox-science"
+SERVICE_FILESYSTEM = FilesystemPolicy(
+    include_workdir=True,
+    read_only=(*BASELINE_READ_ONLY, PREFIX),
+    read_write=BASELINE_READ_WRITE,
+)
+"""A service sandbox's compiled filesystem section: OpenShell's baseline, which the compiler
+lists since its supervisor adds it only where the paths exist on its own host (OpenShell
+v0.1.5), and the prefix to read. No research devices."""
 KERNEL_PACKAGES = {"ipykernel", "jupyter_client", "pyzmq", "zeromq"}
 
 
@@ -136,6 +146,17 @@ def test_every_download_in_the_containerfile_is_pinned() -> None:
         assert re.fullmatch(r"[0-9a-f]{64}", args[name])
     for name in ("G6K_COMMIT", "LATTICE_ESTIMATOR_COMMIT"):
         assert re.fullmatch(r"[0-9a-f]{40}", args[name])
+
+
+def test_arm64_apt_uses_the_pinned_archive_snapshot() -> None:
+    recipe = (IMAGES / "Containerfile").read_text()
+    assert 'if [ "${TARGETARCH}" = arm64 ]; then' in recipe
+    assert (
+        "s|http://ports.ubuntu.com/ubuntu-ports|"
+        "https://snapshot.ubuntu.com/ubuntu/${UBUNTU_SNAPSHOT}|g"
+    ) in recipe
+    assert "Snapshot: no" in recipe
+    assert 'APT::Snapshot="${UBUNTU_SNAPSHOT}"' in recipe
 
 
 def test_python_requirements_are_hashed() -> None:
@@ -259,7 +280,10 @@ def test_the_service_builds_stop_without_the_wheels() -> None:
     for profile in SERVICE_PROFILES:
         assert list(stages).index("wheels") < list(stages).index(profile)
         assert "--mount=type=bind,from=wheels," in stages[profile]
-    assert '--build-context "wheels=' in (IMAGES / "build.sh").read_text()
+    build = (IMAGES / "build.sh").read_text()
+    shared = (IMAGES / "common/build_recipe.sh").read_text()
+    assert "common/build_recipe.sh" in build
+    assert '--build-context "wheels=' in shared
 
 
 # The OpenShell view.
@@ -275,13 +299,11 @@ def test_the_orchestrators_filesystem_section_reads_the_prefix_only() -> None:
     section = yaml.safe_load((IMAGES / "orchestrator" / "filesystem.yml").read_text())
     filesystem = SandboxFilesystem.model_validate(section)
     assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
-    # The example targets file lists it, and the compiler adds no devices to it.
+    # The example targets file lists it, and the compiler adds the baseline but no devices.
     targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
     assert targets.orchestrator is not None
     assert targets.orchestrator.filesystem == filesystem
-    assert compile_orchestrator(targets.orchestrator).filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=(PREFIX,)
-    )
+    assert compile_orchestrator(targets.orchestrator).filesystem_policy == SERVICE_FILESYSTEM
 
 
 def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
@@ -289,7 +311,8 @@ def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
     filesystem = SandboxFilesystem.model_validate(section)
     assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
     # The example targets file lists it, with the interpreter that runs the proxy's entry point
-    # as the binary, since OpenShell sees that (lab 13); the compiler adds no devices.
+    # as the binary, since OpenShell sees that (lab 13); the compiler adds the baseline but
+    # no devices.
     targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
     assert targets.mcp_proxy.filesystem == filesystem
     assert targets.mcp_proxy.binaries == (checks.PROXY_BINARIES,)
@@ -298,9 +321,7 @@ def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
         targets.mcp_proxy,
         ceiling=PoolCeiling.unrestricted(),
     )
-    assert compiled.policy.filesystem_policy == FilesystemPolicy(
-        include_workdir=True, read_only=(PREFIX,)
-    )
+    assert compiled.policy.filesystem_policy == SERVICE_FILESYSTEM
 
 
 def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
@@ -496,6 +517,8 @@ def test_binding_inventory_generator_is_shared_by_build_and_executor() -> None:
     assert "from=binding-inventory,source=binding_inventory.py" in recipe
     assert "python -I -B /tmp/binding_inventory.py" in recipe
     build = (IMAGES / "build.sh").read_text()
+    shared = (IMAGES / "common/build_recipe.sh").read_text()
     revision = (IMAGES / "revision.sh").read_text()
-    assert "binding-inventory=$here/../packages/worker/src/sandbox_science/worker" in build
+    assert "common/build_recipe.sh" in build
+    assert "binding-inventory=$image_here/../packages/worker/src/sandbox_science/worker" in shared
     assert "../packages/worker/src/sandbox_science/worker/binding_inventory.py" in revision

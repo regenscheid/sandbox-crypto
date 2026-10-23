@@ -3,10 +3,12 @@
   import { untrack } from 'svelte';
   import { browserState } from '../lib/browserState';
   import { api } from '../lib/api';
-  import { formatCost, formatTime } from '../lib/format';
-  import { costByRole, costSource } from '../lib/modelCost';
+  import { formatTime } from '../lib/format';
   import {
+    artifactsHref,
     documentHref,
+    documentsHref,
+    settingsHref,
     ledgerHref,
     mcpHref,
     memoryHref,
@@ -15,11 +17,6 @@
   } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectReviewInbox from './ProjectReviewInbox.svelte';
-  import ProjectFiles from './ProjectFiles.svelte';
-  import ProjectModels from './ProjectModels.svelte';
-  import ProjectMacros from './ProjectMacros.svelte';
-  import EnvironmentPanel from './EnvironmentPanel.svelte';
-  import ArtifactList from './ArtifactList.svelte';
 
   let { projectId }: { projectId: string } = $props();
   const scope = untrack(() => `overview:${projectId}`);
@@ -42,10 +39,11 @@
 {:then project}
   <p class="muted">Research overview · updated {formatTime(project.updated_at)}</p>
   <nav class="overview-shortcuts" aria-label="Project shortcuts">
-    <a href={ledgerHref(projectId)}>Ledger</a><a href={memoryHref(projectId)}
+    <a href={documentsHref(projectId)}>Documents</a><a href={artifactsHref(projectId)}>Artifacts</a
+    ><a href={ledgerHref(projectId)}>Ledger</a><a href={memoryHref(projectId)}
       >Memory and proposal inbox</a
-    ><a href={skillsHref(projectId)}>Skills</a><a href={mcpHref(projectId)}>MCP services</a><a
-      href="#project-settings">Project settings</a
+    ><a href={skillsHref(projectId)}>Skills</a><a href={mcpHref(projectId)}>Connectors</a><a
+      href={settingsHref(projectId)}>Settings</a
     >
   </nav>
   {#await memory then found}<p>
@@ -95,6 +93,10 @@
 
   <ProjectReviewInbox {projectId} sessions={project.sessions} />
   <h2>Recent documents</h2>
+  <p>
+    <a href={documentsHref(projectId)}>All documents</a> ·
+    <a href={artifactsHref(projectId)}>All artifacts</a>
+  </p>
   {#await documents}
     <p class="muted">Loading…</p>
   {:then listed}
@@ -116,7 +118,9 @@
           </tr>
         </thead>
         <tbody>
-          {#each [...listed].sort( (a, b) => b.created_at.localeCompare(a.created_at) ) as found (found.document_id)}
+          {#each [...listed]
+            .sort((a, b) => b.created_at.localeCompare(a.created_at))
+            .slice(0, 5) as found (found.document_id)}
             <tr>
               <td><a href={documentHref(projectId, found.document_id)}>{found.name}</a></td>
               <td>{found.title}</td>
@@ -135,69 +139,6 @@
   {:catch error}
     <ErrorMessage {error} />
   {/await}
-
-  <ArtifactList {projectId} />
-
-  <details id="project-settings">
-    <summary>Project settings · policy, environment, math and file capture</summary>
-    <dl class="facts">
-      <dt>Base profile</dt>
-      <dd>{project.profile}</dd>
-      <dt>Policy revision</dt>
-      <dd><code>{project.policy}</code></dd>
-      <dt>Default environment</dt>
-      <dd><code>{project.default_environment_id}</code></dd>
-      <dt>Created</dt>
-      <dd>{formatTime(project.created_at)}</dd>
-      <dt>Updated</dt>
-      <dd>{formatTime(project.updated_at)}</dd>
-      {#if project.model_cost.total !== null}
-        <dt>Model cost</dt>
-        <dd>
-          {formatCost(project.model_cost.last_day ?? 0)} in the last 24 hours, {formatCost(
-            project.model_cost.total,
-          )} in all, {costSource(project.model_cost)}
-          {#if costByRole(project.model_cost).length}
-            <ul>
-              {#each costByRole(project.model_cost) as line (line)}
-                <li>{line}</li>
-              {/each}
-            </ul>
-          {/if}
-        </dd>
-      {/if}
-    </dl>
-    <ProjectMacros {projectId} />
-    <p>
-      <a href={ledgerHref(projectId)}>The project's ledger</a>: its issues, claims and results, as a
-      board.
-    </p>
-    <p>
-      <a href={memoryHref(projectId)}>The project memory</a>: notes on how to work here, which every
-      agent receives.
-      {#await memory then found}
-        {found.memory.entries.length} entries{#if found.memory.waiting > 0};
-          <strong
-            >{found.memory.waiting}
-            {found.memory.waiting === 1 ? 'proposal waits' : 'proposals wait'} for you</strong
-          >{/if}.
-      {:catch error}
-        <ErrorMessage {error} />
-      {/await}
-    </p>
-    <p>
-      <a href={skillsHref(projectId)}>The project's skills</a>: the packs it pins, their import
-      reports, and the skills a run is given.
-    </p>
-    <p>
-      <a href={mcpHref(projectId)}>MCP services</a>: configured service purposes and dated run
-      observations.
-    </p>
-    <ProjectFiles {projectId} />
-    <ProjectModels {projectId} />
-
-    <EnvironmentPanel {projectId} {project} />
-  </details>
 {:catch error}
   <ErrorMessage {error} />
 {/await}

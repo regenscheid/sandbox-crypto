@@ -22,7 +22,7 @@ from pydantic import Field, JsonValue, TypeAdapter
 
 from sandbox_science.contracts.model import Contract, Counter
 from sandbox_science.orchestrator.aio import owned
-from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
+from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
 
 _log = logging.getLogger(__name__)
 

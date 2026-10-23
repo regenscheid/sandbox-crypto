@@ -5,6 +5,8 @@ from typing import cast
 
 import pytest
 
+from sandbox_science.orchestrator.context.history import Archive
+from sandbox_science.orchestrator.context.history.operations import ToolJournal
 from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
 from sandbox_science.orchestrator.continuity.reconcile import Reconciler
 from sandbox_science.orchestrator.continuity.recovery_tools import resource_decision_receipt
@@ -13,8 +15,6 @@ from sandbox_science.orchestrator.continuity.resources import (
     ResourceDecisionRequest,
 )
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history import Archive
-from sandbox_science.orchestrator.history.operations import ToolJournal
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.worker_client import WorkerClient
 

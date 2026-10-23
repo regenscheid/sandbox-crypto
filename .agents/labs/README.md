@@ -85,7 +85,7 @@ Some scripts are historical: they exercise code since removed, and run only at t
 
 ## Prerequisites
 
-- OpenShell 0.1.3 unpacked at `~/.local/opt/openshell-0.1.3/bin` (gateway, driver and CLI).
+- OpenShell 0.1.5 unpacked at `~/.local/opt/openshell-0.1.5/bin` (gateway, driver and CLI).
 - The images in the local Docker store, which OpenShell's VM driver reads directly: `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3`, `sandbox-science/mcp-proxy:d27e41a` and `sandbox-science/orchestrator:174e72e` (built from `images/`; see [images](../../docs/IMAGES.md)). Only create, tag or remove `sandbox-science/*` images: the Docker store is shared with the user's own projects, and is never pruned.
 - `uv sync --locked` in the repository, whose `.venv` the scripts run (`R`, by default the repository these scripts are in).
 

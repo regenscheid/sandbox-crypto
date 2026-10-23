@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
-from sandbox_science.contracts import new_id
+from sandbox_science.contracts import ErrorKind, new_id
 from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.environments import EnvironmentState
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.chat import session_lease
@@ -20,10 +21,11 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.control.errors import CONFLICT, NOT_FOUND
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.environment_claim import environment_claim
-from sandbox_science.orchestrator.harness import Admitted, RunRequest, save, tier_in_effect
+from sandbox_science.orchestrator.harness import Admitted, RunRequest, tier_in_effect
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import run_id_of, run_name
 from sandbox_science.orchestrator.run_inputs import RunInputs
+from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .blueprints import Blueprints
 from .child_settlement import ChildSettlement
@@ -35,11 +37,26 @@ from .reconcile import Reconciler
 from .records import Ownership, Work, WorkRecords
 
 if TYPE_CHECKING:
+    from sandbox_science.contracts import ExecutionContext
     from sandbox_science.orchestrator.harness import Harness, RunSink
 
 
+POLICY_CHANGED = (
+    "the project's policy changed since this work began; Resume to continue under the "
+    "current policy"
+)
+"""Why an automatic Resume does not run work begun under an earlier policy (RC-2)."""
+
+
 class Recovery:
-    """One explicit Resume holds one session lease until all selected branches settle."""
+    """One explicit Resume holds one session lease until all selected branches settle.
+
+    Work resumes under the project's current policy (RC-13). When that policy is not the
+    one the work began under, only the user's own Resume takes it, and says so; an
+    automatic Resume is refused with the reason, so recovery never widens authority
+    unasked (RC-2). The environment is brought to the policy before it is claimed, and
+    the claim follows a later change of the project's policy, as a run's does.
+    """
 
     def __init__(self, harness: Harness, project: str, session: str, request: str) -> None:
         if harness.stores is None:
@@ -59,6 +76,8 @@ class Recovery:
         self.wake = asyncio.Event()
         self.stop: asyncio.Event | None = None
         self.sink: RunSink | None = None
+        self.policy: str | None = None
+        """The policy revision this Resume took in place of the work's, when it changed."""
 
     async def run(self, sink: RunSink, stop: asyncio.Event) -> bool:
         """No branch/model scheduling here: resume_next/resume_branch drive this holder."""
@@ -80,6 +99,28 @@ class Recovery:
                 self.records.reject_queued, self.project, self.session, self.request, str(exc)
             )
             return True
+        began = blueprint.context.policy_revision
+        project = None if began is None else await threaded(self.stores.projects.get, self.project)
+        if project is not None and project.policy != began:
+            source = await threaded(
+                self.records.resume_source, self.project, self.session, self.request
+            )
+            if source == "automatic":
+                await threaded(
+                    self.records.reject_queued,
+                    self.project,
+                    self.session,
+                    self.request,
+                    POLICY_CHANGED,
+                )
+                return True
+            self.policy = project.policy
+            sink.note(
+                f"resuming under the project's current policy {project.policy}; "
+                f"this work began under {began}"
+            )
+        if project is not None:
+            await self._revise_environment(blueprint.context.environment_id, project.policy)
         error: str | None = None
         async with (
             session_lease(self.stores.runs, blueprint.context, name, clock=self.harness.clock),
@@ -102,7 +143,7 @@ class Recovery:
                         project_id=self.project, session_id=self.session, epoch=self.epoch
                     )
                 )
-                owned_context = blueprint.context.model_copy(
+                owned_context = self._context(blueprint.context).model_copy(
                     update={"authority": ExecutionAuthority(work=root, run=name, epoch=self.epoch)}
                 )
                 # Claims deliberately cannot wake a suspended VM. Prepare the existing
@@ -110,7 +151,15 @@ class Recovery:
                 await self.harness.client.capabilities(owned_context.environment_id)
                 await resources.enter_async_context(
                     environment_claim(
-                        self.harness.client, owned_context, name, clock=self.harness.clock
+                        self.harness.client,
+                        owned_context,
+                        name,
+                        clock=self.harness.clock,
+                        follow=self.harness.project_policy(self.project),
+                        followed=lambda revision: sink.note(
+                            f"the project's policy changed to {revision}; "
+                            "the resumed work continues under it"
+                        ),
                     )
                 )
                 with self.plans.authority(self.epoch, name):
@@ -133,7 +182,11 @@ class Recovery:
                     if stop.is_set():
                         await threaded(self.records.stop, self.project, self.session, root)
                     else:
-                        await threaded(self.records.interrupt, self.project, self.session, root)
+                        # The cause, unless the process was only cancelled, for the user.
+                        detail = None if isinstance(exc, asyncio.CancelledError) else error
+                        await threaded(
+                            self.records.interrupt, self.project, self.session, root, detail=detail
+                        )
                 raise
             finally:
                 self.started = False
@@ -151,6 +204,26 @@ class Recovery:
                         error=error,
                     )
         return error is not None
+
+    async def _revise_environment(self, environment_id: str, policy: str) -> None:
+        """Bring the work's environment to the project's policy before anything is claimed,
+        as admission does, so an environment left on another revision cannot refuse the
+        claim. Unlike admission, never create one: a missing environment fails the claim
+        as before, and its loss is reported."""
+        try:
+            info = await self.harness.client.environment(environment_id)
+        except WorkerAPIError as error:
+            if error.kind in (ErrorKind.UNSUPPORTED, ErrorKind.NOT_FOUND):
+                return
+            raise
+        if info.state is not EnvironmentState.DELETED and info.policy != policy:
+            await self.harness.client.revise_environment(environment_id, policy)
+
+    def _context(self, context: ExecutionContext) -> ExecutionContext:
+        """The work's context, under the policy this Resume took if it took another."""
+        if self.policy is None:
+            return context
+        return context.model_copy(update={"policy_revision": self.policy})
 
     async def next(self) -> tuple[str, ...]:
         if not self.started:
@@ -192,23 +265,7 @@ class Recovery:
                 stop=self.stop,
                 wait_children=lambda: self.wait_children(work_id),
             )
-            settlement = (
-                await self.harness.checkpoint_child(finished)
-                if admitted.request.delegation is not None
-                else None
-            )
-            await save(
-                finished.fields(),
-                finished.status,
-                finished.hooks,
-                projects=self.stores.projects,
-                error=self.sink.error,
-            )
-            if settlement is not None:
-                await settlement.settle(
-                    self.project, self.session, run_name(finished.started_at, finished.run_id)
-                )
-                await self.harness.release_child(finished)
+            await self.harness.finalize(finished, error=self.sink.error)
             return True
         except asyncio.CancelledError:
             await threaded(self.records.block, self.project, self.session, work_id, "interrupted")
@@ -337,7 +394,7 @@ class Recovery:
             session is None
             or session.closed_at is not None
             or session.environment_id != blueprint.context.environment_id
-            or project.policy != blueprint.context.policy_revision
+            or project.policy != self._context(blueprint.context).policy_revision
         ):
             raise ControlError(
                 CONFLICT, "recovery configuration changed: session/environment/policy"
@@ -423,11 +480,16 @@ class Recovery:
         )
         if minimum is not None and (tier is None or tier < minimum):
             raise ControlError(CONFLICT, "worker no longer meets the required isolation tier")
-        authorized_context = blueprint.context.model_copy(
+        authorized_context = self._context(blueprint.context).model_copy(
             update={"authority": ExecutionAuthority(work=work.work, run=plan.run, epoch=self.epoch)}
         )
+        source = await threaded(
+            self.records.resume_source, self.project, self.session, self.request
+        )
+        # The user's own Resume goes on past a kernel that cannot be rebuilt, reported lost
+        # (RC-11); an automatic one stops there.
         await KernelJournal(control, owner, work.kernel).reconcile(
-            self.harness.client, authorized_context
+            self.harness.client, authorized_context, accept_loss=source == "operator"
         )
         parent = None if work.parent is None else (await threaded(self.plans.get, work.parent)).run
         async with self._delegation_lock:
@@ -442,9 +504,7 @@ class Recovery:
             stop_by=None,
             work=work.work,
             predecessor=plan.predecessor,
-            resume_source=await threaded(
-                self.records.resume_source, self.project, self.session, self.request
-            ),
+            resume_source=source,
             epoch=self.epoch,
             parent=parent,
             delegation=delegation,
@@ -457,7 +517,7 @@ class Recovery:
         return Admitted(
             request,
             run_id,
-            blueprint.context,
+            self._context(blueprint.context),
             tuple(capabilities.languages),
             tuple(capabilities.features),
             True,
