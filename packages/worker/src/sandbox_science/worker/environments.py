@@ -110,6 +110,12 @@ SANDBOX_PREFIX: Final = "ss-"
 MAX_SANDBOX_NAME: Final = 19
 """OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_FRAME: Final = re.compile(r"[\s\u2500-\u257f\u00d7]+")
+"""Whitespace and the box drawing miette frames and wraps a report with."""
+_MISSING: Final = re.compile(r'(?:message|self): "sandbox not found"')
+"""The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
+the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
+answers, such as a missing service endpoint, gateway or file, do not match."""
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLICY_TIMEOUT: Final = 120
 _DEAD_PHASES: Final = frozenset({"Error", "Deleting", "Completed"})
@@ -157,6 +163,11 @@ def new_sandbox_name() -> str:
     return f"{SANDBOX_PREFIX}{secrets.token_hex((MAX_SANDBOX_NAME - len(SANDBOX_PREFIX)) // 2)}"
 
 
+class SandboxMissingError(WorkerError):
+    """The gateway answered that no sandbox has the name: proof of absence, unlike any
+    other failure, which says nothing about whether the sandbox exists."""
+
+
 class OpenShellCli:
     """Runs ``openshell`` commands for the worker, with the backend's CLI environment."""
 
@@ -197,7 +208,10 @@ class OpenShellCli:
             raise
         if process.returncode != 0:
             text = _ANSI.sub("", (errors or output).decode("utf-8", "replace")).strip()
-            raise WorkerError(
+            # Classify the whole report: the status leads it, and the end is what is kept.
+            missing = _MISSING.search(_FRAME.sub(" ", text)) is not None
+            error = SandboxMissingError if missing else WorkerError
+            raise error(
                 ErrorKind.UNAVAILABLE, f"openshell {' '.join(args[:2])} failed: {text[-500:]}"
             )
         return output.decode("utf-8", "replace")
@@ -215,10 +229,8 @@ class OpenShellCli:
         """The sandbox's description, or None when the gateway has no sandbox by that name."""
         try:
             document = await self.json("sandbox", "get", name)
-        except WorkerError as error:
-            if "not found" in error.message:
-                return None
-            raise
+        except SandboxMissingError:
+            return None
         if not isinstance(document, dict):
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox get returned no object")
         return cast(dict[str, object], document)
