@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import threading
 import tomllib
@@ -308,6 +309,30 @@ def test_writers_of_one_file_never_share_a_temporary_file(tmp_path: Path) -> Non
     assert len(lines) == 1  # one writer's whole text, never a mix
     assert mode(target) == 0o600
     assert [path.name for path in tmp_path.iterdir()] == ["shared.json"]
+
+
+def test_a_private_write_is_synced_before_its_rename_and_its_directory_after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "sandbox.json"
+    synced: list[tuple[str, str | None]] = []
+    real = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        where = os.readlink(f"/proc/self/fd/{descriptor}")
+        content = target.read_text() if target.exists() else None
+        synced.append((where, content))
+        real(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    write_private(target, '{"name": "ss-orch-0123456789", "id": null}\n')
+    assert len(synced) == 2
+    (file, before), (directory, after) = synced
+    assert Path(file).parent == tmp_path
+    assert Path(file).name.startswith(".sandbox.json.")  # the temporary file, before rename
+    assert before is None
+    assert directory == str(tmp_path)  # then the directory, once the rename happened
+    assert after == '{"name": "ss-orch-0123456789", "id": null}\n'
 
 
 def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(

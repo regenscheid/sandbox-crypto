@@ -139,14 +139,23 @@ def write_private(path: Path, text: str) -> None:
     """Replace ``path`` with ``text`` in one step, as a file of mode 600.
 
     The text goes to a temporary file of a name no other writer uses, which then takes
-    ``path``'s place, so two processes writing the same file never share one."""
+    ``path``'s place, so two processes writing the same file never share one. The file is
+    synced before the rename and the directory after it, so a record written before an
+    effect (an ownership record, a pending journal entry) survives a node crash."""
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
             temporary.unlink()
         raise
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
