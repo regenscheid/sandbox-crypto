@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 
 from .kubernetes_config import (
+    GATEWAY_PROFILE,
     REQUIRED_FILES,
     BundleConfig,
     Capacity,
@@ -19,6 +20,17 @@ COPY_HELPER = "/usr/local/libexec/sandbox-science/copy-credentials.py"
 STATE_HELPER = "/usr/local/libexec/sandbox-science/initialize-state.py"
 PRIVATE = "/private"
 DATA = "/var/lib/sandbox-science"
+MANAGER = "runtime-manager"
+XDG = f"{PRIVATE}/xdg"
+"""The manager's OpenShell CLI tree (``XDG_CONFIG_HOME``), built by its copy init."""
+RUNTIME_CREDENTIALS = "/run/sandbox-science/runtime-credentials"
+"""Control's memory volume for the runtime token it mints; no other container mounts it."""
+CONTROL_PORT = 8443
+MANAGER_PORT = 8444
+SETTINGS_ENV = "SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS"
+_INIT = Capacity(
+    cpu_request_millis=50, cpu_limit_millis=100, memory_request_mib=32, memory_limit_mib=128
+)
 
 
 def _labels(config: BundleConfig, component: str | None = None) -> dict[str, str]:
@@ -106,7 +118,13 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
         ]
         egress.extend({"to": [_peer(flow.peer)], "ports": _ports(*flow.ports)} for flow in external)
         if component == "app":
-            ingress = [{"from": [_peer(peer) for peer in network.runtimes], "ports": _ports(8443)}]
+            ingress = [
+                {"from": [_peer(peer) for peer in network.runtimes], "ports": _ports(CONTROL_PORT)},
+                {
+                    "from": [{"podSelector": {"matchLabels": _labels(config, MANAGER)}}],
+                    "ports": _ports(MANAGER_PORT),
+                },
+            ]
             egress.append(
                 {
                     "to": [{"podSelector": {"matchLabels": _labels(config, "pool")}}],
@@ -138,10 +156,39 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
                 },
             )
         )
+    # The manager accepts nothing and reaches only DNS, control's manager port and the
+    # OpenShell gateway (KRB-4).
+    policies.append(
+        _object(
+            config,
+            "NetworkPolicy",
+            MANAGER,
+            spec={
+                "podSelector": {"matchLabels": _labels(config, MANAGER)},
+                "policyTypes": ["Ingress", "Egress"],
+                "ingress": [],
+                "egress": [
+                    {
+                        "to": [_peer(network.dns)],
+                        "ports": [
+                            {"protocol": protocol, "port": 53} for protocol in ("TCP", "UDP")
+                        ],
+                    },
+                    {
+                        "to": [{"podSelector": {"matchLabels": _labels(config, "app")}}],
+                        "ports": _ports(MANAGER_PORT),
+                    },
+                    {"to": [_peer(network.gateway.peer)], "ports": _ports(*network.gateway.ports)},
+                ],
+            },
+        )
+    )
     return policies
 
 
-def _service(config: BundleConfig, component: str, port: int, suffix: str) -> dict[str, object]:
+def _service(
+    config: BundleConfig, component: str, suffix: str, *ports: tuple[str, int]
+) -> dict[str, object]:
     return _object(
         config,
         "Service",
@@ -149,14 +196,19 @@ def _service(config: BundleConfig, component: str, port: int, suffix: str) -> di
         spec={
             "type": "ClusterIP",
             "selector": _labels(config, component),
-            "ports": [{"name": suffix, "port": port, "targetPort": port, "protocol": "TCP"}],
+            "ports": [
+                {"name": name, "port": port, "targetPort": port, "protocol": "TCP"}
+                for name, port in ports
+            ],
         },
     )
 
 
 def _pvc(config: BundleConfig, component: str, placement: Placement) -> dict[str, object]:
+    # Only one manager Pod may ever hold its state, even on one node (KRB-9).
+    access = "ReadWriteOncePod" if component == MANAGER else "ReadWriteOnce"
     spec: dict[str, object] = {
-        "accessModes": ["ReadWriteOnce"],
+        "accessModes": [access],
         "volumeMode": "Filesystem",
         "resources": {"requests": {"storage": f"{placement.storage_gib}Gi"}},
     }
@@ -165,8 +217,19 @@ def _pvc(config: BundleConfig, component: str, placement: Placement) -> dict[str
     return _object(config, "PersistentVolumeClaim", f"{component}-data", spec=spec)
 
 
+def _destination(config: BundleConfig, name: str, file: str) -> str:
+    """Where a projected key lands under ``/private``: the manager's gateway profile
+    keys form the OpenShell CLI's tree, every other key keeps its name."""
+    if name == MANAGER and file in GATEWAY_PROFILE:
+        relative = GATEWAY_PROFILE[file]
+        if file != "active-gateway":
+            relative = f"gateways/{config.runtime_manager.openshell_gateway}/{relative}"
+        return f"{XDG.removeprefix(PRIVATE + '/')}/openshell/{relative}"
+    return file
+
+
 def _credentials(
-    name: str, secret: Secret, image: str
+    config: BundleConfig, name: str, secret: Secret, image: str
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     files = sorted({*REQUIRED_FILES[name], *secret.extra_files})
     source = f"{name}-source"
@@ -182,17 +245,13 @@ def _credentials(
             "--destination-root",
             PRIVATE,
             "--files",
-            json.dumps([[file, file] for file in files], separators=(",", ":")),
+            json.dumps(
+                [[file, _destination(config, name, file)] for file in files],
+                separators=(",", ":"),
+            ),
         ],
         "securityContext": _security(),
-        "resources": _resources(
-            Capacity(
-                cpu_request_millis=50,
-                cpu_limit_millis=100,
-                memory_request_mib=32,
-                memory_limit_mib=128,
-            )
-        ),
+        "resources": _resources(_INIT),
         "volumeMounts": [
             {"name": source, "mountPath": "/source", "readOnly": True},
             {"name": destination, "mountPath": PRIVATE},
@@ -212,6 +271,8 @@ def _credentials(
 
 
 def _command(config: BundleConfig, name: str) -> list[str]:
+    if name == MANAGER:
+        return ["sandbox-science-runtime-manager", "serve"]
     if name == "control":
         return ["sandbox-science-control", "--settings", f"{PRIVATE}/control.json"]
     if name == "workspace":
@@ -243,13 +304,44 @@ def _command(config: BundleConfig, name: str) -> list[str]:
     return [executable, "serve", "--settings", f"{PRIVATE}/{name}.toml"]
 
 
-def _container(config: BundleConfig, name: str, image: str, capacity: Service) -> dict[str, object]:
+def _data_mounts(name: str, capacity: Capacity) -> list[dict[str, object]]:
+    """The PVC as a container sees it. In the app Pod each container mounts only the
+    directories it uses: control's state, which workspace reads as the harness's state
+    directory, and its own managed home/config directories."""
+    if name not in ("control", "workspace"):
+        return [{"name": "data", "mountPath": DATA}]
+    environment = capacity.environment if isinstance(capacity, Service) else {}
+    directories = ["control"]
+    directories += sorted(
+        environment[key].removeprefix(f"{DATA}/")
+        for key in ("HOME", "XDG_CONFIG_HOME")
+        if key in environment
+    )
+    return [
+        {"name": "data", "mountPath": f"{DATA}/{directory}", "subPath": directory}
+        for directory in directories
+    ]
+
+
+def _container(
+    config: BundleConfig, name: str, image: str, capacity: Capacity
+) -> dict[str, object]:
     environment = {
         "HOME": "/tmp",  # noqa: S108 - existing bounded per-container Pod volume
         "PYTHONDONTWRITEBYTECODE": "1",
         "AWS_EC2_METADATA_DISABLED": "true",
-        **capacity.environment,
+        **(capacity.environment if isinstance(capacity, Service) else {}),
     }
+    if name == MANAGER:
+        # `kubectl exec … sandbox-science-runtime-manager request …` inherits this.
+        environment[SETTINGS_ENV] = f"{PRIVATE}/runtime-manager.json"
+    mounts = [
+        *_data_mounts(name, capacity),
+        {"name": f"{name}-scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume
+        {"name": f"{name}-credentials", "mountPath": PRIVATE, "readOnly": True},
+    ]
+    if name == "control":
+        mounts.append({"name": "runtime-credentials", "mountPath": RUNTIME_CREDENTIALS})
     result: dict[str, object] = {
         "name": name,
         "image": image,
@@ -258,17 +350,17 @@ def _container(config: BundleConfig, name: str, image: str, capacity: Service) -
         "securityContext": _security(),
         "resources": _resources(capacity),
         "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
-        "volumeMounts": [
-            {"name": "data", "mountPath": DATA},
-            {"name": f"{name}-scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume
-            {"name": f"{name}-credentials", "mountPath": PRIVATE, "readOnly": True},
-        ],
+        "volumeMounts": mounts,
     }
     probe: dict[str, object] | None = None
     if name == "control":
-        probe = {"httpGet": {"path": "/ready", "port": 8443, "scheme": "HTTPS"}}
+        result["ports"] = [
+            {"name": "control", "containerPort": CONTROL_PORT, "protocol": "TCP"},
+            {"name": "manager", "containerPort": MANAGER_PORT, "protocol": "TCP"},
+        ]
+        probe = {"httpGet": {"path": "/ready", "port": CONTROL_PORT, "scheme": "HTTPS"}}
         result["livenessProbe"] = {
-            "httpGet": {"path": "/live", "port": 8443, "scheme": "HTTPS"},
+            "httpGet": {"path": "/live", "port": CONTROL_PORT, "scheme": "HTTPS"},
             "initialDelaySeconds": 10,
             "periodSeconds": 10,
         }
@@ -279,22 +371,31 @@ def _container(config: BundleConfig, name: str, image: str, capacity: Service) -
     return result
 
 
-def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
-    placement = config.app if component == "app" else config.pool
-    image = config.images.app if component == "app" else config.images.worker
-    roles = (
-        [
+def _roles(config: BundleConfig, component: str) -> list[tuple[str, Capacity, Secret]]:
+    if component == "app":
+        return [
             ("control", config.control, config.secrets.control),
             ("workspace", config.workspace, config.secrets.workspace),
         ]
-        if component == "app"
-        else [
-            ("worker", config.worker, config.secrets.worker),
-            ("middleware", config.middleware, config.secrets.middleware),
-        ]
-    )
-    if component == "pool" and config.secrets.cache is not None:
+    if component == MANAGER:
+        return [(MANAGER, config.runtime_manager, config.secrets.runtime_manager)]
+    roles: list[tuple[str, Capacity, Secret]] = [
+        ("worker", config.worker, config.secrets.worker),
+        ("middleware", config.middleware, config.secrets.middleware),
+    ]
+    if config.secrets.cache is not None:
         roles.append(("cache", config.cache, config.secrets.cache))
+    return roles
+
+
+def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
+    placement: Placement = {
+        "app": config.app,
+        "pool": config.pool,
+        MANAGER: config.runtime_manager,
+    }[component]
+    # The manager runs from trusted-app, which carries the launcher and the OpenShell CLI.
+    image = config.images.worker if component == "pool" else config.images.app
     initialize: dict[str, object] = {
         "name": "initialize-state",
         "image": image,
@@ -312,14 +413,7 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
             ),
         ],
         "securityContext": _security(),
-        "resources": _resources(
-            Capacity(
-                cpu_request_millis=50,
-                cpu_limit_millis=100,
-                memory_request_mib=32,
-                memory_limit_mib=128,
-            )
-        ),
+        "resources": _resources(_INIT),
         "volumeMounts": [{"name": "data", "mountPath": DATA}],
     }
     inits: list[dict[str, object]] = [initialize]
@@ -327,14 +421,20 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
         {"name": "data", "persistentVolumeClaim": {"claimName": f"{config.name}-{component}-data"}}
     ]
     containers: list[dict[str, object]] = []
-    for name, capacity, secret in roles:
-        init, private = _credentials(name, secret, image)
+    for name, capacity, secret in _roles(config, component):
+        init, private = _credentials(config, name, secret, image)
         inits.append(init)
         volumes.extend(private)
-        volumes.append(
-            {"name": f"{name}-scratch", "emptyDir": {"sizeLimit": f"{capacity.scratch_mib}Mi"}}
-        )
+        scratch: dict[str, object] = {"sizeLimit": f"{capacity.scratch_mib}Mi"}
+        if name == MANAGER:
+            # The runtime token passes through a private file in /tmp before upload.
+            scratch = {"medium": "Memory", **scratch}
+        volumes.append({"name": f"{name}-scratch", "emptyDir": scratch})
         containers.append(_container(config, name, image, capacity))
+    if component == "app":
+        volumes.append(
+            {"name": "runtime-credentials", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}
+        )
     return _object(
         config,
         "Deployment",
@@ -373,12 +473,14 @@ def render(config: BundleConfig) -> dict[str, object]:
         *_policies(config),
         _pvc(config, "app", config.app),
         _pvc(config, "pool", config.pool),
+        _pvc(config, MANAGER, config.runtime_manager),
         _deployment(config, "app"),
         _deployment(config, "pool"),
-        _service(config, "app", 8443, "control"),
-        _service(config, "pool", 8100, "worker"),
-        _service(config, "pool", 50051, "middleware"),
+        _deployment(config, MANAGER),
+        _service(config, "app", "control", ("control", CONTROL_PORT), ("manager", MANAGER_PORT)),
+        _service(config, "pool", "worker", ("worker", 8100)),
+        _service(config, "pool", "middleware", ("middleware", 50051)),
     ]
     if config.secrets.cache is not None:
-        items.append(_service(config, "pool", 8090, "cache"))
+        items.append(_service(config, "pool", "cache", ("cache", 8090)))
     return {"apiVersion": "v1", "kind": "List", "items": items}

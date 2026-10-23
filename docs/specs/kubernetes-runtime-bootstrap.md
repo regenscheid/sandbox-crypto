@@ -2,10 +2,10 @@
 
 Status: Design with owner decisions (2026-10-22). Stages 1 to 3 are built (the
 ownership extraction, control's credential endpoint, and the manager against a fake
-OpenShell CLI; see [the manager as built](#the-manager-as-built)); the renderer, image
-and live acceptance are not. It closes the gate in
-[the offline bundle](../KUBERNETES-BUNDLE.md#render-inspect-then-qualify-separately)
-that says "cluster runtime bootstrap is an unimplemented gate". It applies
+OpenShell CLI; see [the manager as built](#the-manager-as-built)), and the renderer
+part of stage 4 ([the renderer as built](#the-renderer-as-built)); live acceptance is
+not. It closes the runtime bootstrap gate of
+[the offline bundle](../KUBERNETES-BUNDLE.md#bootstrap-the-agent-runtime). It applies
 [orchestrator confinement](orchestrator-confinement.md#launcher-and-replacement),
 [Kubernetes operations](kubernetes-operations.md#first-deployment-bundle) and
 [research continuity](research-continuity.md#orchestrator-boundary) (RC-26 to RC-29,
@@ -330,12 +330,37 @@ the `sandbox-science-runtime-manager` script. Where the design left a choice:
   control restart does not consume the budget. A gateway error (never absence) counts
   as an attempt, and ten of them block, as the table above says.
 
+## The renderer as built
+
+`kubernetes_config` and `kubernetes_bundle` (stage 4). Where the design left a choice
+or was inconsistent:
+
+- **Settings stay in the Secret.** `runtime-manager.json` is operator-written and
+  projected like `control.json`, so the TOML has no `images.runtime` or `runtime`
+  section (KRB-20): the renderer would have no consumer for them and could not check
+  them against the Secret. The TOML gains `[runtime_manager]` (architecture, PVC size
+  and class, container bounds, `openshell_gateway`), `secrets.runtime_manager` and
+  `network.gateway`.
+- **Two more Secret keys.** `control-models.json` carries the model part KRB-19 puts in
+  the Secret, and `active-gateway` becomes the CLI's `openshell/active_gateway`, since
+  the copy init only copies keys. The profile lands under `/private/xdg`, read-only,
+  and `runtime-manager.json` names it in `openshell.env.XDG_CONFIG_HOME`.
+- **Workspace still mounts `control/`.** It is the harness's state directory, which the
+  workspace reads and writes (the W4 exception in the conventions), so it cannot lack
+  it. Each app container mounts only `control/` and its own managed home/config
+  directories by subPath, and only control mounts the runtime token's memory volume.
+  The journal and generation file there carry no token.
+- **Stricter than the design.** `network.runtimes` selector peers must name
+  `openshell.ai/component=supervisor` and an `openshell.ai/gateway-id`; the manager's
+  Secret is its own and takes no `extra_files`; no other service may project its token,
+  model key or gateway profile keys; its `/tmp` is a memory volume; its PVC is
+  `ReadWriteOncePod`, so no second manager Pod can mount it even on the same node.
+
 ## Blockers in existing code
 
 - Trusted images pin OpenShell CLI 0.1.3, and `driver_json` targets its schema.
 - `trusted-app` has no OpenShell CLI and no launcher or policy wheels.
 - Absence by the string "not found" (KRB-23) could erase a record in a gateway outage.
-- The renderer mounts the whole app PVC into workspace and requires `control-token`.
 - `OrchestratorTarget.worker_api` is required though the runtime never calls the
   worker; making it optional is cleaner.
 

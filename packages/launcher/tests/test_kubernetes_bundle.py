@@ -29,9 +29,15 @@ def values() -> dict:
         },
         "app": {"architecture": "arm64", "storage_gib": 10},
         "pool": {"architecture": "amd64", "storage_gib": 20, "storage_class": "test-block"},
+        "runtime_manager": {
+            "architecture": "arm64",
+            "storage_gib": 1,
+            "storage_class": "test-block",
+            "openshell_gateway": "test-gateway",
+        },
         "secrets": {
-            role: {"name": f"test-{role}"}
-            for role in ("control", "workspace", "worker", "middleware")
+            role: {"name": f"test-{role.replace('_', '-')}"}
+            for role in ("control", "workspace", "worker", "middleware", "runtime_manager")
         },
         "network": {
             "dns": {
@@ -41,10 +47,20 @@ def values() -> dict:
             "runtimes": [
                 {
                     "namespace_labels": {"kubernetes.io/metadata.name": "runtime"},
-                    "pod_labels": {"role": "orchestrator"},
+                    "pod_labels": {
+                        "openshell.ai/component": "supervisor",
+                        "openshell.ai/gateway-id": "test-gateway-id",
+                    },
                 }
             ],
             "supervisors": [{"cidr": "192.0.2.15/32"}],
+            "gateway": {
+                "peer": {
+                    "namespace_labels": {"kubernetes.io/metadata.name": "openshell"},
+                    "pod_labels": {"app.kubernetes.io/name": "openshell-gateway"},
+                },
+                "ports": [8080],
+            },
             "app_egress": [{"peer": {"cidr": "192.0.2.20/32"}, "ports": [443]}],
         },
     }
@@ -67,7 +83,7 @@ def test_only_trusted_singletons_and_retained_block_claims():
         "NetworkPolicy",
     }
     deployments = [item for item in items if item["kind"] == "Deployment"]
-    assert len(deployments) == 2
+    assert len(deployments) == 3
     for deployment in deployments:
         assert deployment["spec"]["replicas"] == 1
         assert deployment["spec"]["strategy"] == {"type": "Recreate"}
@@ -91,9 +107,12 @@ def test_only_trusted_singletons_and_retained_block_claims():
     assert deployments[1]["spec"]["template"]["spec"]["nodeSelector"] == {
         "kubernetes.io/arch": "amd64"
     }
+    assert deployments[2]["spec"]["template"]["spec"]["nodeSelector"] == {
+        "kubernetes.io/arch": "arm64"
+    }
     claims = [item for item in items if item["kind"] == "PersistentVolumeClaim"]
-    assert len(claims) == 2
-    assert all(item["spec"]["accessModes"] == ["ReadWriteOnce"] for item in claims)
+    assert len(claims) == 3
+    assert all(item["spec"]["accessModes"] == ["ReadWriteOnce"] for item in claims[:2])
     assert all("ownerReferences" not in item["metadata"] for item in claims)
     assert "storageClassName" not in claims[0]["spec"]
     assert claims[1]["spec"]["storageClassName"] == "test-block"
@@ -108,7 +127,9 @@ def test_credentials_projected_only_to_init_and_each_service_has_private_volume(
         for volume in pod["volumes"]:
             if "secret" in volume:
                 assert volume["secret"]["defaultMode"] == 0o444
-            if volume["name"].endswith("credentials"):
+            if volume["name"] == "runtime-credentials":
+                assert volume["emptyDir"] == {"medium": "Memory", "sizeLimit": "1Mi"}
+            elif volume["name"].endswith("credentials"):
                 assert volume["emptyDir"] == {"medium": "Memory", "sizeLimit": "4Mi"}
         private_names = []
         for container in pod["containers"]:
@@ -139,7 +160,13 @@ def test_credentials_projected_only_to_init_and_each_service_has_private_volume(
                 "/usr/local/libexec/sandbox-science/copy-credentials.py",
             ]
             pairs = json.loads(init["args"][-1])
-            assert all(source == destination for source, destination in pairs)
+            if init["name"] == "copy-runtime-manager":
+                assert all(
+                    source == destination or destination.startswith("xdg/openshell/")
+                    for source, destination in pairs
+                )
+            else:
+                assert all(source == destination for source, destination in pairs)
             assert len(pairs) <= 32
 
 
@@ -479,5 +506,308 @@ def test_catalog_alias_must_roundtrip_through_workspace_cli_arguments(alias):
 def test_role_catalog_rejects_missing_roles_incompatible_adapters_and_untyped_fields(models):
     data = values()
     data["models"] = models
+    with pytest.raises(ValidationError):
+        configured(data)
+
+
+def named(items: list[dict], kind: str, name: str) -> dict:
+    return next(item for item in items if item["kind"] == kind and item["metadata"]["name"] == name)
+
+
+def pod(items: list[dict], component: str) -> dict:
+    return named(items, "Deployment", f"research-{component}")["spec"]["template"]["spec"]
+
+
+GATEWAY_KEYS = {
+    "active-gateway",
+    "gateway-metadata.json",
+    "gateway-ca.crt",
+    "gateway-tls.crt",
+    "gateway-tls.key",
+}
+
+
+def test_runtime_manager_is_a_confined_singleton_without_listener_or_probes():
+    items = objects()
+    deployment = named(items, "Deployment", "research-runtime-manager")
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+    spec = pod(items, "runtime-manager")
+    assert spec["automountServiceAccountToken"] is False
+    assert spec["nodeSelector"] == {"kubernetes.io/arch": "arm64"}
+    (manager,) = spec["containers"]
+    assert manager["image"] == values()["images"]["app"]
+    assert manager["command"] == ["sandbox-science-runtime-manager", "serve"]
+    assert not {"ports", "readinessProbe", "livenessProbe", "startupProbe"} & manager.keys()
+    environment = {item["name"]: item["value"] for item in manager["env"]}
+    assert environment["SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS"] == (
+        "/private/runtime-manager.json"
+    )
+    assert manager["securityContext"]["readOnlyRootFilesystem"] is True
+    assert manager["securityContext"]["runAsUser"] == 1000
+    assert manager["resources"]["limits"] == {
+        "cpu": "1000m",
+        "memory": "1024Mi",
+        "ephemeral-storage": "1024Mi",
+    }
+    mounts = {mount["mountPath"]: mount for mount in manager["volumeMounts"]}
+    assert mounts["/var/lib/sandbox-science"]["name"] == "data"
+    assert mounts["/private"]["readOnly"] is True
+    volumes = {volume["name"]: volume for volume in spec["volumes"]}
+    # The runtime token passes through /tmp before upload: never node disk.
+    assert volumes[mounts["/tmp"]["name"]]["emptyDir"] == {"medium": "Memory", "sizeLimit": "128Mi"}
+    assert volumes["data"]["persistentVolumeClaim"]["claimName"] == "research-runtime-manager-data"
+    initialize = spec["initContainers"][0]
+    assert initialize["args"] == [
+        "--root",
+        "/var/lib/sandbox-science",
+        "--component",
+        "runtime-manager",
+    ]
+    assert not any(
+        item["kind"] == "Service" and "manager" in item["metadata"]["name"] for item in items
+    )
+    claim = named(items, "PersistentVolumeClaim", "research-runtime-manager-data")
+    # A second manager Pod, even on the same node, can never mount the state directory.
+    assert claim["spec"]["accessModes"] == ["ReadWriteOncePod"]
+    assert claim["spec"]["storageClassName"] == "test-block"
+    assert claim["spec"]["resources"]["requests"]["storage"] == "1Gi"
+
+
+def test_runtime_manager_architecture_and_capacity_are_configurable():
+    data = values()
+    data["runtime_manager"] |= {"architecture": "amd64", "memory_limit_mib": 512, "scratch_mib": 64}
+    data["runtime_manager"].pop("storage_class")
+    items = objects(configured(data))
+    spec = pod(items, "runtime-manager")
+    assert spec["nodeSelector"] == {"kubernetes.io/arch": "amd64"}
+    assert spec["containers"][0]["resources"]["limits"]["memory"] == "512Mi"
+    claim = named(items, "PersistentVolumeClaim", "research-runtime-manager-data")
+    assert "storageClassName" not in claim["spec"]
+
+
+def test_only_the_manager_projects_the_gateway_profile_into_its_cli_tree():
+    items = objects()
+    projected: dict[str, set[str]] = {}
+    for component in ("app", "pool", "runtime-manager"):
+        for volume in pod(items, component)["volumes"]:
+            if "secret" in volume:
+                keys = {item["key"] for item in volume["secret"]["items"]}
+                projected[volume["secret"]["secretName"]] = keys
+                if component != "runtime-manager":
+                    assert not keys & (GATEWAY_KEYS | {"manager-control.token", "model.key"})
+    assert projected["test-runtime-manager"] == GATEWAY_KEYS | {
+        "runtime-manager.json",
+        "control-models.json",
+        "manager-control.token",
+        "model.key",
+        "control-ca.crt",
+    }
+    assert "test-runtime-manager" not in json.dumps(
+        [pod(items, component) for component in ("app", "pool")]
+    )
+    copy = next(
+        init
+        for init in pod(items, "runtime-manager")["initContainers"]
+        if init["name"] == "copy-runtime-manager"
+    )
+    pairs = dict(json.loads(copy["args"][-1]))
+    profile = "xdg/openshell/gateways/test-gateway"
+    assert pairs == {
+        "active-gateway": "xdg/openshell/active_gateway",
+        "gateway-metadata.json": f"{profile}/metadata.json",
+        "gateway-ca.crt": f"{profile}/mtls/ca.crt",
+        "gateway-tls.crt": f"{profile}/mtls/tls.crt",
+        "gateway-tls.key": f"{profile}/mtls/tls.key",
+        "runtime-manager.json": "runtime-manager.json",
+        "control-models.json": "control-models.json",
+        "manager-control.token": "manager-control.token",
+        "model.key": "model.key",
+        "control-ca.crt": "control-ca.crt",
+    }
+
+
+def test_control_no_longer_needs_a_static_runtime_token():
+    items = objects()
+    assert "control-token" not in json.dumps(items)
+    spec = pod(items, "app")
+    keys = next(
+        {item["key"] for item in volume["secret"]["items"]}
+        for volume in spec["volumes"]
+        if volume.get("secret", {}).get("secretName") == "test-control"
+    )
+    assert "runtime-manager-token.sha256" in keys
+    control, workspace = spec["containers"]
+    volumes = {volume["name"]: volume for volume in spec["volumes"]}
+    assert volumes["runtime-credentials"]["emptyDir"] == {"medium": "Memory", "sizeLimit": "1Mi"}
+    assert {
+        "name": "runtime-credentials",
+        "mountPath": "/run/sandbox-science/runtime-credentials",
+    } in control["volumeMounts"]
+    for container in (workspace, *spec["initContainers"]):
+        assert "runtime-credentials" not in {mount["name"] for mount in container["volumeMounts"]}
+    assert [port["containerPort"] for port in control["ports"]] == [8443, 8444]
+    service = named(items, "Service", "research-control")
+    assert [(port["name"], port["port"]) for port in service["spec"]["ports"]] == [
+        ("control", 8443),
+        ("manager", 8444),
+    ]
+
+
+def test_app_containers_mount_only_their_own_state_directories():
+    data = values()
+    data["control"] = {"environment": {"HOME": "/var/lib/sandbox-science/control-home"}}
+    spec = pod(objects(configured(data)), "app")
+    mounts = {
+        container["name"]: [
+            (mount["mountPath"], mount.get("subPath"))
+            for mount in container["volumeMounts"]
+            if mount["name"] == "data"
+        ]
+        for container in spec["containers"]
+    }
+    assert mounts == {
+        "control": [
+            ("/var/lib/sandbox-science/control", "control"),
+            ("/var/lib/sandbox-science/control-home", "control-home"),
+        ],
+        # The workspace reads the harness's records in control's state directory (D80).
+        "workspace": [("/var/lib/sandbox-science/control", "control")],
+    }
+    initialize = spec["initContainers"][0]
+    assert initialize["volumeMounts"] == [{"name": "data", "mountPath": "/var/lib/sandbox-science"}]
+
+
+def test_manager_port_is_reachable_only_from_the_manager_and_it_only_reaches_out():
+    policies = {
+        item["metadata"]["name"]: item["spec"]
+        for item in objects()
+        if item["kind"] == "NetworkPolicy"
+    }
+    app = policies["research-app"]
+    manager_labels = {
+        "app.kubernetes.io/part-of": "research",
+        "app.kubernetes.io/component": "runtime-manager",
+    }
+    assert app["ingress"][1] == {
+        "from": [{"podSelector": {"matchLabels": manager_labels}}],
+        "ports": [{"protocol": "TCP", "port": 8444}],
+    }
+    inbound = [
+        rule
+        for policy in policies.values()
+        for rule in policy["ingress"]
+        if {"protocol": "TCP", "port": 8444} in rule["ports"]
+    ]
+    assert inbound == [app["ingress"][1]]
+    assert app["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 8443}]
+    assert app["ingress"][0]["from"][0]["podSelector"]["matchLabels"] == {
+        "openshell.ai/component": "supervisor",
+        "openshell.ai/gateway-id": "test-gateway-id",
+    }
+    manager = policies["research-runtime-manager"]
+    assert manager["podSelector"] == {"matchLabels": manager_labels}
+    assert manager["policyTypes"] == ["Ingress", "Egress"]
+    assert manager["ingress"] == []
+    gateway = {
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "openshell"}},
+        "podSelector": {"matchLabels": {"app.kubernetes.io/name": "openshell-gateway"}},
+    }
+    assert manager["egress"] == [
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
+                    },
+                    "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 53}, {"protocol": "UDP", "port": 53}],
+        },
+        {
+            "to": [
+                {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/part-of": "research",
+                            "app.kubernetes.io/component": "app",
+                        }
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 8444}],
+        },
+        {"to": [gateway], "ports": [{"protocol": "TCP", "port": 8080}]},
+    ]
+    for name in ("research-app", "research-pool"):
+        assert gateway not in [peer for rule in policies[name]["egress"] for peer in rule["to"]]
+
+
+def test_render_is_deterministic():
+    assert json.dumps(render(configured()), sort_keys=True) == json.dumps(
+        render(configured()), sort_keys=True
+    )
+    assert json.dumps(render(configured())) == json.dumps(render(configured()))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("network", "runtimes"), [{"namespace_labels": {"kubernetes.io/metadata.name": "r"}}]),
+        (
+            ("network", "runtimes"),
+            [
+                {
+                    "namespace_labels": {"kubernetes.io/metadata.name": "r"},
+                    "pod_labels": {"openshell.ai/component": "workload"},
+                }
+            ],
+        ),
+        (
+            ("network", "runtimes"),
+            [
+                {
+                    "namespace_labels": {"kubernetes.io/metadata.name": "r"},
+                    "pod_labels": {"openshell.ai/component": "supervisor"},
+                }
+            ],
+        ),
+        (("network", "gateway"), None),
+        (("network", "gateway"), {"peer": {"cidr": "0.0.0.0/0"}, "ports": [8080]}),
+        (("network", "gateway"), {"peer": {"cidr": "192.0.2.9/32"}, "ports": []}),
+        (("runtime_manager",), None),
+        (("runtime_manager", "architecture"), "riscv64"),
+        (("runtime_manager", "openshell_gateway"), "../gateway"),
+        (("runtime_manager", "storage_gib"), 0),
+        (
+            ("runtime_manager",),
+            {
+                "architecture": "arm64",
+                "storage_gib": 1,
+                "openshell_gateway": "test-gateway",
+                "memory_request_mib": 128,
+                "memory_limit_mib": 256,
+                "scratch_mib": 512,
+            },
+        ),
+        (("runtime_manager", "environment"), {"HOME": "/var/lib/sandbox-science/x"}),
+        (("secrets", "runtime_manager"), None),
+        (("secrets", "runtime_manager", "name"), "test-control"),
+        (("secrets", "runtime_manager", "extra_files"), ["extra"]),
+        (("secrets", "control", "extra_files"), ["gateway-tls.key"]),
+        (("secrets", "workspace", "extra_files"), ["manager-control.token"]),
+        (("secrets", "worker", "extra_files"), ["model.key"]),
+    ],
+)
+def test_rejects_unsafe_runtime_manager_configuration(path, value):
+    data = values()
+    target = data
+    for key in path[:-1]:
+        target = target[key]
+    if value is None:
+        del target[path[-1]]
+    else:
+        target[path[-1]] = value
     with pytest.raises(ValidationError):
         configured(data)

@@ -22,6 +22,7 @@ def initialize(root, component, *, package_cache=False):
         ("app", False, {"control"}),
         ("pool", False, {"worker", "middleware"}),
         ("pool", True, {"worker", "middleware", "package-cache"}),
+        ("runtime-manager", False, {"runtime"}),
     ],
 )
 def test_fixed_directories_on_empty_volume_are_private_and_idempotent(
@@ -85,7 +86,9 @@ def test_symlink_root_is_refused(tmp_path):
     assert not list(root.iterdir())
 
 
-@pytest.mark.parametrize(("component", "cache"), [("../other", False), ("app", True)])
+@pytest.mark.parametrize(
+    ("component", "cache"), [("../other", False), ("app", True), ("runtime-manager", True)]
+)
 def test_unknown_layout_is_refused_before_any_state_change(tmp_path, component, cache):
     with pytest.raises(ValueError, match="unsupported service state layout"):
         initialize(tmp_path, component, package_cache=cache)

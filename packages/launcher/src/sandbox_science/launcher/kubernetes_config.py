@@ -32,7 +32,7 @@ _VALUE = re.compile(r"^(?:[A-Za-z0-9][-A-Za-z0-9_.]{0,61}[A-Za-z0-9]|[A-Za-z0-9]
 REQUIRED_FILES: dict[str, tuple[str, ...]] = {
     "control": (
         "control.json",
-        "control-token",
+        "runtime-manager-token.sha256",
         "worker-token",
         "control.crt",
         "control.key",
@@ -42,7 +42,30 @@ REQUIRED_FILES: dict[str, tuple[str, ...]] = {
     "worker": ("worker.toml", "worker.crt", "worker.key"),
     "middleware": ("middleware.toml", "middleware.crt", "middleware.key"),
     "cache": ("cache.toml",),
+    "runtime-manager": (
+        "runtime-manager.json",
+        "control-models.json",
+        "manager-control.token",
+        "model.key",
+        "control-ca.crt",
+        "gateway-ca.crt",
+        "gateway-tls.crt",
+        "gateway-tls.key",
+        "gateway-metadata.json",
+        "active-gateway",
+    ),
 }
+GATEWAY_PROFILE: dict[str, str] = {
+    "active-gateway": "active_gateway",
+    "gateway-metadata.json": "metadata.json",
+    "gateway-ca.crt": "mtls/ca.crt",
+    "gateway-tls.crt": "mtls/tls.crt",
+    "gateway-tls.key": "mtls/tls.key",
+}
+"""The manager Secret's OpenShell CLI profile keys and their places in the CLI's tree."""
+MANAGER_ONLY = frozenset((*GATEWAY_PROFILE, "manager-control.token", "model.key"))
+"""Keys no other service's projection may name: the gateway credential stays in the
+manager's Pod (KRB-1)."""
 _AWS_FILES = frozenset(("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_CA_BUNDLE"))
 _MANAGED_DIRECTORIES = {"HOME": "home", "XDG_CONFIG_HOME": "config"}
 _ENVIRONMENT = (
@@ -160,7 +183,22 @@ class Secrets(Model):
     workspace: Secret
     worker: Secret
     middleware: Secret
+    runtime_manager: Secret
     cache: Secret | None = None
+
+    @model_validator(mode="after")
+    def manager_alone(self) -> Self:
+        others = (self.control, self.workspace, self.worker, self.middleware, self.cache)
+        if self.runtime_manager.extra_files:
+            raise ValueError("the runtime manager's Secret projects only its fixed keys")
+        for secret in others:
+            if secret is None:
+                continue
+            if secret.name == self.runtime_manager.name:
+                raise ValueError("the runtime manager's Secret is its own")
+            if MANAGER_ONLY.intersection(secret.extra_files):
+                raise ValueError("only the runtime manager projects its gateway and model keys")
+        return self
 
 
 class Peer(Model):
@@ -204,13 +242,47 @@ class Egress(Model):
     ports: Annotated[tuple[Port, ...], Field(min_length=1, max_length=16)]
 
 
+SUPERVISOR = ("openshell.ai/component", "supervisor")
+GATEWAY_ID = "openshell.ai/gateway-id"
+
+
 class Network(Model):
     dns: Peer
     runtimes: Annotated[tuple[Peer, ...], Field(min_length=1, max_length=16)]
+    """The runtime's traffic leaves through its sandbox's supervisor Pod (KRB-4)."""
     supervisors: Annotated[tuple[Peer, ...], Field(min_length=1, max_length=16)]
+    gateway: Egress
+    """The OpenShell gateway, reached only by the runtime manager."""
     sandboxes: Annotated[tuple[Peer, ...], Field(max_length=16)] = ()
     app_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()
     pool_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()
+
+    @field_validator("runtimes")
+    @classmethod
+    def supervisor_peers(cls, peers: tuple[Peer, ...]) -> tuple[Peer, ...]:
+        # A selector naming anything but this gateway's supervisors would admit Pods
+        # that never carry the runtime's traffic, or every gateway's supervisors.
+        for peer in peers:
+            if peer.cidr is None and (
+                peer.pod_labels.get(SUPERVISOR[0]) != SUPERVISOR[1]
+                or not peer.pod_labels.get(GATEWAY_ID)
+            ):
+                raise ValueError("runtime peers select OpenShell supervisor Pods of one gateway")
+        return peers
+
+
+class RuntimeManager(Placement, Capacity):
+    """The runtime manager's Pod: its node architecture, PVC and container bounds."""
+
+    openshell_gateway: Name
+    """The OpenShell CLI profile's gateway name: ``openshell/gateways/<name>/``."""
+
+    @model_validator(mode="after")
+    def memory_scratch(self) -> Self:
+        # The manager's /tmp is a memory volume, since the runtime token passes there.
+        if self.scratch_mib > self.memory_limit_mib:
+            raise ValueError("the manager's memory scratch must fit its memory limit")
+        return self
 
 
 class BundleConfig(Model):
@@ -219,6 +291,7 @@ class BundleConfig(Model):
     images: Images
     app: Placement
     pool: Placement
+    runtime_manager: RuntimeManager
     secrets: Secrets
     network: Network
     models: ModelCatalog

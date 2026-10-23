@@ -7,8 +7,16 @@ publish images, or create an OpenShell runtime. No actual cluster or native ARM6
 deployment is qualified by rendering or schema validation.
 
 The trusted application image runs control and workspace in one Pod over one block
-PVC. A second Pod runs worker and policy middleware over their shared block PVC;
-package cache is optional there. Deployments use one replica and Recreate strategy,
+PVC; each container mounts only its own directories of it (`control/`, which the
+workspace also reads as the harness's state, and its managed home/config
+directories). A second Pod runs worker and policy middleware over their shared block
+PVC; package cache is optional there. A third Pod, the
+[runtime manager](specs/kubernetes-runtime-bootstrap.md), runs the same
+`trusted-app` image as `sandbox-science-runtime-manager serve` over a small PVC of its
+own. It alone holds an OpenShell gateway credential outside the worker, and it alone
+creates, attaches to, replaces or deletes the agent runtime's Kata sandbox; it has no
+Service, listener or probes and runs no agent loop or model call. Deployments use one
+replica and Recreate strategy,
 retain PVCs independently of Deployment ownership, and rely on the existing service
 state locks. All containers run as UID/GID 1000 with fsGroup 1000, no added Linux
 capabilities, no privilege escalation, a read-only root filesystem and default
@@ -21,7 +29,8 @@ and PVC a profile names must carry the `openshell.ai/sandbox-attachable` labels
 
 A first UID-1000 init container mounts only that Pod's data PVC and creates the
 fixed missing state directories: `control` for the application, `worker` and
-`middleware` for the pool, plus `package-cache` when enabled. This breaks the cold
+`middleware` for the pool, plus `package-cache` when enabled, and `runtime` for the
+runtime manager. This breaks the cold
 volume startup dependency: workspace can initialize its empty control database
 before any runtime has connected. Initialization is create-only, preserves existing
 directory modes and all content, refuses symlink/non-directory collisions and does
@@ -48,8 +57,8 @@ Do not delete the generated PVCs or run `kubectl delete -f` on the entire bundle
 ordinary shutdown. A PVC is not a backup and moving artifacts to S3 does not archive
 the complete workspace or metadata recovery set.
 
-Each of `control`, `workspace`, `worker`, `middleware` and optional `cache` accepts
-these integer bounds; missing fields use the defaults below. Requests must fit
+Each of `control`, `workspace`, `worker`, `middleware`, optional `cache` and
+`runtime_manager` accepts these integer bounds; missing fields use the defaults below. Requests must fit
 limits and scratch must fit the ephemeral storage limit. These are per-container
 trusted-service resources, independent of OpenShell research profile resources.
 
@@ -64,6 +73,16 @@ Tune these to the measured workload and node capacity. The kernel enforces resou
 limits; a request alone reserves scheduler capacity. Service data must use the PVC
 layout below; the image root and credential mounts are read-only. `/tmp` is scratch,
 not retained state. Credentials have a separate 4 MiB memory emptyDir per service.
+
+`[runtime_manager]` also takes the manager Pod's `architecture` (`amd64` or `arm64`;
+the `trusted-app` image must cover it), `storage_gib` and optional `storage_class`
+for its own `ReadWriteOncePod` PVC (attachable from any node of that architecture;
+the class's CSI driver must support that access mode, so a second manager Pod, even on
+the same node, can never mount its state), and
+`openshell_gateway`, the gateway name of its OpenShell CLI profile. Its `/tmp` is a
+memory volume, since the runtime token passes through a private file there before
+upload, so its `scratch_mib` must also fit its memory limit. It accepts no
+`environment` table.
 
 ## Configure the workspace model catalog
 
@@ -99,11 +118,24 @@ corresponding cluster authority; this is not a replacement for cluster Secret po
 
 | Secret setting | Required keys copied to `/private/<key>` |
 | --- | --- |
-| `secrets.control` | `control.json`, `control-token`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` |
+| `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` |
 | `secrets.workspace` | `worker-token`, `worker-ca.crt` |
 | `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` |
 | `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` |
 | optional `secrets.cache` | `cache.toml` |
+| `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, and the OpenShell CLI profile `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key` |
+
+The runtime manager's Secret is its own (no other service may name it) and takes no
+`extra_files`. No other service's `extra_files` may name `manager-control.token`,
+`model.key` or a gateway profile key. Its copy init places the profile keys as the
+pinned CLI's tree under `/private/xdg`: `openshell/active_gateway` (the key
+`active-gateway`, holding exactly the `openshell_gateway` name),
+`openshell/gateways/<openshell_gateway>/metadata.json` and that directory's
+`mtls/ca.crt`, `mtls/tls.crt` and `mtls/tls.key`. Every other key keeps its name
+under `/private`. The profile's client certificate is the manager's own, issued by the
+gateway's client CA; without OpenShell OIDC roles it has platform-admin authority on
+the gateway, and revoking it means replacing the client CA
+([R1](specs/kubernetes-runtime-bootstrap.md#decisions-2026-10-22)).
 
 `name` selects the pre-existing Secret. `extra_files` may list up to 24 additional
 unique leaf keys (up to 64 characters, letters/digits/dot/dash/underscore), such as
@@ -155,8 +187,8 @@ The pinned CLI's XDG tree includes `openshell/active_gateway` and
 `mtls/ca.crt`, `mtls/tls.crt` and `mtls/tls.key`; preserve that actual tree through
 the trusted operator's existing secure configuration workflow.
 Default HOME is the existing per-container `/tmp` scratch volume. Engine/gateway
-credentials belong only in the worker's trusted state/private settings, not in the
-application containers. The renderer still does not mount kubeconfig or an engine
+credentials belong only in the worker's trusted state/private settings and the
+runtime manager's Secret, never in the application containers. The renderer still does not mount kubeconfig or an engine
 socket or grant cluster authority to any application.
 
 Configure the actual service settings using the existing
@@ -165,11 +197,33 @@ Configure the actual service settings using the existing
 
 * `control.json`: `state_dir` is `/var/lib/sandbox-science/control`, `listen` is
   `0.0.0.0:8443`, `tls.certificate` is `/private/control.crt`, `tls.private_key`
-  is `/private/control.key`. `runtime_token_file` points at `/private/control-token`.
+  is `/private/control.key`. Control mints the runtime's generation and token itself
+  (KRB-6): `runtime_token_file` is
+  `/run/sandbox-science/runtime-credentials/runtime.token`, a memory volume only
+  control mounts; `generation_file` is
+  `/var/lib/sandbox-science/control/runtime-generation`; `generation` is a placeholder
+  never issued; `manager_listen` is `0.0.0.0:8444` and `manager_token_sha256_file` is
+  `/private/runtime-manager-token.sha256`, the lowercase SHA-256 hex of the manager's
+  bearer token. There is no static runtime token.
   `worker` is `https://<name>-worker.<namespace>.svc:8100`, `worker_ca_file` is
   `/private/worker-ca.crt` and `worker_token_file` is `/private/worker-token`.
-  Record the trusted runtime image revision, generation, permitted projects,
-  model aliases/effort and other required settings; the renderer cannot infer them.
+  Record the trusted runtime image revision, permitted projects, model
+  aliases/effort and other required settings; the renderer cannot infer them.
+* `runtime-manager.json` ([settings](specs/kubernetes-runtime-bootstrap.md#the-manager-as-built)):
+  `state_dir` is `/var/lib/sandbox-science/runtime`; `control_url` is
+  `https://<name>-control.<namespace>.svc:8443` and `manager_url` the same host at
+  `8444`; `control_ca_file` is `/private/control-ca.crt`, `manager_token_file`
+  `/private/manager-control.token` (whose digest is control's
+  `runtime-manager-token.sha256`), `control_models_file` `/private/control-models.json`
+  (a copy of `control.json`, or its model part) and `model_key_file`
+  `/private/model.key`. `openshell.env` must set `XDG_CONFIG_HOME` to `/private/xdg`,
+  since the manager passes the CLI only that and its standard environment. `image`
+  and `revision` are the `orchestrator` runtime image's digest and source revision
+  (matching `control.json`'s `image_revision`), `policy` the runtime sandbox's
+  OpenShell target (control's runtime Service, the model gateway) and `runtime` its
+  Kata, amd64 Kubernetes profile; `recover_infrastructure` opts into bounded
+  automatic replacement. The container sets
+  `SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS=/private/runtime-manager.json`.
 * `worker.toml`: `listen = "0.0.0.0:8100"`, `[tls]` certificate/private key point at
   `/private/worker.crt` and `/private/worker.key`. Use state under
   `/var/lib/sandbox-science/worker`; OpenShell policy and event stores point at
@@ -210,13 +264,19 @@ recovery set. This bundle does not initialize project policy/bindings or restore
 ## Explicit network authority
 
 Default-deny policies select only this bundle's trusted Pods. Additive allow rules
-permit app-to-worker TCP 8100, approved `network.runtimes` to control TCP 8443 and
-approved `network.supervisors` to middleware TCP 50051. Cache TCP 8090 requires both
+permit app-to-worker TCP 8100, approved `network.runtimes` to control TCP 8443,
+the runtime manager's Pod (and nothing else) to control's manager port TCP 8444, and
+approved `network.supervisors` to middleware TCP 50051. The runtime manager accepts
+no connection; it reaches only DNS, control's TCP 8444 and the required
+`network.gateway` peer and ports (the OpenShell gateway), which no other Pod gets
+from the renderer. Cache TCP 8090 requires both
 `secrets.cache` and nonempty `network.sandboxes`. These are approved peer selectors,
 not a promise that arbitrary OpenShell Pods have the template's labels. Sandbox traffic leaves through each sandbox's OpenShell supervisor Pod, so
 `network.runtimes` must select supervisor Pods; their labels are fixed by OpenShell, so
 the rule admits every supervisor of the gateway, and the runtime token decides which
 connection control accepts ([runtime bootstrap](specs/kubernetes-runtime-bootstrap.md)).
+A selector peer in `network.runtimes` must therefore carry the pod labels
+`openshell.ai/component = "supervisor"` and this gateway's `openshell.ai/gateway-id`.
 
 Every peer uses either a canonical non-default CIDR or explicit namespace labels
 with optional Pod labels. Empty selectors and `0.0.0.0/0` / `::/0` are refused. DNS
@@ -254,26 +314,6 @@ and NetworkPolicies before an operator chooses a cluster context and applies it.
 executed by this tool. The operator must also prepare the exact project policies
 and recorded ownership.
 
-**Cluster runtime bootstrap is an unimplemented gate.** There is currently no safe
-cluster bootstrap command/controller that completes this rendered bundle. A third,
-separate image uses the `orchestrator` profile, not `trusted-app`. Its OCI image
-digest is distinct from its source revision; the source revision must match
-`control.json.image_revision`. Control and runtime must agree on protocol/schema,
-generation, scoped token, permitted projects and model allowlists/adapters/efforts.
-The private runtime settings (`runtime.json`), runtime token, model key and control
-CA must be placed inside the exact recorded original OpenShell sandbox, and its
-runtime CLI must execute only there. Neither a trusted Pod nor an init container
-runs that agent loop. Preparation, callback connectivity and original-identity
-recovery still require implementation and live qualification before a complete
-cluster launch can be claimed.
-
-Do not run `sandbox-science up` against this bundle as a bootstrap workaround: it
-creates a local control instance, rotates generation/token and creates a new
-runtime, breaking the cluster's intended original identity. Likewise, a failed
-handshake or empty PVC never authorizes inventing a replacement runtime or clearing
-ownership/recovery state. These gaps are explicit release gates, not actions the
-offline renderer performs.
-
 Control readiness `/ready` is independent of runtime connectivity so that its
 Service can accept the first authenticated runtime connection. `/live` is separate
 process liveness. Worker/middleware/cache readiness uses a TCP probe without a bearer
@@ -297,3 +337,34 @@ Public origins, secure cookies and authenticated ingress are a separate incremen
 Stop/replace Pods only through a recovery-aware operator procedure, preserving PVCs,
 original identities and unfinished effects. This offline increment does not qualify
 cluster isolation, S3 durability, crash recovery, PVC deletion or either architecture.
+
+## Bootstrap the agent runtime
+
+The runtime manager starts the agent runtime only on an operator's command. After
+the bundle is applied, control is ready and the manager is running:
+
+```sh
+kubectl -n research exec deploy/<name>-runtime-manager -- \
+  sandbox-science-runtime-manager request bootstrap
+kubectl -n research exec deploy/<name>-runtime-manager -- \
+  sandbox-science-runtime-manager request status
+```
+
+Bootstrap requires that the manager's PVC holds no `sandbox.json`. It compiles the
+runtime's policy, records a fresh `ss-orch-<10hex>` name, creates the sandbox from the
+pinned `orchestrator` image under the configured Kata profile, records its ID before
+waiting for Ready, asks control for a fresh generation and token, uploads them with
+the model key, control CA and `runtime.json`, and runs the runtime in an exec session.
+An empty PVC, failed handshake or missing record never creates a runtime. After that
+the manager reconnects to the same recorded sandbox at its own start and after a
+control restart; `request replace` replaces it explicitly, and `request stop --delete`
+is the teardown. Deleting the manager Pod stops the runtime without deleting its
+sandbox. The `orchestrator` image's OCI digest is distinct from its source revision,
+which must match `control.json`'s `image_revision`.
+
+Do not run `sandbox-science up` against this bundle as a bootstrap workaround: it
+creates a local control instance, rotates generation/token and creates a new
+runtime, breaking the cluster's intended original identity. Likewise, a failed
+handshake or empty PVC never authorizes inventing a replacement runtime or clearing
+ownership/recovery state. The manager and the bundle are not yet qualified on a live
+Kata cluster ([KRB-27](specs/kubernetes-runtime-bootstrap.md#delivery-and-tests)).

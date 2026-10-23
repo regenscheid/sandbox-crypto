@@ -32,6 +32,13 @@ storage_gib = 10
 architecture = "amd64"
 storage_gib = 20
 
+# The runtime manager: its own Pod and small PVC. It holds the OpenShell gateway
+# profile named here and creates the agent runtime's Kata sandbox on request.
+[runtime_manager]
+architecture = "arm64"
+storage_gib = 1
+openshell_gateway = "research-gateway"
+
 [secrets.control]
 name = "workbench-control"
 extra_files = []
@@ -47,6 +54,9 @@ extra_files = ["pool-token", "ceiling.yaml", "targets.yaml", "gateway.toml"]
 name = "workbench-middleware"
 extra_files = ["ceiling.yaml", "targets.yaml", "gateway-public.pem"]
 
+[secrets.runtime_manager]
+name = "workbench-runtime-manager"
+
 # Add [secrets.cache] name = "workbench-cache" and approved network.sandboxes
 # peers to enable the optional co-located package cache.
 
@@ -54,13 +64,21 @@ extra_files = ["ceiling.yaml", "targets.yaml", "gateway-public.pem"]
 namespace_labels = { "kubernetes.io/metadata.name" = "kube-system" }
 pod_labels = { "k8s-app" = "kube-dns" }
 
+# The runtime reaches control from its sandbox's supervisor Pod; OpenShell fixes those
+# labels, so select this gateway's supervisors (KRB-4).
 [[network.runtimes]]
 namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
-pod_labels = { "app.kubernetes.io/component" = "orchestrator-runtime" }
+pod_labels = { "openshell.ai/component" = "supervisor", "openshell.ai/gateway-id" = "YOUR_GATEWAY_ID" }
 
 [[network.supervisors]]
 namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
 pod_labels = { "app.kubernetes.io/component" = "supervisor" }
+
+# The OpenShell gateway, reachable only from the runtime manager.
+[network.gateway]
+ports = [8080]
+peer.namespace_labels = { "kubernetes.io/metadata.name" = "openshell" }
+peer.pod_labels = { "app.kubernetes.io/name" = "openshell" }
 
 # Add explicit [[network.app_egress]] and [[network.pool_egress]] entries for
 # approved gateway/S3/package destinations. No external egress is enabled here.

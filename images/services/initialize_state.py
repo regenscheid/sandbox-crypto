@@ -8,12 +8,19 @@ import os
 import sys
 from pathlib import Path
 
+LAYOUTS = {
+    "app": ("control",),
+    "pool": ("worker", "middleware"),
+    "runtime-manager": ("runtime",),
+}
+"""Each Pod's fixed state directories; the runtime manager's is its own PVC (KRB-9)."""
+
 
 def initialize(root: Path, component: str, *, package_cache: bool = False) -> None:
     """Initialize a mounted volume without following links or modifying existing state."""
-    if component not in ("app", "pool") or (package_cache and component != "pool"):
+    if component not in LAYOUTS or (package_cache and component != "pool"):
         raise ValueError("unsupported service state layout")
-    directories = ("control",) if component == "app" else ("worker", "middleware")
+    directories = LAYOUTS[component]
     if package_cache:
         directories += ("package-cache",)
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -37,7 +44,7 @@ def initialize(root: Path, component: str, *, package_cache: bool = False) -> No
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--component", choices=("app", "pool"), required=True)
+    parser.add_argument("--component", choices=tuple(LAYOUTS), required=True)
     parser.add_argument("--package-cache", action="store_true")
     args = parser.parse_args()
     try:
