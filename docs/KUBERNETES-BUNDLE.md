@@ -359,7 +359,8 @@ the model key, control CA and `runtime.json`, and runs the runtime in an exec se
 An empty PVC, failed handshake or missing record never creates a runtime. After that
 the manager reconnects to the same recorded sandbox at its own start and after a
 control restart; `request replace` replaces it explicitly, and `request stop --delete`
-is the teardown. Deleting the manager Pod stops the runtime without deleting its
+is the teardown. `request forget` clears a record whose create never happened (no ID,
+and the gateway answers that the name is absent); it is the operator's decision. Deleting the manager Pod stops the runtime without deleting its
 sandbox. The `orchestrator` image's OCI digest is distinct from its source revision,
 which must match `control.json`'s `image_revision`.
 

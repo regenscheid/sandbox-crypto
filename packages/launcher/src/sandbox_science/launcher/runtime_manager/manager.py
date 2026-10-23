@@ -14,23 +14,28 @@ on its own: the first one comes from the operator's ``request bootstrap`` (KRB-1
   ``recover_infrastructure``. A recorded sandbox that is confirmed gone or dead is
   replaced only with it too, after a confirmed identity-checked deletion (KRB-14).
 - Every automatic action is journaled pending before any effect, with at most ten
-  attempts (``InfrastructureRecovery``); a pending journal at start, an unknown or
+  attempts (``InfrastructureRecovery``); a pending replacement at start, an unknown or
   changed ID, or a foreign name blocks every automatic action until an operator
-  request succeeds (KRB-16, KRB-17).
+  request succeeds (KRB-16, KRB-17). A pending reattach is retried: it deletes and
+  creates nothing, and control revokes the previous token at each issue.
+- An operator request that created a sandbox but could not attach the runtime leaves
+  the attach to the serve loop, under the same journal.
 - SIGTERM ends the exec session and exits; nothing is deleted (KRB-15).
+- One ``serve`` per state directory: it holds ``serve.lock`` while it runs.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import fcntl
 import os
 import re
 import secrets
 import signal
 import tempfile
 from pathlib import Path
-from typing import NoReturn
+from typing import Literal, NoReturn
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
@@ -54,10 +59,31 @@ from .records import (
 )
 from .settings import RuntimeManagerSettings
 
+_CLAIMED = "request.claimed.json"
+"""``request.json`` once the serving process has taken it."""
 NAME = re.compile(r"ss-orch-[0-9a-f]{10}")
 """The only sandbox names the manager acts on (KRB-3)."""
 READY_LINE = "confined agent runtime ready"
 _LINE_BYTES = 64 * 1024
+"""The longest runtime output line relayed whole; a longer one is cut there."""
+_CLI_CALL = 120.0
+"""``OpenShell.run``'s own bound on one CLI call, which no setting changes."""
+_CONTROL_CALL = 10.0
+"""``ControlClient``'s bound on one call to control."""
+
+
+def request_deadline(settings: RuntimeManagerSettings) -> float:
+    """How long an operator's request may take at most: a replace, the longest one,
+    with each step at its bound, and a first reconcile before it, with a margin."""
+    stop, start = settings.stop_timeout, settings.start_timeout
+    stop_exec = stop + 1  # terminate, then the relay's last second
+    delete = 3 * _CLI_CALL + stop  # look up, delete, then poll until confirmed
+    drain = stop + 2  # the drain wait and its last check
+    create = 3 * _CLI_CALL + 2 * start  # look up, create, then poll until Ready
+    attach = 3 * _CONTROL_CALL + stop + 6 * _CLI_CALL + start  # credentials, upload, exec
+    replace = stop_exec + delete + drain + create + attach
+    reconcile = stop_exec + 2 * _CLI_CALL + attach  # an automatic attempt under way
+    return replace + reconcile + 30
 
 
 class BlockedError(LauncherError):
@@ -108,6 +134,7 @@ class RuntimeManager:
             clock=clock,
             steady=steady,
             delays=delays,
+            retryable=True,
         )
         self.process: asyncio.subprocess.Process | None = None
         self.attached: str | None = None
@@ -121,6 +148,8 @@ class RuntimeManager:
         self._next_health = 0.0
         self._alive_since: float | None = None
         self._shown = ""
+        self._created = False
+        """An operator request created a sandbox, so its attach is the serve loop's."""
 
     def alive(self) -> bool | None:
         """Whether the exec session runs (True), has ended (False) or is not held (None)."""
@@ -129,6 +158,8 @@ class RuntimeManager:
     async def run(self) -> None:
         """Serve until ``stopping`` is set, then end the exec session; never delete."""
         self._wanted = self.ownership.read() is not None
+        (self.root / _CLAIMED).unlink(missing_ok=True)  # a dead process's request
+        self._status("starting")  # names this process before the first reconcile
         serving = asyncio.create_task(self._serve())
         stopped = asyncio.create_task(self.stopping.wait())
         try:
@@ -241,6 +272,7 @@ class RuntimeManager:
             )
         placement = self.ownership.placement()
         recorded = placement.driver_config if placement is not None else None
+        self.recovery.irreversible()  # a deletion and a creation are never replayed
         await self._replace(recorded or self.settings.driver_config())
 
     async def _attach(self, owned: Owned) -> None:
@@ -330,26 +362,29 @@ class RuntimeManager:
         stream = process.stdout
         if stream is None:
             raise LauncherError("the runtime exec has no output to watch")
+        lines = _Lines(stream)
         while True:
-            line = await stream.readline()
-            if not line:
+            text = await lines.next()
+            if text is None:
                 await process.wait()
                 raise LauncherError(
                     f"the runtime exec ended before it was ready (status {process.returncode})"
                 )
-            text = line.decode("utf-8", errors="replace").rstrip()
             print("runtime: " + text, flush=True)
             if READY_LINE in text:
                 break
-        self._output = asyncio.create_task(_relay(stream))
+        self._output = asyncio.create_task(_relay(lines))
         while not (await asyncio.to_thread(self.control.health)).runtime_ready:
             if process.returncode is not None:
                 raise LauncherError("the runtime exec ended before control saw it ready")
             await self.clock.sleep(0.1)
 
     async def _stop_exec(self) -> None:
-        """End the exec session; OpenShell then ends the runtime (KRB-11)."""
-        process, self.process = self.process, None
+        """End the exec session; OpenShell then ends the runtime (KRB-11).
+
+        The handle is kept until the process has ended, so a stop interrupted by
+        SIGTERM leaves it for ``run``'s own stop to end."""
+        process = self.process
         if process is not None and process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 process.terminate()
@@ -359,6 +394,8 @@ class RuntimeManager:
                 with contextlib.suppress(ProcessLookupError):
                     process.kill()
                 await process.wait()
+        if self.process is process:
+            self.process = None
         output, self._output = self._output, None
         if output is not None:
             with contextlib.suppress(TimeoutError):
@@ -384,6 +421,7 @@ class RuntimeManager:
             )
         finally:
             self.ownership.creating = None
+        self._created = True
         await self._attach(owned)
 
     async def _delete(self) -> bool:
@@ -402,12 +440,20 @@ class RuntimeManager:
         await self._stop_exec()
         if not await self._delete():
             raise LauncherError("no runtime sandbox is recorded; request bootstrap")
-        await runtime_owner.wait_unoccupied(
-            self.settings.manager_url + "/health",
-            timeout=self.settings.stop_timeout,
-            ca_file=self.settings.control_ca_file,
-            clock=self.clock,
-        )
+        try:
+            await runtime_owner.wait_unoccupied(
+                self.settings.manager_url + "/health",
+                timeout=self.settings.stop_timeout,
+                ca_file=self.settings.control_ca_file,
+                clock=self.clock,
+            )
+        except OSError as exc:
+            # Control is unreachable, so no runtime holds its connection, and it revokes
+            # at its start; Attach's issue fences any survivor (KRB-7). Creating now
+            # keeps a record, which the serve loop attaches once control answers.
+            print(f"control did not answer the drain check ({exc}); creating", flush=True)
+        except LauncherError as exc:
+            raise LauncherError(f"{exc}; the old sandbox is deleted: request bootstrap") from None
         await self._create_and_attach(driver_config)
 
     async def _bootstrap(self) -> None:
@@ -420,6 +466,26 @@ class RuntimeManager:
         await self._stop_exec()
         await self._create_and_attach(self.settings.driver_config())
 
+    async def _forget(self) -> None:
+        """Clear a record whose create never happened: no ID was ever observed, and the
+        gateway answers that the name is absent. Observed absence without an identity
+        is no proof of deletion, so this is the operator's decision, never automatic."""
+        owned = self.ownership.read()
+        if owned is None:
+            raise LauncherError("no runtime sandbox is recorded; nothing to forget")
+        if owned.id is not None:
+            raise LauncherError(
+                "the recorded sandbox has a gateway ID; forget refused (request stop --delete)"
+            )
+        if await self.cli.sandbox(owned.name) is not None:
+            raise LauncherError(
+                "the gateway has a sandbox of the recorded name; forget refused "
+                "(request stop --delete adopts and deletes it)"
+            )
+        self.ownership.remove()
+        (self.root / "credentials.json").unlink(missing_ok=True)
+        print(f"forgot {owned.name}: the gateway has no sandbox of that name", flush=True)
+
     async def _teardown(self) -> None:
         await self._stop_exec()
         if not await self._delete():
@@ -428,7 +494,12 @@ class RuntimeManager:
 
     async def _answer(self) -> None:
         """Carry out the operator's request and write its receipt (``operations.request``)."""
-        path = self.root / "request.json"
+        # Claimed by a rename, so a newer request written meanwhile is the next one.
+        path = self.root / _CLAIMED
+        try:
+            (self.root / "request.json").rename(path)
+        except FileNotFoundError:
+            return
         try:
             data = read_bounded(path)
             if data is None:
@@ -439,6 +510,7 @@ class RuntimeManager:
             path.unlink(missing_ok=True)
             return
         error: str | None = None
+        self._created = False
         try:
             if not request.owned_by(self.instance):
                 raise LauncherError("the request names another runtime manager process")
@@ -447,23 +519,31 @@ class RuntimeManager:
                 await self._bootstrap()
             elif request.action == "replace":
                 await self._replace(self.settings.driver_config())
+            elif request.action == "forget":
+                await self._forget()
             else:
                 await self._teardown()
             self.recovery.save(RecoveryState())
             self._wanted = False
         except (LauncherError, OSError, ValueError) as exc:
             error = str(exc)[:512]
+            if self._created and self.ownership.read() is not None:
+                # The operator asked for a runtime and a sandbox of theirs is recorded:
+                # attaching it is the serve loop's, journaled and bounded.
+                self.recovery.save(RecoveryState())
+                self._wanted = True
+                error = (
+                    error[:400] + "; the new sandbox is kept and the manager keeps trying "
+                    "to attach the runtime"
+                )
             print(f"operator {request.action} failed: {error}", flush=True)
+        finally:
+            self._created = False
         receipt = Result(nonce=request.nonce, error=error)
         write_private(self.root / "result.json", receipt.model_dump_json() + "\n")
-        with contextlib.suppress(FileNotFoundError, LauncherError, ValueError):
-            current = read_bounded(path)
-            if current is not None and ManagerRequest.model_validate_json(current).nonce == (
-                request.nonce
-            ):
-                path.unlink()
+        path.unlink(missing_ok=True)
 
-    def _status(self) -> None:
+    def _status(self, runtime: Literal["starting"] | None = None) -> None:
         owned = self.ownership.read()
         state = self.recovery.state
         note = self.note
@@ -472,7 +552,7 @@ class RuntimeManager:
         status = Status(
             instance=self.instance,
             pid=os.getpid(),
-            runtime="running" if self.alive() else "stopped",
+            runtime=runtime or ("running" if self.alive() else "stopped"),
             sandbox=owned.name if owned is not None else None,
             control_instance=self.attached,
             note=note[:512] if note is not None else None,
@@ -483,16 +563,88 @@ class RuntimeManager:
             self._shown = shown
 
 
-async def _relay(stream: asyncio.StreamReader) -> None:
-    """Pass the runtime's output on to the manager's own, for the Pod's log."""
-    with contextlib.suppress(ValueError):
-        while line := await stream.readline():
-            print("runtime: " + line.decode("utf-8", errors="replace").rstrip(), flush=True)
+class _Lines:
+    """The exec's output as lines, read in bounded chunks until its end. A line longer
+    than ``_LINE_BYTES`` is cut there, with a notice, and its rest dropped: the pipe is
+    always drained, since a runtime blocked on a full pipe would still look alive."""
+
+    def __init__(self, stream: asyncio.StreamReader) -> None:
+        self.stream = stream
+        self.buffer = bytearray()
+        self.cutting = False
+        self.ended = False
+
+    async def next(self) -> str | None:
+        """The next line, without its end; None once the output has ended."""
+        while True:
+            end = self.buffer.find(b"\n", 0, _LINE_BYTES + 1)
+            if end >= 0:
+                line = bytes(self.buffer[:end])
+                del self.buffer[: end + 1]
+                if self.cutting:
+                    self.cutting = False
+                    continue
+                return _text(line)
+            if len(self.buffer) > _LINE_BYTES:
+                line = bytes(self.buffer[:_LINE_BYTES])
+                del self.buffer[:_LINE_BYTES]
+                if self.cutting:
+                    continue
+                self.cutting = True
+                return _text(line) + f" [line cut at {_LINE_BYTES} bytes]"
+            if self.ended:
+                line, cut = bytes(self.buffer), self.cutting
+                self.buffer.clear()
+                self.cutting = False
+                if line and not cut:
+                    return _text(line)
+                return None
+            chunk = await self.stream.read(_LINE_BYTES)
+            if chunk:
+                self.buffer += chunk
+            else:
+                self.ended = True
+
+
+def _text(line: bytes) -> str:
+    return line.decode("utf-8", errors="replace").rstrip()
+
+
+async def _relay(lines: _Lines) -> None:
+    """Pass the runtime's output on to the manager's own, for the Pod's log, until the
+    output ends."""
+    while (text := await lines.next()) is not None:
+        print("runtime: " + text, flush=True)
+
+
+def _hold_serve_lock(root: Path) -> int:
+    """Hold ``serve.lock`` for this process's life: two managers sharing one state
+    directory would each act on the same record and journal."""
+    descriptor = os.open(
+        root / "serve.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        raise LauncherError(
+            f"another runtime manager is serving from {root} (it holds serve.lock)"
+        ) from None
+    return descriptor
 
 
 async def serve(settings: RuntimeManagerSettings) -> None:
     """Serve with SIGTERM and SIGINT stopping (never deleting) and SIGUSR2 waking the
-    manager for an operator request."""
+    manager for an operator request. A second ``serve`` on the same state directory is
+    refused."""
+    lock = _hold_serve_lock(private_dir(settings.state_dir))
+    try:
+        await _serve_locked(settings)
+    finally:
+        os.close(lock)
+
+
+async def _serve_locked(settings: RuntimeManagerSettings) -> None:
     manager = RuntimeManager(settings)
     loop = asyncio.get_running_loop()
     handlers = {

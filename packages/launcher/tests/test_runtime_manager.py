@@ -6,10 +6,13 @@ start and on a new control instance, and bounded, opt-in recovery."""
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 import secrets
 import signal
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,9 +20,15 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher.runtime_manager import RuntimeManager, RuntimeManagerSettings
+from sandbox_science.launcher.runtime_manager import (
+    RuntimeManager,
+    RuntimeManagerSettings,
+    request,
+)
 from sandbox_science.launcher.runtime_manager.control import ControlClient
-from sandbox_science.launcher.runtime_manager.records import ManagerRequest, Result
+from sandbox_science.launcher.runtime_manager.manager import request_deadline
+from sandbox_science.launcher.runtime_manager.records import ManagerRequest, Result, Status
+from sandbox_science.launcher.state import private_dir
 from sandbox_science.testing import eventually
 
 from .conftest import openshell_stand_in
@@ -34,6 +43,7 @@ from .manager_support import (
 pytestmark = pytest.mark.slow
 
 RUNTIME = "sandbox_science.orchestrator.confinement.runtime"
+SERVE = (sys.executable, "-m", "sandbox_science.launcher.runtime_manager")
 
 
 class Site:
@@ -313,6 +323,7 @@ async def test_a_pending_journal_blocks_at_startup_until_an_explicit_replace(sit
             "attempts": 0,
             "retry_after": 0.0,
             "pending": False,
+            "retryable": False,
             "blocked": False,
             "error": None,
         }
@@ -404,3 +415,231 @@ async def test_uncertain_create_and_delete_keep_the_record(site: Site) -> None:
         assert error is not None
         assert "creation outcome is unknown" in error
         assert site.record() == record
+
+
+async def test_the_runtime_output_is_drained_past_an_oversized_line(
+    site: Site, capsys: pytest.CaptureFixture[str]
+) -> None:
+    site.set_fake(behaviour="exec-floods")
+    seen: list[str] = []
+
+    def shown() -> str:
+        seen.append(capsys.readouterr().out)
+        return "".join(seen)
+
+    async with serving(site.manager()) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        # The exec wrote far more than a pipe holds after its long line: it never blocked.
+        await eventually(lambda: (site.tmp_path / "flooded").exists())
+        await eventually(lambda: "runtime: flood done" in shown())
+        await eventually(running(site))
+    lines = shown().splitlines()
+    (cut,) = [line for line in lines if "line cut at" in line]
+    assert len(cut) < 64 * 1024 + 64
+    assert "runtime: line 1999 " + "y" * 200 in lines
+
+
+def test_a_second_serve_on_one_state_directory_is_refused(tmp_path: Path) -> None:
+    tls = localhost_tls(tmp_path / "tls")
+    document = settings_document(
+        tmp_path, manager_url="https://localhost:9", ca=tls.certificate, cli="openshell"
+    )
+    settings = tmp_path / "runtime-manager.json"
+    settings.write_text(json.dumps(document))
+    root = private_dir(Path(document["state_dir"]))
+    held = os.open(root / "serve.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # as a serving manager holds it
+        second = subprocess.run(
+            [*SERVE, "--settings", str(settings), "serve"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    finally:
+        os.close(held)
+    assert second.returncode == 1
+    assert "another runtime manager is serving" in second.stderr
+    assert not (root / "status.json").exists()
+
+
+async def test_an_operator_create_whose_attach_failed_is_attached_by_the_serve_loop(
+    site: Site,
+) -> None:
+    site.set_fake(behaviour="exec-fails")
+    async with serving(site.manager()) as manager:
+        error = await site.ask(manager, "bootstrap")
+        assert error is not None
+        assert "keeps trying to attach" in error
+        site.set_fake(behaviour="")
+        record = site.record()
+        assert record is not None
+        await eventually(running(site))
+        assert site.record() == record
+    assert site.count("openshell sandbox create") == 1
+
+
+async def test_a_replace_while_control_is_down_attaches_once_control_answers(site: Site) -> None:
+    record = await bootstrapped(site)
+    async with serving(site.manager()) as manager:
+        await eventually(running(site))
+        await site.control.down()
+        error = await site.ask(manager, "replace")
+        assert error is not None
+        assert "keeps trying to attach" in error
+        replaced = site.record()
+        assert replaced is not None
+        assert replaced["name"] != record["name"]
+        await site.control.up(site.tls)
+        await eventually(running(site))
+    assert site.record() == replaced
+    assert site.count("openshell sandbox create") == 2
+
+
+async def test_forget_clears_only_an_id_less_record_the_gateway_proves_absent(
+    site: Site,
+) -> None:
+    site.set_fake(behaviour="create-fails")
+    async with serving(site.manager()) as manager:
+        assert await site.ask(manager, "bootstrap") is not None
+        record = site.record()
+        assert record is not None
+        assert record["id"] is None
+        site.set_fake(behaviour="get-fails")  # a gateway error is not absence
+        assert await site.ask(manager, "forget") is not None
+        assert site.record() == record
+        site.set_fake(behaviour="")
+        assert await site.ask(manager, "forget") is None
+        assert site.record() is None
+        assert await site.ask(manager, "bootstrap") is None
+        await eventually(running(site))
+        error = await site.ask(manager, "forget")  # the record has the gateway's ID
+        assert error is not None
+        assert "gateway ID" in error
+        assert await site.ask(manager, "stop") is None
+        site.set_fake(behaviour="create-pending")  # made, though create failed
+        assert await site.ask(manager, "bootstrap") is not None
+        pending = site.record()
+        assert pending is not None
+        assert pending["id"] is None
+        error = await site.ask(manager, "forget")
+        assert error is not None
+        assert "the gateway has a sandbox" in error
+        assert site.record() == pending
+    assert site.count("openshell sandbox delete") == 1
+
+
+async def test_sigterm_during_a_stop_still_ends_the_exec(site: Site) -> None:
+    await bootstrapped(site)
+    site.set_fake(behaviour="exec-ignores-term")
+    manager = site.manager()
+    task = asyncio.create_task(manager.run())
+    try:
+        await eventually(running(site))
+        asking = asyncio.create_task(site.ask(manager, "stop"))
+        await eventually(lambda: any("ignores SIGTERM" in step for step in site.steps()))
+        manager.stopping.set()  # SIGTERM while the teardown waits for the exec
+        await asyncio.wait_for(task, 30)
+        asking.cancel()
+        await asyncio.gather(asking, return_exceptions=True)
+    finally:
+        manager.stopping.set()
+        await asyncio.wait_for(task, 30)
+    assert live_runtimes(site.tmp_path) == []
+
+
+async def test_a_request_written_while_another_is_answered_is_kept(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with serving(site.manager()) as manager:
+        newer = ManagerRequest(
+            nonce="replacement-" + secrets.token_hex(16),
+            instance=manager.instance,
+            action="stop",
+            delete=True,
+        )
+        real = Path.unlink
+        written: list[bool] = []
+
+        def unlink(path: Path, missing_ok: bool = False) -> None:
+            # A newer request arrives just as the manager clears the one it answered.
+            if (
+                path.parent == site.root
+                and path.name.startswith("request")
+                and not written
+                and (site.root / "result.json").exists()
+            ):
+                written.append(True)
+                (site.root / "request.json").write_text(newer.model_dump_json())
+            real(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        assert await site.ask(manager, "stop") is None  # nothing recorded, nothing to do
+        assert written
+
+        def answered() -> bool:
+            found = Result.model_validate_json((site.root / "result.json").read_bytes())
+            return found.nonce == newer.nonce
+
+        await eventually(answered)
+
+
+async def test_a_starting_manager_names_itself_before_its_first_reconcile(site: Site) -> None:
+    await bootstrapped(site)
+    site.control.occupied = True  # the first attach waits for the old runtime to drain
+    async with serving(site.manager(stop_timeout=60)) as manager:
+        await eventually(lambda: site.status()["instance"] == manager.instance, timeout=10)
+        assert site.status()["runtime"] == "starting"
+        site.control.occupied = None
+        await eventually(running(site))
+
+
+async def test_an_interrupted_reattach_is_retried_at_the_next_start(site: Site) -> None:
+    record = await bootstrapped(site)
+    site.control.occupied = True
+    async with serving(site.manager(stop_timeout=60)):
+        await eventually(lambda: site.recovery()["pending"])
+        assert site.recovery()["retryable"]
+    assert site.recovery()["pending"]  # SIGTERM during the attach
+    site.control.occupied = None
+    async with serving(site.manager()):
+        await eventually(running(site))
+        assert not site.recovery()["blocked"]
+    assert site.record() == record
+    assert site.count("openshell sandbox create") == 1
+
+
+def test_a_request_waits_as_long_as_the_managers_bounds_allow(tmp_path: Path) -> None:
+    document = settings_document(
+        tmp_path, manager_url="https://localhost:9", ca=tmp_path / "ca.pem"
+    )
+    settings = RuntimeManagerSettings.model_validate(
+        document | {"start_timeout": 0.01, "stop_timeout": 0.01}
+    )
+    assert request_deadline(settings) > 2 * 0.01 + 2 * 0.01 + 10 + 2
+    root = private_dir(settings.state_dir)
+    slow = (
+        "import json, pathlib, signal, sys, time\n"
+        "asked = []\n"
+        "signal.signal(signal.SIGUSR2, lambda *_: asked.append(1))\n"
+        "print('ready', flush=True)\n"
+        "while not asked: time.sleep(0.02)\n"
+        "time.sleep(12)  # longer than the old fixed deadline, within the bounds\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "nonce = json.loads((root / 'request.json').read_text())['nonce']\n"
+        "(root / 'result.json').write_text(json.dumps({'nonce': nonce}))\n"
+        "time.sleep(30)\n"
+    )
+    manager = subprocess.Popen(
+        [sys.executable, "-c", slow, str(root)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert manager.stdout is not None
+        assert manager.stdout.readline() == "ready\n"
+        status = Status(instance="instance-" + "a" * 32, pid=manager.pid, runtime="running")
+        (root / "status.json").write_text(status.model_dump_json())
+        assert request(settings, "replace", poll=0.05) == 0
+    finally:
+        manager.kill()
+        manager.wait()

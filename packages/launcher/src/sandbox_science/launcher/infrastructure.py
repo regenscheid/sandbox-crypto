@@ -23,6 +23,9 @@ class RecoveryState(Contract):
     attempts: int = Field(default=0, ge=0, le=10)
     retry_after: float = Field(default=0, ge=0)
     pending: bool = False
+    retryable: bool = False
+    """The pending action has so far only reattached the recorded sandbox, which a
+    restart may retry; one that may delete or create is never replayed."""
     blocked: bool = False
     error: str | None = Field(default=None, max_length=512)
 
@@ -37,6 +40,10 @@ class InfrastructureRecovery:
     ``alive`` says whether the runtime its owner holds is running (True), has ended
     (False) or is not held at all (None); ``replace`` is the owner's replacement, which
     leaves no runtime held when it fails; ``stopping`` is set when the owner stops.
+
+    With ``retryable`` each attempt is journaled as one a restart may retry, until the
+    owner calls ``irreversible`` before its first effect that a retry could not repeat
+    safely (a deletion or a creation); the attempt still counts toward the bound.
     """
 
     def __init__(
@@ -51,8 +58,10 @@ class InfrastructureRecovery:
         poll: float = 1,
         steady: float = 60,
         delays: tuple[float, ...] = (2, 4, 8, 16, 32, 60),
+        retryable: bool = False,
     ) -> None:
         self.path, self.enabled, self.alive = path, enabled, alive
+        self.retryable = retryable
         self.replacement, self.stopping = replace, stopping
         self.clock, self.poll, self.steady, self.delays = clock, poll, steady, delays
         self.state = RecoveryState()
@@ -60,7 +69,17 @@ class InfrastructureRecovery:
             if self.path.stat().st_size > 4096:
                 raise LauncherError("infrastructure recovery journal exceeds its byte bound")
             self.state = RecoveryState.model_validate_json(self.path.read_bytes())
-            if self.state.pending:
+            if self.state.pending and self.state.retryable:
+                self.save(
+                    self.state.model_copy(
+                        update={
+                            "pending": False,
+                            "retryable": False,
+                            "error": "a reattach was interrupted; it is retried",
+                        }
+                    )
+                )
+            elif self.state.pending:
                 self.save(
                     self.state.model_copy(
                         update={
@@ -73,6 +92,11 @@ class InfrastructureRecovery:
     def save(self, state: RecoveryState) -> None:
         self.state = state
         write_private(self.path, state.model_dump_json() + "\n")
+
+    def irreversible(self) -> None:
+        """Journal the pending attempt as one a restart must not replay."""
+        if self.state.pending and self.state.retryable:
+            self.save(self.state.model_copy(update={"retryable": False}))
 
     async def wait(self) -> None:
         """Return only when a dead agent is eligible for the next audited attempt."""
@@ -109,7 +133,10 @@ class InfrastructureRecovery:
         delay = self.delays[min(attempts, len(self.delays)) - 1]
         self.save(
             RecoveryState(
-                attempts=attempts, pending=True, retry_after=self.clock.now().timestamp() + delay
+                attempts=attempts,
+                pending=True,
+                retryable=self.retryable,
+                retry_after=self.clock.now().timestamp() + delay,
             )
         )
         print(

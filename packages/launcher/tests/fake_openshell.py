@@ -20,7 +20,10 @@ between commands. ``create-provisioning`` leaves a new sandbox Provisioning;
 ``create-pending`` makes create fail after making the sandbox; ``get-gateway-not-found``
 fails ``sandbox get`` with a gateway error whose text says "not found" (not absence);
 ``delete-ignored`` answers ``sandbox delete`` without deleting; ``exec-fails`` ends the
-runtime's exec before it is ready and ``exec-exits`` soon after. ``sandbox create``
+runtime's exec before it is ready and ``exec-exits`` soon after; ``exec-floods`` has it
+write a line longer than 64 KiB and then far more than a pipe holds, then ``flood done``
+and a ``flooded`` file beside the state file; ``exec-ignores-term`` has it ignore
+SIGTERM (noting so), so only SIGKILL ends it. ``sandbox create``
 keeps its ``--driver-config-json``; with the state's ``record`` naming a file, it notes
 that file's content as it was when create ran. ``sandbox upload`` copies each file to
 ``uploads/<sandbox>/`` beside the state file.
@@ -136,12 +139,21 @@ def runtime(name: str) -> None:
     marker = state_file.parent / f"runtime-{os.getpid()}.live"
 
     def stopped(*_: object) -> None:
+        if "exec-ignores-term" in behaviours():
+            note(f"exec {name} ignores SIGTERM")
+            return
         marker.unlink(missing_ok=True)
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, stopped)
     marker.write_text(name)
     print("confined agent runtime ready", flush=True)
+    if "exec-floods" in behaviours():
+        print("x" * 70000, flush=True)
+        for number in range(2000):
+            print(f"line {number} " + "y" * 200, flush=True)
+        print("flood done", flush=True)
+        (state_file.parent / "flooded").touch()
     started = time.monotonic()
     while True:
         time.sleep(0.05)

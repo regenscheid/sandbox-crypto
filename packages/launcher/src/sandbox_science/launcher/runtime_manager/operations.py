@@ -12,12 +12,17 @@ deploy/runtime-manager -- sandbox-science-runtime-manager request bootstrap``:
 - ``request stop --delete`` is teardown: the runtime stops and the sandbox is deleted
   the same way, its record removed once confirmed. A stop that deletes nothing is the
   manager's SIGTERM (scaling the Deployment to zero), which keeps the sandbox (KRB-15).
+- ``request forget`` clears a record whose create never happened: one without a gateway
+  ID, whose name the gateway answers it does not have. Absence observed without an
+  identity is no proof that nothing was made, so this is the operator's decision; it
+  refuses any other record.
 - ``request status`` shows the serving process, the record and the recovery journal.
 
 A request reaches only the serving process that ``status.json`` names, bound to its
 random instance nonce as the host launcher's replacement requests are bound to the
 launcher: the command writes ``request.json``, wakes the process with SIGUSR2 and waits
-for the receipt carrying its nonce. One request waits at a time.
+for the receipt carrying its nonce, as long as the manager's bounds allow
+(``request_deadline``). One request waits at a time.
 """
 
 from __future__ import annotations
@@ -38,17 +43,18 @@ from typing import Literal
 from sandbox_science.launcher.config import LauncherError
 from sandbox_science.launcher.state import check_private, write_private
 
-from .manager import serve
+from .manager import request_deadline, serve
 from .records import ManagerOwnership, ManagerRequest, Result, Status, read_bounded
 from .settings import RuntimeManagerSettings, load
 
-Action = Literal["bootstrap", "replace", "stop"]
+Action = Literal["bootstrap", "replace", "stop", "forget"]
 SETTINGS_ENV = "SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS"
 DEFAULT_SETTINGS = Path("/etc/sandbox-science/runtime-manager/runtime-manager.json")
 DONE = {
     "bootstrap": "runtime sandbox created and the runtime attached",
     "replace": "runtime sandbox replaced; explicitly Resume unfinished work in the workspace",
     "stop": "runtime stopped and its sandbox deleted",
+    "forget": "the record of a sandbox never created is cleared; request bootstrap next",
 }
 
 
@@ -88,7 +94,7 @@ def request(settings: RuntimeManagerSettings, action: Action, *, poll: float = 0
         )
         write_private(root / "request.json", selected.model_dump_json(exclude_none=True) + "\n")
         os.kill(serving.pid, signal.SIGUSR2)
-        deadline = time.monotonic() + 2 * settings.start_timeout + 2 * settings.stop_timeout + 10
+        deadline = time.monotonic() + request_deadline(settings)
         while _alive(serving.pid):
             data = read_bounded(root / "result.json")
             receipt = None if data is None else Result.model_validate_json(data)
@@ -134,7 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("serve", help="own, reconnect and watch the runtime until SIGTERM")
     asking = commands.add_parser("request", help="ask the serving manager to act")
-    asking.add_argument("action", choices=("bootstrap", "replace", "stop", "status"))
+    asking.add_argument("action", choices=("bootstrap", "replace", "stop", "forget", "status"))
     asking.add_argument(
         "--delete", action="store_true", help="with stop: delete the runtime sandbox (teardown)"
     )

@@ -127,6 +127,9 @@ class FakeControl:
     health_calls: int = 0
     occupied: bool | None = None
     """Forces occupancy; None reads the runtime markers."""
+    runner: web.AppRunner | None = None
+    site: web.TCPSite | None = None
+    port: int = 0
 
     def _live(self) -> bool:
         return self.occupied if self.occupied is not None else bool(live_runtimes(self.markers))
@@ -190,20 +193,34 @@ class FakeControl:
         issue.token = secrets.token_hex(32)
         return web.json_response({"generation": issue.generation, "token": issue.token})
 
+    async def down(self) -> None:
+        """Stop listening, so the manager's calls are refused, as when control is down."""
+        assert self.site is not None
+        await self.site.stop()
+
+    async def up(self, tls: LocalTls) -> None:
+        """Listen again on the same port."""
+        assert self.runner is not None
+        self.site = web.TCPSite(
+            self.runner, "127.0.0.1", self.port, ssl_context=tls.server(), reuse_address=True
+        )
+        await self.site.start()
+
     @asynccontextmanager
     async def serving(self, tls: LocalTls) -> AsyncIterator[str]:
         """Serve on a free port; yields the manager URL."""
         app = web.Application()
         app.router.add_get("/health", self.health)
         app.router.add_post("/runtime/credentials", self.issue)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", 0, ssl_context=tls.server())
-        await site.start()
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, "127.0.0.1", 0, ssl_context=tls.server())
+        await self.site.start()
+        self.port = self.runner.addresses[0][1]
         try:
-            yield f"https://localhost:{runner.addresses[0][1]}"
+            yield f"https://localhost:{self.port}"
         finally:
-            await runner.cleanup()
+            await self.runner.cleanup()
 
 
 def private(path: Path, text: str) -> Path:

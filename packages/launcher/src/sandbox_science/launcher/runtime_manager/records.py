@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """What the runtime manager keeps on its PVC (KRB-9), each file mode 600 in a mode-700
-directory and replaced in one step:
+directory, replaced in one step and synced:
 
 ```
 <state_dir>/
@@ -8,7 +8,9 @@ directory and replaced in one step:
     infrastructure-recovery.json  the journal of automatic actions (``RecoveryState``)
     credentials.json              the in-flight credentials request, and whether an exec used it
     request.json, result.json     an operator request and its receipt
+    request.claimed.json          the request the serving process has taken and is answering
     request.lock                  held by the one operator request waiting for its receipt
+    serve.lock                    held by the one serving process
     status.json                   the serving process: its instance nonce, PID and view
     policy.yaml, runtime.json     the runtime sandbox's policy and settings
 ```
@@ -135,7 +137,8 @@ class Status(Contract):
 
     instance: str = Field(pattern=r"^instance-[0-9a-f]{32}$")
     pid: int = Field(gt=0)
-    runtime: Literal["running", "stopped"]
+    runtime: Literal["starting", "running", "stopped"]
+    """``starting`` until the process's first reconcile has finished."""
     sandbox: str | None = Field(default=None, max_length=128)
     control_instance: str | None = Field(default=None, max_length=128)
     note: str | None = Field(default=None, max_length=512)
@@ -144,7 +147,7 @@ class Status(Contract):
 class ManagerRequest(replacement.Request):
     """An operator's request to the serving manager, bound to its instance nonce."""
 
-    action: Literal["bootstrap", "replace", "stop"]
+    action: Literal["bootstrap", "replace", "stop", "forget"]
     delete: bool = False
 
     @model_validator(mode="after")

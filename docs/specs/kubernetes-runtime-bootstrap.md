@@ -329,6 +329,43 @@ the `sandbox-science-runtime-manager` script. Where the design left a choice:
 - **Bounds.** An automatic attempt starts only while control's health answers, so a
   control restart does not consume the budget. A gateway error (never absence) counts
   as an attempt, and ten of them block, as the table above says.
+- **One serving process.** `serve` holds an exclusive `flock` on `serve.lock` in the
+  state directory for its lifetime and refuses to start (exit 1) while another holds
+  it; the renderer's `ReadWriteOncePod` PVC keeps a second Pod off the volume too.
+- **Durable records.** Every PVC record is written to a temporary file, synced,
+  renamed over the old one and the directory synced (`state.write_private`, which the
+  host launcher shares), as control's `_publish` does.
+- **Output.** The exec's output is read in bounded chunks until it ends; a line over
+  64 KiB is cut there with a notice and its rest dropped, so a long line never stops
+  the reading and the runtime never blocks on a full pipe.
+- **Interrupted actions.** The journal's `retryable` marks a pending attempt that has
+  only reattached the recorded sandbox: after a restart it is retried, still counting
+  toward the ten (control revokes the previous token at every issue). Before a
+  deletion the attempt is marked not retryable, so a pending replacement still blocks.
+  SIGTERM during a stop keeps the exec's handle until the process is waited or killed.
+- **Operator requests that fail part-way.** Each error is in the receipt. If the drain
+  check after a confirmed deletion cannot reach control, the create goes ahead, since
+  no runtime can hold control's connection and Attach's issue fences any survivor;
+  another drain failure leaves nothing recorded and asks for `request bootstrap`. Once
+  an operator's bootstrap or replace has created a sandbox whose attach failed, the
+  serve loop keeps attaching it under the journal (pending, at most ten, blocks apply).
+- **`request forget`** clears a record without an ID only when the gateway answers
+  that the name is absent (`SandboxMissingError`); it refuses a record with an ID, a
+  name the gateway has, and any gateway error. Absence observed without an identity
+  is no proof that nothing was made, so this is the operator's decision, never an
+  automatic one.
+- **Request channel.** The serving process claims `request.json` by renaming it to
+  `request.claimed.json` before reading it, so a newer request is never deleted;
+  writes `status.json` with `runtime: starting` before its first reconcile, so a
+  restart is reachable at once; and the command waits as long as a replace can take
+  at the configured timeouts and the CLI's and control's per-call bounds
+  (`request_deadline`), with a margin.
+- **Settings default.** `openshell.env.XDG_CONFIG_HOME` defaults to `/private/xdg`,
+  where the bundle mounts the CLI's gateway profile; an explicit value wins.
+- **Control's journal** keeps the latest 256 issues, so it never reaches its 16 MiB
+  start refusal: the latest replays, the window refuses recent requests as superseded,
+  an older request mints fresh values, and new generations are still checked against
+  the retained ones and the generation file.
 
 ## The renderer as built
 
