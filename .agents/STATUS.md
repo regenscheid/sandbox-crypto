@@ -1,73 +1,56 @@
 # Status
 
-Settled architecture (2026-10-23): D95–D103 and amended D92 in the [decisions](../docs/DECISIONS.md); work follows the [implementation sequence](BACKLOG.md#architecture-2026-10-23-implementation-sequence).
-
-Architecture audit (2026-10-23): [report](docs/agent-reports/architecture-audit-2026-10-23.md). Containment boundaries sound; gates key on tool names not effects; routine reads still escalate with a CLI-only approval path; ~5k lines of cluster-only durability unused; nightly CI red. Architecture decisions to settle before cluster work are listed there.
-
-Updated 2026-10-22. `k8s-sync` merges `origin/dev` (`3918ccd0`) into `k8s` (`5990f3b0`). Dev schema migrations keep versions 74–75; the Kubernetes upload/retention/index migrations are renumbered 76–78, and the Kubernetes decision is D92 (dev's D91 is the context refactor). No cluster was accessed or deployed; image publication remains deferred.
-
-Earlier dev context: updated 2026-10-21. The context-focused refactor is isolated on
-`agent-context-refactor`, based on `origin/dev` at `391cb7a7`, with its later
-recovery update `1ad689e3` merged into this branch.
-The primary checkout and deployed services are unchanged. Context ownership,
-attempt finalization and workspace request execution are implemented and locally
-reviewed; no remote merge or rollout is implied.
-
-## Kubernetes work
-
-Profile placement/resource bounds and architecture stay pinned with sandbox ownership. Research images ship native scheduler shims and retain real packages under `/sandbox`, with `/opt` compatibility. Required identity/fingerprint checks preserve known revisions; exact restoration uses durable ACK/epoch mapping before execution. Journals and unrelated holds remain. Local AMD64 minimal container/Landlock and retained-volume recreation pass; native ARM64/crypto-base and actual OpenShell Kubernetes qualification remain open. New image publication is deferred by the owner.
-
-Optional S3 backing supports verified immutable content, cold reads and local eviction. New upload originals stream into it; legacy inline rows remain. The 100 MiB HTTP test stays below 32 MiB traced allocation. Earlier disposable S3 evidence covers 128 MiB cold retrieval and immutable retry, followed by teardown.
-
-Worker protocol 11 retains exact project-permitted ACK/outbox delivery and offline replica release under StateLock. Bounded control-cache maintenance now uses indexed hash pages, an age/count/byte policy and a private resumable cursor; failed or unverified copies stay local. Complete offline workspace checkpoints preserve packages, journals, modes and links, with verified chunked S3 upload/fetch. Restore needs a new directory and retains ownership/recovery holds. A 128 MiB Garage archive/retry/fetch/restore passed with teardown.
-
-Unpublished trusted app/worker recipes, verified control/worker TLS and private CA clients, admission readiness, owned drain, private credential copying and the offline Kubernetes renderer are implemented. Rendered services have bounded resources, singleton RWO metadata PVCs, per-role SDK discovery, no service-account tokens and explicit NetworkPolicies. Schema/review evidence is clear; actual image/runtime results are in the [operations report](docs/agent-reports/k8s-operations-2026-10-20.md). Coordinated recovery sets, cluster writer fences/PVC release, recorded runtime bootstrap and actual CNI/ARM64 acceptance remain open. No cluster, real credentials or existing service was touched.
+Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [PLAN-CHANGES](PLAN-CHANGES.md), [decisions](../docs/DECISIONS.md).
 
 ## Phase and focus
 
-The [context ownership refactor](../docs/specs/agent-context-refactor.md) consolidates
-preparation, active state, histories, folding, search and diagnostics under
-`orchestrator/context/`. Root and delegated agents share it. The follow-up removes
-Transcript's forwarding properties and gives folding a context-only interface with
-an ordered lifecycle adapter. New retention protects full recent call/result units;
-narrative prompts prioritize takeaways and retrieval anchors. Overview validation
-pages original text and stops once candidate evidence is proven; enrichment budgets
-actual narrative room before admission. Archive and transport formats are unchanged.
-The follow-up passed 743 integration tests and 42 final evidence/enrichment checks;
-static and repository checks pass. Independent review corrected
-research-state hold detection, numeric arrays and signed values at page boundaries.
-Prior first-stage checks: 426 targeted and 855 workspace passes. Broad-suite baseline failures and an
-unresolved intermittent serving timeout are recorded in the [report](docs/agent-reports/context-refactor-2026-10-21.md).
+- `k8s-sync` is the integration branch. It is `k8s` plus `origin/dev` (`3918ccd0`), then the settled architecture (D95-D103, D92 amended) built on top. Nothing is pushed.
+- `dev` is unchanged except PR #520. `main` is unchanged.
+- The nightly runs the workflow file on `main`, so the sharded flake-measuring jobs reach it only when merged there. Nightly CI is not yet green.
+- No cluster, personal instance or preserved SNOVA service has been touched by this work.
 
-Three follow-ups are integrated and independently reviewed: typed capability assembly,
-pure review snapshot planning, and generated document/comment/job contracts with
-focused clients. Combined checks: 804 pass, three ledger failures match the prior
-baseline exactly; 92 final checks, 862 workspace and 2,289 frontend tests pass.
-See the [report](docs/agent-reports/parallel-refactor-2026-10-21.md). The remaining
-executor, ledger and provisioning ownership refactors are integrated and independently
-reviewed. Worker slow tests: 826 passed, 26 skipped; web: 2,289 passed. Fast tier:
-13,782 passed; baseline failures remain, as detailed in the
-[ownership report](docs/agent-reports/priority-ownership-refactor-2026-10-21.md).
-No merge or rollout is implied.
+## Built and verified (offline tests only)
 
-The owner authorized **$150 aggregate new model-testing spend** for the six-item [completion campaign](docs/agent-reports/completion-campaign-2026-10-18.md), superseding the earlier $75 proposal. This does not restart SNOVA or approve additional research token grants. All six implementation areas are integrated and their campaign acceptance is complete. The wider backlog is not complete.
+- The full suite passes offline: Python, web, math and figure checks, static and license checks.
+- Effect classes, per-server classifications, argument rules, lockdown modes and the drift test (D95, D96).
+- Grants of a class, a host or a package source, with cards for every request kind (D97).
+- Reads-free defaults: GET/HEAD on any port, upload-pack anywhere, reviewed read-only POST list (D95).
+- A child's fence covers outward effects only (D99).
+- Automatic retries and one Resume for the whole tree; idle suspension off by default (D100).
+- Worker, policy middleware and package cache as one unit (D101).
+- Budgets only track; soft caps are check-ins; one local cost enforcement (D102).
+- One logging setup for every service, Pod labels and log-collection steps (D103).
+- Persistent kernels are the default for computation; one OpenShell version constant.
+- The operator checklist and the backup and restore runbook are written.
 
-- **Recovery:** opt-in launcher supervision restarts owned worker/control/workspace processes and replaces only the recorded agent VM. Durable bounded retry state survives launcher loss; exhausted optional components leave a degraded instance. Automatic root Resume reconciles supported original effects and honors Stop, ownership and budgets. Unknown worker/MCP effects are not blindly replayed. Three owned live probes passed worker restart, agent-VM replacement and host-process-loss recovery while a genuine Sage job retained its original operation. The real-model tree then completed after control/runtime replacement; this is not physical-host reboot qualification or arbitrary interpreter restoration.
-- **Resources:** durable parent check-ins support continue, redirect, report, pause and policy-bounded turn/time/retained-artifact extensions. Cumulative grants survive Resume, including nested ancestor accounting. Root self-renewal is opt-in, bounded by policy and newer persisted evidence; it never extends tokens. Explicitly approved paused root/child turn, time and storage allowances can enter automatic root Resume. Token approval is separate: each next 10,000,000 tokens requires explicit USER approval. New delegated defaults remain 20,000,000 tokens and 300 turns; existing explicit settings remain intact. Retained storage is logical artifact revision bytes, not VM disk capacity.
-- **Context and diagnostics:** live and saved attempts have a bounded recent timeline, provider cache counters and a separate auxiliary-call snapshot. Visible dispatch composition is captured with its admitted intent, immutable prompt/source provenance and bounded UTF-8 text reads. Oversized diagnostic omissions do not prevent model execution. Original-history indexing includes retained retrieval echoes, exact substring verification and explicit incomplete coverage; same-work continuations remain separate from children/siblings. Incremental blob reads bound large-body work. Pending-index metadata scans still grow with scoped history. Fold retries/fallbacks retain bounded diagnostic receipts without treating estimates as measured context occupancy.
-- **Workspace:** Skills, safe MCP structural schemas and applicable policy, explicit dated availability checks, Memory accepted/proposal/detail/history views, Overview and session Plan/Agents/Activity refinements are integrated. Page viewing does not execute MCP tools or probe upstream services. Drafts retain revisions and warn when browser storage cannot preserve them across reloads. Authenticated synthetic browser checks passed MCP available → unavailable → restored with **zero tool calls**, Memory draft navigation/save, captured-context chunk paging and original-history partial → complete indexing across continuations. These are browser/runtime checks, not real-model scientific acceptance.
-- **Agent profiles:** Project settings independently select trusted deployment aliases and reasoning effort for the orchestrator, delegated agents and consistency reviewer. A new tree freezes these choices; its children and ordinary Resume retain them. The reviewer defaults to Luna/medium in the qualified lab, while research roles use Sol/max. The browser cannot supply endpoints, adapters or credentials.
-- **Portability:** Native Linux AMD64 and ARM64 runners build, publish and test immutable image digests for `minimal`, `orchestrator`, `mcp-proxy` and `crypto-base`, then merge each profile into one two-platform GHCR tag. `crypto-base` is private. The Mac launcher has native CI coverage, but a real Mac OpenShell MicroVM lifecycle and Resume run remains open. Standard-format SBOMs remain a pre-release item.
+## Built but not verified live
 
-## Verification boundaries
+- Everything Kubernetes-specific: the bundle, runtime manager, Longhorn snapshots, log collection, Agent Sandbox, OpenShell 0.1.5 on the cluster.
+- The direct MCP path (agent to server through OpenShell and the middleware, D98): a prototype that passes offline only.
+- Ports admitted on demand, and the workspace answering network and package requests, against a real gateway.
+- Soft-cap check-ins and loop detection with a real model.
+- Kata on your nodes; the checklist's commands and manifests are unrun.
+- The unit on babbage and the compiled lockdown policy.
 
-- Current Kubernetes increment at frozen `912633b5`: **14,985 Python passed, 51 skipped**, **2,241 web passed**, **55 post-build math/figure passed**; required static/license/build checks clean. Three AMD64 images built locally, trusted checks and 17 orchestrator container/Landlock checks pass. Cold app/TLS and three-image handshake/drain/reconnect passed with zero model requests and full owned teardown. Both schema versions validate all ten resources. Reviews clear; failures/warnings/hashes: [operations report](docs/agent-reports/k8s-operations-2026-10-20.md). No image publication or cluster acceptance.
-- Native image [publication run 39348347538](https://github.com/regenscheid/sandbox-crypto/actions/runs/39348347538) passed eight architecture build/pull/runtime-check jobs and four merges; independent registry inspection confirmed exactly `linux/amd64` and `linux/arm64` on every shared tag. All four GHCR packages are currently private.
-- The live Sol/max root and child recovered through one orchestrator Resume, ran concurrently, exchanged updated instructions and a final handback, and finished `completed/answered` without a replacement child or repeated reference calculation. The parent consumed the child's full history, updated the plan, ledger and eleven-revision living document, and settled two Luna/medium evidence-strength findings as `confirmed fixed`.
-- Real folds applied across child and resumed-root attempts. Two oversize records needed exactly one bounded repair call; the other applied narratives passed on their first attempt. Saved diagnostics retain the reason and sizes. Final numeric GF(16) and GF(32) grades passed every oracle check.
-- Campaign model spend was **$24.56566378 observed**, $0 reserved and no unpriced usage, within the $150 authorization. Five historical reviewer intents remain visibly unsettled rather than treated as zero. The terminal reviewer found no inconsistency in the checked GF(32) claims but remained correctly `inconclusive` because it did not independently reproduce them.
-- Evidence is preserved at `/var/tmp/ss-recovery-evidence-a4addfda`: 52 allowlisted files match their SHA-256 manifest. The private lab root, seven owned sandbox identities, all six owned units, 18 observed processes, owned ports and one driver directory were removed or verified absent. The unrelated SNOVA budget guard remained active.
+## Decided but not built
 
-Earlier [OpenShell recovery/endurance acceptance](docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md) completed a separate 3,600-second Sage job with 249,063,436 verified batches and full owned teardown. That historical synthetic-model lab does not substitute for the current campaign's final receipts or scientific quality. Four local subprocess-death tests also cover final-record commit, mailbox ACK, work completion and child ledger/settlement handback.
+- Run the babbage lab for the direct MCP path, then your decision to retire the MCP proxy or keep it (D98, A2).
+- The workspace's review view for classifications, and proxy-side drift findings (A3).
+- Cards for the direct MCP path's requests (A4).
+- Code egress by binary: OpenShell 0.1.5 cannot express it, so this waits on you (A5).
+- Read connectors for delegated children (A6).
+- The web usage view and a real-model check of the check-ins (A8).
+- Measure shell against kernel use and steer agents to the kernel (A10).
+- First deployment and its three proofs (B3); durability extras, load balancer and Authentik (B4); dashboards, alerts and canaries (B5); job sandboxes (B6, D93).
+- A second instance for another trust group (D94).
 
-The portability code is pushed to `dev` and its images are published in GHCR; neither was deployed into the personal or preserved SNOVA services. SNOVA remains preserved; its owner-stopped monitor must not be recreated implicitly. The campaign did not perform a physical host reboot, qualify arbitrary interpreter-state restoration or turn the bounded consistency review into an independent scientific reproduction. Broader scientific continuity, cache-layout comparisons and other open work remain in [BACKLOG.md](BACKLOG.md).
+## Operator-side prerequisites
+
+1. Node rebuild to Talos 1.13.12 with Kata on the amd64 nodes: done, per the owner. The repo's checklist names Talos 1.13 and the `kata-containers` extension only.
+2. Cluster preparation per [KUBERNETES-PREP](../docs/KUBERNETES-PREP.md), unverified until run.
+3. Image republish: the published images do not include this branch; rebuild, publish and pin by digest.
+
+## Boundaries that stand
+
+- Images stay private on ghcr. No push of `dev` or `main` by agents.
+- SNOVA and its archive stay preserved; its stopped monitor is not recreated.
