@@ -74,6 +74,8 @@ from sandbox_science.contracts.artifact_retention import (
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.permission_requests import (
+    PermissionConfirmation,
+    PermissionConfirmed,
     WorkerPermissionAnswer,
     WorkerPermissionAnswered,
     WorkerPermissionListing,
@@ -515,6 +517,15 @@ class WorkerClient:
         """Relay the user's answer to one of them."""
         return await self._call(
             "POST", f"/v1/permission-requests/{seq}/answer", WorkerPermissionAnswered, answer
+        )
+
+    async def confirm_permission_request(
+        self, seq: int, asked: PermissionConfirmation
+    ) -> PermissionConfirmed:
+        """Whether MCP request ``seq`` is ``asked``'s call and stands as its refusal said
+        (D98): any client, for its own projects."""
+        return await self._call(
+            "POST", f"/v1/permission-requests/{seq}/confirm", PermissionConfirmed, asked
         )
 
     # Executions.

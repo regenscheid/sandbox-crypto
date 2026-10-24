@@ -70,6 +70,8 @@ class Capability(StrEnum):
     FOLD_BEFORE = "fold_before"
     FOLD_OVERFLOW = "fold_overflow"
     FINALIZE = "finalize"
+    CONFIRM_REQUEST = "confirm_request"
+    """Whether one MCP permission request is a call's, for the attempt's project (D98)."""
 
 
 class Request(Contract):

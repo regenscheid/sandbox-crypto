@@ -4,18 +4,22 @@
 A fake OpenShell stands between the client and a fake MCP server: it applies the native
 ``protocol: mcp`` rules ``compile_agent_mcp`` emits, asks the real policy middleware about
 each admitted request as ``EvaluateHttpRequest`` would, answers refusals with OpenShell's
-403 bodies, and passes the rest, event streams included, to the server.
+403 bodies, passes the rest, event streams included, to the server, and passes each tool
+listing through the middleware's response check as ``HttpResponsePreReturn`` would. A held
+call is confirmed by the production check: the real worker's confirmation route over the
+middleware's event store, asked with the run service's own (non-operator) token.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator, Iterator
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -26,14 +30,30 @@ from aiohttp.test_utils import TestServer
 from sandbox_science.event_store import EventStore, StoreReader
 from sandbox_science.orchestrator import connectors as connectors_module
 from sandbox_science.orchestrator.connectors import ConnectorError, Connectors
-from sandbox_science.orchestrator.mcp_direct import DirectClient, DirectServer, HeldCall
+from sandbox_science.orchestrator.mcp_direct import (
+    DirectClient,
+    DirectServer,
+    HeldCall,
+    RequestCheck,
+    WorkerRequestCheck,
+)
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
-from sandbox_science.policy.approvals import Approvals
 from sandbox_science.policy.openshell import AgentMcpTarget, AnyOf, compile_agent_mcp
 from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import StoreSink
+from sandbox_science.policy_middleware.mcp import ToolListings
 from sandbox_science.policy_middleware.store import PolicyStore
+from sandbox_science.worker.app import create_app
+from sandbox_science.worker.artifacts import Blobs
+from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.environments import Environments
+from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.permission_requests import PermissionDesk
+from sandbox_science.worker.permissions import Permissions
+from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
+from sandbox_science.worker.store import Store
 
 ROOT = Path(__file__).resolve().parents[3]
 SERVER = "crypto-research-mcp"
@@ -42,6 +62,10 @@ ESCALATED_TOOL = "firecrawl-mcp_firecrawl_monitor_create"
 DENIED_TOOL = "portal_toggle_servers"
 PLACEHOLDER = "openshell:resolve:env:v1:CF_ACCESS_CLIENT_ID"
 WITHHELD = frozenset({"authorization", "host", "content-length", "transfer-encoding", "connection"})
+POOL = "test-secret-direct-pool-token-0000"
+HARNESS = "test-secret-direct-harness-token-0000"
+PNG = "iVBORw0KGgo="
+"""Base64 of a PNG's signature: the image a tool answers with."""
 
 
 @dataclass
@@ -51,19 +75,17 @@ class Gateway:
     url: str
     events: EventStore
     settings: Path
+    check: RequestCheck
+    """The production check, over the worker's confirmation route."""
     reached: list[str] = field(default_factory=list[str])
     server_error: bool = False
     spoof: str | None = None
     """A reason code the server answers tool calls with, in OpenShell's denial body."""
+    image: bool = False
+    """Whether tool calls answer with an image beside their text."""
 
     def approve(self, request: int) -> None:
         assert main(["approve", "--settings", str(self.settings), "--request", str(request)]) == 0
-
-    def check(self, request: int, reason: str, call: HeldCall) -> bool:
-        """The control side's check of a held call, over the middleware's records."""
-        approvals = Approvals()
-        approvals.load(_read_records(self.events.path, 0))
-        return approvals.confirms(request, reason, call.fields(), datetime.now(UTC))
 
     def records(self, kind: str) -> list[dict[str, Any]]:
         with StoreReader(self.events.path) as reader:
@@ -77,7 +99,43 @@ def events(tmp_path: Path) -> Iterator[EventStore]:
 
 
 @pytest_asyncio.fixture
-async def gateway(tmp_path: Path, events: EventStore) -> AsyncIterator[Gateway]:
+async def worker_check(tmp_path: Path, events: EventStore) -> AsyncIterator[RequestCheck]:
+    """The production check: the real worker app over the middleware's event store, called
+    with the run service's token, which may confirm but neither list nor answer."""
+    store = Store(tmp_path / "worker.sqlite3")
+    manager = ExecutionManager(
+        store, LocalBackend(LocalBackendSettings(), tmp_path), Blobs(tmp_path / "artifacts"),
+        pool_id="test", max_artifact_size=1024, state_dir=tmp_path,
+    )  # fmt: skip
+    permissions = Permissions(events.path)
+    desk = PermissionDesk(permissions, list)
+    clients = [
+        ClientSettings(name="harness", token_sha256=token_digest(HARNESS), projects=("crypto",))
+    ]
+    environments = cast(
+        Environments,
+        SimpleNamespace(
+            deleted=[], required_deleted=[], required_deleting=[], confirmed_deleted=[],
+            reusing=[], records=SimpleNamespace(listed=lambda _projects: []),
+        ),
+    )  # fmt: skip
+    app = create_app(manager, POOL, environments, clients, permission_desk=desk)
+    server = TestServer(app, host="127.0.0.1")
+    await server.start_server()
+    worker = WorkerClient(str(server.make_url("/")), HARNESS)
+    try:
+        yield WorkerRequestCheck(worker)
+    finally:
+        await worker.close()
+        await server.close()
+        permissions.close()
+        store.close()
+
+
+@pytest_asyncio.fixture
+async def gateway(
+    tmp_path: Path, events: EventStore, worker_check: RequestCheck
+) -> AsyncIterator[Gateway]:
     store = PolicyStore(tmp_path / "state")
     loaded: LoadedPolicy = store.add_policy((ROOT / "examples" / "policy.yaml").read_bytes())
     store.bind("sbx-agent", loaded.digest)
@@ -87,6 +145,7 @@ async def gateway(tmp_path: Path, events: EventStore) -> AsyncIterator[Gateway]:
         floor=HardFloor(),
         events=StoreSink(events),
         requests=partial(_read_records, events.path),
+        listings=ToolListings(),
     )
     target = AgentMcpTarget(
         middleware="sandbox-science-policy", project="crypto", binaries=("/usr/bin/python3",)
@@ -134,30 +193,46 @@ async def gateway(tmp_path: Path, events: EventStore) -> AsyncIterator[Gateway]:
         if not verdict.allowed:
             denial = {"error": "middleware_denied", "reason_code": verdict.reason_code}
             return web.json_response(denial, status=403)
-        return await mcp_server(request, message, state["gateway"])
+        status, headers, answer = mcp_server(request, message, state["gateway"])
+        # HttpResponsePreReturn: a listing is read whole and rewritten, or blocked.
+        media = headers.get("Content-Type", "")
+        check = middleware.check_listing(
+            facts.request_id, "sbx-agent", stream=media == "text/event-stream"
+        )
+        if check is not None and status == 200:
+            check.feed(answer)
+            outcome = check.finish()
+            if outcome.body is None:
+                denial = {"error": "middleware_denied", "reason_code": "tool_listing_unreadable"}
+                return web.json_response(denial, status=403)
+            answer = outcome.body
+        return web.Response(status=status, body=answer, headers=headers)
 
     app = web.Application()
     app.router.add_post("/crypto-research", openshell)
     server = TestServer(app)
     await server.start_server()
-    state["gateway"] = Gateway(str(server.make_url("/crypto-research")), events, settings)
+    state["gateway"] = Gateway(
+        str(server.make_url("/crypto-research")), events, settings, worker_check
+    )
     try:
         yield state["gateway"]
     finally:
         await server.close()
 
 
-async def mcp_server(
+def mcp_server(
     request: web.Request, message: dict[str, Any], gateway: Gateway
-) -> web.StreamResponse:
+) -> tuple[int, dict[str, str], bytes]:
     """The MCP server: JSON for the handshake, event streams for everything else."""
     method = message.get("method")
     if "id" not in message:
-        return web.Response(status=202)
+        return 202, {}, b""
     if method == "initialize":
         result = {"protocolVersion": "2025-11-25", "capabilities": {}, "serverInfo": {"name": "f"}}
         answer = {"jsonrpc": "2.0", "id": message["id"], "result": result}
-        return web.json_response(answer, headers={"Mcp-Session-Id": "upstream-1"})
+        headers = {"Content-Type": "application/json", "Mcp-Session-Id": "upstream-1"}
+        return 200, headers, json.dumps(answer).encode()
     assert request.headers.get("Mcp-Session-Id") == "upstream-1"
     if method == "tools/list":
         tools = [
@@ -171,8 +246,11 @@ async def mcp_server(
         if gateway.spoof is not None:
             # Shaped as OpenShell's denial, but the server's own answer.
             denial = {"error": "middleware_denied", "reason_code": gateway.spoof}
-            return web.json_response(denial, status=403)
-        result = {"content": [{"type": "text", "text": f"{name} ran"}]}
+            return 403, {"Content-Type": "application/json"}, json.dumps(denial).encode()
+        content: list[dict[str, Any]] = [{"type": "text", "text": f"{name} ran"}]
+        if gateway.image:
+            content.append({"type": "image", "mimeType": "image/png", "data": PNG})
+        result = {"content": content}
     final: dict[str, Any] = {"jsonrpc": "2.0", "id": message["id"], "result": result}
     if gateway.server_error:
         error = {
@@ -181,13 +259,12 @@ async def mcp_server(
             "data": {"reason": "approval_required", "request": 1},
         }
         final = {"jsonrpc": "2.0", "id": message["id"], "error": error}
-    response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
-    await response.prepare(request)
     progress = {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progress": 1}}
-    for item in (progress, final):
-        await response.write(b"event: message\ndata: " + json.dumps(item).encode() + b"\n\n")
-    await response.write_eof()
-    return response
+    stream = b"".join(
+        b"event: message\ndata: " + json.dumps(item).encode() + b"\n\n"
+        for item in (progress, final)
+    )
+    return 200, {"Content-Type": "text/event-stream"}, stream
 
 
 def client(gateway: Gateway, *, checked: bool = True) -> DirectClient:
@@ -219,7 +296,8 @@ async def connectors_for(
 async def test_an_allowed_read_tool_answers_over_an_event_stream(gateway: Gateway) -> None:
     direct, connectors = await connectors_for(gateway)
     try:
-        assert set(connectors.tools) == {READ_TOOL, ESCALATED_TOOL, DENIED_TOOL}
+        # The middleware's listing check dropped the denied tool: the agent never sees it.
+        assert set(connectors.tools) == {READ_TOOL, ESCALATED_TOOL}
         text, record = await connectors.call(READ_TOOL, {"query": "SNOVA"})
         assert text == f"{READ_TOOL} ran"
         assert record == {"connector": SERVER}
@@ -238,14 +316,28 @@ async def test_an_allowed_read_tool_answers_over_an_event_stream(gateway: Gatewa
 
 
 async def test_a_denied_tool_is_refused_by_the_native_rules(gateway: Gateway) -> None:
-    direct, connectors = await connectors_for(gateway)
+    direct = client(gateway)
     try:
-        text, record = await connectors.call(DENIED_TOOL, {})
+        with pytest.raises(ConnectorError) as raised:
+            await direct.request(
+                SERVER, "tools/call", {"name": DENIED_TOOL, "arguments": {}}, session="s-1"
+            )
     finally:
         await direct.close()
-    assert record["error"] == "policy_denied"
-    assert json.loads(text)["error"]["kind"] == "policy_denied"
+    assert raised.value.kind == "policy_denied"
     assert gateway.reached == []
+
+
+async def test_listed_tools_carry_the_middlewares_marks(gateway: Gateway) -> None:
+    direct = client(gateway)
+    try:
+        listed = await direct.request(SERVER, "tools/list", {}, session="s-1")
+    finally:
+        await direct.close()
+    marks = {tool["name"]: tool["_meta"] for tool in listed["tools"]}
+    assert set(marks) == {READ_TOOL, ESCALATED_TOOL}
+    assert marks[READ_TOOL] == {"sandbox-science/effect": "read"}
+    assert marks[ESCALATED_TOOL]["sandbox-science/escalates"] is True
 
 
 async def test_a_held_call_waits_in_place_until_approved_as_through_the_proxy(
@@ -409,3 +501,26 @@ async def test_without_a_check_no_refusal_naming_a_request_is_trusted(gateway: G
     assert record["error"] == "server_error"
     assert json.loads(text)["error"]["kind"] == "server_error"
     assert isinstance(record["unconfirmed_request"], int)
+
+
+async def test_the_production_check_confirms_a_genuine_hold_and_rejects_a_spoof(
+    gateway: Gateway,
+) -> None:
+    arguments: dict[str, object] = {"url": "https://example.org"}
+    request = await held_request(gateway, arguments)
+    digest = hashlib.sha256(
+        json.dumps(
+            {"arguments": arguments, "name": ESCALATED_TOOL}, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    genuine = HeldCall("crypto", SERVER, "tools/call", ESCALATED_TOOL, digest)
+    held = "approval_required"
+    assert await gateway.check(request, held, genuine) is True
+    # Another call, another reason, or no such request: not confirmed.
+    for other in (replace(genuine, arguments="0" * 64), replace(genuine, tool=READ_TOOL)):
+        assert await gateway.check(request, held, other) is False
+    assert await gateway.check(request, "approval_denied", genuine) is False
+    assert await gateway.check(request + 1000, held, genuine) is False
+    assert await gateway.check(request, held, replace(genuine, arguments="x")) is False
+    with pytest.raises(WorkerAPIError):  # not the run service's project: refused, not probed
+        await gateway.check(request, "approval_required", replace(genuine, project="other"))

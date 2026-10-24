@@ -33,6 +33,7 @@ from sandbox_science.orchestrator.harness import (
 )
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathcheck import MathChecker
+from sandbox_science.orchestrator.mcp_direct import WorkerRequestCheck
 from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
@@ -359,6 +360,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                     run_share=(
                         settings.settings.run_share if settings.settings.cost_limits else None
                     ),
+                    requests=WorkerRequestCheck(worker),
                 )
                 scope = loops.model_capability
                 gateway = CallbackGateway(

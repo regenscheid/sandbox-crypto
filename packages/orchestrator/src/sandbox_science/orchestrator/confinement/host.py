@@ -36,6 +36,7 @@ from sandbox_science.orchestrator.loop import (
     not_run,
     notice_message,
 )
+from sandbox_science.orchestrator.mcp_direct import RequestCheck
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
 from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
@@ -43,6 +44,7 @@ from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
 from .models import CallbackModel
+from .requests import confirm
 from .transport import Capability, Channel, TransportError
 from .wire import (
     AppendReply,
@@ -531,9 +533,13 @@ class HostLoops:
         control: ControlStore | None = None,
         model_roles: Mapping[str, frozenset[str]] | None = None,
         run_share: float | None = None,
+        requests: RequestCheck | None = None,
     ) -> None:
-        """``run_share`` is the part of a configured project cost limit one run may use."""
+        """``run_share`` is the part of a configured project cost limit one run may use;
+        ``requests`` checks a refusal that names an MCP permission request for an attempt
+        (``confirm_request``, D98), for the attempt's project only."""
         self.channel, self.projects = channel, projects
+        self.requests = requests
         self.control, self.model_roles = control, model_roles or {}
         self.run_share = run_share
         self.attempts: dict[str, Prepared] = {}
@@ -665,6 +671,10 @@ class HostLoops:
                 return None
         if prepared is None:
             raise TransportError("denied", "attempt capability is absent or revoked")
+        if kind is Capability.CONFIRM_REQUEST:
+            # The attempt's project, never one the runtime names: a yes or a no about one
+            # request, read from the middleware's records through the worker.
+            return await confirm(self.requests, prepared.owner.project, value)
         return await prepared.call(kind, value)
 
     async def run(

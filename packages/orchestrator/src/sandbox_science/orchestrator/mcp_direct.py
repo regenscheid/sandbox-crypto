@@ -23,6 +23,15 @@ stands as the code says, and is this call's, by project, server, method, tool an
 digest of the parameters. Anything else is the server's error (``server_error``), never a
 hold: no card, no wait, and the number it named is kept only as ``unconfirmed_request``.
 
+The production check reads the middleware's own records, the way the workspace reaches
+them: through the worker, which holds the middleware's event store (``WorkerRequestCheck``,
+the worker's ``POST /v1/permission-requests/{seq}/confirm``). That route answers any
+client, for its own projects, yes or no about one request, never its record, so the run
+service's token gains nothing broader. In the confined runtime, which holds no worker
+token, the check is the attempt's ``confirm_request`` capability
+(``confinement.requests.ControlRequestCheck``), bound to the attempt's project, which the
+host answers with the same worker check.
+
 Not wired into the harness's command line: this is the prototype the D98 decision weighs.
 """
 
@@ -38,6 +47,9 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, cast
 
 import aiohttp
+from pydantic import ValidationError
+
+from sandbox_science.contracts.permission_requests import PermissionConfirmation
 
 from .connectors import (
     CALL_SECONDS,
@@ -48,6 +60,7 @@ from .connectors import (
     clean,
     encode_message,
 )
+from .worker_client import WorkerClient
 
 RUN_HEADER: Final = "Sandbox-Science-Run"
 """Names the run whose agent made a call, which the middleware records."""
@@ -95,10 +108,36 @@ class RequestCheck(Protocol):
     """The control side's word on a refusal that names permission request ``request``
     with ``reason`` (``approval_required``, ``approval_denied`` or
     ``escalation_timed_out``): whether the request exists, stands so and concerns ``call``
-    (``Approvals.confirms`` over the permission request records decides it). Blocking: the
-    client calls it in a thread."""
+    (``Approvals.confirms`` over the permission request records decides it)."""
 
-    def __call__(self, request: int, reason: str, call: HeldCall) -> bool: ...
+    async def __call__(self, request: int, reason: str, call: HeldCall) -> bool: ...
+
+
+class WorkerRequestCheck:
+    """The production ``RequestCheck``: the worker's confirmation of one MCP request in the
+    policy middleware's event store, asked with this client's own token, for its projects.
+    A call the confirmation cannot describe is not confirmed; a worker that cannot answer
+    raises, and the client reports the call as unavailable rather than wait."""
+
+    def __init__(self, worker: WorkerClient) -> None:
+        self._worker = worker
+
+    async def __call__(self, request: int, reason: str, call: HeldCall) -> bool:
+        try:
+            asked = PermissionConfirmation.model_validate(
+                {
+                    "reason": reason,
+                    "project_id": call.project,
+                    "server": call.server,
+                    "method": call.method,
+                    "tool": call.tool,
+                    "arguments": call.arguments,
+                }
+            )
+        except ValidationError:
+            return False
+        answer = await self._worker.confirm_permission_request(request, asked)
+        return answer.confirmed is True
 
 
 class DirectClient:
@@ -190,7 +229,7 @@ class DirectClient:
         if self._check is None:
             raise _unconfirmed(error.kind, request)
         try:
-            confirmed = await asyncio.to_thread(self._check, request, error.kind, call)
+            confirmed = await self._check(request, error.kind, call)
         except Exception as exc:
             raise ConnectorError(
                 "unavailable",

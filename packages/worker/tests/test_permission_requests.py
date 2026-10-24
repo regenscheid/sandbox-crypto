@@ -4,7 +4,7 @@ the worker's routes over the policy middleware's event store."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -195,3 +195,93 @@ async def test_an_answer_is_recorded_for_the_middleware_and_bounded_by_kind(
     listed = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
     assert seq not in [item["seq"] for item in (await listed.json())["requests"]]
     del permissions
+
+
+ARGS = "c" * 64
+LONG = {"timeout_seconds": 10**9, "on_timeout": "deny"}
+"""Terms that keep a request waiting whatever the test clock says."""
+
+
+def held_call(sink: EventStore, project: str = "p1", tool: str = "send", **extra: object) -> int:
+    """An MCP call the middleware holds (D98), recorded as the middleware records one."""
+    key = RequestKey.mcp(project, "agent-runtime", DIGEST, "papers", "tools/call", tool, ARGS)
+    return escalate(
+        sink, key, escalation=LONG, project=project, caller="agent-runtime", session="s-1",
+        run="main-1", server="papers", method="tools/call", tool=tool, effect="communicate",
+        max_grant="session", caller_kind="agent", summary={"recipient": "a@example.org"},
+    )  # fmt: skip
+
+
+async def test_a_held_direct_mcp_call_is_listed_and_answered_for_its_call(
+    api: tuple[TestClient[Any, Any], EventStore, Permissions],
+) -> None:
+    client, sink, _ = api
+    seq = held_call(sink)
+    held_call(sink, project="p2")  # another project's
+    listed = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
+    (item,) = (await listed.json())["requests"]
+    assert (item["seq"], item["kind"], item["environment_id"]) == (seq, "mcp", None)
+    assert (item["session_id"], item["caller_kind"], item["max_grant"]) == (
+        "s-1",
+        "agent",
+        "session",
+    )
+    assert item["mcp"] == {
+        "server": "papers", "method": "tools/call", "tool": "send", "effect": "communicate",
+        "summary": {"recipient": "a@example.org"},
+    }  # fmt: skip
+    path = f"/v1/permission-requests/{seq}/answer"
+    wrong = await client.post(
+        path, json={"approve": True, "scope": "host"}, headers=headers("workspace")
+    )
+    assert wrong.status == 409  # a call is answered for itself only
+    answered = await client.post(
+        path, json={"approve": True, "scope": "call", "hours": 0.25}, headers=headers("workspace")
+    )
+    assert answered.status == 201, await answered.text()
+    with StoreReader(sink.path) as reader:
+        approvals = Approvals()
+        approvals.load(list(reader.records(kinds=KINDS)))
+    key = RequestKey.mcp("p1", "agent-runtime", DIGEST, "papers", "tools/call", "send", ARGS)
+    found = approvals.answer(key, NOW)
+    assert found is not None
+    assert found.kind == "approval"
+
+
+async def test_a_refusal_is_confirmed_only_for_its_own_call_and_project(
+    api: tuple[TestClient[Any, Any], EventStore, Permissions],
+) -> None:
+    client, sink, _ = api
+    seq = held_call(sink)
+    network = escalate(sink, RequestKey.http("sbx-1", DIGEST, "GET", "data.org", 443, "/a"))
+    call = {
+        "reason": "approval_required", "project_id": "p1", "server": "papers",
+        "method": "tools/call", "tool": "send", "arguments": ARGS,
+    }  # fmt: skip
+
+    async def confirmed(number: int, body: Mapping[str, object], who: str = "harness") -> object:
+        response = await client.post(
+            f"/v1/permission-requests/{number}/confirm", json=body, headers=headers(who)
+        )
+        assert response.status == 200, await response.text()
+        return (await response.json())["confirmed"]
+
+    # The run service's own token may ask, for its projects; the answer is yes or no.
+    assert await confirmed(seq, call) is True
+    assert await confirmed(seq, {**call, "arguments": "d" * 64}) is False  # another call's
+    assert await confirmed(seq, {**call, "tool": "other"}) is False
+    assert await confirmed(seq, {**call, "reason": "approval_denied"}) is False  # not so
+    assert await confirmed(network, call) is False  # not an MCP request
+    assert await confirmed(999, call) is False  # none
+    other = await client.post(
+        f"/v1/permission-requests/{seq}/confirm",
+        json={**call, "project_id": "p2"},
+        headers=headers("harness"),
+    )
+    assert other.status == 403  # not this client's project
+    malformed = await client.post(
+        f"/v1/permission-requests/{seq}/confirm",
+        json={**call, "arguments": "not-a-digest"},
+        headers=headers("harness"),
+    )
+    assert malformed.status == 400

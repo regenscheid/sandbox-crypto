@@ -76,6 +76,8 @@ from sandbox_science.contracts.environment_claims import EnvironmentClaim, Envir
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.permission_requests import (
+    PermissionConfirmation,
+    PermissionConfirmed,
     WorkerPermissionAnswer,
     WorkerPermissionListing,
 )
@@ -327,6 +329,7 @@ def create_app(
             [
                 web.get("/v1/permission-requests", permission_requests),
                 web.post("/v1/permission-requests/{seq}/answer", answer_permission_request),
+                web.post("/v1/permission-requests/{seq}/confirm", confirm_permission_request),
             ]
         )
     app.add_routes(
@@ -998,6 +1001,25 @@ async def answer_permission_request(request: web.Request) -> web.Response:
     except PermissionStoreError as exc:
         raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
     return _json(answered, status=201)
+
+
+async def confirm_permission_request(request: web.Request) -> web.Response:
+    """Whether MCP request ``seq`` is a call's and stands as its refusal said (D98): any
+    client, for its own projects. The harness asks before it trusts a refusal that names a
+    request; the answer is yes or no, never the request's record."""
+    desk = request.app[PERMISSION_DESK]
+    raw = request.match_info["seq"]
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 18:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid permission request")
+    asked = PermissionConfirmation.model_validate_json(await _body(request))
+    _allowed(request, asked.project_id)
+    try:
+        confirmed = await asyncio.to_thread(
+            desk.confirm, int(raw), _client(request).allows, asked, desk.clock.now()
+        )
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(PermissionConfirmed(confirmed=confirmed))
 
 
 def _provisioner(request: web.Request) -> Provisioner:

@@ -129,6 +129,11 @@ class Permissions:
     def withdrawn(self, seq: int) -> bool:
         return self._approvals.withdrawn(seq)
 
+    def confirms(self, seq: int, reason: str, call: Mapping[str, str | int], now: datetime) -> bool:
+        """Whether a refusal with ``reason`` naming request ``seq`` is one the ledger gives
+        a call whose key has the fields ``call`` (``Approvals.confirms``)."""
+        return self._approvals.confirms(seq, reason, call, now)
+
     def escalations(self, seqs: Iterable[int]) -> dict[int, dict[str, object]]:
         """The payloads of the escalation records ``seqs``, for what their cards show.
         Blocking."""

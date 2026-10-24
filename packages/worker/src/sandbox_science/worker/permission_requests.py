@@ -1,13 +1,21 @@
 # SPDX-License-Identifier: MIT
-"""Network and package permission requests, listed and answered for the workspace (D97).
+"""Permission requests in the middleware's store, listed and answered for the workspace
+(D97, D98).
 
-The policy middleware records research code's escalated HTTP and git requests, and the
-worker its provisioning operations' file sets, in one event store. An operator client
-(the workspace) lists the unanswered ones of a project's sandboxes, with what their cards
-show, and relays the user's answers to them. Requests of other projects' sandboxes are
-not found, and a request no environment of the worker owns is no one's. A download from
-the package cache is a package request, answered for that file only: a ``host`` answer
-would cover the whole cache.
+The policy middleware records research code's escalated HTTP and git requests and the
+agent's escalated MCP calls straight to a server, and the worker its provisioning
+operations' file sets, in one event store. An operator client (the workspace) lists the
+unanswered ones of a project, with what their cards show, and relays the user's answers
+to them. Requests of other projects' sandboxes are not found, and a request no
+environment of the worker owns is no one's; an MCP request is its key's project's, which
+the middleware takes from the sandbox's compiled config. A download from the package
+cache is a package request, answered for that file only: a ``host`` answer would cover
+the whole cache.
+
+Any client may also confirm one MCP request for its own projects (``confirm``): whether
+it is a given call's and stands as a refusal said. The harness asks before it trusts a
+refusal that names a request, since an MCP server can write one; the answer is a yes or
+a no, never the request's record.
 """
 
 from __future__ import annotations
@@ -22,8 +30,10 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentInfo
 from sandbox_science.contracts.permission_requests import (
     MAX_LISTED,
     HttpSummary,
+    McpAsked,
     PackagesAsked,
     PackageSource,
+    PermissionConfirmation,
     WorkerPermissionAnswer,
     WorkerPermissionAnswered,
     WorkerPermissionRequest,
@@ -36,7 +46,12 @@ from sandbox_science.policy.approvals import (
 
 from .permissions import Permissions
 
-_SCOPES = {"network": ("request", "host"), "packages": ("request", "files")}
+_SCOPES = {
+    "network": ("request", "host"),
+    "packages": ("request", "files"),
+    "mcp": ("call",),
+}
+_GRANTS = frozenset({"none", "once", "session", "project"})
 
 
 class PermissionRequestError(Exception):
@@ -67,18 +82,56 @@ class PermissionDesk:
         mine = [
             request
             for request in self.permissions.unanswered()
-            if request.key.kind in ("http", "packages")
-            and (owner := owners.get(str(request.key.fields()["sandbox_id"]))) is not None
-            and owner.project_id == project_id
+            if self._project(request, owners) == project_id
         ][:MAX_LISTED]
         payloads = self.permissions.escalations(request.seq for request in mine)
         listed: list[WorkerPermissionRequest] = []
         for request in mine:
-            owner = owners[str(request.key.fields()["sandbox_id"])]
-            found = _described(request, payloads.get(request.seq, {}), owner, now)
+            payload = payloads.get(request.seq, {})
+            if request.key.kind == "mcp":
+                found = _described_call(request, payload, project_id, now)
+            else:
+                owner = owners[str(request.key.fields()["sandbox_id"])]
+                found = _described(request, payload, owner, now)
             if found is not None:
                 listed.append(found)
         return listed
+
+    def confirm(
+        self,
+        seq: int,
+        allows: Callable[[str], bool],
+        asked: PermissionConfirmation,
+        now: datetime,
+    ) -> bool:
+        """Whether MCP request ``seq`` is ``asked``'s call and stands as its refusal said,
+        for a client allowed the call's project. Blocking."""
+        if not allows(asked.project_id):
+            return False
+        self.permissions.refresh()
+        request = self.permissions.pending(seq)
+        if request is None or request.key.kind != "mcp":
+            return False
+        call = {
+            "project_id": asked.project_id,
+            "server": asked.server,
+            "method": asked.method,
+            "tool": asked.tool,
+            "arguments": asked.arguments,
+        }
+        return self.permissions.confirms(seq, asked.reason, call, now)
+
+    @staticmethod
+    def _project(request: PermissionRequest, owners: Mapping[str, EnvironmentInfo]) -> str | None:
+        """Whose request it is: an MCP call's key names its project; a sandbox's request
+        is its environment's project's, if the worker owns the environment."""
+        fields = request.key.fields()
+        if request.key.kind == "mcp":
+            return str(fields["project_id"])
+        if request.key.kind not in ("http", "packages"):
+            return None
+        owner = owners.get(str(fields["sandbox_id"]))
+        return owner.project_id if owner is not None else None
 
     def answer(
         self,
@@ -90,15 +143,9 @@ class PermissionDesk:
         """Record the user's answer to request ``seq``. Blocking."""
         self.permissions.refresh()
         request = self.permissions.pending(seq)
-        owner = (
-            self._owners().get(str(request.key.fields().get("sandbox_id", "")))
-            if request is not None
-            else None
-        )
-        if request is None or owner is None or not allows(owner.project_id):
+        project = self._project(request, self._owners()) if request is not None else None
+        if request is None or project is None or not allows(project):
             raise PermissionRequestError(f"no permission request {seq}", missing=True)
-        if request.key.kind not in ("http", "packages"):
-            raise PermissionRequestError(f"permission request {seq} is not answered here")
         payload = self.permissions.escalations([seq]).get(seq, {})
         kind = _kind(request, payload)
         cache_file = request.key.kind == "http" and kind == "packages"
@@ -122,6 +169,8 @@ class PermissionDesk:
 
 
 def _kind(request: PermissionRequest, payload: Mapping[str, object]) -> str:
+    if request.key.kind == "mcp":
+        return "mcp"
     return "packages" if request.key.kind == "packages" or "package" in payload else "network"
 
 
@@ -182,6 +231,58 @@ def _described(
         )
     except ValidationError:
         return None  # a record this listing cannot show is not offered for an answer
+
+
+def _described_call(
+    request: PermissionRequest, payload: Mapping[str, object], project_id: str, now: datetime
+) -> WorkerPermissionRequest | None:
+    """An MCP call the middleware holds (D98), as the proxy's listing describes one."""
+    fields = request.key.fields()
+    summary = payload.get("summary")
+    effect, ceiling = _text(payload.get("effect")), payload.get("max_grant")
+    session = payload.get("session")
+    try:
+        return WorkerPermissionRequest.model_validate(
+            {
+                "seq": request.seq,
+                "kind": "mcp",
+                "project_id": project_id,
+                "session_id": session if isinstance(session, str) else None,
+                # Only the agent's calls reach a server directly; anything else is code's,
+                # which no class grant covers.
+                "caller_kind": "agent" if payload.get("caller_kind") == "agent" else "code",
+                "policy": fields["policy_digest"],
+                "rule": _text(payload.get("rule")),
+                "reason": _text(payload.get("reason")),
+                # An unknown ceiling allows an answer for the one call only.
+                "max_grant": ceiling if ceiling in _GRANTS else "once",
+                "mcp": McpAsked(
+                    server=str(fields["server"])[:600],
+                    method=str(fields["method"])[:600],
+                    tool=str(fields["tool"])[:600],
+                    effect=effect,
+                    summary=_summary(summary),
+                ),
+                "recorded_at": request.recorded,
+                "expires_at": request.recorded + request.timeout,
+                "timed_out": request.expired(now),
+                "on_timeout": request.on_timeout,
+            }
+        )
+    except ValidationError:
+        return None  # a record this listing cannot show is not offered for an answer
+
+
+def _summary(value: object) -> dict[str, str]:
+    """A recorded call summary's text fields, bounded as the card's contract bounds them."""
+    if not isinstance(value, dict):
+        return {}
+    items = [
+        (name[:600], text[:600])
+        for name, text in cast(dict[object, object], value).items()
+        if isinstance(name, str) and isinstance(text, str)
+    ]
+    return dict(items[:20])
 
 
 def _packages(request: PermissionRequest, payload: Mapping[str, object]) -> PackagesAsked:

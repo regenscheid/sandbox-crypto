@@ -252,6 +252,22 @@ class HookRequest(Attempt):
     record: dict[str, JsonValue] | None = None
 
 
+class RequestConfirmation(Attempt):
+    """A refusal that names MCP permission request ``request``, and the call it refused:
+    no project, which the host takes from the attempt."""
+
+    request: int = Field(strict=True, ge=1, le=10**18)
+    reason: Literal["approval_required", "approval_denied", "escalation_timed_out"]
+    server: str = Field(max_length=600)
+    method: str = Field(max_length=600)
+    tool: str = Field(max_length=600)
+    arguments: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RequestConfirmed(Contract):
+    confirmed: bool
+
+
 class ToolRequest(Attempt):
     call: ToolCall
     operation: str = Field(min_length=1, max_length=256)

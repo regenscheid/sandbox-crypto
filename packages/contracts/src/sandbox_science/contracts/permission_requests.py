@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: MIT
-"""Network and package permission requests the worker lists and answers for the workspace
-(D97): the policy middleware's escalations of research code's HTTP and git requests, and
-the provisioning operations' file-set requests, in the middleware's event store.
+"""Permission requests the worker lists and answers for the workspace (D97): the policy
+middleware's escalations of research code's HTTP and git requests and of the agent's MCP
+calls straight to a server (D98), and the provisioning operations' file-set requests, in
+the middleware's event store.
 
 The worker reads them for an operator client's projects only, never with a request's
-body or a package file's contents: what a card shows is the summary the middleware or
-the worker recorded. docs/POLICY-MIDDLEWARE.md, "Permission requests", has the rules.
+body, a call's arguments or a package file's contents: what a card shows is the summary
+the middleware or the worker recorded. Any client may ask whether one MCP request is a
+given call's and stands as a refusal said (``PermissionConfirmation``), for its own
+projects: the harness's check of a refusal before it waits on it.
+docs/POLICY-MIDDLEWARE.md, "Permission requests", has the rules.
 """
 
 from __future__ import annotations
@@ -60,14 +64,29 @@ class PackagesAsked(Contract):
     """For one file the package cache serves, the package it is of."""
 
 
+class McpAsked(Contract):
+    """An MCP call the middleware holds, as its card shows it: never the arguments."""
+
+    server: Text
+    method: Text
+    tool: Text
+    """Empty for a method other than ``tools/call``."""
+    effect: Text | None = None
+    """The call's effect class (D96)."""
+    summary: dict[Text, Text] = Field(default_factory=dict[str, str], max_length=20)
+    """The call's significant arguments, by kind (url, host, recipient, title, size, query)."""
+
+
 class WorkerPermissionRequest(Contract):
-    """One unanswered network or package permission request of a project's sandbox."""
+    """One unanswered permission request of a project: a sandbox's network or package
+    request, or an MCP call of the project's agent."""
 
     seq: Annotated[int, Field(ge=1)]
     """Its sequence number in the middleware's event store."""
-    kind: Literal["network", "packages"]
+    kind: Literal["network", "packages", "mcp"]
     project_id: Identifier
-    environment_id: Identifier
+    environment_id: Identifier | None = None
+    """The environment whose sandbox asked; an MCP call names none."""
     session_id: Identifier | None = None
     """The session that asked, when the request names one (a provisioning operation)."""
     caller_kind: CallerKind
@@ -79,6 +98,7 @@ class WorkerPermissionRequest(Contract):
     """The widest grant the user may give (D97)."""
     http: HttpSummary | None = None
     packages: PackagesAsked | None = None
+    mcp: McpAsked | None = None
     recorded_at: AwareDatetime
     expires_at: AwareDatetime
     timed_out: bool
@@ -91,11 +111,11 @@ class WorkerPermissionListing(Contract):
 
 class WorkerPermissionAnswer(Contract):
     """The user's answer, which the workspace relays: approve or deny, with the ledger's
-    scope (``request`` or ``host`` for a network request, ``files`` for a file set) and
-    for an approval how long it lasts."""
+    scope (``request`` or ``host`` for a network request, ``files`` for a file set,
+    ``call`` for an MCP call) and for an approval how long it lasts."""
 
     approve: bool
-    scope: Literal["request", "host", "files"]
+    scope: Literal["request", "host", "files", "call"]
     hours: Annotated[float, Field(gt=0, le=MAX_ANSWER_HOURS)] | None = None
 
 
@@ -104,3 +124,26 @@ class WorkerPermissionAnswered(Contract):
     answer: Annotated[int, Field(ge=1)]
     """The answer's own sequence number in the store."""
     kind: Literal["approval", "denial"]
+
+
+HeldReason = Literal["approval_required", "approval_denied", "escalation_timed_out"]
+"""The refusals that name a permission request."""
+
+
+class PermissionConfirmation(Contract):
+    """Whether MCP permission request ``seq`` (the route's) is this call's and stands as a
+    refusal of it said: the call's project, server, method, tool (empty for a method other
+    than ``tools/call``) and the hex SHA-256 of its parameters, as the middleware keys it."""
+
+    reason: HeldReason
+    project_id: Identifier
+    server: Text
+    method: Text
+    tool: Text
+    arguments: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+class PermissionConfirmed(Contract):
+    confirmed: bool
+    """True only when the request exists, is an MCP call of that project, and the ledger
+    gives the call that refusal (``Approvals.confirms``)."""
