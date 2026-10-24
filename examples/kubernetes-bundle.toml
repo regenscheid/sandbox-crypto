@@ -81,7 +81,9 @@ pod_labels = { "openshell.ai/component" = "supervisor", "openshell.ai/gateway-id
 namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
 pod_labels = { "app.kubernetes.io/component" = "supervisor" }
 
-# The OpenShell gateway, reachable only from the runtime manager.
+# The OpenShell gateway's Pods and ports. The runtime manager and the worker reach it, each
+# with its own client identity (the worker creates every research sandbox), and the
+# gateway may reach the middleware on 50051: it connects to it at startup.
 [network.gateway]
 ports = [8080]
 peer.namespace_labels = { "kubernetes.io/metadata.name" = "openshell" }

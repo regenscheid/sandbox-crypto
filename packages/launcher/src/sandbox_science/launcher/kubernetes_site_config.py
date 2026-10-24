@@ -13,6 +13,7 @@ against the file's directory, as in the launcher's config.
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -40,6 +41,15 @@ Kata = Annotated[str, StringConstraints(pattern=r"^kata(?:-[a-z0-9]+)*$")]
 Role = Literal["control", "workspace", "worker", "middleware", "cache"]
 Key = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")]
 _CATALOG_ROLES = ("main", "delegated", "reviewer")
+_LABEL = r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?"
+_DOMAIN = rf"^{_LABEL}(?:\.{_LABEL})*$"
+ClusterDomain = Annotated[str, StringConstraints(max_length=200, pattern=_DOMAIN)]
+"""The cluster's DNS domain, CoreDNS's ``kubernetes <domain>`` line: ``cluster.local``
+unless the cluster was set up with another."""
+DEFAULT_DOMAIN = "cluster.local"
+CACHE_ECOSYSTEMS = ("pypi", "conda", "cargo", "go", "npm", "opam", "hackage")
+"""The package cache's ecosystems (``package_cache.settings.Settings``); the launcher
+never imports the cache, so a test compares the two."""
 
 
 class Placement(Model):
@@ -138,6 +148,10 @@ class Site(Model):
     """The pool ceiling, which the worker and the middleware both apply."""
     pool_id: Identifier | None = None
     """The worker's pool; the bundle's name by default."""
+    cluster_domain: ClusterDomain = DEFAULT_DOMAIN
+    """The cluster's DNS domain. A sandbox resolves only fully qualified Service names
+    (OpenShell's sandbox DNS ignores the Pod's search domains), so every name a sandbox
+    reaches is ``<service>.<namespace>.svc.<cluster_domain>``."""
     projects: tuple[ProjectConfig, ...] = Field(min_length=1, max_length=128)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     model: ModelConfig
@@ -164,6 +178,21 @@ class Site(Model):
                 raise ValueError(f"project {project.id} names a pack skills.packs does not")
         if self.cache is not None and {"listen", "public_url", "cache_dir"} & self.cache.keys():
             raise ValueError("the cache's listener, URL and directory are the cluster's")
+        model = urlsplit(self.model.url).hostname or ""
+        if model.endswith(".svc"):
+            # The agent runtime reaches the model gateway from its sandbox, whose DNS
+            # ignores the Pod's search domains.
+            raise ValueError(
+                "model.url names an in-cluster Service the agent runtime resolves inside its "
+                f"sandbox: give the fully qualified <service>.<namespace>.svc.{self.cluster_domain}"
+            )
+        if self.cache is not None and not set(CACHE_ECOSYSTEMS) & self.cache.keys():
+            # A cache with no ecosystem starts, then answers 404 to every request.
+            raise ValueError(
+                "[cache] enables no ecosystem: add at least one of "
+                f"{', '.join(CACHE_ECOSYSTEMS)} (an empty table, such as pypi = {{}}, "
+                "takes that ecosystem's defaults)"
+            )
         return self
 
 
@@ -224,9 +253,14 @@ def load(path: Path) -> tuple[Site, BundleConfig]:
         raise BundleError("the site file names its bundle TOML: bundle = PATH")
     bundle = load_bundle(base / Path(bundle_path).expanduser())
     document["model"] = _model(document.get("model"), bundle.models)
+    # The model gateway's http Service name may carry the cluster's domain; an invalid
+    # domain is refused below, at its own field.
+    domain = document.get("cluster_domain", DEFAULT_DOMAIN)
+    if not isinstance(domain, str) or len(domain) > 200 or re.fullmatch(_DOMAIN, domain) is None:
+        domain = DEFAULT_DOMAIN
     try:
         site = Site.model_validate_json(
-            json.dumps(document), context={"base": base, CLUSTER_SERVICES: True}
+            json.dumps(document), context={"base": base, CLUSTER_SERVICES: domain}
         )
     except ValidationError as exc:
         # Field locations only, since a value may be private; a rule across fields says

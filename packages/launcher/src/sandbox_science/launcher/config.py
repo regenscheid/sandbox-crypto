@@ -92,8 +92,8 @@ Variable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 CLUSTER_SERVICES = "cluster_services"
-"""Validation context key: a Kubernetes site's model gateway may be an http Service name."""
-CLUSTER = (".svc", ".svc.cluster.local")
+"""Validation context key, holding a Kubernetes site's cluster DNS domain: its model
+gateway may be an http Service name, ``.svc`` or ``.svc.<domain>``."""
 
 
 class LauncherError(Exception):
@@ -242,7 +242,8 @@ class ModelConfig(_Strict):
         # A Kubernetes site (kubernetes_site.py) may reach an in-cluster gateway by its
         # Service name over the Pod network, which only that cluster's DNS resolves.
         context = cast(dict[str, object], info.context or {})
-        cluster = bool(context.get(CLUSTER_SERVICES)) and host.endswith(CLUSTER)
+        domain = context.get(CLUSTER_SERVICES)
+        cluster = isinstance(domain, str) and host.endswith((".svc", f".svc.{domain}"))
         if (parts.scheme == "https" and host) or (parts.scheme == "http" and (local or cluster)):
             return value
         raise ValueError(

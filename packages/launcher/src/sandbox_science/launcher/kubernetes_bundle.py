@@ -157,6 +157,12 @@ def _ports(*ports: int) -> list[dict[str, object]]:
     return [{"protocol": "TCP", "port": port} for port in ports]
 
 
+def _gateway(config: BundleConfig) -> dict[str, object]:
+    """Egress to the OpenShell gateway, for the runtime manager and the pool's worker."""
+    gateway = config.network.gateway
+    return {"to": [_peer(gateway.peer)], "ports": _ports(*gateway.ports)}
+
+
 def _policies(config: BundleConfig) -> list[dict[str, object]]:
     network = config.network
     policies = [
@@ -195,13 +201,19 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
                 }
             )
         else:
+            # The gateway connects to each registered middleware at startup and exits if
+            # it cannot; the supervisors call it for every request they decide.
+            middleware = [*network.supervisors, network.gateway.peer]
             ingress = [
                 {
                     "from": [{"podSelector": {"matchLabels": _labels(config, "app")}}],
                     "ports": _ports(8100),
                 },
-                {"from": [_peer(peer) for peer in network.supervisors], "ports": _ports(50051)},
+                {"from": [_peer(peer) for peer in middleware], "ports": _ports(50051)},
             ]
+            # The worker drives the gateway with its own client identity to create every
+            # research sandbox.
+            egress.append(_gateway(config))
             if config.secrets.cache is not None:
                 ingress.append(
                     {"from": [_peer(peer) for peer in network.sandboxes], "ports": _ports(8090)}
@@ -241,7 +253,7 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
                         "to": [{"podSelector": {"matchLabels": _labels(config, "app")}}],
                         "ports": _ports(MANAGER_PORT),
                     },
-                    {"to": [_peer(network.gateway.peer)], "ports": _ports(*network.gateway.ports)},
+                    _gateway(config),
                 ],
             },
         )

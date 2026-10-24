@@ -320,7 +320,7 @@ def test_default_deny_explicit_peers_and_no_wildcard_egress():
     app = policies[1]["spec"]
     pool = policies[2]["spec"]
     assert app["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 8443}]
-    assert pool["ingress"][1]["from"] == [{"ipBlock": {"cidr": "192.0.2.15/32"}}]
+    assert pool["ingress"][1]["from"][0] == {"ipBlock": {"cidr": "192.0.2.15/32"}}
     assert app["egress"][1] == {
         "to": [{"ipBlock": {"cidr": "192.0.2.20/32"}}],
         "ports": [{"protocol": "TCP", "port": 443}],
@@ -855,8 +855,51 @@ def test_manager_port_is_reachable_only_from_the_manager_and_it_only_reaches_out
         },
         {"to": [gateway], "ports": [{"protocol": "TCP", "port": 8080}]},
     ]
-    for name in ("research-app", "research-pool"):
-        assert gateway not in [peer for rule in policies[name]["egress"] for peer in rule["to"]]
+    assert gateway not in [
+        peer for rule in policies["research-app"]["egress"] for peer in rule["to"]
+    ]
+
+
+GATEWAY_PODS = {
+    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "openshell"}},
+    "podSelector": {"matchLabels": {"app.kubernetes.io/name": "openshell-gateway"}},
+}
+
+
+def _policy(name: str, config: BundleConfig | None = None) -> dict:
+    return next(
+        item["spec"]
+        for item in objects(config)
+        if item["kind"] == "NetworkPolicy" and item["metadata"]["name"] == name
+    )
+
+
+def test_the_worker_reaches_the_gateway_it_creates_research_sandboxes_through():
+    data = values()
+    data["network"]["gateway"]["ports"] = [8080, 8443]
+    pool = _policy("research-pool", configured(data))
+    assert {
+        "to": [GATEWAY_PODS],
+        "ports": [{"protocol": "TCP", "port": 8080}, {"protocol": "TCP", "port": 8443}],
+    } in pool["egress"]
+    # Only the gateway's own ports, and nothing else is added for the gateway's Pods.
+    assert [rule for rule in pool["egress"] if GATEWAY_PODS in rule["to"]] == [pool["egress"][-1]]
+
+
+def test_the_gateway_reaches_the_middleware_beside_the_supervisors_and_nothing_else():
+    pool = _policy("research-pool")
+    middleware = {"protocol": "TCP", "port": 50051}
+    rules = [rule for rule in pool["ingress"] if middleware in rule["ports"]]
+    assert rules == [
+        {"from": [{"ipBlock": {"cidr": "192.0.2.15/32"}}, GATEWAY_PODS], "ports": [middleware]}
+    ]
+    for rule in pool["ingress"]:
+        if GATEWAY_PODS in rule["from"]:
+            assert rule["ports"] == [middleware]
+    for name in ("research-app", "research-runtime-manager"):
+        assert GATEWAY_PODS not in [
+            peer for rule in _policy(name)["ingress"] for peer in rule["from"]
+        ]
 
 
 def test_render_is_deterministic():

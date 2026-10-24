@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
@@ -24,9 +25,10 @@ from sandbox_science.launcher.kubernetes_cli import main
 from sandbox_science.launcher.kubernetes_config import REQUIRED_FILES, BundleError
 from sandbox_science.launcher.kubernetes_config import load as load_bundle
 from sandbox_science.launcher.kubernetes_site import plan, write
-from sandbox_science.launcher.kubernetes_site_config import load
+from sandbox_science.launcher.kubernetes_site_config import CACHE_ECOSYSTEMS, load
 from sandbox_science.launcher.runtime_manager import settings as manager_settings
 from sandbox_science.orchestrator.confinement.server import ControlSettings
+from sandbox_science.package_cache.settings import Settings as CacheSettings
 from sandbox_science.package_cache.settings import load_settings as load_cache
 from sandbox_science.policy.openshell import compile_orchestrator
 from sandbox_science.policy_middleware.settings import load_settings as load_middleware
@@ -150,8 +152,11 @@ def _private(path: Path, text: str) -> str:
     return str(path)
 
 
-def site_values(tmp_path: Path, *, cache: bool = False) -> dict[str, Any]:
-    """A site file's values and every file it names, all synthetic."""
+def site_values(
+    tmp_path: Path, *, cache: bool = False, domain: str | None = None
+) -> dict[str, Any]:
+    """A site file's values and every file it names, all synthetic; ``domain`` is the
+    cluster's DNS domain, the default when None."""
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     bundle = inputs / "bundle.toml"
@@ -159,7 +164,8 @@ def site_values(tmp_path: Path, *, cache: bool = False) -> dict[str, Any]:
     targets = (ROOT / "examples/openshell/targets.yaml").read_text()
     if cache:
         targets = targets.replace(
-            "package-cache.sandbox-science.internal", f"{NAME}-cache.{NAMESPACE}.svc"
+            "package-cache.sandbox-science.internal",
+            f"{NAME}-cache.{NAMESPACE}.svc.{domain or 'cluster.local'}",
         )
     (inputs / "targets.yaml").write_text(targets)
     (inputs / "ceiling.yaml").write_text(
@@ -212,6 +218,8 @@ def site_values(tmp_path: Path, *, cache: bool = False) -> dict[str, Any]:
     }
     if cache:
         values["cache"] = {"max_size": "10Gi", "pypi": {}}
+    if domain is not None:
+        values["cluster_domain"] = domain
     return values
 
 
@@ -281,6 +289,8 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     assert middleware.admin_hosts == ("openshell.openshell.svc.cluster.local",)
     assert openshell.environments.admin_hosts == middleware.admin_hosts
     if cache:
+        # A sandbox resolves only the fully qualified name.
+        assert openshell.package_cache == f"http://{NAME}-cache.{NAMESPACE}.svc.cluster.local:8090"
         settings = load_cache(secrets / "cache/cache.toml")
         assert settings.public_url == openshell.package_cache
         assert str(settings.cache_dir) == "/var/lib/sandbox-science/package-cache"
@@ -288,13 +298,15 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
         assert not (secrets / "cache").exists()
 
     manager = manager_settings.load(secrets / "runtime-manager/runtime-manager.json")
-    assert manager.control_url == f"https://{NAME}-control.{NAMESPACE}.svc:8443"
-    assert manager.manager_url == f"https://{NAME}-control.{NAMESPACE}.svc:8444"
+    # The runtime resolves control inside its sandbox: only the qualified name works.
+    control_host = f"{NAME}-control.{NAMESPACE}.svc.cluster.local"
+    assert manager.control_url == f"https://{control_host}:8443"
+    assert manager.manager_url == f"https://{control_host}:8444"
     assert manager.image == _image("orchestrator")
     assert manager.revision == REVISION
     assert manager.runtime.node_selector["test.example/kata-capable"] == "true"
     assert manager.policy.state_service is not None
-    assert manager.policy.state_service.host == f"{NAME}-control.{NAMESPACE}.svc"
+    assert manager.policy.state_service.host == control_host
     assert manager.policy.model_gateway is not None
     assert manager.policy.model_gateway.host == "litellm.litellm.svc.cluster.local"
     compile_orchestrator(manager.policy)
@@ -308,7 +320,7 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
         "test-embedding",
     )
     runtime = json.loads(manager.runtime_json(models, "runtime-test"))
-    assert runtime["control_url"] == f"https://{NAME}-control.{NAMESPACE}.svc:8443/control"
+    assert runtime["control_url"] == f"https://{control_host}:8443/control"
 
 
 def test_secrets_hold_exactly_the_projected_keys_and_everything_is_private(tmp_path):
@@ -395,10 +407,124 @@ def test_certificates_chain_to_the_private_ca_and_name_their_services(tmp_path):
             (secrets / f"{role}/{role}.key").read_bytes(), password=None
         )
         assert key.public_key() == certificate.public_key()
-    registration = tomllib.loads((output / "gateway/middleware-registration.toml").read_text())
-    entry = registration["openshell"]["supervisor"]["middleware"][0]
-    assert entry["grpc_endpoint"] == f"https://{NAME}-middleware.{NAMESPACE}.svc:50051"
-    assert entry["name"] == "sandbox-science-policy"
+
+
+def test_the_gateway_values_mount_the_ca_and_register_the_middleware(tmp_path):
+    output = generate(tmp_path)
+    assert not (output / "gateway/middleware-registration.toml").exists()
+    values = yaml.safe_load((output / "gateway/openshell-values-middleware.yaml").read_text())
+    volume = f"{NAME}-middleware-ca"
+    directory = f"/etc/openshell-middleware/{NAME}"
+    # Only the gateway's Pod mounts the CA: the gateway ships the PEM to the supervisors.
+    assert values == {
+        "server": {
+            "extraVolumes": [{"name": volume, "configMap": {"name": volume}}],
+            "extraVolumeMounts": [{"name": volume, "mountPath": directory, "readOnly": True}],
+        },
+        # The chart takes the literal dotted key; a nested map renders invalid TOML.
+        "gatewayConfig": {
+            "openshell.supervisor": {
+                "middleware": [
+                    {
+                        "name": "sandbox-science-policy",
+                        "grpc_endpoint": f"https://{NAME}-middleware.{NAMESPACE}.svc:50051",
+                        "tls_ca_cert_path": f"{directory}/ca.crt",
+                        "max_payload_bytes": 4194304,
+                        "timeout": "500ms",
+                    }
+                ]
+            }
+        },
+    }
+    readme = (output / "README.md").read_text()
+    assert "TODO-operator" not in readme + json.dumps(values)
+    assert (
+        f"kubectl -n openshell create configmap {volume} \\\n"
+        "  --from-file=ca.crt=gateway/middleware-ca.crt"
+    ) in readme
+    assert "-f gateway/openshell-values-middleware.yaml" in readme
+    assert "connects to\n   the middleware at startup" in readme
+
+
+def test_a_cluster_domain_qualifies_every_name_a_sandbox_resolves(tmp_path):
+    values = site_values(tmp_path, cache=True, domain="test-cluster.internal")
+    values["model"]["url"] = "http://litellm.litellm.svc.test-cluster.internal:4000/v1"
+    values["openshell"]["endpoint"] = "https://openshell.openshell.svc:8080"
+    output = tmp_path / "out"
+    write(output, plan(*load(site_file(tmp_path, values))))
+    secrets = output / "secrets"
+    qualified = f"{NAME}-cache.{NAMESPACE}.svc.test-cluster.internal"
+    worker = load_worker(secrets / "worker/worker.toml")
+    assert worker.openshell is not None
+    assert worker.openshell.package_cache == f"http://{qualified}:8090"
+    assert load_cache(secrets / "cache/cache.toml").public_url == f"http://{qualified}:8090"
+    # Trusted Pods keep the short name their search domains complete.
+    control = ControlSettings.model_validate_json((secrets / "control/control.json").read_text())
+    assert control.worker == f"https://{NAME}-worker.{NAMESPACE}.svc:8100"
+    for role in ("control", "worker", "middleware"):
+        certificate = x509.load_pem_x509_certificate((secrets / f"{role}/{role}.crt").read_bytes())
+        names = certificate.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        host = f"{NAME}-{role}.{NAMESPACE}.svc"
+        assert names.value.get_values_for_type(x509.DNSName) == [
+            host,
+            f"{host}.test-cluster.internal",
+        ]
+    assert "cluster.local" not in (secrets / "worker/worker.toml").read_text()
+    # The agent runtime runs in a sandbox: its control URL and policy hosts are qualified.
+    manager = manager_settings.load(secrets / "runtime-manager/runtime-manager.json")
+    control_host = f"{NAME}-control.{NAMESPACE}.svc.test-cluster.internal"
+    assert manager.control_url == f"https://{control_host}:8443"
+    assert manager.manager_url == f"https://{control_host}:8444"
+    policy = manager.policy
+    assert policy.state_service is not None
+    assert policy.model_gateway is not None
+    assert policy.state_service.host == control_host
+    assert policy.worker_api.host == f"{NAME}-worker.{NAMESPACE}.svc.test-cluster.internal"
+    assert policy.model_gateway.host == "litellm.litellm.svc.test-cluster.internal"
+    assert "cluster.local" not in (secrets / "runtime-manager/runtime-manager.json").read_text()
+
+
+def test_the_targets_file_must_name_the_cache_by_its_fully_qualified_name(tmp_path):
+    values = site_values(tmp_path, cache=True)
+    targets = tmp_path / "inputs/targets.yaml"
+    qualified = f"{NAME}-cache.{NAMESPACE}.svc.cluster.local"
+    targets.write_text(targets.read_text().replace(qualified, f"{NAME}-cache.{NAMESPACE}.svc"))
+    _refused(tmp_path, values, f"package cache at http://{qualified}:8090")
+
+
+@pytest.mark.parametrize("domain", ["Cluster.Local", "cluster..local", "-cluster.local", ""])
+def test_a_malformed_cluster_domain_is_refused(tmp_path, domain):
+    _refused(tmp_path, site_values(tmp_path, domain=domain), "cluster_domain")
+
+
+@pytest.mark.parametrize(
+    "url", ["http://litellm.litellm.svc:4000/v1", "https://litellm.litellm.svc:4000/v1"]
+)
+def test_an_in_cluster_model_gateway_must_be_fully_qualified(tmp_path, url):
+    values = site_values(tmp_path, domain="test-cluster.internal")
+    values["model"]["url"] = url
+    _refused(tmp_path, values, r"fully qualified <service>\.<namespace>\.svc\.test-cluster")
+
+
+def test_an_http_model_gateway_must_be_in_the_sites_cluster_domain(tmp_path):
+    values = site_values(tmp_path, domain="test-cluster.internal")
+    values["model"]["url"] = "http://litellm.litellm.svc.other.internal:4000/v1"
+    _refused(tmp_path, values, r"model\.url")
+
+
+@pytest.mark.parametrize("cache", [{}, {"max_size": "10Gi"}])
+def test_a_cache_that_enables_no_ecosystem_is_refused(tmp_path, cache):
+    values = site_values(tmp_path, cache=True)
+    values["cache"] = cache
+    with pytest.raises(BundleError, match="enables no ecosystem") as raised:
+        plan(*load(site_file(tmp_path, values)))
+    assert "pypi, conda, cargo, go, npm, opam, hackage" in str(raised.value)
+
+
+def test_the_cache_ecosystems_are_the_package_caches():
+    fields = CacheSettings.model_fields
+    assert set(CACHE_ECOSYSTEMS) <= fields.keys()
+    assert all(fields[name].default is None for name in CACHE_ECOSYSTEMS)
 
 
 def test_the_script_names_files_only_and_the_bundle_holds_no_generated_value(tmp_path):

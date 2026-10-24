@@ -9,6 +9,11 @@ worker_policy = "policy.yaml"          # the project policy granted to every pro
 targets = "targets.yaml"               # OpenShell targets; sandbox.middleware = openshell.registration
 ceiling = "pool-ceiling.yaml"          # the pool ceiling for the worker and the middleware
 # pool_id = "research-workbench"       # default: the bundle's name
+# The cluster's DNS domain: CoreDNS's `kubernetes <domain>` line
+# (kubectl -n kube-system get configmap coredns -o yaml). A sandbox resolves only fully
+# qualified names (OpenShell's sandbox DNS ignores search domains), so the package cache
+# is <name>-cache.<namespace>.svc.<cluster_domain> to sandboxes and in the targets file.
+cluster_domain = "cluster.local"
 
 [[projects]]
 id = "crypto"
@@ -19,9 +24,10 @@ sessions = ["main"]
 # embedding_model = "YOUR_EMBEDDING_ALIAS"
 # metadata_model = "YOUR_MODEL_ALIAS"
 
-# The model gateway. https, or http to an in-cluster Service (*.svc, *.svc.cluster.local),
-# whose key then crosses the Pod network unencrypted. The main, delegated and reviewer
-# aliases, APIs and efforts are the bundle's [models]; add only the other roles here.
+# The model gateway. https, or http to an in-cluster Service (*.svc, *.svc.<cluster_domain>),
+# whose key then crosses the Pod network unencrypted. The agent runtime reaches it from its
+# sandbox, so use the fully qualified name. The main, delegated and reviewer aliases, APIs
+# and efforts are the bundle's [models]; add only the other roles here.
 [model]
 url = "http://litellm.litellm.svc.cluster.local:4000/v1"
 api_key_file = "secure/model.key"      # the runtime manager's key, mode 600
@@ -54,8 +60,11 @@ limits = { cpu_millicores = 8000, memory_mib = 16384, ephemeral_storage_mib = 40
 
 # The OpenShell gateway. Both identities are issued by the gateway's cert-manager CA
 # (docs/KUBERNETES-PREP.md step 5.1); the tool checks each certificate against its ca.crt.
+# The endpoint is used by trusted Pods only (the manager and the worker), whose search
+# domains complete `.svc`; the chart's server certificate covers openshell.openshell.svc,
+# so this form works whatever the cluster's domain.
 [openshell]
-endpoint = "https://openshell.openshell.svc.cluster.local:8080"
+endpoint = "https://openshell.openshell.svc:8080"
 gateway_id = "openshell"                  # the chart's default
 # registration = "sandbox-science-policy" # the middleware's registration name
 jwt_public_key = "secure/gateway-jwt-public.pem"   # from OpenShell's own Secrets
@@ -72,7 +81,8 @@ certificate = "secure/worker/tls.crt"
 key = "secure/worker/tls.key"
 
 # Exactly when the bundle has [secrets.cache]: the package cache's settings besides its
-# listener, URL and directory (docs/PACKAGE-CACHE.md).
+# listener, URL and directory (docs/PACKAGE-CACHE.md). Enable at least one ecosystem
+# (pypi, conda, cargo, go, npm, opam, hackage); an empty table takes its defaults.
 # [cache]
 # max_size = "50Gi"
 # pypi = {}

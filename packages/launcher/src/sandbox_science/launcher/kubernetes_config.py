@@ -260,7 +260,9 @@ class Network(Model):
     """The runtime's traffic leaves through its sandbox's supervisor Pod (KRB-4)."""
     supervisors: Annotated[tuple[Peer, ...], Field(min_length=1, max_length=16)]
     gateway: Egress
-    """The OpenShell gateway, reached only by the runtime manager."""
+    """The OpenShell gateway's Pods and ports. The runtime manager and the worker reach it,
+    each with its own client identity (the worker creates every research sandbox), and it
+    reaches the middleware: it connects to each registered middleware at startup."""
     sandboxes: Annotated[tuple[Peer, ...], Field(max_length=16)] = ()
     app_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()
     pool_egress: Annotated[tuple[Egress, ...], Field(max_length=16)] = ()

@@ -5,8 +5,9 @@
 ``sandbox-science-kubernetes site`` writes, into a new private directory, one directory
 per Secret of the bundle with exactly the keys its copy init projects (the required ones
 and the bundle's ``extra_files``), the worker's OpenShell CLI tree for the pool PVC, the
-middleware's CA and registration for the gateway, a ``secrets.sh`` of ``kubectl create
-secret generic --from-file`` commands, and a README with what is left to the operator.
+middleware's CA and the gateway's Helm values that register it, a ``secrets.sh`` of
+``kubectl create secret generic --from-file`` commands, and a README with what is left to
+the operator.
 
 It makes a private CA (ECDSA P-256), the control, worker and middleware Services'
 server certificates, and a 32-byte random token for each link: control to the worker,
@@ -73,6 +74,8 @@ WORKER_CONFIG = f"{DATA}/worker-config"
 SHARED = ("ceiling.yaml", "targets.yaml", "gateway-public.pem")
 """Nonsecret site files any service's ``extra_files`` may name."""
 POOL_TOKEN = "pool-token"  # noqa: S105 - a Secret key's name, not a token
+GATEWAY_VALUES = "gateway/openshell-values-middleware.yaml"
+"""The OpenShell chart's values that register the middleware (``_gateway_values``)."""
 _INPUT_BYTES = 64 * 1024
 _CA_DAYS, _LEAF_DAYS = 3650, 1095
 
@@ -211,7 +214,14 @@ def _cli_tree(gateway: str, endpoint: str, identity: dict[str, bytes]) -> dict[s
 
 
 def _host(bundle: BundleConfig, role: str) -> str:
+    """A Service's name as trusted Pods use it, completed by their search domains."""
     return f"{bundle.name}-{role}.{bundle.namespace}.svc"
+
+
+def _qualified(site: Site, bundle: BundleConfig, role: str) -> str:
+    """A Service's fully qualified name: the only form a sandbox resolves, since
+    OpenShell's sandbox DNS ignores the Pod's search domains."""
+    return f"{_host(bundle, role)}.{site.cluster_domain}"
 
 
 def _tls(role: str) -> dict[str, str]:
@@ -241,8 +251,9 @@ def control_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
     }
 
 
-def _cache_url(bundle: BundleConfig) -> str:
-    return f"http://{_host(bundle, 'cache')}:{CACHE_PORT}"
+def _cache_url(site: Site, bundle: BundleConfig) -> str:
+    """The package cache as sandboxes reach it."""
+    return f"http://{_qualified(site, bundle, 'cache')}:{CACHE_PORT}"
 
 
 def _admin_hosts(site: Site) -> list[str]:
@@ -270,7 +281,7 @@ def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -
         },
     }
     if bundle.secrets.cache is not None:
-        openshell["package_cache"] = _cache_url(bundle)
+        openshell["package_cache"] = _cache_url(site, bundle)
     return {
         "listen": f"{POD_NETWORK}:{WORKER_PORT}",
         "tls": _tls("worker"),
@@ -308,14 +319,17 @@ def cache_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
     return {
         **(site.cache or {}),
         "listen": f"{POD_NETWORK}:{CACHE_PORT}",
-        "public_url": _cache_url(bundle),
+        "public_url": _cache_url(site, bundle),
         "cache_dir": f"{DATA}/package-cache",
     }
 
 
 def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings:
-    """``runtime-manager.json``, through the manager's own model."""
-    control = f"https://{_host(bundle, 'control')}"
+    """``runtime-manager.json``, through the manager's own model. The agent runtime runs
+    in an OpenShell sandbox, so its control URL and its policy's hosts are fully
+    qualified; the manager's own URL names the same host, which the model requires and
+    which resolves from the manager's Pod as well."""
+    control = f"https://{_qualified(site, bundle, 'control')}"
     return RuntimeManagerSettings(
         control_url=f"{control}:{CONTROL_PORT}",
         manager_url=f"{control}:{MANAGER_PORT}",
@@ -330,7 +344,7 @@ def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings
         # worker_api is required by the target, though the runtime never calls the
         # worker and the pool's NetworkPolicy admits only the app Pod (README).
         policy=runtime_target(
-            worker=f"https://{_host(bundle, 'worker')}:{WORKER_PORT}",
+            worker=f"https://{_qualified(site, bundle, 'worker')}:{WORKER_PORT}",
             model=site.model.url,
             control=f"{control}:{CONTROL_PORT}",
             proxy=None,
@@ -352,8 +366,13 @@ def _check_inputs(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     if targets.sandbox.middleware != site.openshell.registration:
         raise BundleError("the targets file names another middleware registration")
     cache = (targets.sandbox.package_cache.host, targets.sandbox.package_cache.port)
-    if bundle.secrets.cache is not None and cache != (_host(bundle, "cache"), CACHE_PORT):
-        raise BundleError(f"the targets file must put the package cache at {_cache_url(bundle)}")
+    if bundle.secrets.cache is not None and cache != (
+        _qualified(site, bundle, "cache"),
+        CACHE_PORT,
+    ):
+        raise BundleError(
+            f"the targets file must put the package cache at {_cache_url(site, bundle)}"
+        )
     if (site.cache is None) != (bundle.secrets.cache is None):
         raise BundleError("give [cache] exactly when the bundle enables the package cache")
     return {
@@ -370,7 +389,7 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     worker_identity = _identity(site.openshell.worker, "worker")
     authority = Authority(f"{bundle.name}.{bundle.namespace}")
     certificates = {
-        role: authority.issue([_host(bundle, role), _host(bundle, role) + ".cluster.local"])
+        role: authority.issue([_host(bundle, role), _qualified(site, bundle, role)])
         for role in ("control", "worker", "middleware")
     }
     tokens = {name: _token() for name in ("harness", "workspace", "pool", "manager")}
@@ -427,7 +446,7 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
         }
     )
     files["gateway/middleware-ca.crt"] = authority.pem
-    files["gateway/middleware-registration.toml"] = _registration(site, bundle).encode()
+    files[GATEWAY_VALUES] = _gateway_values(site, bundle).encode()
     files["bootstrap/policy.yaml"] = _read(site.worker_policy)
     files["secrets.sh"] = _script(bundle, content).encode()
     files["README.md"] = _readme(site, bundle).encode()
@@ -484,31 +503,43 @@ def _json(document: object) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
 
-def _registration(site: Site, bundle: BundleConfig) -> str:
-    return (
-        "# The middleware's registration for the OpenShell gateway's configuration\n"
-        "# (docs/POLICY-MIDDLEWARE.md). TODO(operator): mount middleware-ca.crt where the\n"
-        "# gateway and the supervisors read it, and set tls_ca_cert_path to that path.\n"
-        + toml.dumps(
-            {
-                "openshell": {
-                    "supervisor": {
-                        "middleware": [
-                            {
-                                "name": site.openshell.registration,
-                                "grpc_endpoint": (
-                                    f"https://{_host(bundle, 'middleware')}:{MIDDLEWARE_PORT}"
-                                ),
-                                "tls_ca_cert_path": "TODO-operator-mounted-middleware-ca.crt",
-                                "max_payload_bytes": 4 * 1024 * 1024,
-                                "timeout": "500ms",
-                            }
-                        ]
-                    }
-                }
-            }
-        )
-    )
+def _gateway_values(site: Site, bundle: BundleConfig) -> str:
+    """The OpenShell chart's values that register the middleware with the gateway. The
+    gateway reads ``tls_ca_cert_path`` itself and ships the PEM to the supervisors inside
+    their configuration (OpenShell 0.1.5 ``openshell-server/src/config_file.rs``), so only
+    the gateway's Pod mounts the CA, from a ConfigMap. The chart takes literal dotted keys
+    under ``gatewayConfig``; a nested ``openshell:`` map renders invalid TOML. Every value
+    is a validated name, so none needs quoting."""
+    volume = f"{bundle.name}-middleware-ca"
+    directory = f"/etc/openshell-middleware/{bundle.name}"
+    endpoint = f"https://{_host(bundle, 'middleware')}:{MIDDLEWARE_PORT}"
+    return f"""# Registers {bundle.name}'s policy middleware with the OpenShell gateway: pass it to
+# helm after the site's own values (-f openshell-values.yaml -f <this file>). Helm does
+# not merge lists: merge these into any server.extraVolumes or extraVolumeMounts the
+# site's values already set.
+server:
+  extraVolumes:
+    - name: {volume}
+      configMap: {{name: {volume}}}
+  extraVolumeMounts:
+    - name: {volume}
+      mountPath: {directory}
+      readOnly: true
+gatewayConfig:
+  "openshell.supervisor":
+    middleware:
+      - name: {site.openshell.registration}
+        grpc_endpoint: {endpoint}
+        tls_ca_cert_path: {directory}/ca.crt
+        max_payload_bytes: {4 * 1024 * 1024}
+        timeout: 500ms
+"""
+
+
+def _gateway_namespace(site: Site) -> str:
+    """The gateway's namespace when its endpoint is a Service name, else a placeholder."""
+    labels = site.openshell.host.split(".")
+    return labels[1] if len(labels) >= 3 and labels[2] == "svc" else "OPENSHELL_NAMESPACE"
 
 
 def _script(bundle: BundleConfig, content: dict[str, dict[str, bytes]]) -> str:
@@ -535,6 +566,7 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
     """What was generated and what is the operator's, with every ``TODO(operator)``."""
     ns, name = bundle.namespace, bundle.name
     gateway = bundle.runtime_manager.openshell_gateway
+    gateway_ns = _gateway_namespace(site)
     projects = "".join(
         f"kubectl -n {ns} exec deploy/{name}-app -c control -- sandbox-science-harness "
         f"project create --state-dir {DATA}/control --project {project.id} "
@@ -572,12 +604,24 @@ token, generate a new directory, replace every Secret and recreate the Pods.
 - `secrets/<service>/`: one directory per Secret, exactly the keys the bundle projects.
 - `secrets.sh`: `kubectl create secret generic` for each, from these files only.
 - `pool/worker-config/`: the worker's OpenShell CLI tree, for the pool PVC.
-- `gateway/`: the CA the gateway must trust for the middleware, and its registration.
+- `gateway/`: the CA the gateway must trust for the middleware, and the OpenShell
+  chart's values that mount it and register the middleware.
 - `bootstrap/policy.yaml`: the project policy, granted to every project below.
 
 ## Steps
 
 1. `sh secrets.sh`, then render and apply the bundle (docs/KUBERNETES-PREP.md step 8).
+   Then register the middleware with the gateway. The gateway restarts, and it connects to
+   the middleware at startup and exits if it cannot, so the bundle's pool must be running
+   first:
+
+{fence}sh
+kubectl -n {gateway_ns} create configmap {name}-middleware-ca \\
+  --from-file=ca.crt=gateway/middleware-ca.crt
+helm upgrade openshell oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.5 -n {gateway_ns} \\
+  -f openshell-values.yaml -f {GATEWAY_VALUES}
+{fence}
+
 2. Place the CLI tree on the pool PVC (UID 1000, modes kept), then restart the pool:
 
 {fence}sh
@@ -596,12 +640,11 @@ kubectl -n {ns} exec -i deploy/{name}-pool -c worker -- sandbox-science-worker p
 
 ## TODO(operator)
 
-- The gateway's trust of the middleware comes from OpenShell's chart, not from this
-  tool: merge `gateway/middleware-registration.toml` into the gateway's configuration,
-  mount `gateway/middleware-ca.crt` for the gateway and the supervisors and set
-  `tls_ca_cert_path` to it; the gateway must sign extension tokens with the key whose
-  public half was given as `openshell.jwt_public_key` (issuer
-  `openshell-gateway:{site.openshell.gateway_id}`).
+- Step 1's values file is the site's own OpenShell values (`openshell-values.yaml`);
+  merge `{GATEWAY_VALUES}` by hand if those already set `server.extraVolumes`,
+  `server.extraVolumeMounts` or `"openshell.supervisor"` (Helm does not merge lists). The
+  gateway must sign extension tokens with the key whose public half was given as
+  `openshell.jwt_public_key` (issuer `openshell-gateway:{site.openshell.gateway_id}`).
 - `runtime-manager.json`'s `policy.worker_api` names the worker Service only because
   the target requires one; the runtime never calls it and the pool's NetworkPolicy
   refuses the supervisors there.
@@ -610,7 +653,7 @@ kubectl -n {ns} exec -i deploy/{name}-pool -c worker -- sandbox-science-worker p
   configured (`control.json` has no `proxy`).
 - The gateway `{gateway}`'s CLI profiles use `{site.openshell.endpoint}`; the gateway's
   certificate must cover that host.
-"""
+"""  # noqa: S608 - Markdown whose "replace ... values" reads to ruff as SQL
 
 
 def write(output: Path, files: dict[str, bytes]) -> None:
