@@ -125,7 +125,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: >-
-          uv run pytest --durations=50
+          uv run pytest --durations=50 --session-timeout=2640
           --ignore=packages/orchestrator/tests/test_skills_staging.py
           --ignore=packages/worker/tests/test_skill_staging.py
       - run: uv run python scripts/check_licenses.py
@@ -158,11 +158,19 @@ jobs:
           --timeout=300 --timeout-method=thread -o faulthandler_timeout=280
           ${{ matrix.stage.selection }}
 
-  # Nightly: the slow tier ten times, in parallel, to measure how often its tests flake.
+  # Nightly: the slow tier ten times, to measure how often its tests flake. One job running
+  # all ten repetitions on the two-CPU runner needed about 78 minutes (9038 of 9750 runs in
+  # 72, then the session deadline), so the repetitions are five jobs of two. Each job's
+  # summary gives the flake rate it observed; add the five for the night's rate.
   repeat:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    name: repeat (${{ matrix.shard }}/5)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -173,26 +181,33 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: >-
-          scripts/ci_pytest.sh 4800 slow -n auto --count 10
+          scripts/ci_pytest.sh 2400 slow -n auto --count 2
           -o tmp_path_retention_policy=failed --timeout=300 --timeout-method=thread
           -o faulthandler_timeout=280
           --ignore=packages/orchestrator/tests/test_skills_staging.py
           --ignore=packages/worker/tests/test_skill_staging.py
+      - if: always()
+        run: >-
+          python3 scripts/flake_report.py "${RUNNER_TEMP}/pytest.txt"
+          --title "Slow tier, shard ${{ matrix.shard }}/5 (2 repetitions)"
 
+  # The isolated staging modules, five repetitions in each of two jobs. One module takes
+  # about three minutes a repetition on the runner.
   repeat-staging:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+        shard: [1, 2]
         stage:
           - name: orchestrator
             selection: packages/orchestrator/tests/test_skills_staging.py
           - name: worker
             selection: packages/worker/tests/test_skill_staging.py
-    name: repeat staging (${{ matrix.python }}, ${{ matrix.stage.name }})
+    name: repeat staging (${{ matrix.python }}, ${{ matrix.stage.name }}, ${{ matrix.shard }}/2)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -203,9 +218,13 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: >-
-          scripts/ci_pytest.sh 2400 slow -n 1 --dist=load --count 10
+          scripts/ci_pytest.sh 1800 slow -n 1 --dist=load --count 5
           --timeout=300 --timeout-method=thread -o faulthandler_timeout=280
           ${{ matrix.stage.selection }}
+      - if: always()
+        run: >-
+          python3 scripts/flake_report.py "${RUNNER_TEMP}/pytest.txt"
+          --title "Staging, ${{ matrix.stage.name }}, Python ${{ matrix.python }}, shard ${{ matrix.shard }}/2 (5 repetitions)"
 
   # The workspace GUI (D80): packages from the lockfile, without install scripts.
   web:
