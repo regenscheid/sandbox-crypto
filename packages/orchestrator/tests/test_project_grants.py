@@ -119,8 +119,9 @@ def test_remembered_tool_approvals_become_class_grants_and_server_wide_ones_go(
 ) -> None:
     path = tmp_path / "state" / "control.sqlite3"
     with monkeypatch.context() as old:
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:-1])
-        old.setattr(migrations, "VERSION", migrations.VERSION - 1)
+        before = migrations.MIGRATIONS.index(migrations._project_grants)
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:before])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + before - 1)
         store = ProjectStore(tmp_path / "state")
         store.create("p1", "minimal", POLICY)
         store.close()
