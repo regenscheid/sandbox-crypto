@@ -17,6 +17,7 @@ const hold: PendingApproval = {
   seq: 41,
   kind: 'hold',
   source: 'worker',
+  run: null,
   server: '',
   tool: '',
   method: '',
