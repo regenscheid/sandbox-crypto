@@ -2,7 +2,7 @@
 
 Confirmed: D64, and D66 and D67 with the design this page proposes. The MCP proxy is built ([as built](#the-mcp-proxy-as-built)); the connector auth service is not, and M2 does not need it. The user's requirements:
 
-**Decided, not yet built (2026-10-23):** MCP enforcement moves to OpenShell native `protocol: mcp` rules and the supervisor middleware, and the MCP proxy retires if a prototype passes (D98); tools are classified by effect, with hints for unmentioned tools and a drift test (D96); grants are per class, server and project under admin ceilings (D97); and MCP lockdown is `declared` or `locked` per project (D95). See the [decisions](DECISIONS.md). The text below describes the connectors as built.
+**Decided, not yet built (2026-10-23):** MCP enforcement moves to OpenShell native `protocol: mcp` rules and the supervisor middleware, and the MCP proxy retires if a prototype passes (D98); tools are classified by effect, with hints for unmentioned tools and a drift test (D96); grants are per class, server and project under admin ceilings (D97); and MCP lockdown is `declared` or `locked` per project (D95). See the [decisions](DECISIONS.md). The D98 prototype is built offline and unwired: the agent's client calling servers directly, decided by native rules and the middleware ([prototype](specs/mcp-middleware-prototype.md)). The text below describes the connectors as built.
 
 - crypto-research-mcp is the phase 1 connector; others are added later.
 - MCP services authenticate mainly with OAuth.

@@ -8,6 +8,7 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 
 - [x] A1. Record the settled architecture in the docs ([decisions](../docs/DECISIONS.md), [threat model](../docs/THREAT-MODEL.md#reads-and-effects)).
 - [ ] A2. Middleware MCP prototype against the attack-catalog server and the proxy decision (D98).
+  - [ ] Built offline on `k8s-sync-mcp-mw` ([prototype](../docs/specs/mcp-middleware-prototype.md)): compiler, middleware MCP evaluation, response drift check, harness `DirectClient`; open: the babbage lab against the attack-catalog server, workspace approvals from the middleware, denied-tool listings and binary results, then the owner's decision.
 - [ ] A3. Effect classes, per-server classifications, argument rules, hints default, browser-automation switch, lockdown modes, LLM-drafted classification helper and drift test (D95, D96).
 - [ ] A4. Grants rework (class × server × project, admin ceilings) and GUI cards for network and package requests (D97).
 - [ ] A5. Reads-free defaults: upload-pack to any host, GET/HEAD on any port, read-only POST list, `on_timeout` allow for reads, research-host pre-admission, host cap, source-host list with binary attribution (D95, D97).
