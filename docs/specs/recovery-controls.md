@@ -62,9 +62,11 @@ guard. They are never model tools and never contact a model, worker or executor.
   A successful reconstruction journals the replacement lineage for later losses.
   Recovery status exposes a pending reconstruction identity and detail across
   the session. New main work is refused while a session-kernel reconstruction is
-  unresolved. After an operator acknowledges lost state, Resume refuses a live
-  partial kernel; once that kernel has been closed, it atomically records the
-  abandoned intent and an empty snapshot. The next cell starts a clean kernel.
+  unresolved. Resume acknowledges lost state itself when no operator has (D100),
+  recording the same `resolution:kernel_recompute` provenance marked automatic,
+  restarts a live partial kernel clean, and atomically records the abandoned intent
+  and an empty snapshot. The next cell starts a clean kernel. The operator decision
+  remains available, for a reconstruction left outside a Resume.
   The conditional restart field raises the lockstep worker protocol to 10.
 - Decisions live in `research_observations`, scoped by project/session/work/kind and
   original identity, with detail bounded to 16 KiB. Decision, pending-intent settlement

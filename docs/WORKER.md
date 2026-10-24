@@ -335,7 +335,7 @@ Things to know:
 
 ## Idle suspension
 
-Environments persist, but need not keep running ([projects and sessions](PROJECTS-AND-SESSIONS.md), "Provisioning and persistence"). With `suspend_after` set, the worker stops the sandbox of an environment nobody is using, and starts it again on the next use (W3):
+Environments persist, but need not keep running ([projects and sessions](PROJECTS-AND-SESSIONS.md), "Provisioning and persistence"). Idle suspension is off by default (D100): suspension discards kernel state, which a long investigation may still need. With `suspend_after` set, the worker stops the sandbox of an environment nobody is using, and starts it again on the next use (W3):
 
 - **Active research claims:** a stored root run retains its environment while it and its children run, including model-only work and waiting. `POST /v1/environment-claims` takes an execution context, holder, duration (120 seconds by default, at most 300), and the sandbox ID for renewal/release. Zero seconds releases only that holder's session and sandbox claim. The worker validates project ownership and policy, limits an environment to 32 live claims, and keeps expiry across restart. Renewals cannot silently protect a replacement sandbox. An unmanaged backend reports `unmanaged`; claims never start a VM or prevent explicit deletion.
 - **Idle** also requires no unexpired research claim, plus these three conditions for `suspend_after` seconds:
@@ -789,7 +789,7 @@ admission = true                     # admit hosts on demand (D69)
 admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's admin_hosts
 admission_interval = 3               # seconds between checks of each environment's drafts
 max_admitted_hosts = 64              # hosts admitted on demand per environment
-suspend_after = 3600                 # optional: stop sandboxes idle for an hour (W3)
+# suspend_after = 3600               # optional, off by default (D100): stop sandboxes idle for an hour (W3)
 
 [[clients]]                          # optional: tokens limited to some projects (needs [openshell.environments])
 name = "orchestrator-p1"

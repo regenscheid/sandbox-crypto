@@ -118,7 +118,8 @@ class EnvironmentSettings(_Model):
     them: the compiler and admission apply the same hard floor."""
     suspend_after: Annotated[float, Field(gt=0)] | None = None
     """Seconds an environment may go without executions, and without CPU use by its kernels,
-    before the worker stops its sandbox; the next use starts it again (W3). Off when unset."""
+    before the worker stops its sandbox; the next use starts it again (W3). Off when unset,
+    the default (D100): suspension discards kernel state a long investigation may need."""
     event_store: Path | None = None
     """The policy middleware's event store, where provisioning operations ask for permission
     (D76): ``events.db`` in ``policy_store`` unless the middleware's settings name another."""

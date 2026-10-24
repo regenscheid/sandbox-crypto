@@ -1,9 +1,10 @@
 # Research-tree Resume
 
-Implementation contract for RC-1 through RC-13 and RC-F16. Automatic crash restart
-remains disabled. A bounded control-service scheduler can queue the same durable
-Resume request after a saved model-phase failure. This document describes the
-implementation target, not completed runtime acceptance.
+Implementation contract for RC-1 through RC-13 and RC-F16, amended by D100. A bounded
+control-service scheduler queues the same durable Resume request after a transient
+failure; a process restart alone still waits for the user's one Resume (or opt-in
+infrastructure recovery). This document describes the implementation target, not
+completed runtime acceptance.
 
 ## Identity and ownership
 
@@ -49,26 +50,34 @@ The service gives Resume requests priority over ordinary admission in that sessi
 A durable response reports counts and paged branch states/reasons, including blocked
 branches; it never calls an incomplete tree successfully resumed.
 
-The control service also checks the current tree's saved paused root for model-phase
-failures. It may queue one Resume only when at least one unfinished branch has a
-saved model-phase failure and every other unfinished branch is either another such
-failure or a parent waiting on children. The request and a small retry observation
-commit together; another service sees the same request after restart. Without a new
-completed work item or recorded model answer, at most three automatic requests are made, separated
-by 30 and 60 seconds; later recovery needs an explicit owner action. The scheduler
-defers to a newly queued user message so a correction can be handled first. It
-does not create new work, reset grants, re-dispatch a tool, or override the normal
-cost, policy, environment and kernel checks. It leaves stopped/cancelled work,
-spent token grants, uncertain tool effects and other failures for explicit handling.
-The automatic request rechecks Stop, cancellation, a newer root and fresh user
-messages atomically when claiming the session epoch; an invalidated request becomes
-blocked without dispatch. Cancellation on any prior attempt in the tree also prevents
-queuing it again. Each control-service pass reads at most 100 candidate
-roots and rotates its cursor for later passes.
-Unknown model charges remain visible but do not by themselves prevent this bounded
-continuation. Its positive classification is intentionally narrow: a saved `error`
-attempt must name failure phase `model`. The scheduler does not infer that every
-model error is transient; bounded retries contain persistent configuration errors.
+The control service also checks the current tree's paused root for transient
+failures (D100, `continuity/transient.py`): network errors, gateway 5xx and 524, model
+timeouts, streams without a final answer, worker loss mid-operation, bridge loss and
+persistence errors. The loop saves the classification with a failed attempt
+(`summaries.failure.transient`); a Resume branch ended by one is blocked with reason
+`transient:<kind>: …`; the service records a bridge loss (`transient_failure`) when its
+runtime connection ends while it is not draining. A legacy record with failure phase
+`model` and no classification counts as transient. It queues one Resume only when at
+least one unfinished branch has such a cause and every other unfinished branch is a
+parent waiting on children, interrupted, or an approved turn/time/storage
+continuation; anything else (a permanent failure, a budget, a block) is not retried.
+The request and its decision (progress, streak, attempts, delay, cause) commit
+together; another service sees them after restart. Waits grow 30, 30, 60, 120 … s up
+to 900 s. Three attempts without progress (no new answer, tool evidence, completed
+work or plan change), or ten within an hour, end the retries: the root is blocked
+with `retries_exhausted: …` and an `auto_resume_stopped` record. The user's one Resume
+still continues it. The scheduler defers to a newly queued user message so a
+correction can be handled first. It does not create new work, reset grants,
+re-dispatch a tool, or override the normal cost, policy and environment checks.
+Pending worker operations are admitted only because Resume reconciles them by their
+recorded identity first; a pending effect no adapter can reconcile (such as an MCP
+mutation) stops automatic recovery. It leaves stopped/cancelled work and spent token
+grants for explicit handling. The automatic request rechecks Stop, cancellation, a
+newer root and fresh user messages atomically when claiming the session epoch; an
+invalidated request becomes blocked without dispatch. Cancellation on any prior
+attempt in the tree also prevents queuing it again. Each control-service pass reads
+at most 100 candidate roots and rotates its cursor for later passes. Unknown model
+charges remain visible but never prevent continuation.
 
 An `answered` root whose children are all completed can be a checkpoint rather
 than the end of an active scientific plan. The control service checks such idle
@@ -87,8 +96,8 @@ arriving after the claim is handled by the live run or its next turn. Fresh user
 input, unfinished or stopped child work,
 closed sessions, queued Resume and existing cost gates take precedence. A cost
 refusal retains the observation rather than causing a repeated synthetic input.
-Automatic recovery after process loss, lost kernels, worker failures, and explicit
-budget/grant decisions remains open.
+Automatic recovery after a plain process restart, and explicit budget/grant
+decisions, remain the user's.
 
 Recovery traverses the durable tree in bounded pages. It first reads explicit Stop,
 then current policy, project/environment identity, model and pinned dependencies,
@@ -120,9 +129,13 @@ outcome notice with the trusted failure phase, while the unresolved operation re
 blocked for orchestrator Resume. Neither parent nor child invents a successful result.
 
 Observe sandbox and kernel identity/generation without waking them. Reuse the stable
-child kernel scope only when its saved observation matches. A lost kernel is a visible
-blocked recovery condition unless a recorded checkpoint can be restored or the user
-explicitly authorizes recomputation. No automatic kernel restoration is claimed.
+child kernel scope only when its saved observation matches. A lost kernel never blocks
+Resume (D100): it is rebuilt from verified literal cells when possible, otherwise the
+loss is recorded (`kernel_loss_accepted`, with who accepted it), the next cell starts a
+clean kernel and the agent's view says the variables are gone, so it recomputes them
+from its recorded history. A partial reconstruction is acknowledged automatically with
+a `resolution:kernel_recompute` provenance record, any live partial kernel is
+restarted clean, and the intent is abandoned. No code is replayed for this.
 Paused work protects its kernel from the harness's orphan sweep; worker idle-retention
 claims still expire under their separate policy and do not promise indefinite RAM.
 
