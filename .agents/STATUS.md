@@ -7,7 +7,7 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 - `k8s-sync` is the integration branch. It is `k8s` plus `origin/dev` (`3918ccd0`), then the settled architecture (D95-D103, D92 amended) built on top. It is pushed to `origin/k8s-sync`; no PR is open and nothing is merged into `dev`.
 - `dev` is unchanged except PR #520. `main` is unchanged.
 - The nightly runs the workflow file on `main`, so the sharded flake-measuring jobs reach it only when merged there. Nightly CI is not yet green.
-- No cluster, personal instance or preserved SNOVA service has been touched by this work.
+- A test instance runs on the cluster (2026-10-24): OpenShell 0.1.5, Agent Sandbox v1.0.3, Kata, the bundle and a capped model key. The personal instance and SNOVA are untouched.
 
 ## Built and verified (offline tests only)
 
@@ -23,13 +23,19 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 - Persistent kernels are the default for computation; one OpenShell version constant.
 - The operator checklist and the backup and restore runbook are written.
 
+## Verified live on the cluster (test instance, 2026-10-24)
+
+- Egress only through OpenShell: git from GitHub, pip through the cache, unlisted hosts and pypi.org denied and recorded, raw sockets to public, LAN and in-cluster addresses refused. MCP is not configured yet.
+- Kata in effect with tier 3 recorded. Plain runc is not usable: OpenShell refuses to start there (D43).
+- The manager cycle: bootstrap, reconnection to the same sandbox after its Pods are killed, explicit replace, control history intact.
+- The Secret generator, the bundle and the OpenShell values, after the fixes the run found.
+
 ## Built but not verified live
 
-- Everything Kubernetes-specific: the bundle, runtime manager, Longhorn snapshots, log collection, Agent Sandbox, OpenShell 0.1.5 on the cluster.
+- On the cluster: Longhorn backups to Garage, Garage artifacts, log collection, job sandboxes, MCP.
 - The direct MCP path (agent to server through OpenShell and the middleware, D98): a prototype that passes offline only.
 - Ports admitted on demand, and the workspace answering network and package requests, against a real gateway.
 - Soft-cap check-ins and loop detection with a real model.
-- Kata on your nodes; the checklist's commands and manifests are unrun.
 - The unit on babbage and the compiled lockdown policy.
 
 ## Decided but not built
@@ -44,9 +50,9 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 
 ## Operator-side prerequisites
 
-1. Node rebuild to Talos 1.13.12 with Kata on the amd64 nodes: done, per the owner. The repo's checklist names Talos 1.13 and the `kata-containers` extension only.
-2. Cluster preparation per [KUBERNETES-PREP](../docs/KUBERNETES-PREP.md), unverified until run.
-3. Image republish: done from `k8s-sync` at `0eb47d8b` (run 40081031769, 2026-10-24). Multi-arch manifests on `ghcr.io/regenscheid/sandbox-crypto/`: `trusted-app:5ad6e5d6` (`sha256:800e9b27…`), `trusted-worker:56eef211` (`sha256:2939b51f…`), `orchestrator:3cf3bd51` (`sha256:e4913c0d…`), `mcp-proxy:3cf3bd51` (`sha256:cd2929ac…`), `minimal:d3b1f1cf` (`sha256:fe12987d…`), `crypto-base:d3b1f1cf` (`sha256:39419164…`). Pin the full digests from the ghcr package pages when rendering the bundle.
+1. Talos 1.13.12 with Kata on the amd64 nodes: done and verified.
+2. Cluster preparation: done for the test instance (namespaces, storage classes, RuntimeClass, Agent Sandbox, OpenShell); the [checklist](../docs/KUBERNETES-PREP.md) now carries what the run found. Still open: a Garage bucket and keys for artifacts and backups (backups go to the existing NFS target for now).
+3. Images: the trusted images in use are `trusted-app` and `trusted-worker` at `30c78ad5`; the profile images `orchestrator:3cf3bd51`, `minimal:d3b1f1cf` and `crypto-base:d3b1f1cf` are from run 40081031769. Digests are in the private deployment record.
 
 ## Boundaries that stand
 
