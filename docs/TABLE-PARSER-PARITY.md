@@ -2,7 +2,7 @@
 
 New parses use `ss-markdown-2`. Its table rule is a port of the pinned
 markdown-it-py 4.2.0 rule with JavaScript's `String.prototype.trim` at row and cell
-boundaries, matching the browser's pinned markdown-it 15.0.2. The port retains
+boundaries, matching the browser's pinned markdown-it 15.0.3. The port retains
 upstream line maps, alignment, escaped pipes, termination rules and the limit of
 65,536 autocompleted empty cells. Both upstream MIT notices are retained in
 [table_rule.py](../packages/orchestrator/src/sandbox_science/orchestrator/documents/table_rule.py).
