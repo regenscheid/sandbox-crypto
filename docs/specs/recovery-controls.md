@@ -73,7 +73,10 @@ guard. They are never model tools and never contact a model, worker or executor.
   and visible archive record commit atomically. Oversized original tool arguments
   fail closed rather than being truncated or executed.
 
-`POST .../sessions/{session}/recovery/token-grants` is a narrow USER recovery
+*Removed 2026-10-24 (D102):* the USER token override described next, and its
+`token-grants` routes, are gone; a child's tokens are a soft cap that checks in with its
+parent. Earlier `token_grant` observations stay in the store as history.
+`POST .../sessions/{session}/recovery/token-grants` was a narrow USER recovery
 override for paused direct children of the root whose stop reason is `run_budget`.
 It takes the exact work, current attempt, epoch, expected grant revision, a new
 cumulative token ceiling, and a reason. The child must have an original durable

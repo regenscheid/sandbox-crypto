@@ -1,10 +1,11 @@
 # Plans and delegation
 
-Current resource policy (2026-10-18): new check/task defaults are 20,000,000 tokens
-and 300 turns. Historical implementation notes below describe earlier defaults.
-Durable parent check-ins and bounded turn renewal are implemented; each additional
-10,000,000 tokens requires explicit USER approval. Existing settings and cumulative
-usage survive Resume. Parent finishing and descendant settlement follow the
+Current resource policy (2026-10-24, D102): a check's or task's 20,000,000 tokens and
+300 turns, with active time and cost, are soft caps: at one the child checks in and its
+parent extends it by a bounded step, redirects it or stops it. There are no USER token
+approvals, no carving of a child's tokens from its parent's, and no local cost check at a
+delegation. Historical implementation notes below describe earlier defaults. Existing
+settings and cumulative usage survive Resume. Parent finishing and descendant settlement follow the
 [current adaptive policy](adaptive-research-resources.md) and
 [tree Resume contract](tree-resume.md).
 

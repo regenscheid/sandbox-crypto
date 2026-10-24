@@ -185,10 +185,11 @@ switching between observed usage and reservation conflicts.
 A cancelled fold can leave an estimated usage copy in its run collection. When the same run has a sole durable fold intent with observed usage or an exact reservation, this copy is diagnostic rather than a second unpriced charge. An unsettled or ambiguous copy retains its unpriced status.
 
 The optional reservation gives local cost/token estimates a conservative bound, but
-does not issue Resume or widen the original grants. Its cost counts against the project's daily admission
-budget using the original dispatch time, separately from observed-spend reporting.
-Its input/output bounds reduce the original child token grant across all attempts;
-a spent grant or project budget still blocks continuation. Unknown model calls without
+does not issue Resume or widen the original caps. Its cost counts against a configured
+project limit using the original dispatch time, separately from observed-spend reporting.
+Its input/output bounds count toward the work's soft token and cost caps across all
+attempts; no local cap or limit blocks continuation (D102): a configured limit refuses
+the next paid call instead. Unknown model calls without
 an explicit reservation remain visible and do not alone block Resume. Status retains unknown actual usage and
 shows the reservation/operator evidence separately. This does not recover a lost
 response, determine the actual provider charge or authorize replaying the lost call.

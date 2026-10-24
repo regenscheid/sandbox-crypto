@@ -50,13 +50,13 @@ Before you start, set the `profiles` to the tags `images/build.sh` printed. Set 
 
 After an interrupted research session, use **Resume research** in its chat panel.
 It resumes the selected unfinished tree, including children, within its original
-policy, prompt pins and remaining budget. Completed or explicitly stopped branches
+policy, prompt pins and soft caps. Completed or explicitly stopped branches
 stay ended. A blocked reason identifies an uncertain tool effect,
 lost kernel or changed prerequisite. Advanced reconciliation is available through
 the authenticated `/api/v0/projects/{project}/sessions/{session}/recovery` API and
 its `/resolve` route; it records an operator decision without replaying the effect.
 Unknown model charges remain visible in recovery status without blocking Resume by
-themselves; the upstream LiteLLM budget controls spending.
+themselves, and no local cost check blocks Resume; the upstream LiteLLM budget controls spending.
 
 If the agent VM exits, the launcher keeps the worker, control service and workspace
 available. Run `sandbox-science replace-orchestrator --config CONFIG` to replace
@@ -132,7 +132,8 @@ sandbox-science-harness project budget --state-dir "$D" --project crypto --daily
 ```
 
 - **Delegation** is off by default. `--depth 1` lets the main agent delegate checks and tasks, and `--depth 2` lets a task delegate once more. The same command sets the cap on runs at once and the children's limits ([projects and sessions](PROJECTS-AND-SESSIONS.md)). `[model] delegated` names the model they call.
-- **The cost limit** is off by default: a project has no limit of its own, and the gateway's budget is the cap. `--daily-cost-limit` sets what the project's runs may cost over 24 hours, as the gateway reports it, and `--no-cost-limit` removes it. `[model] daily_cost_limit` sets it for every project from the config.
+- **The cost limit** is off by default: LiteLLM's budget for the gateway key is the only cost enforcement, and the project only tracks its spending, per session, run and role (`GET /api/v0/projects/{project}/usage`). `--daily-cost-limit` sets an optional local limit on what the project's runs may cost over 24 hours, as the gateway reports it; a run that reaches it stops `gateway_budget`, as at the gateway's own refusal, and `--no-cost-limit` removes it. `[model] daily_cost_limit` sets it for every project from the config. `--notify-at 50,100` adds cost notices, which never stop anything.
+- **Soft caps** on each research branch's tokens, turns, active time and cost are check-ins, not stops: a delegated branch asks its parent to extend, redirect or stop it, and the main agent checks itself against its plan and tells you in the chat. You are asked only when the main agent has been extended repeatedly without new evidence ([adaptive resources](specs/adaptive-research-resources.md)).
 
 ## Skill packs
 
