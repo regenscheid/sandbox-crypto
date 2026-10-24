@@ -553,3 +553,13 @@ async def test_a_binary_result_is_withheld_from_the_model_and_kept_by_control(
     assert PNG not in text
     assert record["binary_results"] == 1
     assert sink.kept == [(SERVER, READ_TOOL, Withheld(0, "image", "image/png", PNG))]
+
+
+def test_an_answer_of_another_media_holds_no_result() -> None:
+    from sandbox_science.orchestrator.mcp_direct import _result
+
+    body = b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}'
+    assert _result(200, "application/json", body, 1) == {"tools": []}
+    with pytest.raises(ConnectorError) as raised:
+        _result(200, "text/plain", body, 1)  # the middleware reads no listing of it
+    assert raised.value.kind == "no_usable_answer"

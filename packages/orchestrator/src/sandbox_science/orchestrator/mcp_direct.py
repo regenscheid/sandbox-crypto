@@ -369,10 +369,13 @@ async def _read(response: aiohttp.ClientResponse) -> bytes:
 
 
 def _messages(kind: str, body: bytes) -> list[object]:
-    """The JSON messages of an answer: one JSON body, or an event stream's message events."""
+    """The JSON messages of an answer: one JSON body, or an event stream's message events.
+    Any other media holds none: the middleware reads listings of these two only."""
     try:
-        if kind != "text/event-stream":
+        if kind == "application/json":
             return [json.loads(body)]
+        if kind != "text/event-stream":
+            return []
         found: list[object] = []
         for block in re.split(r"\r?\n\r?\n", body.decode("utf-8")):
             lines = block.splitlines()
