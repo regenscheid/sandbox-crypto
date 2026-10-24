@@ -413,7 +413,7 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
             location = SimpleNamespace(
                 isolation_evidence=None, pool_id="p", backend="local", sandbox_id="e", hostname="h"
             )
-            return SimpleNamespace(languages=(), features=(), location=location)
+            return SimpleNamespace(languages=(), features=(), location=location, kernel_reason=None)
 
     class Model:
         async def complete(self, messages, tools):

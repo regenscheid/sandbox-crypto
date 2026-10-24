@@ -381,6 +381,7 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
             return SimpleNamespace(
                 languages=(),
                 features=(),
+                kernel_reason=None,
                 location=SimpleNamespace(
                     isolation_evidence=None,
                     pool_id="p",

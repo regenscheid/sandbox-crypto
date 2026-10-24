@@ -227,6 +227,7 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
                 ),
                 languages=(),
                 features=(),
+                kernel_reason=None,
             )
 
     original_close = DocumentStore.close

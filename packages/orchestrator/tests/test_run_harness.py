@@ -53,7 +53,7 @@ class Worker:
         location = SimpleNamespace(
             isolation_evidence=None, pool_id="p", backend="local", sandbox_id="e", hostname="h"
         )
-        return SimpleNamespace(location=location, languages=(), features=())
+        return SimpleNamespace(location=location, languages=(), features=(), kernel_reason=None)
 
 
 class Sink:

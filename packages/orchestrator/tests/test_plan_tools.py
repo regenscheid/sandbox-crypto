@@ -715,6 +715,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
             return SimpleNamespace(
                 languages=(),
                 features=(),
+                kernel_reason=None,
                 location=SimpleNamespace(
                     isolation_evidence=None,
                     pool_id="p",
