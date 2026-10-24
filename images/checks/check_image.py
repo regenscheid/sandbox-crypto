@@ -72,6 +72,7 @@ WORKER_FILES = (
     "capture.py",
     "sandbox_files.py",
     "sandbox_processes.py",
+    "sandbox_search.py",
     "sandbox_setup.py",
     "workspace_prefix.py",
 )

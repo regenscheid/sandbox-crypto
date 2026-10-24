@@ -36,7 +36,9 @@ from sandbox_science.orchestrator.tools import PDF_READS
 from .loop_harness import PLAN, PROJECT, SESSION, USER_PLANS
 from .test_capability_assembly import offered
 
-COMPUTE = ("shell", "python", "sage", "start_job", "write_file", "provision", "pdf_render")
+COMPUTE = (
+    "shell", "python", "sage", "start_job", "write_file", "edit_file", "provision", "pdf_render",
+)  # fmt: skip
 OUTWARD = ("papers_fetch", "publish", "admit_hosts", "delegate", "ledger_change")
 
 # --- The fence ------------------------------------------------------------------------------

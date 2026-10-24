@@ -555,6 +555,8 @@ class SharedSync:
         fields: dict[str, Any],
         timeout: float,
         notices: list[str],
+        *,
+        op: str = "write",
     ) -> dict[str, Any]:
         """A file request's write in ``shared/``, its precondition held against the project.
 
@@ -603,7 +605,8 @@ class SharedSync:
                 ) from error
             if synced:
                 await self._check_current(project_id, environment_id, path)
-            reply = await channel.request("write", session=session_id, **fields)
+            # ``op`` is ``write`` or ``edit``, which writes under the same precondition.
+            reply = await channel.request(op, session=session_id, **fields)
             if synced:
                 try:
                     async with asyncio.timeout(timeout):

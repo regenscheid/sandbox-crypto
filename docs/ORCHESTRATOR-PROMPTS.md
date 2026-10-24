@@ -19,7 +19,7 @@ IDs are the version strings in the code.
 
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
-| MAIN base system | `sandbox-main-11` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN base system | `sandbox-main-16` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-2` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Delegated check system | `sandbox-delegated-check-13` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note; later parent messages cannot predetermine its verdict; it says what its read-only connector tools are and that a call needing approval waits for the user | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
 | Delegated task system | `sandbox-delegated-task-13` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs; later parent messages can steer it; it says what its connector tools are, that a call needing approval waits for the user, and how a draft plan holds outward calls | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
@@ -60,7 +60,9 @@ What each input does:
   before saying it made them; the harness runs a script as written
   ([tools spec](specs/tools.md), Shell 1). `shell`, `python` and `sage` say that
   output too long for the result comes back as its head and tail, marked as a
-  sample, and saved whole to a file the result names (Shell 5).
+  sample, and saved whole to a file the result names (Shell 5). `shell` and
+  `write_file` point to `grep`, `glob` and `edit_file` for searching files and for
+  changing part of one (Files 7 to 9).
 - **Platform notices.** Fixed framings in `notices.py`, each with an ID and a version,
   followed by bounded JSON data. The run record pins them, and the saved transcript
   keeps the text actually sent. Delivered notice IDs are tracked separately from fetched ones and
@@ -238,7 +240,10 @@ authority or proof of provider behavior:
   because of one, cites the entry's handle (owner, 2026-10-16; CM-48). `sandbox-main-10`
   adds guidance for explicitly extended exploratory research. `sandbox-main-11`
   adds explicit routing for new user messages: the root's work, plan creation or revision,
-  direct-child steering, and feedback on pinned research records (D87, PD-44). The
+  direct-child steering, and feedback on pinned research records (D87, PD-44).
+  `sandbox-main-16` adds that the file tools search as well: `edit_file` changes part of
+  a file rather than writing it whole, and `grep` and `glob` search rather than grep or
+  find in the shell ([tools spec](specs/tools.md), Files 7 to 9). The
   delegated prompts add parent messaging in `sandbox-delegated-task-8` and
   `sandbox-delegated-check-8`; the latter still requires an independent verdict. Task and tool messages are not pinned; the
   notice framings are.

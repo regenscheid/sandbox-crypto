@@ -29,6 +29,8 @@ from sandbox_science.contracts import (
     ArtifactRef,
     Capabilities,
     Clock,
+    EditFileRequest,
+    EditFileResult,
     EnvironmentInfo,
     EnvironmentRequest,
     ErrorKind,
@@ -38,6 +40,10 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     FileContent,
     FileListing,
+    GlobListing,
+    GlobRequest,
+    GrepRequest,
+    GrepResult,
     HostPort,
     JobListing,
     JobStatus,
@@ -122,6 +128,12 @@ watchdog ends an overdue execution within 90 seconds of its limit."""
 PROTOCOL: Final = {PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
 """Sent with every request, so that a worker of another protocol version refuses it."""
 _Model = TypeVar("_Model", bound=BaseModel)
+
+
+UNSUPPORTED_FILE_TOOLS: Final = (
+    "this worker predates edit_file, glob and grep; upgrade the worker to use them, or "
+    "use write_file, list_files and the shell meanwhile"
+)
 
 
 class WorkerAPIError(Exception):
@@ -764,6 +776,28 @@ class WorkerClient:
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         return await self._call("POST", "/v1/files/list", FileListing, request)
+
+    async def edit_file(self, request: EditFileRequest) -> EditFileResult:
+        return await self._file_tool("/v1/files/edit", EditFileResult, request)
+
+    async def glob_files(self, request: GlobRequest) -> GlobListing:
+        return await self._file_tool("/v1/files/glob", GlobListing, request)
+
+    async def grep_files(self, request: GrepRequest) -> GrepResult:
+        return await self._file_tool("/v1/files/grep", GrepResult, request)
+
+    async def _file_tool(self, path: str, model: type[_Model], request: BaseModel) -> _Model:
+        """A route of ``edit_file``, ``glob`` or ``grep``. A worker that predates them
+        answers 404 without an error of its own: it ran nothing, so that is
+        ``unsupported``, never an unknown effect (docs/COMPATIBILITY.md)."""
+        try:
+            return await self._call("POST", path, model, request)
+        except WorkerAPIError as error:
+            if error.status == 404 and error.kind is ErrorKind.INTERNAL:
+                raise WorkerAPIError(
+                    ErrorKind.UNSUPPORTED, UNSUPPORTED_FILE_TOOLS, error.status
+                ) from error
+            raise
 
     async def stage_check(self, request: StageCheckRequest) -> StageCheck:
         """Whether a skill pack is staged as expected, sealed once it is (SK-16)."""

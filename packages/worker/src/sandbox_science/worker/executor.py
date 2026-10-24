@@ -4,7 +4,8 @@
 The trusted worker service starts it inside a research sandbox and speaks
 newline-delimited JSON with it over stdin and stdout. It depends only on the
 standard library, its siblings beside it (provisioning.py, capture.py,
-sandbox_files.py for the file operations, sandbox_processes.py for the processes and
+sandbox_files.py for the file operations, sandbox_search.py for the file searches,
+sandbox_processes.py for the processes and
 sandbox_setup.py for the isolation probe and configure's files)
 and, once a kernel starts, jupyter_client, so the worker service can copy it into any
 sandbox that has Python.
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
         provisioning,
         sandbox_files,
         sandbox_processes,
+        sandbox_search,
         sandbox_setup,
         workspace_prefix,
     )
@@ -89,6 +91,7 @@ else:
     provisioning = _sibling("provisioning")
     sandbox_files = _sibling("sandbox_files")
     sandbox_processes = _sibling("sandbox_processes")
+    sandbox_search = _sibling("sandbox_search")
     sandbox_setup = _sibling("sandbox_setup")
     workspace_prefix = _sibling("workspace_prefix")
     ToolError = sandbox_files.ToolError
@@ -108,6 +111,15 @@ MAX_REQUEST = 4 * ((100 * 1024 * 1024 + 2) // 3) + 64 * 1024
 MAX_READ = 8 * 1024 * 1024
 MAX_LIST = 5000
 MAX_WRITTEN = 1000
+SEARCH_SECONDS = 20.0
+"""How long a glob or grep searches before it stops and returns what it found."""
+SEARCH_GRACE = 10.0
+"""Seconds past ``SEARCH_SECONDS`` after which a search helper is ended, whatever it is
+doing: an agent's regular expression can take any time on one line."""
+MAX_SEARCH_REPLY = 1024 * 1024
+FILE_TOOLS = 1
+"""Said in ``hello``: this executor edits, globs and greps (``edit``, ``glob``, ``grep``).
+An older one leaves it out, and the worker then reports the tools unsupported."""
 MAX_OUTPUTS = 10_000
 """Rich outputs a cell returns; one note stands for any beyond them or the limit."""
 STREAM_CHUNK = 64 * 1024
@@ -809,7 +821,10 @@ class Executor:
             "capture_read": self.op_capture_read,
             "capture_cancel": self.op_capture_cancel,
             "write": self.op_write,
+            "edit": self.op_edit,
             "list": self.op_list,
+            "glob": self.op_glob,
+            "grep": self.op_grep,
             "lockfile": self.op_lockfile,
             "shared": self.op_shared,
             "remove": self.op_remove,
@@ -1141,6 +1156,7 @@ class Executor:
             artifact_capture_protocol=capture.PROTOCOL,
             output_observation_protocol=1,
             kernel_revision_protocol=1,
+            file_tools=FILE_TOOLS,
             run_kernels=1,
             conditional_kernel_restart=1,
             environment=await self.baseline(),
@@ -1989,6 +2005,100 @@ class Executor:
 
     async def op_list(self, request: Message) -> None:
         await self.reply(request, **await self.files.list(request))
+
+    async def op_edit(self, request: Message) -> None:
+        await self.reply(request, **await self.files.edit(request))
+
+    async def op_glob(self, request: Message) -> None:
+        fields = ("pattern", "limit")
+        await self.reply(request, **await self.search(request, "glob", fields))
+
+    async def op_grep(self, request: Message) -> None:
+        fields = ("pattern", "glob", "mode", "case_insensitive", "context_lines", "max_results")
+        await self.reply(request, **await self.search(request, "grep", fields))
+
+    async def search(self, request: Message, op: str, fields: Sequence[str]) -> Message:
+        """Run a glob or a grep in a helper process (sandbox_search.py) on the directory
+        the path names, or on its parent and the name, opened here through no symlink."""
+        path = request.get("path", ".")
+        base, rest = self.files.split(request.get("session"), path)
+        if rest:
+            parent = sandbox_files.walk(
+                self.files.open_base(base), rest[:-1], str(path), create=False
+            )
+        else:
+            parent = self.files.open_base(base)
+        data: Message = {
+            **{name: request[name] for name in fields if name in request},
+            "op": op,
+            "fd": parent,
+            "name": rest[-1] if rest else None,
+            "prefix": "" if path == "." else str(path),
+            "seconds": SEARCH_SECONDS,
+        }
+        with sandbox_processes.starting_children():
+            return await self._search_helper(parent, data, op)
+
+    async def _search_helper(self, parent: int, data: Message, op: str) -> Message:
+        process: asyncio.subprocess.Process | None = None
+        try:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-I",
+                    "-S",
+                    str(Path(sandbox_search.__file__).resolve()),
+                    "--helper",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env={"LANG": "C.UTF-8"},
+                    cwd="/",
+                    pass_fds=(parent,),
+                    start_new_session=True,
+                )
+            finally:
+                os.close(parent)
+            if process.stdin is None or process.stdout is None:
+                raise ToolError("internal", "the search helper has no pipes")
+            async with asyncio.timeout(SEARCH_SECONDS + SEARCH_GRACE):
+                process.stdin.write(json.dumps(data, ensure_ascii=False).encode())
+                await process.stdin.drain()
+                process.stdin.close()
+                output = bytearray()
+                while chunk := await process.stdout.read(64 * 1024):
+                    if len(output) + len(chunk) > MAX_SEARCH_REPLY:
+                        raise ToolError("internal", "the search helper's reply is too large")
+                    output.extend(chunk)
+                status = await process.wait()
+        except TimeoutError:
+            raise ToolError(
+                "timed_out",
+                f"the {op} ran past {SEARCH_SECONDS + SEARCH_GRACE:.0f} seconds and was "
+                "stopped: narrow its path or simplify its pattern",
+            ) from None
+        except (BrokenPipeError, ConnectionResetError):
+            raise ToolError("internal", "the search helper ended early") from None
+        finally:
+            if process is not None and process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
+        if status != 0:
+            raise ToolError("internal", f"the search helper exited with status {status}")
+        try:
+            raw: object = json.loads(output)
+        except (ValueError, RecursionError):
+            raise ToolError("internal", "the search helper's reply is not JSON") from None
+        reply = cast(Message, raw) if isinstance(raw, dict) else {}
+        if reply.get("ok") is True and isinstance(reply.get("result"), dict):
+            return cast(Message, reply["result"])
+        error = reply.get("error")
+        failure = cast(Message, error) if isinstance(error, dict) else {}
+        kind, message = failure.get("kind"), failure.get("message")
+        if kind not in ("invalid_request", "not_found") or not isinstance(message, str):
+            raise ToolError("internal", "the search helper's reply is malformed")
+        raise ToolError(str(kind), message[:500])
 
     async def op_lockfile(self, request: Message) -> None:
         """The packages installed now: their fingerprint and lockfile (CP-18).

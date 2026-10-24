@@ -32,6 +32,7 @@ from sandbox_science.contracts import (
     AdmissionRequest,
     AdmissionResult,
     ArtifactRef,
+    EditFileRequest,
     EnvironmentInfo,
     EnvironmentList,
     EnvironmentRequest,
@@ -42,6 +43,8 @@ from sandbox_science.contracts import (
     Execution,
     ExecutionContext,
     ExecutionRequest,
+    GlobRequest,
+    GrepRequest,
     Identifier,
     KernelRestartRequest,
     KernelStatusRequest,
@@ -137,7 +140,15 @@ _MEDIA_TYPE = TypeAdapter[str](MediaType)
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 _CLIENT: Final = "sandbox_science.client"
 _MAX_TOKEN: Final = 4096
-_READS: Final = frozenset({"/v1/files/read", "/v1/files/list", "/v1/kernels/observe"})
+_READS: Final = frozenset(
+    {
+        "/v1/files/read",
+        "/v1/files/list",
+        "/v1/files/glob",
+        "/v1/files/grep",
+        "/v1/kernels/observe",
+    }
+)
 """Requests that change nothing, though sent with POST: not logged as changes."""
 
 
@@ -395,6 +406,9 @@ def create_app(
             web.post("/v1/files/read", read_file),
             web.post("/v1/files/write", write_file),
             web.post("/v1/files/list", list_files),
+            web.post("/v1/files/edit", edit_file),
+            web.post("/v1/files/glob", glob_files),
+            web.post("/v1/files/grep", grep_files),
             web.post("/v1/skills/check", skills_check),
             web.post("/v1/skills/put", skills_put),
             web.post("/v1/artifacts", publish),
@@ -1413,6 +1427,24 @@ async def list_files(request: web.Request) -> web.Response:
     body = ListFilesRequest.model_validate_json(await _body(request))
     _context(request, body.context)
     return _json(await request.app[MANAGER].list_files(body))
+
+
+async def edit_file(request: web.Request) -> web.Response:
+    body = EditFileRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].edit_file(body))
+
+
+async def glob_files(request: web.Request) -> web.Response:
+    body = GlobRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].glob_files(body))
+
+
+async def grep_files(request: web.Request) -> web.Response:
+    body = GrepRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].grep_files(body))
 
 
 async def publish(request: web.Request) -> web.Response:

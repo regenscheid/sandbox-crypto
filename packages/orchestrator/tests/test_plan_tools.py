@@ -131,6 +131,8 @@ async def read_and_deliver(f):
 READS = {
     "read_file",
     "list_files",
+    "glob",
+    "grep",
     "pdf_info",
     "pdf_pages",
     "pdf_search",

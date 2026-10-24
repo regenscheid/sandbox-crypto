@@ -37,6 +37,8 @@ MAX_OBSERVATION_SCAN_ENTRIES = 256
 MAX_OBSERVATION_SCAN_BYTES = 64 * 1024
 SHARED = "shared"
 DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+"""A file opened to read: through no symlink, and without waiting on a FIFO."""
 
 
 class ToolError(Exception):
@@ -526,6 +528,85 @@ def write_file(
     }
 
 
+def edit_file(
+    parent: int,
+    name: str,
+    old: str,
+    new: str,
+    replace_all: bool,
+    expected: object,
+    path: str,
+    limit: int,
+) -> Message:
+    """Replace ``old`` with ``new`` in the UTF-8 text file ``name`` in the directory
+    ``parent``, which is consumed.
+
+    The file is read once, through no symlink and without waiting on a FIFO, and replaced
+    as ``write_file`` replaces it, on condition that it still has the content read: a
+    change in between is a ``conflict``, never a lost write. The file keeps its
+    executable bit. The reply is ``write_file``'s, with the number of replacements.
+    """
+    handed = False
+    try:
+        try:
+            descriptor = os.open(name, FILE_FLAGS, dir_fd=parent)
+        except FileNotFoundError:
+            raise ToolError("not_found", f"no file {path!r}") from None
+        except OSError as exc:
+            raise path_refusal(parent, name, path, exc) from exc
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise ToolError("invalid_request", f"{path!r} is not a regular file")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with os.fdopen(descriptor, "rb") as handle:
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            raise ToolError(
+                "invalid_request",
+                f"{path!r} is larger than the {limit} bytes edit_file changes; "
+                "use write_file or a script",
+            )
+        current = hashlib.sha256(data).hexdigest()
+        if expected is not None and current != expected:
+            raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {current}")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+        if text is None or "\x00" in text:
+            raise ToolError("invalid_request", f"{path!r} is not UTF-8 text: edit_file refuses it")
+        count = text.count(old)
+        if count == 0:
+            raise ToolError("not_found", f"not_found: old_string does not occur in {path!r}")
+        if count > 1 and not replace_all:
+            raise ToolError(
+                "invalid_request",
+                f"ambiguous: old_string occurs {count} times in {path!r}; give more of the "
+                "surrounding text so it occurs once, or set replace_all",
+            )
+        try:
+            content = text.replace(old, new, -1 if replace_all else 1).encode("utf-8")
+        except UnicodeEncodeError:
+            raise ToolError(
+                "invalid_request", "new_string is not valid text: it has an unpaired surrogate"
+            ) from None
+        if len(content) > limit:
+            raise ToolError(
+                "invalid_request",
+                f"the edited {path!r} would be larger than the {limit} bytes edit_file writes",
+            )
+        executable = bool(info.st_mode & stat.S_IXUSR)
+        handed = True
+        reply = write_file(parent, name, content, current, False, path, executable)
+    finally:
+        if not handed:
+            os.close(parent)
+    return {**reply, "replacements": count if replace_all else 1}
+
+
 _RENAME_EXCHANGE: Final = 2
 
 
@@ -796,7 +877,6 @@ MAX_STAGED_ENTRIES = 8192
 """Entries, files and folders, a staged pack's check reads at most; past them, or past
 ``MAX_STAGED_DEPTH`` folders down, it is not as expected."""
 MAX_STAGED_DEPTH = 32
-FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
 def _staged(
@@ -1143,6 +1223,43 @@ class Requests:
         except OSError as exc:
             raise file_error(exc, str(path)) from exc
         return reply
+
+    async def edit(self, request: Message) -> Message:
+        """Replace a string in a text file, under ``write``'s rules (``edit_file``)."""
+        path = request.get("path")
+        base, rest = self.split(request.get("session"), path)
+        if not rest:
+            raise ToolError("invalid_request", f"{path!r} is a directory")
+        old, new = request.get("old_string"), request.get("new_string")
+        if not isinstance(old, str) or not isinstance(new, str) or not old:
+            raise ToolError("invalid_request", "old_string must be non-empty text, new_string text")
+        if old == new:
+            raise ToolError("invalid_request", "old_string and new_string are the same")
+        expected = request.get("expected_sha256")
+        if expected is not None and not (
+            isinstance(expected, str) and _SHA256_RE.fullmatch(expected)
+        ):
+            raise ToolError("invalid_request", "expected_sha256 must be a SHA-256")
+        if base == [SHARED] and expected is None:
+            raise ToolError(
+                "invalid_request",
+                "edits in the shared area need expected_sha256, the hash read_file showed",
+            )
+        try:
+            parent = walk(self.open_base(base), rest[:-1], str(path), create=False)
+            return await asyncio.to_thread(
+                edit_file,
+                parent,
+                rest[-1],
+                old,
+                new,
+                request.get("replace_all") is True,
+                expected,
+                str(path),
+                self.max_read,
+            )
+        except OSError as exc:
+            raise file_error(exc, str(path)) from exc
 
     async def shared(self, request: Message) -> Message:
         """The shared area's files with their stamps, and the SHA-256 of some (D79).

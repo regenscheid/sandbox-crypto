@@ -27,10 +27,13 @@ from pydantic import ValidationError
 from sandbox_science.contracts import (
     MAX_ADMISSION_HOSTS,
     CellRequest,
+    EditFileRequest,
     ErrorKind,
     Execution,
     ExecutionContext,
     ExecutionState,
+    GlobRequest,
+    GrepRequest,
     HostPort,
     ListFilesRequest,
     PdfRequest,
@@ -39,7 +42,14 @@ from sandbox_science.contracts import (
     ShellRequest,
     WriteFileRequest,
 )
-from sandbox_science.contracts.worker import Language
+from sandbox_science.contracts.worker import (
+    DEFAULT_GREP_RESULTS,
+    MAX_GLOB_RESULTS,
+    MAX_GREP_CONTEXT,
+    MAX_GREP_RESULTS,
+    Language,
+    SearchStop,
+)
 
 from . import capabilities as caps
 from .agent_messages import AgentMailbox
@@ -295,7 +305,11 @@ SPECS: Final = (
         "sage, where offered). Each call starts afresh in the workspace (no state carries "
         "over except files); stdin is empty. Returns the exit code and the output. If a "
         "command might fail, keep its diagnostics visible or inspect its redirected log in "
-        "the same call." + LONG_OUTPUT + STOP_AT_FAILURE + SHARED_IN_CODE,
+        "the same call. To search or find files, use grep and glob, whose output is "
+        "bounded, rather than grep or find here; to change part of a file, edit_file."
+        + LONG_OUTPUT
+        + STOP_AT_FAILURE
+        + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -325,7 +339,8 @@ SPECS: Final = (
         "write_file",
         "Write a text file in the workspace. For shared/ paths, set create_only=true "
         "to create a new file, or expected_sha256 to the current hash from read_file "
-        "when replacing it. Other paths can omit a precondition.",
+        "when replacing it. Other paths can omit a precondition. To change part of an "
+        "existing file, use edit_file instead of writing it whole.",
         {
             "type": "object",
             "properties": {
@@ -339,11 +354,78 @@ SPECS: Final = (
         },
     ),
     ToolSpec(
+        "edit_file",
+        "Change part of a text file in the workspace (or shared/…) by replacing an exact "
+        "string, instead of rewriting the file with write_file. old_string must occur "
+        "exactly once, so include enough of the surrounding text, unless replace_all "
+        "replaces every occurrence; whitespace and line breaks count. For shared/ paths, "
+        "set expected_sha256 to the current hash from read_file. Returns the file's new "
+        "sha256 and the number of replacements.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string", "minLength": 1},
+                "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+                "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            },
+            "required": ["path", "old_string", "new_string"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
         "list_files",
         "List a directory in the workspace (or shared/…).",
         {
             "type": "object",
             "properties": {"path": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "glob",
+        "Find files and directories by path pattern below a directory of the workspace "
+        "(or shared/…): * and ? match within a name, [ab] one of a set, and ** any number "
+        f"of directories, as in **/*.py. Newest first, at most {MAX_GLOB_RESULTS}; "
+        "symlinks are listed, not followed.",
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "minLength": 1},
+                "path": {"type": "string", "description": "Directory to search; default ."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_GLOB_RESULTS},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "grep",
+        "Search the text files below a directory of the workspace (or shared/…), or one "
+        "file, for a Python regular expression, with bounded output: use it rather than "
+        "grep in the shell. mode files (the default) lists the matching files, count the "
+        "matching lines in each, and content the lines as path:line: text, with "
+        "context_lines around each. glob narrows the files, by name (*.py) or by path "
+        "(src/**/*.py). Binary files and symlinks are skipped.",
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "minLength": 1},
+                "path": {"type": "string", "description": "Directory or file; default ."},
+                "glob": {"type": "string"},
+                "mode": {"type": "string", "enum": ["files", "count", "content"]},
+                "case_insensitive": {"type": "boolean"},
+                "context_lines": {"type": "integer", "minimum": 0, "maximum": MAX_GREP_CONTEXT},
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_GREP_RESULTS,
+                    "description": f"Files, or lines in content mode; default "
+                    f"{DEFAULT_GREP_RESULTS}",
+                },
+            },
+            "required": ["pattern"],
             "additionalProperties": False,
         },
     ),
@@ -554,7 +636,10 @@ class Toolbox:
             "python": ("effect", _plain(self._python)),
             "read_file": ("read", _plain(self._read)),
             "write_file": ("effect", _plain(self._write)),
+            "edit_file": ("effect", _plain(self._edit)),
             "list_files": ("read", _plain(self._list)),
+            "glob": ("read", _plain(self._glob)),
+            "grep": ("read", _plain(self._grep)),
             "publish": ("effect", self._publish),
             "find_artifacts": ("read", _plain(self._find_artifacts)),
             "sage": ("effect", _plain(self._sage)),
@@ -1172,6 +1257,136 @@ class Toolbox:
             written=Written((request.path,)),
         )
 
+    async def _edit(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        for name in ("old_string", "new_string"):
+            value = args.get(name)
+            if not isinstance(value, str):
+                return _failure(ErrorKind.INVALID_REQUEST, f"{name} must be a string")
+            try:
+                value.encode()
+            except UnicodeEncodeError:
+                return _failure(
+                    ErrorKind.INVALID_REQUEST,
+                    f"{name} is not valid text: it has an unpaired surrogate",
+                )
+        request = EditFileRequest.model_validate(
+            {
+                "context": self.context,
+                **_known(
+                    args, "path", "old_string", "new_string", "replace_all", "expected_sha256"
+                ),
+            }
+        )
+        edited = await self.client.edit_file(request)
+        return ToolOutcome(
+            dump({"edited": request.path, **edited.model_dump()}),
+            {"edit": edited.model_dump()},
+            written=Written((request.path,)),
+        )
+
+    async def _glob(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        request = GlobRequest.model_validate(
+            {"context": self.context, **_known(args, "pattern", "path", "limit")}
+        )
+        listing = await self.client.glob_files(request)
+        entries = [
+            {
+                "path": bound(entry.path, 512),
+                "type": entry.type,
+                "size": entry.size,
+                "modified": entry.modified_at.isoformat(timespec="seconds"),
+            }
+            for entry in listing.entries
+        ]
+        shown = len(entries)
+        while True:
+            answer: dict[str, Any] = {
+                "path": listing.path,
+                "pattern": listing.pattern,
+                "entries": entries[:shown],
+                "truncated": listing.truncated or shown < len(entries),
+            }
+            note = _search_note(listing.stopped, shown < len(entries), listing.skipped)
+            if note:
+                answer["note"] = note
+            text = dump(answer)
+            if len(text) <= self.output_chars or shown == 0:
+                break
+            shown //= 2
+        record = {
+            "entries": len(listing.entries),
+            "shown": shown,
+            "truncated": answer["truncated"],
+            "stopped": listing.stopped,
+            "scanned": listing.scanned,
+        }
+        return ToolOutcome(text, {"glob": record})
+
+    async def _grep(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        request = GrepRequest.model_validate(
+            {
+                "context": self.context,
+                **_known(
+                    args,
+                    "pattern",
+                    "path",
+                    "glob",
+                    "mode",
+                    "case_insensitive",
+                    "context_lines",
+                    "max_results",
+                ),
+            }
+        )
+        found = await self.client.grep_files(request)
+        items: list[Any]
+        if found.mode == "files":
+            key, items = "files", [bound(path, 512) for path in found.files]
+        elif found.mode == "count":
+            key = "counts"
+            items = [{"path": bound(c.path, 512), "count": c.count} for c in found.counts]
+        else:
+            key, items = "lines", list(found.lines)
+        shown = len(items)
+        while True:
+            answer: dict[str, Any] = {
+                "path": found.path,
+                "pattern": found.pattern,
+                "mode": found.mode,
+                key: items[:shown],
+                "truncated": found.truncated or shown < len(items),
+            }
+            skipped = {
+                name: count
+                for name, count in (
+                    ("binary", found.skipped_binary),
+                    ("too_large", found.skipped_large),
+                    ("unreadable", found.skipped_unreadable),
+                )
+                if count
+            }
+            if skipped:
+                answer["skipped_files"] = skipped
+            note = _search_note(found.stopped, shown < len(items), found.skipped)
+            if not items and not found.truncated:
+                note = (note + "; " if note else "") + "no match in the files searched"
+            if note:
+                answer["note"] = note
+            text = dump(answer)
+            if len(text) <= self.output_chars or shown == 0:
+                break
+            shown //= 2
+        record = {
+            "mode": found.mode,
+            "results": len(items),
+            "shown": shown,
+            "truncated": answer["truncated"],
+            "stopped": found.stopped,
+            "scanned_files": found.scanned_files,
+            "scanned_bytes": found.scanned_bytes,
+        }
+        return ToolOutcome(text, {"grep": record})
+
     async def _list(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         request = ListFilesRequest.model_validate({"context": self.context, **_known(args, "path")})
         listing = await self.client.list_files(request)
@@ -1571,6 +1786,28 @@ def _host_port(text: str) -> HostPort:
     if not port.isdigit():
         return HostPort(host=text.strip())  # refused by the worker as no host it knows
     return HostPort(host=host, port=int(port))
+
+
+_STOPS: Final[dict[str, str]] = {
+    "results": "more matched than the limit: narrow the path or pattern, or raise the limit",
+    "entries": "the search stopped at its limit of entries walked: narrow the path or glob",
+    "depth": "directories past the search's depth limit were not searched",
+    "bytes": "the search stopped at its limit of bytes read: narrow the path or glob",
+    "time": "the search stopped at its time limit: narrow the path or glob",
+    "reply": "the results passed the reply's size limit: narrow the path or pattern",
+}
+
+
+def _search_note(stopped: SearchStop | None, cut: bool, skipped: Sequence[str]) -> str:
+    """What a glob's or grep's result leaves out, and why, for the model."""
+    notes: list[str] = []
+    if stopped is not None:
+        notes.append(_STOPS[stopped])
+    if cut:
+        notes.append("shown in part to fit the result: narrow the search")
+    if skipped:
+        notes.append(f"not searched: {', '.join(skipped)} (name one as path to search it)")
+    return "; ".join(notes)
 
 
 def _known(args: dict[str, Any], *names: str) -> dict[str, Any]:

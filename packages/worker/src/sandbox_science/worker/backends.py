@@ -34,6 +34,7 @@ from . import (
     request_frames,
     sandbox_files,
     sandbox_processes,
+    sandbox_search,
     sandbox_setup,
     workspace_prefix,
 )
@@ -62,6 +63,7 @@ SANDBOX_FILES: tuple[Path, ...] = (
     CAPTURE_SOURCE,
     Path(sandbox_files.__file__),
     Path(sandbox_processes.__file__),
+    Path(sandbox_search.__file__),
     Path(sandbox_setup.__file__),
     Path(workspace_prefix.__file__),
 )

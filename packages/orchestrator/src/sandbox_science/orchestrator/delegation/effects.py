@@ -34,14 +34,15 @@ SESSION_TOOLS: Final = frozenset(
         "sage",
         "restart_kernel",
         "write_file",
+        "edit_file",
         "pdf_render",
         "start_job",
         "provision",
     }
 )
 """The built-in ``effect`` tools whose effects stay in the session. ``pdf_info``,
-``pdf_pages`` and ``pdf_search`` are ``read`` tools (``tools.PDF_READS``), which every
-gate lets through."""
+``pdf_pages`` and ``pdf_search`` are ``read`` tools (``tools.PDF_READS``), as ``read_file``,
+``list_files``, ``glob`` and ``grep`` are, which every gate lets through."""
 
 
 EFFECT_CLASSES: Final = frozenset(

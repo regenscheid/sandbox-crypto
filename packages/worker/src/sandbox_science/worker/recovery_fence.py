@@ -60,6 +60,8 @@ _PASSIVE = frozenset(
         "usage",
         "read",
         "list",
+        "glob",
+        "grep",
         "job_status",
         "lockfile",
         "capture_cancel",

@@ -364,7 +364,7 @@ evidence with that reason, and counts it as a change.
 ## Recording the files calls write
 
 With a state directory, each run has a `FileRecorder` (`orchestrator/recording.py`;
-RA-27 to RA-35). After a shell call, a kernel cell, a PDF helper or `write_file`, and
+RA-27 to RA-35). After a shell call, a kernel cell, a PDF helper, `write_file` or `edit_file`, and
 before the result goes back to the model, it records the files the worker reported:
 
 - It reads the project's [file settings](PROJECTS-AND-SESSIONS.md#files-executions-write)

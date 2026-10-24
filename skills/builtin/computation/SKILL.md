@@ -12,7 +12,7 @@ All research code runs in the project's sandbox, through the tools.
 - `python` runs code in the session's persistent Python kernel, and `sage` in its Sage kernel, where Sage syntax applies: ^ is a power and 1/3 is an exact rational. Variables, imports and loaded data persist between calls. They are the default for computation, analysis and exploration. Each is offered when the environment has the language.
 - `shell` runs a bash script in the session workspace, for commands: builds, installs, file operations, and running existing scripts and command-line tools. Each call starts afresh: only files carry over, and stdin is empty.
 - `start_job` runs a long shell computation in the background (below).
-- `read_file`, `write_file` and `list_files` work on the session workspace, or on shared/... for the project's shared area.
+- `read_file`, `write_file` and `list_files` work on the session workspace, or on shared/... for the project's shared area. To change part of a file, use `edit_file` rather than writing it whole. To search files, use `grep` (a regular expression, by file, count or line) and `glob` (path patterns, with a double star for any depth), whose output is bounded, rather than grep or find in the shell.
 - `restart_kernel` starts a kernel afresh, discarding its state.
 
 ## Explore in a kernel

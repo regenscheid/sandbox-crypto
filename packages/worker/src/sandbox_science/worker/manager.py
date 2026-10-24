@@ -25,6 +25,8 @@ from sandbox_science.contracts import (
     ArtifactRef,
     Capabilities,
     Clock,
+    EditFileRequest,
+    EditFileResult,
     ErrorKind,
     Event,
     Execution,
@@ -32,6 +34,10 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     FileContent,
     FileListing,
+    GlobListing,
+    GlobRequest,
+    GrepRequest,
+    GrepResult,
     JobListing,
     JobStatus,
     KernelInfo,
@@ -612,6 +618,18 @@ class ExecutionManager:
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         with self.store.recovery_fences.bind(request.context):
             return await self._files.listing(request)
+
+    async def edit_file(self, request: EditFileRequest) -> EditFileResult:
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.edit(request)
+
+    async def glob_files(self, request: GlobRequest) -> GlobListing:
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.glob(request)
+
+    async def grep_files(self, request: GrepRequest) -> GrepResult:
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.grep(request)
 
     async def stage_check(self, request: StageCheckRequest) -> StageCheck:
         with self.store.recovery_fences.bind(request.context):

@@ -778,6 +778,150 @@ class WriteFileResult(Contract):
     size: Annotated[int, Field(ge=0)]
 
 
+MAX_EDIT_BYTES: Final = MAX_READ_BYTES
+"""The largest file ``edit_file`` changes, before and after the edit: the read limit."""
+MAX_EDIT_STRING: Final = 1024 * 1024
+"""Characters of ``old_string`` and of ``new_string``, each."""
+
+
+class EditFileRequest(Contract):
+    """Replace ``old_string`` with ``new_string`` in a UTF-8 text file, atomically.
+
+    ``old_string`` must occur exactly once unless ``replace_all``. The file must exist;
+    in the shared area the edit needs ``expected_sha256``, the hash ``read_file`` showed.
+    """
+
+    context: ExecutionContext
+    path: RelativePath
+    old_string: Annotated[str, Field(min_length=1, max_length=MAX_EDIT_STRING)]
+    new_string: Annotated[str, Field(max_length=MAX_EDIT_STRING)]
+    replace_all: bool = False
+    expected_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def changes_something(self) -> Self:
+        if self.old_string == self.new_string:
+            raise ValueError("old_string and new_string are the same")
+        return self
+
+
+class EditFileResult(Contract):
+    sha256: Sha256
+    size: Annotated[int, Field(ge=0)]
+    replacements: Annotated[int, Field(ge=1)]
+
+
+MAX_SEARCH_PATTERN: Final = 1000
+"""Characters of a glob or a grep pattern."""
+MAX_GLOB_RESULTS: Final = 200
+MAX_GREP_RESULTS: Final = 500
+DEFAULT_GREP_RESULTS: Final = 100
+MAX_GREP_CONTEXT: Final = 10
+MAX_GREP_LINE_CHARS: Final = 400
+"""Characters of one line ``grep`` shows in ``content`` mode; a longer one is cut."""
+MAX_SKIPPED_NAMES: Final = 16
+
+
+def validate_glob(value: str) -> str:
+    """Check a path pattern: relative, without empty, ``.`` or ``..`` segments.
+
+    ``*`` and ``?`` match within one segment, ``[…]`` one character of a set, and a
+    segment ``**`` any number of directories. Raises ValueError.
+    """
+    if not value or "\x00" in value or len(value) > MAX_SEARCH_PATTERN:
+        raise ValueError("invalid pattern")
+    if value.startswith("/"):
+        raise ValueError(f"pattern {value!r} must be relative to the path")
+    for segment in value.split("/"):
+        if segment in ("", ".", ".."):
+            raise ValueError(f"pattern {value!r} has an empty, '.' or '..' segment")
+    return value
+
+
+GlobPattern = Annotated[str, AfterValidator(validate_glob)]
+SearchPattern = Annotated[str, StringConstraints(min_length=1, max_length=MAX_SEARCH_PATTERN)]
+SearchStop = Literal["results", "entries", "depth", "bytes", "time", "reply"]
+"""Why a search stopped early: its result limit, the entries or directory levels it walks,
+the bytes it reads, its time, or the size of its reply."""
+
+
+class GlobRequest(Contract):
+    """The paths below ``path`` that match ``pattern``, newest first."""
+
+    context: ExecutionContext
+    pattern: GlobPattern
+    path: RelativePath = "."
+    limit: Annotated[int, Field(ge=1, le=MAX_GLOB_RESULTS)] = MAX_GLOB_RESULTS
+
+
+class GlobEntry(Contract):
+    """A match, by its path relative to the session workspace (``shared/…`` in the
+    shared area); a symlink is reported as a link and not followed."""
+
+    path: str
+    type: Literal["file", "directory", "symlink", "other"]
+    size: Annotated[int, Field(ge=0)]
+    modified_at: datetime
+
+
+class GlobListing(Contract):
+    path: str
+    pattern: str
+    entries: tuple[GlobEntry, ...] = Field(max_length=MAX_GLOB_RESULTS)
+    truncated: bool = False
+    """More entries matched than are listed, or the walk stopped early (``stopped``)."""
+    stopped: SearchStop | None = None
+    scanned: Annotated[int, Field(ge=0)]
+    skipped: tuple[str, ...] = Field(default=(), max_length=MAX_SKIPPED_NAMES)
+    """Directories the walk did not enter: the research prefix and the executor's state."""
+
+
+GrepMode = Literal["files", "count", "content"]
+
+
+class GrepRequest(Contract):
+    """Search the text files below ``path``, or the file it names, for a Python regular
+    expression. Binary files, symlinks and the directories ``GlobListing.skipped`` names
+    are left out; ``glob`` narrows the files, by name or, with a ``/``, by path."""
+
+    context: ExecutionContext
+    pattern: SearchPattern
+    path: RelativePath = "."
+    glob: GlobPattern | None = None
+    mode: GrepMode = "files"
+    case_insensitive: bool = False
+    context_lines: Annotated[int, Field(ge=0, le=MAX_GREP_CONTEXT)] = 0
+    max_results: Annotated[int, Field(ge=1, le=MAX_GREP_RESULTS)] = DEFAULT_GREP_RESULTS
+
+
+class GrepCount(Contract):
+    path: str
+    count: Annotated[int, Field(ge=1)]
+
+
+class GrepResult(Contract):
+    """``files`` lists the files that match, ``count`` each one's matching lines, and
+    ``content`` the lines, as ``path:line: text``, with context lines as
+    ``path-line- text`` and ``--`` between groups."""
+
+    path: str
+    pattern: str
+    mode: GrepMode
+    files: tuple[str, ...] = Field(default=(), max_length=MAX_GREP_RESULTS)
+    counts: tuple[GrepCount, ...] = Field(default=(), max_length=MAX_GREP_RESULTS)
+    lines: tuple[str, ...] = Field(
+        default=(), max_length=MAX_GREP_RESULTS * (2 * MAX_GREP_CONTEXT + 2)
+    )
+    truncated: bool = False
+    stopped: SearchStop | None = None
+    scanned_files: Annotated[int, Field(ge=0)]
+    scanned_bytes: Annotated[int, Field(ge=0)]
+    skipped_binary: Annotated[int, Field(ge=0)] = 0
+    skipped_large: Annotated[int, Field(ge=0)] = 0
+    skipped_unreadable: Annotated[int, Field(ge=0)] = 0
+    skipped: tuple[str, ...] = Field(default=(), max_length=MAX_SKIPPED_NAMES)
+
+
 MAX_STAGED_FILES: Final = 4096
 """Files one staged pack holds at most, as an imported pack does."""
 MAX_STAGED_BYTES: Final = 32 * 1024 * 1024
