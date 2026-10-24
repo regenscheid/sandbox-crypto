@@ -263,7 +263,6 @@ network_policies:
             - e-print-mcp_get_eprint
             - e-print-mcp_recent_eprint
             - e-print-mcp_search_eprint
-            - firecrawl-mcp_firecrawl_agent
             - firecrawl-mcp_firecrawl_agent_status
             - firecrawl-mcp_firecrawl_check_crawl_status
             - firecrawl-mcp_firecrawl_crawl

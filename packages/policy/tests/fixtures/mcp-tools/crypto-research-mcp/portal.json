@@ -1,0 +1,50 @@
+{
+ "captured": "2026-10-24",
+ "group": "portal",
+ "server": "crypto-research-mcp",
+ "tools": [
+  {
+   "description": "Lists all available upstream MCP servers with their IDs, names, and enabled status. Use this to discover which servers are available and their current state.",
+   "inputSchema": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+   },
+   "name": "portal_list_servers"
+  },
+  {
+   "description": "Initiates a server selection flow allowing the user to enable or disable upstream MCP servers. The user will be directed to a URL to complete the selection.",
+   "inputSchema": {
+    "properties": {},
+    "required": [],
+    "type": "object"
+   },
+   "name": "portal_toggle_servers"
+  },
+  {
+   "description": "Toggles a single upstream MCP server on or off. Use 'toggle' to enable a server (will warmup and may require OAuth), or 'untoggle' to disable it.",
+   "inputSchema": {
+    "properties": {
+     "action": {
+      "description": "'toggle' to enable the server, 'untoggle' to disable it",
+      "enum": [
+       "toggle",
+       "untoggle"
+      ],
+      "type": "string"
+     },
+     "server_id": {
+      "description": "The ID of the server to toggle. This is usually the prefix before tool names",
+      "type": "string"
+     }
+    },
+    "required": [
+     "server_id",
+     "action"
+    ],
+    "type": "object"
+   },
+   "name": "portal_toggle_single_server"
+  }
+ ]
+}

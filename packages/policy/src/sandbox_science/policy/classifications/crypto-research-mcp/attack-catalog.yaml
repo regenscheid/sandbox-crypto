@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's attack-catalog-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/attack-catalog-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: attack-catalog-mcp_
+pinned: "2026-10-24"
+tools:
+  attack-catalog-mcp_find_applicable_attacks:
+    class: read
+    reason: "Lexical lookup of reference leads in the loaded catalog."
+    sha256: 41c5a9a548b5b965e2da908d8bc1dfff8748d30cbdc994452de8a70b44877211
+    significant: {query: target_properties}
+  attack-catalog-mcp_get_attack:
+    class: read
+    reason: "Returns one attack record by catalog ID."
+    sha256: 9445800c1d85f20a44eb590744f6032db3e5b1ca3fe5ae0e1b4813ac5cb826c0
+    significant: {title: attack_id}
+  attack-catalog-mcp_get_catalog_info:
+    class: read
+    reason: "Describes the loaded snapshot and its reading guides."
+    sha256: fb1a6e4878cac898fa7d4a04c01638db4ea4cc847775a2beb3f44b0fbc61c5a6
+  attack-catalog-mcp_get_filter_contract:
+    class: read
+    reason: "Explains filter semantics; documentation only."
+    sha256: eca38fc42d2a77a498e2492794aba2a9d566479a4be08748874f7b196dcc2d98
+  attack-catalog-mcp_get_source:
+    class: read
+    reason: "Returns source metadata and digest; fetches nothing."
+    sha256: 4a048f0fa6f73a32438903b60d9899ebc67b676981d98e61a92cd863bf72643f
+    significant: {title: source_id}
+  attack-catalog-mcp_list_attacks_for_skill:
+    class: read
+    reason: "Lists attack references for a skill ID."
+    sha256: 88a4f250087c1813685959a941cd777e9191127c5145cf6e08a92cde34f70b5e
+    significant: {title: skill_id}
+  attack-catalog-mcp_list_taxonomy:
+    class: read
+    reason: "Lists taxonomy dimensions and terms."
+    sha256: 59a1de1476eadfd4060edd382cebf61a3251a05f21b83731a15333bad6594e93
+  attack-catalog-mcp_search_attacks:
+    class: read
+    reason: "Searches the loaded catalog snapshot."
+    sha256: 344d3ca8b567fb59e2f8bebf59603f3e414ad70830c0d01880e74dc415d559e9
+    significant: {query: text}
+  attack-catalog-mcp_search_by_legacy_value_exact:
+    class: read
+    reason: "Exact literal match on a legacy field."
+    sha256: 3d1e8c4e5d6e23880c249f3834d2f2a554a4501c58519a9e61b1a08e3ce1678d
+    significant: {query: value}

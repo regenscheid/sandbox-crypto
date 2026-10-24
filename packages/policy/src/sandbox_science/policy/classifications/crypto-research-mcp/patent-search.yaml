@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's patent-search-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/patent-search-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: patent-search-mcp_
+pinned: "2026-10-24"
+tools:
+  patent-search-mcp_patent_search:
+    class: read
+    reason: "Searches Google Patents; billed by the service, which controls its cost."
+    sha256: 4258103f06597dd012148ac1a517a21782e58dac536b4e8678aae0e4f53faf09
+    significant: {query: query}
+  patent-search-mcp_patent_search_health:
+    class: read
+    reason: "Reports configuration and counters."
+    sha256: f3ef8e45be5abe54f3312bf0b47258f9d0658958f0cca7bcfa2304522b9c86ff

@@ -6406,7 +6406,7 @@ network_middlewares:
     config:
       policy:
         name: permissive-default
-        digest: sha256:3854ea4335c24adf00d245bda9f7d2f2760fea0a806802056a6a5287748b8fa7
+        digest: sha256:79ec2ec3cad5ec7983e20520eb42dad29329d892bf67aa42188857078e140795
       package_cache:
         host: package-cache.sandbox-science.internal
         port: 8090

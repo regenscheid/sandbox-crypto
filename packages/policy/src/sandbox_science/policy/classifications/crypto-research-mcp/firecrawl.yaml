@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's firecrawl-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/firecrawl-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: firecrawl-mcp_
+pinned: "2026-10-24"
+tools:
+  firecrawl-mcp_firecrawl_agent:
+    class: browse
+    reason: "Starts an autonomous agent that searches and navigates sites on its own (H1)."
+    sha256: dd64b8adcadda9607645a2679c4e3e269ab0a9159e57a004b95e25e943092f38
+    significant: {query: prompt, url: urls}
+  firecrawl-mcp_firecrawl_agent_status:
+    class: read
+    reason: "Polls an agent job; changes nothing."
+    sha256: e6647ecf1b35dcfea3c47800c60b39fdeb8b449e2c7c6069fe1204250d497c51
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_check_crawl_status:
+    class: read
+    reason: "Reads crawl job state; does not start or modify it."
+    sha256: 8bfec168aebd61fa1af423ae684334719fd6b3a204a9937f1f4a94d3980486bb
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_crawl:
+    class: read
+    reason: "Crawls a site for its pages; webhooks, browser actions and profile saves are effects (H1)."
+    sha256: b556c3ead85cac70c54078ccf689fc269f6aa3626c352b545e35fe22a8de4068
+    significant: {url: url, size: limit}
+    rules:
+      - {argument: webhook, present: true, class: communicate}
+      - {argument: webhookHeaders, present: true, class: communicate}
+      - {argument: scrapeOptions.actions, present: true, class: browse}
+      - {argument: scrapeOptions.profile.saveChanges, equals: true, class: write}
+  firecrawl-mcp_firecrawl_developer_search:
+    class: read
+    reason: "Searches an index of issues, pull requests and documentation."
+    sha256: b9b04e7f26ee324c7fdf8dbc86a9da079880a9ac249ac4708b3aab92f3cb58f1
+    significant: {query: query}
+  firecrawl-mcp_firecrawl_extract:
+    class: read
+    reason: "Deprecated multi-URL extraction; reads the pages named."
+    sha256: dbde6f168b97e234c55ca5c4ead815ed6c073bcb66eeb9d3d0df7126e6a60e9c
+    significant: {url: urls, query: prompt}
+  firecrawl-mcp_firecrawl_feedback:
+    class: write
+    reason: "Submits quality feedback to Firecrawl about a job."
+    sha256: e07534fad1ee744f7404c070c520d235df995fdfead4d4350895625ceeeb6153
+    significant: {title: rating, url: url}
+  firecrawl-mcp_firecrawl_interact:
+    class: browse
+    reason: "Live browser session that clicks, fills forms and runs code on the site."
+    sha256: 3647490c98aa7d6be0a2413d623d96d324d2c68acd6382853fe194c7e66ac1ce
+    significant: {url: url, query: prompt}
+  firecrawl-mcp_firecrawl_interact_stop:
+    class: browse
+    reason: "Ends a live browser session."
+    sha256: 462de352e317a9b48f9c6f5cf5afb55aaf9913d3b2b0bb3dad7d653213107cb3
+    significant: {title: scrapeId}
+  firecrawl-mcp_firecrawl_map:
+    class: read
+    reason: "Lists a site's indexed URLs without fetching pages."
+    sha256: f5ce0f2689f005b790a6943ebf6594dd8e952b0a03188e23b4fbe425f99fdf67
+    significant: {url: url, size: limit}
+  firecrawl-mcp_firecrawl_monitor_check:
+    class: read
+    reason: "Reads one past monitor check; does not run one."
+    sha256: bcd86461900c09be1512365c8bcce257abea7a67b9f574746c38bba64ed25fec
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_monitor_checks:
+    class: read
+    reason: "Lists a monitor's past checks."
+    sha256: e080e0eff8e5647ce23dfe1d9fd6956df921e99ee4e5a55ec9430ae1ae663ce3
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_monitor_create:
+    class: communicate
+    reason: "Creates a recurring monitor that can email or call webhooks later."
+    sha256: 3239140efb5feb9c7caa7029092a28e196c737250a2f03f65b0ccc5b55cbde21
+    significant: {recipient: email, url: page, title: name}
+  firecrawl-mcp_firecrawl_monitor_delete:
+    class: write
+    reason: "Deletes a monitor (in lab 39's listing, not the pinned one)."
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_monitor_get:
+    class: read
+    reason: "Reads one monitor's configuration and state."
+    sha256: 8a61cfbc867b0d8c07b0a22fcfc687fae4bbc995ff73e40c14807d2be0f09011
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_monitor_list:
+    class: read
+    reason: "Lists the account's monitors."
+    sha256: 8ff17499f6e596a0c844eb83934cd3f28b623955279862b2498adcb93f395414
+  firecrawl-mcp_firecrawl_monitor_run:
+    class: write
+    reason: "Queues an immediate check, starting network work for its targets."
+    sha256: 1add92dd899ffdb0a9743ba34ab16543e12a962ad21a40bdf744a131174f5fc5
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_monitor_update:
+    class: communicate
+    reason: "Changes a monitor's schedule, targets, webhook or notifications."
+    sha256: 348031db135d3a38a713b9525e330784c183090986e5d488c05f635e2a9fefaf
+    significant: {title: id}
+  firecrawl-mcp_firecrawl_parse:
+    class: read
+    reason: "Parses one document into text; returns content."
+    sha256: ca93f1aafdcb406b6d2b9e46dc4bb2d8b67667fe003c089db08478fde6a3b84f
+    significant: {title: filePath}
+  firecrawl-mcp_firecrawl_research_inspect_paper:
+    class: read
+    reason: "Metadata for one paper ID."
+    sha256: 9b8fcea999b80e37ca50ab1221567768fb769dcbbeedf8929fb24e115b4e7023
+    significant: {title: paperId}
+  firecrawl-mcp_firecrawl_research_read_paper:
+    class: read
+    reason: "Passages from one indexed paper."
+    sha256: 3f09739e0ac96b0c0f44d4dc245ee43993b41600120c96eb84396a9cc32ed99a
+    significant: {title: paperId, query: question}
+  firecrawl-mcp_firecrawl_research_related_papers:
+    class: read
+    reason: "Citation-graph candidates for seed papers."
+    sha256: 58fe642d3a42ea91250322b7f2415a74edda4bd0f2a209e7dfc264859864c91c
+    significant: {query: intent}
+  firecrawl-mcp_firecrawl_research_search_github:
+    class: read
+    reason: "Searches indexed GitHub issues, pull requests and READMEs."
+    sha256: 773128f8f8e9b9cbedec2226e53e18ac26e6448541b21614a324faca4f91dcb7
+    significant: {query: query}
+  firecrawl-mcp_firecrawl_research_search_papers:
+    class: read
+    reason: "Searches indexed paper metadata and abstracts."
+    sha256: 02d181181db66311c102ce2f5273d80990333897bde121416c633d670f07ffcc
+    significant: {query: query}
+  firecrawl-mcp_firecrawl_scrape:
+    class: read
+    reason: "Fetches one page's content; browser actions and profile saves are effects (H1)."
+    sha256: 867de81d8da507fb45731a6423e9a6a431a44d063bce75773880507f5aedf748
+    significant: {url: url}
+    rules:
+      - {argument: actions, present: true, class: browse}
+      - {argument: profile.saveChanges, equals: true, class: write}
+  firecrawl-mcp_firecrawl_search:
+    class: read
+    reason: "Web search; attached scrapes with browser actions or profile saves are effects."
+    sha256: 2050875fe78bd8e9b844c0aaefd0b01317d0091cfc5f9849aa8ae8bc86f06a6b
+    significant: {query: query, size: limit}
+    rules:
+      - {argument: scrapeOptions.actions, present: true, class: browse}
+      - {argument: scrapeOptions.profile.saveChanges, equals: true, class: write}
+  firecrawl-mcp_firecrawl_search_feedback:
+    class: write
+    reason: "Records feedback on a past search, which can refund a credit."
+    sha256: 7288d35e8720720e3b1761b63dde611e57bc28e9847e864ab29aaf36722a2da7
+    significant: {title: rating}

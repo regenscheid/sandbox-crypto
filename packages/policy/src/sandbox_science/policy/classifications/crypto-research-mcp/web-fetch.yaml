@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's web-fetch-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/web-fetch-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: web-fetch-mcp_
+pinned: "2026-10-24"
+tools:
+  web-fetch-mcp_fetch_continue:
+    class: read
+    reason: "Reads the next part of a cached page."
+    sha256: 1434eac831def1cfabe19a0dd5975efe101479390be85ff926a14d2c335b3268
+    significant: {title: document_id}
+  web-fetch-mcp_fetch_links:
+    class: read
+    reason: "Fetches a page's links."
+    sha256: 9d244411ec93f05e8925f527fc6f36ff83c61278da417a52514df9bab4d74771
+    significant: {url: url}
+  web-fetch-mcp_fetch_page:
+    class: read
+    reason: "Fetches a page's content."
+    sha256: 8105b8adbc4cbb300d476998294d984f98a0391f218eb9bab6292deff3dd6111
+    significant: {url: url}
+  web-fetch-mcp_web_capture:
+    class: read
+    reason: "Screenshots a page; scrolls but does not interact."
+    sha256: d27b96168bedd1289e388c47d99eadc95103e6780a208ca35217b909042c5c38
+    significant: {url: url}
+  web-fetch-mcp_web_fetch:
+    class: read
+    reason: "Fetches a page's content."
+    sha256: 692034c8cd541eff5451afe1392e456fbf7a394a4a4a4459f56cdf30f40ba87f
+    significant: {url: url, size: max_chars}
+  web-fetch-mcp_web_fetch_health:
+    class: read
+    reason: "Reports fetch engines and configuration."
+    sha256: f26fad73067c70643756844038b0be243bb8fa4739a0134018ec93c0e42faa40

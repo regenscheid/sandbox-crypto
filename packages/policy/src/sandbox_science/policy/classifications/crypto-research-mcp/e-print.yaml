@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's e-print-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/e-print-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: e-print-mcp_
+pinned: "2026-10-24"
+tools:
+  e-print-mcp_corpus_stats:
+    class: read
+    reason: "Reports corpus size, coverage and last harvest."
+    sha256: baabd0b4f11a930a738e65aaefb092006348d30ef6ac30be93577e0154200261
+  e-print-mcp_eprint_file:
+    class: read
+    reason: "Signed URL for a paper; a missing original is fetched into the server's cache (D95: a read)."
+    sha256: ea5131406d9774a10c24fdbd12b06e802691d821c33b80532ff1d88bbe1d9528
+    significant: {title: paper_id}
+  e-print-mcp_eprint_fulltext:
+    class: read
+    reason: "Reads a paper's text; the first call may fetch and cache the PDF (D95: a read)."
+    sha256: 9c1a3f44d72426a6191da42c05f537b548dab98f1f6b326374de1b62bd718e38
+    significant: {title: paper_id, query: query}
+  e-print-mcp_get_eprint:
+    class: read
+    reason: "Metadata and abstract for one paper."
+    sha256: d21b5767ae9d867711267a01c9a45bb1d36e29db1b3f3e7c8f70b9af3ffe91e8
+    significant: {title: paper_id}
+  e-print-mcp_recent_eprint:
+    class: read
+    reason: "Lists the newest submissions."
+    sha256: 1a3edf7cbfccc92ef7f2efaad24d1047764fbb3c05c23cf0e6af9ae09621a83c
+    significant: {query: query}
+  e-print-mcp_refresh_eprint:
+    class: admin
+    reason: "Refreshes and reindexes the server's whole shared corpus."
+    sha256: 9815fcb5c5d04a3161a475b497e89f781df48ae8383f52fbf90dc71158ddd29f
+  e-print-mcp_search_eprint:
+    class: read
+    reason: "Searches the ePrint corpus."
+    sha256: 41cb9f4dc0bfd7e5519a00ec5b2dbf49459cfd077ab696242ed5d5c9c80f80db
+    significant: {query: query}

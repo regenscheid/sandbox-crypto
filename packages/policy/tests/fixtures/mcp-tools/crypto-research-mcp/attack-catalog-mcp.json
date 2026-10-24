@@ -1,0 +1,332 @@
+{
+ "captured": "2026-10-24",
+ "group": "attack-catalog-mcp",
+ "server": "crypto-research-mcp",
+ "tools": [
+  {
+   "description": "Retrieve reference leads using lexical overlap with authored applicability text. This existing heuristic does not decide whether a target satisfies preconditions. It does not reason about negation, quantifiers, conjunctions, or capability access. Even a high score is text relevance only. Inspect source scope and limitations; defeated_by commentary is not a general immunity theorem. The historical capability_gates_met field means lexical overlap, not established capability. Only records with reviewed applicability text are searched. Empty results do not establish that no relevant result exists.",
+   "inputSchema": {
+    "properties": {
+     "min_matches": {
+      "default": 1,
+      "title": "Min Matches",
+      "type": "integer"
+     },
+     "target_properties": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Target Properties",
+      "type": "array"
+     }
+    },
+    "required": [
+     "target_properties"
+    ],
+    "title": "find_applicable_attacksArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_find_applicable_attacks"
+  },
+  {
+   "description": "Return one attack by its stable catalog ID, with both layers. `normalized` carries the classification and review states; `legacy` preserves the published record's preserved non-identity fields. Historical aliases are returned as references but do not resolve as lookup IDs. Both are returned so any classification can be audited against the value it came from.",
+   "inputSchema": {
+    "properties": {
+     "attack_id": {
+      "title": "Attack Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "attack_id"
+    ],
+    "title": "get_attackArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_get_attack"
+  },
+  {
+   "description": "Describe the loaded snapshot, refresh limits, registry pin, and reading-guide index.",
+   "inputSchema": {
+    "properties": {},
+    "title": "get_catalog_infoArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_get_catalog_info"
+  },
+  {
+   "description": "Explain the filter semantics: rollup, result-level matching, and absence handling.",
+   "inputSchema": {
+    "properties": {},
+    "title": "get_filter_contractArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_get_filter_contract"
+  },
+  {
+   "description": "Return source metadata and its content digest; this does not retrieve or verify a paper.",
+   "inputSchema": {
+    "properties": {
+     "source_id": {
+      "title": "Source Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "source_id"
+    ],
+    "title": "get_sourceArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_get_source"
+  },
+  {
+   "description": "List subject references for an exact runtime skill ID, in canonical ID order. Links are reading relevance only, never mandatory invocations or applicability evidence. Editorial additions carry their authorship and limited evidence scope. Pagination uses offsets within the returned snapshot digest; stop or restart if that digest changes.",
+   "inputSchema": {
+    "properties": {
+     "limit": {
+      "default": 25,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "skill_id": {
+      "title": "Skill Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "skill_id"
+    ],
+    "title": "list_attacks_for_skillArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_list_attacks_for_skill"
+  },
+  {
+   "description": "List dimensions, or the terms and hierarchy of one dimension. Call this before guessing a filter value. Terms are data and may grow between releases.",
+   "inputSchema": {
+    "properties": {
+     "dimension": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Dimension"
+     }
+    },
+    "title": "list_taxonomyArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_list_taxonomy"
+  },
+  {
+   "description": "Search the loaded promoted catalog snapshot using NORMALIZED filters. Hierarchical dimensions roll up: outcome=key_recovery returns private-key, symmetric-key, session-key, shared-secret and partial recoveries. Every result reports matched_by, naming the dimension and the exact term that produced the match, and for result-level dimensions which result variant matched. Two distinctions that change answers: * outcome is what a record DEMONSTRATES. An attack on a hardness assumption carries outcome=assumption_solver and is NOT returned by outcome=key_recovery; ask potential_scheme_impact=key_recovery for what it would yield once instantiated. * shared_secret_recovery is not session_key_recovery. A derivation step may stand between the raw shared secret and the session key. Use list_taxonomy first if unsure which terms exist; unknown terms are rejected rather than silently ignored.",
+   "inputSchema": {
+    "properties": {
+     "adversary_capability": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Adversary Capability"
+     },
+     "hardness_assumption": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Hardness Assumption"
+     },
+     "limit": {
+      "default": 25,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "model_qualifier": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model Qualifier"
+     },
+     "outcome": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Outcome"
+     },
+     "potential_scheme_impact": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Potential Scheme Impact"
+     },
+     "record_kind": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Record Kind"
+     },
+     "scope_coverage": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Scope Coverage"
+     },
+     "security_property": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Security Property"
+     },
+     "target_layer": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Target Layer"
+     },
+     "technique": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Technique"
+     },
+     "text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Text"
+     }
+    },
+    "title": "search_attacksArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_search_attacks"
+  },
+  {
+   "description": "NON-SEMANTIC. Match one literal legacy string exactly. This exists for debugging and export parity ONLY. It matches a single string and makes no completeness claim: legacy `result_type` has 65 distinct free-text values, so field='result_type', value='key recovery' returns 36 records while the semantic filter outcome=key_recovery returns 116. If you are answering a question about attacks, use search_attacks instead. Reaching for this tool for a semantic question produces a wrong answer that looks right.",
+   "inputSchema": {
+    "properties": {
+     "field": {
+      "title": "Field",
+      "type": "string"
+     },
+     "value": {
+      "title": "Value",
+      "type": "string"
+     }
+    },
+    "required": [
+     "field",
+     "value"
+    ],
+    "title": "search_by_legacy_value_exactArguments",
+    "type": "object"
+   },
+   "name": "attack-catalog-mcp_search_by_legacy_value_exact"
+  }
+ ]
+}

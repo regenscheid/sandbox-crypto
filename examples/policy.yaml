@@ -166,6 +166,15 @@ mcp:
     worker_tools: inherit   # or a narrower allow list for worker code
     max_response_bytes: 2Mi
     binary_results: artifact   # store as artifact references, not inline base64
+  browser_automation: disabled     # browse calls (Firecrawl interact and agent, page actions) are denied (D96)
+  # Per-class actions and the widest grant a user may give (D97), for every server
+  # unless a server's own `effects` say otherwise. The shipped defaults:
+  # effects:
+  #   read: {action: allow}
+  #   write: {action: escalate, max_grant: project}
+  #   communicate: {action: escalate, max_grant: session}
+  #   admin: {action: escalate, max_grant: once}
+  #   unclassified: {action: escalate, max_grant: once}
   servers:
     crypto-research-mcp:
       url: https://mcp.example.invalid/crypto-research   # placeholder: the Access-protected address
@@ -177,92 +186,18 @@ mcp:
           CF-Access-Client-Secret: "${provider:crypto-research-mcp.CF_ACCESS_CLIENT_SECRET}"
       # The server lists its tools by their bare names, such as
       # e-print-mcp_search_eprint, with no portal prefix (lab 39, 2026-10-15).
-      # Checked against the server's 78 tools (2026-10-10). Tools are allowed by
-      # exact name, so a tool a new server revision adds, or a compound name such as
-      # get_or_create_note, asks first (defaults.action). Patterns only escalate or
-      # deny. Cost is the services' to control, so no tool asks because it is billed;
-      # the ones that ask act on the world. The fixture
-      # packages/policy/tests/fixtures/crypto-research-mcp-tools.json pins every
-      # tool's outcome.
+      # Each tool's effect class comes from the checked-in classification
+      # (packages/policy/src/sandbox_science/policy/classifications/crypto-research-mcp),
+      # with argument rules: firecrawl_scrape is a read, but browse with `actions` and
+      # write with `profile.saveChanges: true` (D96). The class decides the call: reads
+      # are allowed, writes, messages and admin tools ask, browser automation is off.
+      # A tool a new revision adds takes its hints: read if it says readOnlyHint,
+      # otherwise unclassified, which asks. Cost is the services' to control, so no
+      # tool asks because it is billed.
+      classification: crypto-research-mcp
       tools:
         allow:
-          - attack-catalog-mcp_find_applicable_attacks
-          - attack-catalog-mcp_get_attack
-          - attack-catalog-mcp_get_catalog_info
-          - attack-catalog-mcp_get_filter_contract
-          - attack-catalog-mcp_get_source
-          - attack-catalog-mcp_list_attacks_for_skill
-          - attack-catalog-mcp_list_taxonomy
-          - attack-catalog-mcp_search_attacks
-          - attack-catalog-mcp_search_by_legacy_value_exact
-          - e-print-mcp_corpus_stats
-          - e-print-mcp_get_eprint
-          - e-print-mcp_recent_eprint
-          - e-print-mcp_search_eprint
-          - firecrawl-mcp_firecrawl_agent
-          - firecrawl-mcp_firecrawl_agent_status
-          - firecrawl-mcp_firecrawl_check_crawl_status
-          - firecrawl-mcp_firecrawl_crawl
-          - firecrawl-mcp_firecrawl_developer_search
-          - firecrawl-mcp_firecrawl_extract
-          - firecrawl-mcp_firecrawl_map
-          - firecrawl-mcp_firecrawl_monitor_check
-          - firecrawl-mcp_firecrawl_monitor_checks
-          - firecrawl-mcp_firecrawl_monitor_get
-          - firecrawl-mcp_firecrawl_monitor_list
-          - firecrawl-mcp_firecrawl_parse
-          - firecrawl-mcp_firecrawl_research_inspect_paper
-          - firecrawl-mcp_firecrawl_research_read_paper
-          - firecrawl-mcp_firecrawl_research_related_papers
-          - firecrawl-mcp_firecrawl_research_search_github
-          - firecrawl-mcp_firecrawl_research_search_papers
-          - firecrawl-mcp_firecrawl_scrape
-          - nist-csrc-mcp_nist_browse_catalogs
-          - nist-csrc-mcp_nist_get_catalog_item
-          - nist-csrc-mcp_nist_get_corpus_status
-          - nist-csrc-mcp_nist_get_pdf
-          - nist-csrc-mcp_nist_get_publication
-          - nist-csrc-mcp_nist_list_topics
-          - nist-csrc-mcp_nist_read
-          - nist-csrc-mcp_nist_search
-          - nist-mcp_csrc_currency
-          - nist-mcp_csrc_stats
-          - nist-mcp_get_csrc
-          - nist-mcp_search_csrc
-          - paper-search-mcp_arxiv_search
-          - paper-search-mcp_crossref_search
-          - paper-search-mcp_dblp_search
-          - paper-search-mcp_openalex_search
-          - paper-search-mcp_paper_citations
-          - paper-search-mcp_paper_details
-          - paper-search-mcp_paper_search_health
-          - paper-search-mcp_semantic_scholar_search
-          - patent-search-mcp_patent_search_health
-          - portal_list_servers
-          - web-fetch-mcp_fetch_continue
-          - web-fetch-mcp_fetch_links
-          - web-fetch-mcp_fetch_page
-          - web-fetch-mcp_web_capture
-          - web-fetch-mcp_web_fetch
-          - web-fetch-mcp_web_fetch_health
-          # Billed per call by the services, which control their own cost:
-          - firecrawl-mcp_firecrawl_search
-          - paper-search-mcp_scholar_search
-          - paper-search-mcp_search_papers
-          - patent-search-mcp_patent_search
-          # Reads that fill the server's own document cache on first use:
-          - e-print-mcp_eprint_file
-          - e-print-mcp_eprint_fulltext
-          - nist-mcp_csrc_file
-          - nist-mcp_csrc_fulltext
-        escalate:
-          - "*_feedback"                    # e.g. firecrawl_search_feedback, which submits feedback
-          - "*_refresh_*"                   # rebuilds a server's shared corpus
-          - firecrawl-mcp_firecrawl_interact          # a live browser session can submit forms
-          - firecrawl-mcp_firecrawl_interact_stop
-          - firecrawl-mcp_firecrawl_monitor_create    # monitors run later and can email or call webhooks
-          - firecrawl-mcp_firecrawl_monitor_update
-          - firecrawl-mcp_firecrawl_monitor_run
+          - portal_list_servers    # lists the portal's servers; reads nothing else
         deny:
           - "portal_*"             # server configuration is not an agent action
 
@@ -293,3 +228,12 @@ shared_data:
 
 data:
   default_class: project-private
+
+# Lockdown modes, set by the admin (D95). The defaults: reads reach any public host,
+# and every declared server's tools take their classes.
+lockdown:
+  network: open-reads      # or allowlist: only `hosts` (names, *.domains, address ranges)
+  mcp: declared            # or locked: only tools the policy or its classification names
+  # network: allowlist
+  # hosts: [eprint.iacr.org, "*.arxiv.org", 192.0.2.0/24]
+  # unlisted: deny         # or escalate

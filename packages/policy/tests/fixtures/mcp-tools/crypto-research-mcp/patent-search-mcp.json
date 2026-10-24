@@ -1,0 +1,43 @@
+{
+ "captured": "2026-10-24",
+ "group": "patent-search-mcp",
+ "server": "crypto-research-mcp",
+ "tools": [
+  {
+   "description": "Search Google Patents for patents and published applications worldwide. Returns publication numbers, assignees, first inventors, priority, filing, publication, and grant dates, a snippet, and Google Patents / PDF links. Google Patents matches keywords loosely, so quote technical phrases and combine them with AND/OR and parentheses, e.g. `(\"key encapsulation\" OR KEM) AND (masking OR \"side-channel\")`. `assignee:Name` restricts results to one assignee. Each page holds up to ten results (`num` trims the page); `page` continues. Use web_fetch on a result's Google Patents link to read the claims and full description. Each call is billed by Serper; identical calls within an hour are cached.",
+   "inputSchema": {
+    "properties": {
+     "num": {
+      "default": 10,
+      "title": "Num",
+      "type": "integer"
+     },
+     "page": {
+      "default": 1,
+      "title": "Page",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "patent_searchArguments",
+    "type": "object"
+   },
+   "name": "patent-search-mcp_patent_search"
+  },
+  {
+   "description": "Report whether Serper is configured and the request/cache counters.",
+   "inputSchema": {
+    "properties": {},
+    "title": "patent_search_healthArguments",
+    "type": "object"
+   },
+   "name": "patent-search-mcp_patent_search_health"
+  }
+ ]
+}

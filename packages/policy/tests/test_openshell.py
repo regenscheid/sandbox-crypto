@@ -958,7 +958,9 @@ def test_example_mcp_proxy_policy() -> None:
     assert len(tool_rules) == 1
     names = tool_rules[0].allow.tool
     assert isinstance(names, AnyOf)
-    assert len(names.any) == 67
+    # The tools the classification makes reads, and portal_list_servers by name.
+    assert len(names.any) == 66
+    assert "firecrawl-mcp_firecrawl_agent" not in names.any  # browse, off by default
     # The server lists bare names, and the fence admits them as listed (lab 39).
     assert "e-print-mcp_search_eprint" in names.any
     assert not any(name.startswith("crypto_research_mcp-") for name in names.any)
@@ -1140,10 +1142,16 @@ def test_a_star_block_drops_allow_patterns() -> None:
     assert endpoint.deny_rules is None
 
 
-def test_a_permissive_default_is_reported_as_stricter_at_the_fence() -> None:
-    compiled = compile_mcp(mcp_policy("{allow: [a]}", default="allow"))
+def test_a_permissive_unclassified_action_is_reported_as_stricter_at_the_fence() -> None:
+    policy = parse_policy(
+        HEADER
+        + "mcp:\n  effects: {unclassified: {action: allow}}\n  servers:\n    srv:\n"
+        + "      url: https://mcp.example.org/mcp\n      revision: '1'\n      auth: {mode: none}\n"
+        + "      tools: {allow: [a]}\n"
+    )
+    compiled = compile_mcp(policy)
     assert any(
-        finding.severity is Severity.WARNING and "defaults.action is allow" in finding.message
+        finding.severity is Severity.WARNING and "unclassified tools are allow" in finding.message
         for finding in compiled.findings
     )
 

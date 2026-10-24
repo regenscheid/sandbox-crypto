@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's portal tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/portal.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: portal_
+pinned: "2026-10-24"
+tools:
+  portal_list_servers:
+    class: read
+    reason: "Lists the portal's upstream servers and their state."
+    sha256: d84f5b5863b5fcffc4b0ef91f37eb9c286c7bba033878fb32165b973dee476a3
+  portal_toggle_servers:
+    class: admin
+    reason: "Starts a flow that enables or disables the portal's servers."
+    sha256: 84671cdb3f4b3145dbf53537512cf591492e05fead28971d91e4c68341215772
+  portal_toggle_single_server:
+    class: admin
+    reason: "Enables or disables one of the portal's servers."
+    sha256: 3b142125417c7a7297a5f3a95cae5526f2054d55964f8120c29b4de103f34477
+    significant: {title: server_id}

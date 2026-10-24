@@ -7,7 +7,9 @@ docs/POLICY.md defines the semantics.
 
 from __future__ import annotations
 
+import ipaddress
 import re
+from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self
@@ -30,7 +32,8 @@ from pydantic import (
 )
 
 from .decision import Action
-from .hosts import HostPattern, normalize_host, parse_ip
+from .effects import CATALOG, ClassActions, EffectClass, ToolName
+from .hosts import HostKind, HostPattern, normalize_host, parse_ip
 from .units import ByteSize, Duration
 
 API_VERSION: Final = "sandbox-science/v0alpha1"
@@ -455,6 +458,20 @@ class McpServer(StrictModel):
     auth: McpAuth
     tool_prefix: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_./-]{1,64}$")] | None = None
     tools: ToolRules = ToolRules()
+    classification: Name | None = None
+    """The checked-in classification of the server's tools (``classifications/<name>``)."""
+    classify: dict[ToolName, EffectClass] = Field(default_factory=dict[str, EffectClass])
+    """The policy's own classes for tools, by exact name after the prefix; they win over
+    the classification file and the server's hints."""
+    effects: ClassActions = Field(default_factory=ClassActions)
+    """Per-class actions and grant ceilings for this server, over ``mcp.effects``."""
+
+    @field_validator("classification")
+    @classmethod
+    def _known_classification(cls, value: str | None) -> str | None:
+        if value is not None and not (CATALOG / value).is_dir():
+            raise ValueError(f"there is no checked-in classification {value!r}")
+        return value
 
     @field_validator("url")
     @classmethod
@@ -515,6 +532,88 @@ class Mcp(StrictModel):
 
     proxy: McpProxy = McpProxy()
     servers: dict[Name, McpServer] = Field(default_factory=dict[str, McpServer])
+    effects: ClassActions = Field(default_factory=ClassActions)
+    """Cross-server per-class actions and grant ceilings, over the shipped defaults (D97)."""
+    browser_automation: Literal["disabled", "enabled"] = "disabled"
+    """Whether ``browse`` calls may happen at all: disabled, they are denied (D96)."""
+
+    @model_validator(mode="after")
+    def _browse_needs_automation(self) -> Self:
+        if self.browser_automation == "disabled" and (
+            EffectClass.BROWSE in self.effects
+            or any(EffectClass.BROWSE in server.effects for server in self.servers.values())
+        ):
+            raise ValueError("effects for browse need browser_automation: enabled")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class ListedHost:
+    """An entry of a network allowlist: an exact host, ``*.suffix`` or an address range."""
+
+    pattern: HostPattern | None
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network | None = None
+
+    @classmethod
+    def parse(cls, raw: str) -> ListedHost:
+        """Parse an entry as written. Raises ValueError."""
+        if "/" in raw:
+            return cls(None, ipaddress.ip_network(raw, strict=True))
+        pattern = HostPattern.parse(raw)
+        if pattern.kind is HostKind.ANY:
+            raise ValueError("'*' lists every host; use network: open-reads instead")
+        return cls(pattern)
+
+    def matches(self, host: str) -> bool:
+        """Whether a normalized host is listed."""
+        if self.network is not None:
+            address = parse_ip(host)
+            return address is not None and address in self.network
+        return self.pattern is not None and self.pattern.matches(host)
+
+    def __str__(self) -> str:
+        return str(self.network if self.network is not None else self.pattern)
+
+
+def _parse_listed(value: object) -> ListedHost:
+    if isinstance(value, ListedHost):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("allowlist entries must be strings")
+    return ListedHost.parse(value)
+
+
+ListedHostField = Annotated[
+    ListedHost,
+    PlainValidator(_parse_listed),
+    PlainSerializer(str, return_type=str),
+    WithJsonSchema({"type": "string"}),
+]
+
+
+class Lockdown(StrictModel):
+    """Per-project lockdown modes, set by the admin (D95).
+
+    ``network: allowlist`` lets HTTP and git reach only the listed hosts, domains
+    (``*.suffix``) and address ranges; a request elsewhere takes ``unlisted``, whatever the
+    rules say. ``mcp: locked`` makes only tools the policy names callable, so a tool a server
+    adds is unavailable until it is named.
+    """
+
+    network: Literal["open-reads", "allowlist"] = "open-reads"
+    hosts: tuple[ListedHostField, ...] = ()
+    unlisted: Literal[Action.DENY, Action.ESCALATE] = Action.DENY
+    mcp: Literal["declared", "locked"] = "declared"
+
+    @model_validator(mode="after")
+    def _hosts_need_allowlist(self) -> Self:
+        if self.network != "allowlist" and (self.hosts or self.unlisted is not Action.DENY):
+            raise ValueError("hosts and unlisted apply only to network: allowlist")
+        return self
+
+    def listed(self, host: str) -> bool:
+        """Whether network traffic may reach a normalized host under this lockdown."""
+        return self.network != "allowlist" or any(entry.matches(host) for entry in self.hosts)
 
 
 def _parse_credential_host(value: object) -> str:
@@ -616,6 +715,7 @@ class ProjectPolicy(StrictModel):
     credentials: Credentials = Credentials()
     shared_data: SharedData = SharedData()
     data: Data = Data()
+    lockdown: Lockdown = Lockdown()
 
     @model_validator(mode="after")
     def _unique_rule_names(self) -> Self:

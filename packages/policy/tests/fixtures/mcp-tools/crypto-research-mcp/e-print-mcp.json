@@ -1,0 +1,220 @@
+{
+ "captured": "2026-10-24",
+ "group": "e-print-mcp",
+ "server": "crypto-research-mcp",
+ "tools": [
+  {
+   "description": "Report corpus size, year coverage, and last-harvest time.",
+   "inputSchema": {
+    "properties": {},
+    "title": "corpus_statsArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_corpus_stats"
+  },
+  {
+   "description": "Return a temporary URL for an intact original PDF or PostScript file. A missing original is fetched inline in standalone mode or queued for the cluster's dedicated fetcher. The cluster waits briefly so the initial call normally returns the URL on a direct-fetch success; slower fallbacks return a queue status. Once returned, the client should download the signed HTTPS URL from the server's cache.",
+   "inputSchema": {
+    "properties": {
+     "paper_id": {
+      "title": "Paper Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "paper_id"
+    ],
+    "title": "eprint_fileArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_eprint_file"
+  },
+  {
+   "description": "Read a paper's BODY from the local cache, not just its abstract. In standalone mode, the first call downloads and caches the PDF. In the cluster, it queues a missing PDF and waits briefly for the dedicated fetcher; the initial call normally returns the requested text when the direct path succeeds, otherwise it returns a queue status. Responses link to the archive or a verified original. PostScript text is extracted by an isolated worker and cached; if extraction fails, the original PS download remains available. Always pass `query` -- these are full papers. `ref` is accepted as an alias for paper_id for symmetry with the NIST tools.",
+   "inputSchema": {
+    "properties": {
+     "context": {
+      "default": 3,
+      "title": "Context",
+      "type": "integer"
+     },
+     "fetch": {
+      "default": true,
+      "title": "Fetch",
+      "type": "boolean"
+     },
+     "max_passages": {
+      "default": 8,
+      "title": "Max Passages",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "paper_id": {
+      "default": null,
+      "title": "Paper Id",
+      "type": "string"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query"
+     },
+     "ref": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Ref"
+     }
+    },
+    "title": "eprint_fulltextArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_eprint_fulltext"
+  },
+  {
+   "description": "Fetch full metadata and the abstract for one ePrint paper by ID (e.g. \"2024/1234\"), including its archive link and any cached original's format.",
+   "inputSchema": {
+    "properties": {
+     "paper_id": {
+      "title": "Paper Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "paper_id"
+    ],
+    "title": "get_eprintArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_get_eprint"
+  },
+  {
+   "description": "List the newest ePrint submissions, optionally filtered by topic.",
+   "inputSchema": {
+    "properties": {
+     "limit": {
+      "default": 25,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Query"
+     }
+    },
+    "title": "recent_eprintArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_recent_eprint"
+  },
+  {
+   "description": "Refresh the entire local corpus incrementally, then rebuild its index. This tool takes no parameters. It is not a targeted per-paper refresh and may take a while when many new archive records are available.",
+   "inputSchema": {
+    "properties": {},
+    "title": "refresh_eprintArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_refresh_eprint"
+  },
+  {
+   "description": "Search the Cryptology ePrint Archive corpus by topic, title, or keyword. Domain acronyms expand automatically (LWE -> learning with errors, MPCitH -> MPC-in-the-Head, etc.). Supports FTS5 syntax directly when you want control -- quoted phrases, AND/OR/NOT, prefix wildcards like \"latt*\". Results include archive links and verified formats for cached originals. Use eprint_file to resolve and download an uncached original (PDF or PS). Set abstracts=true only after narrowing; it costs a lot of tokens.",
+   "inputSchema": {
+    "properties": {
+     "abstracts": {
+      "default": false,
+      "title": "Abstracts",
+      "type": "boolean"
+     },
+     "author": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Author"
+     },
+     "category": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Category"
+     },
+     "limit": {
+      "default": 15,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "search_eprintArguments",
+    "type": "object"
+   },
+   "name": "e-print-mcp_search_eprint"
+  }
+ ]
+}

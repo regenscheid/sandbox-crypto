@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's nist-csrc-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/nist-csrc-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: nist-csrc-mcp_
+pinned: "2026-10-24"
+tools:
+  nist-csrc-mcp_nist_browse_catalogs:
+    class: read
+    reason: "Browses the structured NIST catalogs."
+    sha256: 49c0fd000080bafe01c3aa8ca37067159fe9ea1750ca743312b1f2d84075f28d
+    significant: {title: dataset}
+  nist-csrc-mcp_nist_get_catalog_item:
+    class: read
+    reason: "Returns one catalog item."
+    sha256: 7491b87af31c404f652d44f10cb1282299e92b10d3d7a1e373d4ccdc174a53ef
+    significant: {title: item_id}
+  nist-csrc-mcp_nist_get_corpus_status:
+    class: read
+    reason: "Reports corpus coverage and refresh status."
+    sha256: 003f2ec877d71afbc98a9af67da0e77dd01ad34146966407456f241e83cecdbf
+  nist-csrc-mcp_nist_get_pdf:
+    class: read
+    reason: "Signed URL and digest of an archived PDF."
+    sha256: d0a056cb05e64729f5c8bbef39b3c0fc14e88a0d5baf7137d41a6480523c65b6
+    significant: {title: edition_id}
+  nist-csrc-mcp_nist_get_publication:
+    class: read
+    reason: "Describes one publication edition."
+    sha256: 5a5fa4d1127a6237736dd5188dfe567ea55c985ef6fc9a5f10b3512b92202c60
+    significant: {title: edition_id, query: query}
+  nist-csrc-mcp_nist_list_topics:
+    class: read
+    reason: "Lists CSRC topics."
+    sha256: c93f409b46123530b1d60e0612bd2a81cd100cb21c26b7935b3fc3a43193121e
+  nist-csrc-mcp_nist_read:
+    class: read
+    reason: "Reads pages of a publication as Markdown."
+    sha256: b56d459f500187ab4e4b9153d495b303a91c784b083881acbb78e498a8e90f4f
+    significant: {title: edition_id, size: page_count}
+  nist-csrc-mcp_nist_search:
+    class: read
+    reason: "Searches NIST publications, catalog items and passages."
+    sha256: f3536e191439f99588a8f97a26f941120f59e859d50d744842ba1494ce052623
+    significant: {query: query}

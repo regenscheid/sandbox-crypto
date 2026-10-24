@@ -67,6 +67,10 @@ class Decision:
     rule: str | None = None
     policy_digest: str | None = None
     escalation: EscalationTerms | None = None
+    effect: str | None = None
+    """For an MCP tool call, the effect class it resolved to (D96)."""
+    max_grant: str | None = None
+    """For an escalated MCP tool call, the widest grant a user may give (D97)."""
 
     def __post_init__(self) -> None:
         if (self.action is Action.ESCALATE) != (self.escalation is not None):

@@ -7,12 +7,14 @@ docs/POLICY.md defines the semantics; the section names in comments refer to it.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, NamedTuple, assert_never
 
 from .ceiling import PoolCeiling
+from .classification import CallClass, class_action, named, resolve
 from .decision import Action, Alert, Decision, EscalationTerms, Layer, most_restrictive
+from .effects import ClassAction, EffectClass, MaxGrant
 from .errors import ClassificationError
 from .floor import HardFloor
 from .hosts import HostKind, address_forms, is_public, parse_ip
@@ -217,10 +219,15 @@ def evaluate_mcp_message(
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
     resolved: Sequence[str] = (),
+    hints: Mapping[str, EffectClass] | None = None,
 ) -> Decision:
-    """Classify and evaluate one MCP JSON-RPC message; unclassifiable messages are denied."""
+    """Classify and evaluate one MCP JSON-RPC message; unclassifiable messages are denied.
+
+    ``hints`` are the classes the server's latest listing declares, by tool name
+    (``mcp_wire.tool_hints``); a tool the policy does not classify takes its hint (D96).
+    """
     try:
-        operation = classify_mcp_message(server, message, origin=origin)
+        operation = classify_mcp_message(server, message, origin=origin, hints=hints)
     except ClassificationError as exc:
         return _deny("classification", str(exc), policy)
     return evaluate(operation, policy, ceiling=ceiling, floor=floor, resolved=resolved)
@@ -528,6 +535,16 @@ def _evaluate_network(
     )
     if reason is not None:
         return _deny("floor", reason, policy)
+    lockdown = policy.policy.lockdown
+    if not lockdown.listed(operation.host):
+        # An allowlist holds whatever the rules say (D95): only listed hosts are reachable.
+        return _decision(
+            lockdown.unlisted,
+            "policy",
+            f"{operation.host} is not on the project's network allowlist",
+            policy,
+            rule="lockdown.network",
+        )
 
     operation_class = "http" if isinstance(operation, HttpOperation) else "git"
     candidates: list[_Candidate] = []
@@ -677,6 +694,21 @@ def _evaluate_mcp(
     ):
         return _deny("policy", f"tool {tool!r} is not in mcp.proxy.worker_tools", policy)
 
+    if policy.policy.lockdown.mcp == "locked" and not named(server, name):
+        return _deny(
+            "policy",
+            f"tool {tool!r} is not named in the policy, and MCP is locked (lockdown.mcp)",
+            policy,
+            rule="lockdown.mcp",
+        )
+
+    def rank(effect: EffectClass) -> tuple[int, int]:
+        terms = class_action(policy.policy, operation.server, effect)
+        # A narrower grant ceiling is the more restrictive treatment of two escalations.
+        return terms.action.restrictiveness, -list(MaxGrant).index(terms.max_grant)
+
+    call = resolve(server, name, operation.arguments, rank, hint=operation.hint)
+    terms = class_action(policy.policy, operation.server, call.effect)
     lists = (
         ("allow", Action.ALLOW, server.tools.allow),
         ("escalate", Action.ESCALATE, server.tools.escalate),
@@ -690,15 +722,45 @@ def _evaluate_mcp(
     ]
     exact = [entry for entry in matches if "*" not in entry[2]]
     pool = exact or matches
+    class_label = f"mcp.effects.{call.effect}"
     if not pool:
-        action = policy.policy.defaults.action
-        return _decision(
-            action, "default", f"no tool rule matched {tool!r}; defaults.action is {action}", policy
+        # The class decides a tool no tool rule names (D97).
+        layer: Layer = "default" if call.source == "none" and call.rule is None else "policy"
+        return _mcp_decision(
+            terms.action, layer, f"tool {tool!r} is {call.label}", policy, class_label, call, terms
         )
     action = most_restrictive(entry[1] for entry in pool)
     list_name, _, pattern = next(entry for entry in pool if entry[1] is action)
     label = f"mcp.servers.{operation.server}.tools.{list_name}[{pattern}]"
-    return _decision(action, "policy", f"tool {tool!r} matched {label}", policy, rule=label)
+    if call.rule is not None and terms.action.restrictiveness > action.restrictiveness:
+        # An argument rule changes what the call does, so it is never looser than its class.
+        return _mcp_decision(
+            terms.action,
+            "policy",
+            f"tool {tool!r} matched {label}, but is {call.label}",
+            policy,
+            class_label,
+            call,
+            terms,
+        )
+    return _mcp_decision(
+        action, "policy", f"tool {tool!r} matched {label}", policy, label, call, terms
+    )
+
+
+def _mcp_decision(
+    action: Action,
+    layer: Layer,
+    reason: str,
+    policy: LoadedPolicy,
+    rule: str,
+    call: CallClass,
+    terms: ClassAction,
+) -> Decision:
+    """A tool call's decision with its class and, for an escalation, its grant ceiling."""
+    decision = _decision(action, layer, reason, policy, rule=rule)
+    grant = terms.max_grant if action is Action.ESCALATE else MaxGrant.NONE
+    return replace(decision, effect=call.effect.value, max_grant=grant.value)
 
 
 def _evaluate_package(

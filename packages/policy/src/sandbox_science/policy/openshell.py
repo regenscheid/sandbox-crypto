@@ -48,7 +48,9 @@ import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 from .ceiling import PoolCeiling
+from .classification import class_action, classified_names, possible_classes
 from .decision import Action
+from .effects import EffectClass
 from .evaluate import (
     DEFAULT_FLOOR,
     MCP_PROTOCOL_METHODS,
@@ -56,10 +58,12 @@ from .evaluate import (
     host_reach,
     registry_reason,
     reserved_host_reason,
+    tool_pattern_matches,
 )
 from .floor import HardFloor
 from .hosts import (
     HostKind,
+    HostPattern,
     address_variants,
     floor_addresses,
     floor_reason,
@@ -80,6 +84,7 @@ from .model import (
     Port,
     ProjectPolicy,
     StrictModel,
+    ToolRules,
 )
 from .operations import HttpRequest
 
@@ -664,7 +669,7 @@ def public_address_ranges() -> tuple[str, ...]:
     return tuple(str(network) for network in (*ipv4, *ipv6))
 
 
-def _wildcard_hosts(rules: Sequence[HttpRule | GitRule], findings: list[Finding]) -> list[str]:
+def _wildcard_patterns(patterns: Iterable[HostPattern], findings: list[Finding]) -> list[str]:
     """OpenShell host patterns for the rules' ``*.suffix`` wildcards.
 
     The library's ``*.suffix`` matches names at any depth below the suffix, which
@@ -673,29 +678,28 @@ def _wildcard_hosts(rules: Sequence[HttpRule | GitRule], findings: list[Finding]
     grant non-public names, so those are not named either.
     """
     hosts: set[str] = set()
-    for rule in rules:
-        for pattern in rule.match.hosts:
-            # The suffix itself may be a lone label such as "org"; what matters is
-            # whether the names under it are public.
-            if pattern.kind is not HostKind.WILDCARD or not is_public(f"x.{pattern.value}"):
-                continue
-            reason = registry_reason(f"x.{pattern.value}") or registry_reason(pattern.value)
-            if reason is not None:
-                findings.append(
-                    Finding(Severity.WARNING, f"hosts.{pattern}", f"not admitted: {reason}")
+    for pattern in patterns:
+        # The suffix itself may be a lone label such as "org"; what matters is
+        # whether the names under it are public.
+        if pattern.kind is not HostKind.WILDCARD or not is_public(f"x.{pattern.value}"):
+            continue
+        reason = registry_reason(f"x.{pattern.value}") or registry_reason(pattern.value)
+        if reason is not None:
+            findings.append(
+                Finding(Severity.WARNING, f"hosts.{pattern}", f"not admitted: {reason}")
+            )
+            continue
+        if pattern.labels < 2:
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    f"hosts.{pattern}",
+                    "OpenShell wildcard hosts need three labels, so names under this "
+                    "pattern cannot be resolved in a sandbox (stricter)",
                 )
-                continue
-            if pattern.labels < 2:
-                findings.append(
-                    Finding(
-                        Severity.WARNING,
-                        f"hosts.{pattern}",
-                        "OpenShell wildcard hosts need three labels, so names under this "
-                        "pattern cannot be resolved in a sandbox (stricter)",
-                    )
-                )
-                continue
-            hosts.add(f"**.{pattern.value}")
+            )
+            continue
+        hosts.add(f"**.{pattern.value}")
     return sorted(hosts)
 
 
@@ -765,8 +769,8 @@ def _entry_port(text: str) -> int:
     return int(text)
 
 
-def _open_internet(project: ProjectPolicy, reachable: Sequence[HttpRule | GitRule]) -> bool:
-    """Whether requests can reach hosts the policy does not name.
+def _wide(project: ProjectPolicy, reachable: Sequence[HttpRule | GitRule]) -> bool:
+    """Whether the rules reach hosts they do not name, before any lockdown.
 
     Unmatched requests take defaults.action, so anything but deny does, as does
     every wildcard rule.
@@ -774,6 +778,82 @@ def _open_internet(project: ProjectPolicy, reachable: Sequence[HttpRule | GitRul
     return project.defaults.action is not Action.DENY or any(
         pattern.kind is not HostKind.EXACT for rule in reachable for pattern in rule.match.hosts
     )
+
+
+def _open_internet(project: ProjectPolicy, reachable: Sequence[HttpRule | GitRule]) -> bool:
+    """Whether requests can reach hosts the compiled policy does not name.
+
+    Under ``network: allowlist`` (D95) only listed hosts are reachable, so unnamed ones
+    are reached only through a listed domain or address range, or when unlisted hosts
+    escalate instead of being denied.
+    """
+    if not _wide(project, reachable):
+        return False
+    lockdown = project.lockdown
+    return (
+        lockdown.network != "allowlist"
+        or lockdown.unlisted is Action.ESCALATE
+        or any(
+            entry.pattern is None or entry.pattern.kind is not HostKind.EXACT
+            for entry in lockdown.hosts
+        )
+    )
+
+
+def _listed_hosts(
+    policy: LoadedPolicy,
+    reachable: Sequence[HttpRule | GitRule],
+    ports: Iterable[int],
+    findings: list[Finding],
+    *,
+    ceiling: PoolCeiling,
+    floor: HardFloor,
+) -> tuple[list[str], list[HostPattern]]:
+    """The exact hosts and the wildcards that endpoints name, under the network lockdown.
+
+    Without an allowlist, those the rules name. With one, the rules' exact hosts that it
+    lists, its own exact hosts that some request could reach, and its domains, plus the
+    rules' wildcards when unlisted hosts escalate.
+    """
+    project = policy.policy
+    lockdown = project.lockdown
+    named = {
+        pattern.value
+        for rule in reachable
+        for pattern in rule.match.hosts
+        if pattern.kind is HostKind.EXACT
+    }
+    patterns = [pattern for rule in reachable for pattern in rule.match.hosts]
+    if lockdown.network != "allowlist":
+        return sorted(named), patterns
+    unlisted = sorted(host for host in named if not lockdown.listed(host))
+    if unlisted and lockdown.unlisted is Action.DENY:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "lockdown.hosts",
+                "not admitted, since the network allowlist does not list them: "
+                + ", ".join(unlisted),
+            )
+        )
+        named -= set(unlisted)
+    wide = _wide(project, reachable)
+    for entry in lockdown.hosts:
+        pattern = entry.pattern
+        if pattern is None or pattern.kind is not HostKind.EXACT or pattern.value in named:
+            continue
+        if any(
+            host_reach(pattern.value, port, policy, ceiling=ceiling, floor=floor).action
+            is not Action.DENY
+            for port in ports
+        ):
+            named.add(pattern.value)
+    listed = (
+        [entry.pattern for entry in lockdown.hosts if entry.pattern is not None] if wide else []
+    )
+    if lockdown.unlisted is Action.ESCALATE:
+        listed += patterns
+    return sorted(named), listed
 
 
 def _admission_refusal(
@@ -870,13 +950,8 @@ def compile_sandbox(
     admitted_ports = tuple(sorted(ports - CONTROL_PLANE_PORTS))
 
     open_internet = _open_internet(project, reachable)
-    exact_hosts = sorted(
-        {
-            pattern.value
-            for rule in reachable
-            for pattern in rule.match.hosts
-            if pattern.kind is HostKind.EXACT
-        }
+    exact_hosts, host_patterns = _listed_hosts(
+        policy, reachable, admitted_ports, findings, ceiling=ceiling, floor=floor
     )
     endpoints: list[Endpoint] = []
     # OpenShell's policy DNS answers only for host names that an endpoint names,
@@ -884,7 +959,7 @@ def compile_sandbox(
     # endpoint. Public hosts get the public address ranges, as the library's
     # wildcard rule allows only public destinations; hosts a rule names exactly
     # may be private, as in the library.
-    allowed_ips = admission_ranges(policy, ceiling, floor) if open_internet else None
+    allowed_ips = admission_ranges(policy, ceiling, floor) if _wide(project, reachable) else None
     service_hosts = {target.package_cache.host, target.mcp_proxy.host}
     # A closed policy admits only hosts its rules name, so it binds only those.
     bound = _bound_hosts(
@@ -933,7 +1008,7 @@ def compile_sandbox(
             findings.append(Finding(Severity.WARNING, f"hosts.{host}", f"not admitted: {reason}"))
             continue
         named_hosts.append(host)
-    wildcards = _wildcard_hosts(reachable, findings) if open_internet else []
+    wildcards = _wildcard_patterns(host_patterns, findings) if open_internet else []
     suffixes = tuple(host.removeprefix("**.") for host in wildcards)
 
     # Entries the worker admitted on demand: hosts the policy reaches without naming
@@ -1545,7 +1620,11 @@ def _mcp_server_policies(
                 )
             )
         rules, deny_rules = _tool_rules(
-            server, project.defaults.action, subject, findings, admit_escalated
+            _effective_tools(project, name, server, subject, findings),
+            class_action(project, name, EffectClass.UNCLASSIFIED).action,
+            subject,
+            findings,
+            admit_escalated,
         )
         binding = _credential_binding(server, subject, findings)
         bindings_by_host.setdefault((server.host, port), set()).add(
@@ -1653,6 +1732,62 @@ def _openshell_matches(pattern: str, name: str) -> bool:
     return re.fullmatch(regex, name) is not None
 
 
+def _effective_tools(
+    project: ProjectPolicy, name: str, server: McpServer, subject: str, findings: list[Finding]
+) -> McpServer:
+    """The server with its tool rules widened by name to what its classes admit.
+
+    A classified tool no tool rule matches is admitted by exact name as its most
+    permissive possible class allows it: argument rules can only make one call stricter
+    at the fence, and the middleware or the MCP proxy decides each call with its
+    arguments. Under ``mcp: locked`` only exact names are compiled, so a tool the server
+    adds stays denied until the policy names it (D95).
+    """
+    tools = server.tools
+    patterns = (*tools.allow, *tools.escalate, *tools.deny)
+    admitted: dict[Action, list[str]] = {Action.ALLOW: [], Action.ESCALATE: [], Action.DENY: []}
+    for tool in sorted(classified_names(server)):
+        if any(tool_pattern_matches(pattern, tool) for pattern in patterns):
+            continue
+        action = min(
+            (
+                class_action(project, name, effect).action
+                for effect in possible_classes(server, tool)
+            ),
+            key=lambda action: action.restrictiveness,
+        )
+        admitted[Action.DENY if action is Action.DENY else action].append(tool)
+    allow, escalate = (
+        (*tools.allow, *admitted[Action.ALLOW]),
+        (*tools.escalate, *admitted[Action.ESCALATE]),
+    )
+    if project.lockdown.mcp == "locked":
+        globs = sorted(pattern for pattern in (*allow, *escalate) if "*" in pattern)
+        if globs:
+            findings.append(
+                Finding(
+                    Severity.INFO,
+                    f"{subject}.tools",
+                    "MCP is locked, so only exact names are admitted; the patterns "
+                    + ", ".join(globs)
+                    + " are not compiled (lockdown.mcp)",
+                )
+            )
+        allow = tuple(pattern for pattern in allow if "*" not in pattern)
+        escalate = tuple(pattern for pattern in escalate if "*" not in pattern)
+    if classified_names(server):
+        findings.append(
+            Finding(
+                Severity.INFO,
+                f"{subject}.tools",
+                "tools the policy does not classify are admitted only by name, so a tool "
+                "that a later listing hints is read-only is denied at this fence (stricter)",
+            )
+        )
+    widened = ToolRules(allow=allow, escalate=escalate, deny=(*tools.deny, *admitted[Action.DENY]))
+    return server.model_copy(update={"tools": widened})
+
+
 def _tool_rules(
     server: McpServer,
     default: Action,
@@ -1707,8 +1842,8 @@ def _tool_rules(
             Finding(
                 Severity.WARNING,
                 f"{subject}.tools",
-                f"defaults.action is {default}, but OpenShell denies tools that no allow entry "
-                "names, so such tools are denied at the fence (stricter)",
+                f"unclassified tools are {default}, but OpenShell denies tools that no allow "
+                "entry names, so such tools are denied at the fence (stricter)",
             )
         )
     if admit_escalated and tools.escalate:

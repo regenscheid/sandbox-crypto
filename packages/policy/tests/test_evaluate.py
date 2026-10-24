@@ -39,6 +39,7 @@ from sandbox_science.policy import (
     load_policy,
     parse_policy,
 )
+from sandbox_science.policy.decision import most_restrictive
 
 HEADER = """\
 apiVersion: sandbox-science/v0alpha1
@@ -1989,7 +1990,9 @@ def test_unmatched_tools_take_defaults_action(action: Action) -> None:
         """
     )
     decision = call_tool(policy, "crawl_site")
-    assert decision.action == action
+    # An unclassified tool asks (D97), and is never looser than defaults.action.
+    assert decision.action == most_restrictive((action, Action.ESCALATE))
+    assert decision.effect == "unclassified"
     assert decision.layer == "default"
 
 

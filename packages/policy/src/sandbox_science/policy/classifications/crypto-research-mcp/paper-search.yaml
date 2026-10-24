@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's paper-search-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/paper-search-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: paper-search-mcp_
+pinned: "2026-10-24"
+tools:
+  paper-search-mcp_arxiv_search:
+    class: read
+    reason: "Searches arXiv."
+    sha256: 1974706e75394fe126a032b6b0bb25d1eeddba49896e95b37f9d3ca334b2f5c9
+    significant: {query: query, size: limit}
+  paper-search-mcp_crossref_search:
+    class: read
+    reason: "Searches Crossref."
+    sha256: 368f1d3bda5d614468b629ea7a4b49f50ab9fe0a4dea18297af4f072f107e544
+    significant: {query: query, size: limit}
+  paper-search-mcp_dblp_search:
+    class: read
+    reason: "Searches DBLP."
+    sha256: c938927abe76b4c6466ac73b9cc12e16abdf00ca31608a745766feb9e832c20b
+    significant: {query: keywords, size: limit}
+  paper-search-mcp_openalex_search:
+    class: read
+    reason: "Searches OpenAlex."
+    sha256: 37ab3e928335359d0e0a86f06d551713ad39b09ed68a24003781aa94935a4d9d
+    significant: {query: query, size: limit}
+  paper-search-mcp_paper_citations:
+    class: read
+    reason: "Lists citing or cited papers."
+    sha256: 34ec4ce2c7fa270736f3bf467e5743de923010296239976a7ce27eb38d733acc
+    significant: {title: identifier}
+  paper-search-mcp_paper_details:
+    class: read
+    reason: "Metadata for one paper."
+    sha256: 44f2f058a1f795acf9eb15ce6be96d3e8559626f8b528715cc7df9965d200e45
+    significant: {title: identifier}
+  paper-search-mcp_paper_search_health:
+    class: read
+    reason: "Reports configured sources and counters."
+    sha256: d1e82f7140d726d1bdf7c2f93106282e1417b9f3cbf2a881c2db01f0432cf95a
+  paper-search-mcp_scholar_search:
+    class: read
+    reason: "Searches Google Scholar; billed by the service, which controls its cost."
+    sha256: 40c1cd0df11aa7d048506e817284289282140ae71588826253272a2b2fcb8ec6
+    significant: {query: query}
+  paper-search-mcp_search_papers:
+    class: read
+    reason: "Searches several sources and merges the results."
+    sha256: a0918ee28e7ff82e741ceccbcca1b07d1f90b0a7ac98231c19ec76b5584c0b40
+    significant: {query: query, size: limit}
+  paper-search-mcp_semantic_scholar_search:
+    class: read
+    reason: "Searches Semantic Scholar."
+    sha256: 03e4abb9946e3ad6da3d2f4c5c1ec6ee013b1c9b7240f68b241b19144d5597dd
+    significant: {query: query, size: limit}

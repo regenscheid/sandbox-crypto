@@ -1,0 +1,476 @@
+{
+ "captured": "2026-10-24",
+ "group": "paper-search-mcp",
+ "server": "crypto-research-mcp",
+ "tools": [
+  {
+   "description": "Search arXiv preprints directly (freshest source for new preprints). Free text becomes an all-fields AND query; arXiv field syntax passes through unchanged (ti:, au:, abs:, cat:, e.g. `ti:lattice AND au:Peikert`). `category` limits results to one arXiv category such as cs.CR or quant-ph. Year filters use the submission date. `sort`: relevance or newest.",
+   "inputSchema": {
+    "properties": {
+     "category": {
+      "default": "",
+      "title": "Category",
+      "type": "string"
+     },
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "sort": {
+      "default": "relevance",
+      "title": "Sort",
+      "type": "string"
+     },
+     "start": {
+      "default": 0,
+      "title": "Start",
+      "type": "integer"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "arxiv_searchArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_arxiv_search"
+  },
+  {
+   "description": "Search Crossref, the registry of DOIs for journals, proceedings, and books. Useful for resolving a half-remembered citation to its DOI and publisher record. Filters: publication year range and author. `sort`: relevance, cited, or newest.",
+   "inputSchema": {
+    "properties": {
+     "author": {
+      "default": "",
+      "title": "Author",
+      "type": "string"
+     },
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "sort": {
+      "default": "relevance",
+      "title": "Sort",
+      "type": "string"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "crossref_searchArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_crossref_search"
+  },
+  {
+   "description": "Search DBLP, the curated computer-science bibliography, newest first. Every keyword must appear in the title (\"quoted phrases\" stay together). `author` is a case-insensitive substring of the DBLP author name. `venue` accepts CRYPTO, EUROCRYPT, ASIACRYPT, CHES/TCHES, FSE/ToSC, JoC, PKC, TCC, CT-RSA, PQCrypto, SAC, COSADE, CARDIS, DCC, CiC, ePrint, CCS, S&P, USENIX Security, NDSS, EuroS&P, ACNS, ESORICS, CSF, TIFS, TDSC, CoRR, or a DBLP stream key such as conf/crypto or journals/tches; other text matches a substring of DBLP's venue label. At least one of keywords, author, or venue is required. `peer_reviewed_only` drops arXiv/ePrint preprint records. Queries take a few seconds.",
+   "inputSchema": {
+    "properties": {
+     "author": {
+      "default": "",
+      "title": "Author",
+      "type": "string"
+     },
+     "keywords": {
+      "default": "",
+      "title": "Keywords",
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "peer_reviewed_only": {
+      "default": false,
+      "title": "Peer Reviewed Only",
+      "type": "boolean"
+     },
+     "venue": {
+      "default": "",
+      "title": "Venue",
+      "type": "string"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "title": "dblp_searchArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_dblp_search"
+  },
+  {
+   "description": "Search OpenAlex, an open index of ~250M works with abstracts and citations. Filters: publication year range, author name, and open access only. `sort`: relevance (default), cited (most cited first), or newest. Results carry OpenAlex IDs (W...) for paper_details and paper_citations, and link a legal open-access PDF when one is known.",
+   "inputSchema": {
+    "properties": {
+     "author": {
+      "default": "",
+      "title": "Author",
+      "type": "string"
+     },
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "open_access_only": {
+      "default": false,
+      "title": "Open Access Only",
+      "type": "boolean"
+     },
+     "page": {
+      "default": 1,
+      "title": "Page",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "sort": {
+      "default": "relevance",
+      "title": "Sort",
+      "type": "string"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "openalex_searchArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_openalex_search"
+  },
+  {
+   "description": "List papers that cite a paper, or the papers it references (OpenAlex). `direction`: cited_by (later work citing it) or references (work it cites). `identifier`: DOI, arXiv ID, OpenAlex work ID, or Semantic Scholar ID. `sort`: cited (most cited first), newest, or relevance.",
+   "inputSchema": {
+    "properties": {
+     "direction": {
+      "default": "cited_by",
+      "title": "Direction",
+      "type": "string"
+     },
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     },
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "page": {
+      "default": 1,
+      "title": "Page",
+      "type": "integer"
+     },
+     "sort": {
+      "default": "cited",
+      "title": "Sort",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_citationsArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_paper_citations"
+  },
+  {
+   "description": "Full metadata for one paper: abstract, authors, venue, citations, PDFs. `identifier`: a DOI (10.xxxx/..., doi.org URL), an arXiv ID or URL, an OpenAlex work ID (W...), a Semantic Scholar paper ID (40 hex characters or URL), or CorpusId:<n>. Combines OpenAlex with Semantic Scholar (TL;DR, influential citations) and falls back to Crossref or arXiv.",
+   "inputSchema": {
+    "properties": {
+     "identifier": {
+      "title": "Identifier",
+      "type": "string"
+     }
+    },
+    "required": [
+     "identifier"
+    ],
+    "title": "paper_detailsArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_paper_details"
+  },
+  {
+   "description": "Report which sources are configured and per-source request counters.",
+   "inputSchema": {
+    "properties": {},
+    "title": "paper_search_healthArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_paper_search_health"
+  },
+  {
+   "description": "Search Google Scholar (via Serper) for papers, with citation counts. Broadest coverage, including books, theses, and publisher pages that other indexes miss. Results include a publication line (authors, venue, year), a snippet, \"cited by\" counts, and a PDF link when Scholar shows one. Supports Google Scholar operators in `query`, e.g. author:\"Last Name\", intitle:word, or \"exact phrase\". Each page holds up to ten results (`num` trims the page); `page` continues. Each call is billed by Serper; repeated identical calls within an hour are cached.",
+   "inputSchema": {
+    "properties": {
+     "num": {
+      "default": 10,
+      "title": "Num",
+      "type": "integer"
+     },
+     "page": {
+      "default": 1,
+      "title": "Page",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "scholar_searchArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_scholar_search"
+  },
+  {
+   "description": "Search several scholarly sources at once and merge the results. Queries the sources in parallel, merges duplicates by DOI, arXiv ID, or title, and ranks papers found by more sources and ranked higher first. Each merged record lists the sources that returned it. `sources`: any of google_scholar, openalex, semantic_scholar, crossref, dblp, arxiv. Default: all of them (google_scholar only when Serper is configured). DBLP matches every query word against titles, so short keyword queries suit it best. Google Scholar year filters apply to the returned page only. Per-source failures are reported in Notes rather than failing the whole call. Cryptology ePrint papers are covered by the ePrint tools as well as by DBLP, OpenAlex, and Semantic Scholar.",
+   "inputSchema": {
+    "properties": {
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "per_source": {
+      "default": 8,
+      "title": "Per Source",
+      "type": "integer"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "sources": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Sources"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "search_papersArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_search_papers"
+  },
+  {
+   "description": "Search Semantic Scholar (strong computer-science relevance ranking). Filters: year range, venue (comma-separated names such as \"CRYPTO,EUROCRYPT\"), and papers with an open-access PDF. Use paper_details on a result for its TL;DR summary and reference counts.",
+   "inputSchema": {
+    "properties": {
+     "limit": {
+      "default": 10,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "offset": {
+      "default": 0,
+      "title": "Offset",
+      "type": "integer"
+     },
+     "open_access_only": {
+      "default": false,
+      "title": "Open Access Only",
+      "type": "boolean"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "venue": {
+      "default": "",
+      "title": "Venue",
+      "type": "string"
+     },
+     "year_from": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year From"
+     },
+     "year_to": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Year To"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "semantic_scholar_searchArguments",
+    "type": "object"
+   },
+   "name": "paper-search-mcp_semantic_scholar_search"
+  }
+ ]
+}

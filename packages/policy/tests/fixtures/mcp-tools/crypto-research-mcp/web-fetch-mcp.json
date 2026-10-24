@@ -1,0 +1,156 @@
+{
+ "captured": "2026-10-24",
+ "group": "web-fetch-mcp",
+ "server": "crypto-research-mcp",
+ "tools": [
+  {
+   "description": "Read the next part of a cached webpage without another upstream request.",
+   "inputSchema": {
+    "properties": {
+     "document_id": {
+      "title": "Document Id",
+      "type": "string"
+     },
+     "max_chars": {
+      "default": 40000,
+      "title": "Max Chars",
+      "type": "integer"
+     },
+     "offset": {
+      "title": "Offset",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "document_id",
+     "offset"
+    ],
+    "title": "fetch_continueArguments",
+    "type": "object"
+   },
+   "name": "web-fetch-mcp_fetch_continue"
+  },
+  {
+   "description": "Fetch a page and return its links (text + href) for navigation.",
+   "inputSchema": {
+    "properties": {
+     "limit": {
+      "default": 50,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "fetch_linksArguments",
+    "type": "object"
+   },
+   "name": "web-fetch-mcp_fetch_links"
+  },
+  {
+   "description": "Fetch a page and return its content (alias of web_fetch). Accepts the same arguments as web_fetch: `url`, `format` (markdown/text/html), `max_chars`. Provided because some MCP hosts call the tool fetch_page.",
+   "inputSchema": {
+    "properties": {
+     "extractor": {
+      "default": "auto",
+      "title": "Extractor",
+      "type": "string"
+     },
+     "format": {
+      "default": "markdown",
+      "title": "Format",
+      "type": "string"
+     },
+     "max_chars": {
+      "default": 0,
+      "title": "Max Chars",
+      "type": "integer"
+     },
+     "refresh": {
+      "default": false,
+      "title": "Refresh",
+      "type": "boolean"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "fetch_pageArguments",
+    "type": "object"
+   },
+   "name": "web-fetch-mcp_fetch_page"
+  },
+  {
+   "description": "Capture a webpage screenshot, automatically paging oversized pages. One MCP call returns either one full-page PNG or multiple numbered PNG sections with signed download/resource links. Firefox scrolls down the page and divides oversized pages vertically (and horizontally if needed) instead of making one huge image. Each section reports its page position; adjacent sections overlap, and vertical cuts favor gaps between text lines. The response explicitly says whether coverage is complete or partial and reports page dimensions and any stopping limit. Infinite-scroll sites may be partial. Uses the same public-URL checks as web_fetch. This is a visual capture, not extracted text or print-to-PDF.",
+   "inputSchema": {
+    "properties": {
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "web_captureArguments",
+    "type": "object"
+   },
+   "name": "web-fetch-mcp_web_capture"
+  },
+  {
+   "description": "Fetch a page as Markdown/text/HTML, or return an intact file download. Local-first fallback: direct HTTP, Obscura, Firefox, then Bright Data. Paper landing pages prominently identify advertised full-text, errata, and supplemental links. Attachments are not automatically fetched. `format`: \"markdown\" (default), \"text\", or \"html\". `max_chars`: cap on the returned content; 0 uses the server default. Long pages include a continuation token. `extractor`: auto, trafilatura, or conservative. `refresh` bypasses the short-lived result cache.",
+   "inputSchema": {
+    "properties": {
+     "extractor": {
+      "default": "auto",
+      "title": "Extractor",
+      "type": "string"
+     },
+     "format": {
+      "default": "markdown",
+      "title": "Format",
+      "type": "string"
+     },
+     "max_chars": {
+      "default": 0,
+      "title": "Max Chars",
+      "type": "integer"
+     },
+     "refresh": {
+      "default": false,
+      "title": "Refresh",
+      "type": "boolean"
+     },
+     "url": {
+      "title": "Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "url"
+    ],
+    "title": "web_fetchArguments",
+    "type": "object"
+   },
+   "name": "web-fetch-mcp_web_fetch"
+  },
+  {
+   "description": "Report which fetch engines are available and the server config.",
+   "inputSchema": {
+    "properties": {},
+    "title": "web_fetch_healthArguments",
+    "type": "object"
+   },
+   "name": "web-fetch-mcp_web_fetch_health"
+  }
+ ]
+}

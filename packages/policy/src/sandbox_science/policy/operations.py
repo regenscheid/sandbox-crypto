@@ -12,10 +12,11 @@ import ipaddress
 import re
 import unicodedata
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final, Literal, cast
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .effects import EffectClass
 from .errors import ClassificationError
 from .hosts import normalize_host
 from .names import pep503
@@ -179,6 +180,10 @@ class McpOperation:
     method: str
     tool: str | None = None
     origin: Origin = "orchestrator"
+    arguments: Mapping[str, object] | None = field(default=None, compare=False, hash=False)
+    """A ``tools/call``'s arguments, which argument rules read (D96)."""
+    hint: EffectClass | None = None
+    """The class the server's latest listing declares for the tool (its annotations)."""
 
     def __post_init__(self) -> None:
         if not _NAME_RE.fullmatch(self.server):
@@ -387,7 +392,11 @@ def classify_http_request(request: HttpRequest) -> HttpOperation | GitOperation:
 
 
 def classify_mcp_message(
-    server: str, message: object, *, origin: Origin = "orchestrator"
+    server: str,
+    message: object,
+    *,
+    origin: Origin = "orchestrator",
+    hints: Mapping[str, EffectClass] | None = None,
 ) -> McpOperation:
     """Classify one JSON-RPC message sent to an MCP server.
 
@@ -404,6 +413,7 @@ def classify_mcp_message(
     if not isinstance(method, str) or not method:
         raise ClassificationError("a JSON-RPC request needs a string method")
     tool: str | None = None
+    arguments: Mapping[str, object] | None = None
     if method == "tools/call":
         params = fields.get("params")
         if not isinstance(params, Mapping):
@@ -412,4 +422,10 @@ def classify_mcp_message(
         if not isinstance(name, str) or not name:
             raise ClassificationError("tools/call needs a string tool name")
         tool = name
-    return McpOperation(server=server, method=method, tool=tool, origin=origin)
+        raw = cast("Mapping[str, object]", params).get("arguments")
+        if isinstance(raw, Mapping):
+            arguments = cast("Mapping[str, object]", raw)
+    hint = hints.get(tool) if hints is not None and tool is not None else None
+    return McpOperation(
+        server=server, method=method, tool=tool, origin=origin, arguments=arguments, hint=hint
+    )

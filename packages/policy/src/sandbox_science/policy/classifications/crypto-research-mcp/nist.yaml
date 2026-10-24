@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# The classification of crypto-research-mcp's nist-mcp tools (D96, docs/MCP-CONNECTORS.md).
+# Reviewed by the admin; sha256 pins each tool as the pinned listing has it
+# (packages/policy/tests/fixtures/mcp-tools/crypto-research-mcp/nist-mcp.json).
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: nist-mcp_
+tools:
+  nist-mcp_csrc_currency:
+    class: read
+    reason: "Checks whether a NIST publication is current (2026-10-10 listing)."
+  nist-mcp_csrc_file:
+    class: read
+    reason: "Fetches and caches a NIST PDF, returning its URLs (D95: a read; 2026-10-10 listing)."
+  nist-mcp_csrc_fulltext:
+    class: read
+    reason: "Searches one publication's text, caching its PDF first (2026-10-10 listing)."
+  nist-mcp_csrc_stats:
+    class: read
+    reason: "Reports index size and cache state (2026-10-10 listing)."
+  nist-mcp_get_csrc:
+    class: read
+    reason: "Metadata for one NIST publication (2026-10-10 listing)."
+  nist-mcp_refresh_csrc:
+    class: admin
+    reason: "Re-downloads NIST's index and rebuilds the shared search index (2026-10-10 listing)."
+  nist-mcp_search_csrc:
+    class: read
+    reason: "Searches NIST publications (2026-10-10 listing)."

@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final, cast
 
+from .effects import EffectClass, hint_class
 from .errors import ClassificationError
 
 JsonObject = dict[str, object]
@@ -145,6 +146,33 @@ def tool_names(result: Mapping[str, object]) -> tuple[list[str], str | None]:
             raise McpWireError("every tool in a tools/list result needs a name")
         names.append(name)
     return names, cursor
+
+
+def tool_digest(tool: Mapping[str, object]) -> str:
+    """The hex SHA-256 of a listed tool's name, description and input schema, as sorted
+    compact JSON: what a classification file pins of each tool (D96)."""
+    spec = {key: tool.get(key) for key in ("name", "description", "inputSchema")}
+    text = json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ListedTool:
+    """One tool of a ``tools/list`` page, as drift checks and hints read it."""
+
+    name: str
+    digest: str
+    hint: EffectClass
+
+
+def listed_tools(result: Mapping[str, object]) -> list[ListedTool]:
+    """The tools of a ``tools/list`` result; raises McpWireError as ``tool_names`` does."""
+    names, _ = tool_names(result)
+    tools = cast("list[JsonObject]", result["tools"])
+    return [
+        ListedTool(name, tool_digest(tool), hint_class(tool.get("annotations")))
+        for name, tool in zip(names, tools, strict=True)
+    ]
 
 
 @dataclass(frozen=True, slots=True)

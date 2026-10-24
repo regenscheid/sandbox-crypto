@@ -12,6 +12,7 @@ import pytest
 
 from sandbox_science.policy import (
     Action,
+    Decision,
     EgressUsage,
     HttpRequest,
     LoadedPolicy,
@@ -37,25 +38,37 @@ class Tool(TypedDict):
     class_: str
 
 
-# Deliberate choices in examples/policy.yaml that differ from a tool's class.
-ALLOWED_DESPITE_CLASS = {
-    # Fetching and crawling pages: the services control their own cost, and these
-    # tools read the web for the project.
-    "firecrawl-mcp_firecrawl_crawl",
-    "firecrawl-mcp_firecrawl_parse",
-    "firecrawl-mcp_firecrawl_scrape",
-    # Reads that fill the server's own document cache on first use.
-    "e-print-mcp_eprint_file",
-    "e-print-mcp_eprint_fulltext",
-    "nist-mcp_csrc_file",
-    "nist-mcp_csrc_fulltext",
+# The class each tool of the 2026-10-10 notes takes in the checked-in classification,
+# where it differs from the notes' word for it (D96, H1). Cost is not a reason to ask:
+# the services limit and bill their own use, so SPEND tools are reads.
+RECLASSED = {
+    # Reads that fill the server's own document cache on first use (D95: reads).
+    "e-print-mcp_eprint_file": "read",
+    "e-print-mcp_eprint_fulltext": "read",
+    "nist-mcp_csrc_file": "read",
+    "nist-mcp_csrc_fulltext": "read",
+    # Reads by name; their effects come from argument rules (H1).
+    "firecrawl-mcp_firecrawl_crawl": "read",
+    "firecrawl-mcp_firecrawl_scrape": "read",
+    "firecrawl-mcp_firecrawl_parse": "read",
+    # Browser automation, off by default.
+    "firecrawl-mcp_firecrawl_agent": "browse",
+    "firecrawl-mcp_firecrawl_interact": "browse",
+    "firecrawl-mcp_firecrawl_interact_stop": "browse",
+    # Monitors that notify later.
+    "firecrawl-mcp_firecrawl_monitor_create": "communicate",
+    "firecrawl-mcp_firecrawl_monitor_update": "communicate",
+    # Shared corpora rebuilt for everyone.
+    "e-print-mcp_refresh_eprint": "admin",
+    "nist-mcp_refresh_csrc": "admin",
 }
+BY_NOTE = {"READ": "read", "SPEND": "read", "WRITE": "write", "CONFIG": "admin"}
 EXPECTED_BY_CLASS = {
-    "READ": Action.ALLOW,
-    # Cost is not a reason to ask: the MCP services limit and bill their own use.
-    "SPEND": Action.ALLOW,
-    "WRITE": Action.ESCALATE,
-    "CONFIG": Action.DENY,
+    "read": Action.ALLOW,
+    "write": Action.ESCALATE,
+    "communicate": Action.ESCALATE,
+    "admin": Action.ESCALATE,
+    "browse": Action.DENY,
 }
 
 
@@ -69,30 +82,115 @@ def policy() -> LoadedPolicy:
     return load_policy(EXAMPLE)
 
 
+def call(policy: LoadedPolicy, tool: str, arguments: dict[str, object] | None = None) -> Decision:
+    operation = McpOperation(
+        server="crypto-research-mcp", method="tools/call", tool=tool, arguments=arguments
+    )
+    return evaluate(operation, policy, ceiling=CEILING)
+
+
 @pytest.mark.parametrize("tool", load_tools(), ids=lambda tool: tool["name"])
 def test_every_crypto_research_mcp_tool(policy: LoadedPolicy, tool: Tool) -> None:
     name = tool["name"]
-    expected = Action.ALLOW if name in ALLOWED_DESPITE_CLASS else EXPECTED_BY_CLASS[tool["class_"]]
-    operation = McpOperation(server="crypto-research-mcp", method="tools/call", tool=tool["name"])
-    decision = evaluate(operation, policy, ceiling=CEILING)
+    effect = RECLASSED.get(name, BY_NOTE[tool["class_"]])
+    decision = call(policy, name)
+    if name.startswith("portal_"):
+        # Portal configuration is denied by pattern; listing its servers is allowed by name.
+        expected = Action.ALLOW if name == "portal_list_servers" else Action.DENY
+    else:
+        expected = EXPECTED_BY_CLASS[effect]
+        assert decision.effect == effect, decision.reason
     assert decision.action is expected, decision.reason
 
 
-def test_fixture_covers_the_deliberate_exceptions() -> None:
+def test_fixture_covers_the_reclassed_tools() -> None:
     names = {tool["name"] for tool in load_tools()}
-    assert names >= ALLOWED_DESPITE_CLASS
+    assert names >= set(RECLASSED)
     assert len(names) == 78
 
 
-def test_search_feedback_is_not_allowed_by_the_search_pattern(policy: LoadedPolicy) -> None:
-    tool = "firecrawl-mcp_firecrawl_search_feedback"
-    decision = evaluate(
-        McpOperation(server="crypto-research-mcp", method="tools/call", tool=tool),
-        policy,
-        ceiling=CEILING,
+@pytest.mark.parametrize(
+    ("tool", "arguments", "effect", "action"),
+    [
+        ("firecrawl-mcp_firecrawl_scrape", {"url": "https://e.org/"}, "read", Action.ALLOW),
+        (
+            "firecrawl-mcp_firecrawl_scrape",
+            {"url": "https://e.org/", "actions": []},
+            "read",
+            Action.ALLOW,
+        ),
+        (
+            "firecrawl-mcp_firecrawl_scrape",
+            {"url": "https://e.org/", "actions": [{"type": "click"}]},
+            "browse",
+            Action.DENY,
+        ),
+        (
+            "firecrawl-mcp_firecrawl_scrape",
+            {"url": "https://e.org/", "profile": {"name": "p", "saveChanges": True}},
+            "write",
+            Action.ESCALATE,
+        ),
+        (
+            "firecrawl-mcp_firecrawl_scrape",
+            {"url": "https://e.org/", "profile": {"name": "p", "saveChanges": False}},
+            "read",
+            Action.ALLOW,
+        ),
+        (
+            "firecrawl-mcp_firecrawl_crawl",
+            {"url": "https://e.org/", "webhook": "https://h.example/"},
+            "communicate",
+            Action.ESCALATE,
+        ),
+        (
+            "firecrawl-mcp_firecrawl_crawl",
+            {
+                "url": "https://e.org/",
+                "webhook": "https://h.example/",
+                "scrapeOptions": {"actions": [{"type": "write"}]},
+            },
+            "browse",
+            Action.DENY,
+        ),
+        (
+            "firecrawl-mcp_firecrawl_search",
+            {"query": "SNOVA", "scrapeOptions": {"actions": [{"type": "press"}]}},
+            "browse",
+            Action.DENY,
+        ),
+        ("firecrawl-mcp_firecrawl_agent", {"prompt": "find papers"}, "browse", Action.DENY),
+    ],
+)
+def test_firecrawl_argument_rules(
+    policy: LoadedPolicy, tool: str, arguments: dict[str, object], effect: str, action: Action
+) -> None:
+    """H1: the arguments that act on the world make the call an effect, whatever its name."""
+    decision = call(policy, tool, arguments)
+    assert (decision.effect, decision.action) == (effect, action), decision.reason
+
+
+def test_escalations_carry_the_class_ceiling(policy: LoadedPolicy) -> None:
+    feedback = call(policy, "firecrawl-mcp_firecrawl_search_feedback")
+    assert (feedback.action, feedback.effect, feedback.max_grant) == (
+        Action.ESCALATE,
+        "write",
+        "project",
     )
-    assert decision.action is Action.ESCALATE
-    assert decision.rule == "mcp.servers.crypto-research-mcp.tools.escalate[*_feedback]"
+    monitor = call(policy, "firecrawl-mcp_firecrawl_monitor_create")
+    assert (monitor.effect, monitor.max_grant) == ("communicate", "session")
+    refresh = call(policy, "e-print-mcp_refresh_eprint")
+    assert (refresh.effect, refresh.max_grant) == ("admin", "once")
+
+
+def test_a_made_up_tool_is_unclassified_and_asks(policy: LoadedPolicy) -> None:
+    decision = call(policy, "e-print-mcp_get_or_create_note")
+    assert (decision.action, decision.effect, decision.max_grant) == (
+        Action.ESCALATE,
+        "unclassified",
+        "once",
+    )
+    assert decision.layer == "default"
 
 
 @pytest.mark.parametrize(
