@@ -18,8 +18,8 @@ from sandbox_science.policy.mcp_answers import (
     callable_tools,
     rewrite_answer,
     tool_summary,
-    withhold_binary,
     withheld_note,
+    withhold_binary,
 )
 from sandbox_science.policy.mcp_wire import McpWireError
 

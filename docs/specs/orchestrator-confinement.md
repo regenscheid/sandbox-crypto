@@ -78,6 +78,9 @@ The operation catalog is explicit:
 - Admit a child against its durable parent, role, grants and Stop state; enumerate
   unfinished children; receive and acknowledge each terminal child outcome. The
   runtime schedules child loops, while the service validates their admission.
+- Confirm whether one MCP permission request is a refused call's, for the attempt's
+  project, which the host binds: yes or no from the policy middleware's records through
+  the worker (`confirm_request`, D98), never the request's record.
 - Evaluate closing/finishing guards and atomically finalize the attempt with its
   archive/checkpoint references and delivery receipts.
 

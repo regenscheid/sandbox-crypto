@@ -29,7 +29,7 @@ There are two stores in a deployment: the middleware's (`events.db` in its state
 | `escalation` | `mcp-proxy` | `mcp_proxy.proxy`: the first occurrence of an escalated call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
 | `approval` | `operator` | The `approve` command of `sandbox-science-policy-middleware` or `sandbox-science-mcp-proxy` (`policy.approvals.prepare_answer`) | Either | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `denial` | `operator` | The `deny` command of either | Either | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
-| `approval`, `denial` | `workspace` | `worker.permissions`: the user's answer to a network or package request, which the workspace relays through the worker (D97) | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
+| `approval`, `denial` | `workspace` | `worker.permissions`: the user's answer to a network or package request, or to an MCP call the middleware holds (D98), which the workspace relays through the worker (D97) | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `denial` | `worker` | `worker.permissions`: a withdrawal (`withdrawn`) of a file-set request once its operation ends | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `approved` | `policy-middleware` | `policy_middleware.evaluator`: a request allowed by an approval or a file-set grant | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
 | `approved` | `mcp-proxy` | `mcp_proxy.proxy`: a call allowed by an approval | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
