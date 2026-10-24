@@ -13,7 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-OPENSHELL_VERSION_OUTPUT = "openshell 0.1.5"
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
 
 
 def command(*args: str) -> str:

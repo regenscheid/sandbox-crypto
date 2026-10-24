@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
 from sandbox_science.launcher import toml
 
 ConfigMaker = Callable[..., Path]
@@ -55,7 +56,7 @@ def make_config(tmp_path: Path) -> ConfigMaker:
     for name in ("policy.yaml", "targets.yaml", "pool-ceiling.yaml", "web/dist/index.html"):
         (site / name).write_text("# test\n")
     openshell = site / "bin" / "openshell"
-    openshell.write_text("#!/bin/sh\nexit 0\n")
+    openshell.write_text(f"#!/bin/sh\necho {OPENSHELL_VERSION_OUTPUT}\n")
     openshell.chmod(0o755)
 
     def make(changes: dict[str, Any] | None = None, name: str = "sandbox-science.toml") -> Path:

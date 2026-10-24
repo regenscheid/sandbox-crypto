@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -12,6 +13,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION, OPENSHELL_VERSION_OUTPUT
 
 from .test_recipes import IMAGES, _containerfile_args, _recipe_inputs, _recipe_packages, _stages
 
@@ -169,7 +172,7 @@ def test_revision_covers_locks_packages_and_all_runtime_inputs(profile: str) -> 
 def test_trusted_native_pins_and_build_contexts_are_explicit() -> None:
     arguments = _containerfile_args()
     assert arguments["NODE_VERSION"].startswith("24.")
-    assert arguments["OPENSHELL_VERSION"] == "0.1.5"
+    assert arguments["OPENSHELL_VERSION"] == OPENSHELL_VERSION
     for product in ("NODE", "OPENSHELL"):
         for architecture in ("AMD64", "ARM64"):
             assert re.fullmatch(r"[0-9a-f]{64}", arguments[f"{product}_SHA256_{architecture}"])
@@ -261,3 +264,17 @@ def test_trusted_smoke_uses_only_a_local_hardened_container() -> None:
     assert "--cap-drop=ALL" in script
     for name in ("build_trusted.sh", "test_trusted.sh"):
         subprocess.run(["bash", "-n", str(IMAGES / name)], check=True)
+
+
+def test_the_image_check_expects_the_release_the_containerfile_installs() -> None:
+    """``check.py`` imports the version constant, so the image's qualification and the
+    launcher agree; the Containerfile's build argument (it cannot import) is tested above."""
+    spec = importlib.util.spec_from_file_location(
+        "trusted_check", Path(__file__).resolve().parents[1] / "trusted/check.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check)
+    assert check.OPENSHELL_VERSION_OUTPUT == OPENSHELL_VERSION_OUTPUT
+    assert _containerfile_args()["OPENSHELL_VERSION"] == OPENSHELL_VERSION

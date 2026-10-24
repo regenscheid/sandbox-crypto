@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher import orchestrator, parts, skills
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION
+from sandbox_science.launcher import openshell_version, orchestrator, parts, skills
 from sandbox_science.launcher.config import LauncherError, load_config
 from sandbox_science.launcher.state import Layout, ensure_token, write_private
 
@@ -263,6 +264,56 @@ def test_check_names_everything_missing_and_never_reads_the_key(
     assert f"no {parts.HARNESS} in {commands}" in message
     assert f"no project policy at {config.worker.policy}" in message
     config.model.api_key_file.chmod(0o600)
+
+
+def _openshell(config: Any, script: str) -> None:
+    cli = Path(config.openshell.cli)
+    cli.write_text(f"#!/bin/sh\n{script}\n")
+    cli.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "echo openshell 0.1.3",
+        "echo openshell 0.1.50",
+        f"echo openshell {OPENSHELL_VERSION}-pre.1",
+        "echo",
+        f"echo openshell {OPENSHELL_VERSION}; exit 1",
+        "sleep 0.1; exit 0",
+    ],
+)
+def test_check_refuses_an_openshell_cli_of_another_release(
+    make_config: Any, commands: Path, script: str
+) -> None:
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    _openshell(config, script)
+    with pytest.raises(LauncherError) as error:
+        parts.check(config)
+    assert f"needs OpenShell {OPENSHELL_VERSION}" in str(error.value)
+    assert config.openshell.cli in str(error.value)
+
+
+def test_check_accepts_the_pinned_openshell_cli_and_names_a_missing_one(
+    make_config: Any, commands: Path
+) -> None:
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    for said in (f"openshell {OPENSHELL_VERSION}", f"openshell v{OPENSHELL_VERSION}"):
+        _openshell(config, f"echo {said}")
+        parts.check(config)
+    Path(config.openshell.cli).unlink()
+    with pytest.raises(LauncherError, match="no OpenShell CLI"):
+        parts.check(config)
+
+
+def test_an_openshell_cli_that_does_not_answer_is_refused(
+    make_config: Any, commands: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(openshell_version, "TIMEOUT", 0.2)
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    _openshell(config, "sleep 5")
+    with pytest.raises(LauncherError, match="did not answer"):
+        parts.check(config)
 
 
 def test_a_state_directory_open_to_others_is_refused_not_changed(

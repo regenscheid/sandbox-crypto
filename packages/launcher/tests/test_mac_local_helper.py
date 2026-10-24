@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 import yaml
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION, pinned_version
+
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts/mac_local.py"
 SPEC = importlib.util.spec_from_file_location("mac_local_helper", SCRIPT)
 assert SPEC is not None
@@ -53,13 +55,17 @@ def test_sample_config_selects_the_published_crypto_base_image() -> None:
 
 
 def test_pinned_version_does_not_accept_a_later_patch_number() -> None:
-    assert mac.OPEN_SHELL_VERSION == "0.1.5"
-    assert mac.pinned_version("openshell 0.1.5")
-    assert mac.pinned_version("openshell-gateway v0.1.5")
+    # The helper reads the one constant as text, since it runs with a bare python3.
+    assert mac.OPEN_SHELL_VERSION == OPENSHELL_VERSION
+    assert mac.pinned_version(f"openshell {OPENSHELL_VERSION}")
+    assert mac.pinned_version(f"openshell-gateway v{OPENSHELL_VERSION}")
     assert not mac.pinned_version("openshell 0.1.3")
-    assert not mac.pinned_version("openshell 0.1.50")
-    assert not mac.pinned_version("openshell 0.1.5-pre.1")
-    assert mac.INSTALLER.endswith("/v0.1.5/install.sh")
+    assert not mac.pinned_version(f"openshell {OPENSHELL_VERSION}0")
+    assert not mac.pinned_version(f"openshell {OPENSHELL_VERSION}-pre.1")
+    assert mac.INSTALLER.endswith(f"/v{OPENSHELL_VERSION}/install.sh")
+    # Both say the same about every output.
+    for said in ("openshell 0.1.5", "v0.1.5", "0.1.50", "0.1.5-pre.1", "x", ""):
+        assert mac.pinned_version(said) == pinned_version(said)
 
 
 def test_unmounted_volume_refuses_state_creation(

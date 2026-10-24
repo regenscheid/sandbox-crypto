@@ -23,7 +23,9 @@
 #   SS_PERSONAL_GATEWAY_PORT 17680, SS_PERSONAL_MIDDLEWARE_PORT 50061,
 #   SS_PERSONAL_CACHE_PORT 8390, SS_PERSONAL_PROXY_PORT 8380      (loopback ports)
 #   VM_VCPUS 8, VM_MEM_MIB 16384, VM_DISK_MIB 32768              (each sandbox's VM)
-#   OS_BIN ~/.local/opt/openshell-0.1.5/bin, R the repository (this script's by default)
+#   OS_BIN ~/.local/opt/openshell-<version>/bin, where <version> is OPENSHELL_VERSION in
+#   packages/contracts/.../openshell_version.py (the script refuses any other release);
+#   R the repository (this script's by default)
 #
 # The config must name the unit: personal.toml's [worker] has `unit = "$ROOT/openshell/unit.toml"`.
 # None of it is the labs' (.agents/labs/lab_up.sh: ~/.local/state/openshell-lab, units
@@ -37,7 +39,12 @@ GATEWAY_PORT=${SS_PERSONAL_GATEWAY_PORT:-17680}
 MIDDLEWARE_PORT=${SS_PERSONAL_MIDDLEWARE_PORT:-50061}
 CACHE_PORT=${SS_PERSONAL_CACHE_PORT:-8390}
 PROXY_PORT=${SS_PERSONAL_PROXY_PORT:-8380}
-OS_BIN=${OS_BIN:-$HOME/.local/opt/openshell-0.1.5/bin}
+# The one OpenShell release the code supports, read from the constant that names it
+# (contracts/openshell_version.py), from the checkout this script is in.
+VERSION_FILE="$(cd "$(dirname "$0")/.." && pwd)/packages/contracts/src/sandbox_science/contracts/openshell_version.py"
+OS_VERSION=$(sed -n 's/^OPENSHELL_VERSION: Final = "\([0-9][0-9.]*\)"$/\1/p' "$VERSION_FILE" 2>/dev/null)
+if [ -z "$OS_VERSION" ]; then echo "no OPENSHELL_VERSION in $VERSION_FILE" >&2; exit 1; fi
+OS_BIN=${OS_BIN:-$HOME/.local/opt/openshell-$OS_VERSION/bin}
 OPENSHELL_ONLY=false
 SKIP_SNAPSHOT=false
 [ "${SS_PERSONAL_SKIP_SNAPSHOT:-}" = 1 ] && SKIP_SNAPSHOT=true
@@ -57,6 +64,14 @@ active() { systemctl --user is-active -q "$1" 2>/dev/null; }
 listening() { ss -ltn | grep -qE "127\.0\.0\.1:$1\b"; }
 
 if active "$UNIT-launcher"; then echo "$UNIT-launcher is already running" >&2; exit 1; fi
+# Nothing starts on another release of OpenShell: its gateway, CLI and supervisor are
+# versioned together, and the code follows one release's behavior.
+OS_SAID=$("$OS_BIN/openshell" --version 2>&1) || true
+case " $OS_SAID " in
+  *" $OS_VERSION "*|*" v$OS_VERSION "*) ;;
+  *) echo "$OS_BIN/openshell says '${OS_SAID:-nothing}', but this checkout needs OpenShell $OS_VERSION (OS_BIN names the directory of that release)" >&2; exit 1 ;;
+esac
+
 # The unit's worker takes its settings, with the clients' tokens, from the launcher's config,
 # so even --openshell-only needs it.
 if [ ! -f "$CONFIG" ]; then echo "no config at $CONFIG" >&2; exit 1; fi

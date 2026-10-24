@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION
 from sandbox_science.launcher import unit
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
@@ -77,7 +78,10 @@ if os.path.exists(path):
 OPENSHELL = {
     "openshell-gateway": "pass",
     "openshell": r"""
-import sys
+import os, sys
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
+if sys.argv[1:] == ["--version"]:
+    print(os.environ.get("FAKE_OPENSHELL_SAYS", OPENSHELL_VERSION_OUTPUT))
 if sys.argv[1:3] == ["gateway", "list"]:
     print("openshell 127.0.0.1:17680")
 if sys.argv[1:3] == ["provider", "list"]:
@@ -482,3 +486,24 @@ def test_down_keeping_the_sandboxes_leaves_the_unit_and_the_gateway_running(
 def test_a_bad_option_is_a_usage_error(instance: Instance) -> None:
     assert instance.run("personal_up.sh", "--bogus").returncode == 2
     assert instance.run("personal_down.sh", "--bogus").returncode == 2
+
+
+@pytest.mark.parametrize("says", ["openshell 0.1.3", "openshell 0.1.50", ""])
+def test_up_starts_nothing_on_another_release_of_openshell(instance: Instance, says: str) -> None:
+    done = instance.run("personal_up.sh", FAKE_OPENSHELL_SAYS=says)
+    assert done.returncode == 1
+    assert f"needs OpenShell {OPENSHELL_VERSION}" in done.stderr
+    assert instance.started() == []
+
+
+def test_the_openshell_directory_defaults_to_the_pinned_releases(instance: Instance) -> None:
+    env = instance.env()
+    del env["OS_BIN"]
+    done = subprocess.run(
+        ["bash", str(SCRIPTS / "personal_up.sh")],
+        capture_output=True, text=True, env=env, check=False, timeout=60,
+    )  # fmt: skip
+    # No such release is installed under the test's home: the message names where it looked.
+    assert done.returncode == 1
+    assert f"{instance.home}/.local/opt/openshell-{OPENSHELL_VERSION}/bin/openshell" in done.stderr
+    assert instance.started() == []

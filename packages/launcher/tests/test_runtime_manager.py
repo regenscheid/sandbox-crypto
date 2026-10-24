@@ -16,10 +16,13 @@ import sys
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
+from sandbox_science.launcher import openshell_version
 from sandbox_science.launcher.runtime_manager import (
     RuntimeManager,
     RuntimeManagerSettings,
@@ -441,8 +444,11 @@ async def test_the_runtime_output_is_drained_past_an_oversized_line(
 
 def test_a_second_serve_on_one_state_directory_is_refused(tmp_path: Path) -> None:
     tls = localhost_tls(tmp_path / "tls")
+    cli = tmp_path / "openshell"
+    cli.write_text(f"#!/bin/sh\necho {OPENSHELL_VERSION_OUTPUT}\n")
+    cli.chmod(0o755)
     document = settings_document(
-        tmp_path, manager_url="https://localhost:9", ca=tls.certificate, cli="openshell"
+        tmp_path, manager_url="https://localhost:9", ca=tls.certificate, cli=cli
     )
     settings = tmp_path / "runtime-manager.json"
     settings.write_text(json.dumps(document))
@@ -667,7 +673,10 @@ def test_the_manager_starts_its_logging_when_it_serves(
 
     set_up: list[str] = []
     monkeypatch.setattr(operations, "configure_logging", set_up.append)
-    monkeypatch.setattr(operations, "load", lambda path: object())
+    monkeypatch.setattr(
+        operations, "load", lambda path: SimpleNamespace(openshell=SimpleNamespace(cli="x"))
+    )
+    monkeypatch.setattr(openshell_version, "require", lambda cli: None)
 
     async def serve(settings: object) -> None:
         return None
@@ -675,3 +684,23 @@ def test_the_manager_starts_its_logging_when_it_serves(
     monkeypatch.setattr(operations, "serve", serve)
     assert operations.main(["--settings", str(tmp_path / "x.json"), "serve"]) == 0
     assert set_up == ["runtime-manager"]
+
+
+def test_the_manager_refuses_another_release_of_the_openshell_cli(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sandbox_science.launcher.runtime_manager import operations
+
+    cli = tmp_path / "openshell"
+    cli.write_text("#!/bin/sh\necho openshell 0.1.3\n")
+    cli.chmod(0o755)
+    monkeypatch.setattr(
+        operations, "load", lambda path: SimpleNamespace(openshell=SimpleNamespace(cli=str(cli)))
+    )
+
+    async def serve(settings: object) -> None:
+        raise AssertionError("served with the wrong OpenShell")
+
+    monkeypatch.setattr(operations, "serve", serve)
+    assert operations.main(["--settings", str(tmp_path / "x.json"), "serve"]) == 1
+    assert "needs OpenShell" in capsys.readouterr().err

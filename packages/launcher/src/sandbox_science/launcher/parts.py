@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from . import mcp, toml, unit
+from . import mcp, openshell_version, toml, unit
 from .config import LauncherConfig, LauncherError
 from .state import Layout, ensure_token, write_private
 
@@ -70,8 +70,9 @@ def check(config: LauncherConfig) -> None:
             f"no web app build at {config.workspace.static}: in web/workspace, run "
             "npm ci --ignore-scripts && npm run build"
         )
-    if shutil.which(config.openshell.cli) is None:
-        problems.append(f"no OpenShell CLI {config.openshell.cli}")
+    cli_problem = openshell_version.problem(config.openshell.cli)
+    if cli_problem is not None:
+        problems.append(cli_problem)
     names = [WORKER, HARNESS, WORKSPACE, "sandbox-science-control"]
     if config.mcp_proxy is not None:
         names.append(mcp.COMMAND)

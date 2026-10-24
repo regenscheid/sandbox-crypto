@@ -7,7 +7,8 @@ saying ``{"openshell": "forward-exits-once"}``, the first forward exits a moment
 it starts, as one does when its sandbox stops; with ``forward-exits-always``, every one
 does; with ``create-fails``, ``sandbox create`` fails and makes nothing; with
 ``get-fails``, ``sandbox get`` cannot reach the gateway; with ``provider-fails``,
-``provider create`` and ``update`` fail.
+``provider create`` and ``update`` fail; with ``old-version``, ``--version`` names
+OpenShell 0.1.3.
 
 ``provider create`` and ``update`` read their credentials from the environment, as
 ``--credential KEY`` does, and say the values on stdout and stderr, as a careless CLI
@@ -55,10 +56,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
+
 args = sys.argv[1:]
 state_file = Path(os.environ["FAKE_OPENSHELL"])
 behaviour = json.loads(os.environ.get("FAKE_PARTS", "{}")).get("openshell", "")
 RUNTIME = "sandbox_science.orchestrator.confinement.runtime"
+if args == ["--version"]:  # not a call: no journal, no state; "old-version" is another release
+    print("openshell 0.1.3" if "old-version" in behaviour else OPENSHELL_VERSION_OUTPUT)
+    sys.exit(0)
 
 
 def note(text: str) -> None:

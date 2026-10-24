@@ -5,7 +5,7 @@ path in the private configuration outside the repository.
 
 The owner's own Sandbox Science on babbage: a [`sandbox-science up`](QUICKSTART.md) instance that runs for research, apart from the labs. It has its own OpenShell gateway, its own [worker-side unit](UNIT.md) (the worker, policy middleware and package cache as one supervised group), its own units, ports and state, and its own config outside the repository. The labs' scripts (`.agents/labs/lab_up.sh`, `lab_down.sh`, the `cm_lab` kit) never start, stop or remove any of it.
 
-Like the labs' scripts, this is babbage's setup: it assumes OpenShell 0.1.5 at `~/.local/opt/openshell-0.1.5/bin`, the images in the local Docker store, and the repository's `.venv`. Install v0.1.5's release binaries there, all from that one release: its VM driver takes `--parent-liveness-stdin` where v0.1.3's took `--parent-liveness-fd`, so a gateway cannot start a driver from another release.
+Like the labs' scripts, this is babbage's setup: it assumes OpenShell 0.1.5 at `~/.local/opt/openshell-0.1.5/bin`, the images in the local Docker store, and the repository's `.venv`. Install v0.1.5's release binaries there, all from that one release: its VM driver takes `--parent-liveness-stdin` where v0.1.3's took `--parent-liveness-fd`, so a gateway cannot start a driver from another release. The release is one constant, `OPENSHELL_VERSION` in `packages/contracts/src/sandbox_science/contracts/openshell_version.py`: `personal_up.sh` reads it for the default `OS_BIN` and starts nothing when `openshell --version` names another release, and `sandbox-science up` and the runtime manager refuse such a CLI the same way.
 
 ## What runs where
 

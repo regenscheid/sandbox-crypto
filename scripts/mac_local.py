@@ -25,8 +25,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-OPEN_SHELL_VERSION = "0.1.5"
+VERSION_FILE = (
+    Path(__file__).resolve().parent.parent
+    / "packages/contracts/src/sandbox_science/contracts/openshell_version.py"
+)
+
+
+def pinned_release() -> str:
+    """The OpenShell release Sandbox Science is built against: ``OPENSHELL_VERSION`` in
+    ``contracts/openshell_version.py``, the one place that names it. Read as text, since
+    this helper runs with a bare python3 and imports no package."""
+    found = re.search(
+        r'^OPENSHELL_VERSION: Final = "([0-9]+\.[0-9]+\.[0-9]+)"$',
+        VERSION_FILE.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if found is None:
+        raise SystemExit(f"no OPENSHELL_VERSION in {VERSION_FILE}")
+    return found[1]
+
+
+OPEN_SHELL_VERSION = pinned_release()
 INSTALLER = f"https://raw.githubusercontent.com/NVIDIA/OpenShell/v{OPEN_SHELL_VERSION}/install.sh"
+# The digest of that release's installer: a new release needs its own.
 INSTALLER_SHA256 = "7bf6706741b8b59c1b61e0c47030f0a34fefba6cee3c74cd52638cbf7cdc3655"
 DEFAULT_IMAGE = "ghcr.io/regenscheid/sandbox-crypto/crypto-base:6bb73871"
 # OpenShell's VM driver sends its one registry credential to every pull, so the
