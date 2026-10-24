@@ -105,13 +105,14 @@ jobs:
           kubectl get nodes -o wide
 
       # The bundle holds no Namespace, as the operator creates it (docs/KUBERNETES-PREP.md),
-      # so the job creates the one the example names. A dry run needs no Secret, image or
+      # so the job creates every one the example names (its own and the sandbox namespace
+      # of the job-sandbox PodDisruptionBudget). A dry run needs no Secret, image or
       # storage class to exist; admission validates each object as the API server would.
       - name: Server-side dry run
         run: |
           set -euo pipefail
-          namespace="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['items'][0]['metadata']['namespace'])" "${RUNNER_TEMP}/bundle.json")"
-          kubectl create namespace "${namespace}"
+          python3 -c "import json,sys; print(*sorted({i['metadata']['namespace'] for i in json.load(open(sys.argv[1]))['items']}), sep='\n')" "${RUNNER_TEMP}/bundle.json" |
+            xargs -n1 kubectl create namespace
           kubectl apply --dry-run=server -f "${RUNNER_TEMP}/bundle.json" | tee "${RUNNER_TEMP}/dry-run.txt"
           {
             echo "## kubectl apply --dry-run=server (Kubernetes 1.36.4)"

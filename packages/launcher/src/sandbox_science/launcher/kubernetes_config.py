@@ -340,6 +340,19 @@ class Ingress(Model):
         return self
 
 
+class Sandboxes(Model):
+    """Where OpenShell creates sandboxes, for the objects the bundle must put there. The
+    renderer cannot derive the namespace (the peers select it by label only), so the
+    operator names it: ``server.sandboxNamespace`` of the OpenShell chart."""
+
+    namespace: Name
+    job_budget: bool = True
+    """Render the PodDisruptionBudget that makes a planned drain wait for job sandboxes
+    (D93, JS-20). Harmless with no job profile configured: it selects no Pod. Turn it off
+    in all but one instance that shares a sandbox namespace: two budgets selecting the same
+    Pod make every eviction of it fail."""
+
+
 class RuntimeManager(Placement, Capacity):
     """The runtime manager's Pod: its node architecture, PVC and container bounds."""
 
@@ -370,6 +383,8 @@ class BundleConfig(Model):
     middleware: Service = Service()
     cache: Service = Service()
     ingress: Ingress | None = None
+    sandboxes: Sandboxes | None = None
+    """Absent, nothing is rendered outside the bundle's own namespace."""
 
     @model_validator(mode="after")
     def remote_workspace(self) -> Self:

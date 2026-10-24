@@ -1298,3 +1298,60 @@ def test_two_instances_coexist_without_collisions(first, second, ingress):
                 assert {
                     s["name"] for r in route["spec"]["routes"] for s in r["services"]
                 } <= services
+
+
+def with_sandboxes(**sandboxes: object) -> list[dict]:
+    data = values()
+    data["sandboxes"] = {"namespace": "research-runtimes", **sandboxes}
+    return objects(configured(data))
+
+
+def test_no_sandboxes_section_renders_nothing_outside_the_bundle_namespace():
+    items = objects()
+    assert "PodDisruptionBudget" not in {item["kind"] for item in items}
+    assert {item["metadata"]["namespace"] for item in items} == {"research-test"}
+
+
+def test_job_sandboxes_get_a_budget_in_the_sandbox_namespace_that_allows_no_eviction():
+    items = with_sandboxes()
+    budgets = [item for item in items if item["kind"] == "PodDisruptionBudget"]
+    assert len(budgets) == 1
+    budget = budgets[0]
+    assert budget["apiVersion"] == "policy/v1"
+    # Not the bundle's namespace: a budget selects Pods of its own namespace only.
+    assert budget["metadata"]["namespace"] == "research-runtimes"
+    assert budget["metadata"]["name"] == "research-job-sandboxes"
+    assert budget["spec"] == {
+        "maxUnavailable": 0,
+        "selector": {"matchLabels": {"sandbox-science.io/job-sandbox": "true"}},
+        "unhealthyPodEvictionPolicy": "AlwaysAllow",
+    }
+    # Everything else stays in the bundle's namespace.
+    assert {i["metadata"]["namespace"] for i in items if i is not budget} == {"research-test"}
+
+
+def test_the_budget_selects_the_label_the_worker_puts_on_job_sandboxes():
+    from sandbox_science.worker.settings import JOB_SANDBOX_LABEL
+
+    budget = next(i for i in with_sandboxes() if i["kind"] == "PodDisruptionBudget")
+    assert budget["spec"]["selector"]["matchLabels"] == dict([JOB_SANDBOX_LABEL])
+
+
+def test_the_budget_can_be_left_to_another_instance_sharing_the_namespace():
+    items = with_sandboxes(job_budget=False)
+    assert "PodDisruptionBudget" not in {item["kind"] for item in items}
+
+
+@pytest.mark.parametrize("namespace", ["Not_A_Name", "", "a" * 64])
+def test_the_sandbox_namespace_must_be_a_namespace_name(namespace):
+    data = values()
+    data["sandboxes"] = {"namespace": namespace}
+    with pytest.raises(ValidationError):
+        configured(data)
+
+
+def test_unknown_sandboxes_keys_are_refused():
+    data = values()
+    data["sandboxes"] = {"namespace": "research-runtimes", "selector": {"a": "b"}}
+    with pytest.raises(ValidationError):
+        configured(data)
