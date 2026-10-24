@@ -17,7 +17,13 @@ import pytest
 from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION
 from sandbox_science.launcher import openshell_version, orchestrator, parts, skills
 from sandbox_science.launcher.config import LauncherError, load_config
-from sandbox_science.launcher.state import Layout, ensure_token, write_private
+from sandbox_science.launcher.state import (
+    Layout,
+    check_private,
+    ensure_token,
+    private_dir,
+    write_private,
+)
 
 
 def mode(path: Path) -> int:
@@ -327,6 +333,21 @@ def test_a_state_directory_open_to_others_is_refused_not_changed(
         parts.prepare(config)
     assert mode(shared) == 0o755
     assert list(shared.iterdir()) == []
+
+
+def test_a_state_directory_with_only_the_volume_setgid_bit_is_accepted(tmp_path: Path) -> None:
+    # A Kubernetes volume with an fsGroup gives its directories mode 2700 at each mount.
+    volume = tmp_path / "volume"
+    volume.mkdir(mode=0o700)
+    volume.chmod(0o2700)
+    assert private_dir(volume) == volume
+    check_private(volume)
+    assert stat.S_IMODE(volume.stat().st_mode) == 0o2700
+    volume.chmod(0o2770)
+    with pytest.raises(LauncherError, match=r"is open to other users .mode 2770"):
+        private_dir(volume)
+    with pytest.raises(LauncherError, match=r"is open to other users .mode 2770"):
+        check_private(volume)
 
 
 def test_a_model_key_file_open_to_others_is_refused_without_reading_it(

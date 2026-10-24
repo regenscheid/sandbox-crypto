@@ -64,6 +64,12 @@ class Layout:
             private_dir(directory)
 
 
+def _open_to_others(mode: int) -> bool:
+    """Whether a directory's permission bits are other than ``rwx------``. The setgid bit
+    Kubernetes puts on a volume's directories for the Pod's ``fsGroup`` opens nothing."""
+    return stat.S_IMODE(mode) & 0o777 != 0o700
+
+
 def private_dir(path: Path) -> Path:
     """``path`` as a directory of this user's that only they can open.
 
@@ -85,7 +91,7 @@ def private_dir(path: Path) -> Path:
         raise LauncherError(f"{path} is not yours: choose another state_dir")
     if made:
         path.chmod(0o700)  # whatever the umask took away or left
-    elif stat.S_IMODE(found.st_mode) != 0o700:
+    elif _open_to_others(found.st_mode):
         raise LauncherError(
             f"{path} is open to other users (mode {stat.S_IMODE(found.st_mode):o}): make it "
             f"mode 700 (chmod 700 {path}), or choose another state_dir"
@@ -104,7 +110,7 @@ def check_private(path: Path) -> None:
         raise LauncherError(f"{path} is not a directory")
     if found.st_uid != os.getuid():
         raise LauncherError(f"{path} is not yours: choose another state_dir")
-    if stat.S_IMODE(found.st_mode) != 0o700:
+    if _open_to_others(found.st_mode):
         raise LauncherError(
             f"{path} is open to other users (mode {stat.S_IMODE(found.st_mode):o}): make it "
             f"mode 700 (chmod 700 {path}), or choose another state_dir"
