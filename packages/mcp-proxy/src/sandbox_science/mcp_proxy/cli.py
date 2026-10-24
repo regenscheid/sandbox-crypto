@@ -98,10 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             answer.add_argument(
                 "--scope",
                 choices=ALL_SCOPES,
-                help=(
-                    "call (the default); tool: the tool with any arguments; "
-                    "server: any escalated tool of the server"
-                ),
+                help="call (the default); tool: the tool with any arguments",
             )
             answer.add_argument("--for", dest="hours", type=float, default=8.0, help="hours")
     args = parser.parse_args(argv)
