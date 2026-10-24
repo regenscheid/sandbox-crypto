@@ -280,4 +280,8 @@ Two changes follow from the owner's review:
   0.1.5 allowed pod labels), and the deployment ships a PodDisruptionBudget for it, so
   a node drain waits for a running job instead of evicting it. Unplanned loss (crash,
   power, hardware) still marks the job `lost`. Whether `talosctl upgrade` honours
-  PodDisruptionBudgets as `kubectl drain` does is unverified.
+  PodDisruptionBudgets as `kubectl drain` does is unverified. The bundle renders the budget in
+  the sandbox namespace ([bundle](../KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains));
+  the operator checks it with `kubectl -n <sandbox-namespace> get pdb` and
+  `kubectl drain <node> --dry-run=server`, and the gateway must list the label key in
+  `allowed_pod_labels`.

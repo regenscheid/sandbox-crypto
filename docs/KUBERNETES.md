@@ -137,10 +137,25 @@ section, with resource admission on (example: [gateway-driver.toml](../examples/
 [openshell.drivers.kubernetes]
 allow_driver_config = true
 default_runtime_class_name = "kata"
+allowed_pod_labels = ["sandbox-science.io/job-sandbox"]
 
 [openshell.drivers.kubernetes.resource_admission]
 enabled = true
 ```
+
+`allowed_pod_labels` (OpenShell 0.1.5, `openshell-driver-kubernetes` `src/config.rs`
+275-287, and the gateway runtimes page) is a list of label **keys**, not `key=value`
+pairs: each entry is an exact key or a `<domain>/*` wildcard, and keys under
+`openshell.ai` and `agents.x-k8s.io` are always refused. Empty, the default, rejects
+every label a caller sets. The one label the project sets on sandbox pods is
+`sandbox-science.io/job-sandbox` (value `true`), which the worker puts on a job
+sandbox's workload Pod through `pod.labels`; list that exact key, not a wildcard. OpenShell
+warns that labels select Pods for NetworkPolicy rules and Services, so allow only keys
+that no other rule in the sandbox namespace selects on. The chart has no dedicated value
+for it: set it through `gatewayConfig` ([preparation step 5](KUBERNETES-PREP.md#5-openshell-015)).
+The [bundle](KUBERNETES-BUNDLE.md#job-sandboxes-and-node-drains) renders the
+PodDisruptionBudget that selects the label, so a planned node drain waits for running
+job sandboxes ([job sandboxes](specs/job-sandboxes.md), JS-20).
 
 With the Helm chart these are `server.drivers.kubernetes.allowDriverConfig`,
 `server.defaultRuntimeClassName` and `server.drivers.kubernetes.resourceAdmission`

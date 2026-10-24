@@ -10,8 +10,8 @@
 #     job_sandboxes: 1          # at once per project; 0 or unset keeps the feature off
 #
 # The gateway must list the job sandbox label in allowed_pod_labels
-# (gateway-driver.toml), and the deployment needs a PodDisruptionBudget selecting it,
-# so a planned drain waits for running jobs (docs/WORKER.md, job sandboxes).
+# (gateway-driver.toml); the bundle's [sandboxes] section renders the PodDisruptionBudget
+# selecting it, so a planned drain waits for running jobs (docs/WORKER.md, job sandboxes).
 [openshell.environments]
 max_job_sandboxes = 2            # at once across the pool
 job_retention = 259200           # seconds a failed job's stopped sandbox is kept (3 days)

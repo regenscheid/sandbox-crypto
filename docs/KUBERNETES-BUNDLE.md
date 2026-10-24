@@ -299,6 +299,29 @@ host-network supervisors and OpenShell's independently scheduled supervisors nee
 live qualification. NetworkPolicy cannot authenticate a permitted IP/label, and
 does not replace middleware token verification or OpenShell sandbox policy.
 
+## Job sandboxes and node drains
+
+An optional `[sandboxes]` section names the namespace in which OpenShell creates sandboxes
+(`namespace`, the chart's `server.sandboxNamespace`; the renderer cannot derive it from the
+`network.*` peers, which select it by label). With it the bundle adds one object outside its
+own namespace: the `PodDisruptionBudget` `<name>-job-sandboxes` there, `maxUnavailable: 0`,
+selecting `sandbox-science.io/job-sandbox: "true"`, the label the worker puts on a job
+sandbox's workload Pod. A `kubectl drain` then waits for a running job instead of evicting
+it ([job sandboxes](specs/job-sandboxes.md), JS-20); a running Pod that is not Ready may
+still be evicted (`unhealthyPodEvictionPolicy: AlwaysAllow`), so a wedged one cannot hold a node.
+The budget protects nothing from crashes, power loss, `--disable-eviction` or a drain
+that gives up. The gateway must also list the label key in `allowed_pod_labels`
+([gateway settings](KUBERNETES.md#gateway-settings-for-profile-placement)), or no job
+sandbox starts.
+
+Without `[sandboxes]` nothing is rendered outside `namespace`, and no budget exists. With
+it, applying the bundle needs permission to create a PodDisruptionBudget in the sandbox
+namespace as well as in the bundle's. A budget is per namespace: when two instances share a
+sandbox namespace, set `job_budget = false` in all but one, since two budgets selecting the
+same Pod make every eviction of it fail. A budget with no job profile configured selects no
+Pod and costs nothing. Check it with `kubectl -n <sandbox-namespace> get pdb` and
+`kubectl drain <node> --dry-run=server`.
+
 ## Render, inspect, then qualify separately
 
 ```sh

@@ -215,7 +215,15 @@ helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart --ver
 kubectl -n openshell rollout status statefulset/openshell
 ```
 
-If the chart rejects a key, the equivalent is `gatewayConfig` (the chart renders it into `gateway.toml`): `gatewayConfig: {openshell.drivers.kubernetes: {allow_driver_config: true, default_runtime_class_name: kata, resource_admission: {enabled: true}}}`. Whichever form, the rendered `gateway.toml` must show `allow_driver_config = true`, `default_runtime_class_name = "kata"` and resource admission enabled, as in the example fragment. `server.workspaceStorageClass` and the size are creation defaults for each sandbox's PVC. Keep the Helm values and the chart version with the site file.
+The chart has no value for the pod label allowlist, so add it through `gatewayConfig` in the same values file, alongside the example fragment's `allowed_pod_labels = ["sandbox-science.io/job-sandbox"]` (a list of label keys; [why](KUBERNETES.md#gateway-settings-for-profile-placement)): without it the gateway refuses every job sandbox at creation, and with it the bundle's PodDisruptionBudget (step 8) is what makes a node drain wait for running jobs:
+
+```yaml
+gatewayConfig:
+  openshell.drivers.kubernetes:
+    allowed_pod_labels: ["sandbox-science.io/job-sandbox"]
+```
+
+If the chart rejects a key, the equivalent is `gatewayConfig` (the chart renders it into `gateway.toml`): `gatewayConfig: {openshell.drivers.kubernetes: {allow_driver_config: true, default_runtime_class_name: kata, allowed_pod_labels: ["sandbox-science.io/job-sandbox"], resource_admission: {enabled: true}}}`. Whichever form, the rendered `gateway.toml` must show `allow_driver_config = true`, `default_runtime_class_name = "kata"`, the `allowed_pod_labels` line and resource admission enabled, as in the example fragment. `server.workspaceStorageClass` and the size are creation defaults for each sandbox's PVC. Keep the Helm values and the chart version with the site file.
 
 The gateway's `gateway-id` (default: the chart's fullname, `openshell`) is the label value that the bundle's `network.runtimes` peer must name: `openshell.ai/component = "supervisor"` and `openshell.ai/gateway-id = "<id>"`. Confirm it after the first sandbox (step 9).
 
@@ -334,7 +342,7 @@ Rollback: delete a Secret only while no Pod mounts it; a Pod re-reads credential
 
 ## 8. Render, dry-run, apply
 
-The private bundle TOML starts from [the template](../examples/kubernetes-bundle.toml): the six digests, `storage_class = "research-retain"` for app, pool and manager, `app.architecture` and `runtime_manager.architecture` for the arm64 nodes (the `trusted-app` image covers both), `pool.architecture = "amd64"`, the `network.*` peers (DNS labels of the cluster's CoreDNS, the OpenShell gateway at port 8080, the supervisors of `<gateway-id>` in `research-runtimes`), the egress entries of step 6 and the gateway, Garage and package-upstream destinations.
+The private bundle TOML starts from [the template](../examples/kubernetes-bundle.toml): the six digests, `storage_class = "research-retain"` for app, pool and manager, `app.architecture` and `runtime_manager.architecture` for the arm64 nodes (the `trusted-app` image covers both), `pool.architecture = "amd64"`, the `network.*` peers (DNS labels of the cluster's CoreDNS, the OpenShell gateway at port 8080, the supervisors of `<gateway-id>` in `research-runtimes`), the egress entries of step 6 and the gateway, Garage and package-upstream destinations, and `[sandboxes] namespace = "research-runtimes"` (the chart's `server.sandboxNamespace`), which adds the PodDisruptionBudget for job sandboxes in that namespace.
 
 ```sh
 uv run sandbox-science-kubernetes check  --config /path/private-kubernetes.toml
@@ -345,9 +353,11 @@ kubectl apply -f /path/new-bundle.json
 kubectl -n research rollout status deploy/<name>-app deploy/<name>-pool deploy/<name>-runtime-manager
 ```
 
-Inspect the JSON before applying: image digests, `kubernetes.io/arch` selectors, the storage class and size, the NetworkPolicies, and no Secret value. The renderer never overwrites an existing output file.
+Inspect the JSON before applying: image digests, `kubernetes.io/arch` selectors, the storage class and size, the NetworkPolicies, the `<name>-job-sandboxes` PodDisruptionBudget (in `research-runtimes`, not `research`), and no Secret value. Applying it needs permission to create a PodDisruptionBudget in the sandbox namespace as well as in the bundle's. The renderer never overwrites an existing output file.
 
 Verify: all three Deployments are `Available`; `kubectl -n research get pvc` shows three `Bound` claims on `research-retain` with the recurring jobs attached (Longhorn UI, volume details); the control Service accepts the first connection (`/ready`). Check the runtime manager: `kubectl -n research logs deploy/<name>-runtime-manager` reports waiting, not creating. Reach the GUI by port-forward to the exact application Pod, as [the bundle](KUBERNETES-BUNDLE.md#render-inspect-then-qualify-separately) says (or, later, through the load balancer: step 12).
+
+Verify the drain protection: `kubectl -n research-runtimes get pdb <name>-job-sandboxes` shows `MAX UNAVAILABLE 0`. With a job sandbox running (it has the label `sandbox-science.io/job-sandbox=true`; `kubectl -n research-runtimes get pods -l sandbox-science.io/job-sandbox=true`), `kubectl drain <node> --dry-run=server --ignore-daemonsets --delete-emptydir-data` on its node must report the pod as one it cannot evict (the real drain would wait), and a node with no job sandbox drains as before. This proves `kubectl drain` only; whether `talosctl upgrade` waits is unverified ([job sandboxes](specs/job-sandboxes.md)).
 
 Rollback: set the three Deployments to zero replicas (`kubectl -n research scale deploy --all --replicas=0`). Never `kubectl delete -f` the whole bundle, and never delete the PVCs.
 
