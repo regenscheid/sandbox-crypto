@@ -42,6 +42,7 @@ for embedded subcomponents.
 | quetz, mamba/micromamba | BSD-3-Clause | Conda mirror and installer candidates; micromamba installs the base images' environments and runtime packages |
 | Ubuntu 24.04 (Docker Hub `ubuntu`) | Each package's own (GPL, LGPL and permissive) | Base distribution of both base profile images ([images](IMAGES.md)) |
 | conda-lock | MIT | Development only: solves the base images' Conda lockfiles, run with `uvx` |
+| pip-audit | Apache-2.0 | Development only: the weekly `audit` workflow checks `uv.lock`'s resolved set against advisories, run with `uv tool run` at a pinned version, never a workspace dependency |
 | TeX Live (Ubuntu packages), qpdf | LPPL-1.3c, GPL and others; Apache-2.0 | Tier 3, in the `crypto-base` image |
 | miniforge installer | BSD-3-Clause (bundled packages carry their own licenses) | Use conda-forge only; avoid Anaconda `defaults` (commercial terms) |
 | jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol: the executor's kernels in the sandbox, and the worker's `kernels` extra for its local backend |
