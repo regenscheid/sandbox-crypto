@@ -441,7 +441,14 @@ Orphan survival after an abrupt gateway loss (restart the gateway Pod during a r
 
 ## 11. Log collection
 
-Placeholder for D103: the first deployment collects structured JSON logs from every service, OpenShell OCSF events and metrics, and the proxy and middleware records into Loki through Alloy. The repository does not yet fix the Alloy configuration, the label set or the retention (backlog B2 and B5). Until it does, keep the proof results of step 10 and the commands above with the deployment record, and make sure the Pods' stdout is kept long enough to read the denial of 10.1.
+D103: structured JSON logs from every service, OpenShell's OCSF events and the proxy and middleware records go to Loki through Alloy. The bundle already makes each container log JSON lines and labels each Pod ([bundle: log collection](KUBERNETES-BUNDLE.md#log-collection)); this step installs the collector. Do it before the live proofs of step 10, so their denials are kept.
+
+1. **Install Loki** (3.x, for structured metadata) with storage and retention you choose; the proofs' evidence needs at least the length of the qualification (a month is a start), and the bundle sets none. Note the push URL.
+2. **Install Alloy** where it can read the namespace's Pod logs: `get`, `list` and `watch` on `pods` and `get` on `pods/log` for its ServiceAccount, in the bundle's namespace and the sandboxes' namespace. It needs no NetworkPolicy ingress rule on the bundle's Pods; it needs egress to Loki.
+3. **Configure it from the sample.** Copy [alloy-config.alloy](../examples/kubernetes/alloy-config.alloy) outside Git; set the namespaces (the sample has `research` and `research-runtimes`) and the Loki URL.
+4. **OpenShell's events.** Turn the supervisors' OCSF JSON on (`openshell settings set --global --key ocsf_json_enabled --value true`) and, if you export over OTLP, add `[openshell.gateway.otlp]` and `[openshell.gateway.otlp.ocsf]` to the gateway's configuration with the Alloy listener's address (the sample's OTLP receiver) as the endpoint; the listener must be reachable from the sandboxes, which the sandbox network policy and a NetworkPolicy must allow. The gateway's metrics listener (`metrics_bind_address`) is for Prometheus, if you run one.
+5. **Check it.** `kubectl -n research logs deploy/<name>-pool -c worker --tail 3` shows JSON lines; in Loki, `{service="worker"} | json` returns the same lines, and `{service="middleware"} | json | event != ""` finds the middleware's records. Trigger the denial of 10.1 and find it by its OCSF line. A container that logs text (no `service` field) is a bundle rendered before this change.
+6. **Keep the proofs' results** (steps 10.1 to 10.3) with the deployment record, and the dashboards and alerts (D103's later steps) wait until the three proofs have passed.
 
 ## Order of the rollback points
 

@@ -29,6 +29,10 @@ RUNTIME_CREDENTIALS = "/run/sandbox-science/runtime-credentials"
 CONTROL_PORT = 8443
 MANAGER_PORT = 8444
 SETTINGS_ENV = "SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS"
+APPLICATION = "sandbox-science"
+APPLICATION_LABEL = "app.kubernetes.io/name"
+LOG_FORMAT = {"SS_LOG_FORMAT": "json"}
+"""Every container logs JSON lines for Loki (D103) rather than the local text format."""
 UNIT = "sandbox-science-unit"
 UNIT_DIR = "/etc/sandbox-science"
 """Where the pool Pod's containers read the unit config (a ConfigMap, never a credential)."""
@@ -46,6 +50,14 @@ def _labels(config: BundleConfig, component: str | None = None) -> dict[str, str
     return result
 
 
+def _identity(config: BundleConfig) -> dict[str, str]:
+    """The labels a log collector (Alloy, docs/KUBERNETES-BUNDLE.md#log-collection) and
+    ``kubectl`` select this instance's Pods by: the application and the instance's name.
+    Selectors and NetworkPolicies keep to ``_labels``, so these never decide who may talk
+    to whom."""
+    return {APPLICATION_LABEL: APPLICATION, "app.kubernetes.io/instance": config.name}
+
+
 def _object(config: BundleConfig, kind: str, suffix: str, **fields: object) -> dict[str, object]:
     api = {"Deployment": "apps/v1", "NetworkPolicy": "networking.k8s.io/v1"}.get(kind, "v1")
     return {
@@ -54,7 +66,7 @@ def _object(config: BundleConfig, kind: str, suffix: str, **fields: object) -> d
         "metadata": {
             "name": f"{config.name}-{suffix}",
             "namespace": config.namespace,
-            "labels": _labels(config),
+            "labels": {**_identity(config), **_labels(config)},
         },
         **fields,
     }
@@ -355,7 +367,7 @@ def _unit_config(config: BundleConfig) -> str:
 def _container(
     config: BundleConfig, name: str, image: str, capacity: Capacity
 ) -> dict[str, object]:
-    environment = _environment(capacity)
+    environment = {**_environment(capacity), **LOG_FORMAT}
     if name == MANAGER:
         # `kubectl exec … sandbox-science-runtime-manager request …` inherits this.
         environment[SETTINGS_ENV] = f"{PRIVATE}/runtime-manager.json"
@@ -481,7 +493,7 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
             "strategy": {"type": "Recreate"},
             "selector": {"matchLabels": _labels(config, component)},
             "template": {
-                "metadata": {"labels": _labels(config, component)},
+                "metadata": {"labels": {**_identity(config), **_labels(config, component)}},
                 "spec": {
                     "automountServiceAccountToken": False,
                     "enableServiceLinks": False,

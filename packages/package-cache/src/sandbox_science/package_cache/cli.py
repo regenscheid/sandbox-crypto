@@ -35,6 +35,8 @@ from pathlib import Path
 
 from aiohttp import web
 
+from sandbox_science.contracts.logs import configure_logging
+
 from .adapter import Fetch
 from .app import KEEPALIVE_TIMEOUT, create_app, negative_expiry, store_key
 from .errors import PackageCacheError, StoreError
@@ -77,10 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = load_settings(args.settings)
         match args.command:
             case "serve":
-                logging.basicConfig(
-                    level=args.log_level,
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-                )
+                configure_logging("cache", level=args.log_level)
                 return _serve(settings)
             case "stats":
                 return _stats(settings)

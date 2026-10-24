@@ -57,6 +57,7 @@ from typing import cast
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, Identifier
+from sandbox_science.contracts.logs import configure_logging
 
 from .chat import session_lease
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
@@ -810,6 +811,13 @@ def main(argv: list[str] | None = None) -> int:
     _agent_arguments(serve)
     serve.add_argument("--state-dir", type=Path, required=True, help="the projects' records")
     serve.add_argument(
+        "--log-level",
+        type=str.upper,
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        default="INFO",
+        help="logging level; SS_LOG_FORMAT=json makes the log JSON lines",
+    )
+    serve.add_argument(
         "--poll", type=float, default=POLL_SECONDS, help="seconds between looks at the store"
     )
     serve.add_argument(
@@ -869,6 +877,7 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--poll must be positive and finite")
             if args.run_share is not None and not 1 <= args.run_share <= 100:
                 parser.error("--run-share is a percent, 1 to 100")
+            configure_logging("harness", level=args.log_level)
             action = _serve(args)
         case "project":
             if args.action == "create" and (args.profile is None or args.policy is None):

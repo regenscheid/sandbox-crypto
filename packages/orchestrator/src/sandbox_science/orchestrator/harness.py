@@ -34,6 +34,7 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import Language
 
@@ -823,6 +824,25 @@ class Harness:
         return await self.start(admitted, sink)
 
     async def start(
+        self,
+        admitted: Admitted,
+        sink: RunSink,
+        *,
+        stop: asyncio.Event | None = None,
+        wait_children: Callable[[], Awaitable[bool]] | None = None,
+    ) -> Finished:
+        """Run an admitted task to its end, with its project, session, environment and run
+        on every log record it makes (``log_context``). See ``_run``."""
+        context = admitted.context
+        with log_context(
+            project=context.project_id,
+            session=context.session_id,
+            environment=context.environment_id,
+            run=admitted.run_id,
+        ):
+            return await self._run(admitted, sink, stop=stop, wait_children=wait_children)
+
+    async def _run(
         self,
         admitted: Admitted,
         sink: RunSink,

@@ -32,6 +32,7 @@ from types import FrameType
 
 import grpc
 
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
 from sandbox_science.policy.approvals import ALL_SCOPES, KINDS
@@ -99,10 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         match args.command:
             case "serve":
-                logging.basicConfig(
-                    level=args.log_level.upper(),
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-                )
+                configure_logging("middleware", level=args.log_level)
                 return _serve(load_settings(args.settings))
             case "store":
                 loaded = PolicyStore(args.state_dir).add_policy(read_limited(args.policy))

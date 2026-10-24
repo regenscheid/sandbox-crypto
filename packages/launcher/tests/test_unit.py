@@ -246,3 +246,33 @@ def test_a_second_unit_on_the_same_addresses_does_not_start(site: Site) -> None:
     assert second.finish() == 1
     assert "something else listens on" in second.output
     assert first.stop() == 0
+
+
+def test_json_logging_keeps_the_unit_output_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sandbox_science.launcher import unit
+
+    monkeypatch.setenv("SS_LOG_FORMAT", "json")
+    own = json.dumps({"service": "worker", "level": "info", "msg": "ready"})
+    unit._echo("worker", own)
+    unit._echo("cache", "Traceback (most recent call last):")
+    unit._say("the unit is ready: cache, worker")
+    unit._say("a service stopped", error=True)
+    captured = capsys.readouterr()
+    lines = [json.loads(line) for line in captured.out.splitlines()]
+    assert lines[0] == json.loads(own)
+    assert (lines[1]["service"], lines[1]["msg"]) == ("cache", "Traceback (most recent call last):")
+    assert (lines[2]["service"], lines[2]["level"]) == ("unit", "info")
+    assert json.loads(captured.err)["level"] == "error"
+
+
+def test_text_logging_keeps_the_prefixes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sandbox_science.launcher import unit
+
+    monkeypatch.delenv("SS_LOG_FORMAT", raising=False)
+    unit._echo("worker", "ready")
+    unit._say("stopping")
+    assert capsys.readouterr().out == "[worker] ready\n[unit] stopping\n"

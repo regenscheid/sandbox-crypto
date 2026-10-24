@@ -40,6 +40,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
 
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.launcher.config import LauncherError
 from sandbox_science.launcher.state import check_private, write_private
 
@@ -150,6 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         settings = load(args.settings)
         if args.command == "serve":
+            configure_logging("runtime-manager")
             asyncio.run(serve(settings))
             return 0
         if args.action == "status":

@@ -55,6 +55,7 @@ ENVIRONMENT = frozenset(
         "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR",
         "XDG_RUNTIME_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
         "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "SS_LOG_FORMAT", "SS_LOG_LEVEL",
     }
 )  # fmt: skip
 """The variables of the launcher's environment every part gets, with the ``LC_`` ones."""

@@ -40,6 +40,7 @@ from typing import Final
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.model_profiles import Effort, requested
@@ -333,9 +334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     repairs.add_argument("--reviewer-effort")
     args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    configure_logging("workspace", level=args.log_level)
     try:
         host, port = parse_listen(args.listen)
     except ValueError as exc:

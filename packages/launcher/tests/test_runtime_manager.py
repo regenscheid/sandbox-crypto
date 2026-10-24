@@ -643,3 +643,35 @@ def test_a_request_waits_as_long_as_the_managers_bounds_allow(tmp_path: Path) ->
     finally:
         manager.kill()
         manager.wait()
+
+
+def test_the_manager_says_its_lines_as_json_when_asked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sandbox_science.launcher.runtime_manager.manager import say
+
+    monkeypatch.delenv("SS_LOG_FORMAT", raising=False)
+    say("runtime attached")
+    assert capsys.readouterr().out == "runtime attached\n"
+    monkeypatch.setenv("SS_LOG_FORMAT", "json")
+    say("runtime attached with token=test-secret-1")
+    record = json.loads(capsys.readouterr().out)
+    assert (record["service"], record["level"]) == ("runtime-manager", "info")
+    assert "test-secret-1" not in record["msg"]
+
+
+def test_the_manager_starts_its_logging_when_it_serves(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from sandbox_science.launcher.runtime_manager import operations
+
+    set_up: list[str] = []
+    monkeypatch.setattr(operations, "configure_logging", set_up.append)
+    monkeypatch.setattr(operations, "load", lambda path: object())
+
+    async def serve(settings: object) -> None:
+        return None
+
+    monkeypatch.setattr(operations, "serve", serve)
+    assert operations.main(["--settings", str(tmp_path / "x.json"), "serve"]) == 0
+    assert set_up == ["runtime-manager"]

@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: MIT
+// Illustrative Grafana Alloy configuration for the first deployment's log collection
+// (D103, docs/KUBERNETES-BUNDLE.md#log-collection). Not applied by the bundle: the operator
+// installs Loki and Alloy (docs/KUBERNETES-PREP.md, step 11). Replace the namespaces,
+// the Loki URL and the OTLP listener to suit the cluster. Not yet run on a live cluster.
+//
+// Alloy reads Pod logs through the Kubernetes API (RBAC: get/list/watch pods, get pods/log),
+// so the bundle's default-deny NetworkPolicies need no ingress rule for it.
+
+// 1. The bundle's Pods, selected by the labels the renderer sets on every Pod.
+discovery.kubernetes "pods" {
+  role = "pod"
+  namespaces {
+    names = ["research"]
+  }
+}
+
+discovery.relabel "sandbox_science" {
+  targets = discovery.kubernetes.pods.targets
+
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+    regex         = "sandbox-science"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label  = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_instance"]
+    target_label  = "instance"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_component"]
+    target_label  = "component"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label  = "pod"
+  }
+}
+
+loki.source.kubernetes "sandbox_science" {
+  targets    = discovery.relabel.sandbox_science.output
+  forward_to = [loki.process.sandbox_science.receiver]
+}
+
+// 2. Every container writes one JSON object per line (SS_LOG_FORMAT=json). Low-cardinality
+// fields become labels; the identifiers stay out of the label set, as structured metadata
+// (Loki 3), so that a project, session, run or request is a filter, not a stream.
+loki.process "sandbox_science" {
+  stage.json {
+    expressions = {
+      level       = "level",
+      service     = "service",
+      event       = "event",
+      project     = "project",
+      session     = "session",
+      run         = "run",
+      environment = "environment",
+      request     = "request",
+    }
+  }
+  stage.labels {
+    values = {
+      level   = "",
+      service = "",
+    }
+  }
+  stage.structured_metadata {
+    values = {
+      event       = "",
+      project     = "",
+      session     = "",
+      run         = "",
+      environment = "",
+      request     = "",
+    }
+  }
+  forward_to = [loki.write.default.receiver]
+}
+
+// 3. Optional: the OpenShell supervisors' OCSF JSON (ocsf_json_enabled, set with
+// `openshell settings set --global --key ocsf_json_enabled --value true`) arrive on the
+// sandbox Pods' stderr as `<timestamp> OCSF-JSON {...}`. Keep those lines only.
+discovery.kubernetes "sandboxes" {
+  role = "pod"
+  namespaces {
+    names = ["research-runtimes"]
+  }
+}
+
+loki.source.kubernetes "sandboxes" {
+  targets    = discovery.kubernetes.sandboxes.targets
+  forward_to = [loki.process.ocsf.receiver]
+}
+
+loki.process "ocsf" {
+  stage.match {
+    selector = "{namespace=\"research-runtimes\"} !~ \".* OCSF-JSON [{].*\""
+    action   = "drop"
+  }
+  stage.regex {
+    expression = "^\\S+ OCSF-JSON (?P<ocsf>\\{.*\\})$"
+  }
+  stage.json {
+    source      = "ocsf"
+    expressions = {
+      class_uid   = "class_uid",
+      action      = "action",
+      severity_id = "severity_id",
+    }
+  }
+  stage.labels {
+    values = {
+      class_uid = "",
+      action    = "",
+    }
+  }
+  stage.static_labels {
+    values = {
+      service = "openshell-supervisor",
+    }
+  }
+  forward_to = [loki.write.default.receiver]
+}
+
+// 4. Optional: OCSF events and traces the gateway and supervisors export over OTLP/gRPC
+// ([openshell.gateway.otlp] and [openshell.gateway.otlp.ocsf] in the gateway's TOML, with
+// its endpoint pointing at this listener). The collector must be reachable from the
+// sandboxes as well as from the gateway, which a NetworkPolicy and the sandbox network
+// policy must allow explicitly.
+otelcol.receiver.otlp "openshell" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  output {
+    logs = [otelcol.exporter.loki.openshell.input]
+  }
+}
+
+otelcol.exporter.loki "openshell" {
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki.monitoring.svc:3100/loki/api/v1/push"
+  }
+}

@@ -926,3 +926,33 @@ def test_rejects_unsafe_runtime_manager_configuration(path, value):
         target[path[-1]] = value
     with pytest.raises(ValidationError):
         configured(data)
+
+
+def test_every_pod_carries_the_labels_the_log_collector_selects_by():
+    items = objects()
+    for component in ("app", "pool", "runtime-manager"):
+        labels = named(items, "Deployment", f"research-{component}")["spec"]["template"][
+            "metadata"
+        ]["labels"]
+        assert labels == {
+            "app.kubernetes.io/name": "sandbox-science",
+            "app.kubernetes.io/instance": "research",
+            "app.kubernetes.io/part-of": "research",
+            "app.kubernetes.io/component": component,
+        }
+    # Selectors and network policies match the component labels only: the log labels
+    # never decide who may talk to whom, and a Deployment's selector is immutable.
+    for item in items:
+        if item["kind"] == "Deployment":
+            assert "app.kubernetes.io/name" not in item["spec"]["selector"]["matchLabels"]
+        if item["kind"] == "NetworkPolicy":
+            assert '"sandbox-science"' not in json.dumps(item["spec"])
+    for item in items:
+        assert item["metadata"]["labels"]["app.kubernetes.io/instance"] == "research"
+
+
+def test_every_container_logs_json_lines():
+    items = objects()
+    for component in ("app", "pool", "runtime-manager"):
+        for container in pod(items, component)["containers"]:
+            assert {"name": "SS_LOG_FORMAT", "value": "json"} in container["env"], container["name"]

@@ -1768,12 +1768,14 @@ version = "0.1.0"
 source = { editable = "packages/package-cache" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "sandbox-science-contracts" },
     { name = "sandbox-science-policy" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
+    { name = "sandbox-science-contracts", editable = "packages/contracts" },
     { name = "sandbox-science-policy", editable = "packages/policy" },
 ]
 
@@ -1801,6 +1803,7 @@ dependencies = [
     { name = "grpcio" },
     { name = "protobuf" },
     { name = "pyjwt" },
+    { name = "sandbox-science-contracts" },
     { name = "sandbox-science-event-store" },
     { name = "sandbox-science-policy" },
 ]
@@ -1811,6 +1814,7 @@ requires-dist = [
     { name = "grpcio", specifier = ">=1.66" },
     { name = "protobuf", specifier = ">=7.35.1" },
     { name = "pyjwt", specifier = ">=2.9" },
+    { name = "sandbox-science-contracts", editable = "packages/contracts" },
     { name = "sandbox-science-event-store", editable = "packages/event-store" },
     { name = "sandbox-science-policy", editable = "packages/policy" },
 ]

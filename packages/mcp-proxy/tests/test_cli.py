@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_science.mcp_proxy import cli
 from sandbox_science.mcp_proxy.callers import token_digest
 from sandbox_science.mcp_proxy.cli import main
 from sandbox_science.mcp_proxy.store import PolicyStore
@@ -116,3 +117,13 @@ def test_compile_policy_refuses_a_bad_ceiling(
     assert main(argv) == 1
     assert capsys.readouterr().err.startswith("error:")
     assert not (tmp_path / "out.yaml").exists()
+
+
+def test_serve_sets_up_the_shared_logging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    set_up: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli, "configure_logging", lambda service, **kw: set_up.append((service, kw))
+    )
+    argv = ["serve", "--settings", str(tmp_path / "missing.toml"), "--log-level", "warning"]
+    assert main(argv) == 1  # the settings are refused, after the logging is up
+    assert set_up == [("mcp-proxy", {"level": "WARNING"})]

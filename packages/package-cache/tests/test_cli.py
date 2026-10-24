@@ -222,3 +222,14 @@ def test_serve_warns_when_the_open_file_limit_is_low(
 def test_unknown_log_levels_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         cli.main(["serve", "--settings", str(settings_file(tmp_path)), "--log-level", "loud"])
+
+
+def test_serve_sets_up_the_shared_logging(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    set_up: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli, "configure_logging", lambda service, **kw: set_up.append((service, kw))
+    )
+    monkeypatch.setattr(cli, "_serve", lambda settings: 0)
+    argv = ["serve", "--settings", str(settings_file(tmp_path)), "--log-level", "debug"]
+    assert cli.main(argv) == 0
+    assert set_up == [("cache", {"level": "DEBUG"})]

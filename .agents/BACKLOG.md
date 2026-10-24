@@ -23,7 +23,7 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 ### Phase B: cluster
 
 - [x] B1. Operator prep checklist; Longhorn recurring snapshots with backup to Garage (D92) ([checklist](../docs/KUBERNETES-PREP.md); untested on the cluster).
-- [ ] B2. Bundle updates for the combined unit and Loki/Alloy log collection (D101, D103).
+- [x] B2. Bundle updates for the combined unit and Loki/Alloy log collection (D101, D103): every service logs through one setup (`contracts/logs.py`, JSON lines with `SS_LOG_FORMAT=json`, secrets redacted), the bundle's containers set it and its Pods carry `app.kubernetes.io/name` and `instance`, and the bundle doc, a sample Alloy configuration and prep step 11 describe collection ([bundle](../docs/KUBERNETES-BUNDLE.md#log-collection)). Not yet run on the cluster.
 - [ ] B3. First deployment and the three live proofs (D92, [proofs](../docs/KUBERNETES.md#first-deployment-scope-and-proofs)).
 - [ ] B4. Durability extras (cache trimming, replica release and ACK outbox, workspace checkpoints) and the load balancer with Authentik (D92).
 - [ ] B5. Dashboards, alerts, detect-and-hold rules and MCP canaries (D103).

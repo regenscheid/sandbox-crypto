@@ -353,3 +353,20 @@ async def test_the_server_prints_a_login_url_that_opens_a_session(
     assert process.stderr is not None
     # Two sites: no warning that the frames may share the page's thread.
     assert "shares the workspace's host" not in (await process.stderr.read()).decode()
+
+
+def test_serve_sets_up_the_shared_logging(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    set_up: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli, "configure_logging", lambda service, **kw: set_up.append((service, kw))
+    )
+
+    async def serve(*args: object) -> None:
+        return None
+
+    monkeypatch.setattr(cli, "serve", serve)
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
+    assert cli.main([*args, "--log-level", "WARNING"]) == 0
+    assert set_up == [("workspace", {"level": "WARNING"})]

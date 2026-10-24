@@ -67,6 +67,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
+from sandbox_science.contracts.logs import configure_logging, json_line, log_format, relayed_line
 
 from . import toml
 from .config import ConfigPath, LauncherError, Variable
@@ -377,15 +378,17 @@ async def unhealthy(
 
 
 def _echo(name: str, line: str) -> None:
-    print(f"[{name}] {line}", flush=True)
+    """A service's line on the unit's output: under ``[service]``, or, with
+    ``SS_LOG_FORMAT=json``, as the JSON record it is (its own, or one made of plain text)."""
+    print(relayed_line(name, line, prefix=f"[{name}] "), flush=True)
 
 
 def _say(text: str, *, error: bool = False) -> None:
-    print(
-        f"[unit] {'error: ' if error else ''}{text}",
-        file=sys.stderr if error else sys.stdout,
-        flush=True,
-    )
+    if log_format() == "json":
+        line = json_line("unit", text, level="error" if error else "info")
+    else:
+        line = f"[unit] {'error: ' if error else ''}{text}"
+    print(line, file=sys.stderr if error else sys.stdout, flush=True)
 
 
 async def run(unit: UnitConfig, *, ready: Callable[[], None] = lambda: None) -> int:
@@ -459,6 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         unit = load(args.config, only=args.only)
         match args.command:
             case "serve":
+                configure_logging("unit", level=unit.options.log_level)
                 return asyncio.run(run(unit))
             case "check":
                 problems = unit.problems()

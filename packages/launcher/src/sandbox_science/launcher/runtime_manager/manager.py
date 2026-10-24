@@ -39,6 +39,7 @@ from typing import Literal, NoReturn
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
+from sandbox_science.contracts.logs import json_line, log_format, relayed_line
 from sandbox_science.launcher import runtime_owner
 from sandbox_science.launcher.config import LauncherError
 from sandbox_science.launcher.infrastructure import InfrastructureRecovery, RecoveryState
@@ -84,6 +85,12 @@ def request_deadline(settings: RuntimeManagerSettings) -> float:
     replace = stop_exec + delete + drain + create + attach
     reconcile = stop_exec + 2 * _CLI_CALL + attach  # an automatic attempt under way
     return replace + reconcile + 30
+
+
+def say(text: str) -> None:
+    """One line of the manager's own log: as written, or, with ``SS_LOG_FORMAT=json``, a JSON
+    record of the ``runtime-manager`` service."""
+    print(json_line("runtime-manager", text) if log_format() == "json" else text, flush=True)
 
 
 class BlockedError(LauncherError):
@@ -172,7 +179,7 @@ class RuntimeManager:
             await asyncio.gather(serving, stopped, return_exceptions=True)
             await self._stop_exec()
             self._status()
-            print("runtime manager stopped; the runtime sandbox is kept", flush=True)
+            say("runtime manager stopped; the runtime sandbox is kept")
 
     async def _serve(self) -> None:
         while True:
@@ -203,7 +210,7 @@ class RuntimeManager:
     async def _observe(self) -> None:
         """Notice the exec's end and control's restarts, and decide what is wanted."""
         if self.process is not None and self.process.returncode is not None:
-            print(f"runtime exec ended with status {self.process.returncode}", flush=True)
+            say(f"runtime exec ended with status {self.process.returncode}")
             await self._stop_exec()
             self._exited = True
         now = self.clock.monotonic()
@@ -218,7 +225,7 @@ class RuntimeManager:
             return
         self._control_up = True
         if self.attached is not None and health.control_instance != self.attached:
-            print("control restarted; reconnecting the runtime to its sandbox", flush=True)
+            say("control restarted; reconnecting the runtime to its sandbox")
             await self._stop_exec()
             self.attached, self._exited = None, False
             self._wanted = self.ownership.read() is not None
@@ -303,7 +310,7 @@ class RuntimeManager:
             self._journal(record.model_copy(update={"started": True}))
         await self._exec(owned.name)
         self.attached, self._exited, self.note = instance, False, None
-        print(f"runtime attached in {owned.name} ({issued.generation})", flush=True)
+        say(f"runtime attached in {owned.name} ({issued.generation})")
 
     def _credentials_record(self) -> CredentialsRecord | None:
         data = read_bounded(self.root / "credentials.json")
@@ -370,7 +377,7 @@ class RuntimeManager:
                 raise LauncherError(
                     f"the runtime exec ended before it was ready (status {process.returncode})"
                 )
-            print("runtime: " + text, flush=True)
+            print(relayed_line("runtime", text, prefix="runtime: "), flush=True)
             if READY_LINE in text:
                 break
         self._output = asyncio.create_task(_relay(lines))
@@ -451,7 +458,7 @@ class RuntimeManager:
             # Control is unreachable, so no runtime holds its connection, and it revokes
             # at its start; Attach's issue fences any survivor (KRB-7). Creating now
             # keeps a record, which the serve loop attaches once control answers.
-            print(f"control did not answer the drain check ({exc}); creating", flush=True)
+            say(f"control did not answer the drain check ({exc}); creating")
         except LauncherError as exc:
             raise LauncherError(f"{exc}; the old sandbox is deleted: request bootstrap") from None
         await self._create_and_attach(driver_config)
@@ -484,12 +491,12 @@ class RuntimeManager:
             )
         self.ownership.remove()
         (self.root / "credentials.json").unlink(missing_ok=True)
-        print(f"forgot {owned.name}: the gateway has no sandbox of that name", flush=True)
+        say(f"forgot {owned.name}: the gateway has no sandbox of that name")
 
     async def _teardown(self) -> None:
         await self._stop_exec()
         if not await self._delete():
-            print("no runtime sandbox is recorded; nothing to delete", flush=True)
+            say("no runtime sandbox is recorded; nothing to delete")
         (self.root / "credentials.json").unlink(missing_ok=True)
 
     async def _answer(self) -> None:
@@ -506,7 +513,7 @@ class RuntimeManager:
                 return
             request = ManagerRequest.model_validate_json(data)
         except (LauncherError, ValueError) as exc:
-            print(f"ignored a malformed operator request: {str(exc)[:200]}", flush=True)
+            say(f"ignored a malformed operator request: {str(exc)[:200]}")
             path.unlink(missing_ok=True)
             return
         error: str | None = None
@@ -514,7 +521,7 @@ class RuntimeManager:
         try:
             if not request.owned_by(self.instance):
                 raise LauncherError("the request names another runtime manager process")
-            print(f"operator request: {request.action}", flush=True)
+            say(f"operator request: {request.action}")
             if request.action == "bootstrap":
                 await self._bootstrap()
             elif request.action == "replace":
@@ -536,7 +543,7 @@ class RuntimeManager:
                     error[:400] + "; the new sandbox is kept and the manager keeps trying "
                     "to attach the runtime"
                 )
-            print(f"operator {request.action} failed: {error}", flush=True)
+            say(f"operator {request.action} failed: {error}")
         finally:
             self._created = False
         receipt = Result(nonce=request.nonce, error=error)
@@ -614,7 +621,7 @@ async def _relay(lines: _Lines) -> None:
     """Pass the runtime's output on to the manager's own, for the Pod's log, until the
     output ends."""
     while (text := await lines.next()) is not None:
-        print("runtime: " + text, flush=True)
+        print(relayed_line("runtime", text, prefix="runtime: "), flush=True)
 
 
 def _hold_serve_lock(root: Path) -> int:
@@ -654,7 +661,7 @@ async def _serve_locked(settings: RuntimeManagerSettings) -> None:
     }
     for number, handler in handlers.items():
         loop.add_signal_handler(number, handler)
-    print(f"runtime manager serving ({manager.instance})", flush=True)
+    say(f"runtime manager serving ({manager.instance})")
     try:
         await manager.run()
     finally:

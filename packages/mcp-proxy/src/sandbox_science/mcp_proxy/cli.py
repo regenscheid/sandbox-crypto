@@ -33,6 +33,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling, load_policy
 from sandbox_science.policy.approvals import ALL_SCOPES, KINDS
@@ -107,10 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         match args.command:
             case "serve":
-                logging.basicConfig(
-                    level=args.log_level,
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-                )
+                configure_logging("mcp-proxy", level=args.log_level)
                 return _serve(load_settings(args.settings))
             case "bind":
                 store = PolicyStore(args.state_dir)

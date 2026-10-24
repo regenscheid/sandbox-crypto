@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import EnvironmentState, WriteFileResult
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.worker.app import ENVIRONMENTS, create_app
 from sandbox_science.worker.artifacts import Blobs
@@ -160,3 +162,21 @@ async def test_cancel_requires_supplied_current_context_or_authenticated_operato
     ).status == 200
     assert (await client.post(path, headers=auth("operator"))).status == 200
     assert not view(manager).connected()
+
+
+async def test_a_request_logs_under_its_own_id_and_event(api, capsys) -> None:
+    client, _ = api
+    configure_logging("worker", fmt="json")
+    body = {"project_id": "p", "session_id": "s", "epoch": 3}
+    assert (
+        await client.post("/v1/recovery/fence", json=body, headers=auth("control"))
+    ).status == 200
+    assert (
+        await client.post("/v1/recovery/fence", json=body, headers=auth("control"))
+    ).status == 200
+    audits = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    audits = [line for line in audits if line.get("event") == "worker_request"]
+    assert [(line["service"], line["status"]) for line in audits] == [("worker", 200)] * 2
+    assert "by control: 200" in audits[0]["msg"]
+    assert len({line["request"] for line in audits}) == 2  # an ID for each request
+    assert "test-secret" not in json.dumps(audits)

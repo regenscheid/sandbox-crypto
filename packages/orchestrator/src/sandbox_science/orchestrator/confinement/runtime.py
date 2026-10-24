@@ -12,6 +12,7 @@ import aiohttp
 from pydantic import Field, JsonValue, TypeAdapter, field_validator, model_validator
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.control.migrations import VERSION
 from sandbox_science.orchestrator.messages import ThinkingReplay
@@ -192,6 +193,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
     args = parser.parse_args()
+    configure_logging("agent-runtime")
     settings = RuntimeSettings.model_validate_json(args.settings.read_text(encoding="utf-8"))
     asyncio.run(serve(settings))
 

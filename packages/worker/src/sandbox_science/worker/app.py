@@ -17,6 +17,7 @@ import contextlib
 import hmac
 import logging
 import re
+import secrets
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ from sandbox_science.contracts.documents import (
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
+from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import EffectControl, OperationLookupRequest, RecoveryFence
@@ -225,6 +227,19 @@ def create_app(
         return resource is not None and "/provisioning/observations" in resource.canonical
 
     @web.middleware
+    async def tagged(request: web.Request, handler: Handler) -> web.StreamResponse:
+        """Put a request ID and the project and environment its route names on every log
+        record the request makes. They are labels for finding records, set before the
+        caller is known, so they say nothing about what the caller may do."""
+        names = request.match_info
+        with log_context(
+            request=secrets.token_hex(6),
+            project=names.get("project_id"),
+            environment=names.get("environment_id"),
+        ):
+            return await handler(request)
+
+    @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         client = identify(request.headers.get("Authorization", ""))
         if client is None:
@@ -252,7 +267,7 @@ def create_app(
         _audit(request, client, response.status)
         return response
 
-    app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
+    app = web.Application(middlewares=[tagged, guard], client_max_size=MAX_BODY)
     app.on_response_prepare.append(_speak_protocol)
     app[FILE_WRITES] = asyncio.Lock()
     app[FILE_WRITE_TIMEOUT] = file_write_timeout
@@ -494,7 +509,14 @@ def _audit(request: web.Request, client: Client, status: int) -> None:
     template = route.canonical if route is not None else "an unknown route"
     if template in _READS:
         return
-    _log.info("%s %s by %s: %d", request.method, template, client.name, status)
+    _log.info(
+        "%s %s by %s: %d",
+        request.method,
+        template,
+        client.name,
+        status,
+        extra={"event": "worker_request", "status": status},
+    )
 
 
 def _client(request: web.Request) -> Client:

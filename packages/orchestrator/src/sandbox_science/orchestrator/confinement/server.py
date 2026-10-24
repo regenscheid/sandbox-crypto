@@ -16,6 +16,7 @@ from pathlib import Path
 from aiohttp import WSCloseCode, web
 from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.connectors import ProxyClient
 from sandbox_science.orchestrator.consistency.models import REVIEWER_MAX_RESPONSE_BYTES
@@ -538,6 +539,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
     args = parser.parse_args()
+    configure_logging("control")
     settings = ControlSettings.model_validate_json(args.settings.read_text(encoding="utf-8"))
     host, port = bind_address(settings.listen)
     web.run_app(
@@ -546,6 +548,7 @@ def main() -> None:
         port=port,
         ssl_context=settings.tls.context() if settings.tls is not None else None,
         print=_ready,
+        access_log=None,  # the probes would fill the log; every other service does the same
     )
 
 

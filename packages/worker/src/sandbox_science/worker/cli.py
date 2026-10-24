@@ -31,6 +31,7 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Identifier
+from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy.store import StoreError
 
@@ -330,9 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "artifact-retention":
             return release_artifacts(settings, apply=args.apply, limit=args.limit, after=args.after)
         return show_admissions(settings, args.environment)
-    logging.basicConfig(
-        level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    configure_logging("worker", level=args.log_level)
     try:
         settings = load_settings(args.settings)
         settings.token()
