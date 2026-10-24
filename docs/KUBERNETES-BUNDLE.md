@@ -376,7 +376,8 @@ it (the explicit acknowledgement that the plain-HTTP listener leaves loopback). 
 section has no field that turns authentication off.
 
 **What changes.** The workspace container listens on `0.0.0.0:8200` and `0.0.0.0:8201`
-and gets `--allow-remote --preview-name <preview_host>`; it declares those two ports. For
+and gets `--allow-remote --public-origin https://<workspace_host> --preview-public-origin
+https://<preview_host>`; it declares those two ports. For
 each host name the renderer adds:
 
 * a `ClusterIP` Service, `<name>-workspace` (8200) and `<name>-preview` (8201), selecting
@@ -398,33 +399,25 @@ works only on `Ingress` and `Gateway` objects, so the bundle renders the `Certif
 explicitly, which also names the Secret the route reads. The cost is a dependency on
 Traefik's CRDs (a cluster that moves to another controller needs another renderer).
 
-**What the workspace supports, and does not.** The workspace has `--allow-remote`,
-`--listen`, `--preview-listen` and `--preview-name`, and nothing more for a proxy: no
-option to trust `X-Forwarded-*` or `Forwarded` headers from a proxy, no public origin or
-scheme, no secure-cookie switch ([workspace](WORKSPACE.md#authentication)). Rendered here
-is exactly what exists, and these follow from the workspace's code:
+**What the workspace does behind the route** ([workspace: behind a reverse
+proxy](WORKSPACE.md#behind-a-reverse-proxy)). Told its two public origins, the workspace:
 
-* It sees plain HTTP from Traefik. A change (any method but GET or HEAD) must carry an
-  `Origin` equal to `<scheme>://<Host>` with the scheme the server sees, `http`; the
-  browser sends `https`. **Writes through the ingress are refused** (403) until the workspace
-  can be told its public origin. Traefik must not rewrite `Origin` to get around this: that
-  would remove the check for every site.
-* The session cookie is Secure only when the server itself sees HTTPS, so it is not
-  marked Secure here. It stays HttpOnly, SameSite=Strict and host-only (no `Domain`), and is
-  named with the port (`...-8200`). Redirect the `web` entry point to HTTPS at Traefik and
-  consider HSTS on the routes' hosts, which a `Headers` middleware can add.
-* The preview origin is announced as `http://<preview_host>:8201`, in the workspace's
-  CSP and links and the viewer's frame ancestors, not `https://<preview_host>`. **The PDF
-  viewer and figure frames do not work through the ingress** until the preview origin can
-  be given by its public origin.
-* With `--allow-remote` the `Host` check is off. The route's `Host(...)` rule and the
-  NetworkPolicy are what keep other names and Pods out; Authentik is checked before the
-  workspace's own login token, which the workspace still needs
-  (`kubectl logs deploy/<name>-app -c workspace`).
+* answers only to a `Host` naming `<workspace_host>` (the viewer only `<preview_host>`), so
+  a `kubectl port-forward` to the Pod's listener is refused; Traefik passes `Host` through;
+* takes a change only with `Origin: https://<workspace_host>`. Traefik must not rewrite
+  `Origin`;
+* sets the session cookie Secure, HttpOnly, SameSite=Strict and host-only, named
+  `__Host-sandbox_science_workspace-8200`, so the preview host cannot set or shadow it.
+  Redirect the `web` entry point to HTTPS at Traefik and consider HSTS on the routes'
+  hosts, which a `Headers` middleware can add;
+* announces the preview as `https://<preview_host>` in its CSP and links and the viewer's
+  frame ancestors, so the PDF viewer and figure frames work through the ingress.
 
-So the ingress today carries login and the read-only views; the backlog item "Workspace:
-public origin behind a TLS proxy" adds the missing options and removes these limits.
-Nothing here is qualified on a cluster.
+The renderer passes no `--trust-proxy-from`: Traefik's Pods have no fixed addresses, and
+with `Host` passed through no forwarded header is needed. Authentik is checked before
+the workspace's own login token, which the workspace still needs
+(`kubectl logs deploy/<name>-app -c workspace` prints the login URL on the public origin);
+Authentik's headers open no workspace session. Nothing here is qualified on a cluster.
 
 **Both host names behind Authentik.** The preview is framed by the workspace page, so its
 requests carry the Authentik session too. Put both names under one parent domain and use

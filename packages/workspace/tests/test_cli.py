@@ -19,7 +19,8 @@ from aiohttp import web
 
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.workspace import cli
+from sandbox_science.workspace import app, cli
+from sandbox_science.workspace.proxy import Exposure, PublicOrigin
 
 COMMAND = Path(sys.executable).parent / "sandbox-science-workspace"
 
@@ -370,3 +371,172 @@ def test_serve_sets_up_the_shared_logging(
     args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
     assert cli.main([*args, "--log-level", "WARNING"]) == 0
     assert set_up == [("workspace", {"level": "WARNING"})]
+
+
+# Behind a TLS-terminating proxy (docs/WORKSPACE.md, "Behind a reverse proxy").
+
+PUBLIC = ["--public-origin", "https://workspace.research.test"]
+PREVIEW_PUBLIC = ["--preview-public-origin", "https://preview.research.test"]
+REMOTE = ["--allow-remote", "--listen", "0.0.0.0:8200"]  # never bound here
+
+
+@pytest.mark.parametrize(
+    ("flags", "reason"),
+    [
+        ([*PUBLIC, *PREVIEW_PUBLIC], "need --allow-remote"),
+        (["--trust-proxy-from", "10.42.0.0/16"], "need --allow-remote"),
+        ([*REMOTE, *PUBLIC], "given together"),
+        ([*REMOTE, *PREVIEW_PUBLIC], "given together"),
+        ([*REMOTE, "--public-origin", "http://workspace.research.test", *PREVIEW_PUBLIC],
+         "is not an https:// origin"),
+        ([*REMOTE, *PUBLIC, "--preview-public-origin", "https://preview.research.test/viewer"],
+         "is not an https:// origin"),
+        ([*REMOTE, *PUBLIC, "--preview-public-origin", "https://WORKSPACE.research.test:443"],
+         "must differ"),
+        ([*REMOTE, *PUBLIC, *PREVIEW_PUBLIC, "--preview-name", "preview.research.test"],
+         "drop --preview-name"),
+        ([*REMOTE, "--trust-proxy-from", "10.42.0.1/16"], "CIDR"),
+        ([*REMOTE, "--trust-proxy-from", "0.0.0.0/0"], "every address"),
+    ],
+)  # fmt: skip
+def test_proxy_settings_that_would_weaken_or_confuse_are_refused(
+    state_dir: Path,
+    static_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+    reason: str,
+) -> None:
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags])
+    assert refused.value.code == 2
+    assert reason in capsys.readouterr().err
+
+
+def captured_app(monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, object], list[object]]:
+    """Patches ``create_app`` and ``serve``: the app's settings and what serve was given."""
+    settings: dict[str, object] = {}
+    served: list[object] = []
+    create = app.create_app
+
+    def create_app(*args: object, **kwargs: object) -> web.Application:
+        settings.update(kwargs)
+        return create(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    async def serve(*args: object) -> None:
+        served.extend(args)
+
+    monkeypatch.setattr(cli, "create_app", create_app)
+    monkeypatch.setattr(cli, "serve", serve)
+    return settings, served
+
+
+def test_without_proxy_settings_the_loopback_server_is_unchanged(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, served = captured_app(monkeypatch)
+    assert cli.main(["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]) == 0
+    assert settings["exposure"] is None
+    assert settings["check_host"] is True
+    assert served[5] is None  # no public origins: the listeners' own are announced
+
+
+def test_proxy_settings_reach_the_app_and_the_announcement(
+    state_dir: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, served = captured_app(monkeypatch)
+    flags = [*REMOTE, *PUBLIC, *PREVIEW_PUBLIC]
+    flags += ["--trust-proxy-from", "10.42.0.0/16", "--trust-proxy-from", "fd00::/8"]
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *flags]
+    assert cli.main(args) == 0
+    exposure = settings["exposure"]
+    assert isinstance(exposure, Exposure)
+    assert exposure.public == PublicOrigin("workspace.research.test")
+    assert [str(network) for network in exposure.trusted] == ["10.42.0.0/16", "fd00::/8"]
+    assert settings["check_host"] is False
+    assert served[5] == (
+        PublicOrigin("workspace.research.test"),
+        PublicOrigin("preview.research.test"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_behind_a_proxy_the_public_origins_are_announced_and_used(
+    state_dir: Path, static_dir: Path
+) -> None:
+    (static_dir / "viewer").mkdir()
+    (static_dir / "viewer" / "index.html").write_text("<!doctype html><title>Viewer</title>")
+    process = await asyncio.create_subprocess_exec(
+        str(COMMAND),
+        *("serve", "--state-dir", str(state_dir), "--static", str(static_dir)),
+        *("--listen", "127.0.0.1:0", "--allow-remote", *PUBLIC, *PREVIEW_PUBLIC),
+        *("--trust-proxy-from", "127.0.0.0/8"),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        assert process.stdout is not None
+        printed = ""
+        while "token=" not in printed:
+            line = await asyncio.wait_for(process.stdout.readline(), 30)
+            assert line, f"the server stopped; it printed {printed!r}"
+            printed += line.decode()
+        viewer = re.search(
+            r"PDF viewer origin on https://preview\.research\.test/ "
+            r"\(served at http://127\.0\.0\.1:(\d+)/\)\n",
+            printed,
+        )
+        workspace = re.search(
+            r"Sandbox Science workspace on https://workspace\.research\.test/ "
+            r"\(served at (http://127\.0\.0\.1:(\d+))/\)\n",
+            printed,
+        )
+        login = re.search(
+            r"\n    https://workspace\.research\.test/login\?token=([A-Za-z0-9_-]{43})\n", printed
+        )
+        assert viewer is not None, printed
+        assert workspace is not None, printed
+        assert login is not None, printed
+        base, port, token = workspace[1], workspace[2], login[1]
+        proxied = {"Host": f"research-workspace:{port}", "X-Forwarded-Proto": "https"}
+        proxied["X-Forwarded-Host"] = "workspace.research.test"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{base}/", headers=proxied) as page:
+                policy = page.headers["Content-Security-Policy"]
+                assert "frame-src https://preview.research.test" in policy
+                assert "img-src 'self' https://preview.research.test" in policy
+            async with session.get(f"{base}/", headers={"Host": f"127.0.0.1:{port}"}) as own:
+                assert own.status == 403  # only the public host is answered
+            async with session.get(
+                f"http://127.0.0.1:{viewer[1]}/viewer/", headers={"Host": "preview.research.test"}
+            ) as framed:
+                assert framed.status == 200
+                ancestors = "frame-ancestors https://workspace.research.test"
+                assert ancestors in framed.headers["Content-Security-Policy"]
+            async with session.get(
+                f"{base}/login?token={token}", headers=proxied, allow_redirects=False
+            ) as opened:
+                assert opened.status == 303
+                set_cookie = opened.headers["Set-Cookie"]
+            name, _, rest = set_cookie.partition("=")
+            assert name == f"__Host-sandbox_science_workspace-{port}"
+            assert rest.endswith("; HttpOnly; Path=/; SameSite=Strict; Secure")
+            cookie = {"Cookie": f"{name}={rest.partition(';')[0]}"}
+            async with session.get(
+                f"{base}/api/v0/projects", headers={**proxied, **cookie}
+            ) as listed:
+                assert listed.status == 200
+            async with session.post(
+                f"{base}/api/v0/logout",
+                headers={**proxied, **cookie, "Origin": "http://workspace.research.test"},
+            ) as refused:
+                assert refused.status == 403
+            async with session.post(
+                f"{base}/api/v0/logout",
+                headers={**proxied, **cookie, "Origin": "https://workspace.research.test"},
+            ) as ended:
+                assert ended.status == 204
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            process.send_signal(signal.SIGTERM)
+        status = await asyncio.wait_for(process.wait(), 30)
+    assert status == 0

@@ -14,7 +14,11 @@ POST ones included, are listed in docs/WORKSPACE.md. This module adds logout and
 (mathrepair.py) within the limits of the browser session. With a loopback
 listener, every request must also name this server in ``Host`` (localhost, 127.0.0.1,
 ::1 or the address it listens on, with its port), which stops a DNS name rebound to
-127.0.0.1 from reaching it.
+127.0.0.1 from reaching it. Behind a TLS-terminating proxy, ``exposure`` (proxy.py) may
+name the public origin, which then replaces both: the server answers only to its host,
+a change needs exactly that ``Origin``, and the cookie is Secure and ``__Host-`` prefixed;
+it may also name the proxies whose ``X-Forwarded-Proto`` and ``X-Forwarded-Host`` are
+believed.
 
 Every response carries the security headers below. The Content-Security-Policy admits
 scripts, styles, fonts and fetches from this origin only, and inline style attributes,
@@ -92,11 +96,16 @@ from .mathrepair import (
 )
 from .mcp_metadata import MetadataClient
 from .preview import Preview
+from .proxy import Exposure, ForwardedHeaderError
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 SESSION_COOKIE: Final = "sandbox_science_workspace"
 """The session cookie's name, followed by ``-<port>``."""
+HOST_PREFIX: Final = "__Host-"
+"""Prefixes the session cookie's name behind a public origin: the browser then keeps it
+only as set Secure, on Path ``/``, without ``Domain``, so no sibling host under the same
+parent domain (such as the preview origin's) can set or shadow it."""
 MAX_SESSIONS: Final = 64
 """Sessions kept at once; logging in beyond it ends the oldest."""
 MAX_TOKEN: Final = 256
@@ -223,6 +232,7 @@ def create_app(
     mcp_metadata: MetadataClient | None = None,
     mcp_approvals: approvals.ApprovalClient | None = None,
     model_configuration: project_settings.ModelConfiguration | None = None,
+    exposure: Exposure | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -234,7 +244,9 @@ def create_app(
     application closes ``job_worker``. With ``preview``, it lists published artifacts with
     links that open a PDF in the viewer on the preview origin, and may frame that origin.
     With ``skills_metadata``, the alias of the import's pass, the skills page shows what
-    that pass derived, as runs are given it."""
+    that pass derived, as runs are given it. ``exposure`` names a public origin and the
+    proxies trusted to forward the scheme and host (proxy.py); without it a request is seen
+    as it arrives."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
     if mcp_inventory and mcp_project is None:
@@ -242,6 +254,12 @@ def create_app(
     if document_store is not None and not document_store.readonly:
         raise ValueError("the workspace's document_store must be read-only")
     sessions = Sessions(login_token)
+    reached = exposure if exposure is not None else Exposure()
+
+    def session_cookie(request: web.Request) -> str:
+        name = cookie_name(request)
+        return HOST_PREFIX + name if reached.public is not None else name
+
     files = StaticFiles(static_dir)
     repairs = math_repair if math_repair is not None else MathRepairService()
     if document_store is None:
@@ -252,19 +270,25 @@ def create_app(
     check_figures(writer)  # and its figures, by the run service (FG-19)
 
     def principal(request: web.Request) -> str:
-        return _digest(request.cookies.get(cookie_name(request), "")).hex()
+        return _digest(request.cookies.get(session_cookie(request), "")).hex()
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
-        host = request.headers.get(hdrs.HOST, "").lower()
+        try:
+            seen = reached.seen(request)
+        except ForwardedHeaderError:
+            return _refusal("The proxy's forwarded headers are ambiguous.")
+        host = seen.host
         if check_host and host not in own_hosts(request):
             return _refusal("This server answers only to its own address.")
+        if not reached.answers(seen):
+            return _refusal("This server answers only to its public origin.")
         if request.method not in SAFE_METHODS:
             origin = request.headers.get(hdrs.ORIGIN, "").lower()
-            if not host or origin != f"{request.scheme}://{host}":
+            if not host or origin != reached.origin(seen):
                 return _refusal("A request from another origin is refused.")
         if is_api(request.path):
-            if not sessions.valid(request.cookies.get(cookie_name(request))):
+            if not sessions.valid(request.cookies.get(session_cookie(request))):
                 return json_error(
                     401,
                     ErrorKind.POLICY_DENIED,
@@ -295,21 +319,27 @@ def create_app(
         response = web.Response(
             status=303, headers={hdrs.LOCATION: "/", hdrs.CACHE_CONTROL: "no-store"}
         )
+        # Strict holds behind Authentik too: this answer sets the cookie on a top-level
+        # navigation, which a browser accepts from any site, and the page it redirects to
+        # needs no cookie; only the app's own same-origin requests carry it.
         response.set_cookie(
-            cookie_name(request),
+            session_cookie(request),
             session,
             path="/",
             httponly=True,
             samesite="Strict",
-            secure=request.secure,
+            secure=reached.secure(reached.seen(request)),
         )
         return response
 
     async def logout(request: web.Request) -> web.StreamResponse:
-        name = cookie_name(request)
+        name = session_cookie(request)
         sessions.end(request.cookies.get(name))
         response = web.Response(status=204, headers={hdrs.CACHE_CONTROL: "no-store"})
-        response.del_cookie(name, path="/")
+        if reached.public is not None:
+            response.del_cookie(name, path="/", secure=True)  # a __Host- cookie needs it
+        else:
+            response.del_cookie(name, path="/")
         return response
 
     async def repair_math(request: web.Request) -> web.StreamResponse:

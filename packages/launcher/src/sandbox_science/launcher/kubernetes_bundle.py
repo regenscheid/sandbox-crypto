@@ -395,12 +395,20 @@ def _command(config: BundleConfig, name: str) -> list[str]:
         ingress = config.ingress
         # Loopback unless the ingress is on (config requires allow_remote then): the
         # workspace speaks plain HTTP, so nothing but the authenticated, TLS-terminating
-        # route and its NetworkPolicy may reach the Pod-network listener. Its preview
-        # origin is named by the preview host, which is not loopback, so the listener
-        # takes any Host: Traefik's Host() rule and the NetworkPolicy are the guards.
+        # route and its NetworkPolicy may reach the Pod-network listener. It is told the
+        # two https:// origins the browser sees, so it answers only to those host names,
+        # takes changes only from the workspace's, sets a Secure cookie and announces the
+        # preview by its public origin. Traefik passes Host through, so no forwarded
+        # header needs trusting (no --trust-proxy-from).
         bind = POD_NETWORK if ingress is not None else LOOPBACK
         remote = (
-            ["--allow-remote", "--preview-name", ingress.preview_host]
+            [
+                "--allow-remote",
+                "--public-origin",
+                f"https://{ingress.workspace_host}",
+                "--preview-public-origin",
+                f"https://{ingress.preview_host}",
+            ]
             if ingress is not None
             else []
         )

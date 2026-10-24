@@ -3,7 +3,8 @@
 
 ```
 sandbox-science-workspace serve --state-dir DIR --static DIR [--listen 127.0.0.1:8200] \\
-    [--allow-remote] \\
+    [--allow-remote [--public-origin https://H --preview-public-origin https://P] \\
+     [--trust-proxy-from CIDR ...]] \\
     [--model-url http://127.0.0.1:4000 --reviewer-model reviewer --api-key-file key]
 ```
 
@@ -12,8 +13,11 @@ workspace reads. With a worker connection it also serves live job status and can
 ``--static`` is the web app's build (``web/workspace/dist``). The server
 listens on a loopback address unless ``--allow-remote`` allows another one; it speaks
 plain HTTP, so on another address the login URL and the session cookie cross the
-network unencrypted. At each start it makes a new login token and prints the login URL
-once, on standard output.
+network unencrypted. Behind a TLS-terminating reverse proxy, ``--public-origin`` and
+``--preview-public-origin`` name the ``https://`` origins the browser sees, and
+``--trust-proxy-from`` the proxies whose forwarded scheme and host are believed
+(proxy.py). At each start it makes a new login token and prints the login URL once, on
+standard output.
 
 With ``--model-url``, ``--reviewer-model`` and ``--api-key-file``, the page may ask the
 reviewer model, through the model gateway, to repair math that KaTeX rejects
@@ -33,7 +37,7 @@ import re
 import secrets
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -56,6 +60,7 @@ from .mcp_metadata import MetadataClient
 from .mcp_services import ServiceConfig
 from .preview import Capabilities, Preview, create_preview_app, own_host
 from .project_settings import ModelConfiguration
+from .proxy import Exposure, Network, PublicOrigin, parse_network
 
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
@@ -184,16 +189,62 @@ def check_preview_name(name: str, preview_host: str) -> None:
             raise ValueError(f"--preview-name {name!r} is not a host name") from None
 
 
+def proxy_settings(
+    public_origin: str | None,
+    preview_public_origin: str | None,
+    trust_proxy_from: Sequence[str],
+    *,
+    allow_remote: bool,
+    preview_name_given: bool,
+) -> tuple[tuple[PublicOrigin, PublicOrigin] | None, tuple[Network, ...]]:
+    """The public origins (the workspace's and the preview's) and the trusted proxy
+    networks; ``ValueError`` for settings that are not both ``https://`` origins, not
+    given together, not distinct, or given without ``--allow-remote``."""
+    if (public_origin is None) != (preview_public_origin is None):
+        raise ValueError("--public-origin and --preview-public-origin must be given together")
+    if (public_origin is not None or trust_proxy_from) and not allow_remote:
+        raise ValueError(
+            "--public-origin and --trust-proxy-from are for a server behind a proxy, off "
+            "loopback: they need --allow-remote"
+        )
+    networks: list[Network] = []
+    for text in trust_proxy_from:
+        try:
+            network = parse_network(text)
+        except ValueError as exc:
+            raise ValueError(f"--trust-proxy-from {exc}") from None
+        if network not in networks:
+            networks.append(network)
+    if public_origin is None or preview_public_origin is None:
+        return None, tuple(networks)
+    if preview_name_given:
+        raise ValueError("--preview-public-origin names the viewer: drop --preview-name")
+    try:
+        workspace = PublicOrigin.parse(public_origin)
+    except ValueError as exc:
+        raise ValueError(f"--public-origin {exc}") from None
+    try:
+        viewer = PublicOrigin.parse(preview_public_origin)
+    except ValueError as exc:
+        raise ValueError(f"--preview-public-origin {exc}") from None
+    if workspace == viewer:
+        raise ValueError("--preview-public-origin must differ from --public-origin")
+    return (workspace, viewer), tuple(networks)
+
+
 async def serve(
     app: web.Application,
     host: str,
     port: int,
     login_token: str,
     preview: tuple[web.Application, Preview, str, int, str] | None = None,
+    public: tuple[PublicOrigin, PublicOrigin] | None = None,
 ) -> None:
     """Serve until SIGTERM or SIGINT, after printing the login URL once. With ``preview``
     (its application, its state, host, port and the name it is given by), the PDF
-    viewer's origin is served too."""
+    viewer's origin is served too. With ``public`` (the workspace's and the preview's
+    public origins), those are the origins announced and printed, with the addresses
+    served at beside them."""
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -212,10 +263,23 @@ async def serve(
             shown = viewer.addresses[0][1] if preview_port == 0 else preview_port
             if name == "localhost" and preview_host == "127.0.0.1":
                 await _also_on_ipv6(viewer, shown)
-            state.origin = base_url(name, shown)
-            print(f"PDF viewer origin on {state.origin}/", flush=True)
-            state.workspace_origin = url
-        print(f"Sandbox Science workspace on {url}/", flush=True)
+            if public is None:
+                state.origin = base_url(name, shown)
+                print(f"PDF viewer origin on {state.origin}/", flush=True)
+                state.workspace_origin = url
+            else:
+                state.origin = public[1].origin
+                served = base_url(preview_host, shown)
+                print(f"PDF viewer origin on {state.origin}/ (served at {served}/)", flush=True)
+                state.workspace_origin = public[0].origin
+        if public is None:
+            print(f"Sandbox Science workspace on {url}/", flush=True)
+        else:
+            print(
+                f"Sandbox Science workspace on {public[0].origin}/ (served at {url}/)",
+                flush=True,
+            )
+            url = public[0].origin
         print(
             "Log in by opening this URL; it works until the server stops:\n"
             f"    {url}/login?token={login_token}",
@@ -277,6 +341,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--allow-remote",
         action="store_true",
         help="allow a listen address that is not loopback (plain HTTP: see the docs)",
+    )
+    command.add_argument(
+        "--public-origin",
+        help="behind a TLS-terminating proxy: the https:// origin the browser reaches the "
+        "workspace at; the server then answers only to its host and takes changes only from "
+        "it (needs --allow-remote and --preview-public-origin)",
+    )
+    command.add_argument(
+        "--preview-public-origin",
+        help="the https:// origin the browser reaches the PDF viewer at, through the proxy; "
+        "an origin of its own (needs --public-origin; replaces --preview-name)",
+    )
+    command.add_argument(
+        "--trust-proxy-from",
+        action="append",
+        default=[],
+        metavar="CIDR",
+        help="a network whose connections' X-Forwarded-Proto and X-Forwarded-Host are "
+        "believed; repeat for each (needs --allow-remote; never X-Forwarded-For or Forwarded)",
     )
     command.add_argument(
         "--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR")
@@ -410,6 +493,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{host} is not a loopback address; --allow-remote accepts connections from "
             "other machines, over plain HTTP"
         )
+    try:
+        public, trusted = proxy_settings(
+            args.public_origin,
+            args.preview_public_origin,
+            args.trust_proxy_from,
+            allow_remote=args.allow_remote,
+            preview_name_given=args.preview_name is not None,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if not args.state_dir.is_dir():
         print(f"error: there is no state directory {args.state_dir}", file=sys.stderr)
         return 1
@@ -433,6 +526,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         except DocumentError as exc:
             print(f"error: {exc.message}", file=sys.stderr)
             return 1
+    exposure = (
+        Exposure(public[0] if public is not None else None, trusted)
+        if public is not None or trusted
+        else None
+    )
     login_token = secrets.token_urlsafe(32)
     preview = Preview(Capabilities())
     mcp_inventory: list[ServiceConfig] = []
@@ -470,7 +568,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ProjectStore(args.state_dir, readonly=True),
             args.static,
             login_token=login_token,
-            check_host=loopback,
+            # A public origin replaces the loopback names with its own host.
+            check_host=loopback and public is None,
             math_repair=repair,
             job_worker=job_worker,
             job_state=job_state,
@@ -481,6 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_metadata=metadata,
             mcp_approvals=answers,
             model_configuration=model_configuration,
+            exposure=exposure,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)
@@ -498,13 +598,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         _log.info("math repairs by a model are off")
-    if not loopback:
+    if public is not None:
+        _log.info(
+            "behind a proxy at the public origin %s, with the preview at %s; trusted to "
+            "forward the scheme and host: %s",
+            public[0].origin,
+            public[1].origin,
+            ", ".join(str(network) for network in trusted) or "none",
+        )
+        if public[0].host == public[1].host:
+            _log.warning(
+                "the preview's public origin %s shares the workspace's host: figures and the "
+                "PDF viewer may run on the workspace page's thread. Give it a host name of "
+                "its own",
+                public[1].origin,
+            )
+    elif not loopback:
         _log.warning(
             "listening on %s, which is not loopback: the login URL and session cookie travel "
             "unencrypted, and any Host name is accepted",
             host,
         )
-    if name == host:
+    if name == host and public is None:
         # Same site: a browser may run the preview origin's frames on the workspace page's
         # own thread, where a heavy figure stalls the page (FG-17; review of #492, M1).
         remedy = (
@@ -518,13 +633,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             name,
             remedy,
         )
+    viewer_host: Callable[[web.Request], bool]
+    if public is not None:
+        viewer_host = Exposure(public[1], trusted).host_check  # its public host only
+    elif is_loopback(preview_host):
+        viewer_host = own_host
+    else:
+        viewer_host = lambda request: True  # noqa: E731 - the names are not known
     viewer_app = create_preview_app(
         app[CONTEXT].documents,
         preview.capabilities,
         workspace_origin=lambda: preview.workspace_origin,
         viewer_dir=args.static / "viewer",
         figures_dir=args.static / "figures",
-        check_host=own_host if is_loopback(preview_host) else lambda request: True,
+        check_host=viewer_host,
     )
     try:
         asyncio.run(
@@ -534,6 +656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 port,
                 login_token,
                 (viewer_app, preview, preview_host, preview_port, name),
+                public,
             )
         )
     except KeyboardInterrupt:  # before the signal handlers are in place

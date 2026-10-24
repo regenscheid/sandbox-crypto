@@ -992,18 +992,30 @@ def test_without_ingress_nothing_is_exposed_and_the_workspace_stays_on_loopback(
     workspace = next(c for c in pod(items, "app")["containers"] if c["name"] == "workspace")
     assert "ports" not in workspace
     assert not any(a.startswith("--allow-remote") for a in workspace["command"])
-    assert "--preview-name" not in workspace["command"]
+    for flag in ("--preview-name", "--public-origin", "--preview-public-origin"):
+        assert flag not in workspace["command"]
+    assert not any(a.startswith("--trust-proxy") for a in workspace["command"])
 
 
-def test_ingress_moves_the_workspace_to_the_pod_network_with_its_own_preview_name():
+def test_ingress_moves_the_workspace_to_the_pod_network_with_its_public_origins():
     command = workspace_command(objects(configured(with_ingress())))
     assert command[command.index("--listen") + 1] == "0.0.0.0:8200"
     assert command[command.index("--preview-listen") + 1] == "0.0.0.0:8201"
     assert "--allow-remote" in command
-    assert command[command.index("--preview-name") + 1] == "preview.research.test"
+    assert command[command.index("--public-origin") + 1] == "https://workspace.research.test"
+    assert command[command.index("--preview-public-origin") + 1] == "https://preview.research.test"
+    # The public origin names the viewer; Traefik passes Host, so no header is trusted.
+    assert "--preview-name" not in command
+    assert not any(a.startswith("--trust-proxy") for a in command)
     # Nothing else about the command changes.
     plain = workspace_command(objects())
-    drop = {"--allow-remote", "--preview-name", "preview.research.test"}
+    drop = {
+        "--allow-remote",
+        "--public-origin",
+        "https://workspace.research.test",
+        "--preview-public-origin",
+        "https://preview.research.test",
+    }
     assert [a for a in command if a not in drop and not a.endswith((":8200", ":8201"))] == [
         a for a in plain if not a.endswith((":8200", ":8201"))
     ]
