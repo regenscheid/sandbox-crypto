@@ -51,7 +51,7 @@ Settled 2026-10-23 (D95); not built. **Reads are free and recorded; effects are 
 | MCP | `declared` | Servers in the policy, tools classified as D96 sets out |
 | MCP | `locked` | Only named servers and tools; a new tool is unavailable until named |
 
-Controls aimed at exfiltration are no longer required by this threat model and are retained until removed: the upload-pack body checks on git fetches ([policy middleware](POLICY-MIDDLEWARE.md)), `limits.max_url_bytes`, the egress-volume monitor and query-size logging ([policy](POLICY.md)).
+Controls aimed at exfiltration are no longer required by this threat model and are retained until removed: the upload-pack body checks on git fetches ([policy middleware](POLICY-MIDDLEWARE.md)), `limits.max_url_bytes`, the egress-volume monitor and query-size logging ([policy](POLICY.md)). The example policy no longer sets URL limits or the monitor; a policy still can.
 
 ## Threat sources, by priority
 

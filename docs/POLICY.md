@@ -2,7 +2,7 @@
 
 The format is confirmed (D62), and so are the evaluation details below (D68). The `sandbox_science.policy` library ([packages/policy](../packages/policy)) implements them. The user wants permissions to stay policy-based and to be defined in a YAML file that is quite permissive by default, with a configurable timeout after which unanswered requests fall back to deny. This document defines the semantics. The example is [examples/policy.yaml](../examples/policy.yaml); the library's tests load it, so it stays valid.
 
-**Decided, not yet built (2026-10-23):** reads are free and recorded and effects are gated, with per-project lockdown modes (network `open-reads` or `allowlist`, MCP `declared` or `locked`) (D95); effect classes and per-server tool classification (D96); admin ceilings and user grants per class, server and project (D97); and MCP enforcement through OpenShell native rules and the middleware (D98). See the [decisions](DECISIONS.md) and [threat model](THREAT-MODEL.md#reads-and-effects). Under D95, `limits.max_url_bytes`, the upload-pack body checks and the egress-volume monitor are no longer required and stay until removed. The text below describes the policy as built.
+**Decided (2026-10-23), partly built:** reads are free and recorded and effects are gated, with per-project lockdown modes (network `open-reads` or `allowlist`, MCP `declared` or `locked`) (D95); effect classes and per-server tool classification (D96); admin ceilings and user grants per class, server and project (D97); and MCP enforcement through OpenShell native rules and the middleware (D98). See the [decisions](DECISIONS.md) and [threat model](THREAT-MODEL.md#reads-and-effects). D95's reads-free defaults are built ([what the default allows](#what-the-permissive-default-allows)); the lockdown modes and D96 to D98 are not, and D97's binary attribution cannot be compiled ([code egress by binary](#code-egress-by-binary-d97)). Under D95, `limits.max_url_bytes`, the upload-pack body checks and the egress-volume monitor are no longer required: the example sets no URL limits and no monitors, and both remain available. The text below describes the policy as built.
 
 ## Layers and precedence
 
@@ -77,7 +77,7 @@ The path checks allow a trailing slash. The query string is neither checked nor 
 Every network rule names at least one host. A rule matches an operation of its class when every condition it states holds:
 
 - **hosts**: an exact name or IP address matches only itself (case-insensitive; one trailing dot is ignored). `*.example.org` matches names with at least one more label (`a.example.org`, `a.b.example.org`), not `example.org`. `*` matches any host.
-- **ports**: a rule without `ports` matches only the scheme's default port (443 for `https`, 80 for `http`).
+- **ports**: a rule without `ports` matches only the scheme's default port (443 for `https`, 80 for `http`). `ports: any` matches every port (D95).
 - **paths**: prefixes compared segment by segment on the decoded path. `/v1/search` matches `/v1/search` and `/v1/search/x`, not `/v1/searchx`. The query string is ignored. Paths are case-sensitive.
 - **methods** (`http`) or **git_service** (`git`): the request's method or service must be listed.
 
@@ -96,7 +96,7 @@ So a narrow `escalate` or `deny` still overrides a broad `allow`, which keeps br
 
 ### Rule limits
 
-`limits.max_url_bytes` bounds the length of the full URL, on `http` and `git` rules. When the winning action is `allow` or `alert` and the URL is longer than any tied rule's limit, the request is denied; it does not fall through to another rule. An escalation whose URL exceeds a limit is denied when it times out. This bounds how much data a read can carry out in its URL (threat T7).
+`limits.max_url_bytes` bounds the length of the full URL, on `http` and `git` rules. When the winning action is `allow` or `alert` and the URL is longer than any tied rule's limit, the request is denied; it does not fall through to another rule. An escalation whose URL exceeds a limit is denied when it times out. This bounds how much data a read can carry out in its URL (threat T7). D95 leaves that out of scope, so the example sets no limits; the setting remains available.
 
 ### MCP calls
 
@@ -143,7 +143,7 @@ credentials:
 
 ### Escalation timeout
 
-`escalation.timeout` sets how long a request waits for an answer (default `30m`). When it expires, the request is denied: the policy-wide `escalation.on_timeout` must be `deny`. A rule can override the timeout for itself. A rule that only reads, meaning an `http` rule whose `methods` are all `GET` or `HEAD`, or a `git` rule for `upload-pack`, may also set `on_timeout: allow`. A timed-out request under such a rule proceeds as an `alert`, with a recorded finding, never silently. A request whose URL exceeds a limit is denied on timeout regardless. So is a request to a host that a provider credential is bound to ("Credentials"), unless the rule also sets `allow_credentialed: true`: a credentialed read acts with the user's identity, so it proceeds unanswered only where the policy says so, endpoint by endpoint. When escalate rules tie, the request proceeds as an alert only if every one of them permits it, including `allow_credentialed` for a credentialed request. MCP tool escalations use the policy-wide setting.
+`escalation.timeout` sets how long a request waits for an answer (default `30m`). When it expires, the request is denied: the policy-wide `escalation.on_timeout` must be `deny`. A rule can override the timeout for itself. Reads never deny on a timeout (D95): under a rule that only reads, meaning an `http` rule whose `methods` are all `GET` or `HEAD`, or a `git` rule for `upload-pack`, a timed-out request proceeds as an `alert`, with a recorded finding, never silently, unless the rule sets `on_timeout: deny` (for a host that must wait for an answer, such as a dataset host under D97). Only such rules may set `on_timeout: allow`, which is their default; a rule that can hold a write denies on timeout. Unmatched requests take the policy-wide setting, so an allowlist policy whose default escalates keeps every other host waiting. A request whose URL exceeds a limit is denied on timeout regardless, and so is one to a non-public destination that the rule names only through a wildcard, since a wildcard never allows one. So is a request to a host that a provider credential is bound to ("Credentials"), unless the rule also sets `allow_credentialed: true`: a credentialed read acts with the user's identity, so it proceeds unanswered only where the policy says so, endpoint by endpoint. When escalate rules tie, the request proceeds as an alert only if every one of them permits it, including `allow_credentialed` for a credentialed request. MCP tool escalations use the policy-wide setting.
 
 Other work continues while a request waits (`hold_scope: operation`). A denied or timed-out request is not retried automatically. The policy middleware keeps each escalation as a permission request that an operator approves or denies, and applies the timeout when the request is retried ([policy middleware](POLICY-MIDDLEWARE.md#permission-requests)).
 
@@ -173,18 +173,33 @@ jobs. The same sandbox policy, network path and environment resource limits appl
 
 ### Monitors
 
-Threshold rules, such as egress volume, live in `monitors`, not in `network.rules`. They never decide whether an operation may proceed; they add findings when usage crosses a threshold. A threshold written as an access rule could never fire: every access rule that matches the same traffic outranks a rule that names no host or method.
+Threshold rules, such as egress volume, live in `monitors`, not in `network.rules`. They never decide whether an operation may proceed; they add findings when usage crosses a threshold. A threshold written as an access rule could never fire: every access rule that matches the same traffic outranks a rule that names no host or method. The example sets none (D95); D103's rate and shape alerts are to take their place.
 
 ## What the permissive default allows
 
-The shipped example is "quite allowing", as requested:
+The shipped example follows D95: reads are free and recorded, effects are gated.
 
-- **Freely allowed:** package installs from PyPI, conda-forge, crates.io, the Go module proxy, npm, opam.ocaml.org and Hackage through the package cache; source downloads from GitHub, GitLab and Codeberg; read-only HTTP (`GET`/`HEAD`) to public hosts, with a URL length limit; git clone/fetch from GitHub, GitLab and Codeberg (classified as `git`, so its `POST` requests are not caught by the HTTP write rule); read-type tools on crypto-research-mcp (classified as `mcp`); writes to the project's shared data, with conflict checks.
-- **Asks first:** any external `http` write (`POST`/`PUT`/`PATCH`/`DELETE`) not covered by a more specific allow, git push, MCP tools that act on the world (monitors, refreshes, feedback, live page interaction), and anything unmatched, including non-public hosts and non-default ports.
-- **Never:** MCP server configuration tools, plus the hard floor.
-- **Alerts:** unusually large egress volume (a monitor).
+- **Freely allowed:**
+  - package installs from PyPI, conda-forge, crates.io, the Go module proxy, npm, opam.ocaml.org and Hackage through the package cache;
+  - `GET` and `HEAD` to any public host, on any port (`read-only-web`, `ports: any`);
+  - git clone and fetch (`upload-pack`) from any public host, on any port (`git-fetch`; classified as `git`, so its `POST` requests are not caught by the HTTP write rule);
+  - reviewed read-only `POST` endpoints: Semantic Scholar's paper and author batch lookups and recommendations, and arXiv's query API, each cited in the example. Crossref, OpenAlex and DBLP search with `GET`. No GraphQL endpoint is listed: queries and mutations share one path, which a rule cannot tell apart;
+  - read-type tools on crypto-research-mcp (classified as `mcp`), and writes to the project's shared data, with conflict checks.
+- **Pre-admitted:** research destinations (ePrint and IACR, arXiv, Zenodo, Hugging Face, DBLP, NIST CSRC, Crossref, OpenAlex, Semantic Scholar, `doi.org`) and code sources (GitHub, GitLab, gitlab.inria.fr, Codeberg, Bitbucket, SourceForge, the GNU, GMP, FLINT and Sage download hosts) are named in `research-hosts` and `source-hosts`, so a sandbox resolves them without admission on demand. Each costs one endpoint (about 4 KiB) of the sandbox policy's size, which also bounds the hosts admitted on demand ([worker](WORKER.md#admission-on-demand)).
+- **Asks first:** any other `POST`, `PUT`, `PATCH` or `DELETE` (`external-writes`), git push (`git-push`), MCP tools that act on the world (monitors, refreshes, feedback, live page interaction), and anything unmatched, such as a write on a non-default port. These deny on timeout.
+- **Never:** MCP server configuration tools, plus the hard floor; non-public hosts unless a rule names them.
+- **Not set:** URL limits and egress-volume monitors. Both remain available to a policy that wants them.
 
-This deliberately relaxes the earlier review proposal (D44) that unknown destinations should never be reachable without approval. Reads are broadly allowed. The primary threat is agent overreach, which mostly shows up as side effects, and those still escalate. The remaining cost is that read requests can carry small amounts of data out in URLs; the URL limit and logging bound it.
+This deliberately relaxes the earlier review proposal (D44) that unknown destinations should never be reachable without approval. The primary threat is agent overreach, which shows up as side effects, and those still escalate; effects that a `GET` triggers are reviewed after the fact from the record (D95).
+
+### Code egress by binary (D97)
+
+D97 lets research code fetch from the source hosts with git, pip, conda, cargo, go, npm, opam and cabal, and asks first when other programs (curl, python) reach the same hosts. The compiled policy cannot express that cleanly, so it is not built; under D95 those reads are allowed for every program, and writes and pushes still ask whatever the program:
+
+- OpenShell's network rules only admit: every rule that matches a connection adds access, and a program a rule does not list is refused at connection, with no request for the middleware to escalate. So "other programs escalate" can compile only to "other programs are refused".
+- A rule's `binaries` match the program that connects or any of its ancestors. Every research process descends from the sandbox's executor, a Python interpreter, so listing Python, as pip and conda need, admits every program.
+- pip and conda run as Python and npm as Node: by executable, `pip install` and `python fetch.py` are the same program. Native tools (git's `git-remote-https`, micromamba, cargo, go, opam, cabal) are distinguishable.
+- The policy middleware receives the requesting program and its ancestors (`RequestContext.originating_process` in OpenShell v0.1.5), so a middleware-side rule could escalate by program for the native tools, with the same interpreter limit. That needs a `binaries` match condition in this library and an owner decision on the interpreters.
 
 ## Mapping to enforcement
 
@@ -203,8 +218,9 @@ The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1
       - An admitted host is named in a new compilation of the same revision, with the public ranges.
       - An `http` deny rule alone does not keep a host out under a non-deny default: git requests to it still take the default. To keep a host out, deny it for `git` as well, or deny by default.
       - It never approves the draft. It rejects it, giving its decision as the reason ([worker](WORKER.md#admission-on-demand)).
+      - **Other ports.** Endpoints list their ports: 80, 443 and every port a rule names. Under a `ports: any` rule (D95) the worker admits another port of a host the same way, as a `host:port` entry that adds the port to that host's endpoint, never one of OpenShell's control-plane ports.
       - Addresses are admitted the same way.
-      - In [lab 10](../.agents/docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md), a host was reachable 9 to 20 s after the first refused connection.
+      - In [lab 10](../.agents/docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md), a host was reachable 9 to 20 s after the first refused connection. Hosts a rule names exactly skip this, which is why the example names research and source hosts.
   - **The policy middleware** is attached to every host (`**`, `fail_closed`). OpenShell calls it for each admitted request, after its network rules and before injecting credentials. The middleware applies this library to the request, so every rule in this file is enforced exactly, including requests to hosts that providers admit. [Policy middleware](POLICY-MIDDLEWARE.md) describes the service.
   - **Escalations** are denied with the reason code `approval_required` and recorded as pending requests; the agent retries after approval.
   - **Platform services** are inspected endpoints behind the middleware too. The compiler writes each service's host and port into the middleware's config.
@@ -250,7 +266,7 @@ The middleware path has these limits, checked against a real gateway on babbage 
 | Policy element | Enforced by |
 | --- | --- |
 | Hard floor | OpenShell blocks loopback, link-local and unspecified addresses itself; the middleware applies the rest by name (metadata and gateway-host names, administration endpoints, MCP hosts, package registries), and the compiled address ranges leave out the floor's, the ceiling's and the administration endpoints' public addresses |
-| `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The policy middleware, with this library, behind OpenShell's admission endpoints and address checks |
+| `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The policy middleware, with this library, behind OpenShell's admission endpoints and address checks; other ports of `ports: any` rules once admitted on demand |
 | `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox; `worker_access` also decides whether research sandboxes can reach the MCP proxy |
 | `mcp.servers.*.auth` | OpenShell providers bound with `credential_binding`, and later the connector auth service for OAuth servers; crypto-research-mcp uses a Cloudflare Access service token in `headers` mode ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |
 | `credentials.providers` | OpenShell providers (D57) with profiles without endpoints; the compiled policy binds each credential to its `hosts` on port 443, and OpenShell injects it there after the middleware has decided |
@@ -266,7 +282,7 @@ Create a research sandbox with the whole compiled document. Apply each later rev
 The library's adversarial reviews (their cases are pinned by `test_review_regressions.py`) left these for the components around it:
 
 - Paths are compared case-sensitively, so a path `deny` can be bypassed on a server that ignores case. Prefer narrow allows to path denies.
-- An allowed git fetch sends a request body to the git host. The policy middleware accepts only a well-formed upload-pack request (git's keywords, object IDs and bounded values), which stops arbitrary payloads but not volume: `have` object IDs and values such as `ref-prefix` are unchecked against any repository and can carry most of a 4 MiB body. Name the hosts in fetch rules; a host the agent cannot read back from receives such data harmlessly.
+- An allowed git fetch sends a request body to the git host. The policy middleware accepts only a well-formed upload-pack request (git's keywords, object IDs and bounded values), which stops arbitrary payloads but not volume: `have` object IDs and values such as `ref-prefix` are unchecked against any repository and can carry most of a 4 MiB body. The example allows fetches from any public host, which D95 accepts; a policy that cares names the hosts in its fetch rules.
 - MCP tools that fetch URLs take the URL as an argument, which `max_url_bytes` does not see. The MCP proxy bounds a request's parameters (`mcp.proxy.max_argument_bytes`), but within that bound an argument can still carry data out, as a URL can.
 - The policy middleware sees host names only, so address checks for traffic it decides rest on OpenShell's admission endpoints (see above).
 - The MCP host floor matches the declared host, so another name for a server declared by name (an alias, or the same app under another domain) is not recognized. MCP credentials stay in the MCP proxy, so such a request carries none, and writes still escalate as generic `http`. The MCP proxy verifies the upstream TLS certificate against the declared host.
@@ -275,7 +291,7 @@ The library's adversarial reviews (their cases are pinned by `test_review_regres
 - `packages.opam` decides only archives fetched through the package cache, since opam falls back to each archive's own URL (see "Packages"). Rules that stop those downloads stop every other read from those hosts too; the compiler warns when they do not.
 - The package cache is shared by every project on the host, so cache timing reveals whether some sandbox fetched a file before.
 - OpenShell v0.1.5, as v0.1.3 (outside this code): a host written with two trailing dots (`example.com..`) through OpenShell's explicit proxy matches no middleware selector, so no middleware runs. VM sandboxes cannot reach the explicit proxy, and since lab 10 compiled policies name every host they admit, so no endpoint matches such a host ([bug description](../.agents/upstream/openshell-trailing-dot-host-skips-middleware.md)).
-- Admission on demand (D69) lets research code choose which public host names the gateway's resolver looks up, after a first refused connection. Those lookups can carry data out in the names, as the URLs of allowed reads can. Each environment admits at most `max_admitted_hosts` hosts.
+- Admission on demand (D69) lets research code choose which public host names the gateway's resolver looks up, after a first refused connection. Those lookups can carry data out in the names, as the URLs of allowed reads can. D95 leaves this out of scope; the compiled policy's size bounds how many hosts an environment admits.
 - Some servers interpret paths in ways the classifier does not model, such as case-insensitive matching or fullwidth letters on Windows; this is why path denies are weak.
 - Research code can open pseudo-terminals, and OpenShell's VM guest kernel allows `TIOCSTI` (`dev.tty.legacy_tiocsti = 1`). So it can type into any terminal of the sandbox user, such as an interactive `openshell sandbox connect` session. That user could run the same commands directly, so nothing is gained inside the sandbox, but do not type secrets into interactive sessions in research sandboxes.
 - OpenShell (outside this code) substitutes a bound credential on its port whatever the transport, and has no setting that requires TLS. A sandbox can send plain HTTP to port 443 of a bound host, for example `curl http://api.github.com:443/` from a VM sandbox. Under v0.1.3 that request reached OpenShell transparently or through a tunnel, which OpenShell labelled `https`, so the middleware could not tell, and lab 3 saw OpenShell forward such a request to `github.com:443` with no credential error. Since v0.1.4 the tunnel path detects plain HTTP and reports it as `http` (`ctx.request_default_port = Some(80)` in its `proxy.rs`), so the middleware, which OpenShell calls before it substitutes credentials, refuses it as `credential_unencrypted`, as it already did through the forward proxy. This is from the v0.1.5 source and has not yet been observed in a lab. OpenShell itself still substitutes into plain HTTP, so the protection depends on the middleware being attached, which compiled research policies require (`fail_closed` on every host) ([bug description](../.agents/upstream/openshell-credential-substitution-over-plain-http.md)).

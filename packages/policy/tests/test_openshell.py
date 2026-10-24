@@ -278,6 +278,20 @@ def test_example_sandbox_policy() -> None:
     assert compiled.policy_digest == EXAMPLE.digest
 
 
+def test_source_hosts_are_not_restricted_by_program() -> None:
+    # D97's binary attribution is not compiled (docs/POLICY.md, "Code egress by binary"):
+    # OpenShell's binaries only admit, match ancestors (every research process descends
+    # from the executor's Python), and cannot tell pip from python. Every program may
+    # reach the source hosts, as the middleware decides each request by the library.
+    compiled = compile_research(EXAMPLE)
+    entries = compiled.policy.network_policies
+    egress = entries["sandbox-science-egress"]
+    assert egress.binaries == (Binary(path="/**"),)
+    source = {"github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "ftp.gnu.org"}
+    assert source <= {endpoint.host for endpoint in egress.endpoints}
+    assert all(entry.binaries == (Binary(path="/**"),) for entry in entries.values())
+
+
 def test_public_ranges_hold_only_addresses_the_library_calls_public() -> None:
     rng = random.Random(7)  # noqa: S311 - test data, not secrets
     for block in public_address_ranges():
