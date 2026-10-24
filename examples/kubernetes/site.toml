@@ -12,7 +12,8 @@ ceiling = "pool-ceiling.yaml"          # the pool ceiling for the worker and the
 # The cluster's DNS domain: CoreDNS's `kubernetes <domain>` line
 # (kubectl -n kube-system get configmap coredns -o yaml). A sandbox resolves only fully
 # qualified names (OpenShell's sandbox DNS ignores search domains), so the package cache
-# is <name>-cache.<namespace>.svc.<cluster_domain> to sandboxes and in the targets file.
+# is <name>-cache.<namespace>.svc.<cluster_domain> to sandboxes and in the targets file,
+# and the agent runtime (itself in a sandbox) reaches control by its qualified name.
 cluster_domain = "cluster.local"
 
 [[projects]]
@@ -26,7 +27,7 @@ sessions = ["main"]
 
 # The model gateway. https, or http to an in-cluster Service (*.svc, *.svc.<cluster_domain>),
 # whose key then crosses the Pod network unencrypted. The agent runtime reaches it from its
-# sandbox, so use the fully qualified name. The main, delegated and reviewer aliases, APIs
+# sandbox, so an in-cluster name must be fully qualified (*.svc alone is refused). The main, delegated and reviewer aliases, APIs
 # and efforts are the bundle's [models]; add only the other roles here.
 [model]
 url = "http://litellm.litellm.svc.cluster.local:4000/v1"

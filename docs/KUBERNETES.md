@@ -123,9 +123,12 @@ longer allows. gVisor is therefore not a tier-2 option here.
   confirming the admitted runtime from trusted state or inside the guest remains
   open (backlog).
 - **Version.** This plan assumes OpenShell 0.1.5, as `dev` runs on babbage.
-- **Unverified on the owner's cluster:** KVM and nested virtualization on each
-  amd64 node (VM nodes need nested virtualization), Kata under Talos 1.13, and
-  Landlock enabled in the Talos kernel.
+- **Verified on the owner's cluster** (first test deployment, 2026-10-24): Kata under
+  Talos 1.13 on four amd64 nodes (a guest kernel release without `-talos` and the
+  hypervisor CPU flag in a smoke Pod). An OpenShell 0.1.5 sandbox under Kata passed
+  the runtime bootstrap, so the guest has what OpenShell requires (it fails closed
+  otherwise); its process ran as uid 10001 with `no_new_privs`, a seccomp filter and
+  no capabilities, and the worker recorded tier 3 with the kernel `separate`.
 
 ### Gateway settings for profile placement
 
@@ -206,8 +209,14 @@ interpreter memory.
 An active workspace PVC must fit its full native base prefix, installed packages
 and research data. Upstream's 2 GiB workspace default is too small for `crypto-base`
 (the earlier package measurement was about 5.2 GB before headroom). Storage size,
-class and retention are private operator choices. Initial copy/fsync latency and
-both native architectures need live qualification. Upstream interrupted seeding
+class and retention are private operator choices. The initial copy must finish within
+OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,
+not configurable), or the gateway rolls the sandbox back: on the owner's cluster
+seeding `crypto-base`'s prefix (about 100k files) into a 2-replica Longhorn volume took
+over 4 minutes, and a single-replica `strict-local` class about 2.5 minutes
+([preparation step 2.1](KUBERNETES-PREP.md#21-a-retain-class-for-research-volumes)).
+Keeping the prefix out of `/sandbox` is an open owner decision (backlog). The arm64
+architecture needs live qualification. Upstream interrupted seeding
 does not currently resume a partial copy: preserve that PVC and report the exact
 initialization failure, never delete/reseed it to manufacture successful recovery.
 Complete archive/restore remains required before releasing a research PVC.

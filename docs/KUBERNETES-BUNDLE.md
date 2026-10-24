@@ -15,7 +15,8 @@ directories). A second Pod, the [worker-side unit](UNIT.md), runs worker and pol
 PVC; package cache is optional there. Each of its containers runs `sandbox-science-unit serve --config /etc/sandbox-science/unit.toml --only <service>`, on one unit config the renderer makes as a ConfigMap `<name>-pool-unit` (no credential in it): a section for each service naming the settings file that service's Secret projects at `/private`, and the container's variables as the service's `pass_env`. The local launcher's unit uses the same file shape. The containers stay apart so that each keeps its own credentials, limits and probes; the Pod is ready when all are. A third Pod, the
 [runtime manager](specs/kubernetes-runtime-bootstrap.md), runs the same
 `trusted-app` image as `sandbox-science-runtime-manager serve` over a small PVC of its
-own. It alone holds an OpenShell gateway credential outside the worker, and it alone
+own (the image carries the OpenShell CLI and the OpenSSH client that its
+`openshell sandbox upload` needs). It alone holds an OpenShell gateway credential outside the worker, and it alone
 creates, attaches to, replaces or deletes the agent runtime's Kata sandbox; it has no
 Service, listener or probes and runs no agent loop or model call. Deployments use one
 replica and Recreate strategy,
@@ -281,14 +282,15 @@ file:
 
 | Key | What |
 | --- | --- |
-| `bundle`, `worker_policy`, `targets`, `ceiling` | The bundle TOML; the project policy granted to every project; the OpenShell targets file (`sandbox.middleware` must be `openshell.registration`, and with the cache its `package_cache` must be `<name>-cache.<namespace>.svc:8090`); the pool ceiling. The policy library parses all three |
+| `bundle`, `worker_policy`, `targets`, `ceiling` | The bundle TOML; the project policy granted to every project; the OpenShell targets file (`sandbox.middleware` must be `openshell.registration`, and with the cache its `package_cache` must be `<name>-cache.<namespace>.svc.<cluster_domain>:8090`); the pool ceiling. The policy library parses all three |
 | `pool_id` | The worker's pool, the bundle's name by default |
+| `cluster_domain` | The cluster's DNS domain, `cluster.local` by default (CoreDNS's `kubernetes <domain>` line: `kubectl -n kube-system get configmap coredns -o yaml`). OpenShell's sandbox DNS ignores the Pod's search domains, so a sandbox resolves only fully qualified names: every name a sandbox reaches is `<service>.<namespace>.svc.<cluster_domain>`: the package cache in `worker.toml`'s `package_cache`, the cache's `public_url` and the targets file, and, since the agent runtime runs in a sandbox, `runtime-manager.json`'s `control_url` (and `manager_url`, which must name the same host) and the runtime policy's control, worker and model hosts. Other trusted Pods keep the `.svc` names their search domains complete |
 | `[[projects]]`, `[skills]` | As in the launcher's config (`id`, `profile`, `sessions`, `skills`; `embedding_model`, `metadata_model`, `packs`); each profile must be one of `[profiles]` |
-| `[model]` | The launcher's `[model]` without `name`, `delegated` and `reviewer`, which come from the bundle's catalog with its APIs and its efforts defaulted as the workspace's options default them (`max`, reviewer `medium`): `url`, `api_key_file` (the runtime manager's key), `watcher`, and `api`/`reasoning_effort` for aliases and roles outside the catalog. `url` is https, or http to an in-cluster Service (`*.svc`, `*.svc.cluster.local`), whose key then crosses the Pod network unencrypted |
+| `[model]` | The launcher's `[model]` without `name`, `delegated` and `reviewer`, which come from the bundle's catalog with its APIs and its efforts defaulted as the workspace's options default them (`max`, reviewer `medium`): `url`, `api_key_file` (the runtime manager's key), `watcher`, and `api`/`reasoning_effort` for aliases and roles outside the catalog. `url` is https, or http to an in-cluster Service (`*.svc`, `*.svc.<cluster_domain>`), whose key then crosses the Pod network unencrypted. The agent runtime reaches it from its sandbox, so an in-cluster name must be fully qualified (`http://litellm.litellm.svc.<cluster_domain>:4000/v1`); a bare `*.svc` name is refused |
 | `[runtime]` | The `orchestrator` image by digest, its full source `revision`, `recover_infrastructure`, and its Kata placement |
 | `[profiles.<name>]` | Each research base profile's image by digest and Kata placement |
-| `[openshell]` | The gateway `endpoint` (`https://host:port`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts`, `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
-| `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directory |
+| `[openshell]` | The gateway `endpoint` (`https://host:port`; only the trusted manager and worker use it, so `https://openshell.openshell.svc:8080` works on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts`, `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
+| `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directory. It must enable at least one ecosystem (`pypi`, `conda`, `cargo`, `go`, `npm`, `opam`, `hackage`; `{}` takes that ecosystem's defaults): a cache with none answers 404 to every request, so `site` refuses it |
 | `[extra_files.<service>]` | A file for each other key the bundle's `extra_files` names, such as `s3-credentials` |
 
 A placement is `runtime_class_name` (`kata` or `kata-*`, default `kata`), the
@@ -309,15 +311,22 @@ one, as the renderer never overwrites its output), every file mode 600 and direc
   (`openshell/active_gateway`, `openshell/gateways/<gateway>/metadata.json` and its
   `mtls/`), as `openshell gateway add` writes it, with `runtime_manager.openshell_gateway`
   as the gateway's name. The manager's profile keys are the same tree from its identity.
-- `gateway/`: the CA the gateway and the supervisors must trust for the middleware, and
-  the middleware's `[[openshell.supervisor.middleware]]` registration.
+- `gateway/`: `middleware-ca.crt`, the CA the gateway must trust for the middleware, and
+  `openshell-values-middleware.yaml`, OpenShell chart values that mount it from a
+  ConfigMap `<name>-middleware-ca` at `/etc/openshell-middleware/<name>/ca.crt` and
+  register the middleware under `gatewayConfig."openshell.supervisor"` (the chart takes
+  literal dotted keys there; a nested `openshell:` map renders invalid TOML). The gateway
+  reads `tls_ca_cert_path` itself and ships the PEM to the supervisors inside their
+  configuration, so only the gateway's Pod needs the CA. The README gives the
+  `kubectl create configmap` and `helm upgrade` commands; the gateway restarts and
+  connects to the middleware at startup, exiting if it cannot, so apply the bundle first.
 - `bootstrap/policy.yaml`, `secrets.sh` (one `kubectl create secret generic` per Secret,
   `--from-file` only, no value inline) and a `README.md` with the remaining steps and
   every `TODO(operator)`.
 
 What it generates: a private CA (ECDSA P-256) and server certificates for
 `<name>-control`, `<name>-worker` and `<name>-middleware` at `.<namespace>.svc` and
-`.<namespace>.svc.cluster.local`; a 32-byte random token for each link, without a
+`.<namespace>.svc.<cluster_domain>`; a 32-byte random token for each link, without a
 newline (control's `worker-token`, the workspace's, the worker's `pool-token` and the
 manager's `manager-control.token`, whose lowercase SHA-256 hex is control's
 `runtime-manager-token.sha256`); and the settings with the bindings above, through the
@@ -332,10 +341,11 @@ never written: renewing a certificate or rotating a token means generating a new
 directory, replacing every Secret and recreating the Pods. The tests load each settings
 file through the model its service starts with.
 
-What it cannot generate, each a `TODO(operator)` in the README: the gateway's trust of
-the middleware (OpenShell's chart must mount `middleware-ca.crt` for the gateway and the
-supervisors and set `tls_ca_cert_path`, and sign extension tokens with the key whose
-public half is `jwt_public_key`); the client identities, which the gateway's CA issues;
+What it cannot generate, each a `TODO(operator)` in the README: applying the gateway's
+values (merged by hand if the site's own OpenShell values already set
+`server.extraVolumes`, `server.extraVolumeMounts` or `"openshell.supervisor"`, since Helm
+does not merge lists), and the gateway's signing of extension tokens with the key whose
+public half is `jwt_public_key`; the client identities, which the gateway's CA issues;
 and the project initialization (`policy add`, `project create`, `session open`), whose
 commands the README lists. `runtime-manager.json`'s `policy.worker_api` names the worker
 Service only because `OrchestratorTarget` requires one; the runtime never calls it and
@@ -346,10 +356,13 @@ the pool's NetworkPolicy refuses it. Skill packs are not imported.
 Default-deny policies select only this bundle's trusted Pods. Additive allow rules
 permit app-to-worker TCP 8100, approved `network.runtimes` to control TCP 8443,
 the runtime manager's Pod (and nothing else) to control's manager port TCP 8444, and
-approved `network.supervisors` to middleware TCP 50051. The runtime manager accepts
+approved `network.supervisors` and the `network.gateway` peer to middleware TCP 50051
+(OpenShell 0.1.5's gateway connects to each registered middleware at startup and exits,
+"middleware registration failed", if it cannot). The runtime manager accepts
 no connection; it reaches only DNS, control's TCP 8444 and the required
-`network.gateway` peer and ports (the OpenShell gateway), which no other Pod gets
-from the renderer. Cache TCP 8090 requires both
+`network.gateway` peer and ports (the OpenShell gateway). The pool Pod reaches the same
+gateway peer and ports, since the worker creates every research sandbox through the
+gateway with its own client identity; the app Pod does not. Cache TCP 8090 requires both
 `secrets.cache` and nonempty `network.sandboxes`. These are approved peer selectors,
 not a promise that arbitrary OpenShell Pods have the template's labels. Sandbox traffic leaves through each sandbox's OpenShell supervisor Pod, so
 `network.runtimes` must select supervisor Pods; their labels are fixed by OpenShell, so

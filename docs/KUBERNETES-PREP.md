@@ -1,22 +1,21 @@
 # Cluster preparation checklist
 
-For the operator of the first Kubernetes deployment ([D92, amended 2026-10-23](DECISIONS.md), [scope and proofs](KUBERNETES.md#first-deployment-scope-and-proofs); isolation from [D43](KUBERNETES.md#sandbox-isolation); logs from D103). The steps run in order; each says what to verify and how to back out. The commands and manifests are skeletons: private values (endpoints, node names, bucket names, keys) are placeholders and stay out of Git. Nothing here is qualified on a live cluster; the first run of a step may find that a command differs on your versions, which the verify line will show.
+For the operator of the first Kubernetes deployment ([D92, amended 2026-10-23](DECISIONS.md), [scope and proofs](KUBERNETES.md#first-deployment-scope-and-proofs); isolation from [D43](KUBERNETES.md#sandbox-isolation); logs from D103). The steps run in order; each says what to verify and how to back out. The commands and manifests are skeletons: private values (endpoints, node names, bucket names, keys) are placeholders and stay out of Git. A first test deployment on the cluster (2026-10-24) ran steps 1 to 9 and part of step 10; what it verified is said where it applies. It does not qualify the deployment, and a command may still differ on your versions, which the verify line will show.
 
 The cluster this describes: Talos 1.13 with the `kata-containers` extension (3.32.0) on the amd64 nodes, Kubernetes 1.36, Flannel with kube-network-policies, Longhorn v1.12, MetalLB, Traefik, cert-manager, Authentik, an in-cluster model gateway, and Garage S3 outside the cluster. Arm64 Raspberry Pi nodes host trusted pods only.
 
 ## Verify before use
 
 This checklist was written from the repository, OpenShell 0.1.5's documentation and
-source, and general Kubernetes practice, without access to the cluster. Confirm these
-against the live tools before relying on them; each is marked where it appears:
+source, and general Kubernetes practice, then corrected by the first test deployment,
+which confirmed the OpenShell chart's value keys and `--version` form, the Agent Sandbox
+release, the chart's CA issuer and the client profile's `metadata.json`. Confirm these
+against the live tools before relying on them:
 
-- the OpenShell Helm chart's value keys, the `--version` form and the Agent Sandbox
-  release to pin;
-- the chart's CA issuer name and the fields of a client identity's `metadata.json`;
 - Longhorn 1.12's backup-target and recurring-job resource shapes;
 - the `garage` CLI commands;
 - the bundle's container names (`control`, `workspace`, `worker`) and the exact proof
-  commands in step 10, which were not run.
+  commands in step 10; the test deployment ran 10.1 except its MCP row.
 
 The bundle renders no `imagePullSecrets`; step 1 attaches the pull secret to the
 namespace's default ServiceAccount instead.
@@ -31,6 +30,7 @@ namespace's default ServiceAccount instead.
 | `research-runtimes` | The sandbox namespace (`server.sandboxNamespace`); the bundle's `network.runtimes` and `network.supervisors` peers select it |
 | `<gateway>` | The runtime manager's `openshell_gateway` name (CLI profile name) |
 | `<kata-node>` | An amd64 node that runs Kata |
+| `<cluster-domain>` | The cluster's DNS domain, `cluster.local` unless the cluster was set up with another: the `kubernetes <domain> ...` line of CoreDNS's Corefile (`kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}' \| grep kubernetes`) |
 
 Tools on the operator's machine: `kubectl` (cluster-admin context), `talosctl`, `helm` 3, the OpenShell 0.1.5 CLI, and this repository's `uv` environment (`uv sync --extra s3`).
 
@@ -92,7 +92,30 @@ parameters:
   recurringJobSelector: '[{"name":"research-snapshot","isGroup":false},{"name":"research-backup","isGroup":false}]'
 ```
 
-Use `research-retain` for: `app.storage_class`, `pool.storage_class`, `runtime_manager.storage_class` in the bundle TOML (the manager's PVC is `ReadWriteOncePod`; Longhorn supports it), and the gateway's `server.workspaceStorageClass` (step 5). Size: about 100 GiB for the app and 200 GiB for the pool ([D92](KUBERNETES.md#first-deployment-scope-and-proofs)), 1 GiB for the manager, and the workspace default per the `crypto-base` footprint (about 5.2 GB before headroom, so at least 20 Gi).
+Use `research-retain` for `app.storage_class`, `pool.storage_class` and `runtime_manager.storage_class` in the bundle TOML (the manager's PVC is `ReadWriteOncePod`; Longhorn supports it).
+
+The sandbox workspaces need a faster class of their own. OpenShell copies the image's `/sandbox` tree into every new workspace PVC, and the copy must finish within OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`, not configurable), or the gateway rolls the sandbox back. `crypto-base` seeds its 5.2 GB, about 100,000-file prefix that way: on a 2-replica Longhorn class it took over 4 minutes in the test deployment, and the gateway rolled sandboxes back; a single-replica `strict-local` class brought it to about 2.5 minutes:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: research-workspace
+provisioner: driver.longhorn.io
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  numberOfReplicas: "1"
+  dataLocality: strict-local          # the one replica on the sandbox's node
+  staleReplicaTimeout: "30"
+  fsType: ext4
+  recurringJobSelector: '[{"name":"research-snapshot","isGroup":false},{"name":"research-backup","isGroup":false}]'
+```
+
+Use it for the gateway's `server.workspaceStorageClass` (step 5). The trade-off: a workspace has no second replica, so losing its node's disk loses the workspace back to its last backup; the recurring snapshots and backups of 2.2 still apply. Keeping the prefix out of `/sandbox`, so that nothing large is seeded, is an open owner decision (backlog).
+
+Size: about 100 GiB for the app and 200 GiB for the pool ([D92](KUBERNETES.md#first-deployment-scope-and-proofs)), 1 GiB for the manager, and the workspace default per the `crypto-base` footprint (about 5.2 GB before headroom, so at least 20 Gi).
 
 Verify: a 1 Gi test PVC reaches `Bound`; `kubectl get pv -o custom-columns=NAME:.metadata.name,RECLAIM:.spec.persistentVolumeReclaimPolicy` shows `Retain` for it. Delete the PVC, confirm the PV stays `Released`, then remove the PV and the Longhorn volume by hand.
 
@@ -169,42 +192,53 @@ spec:
 
 Verify: `kubectl -n research-runtimes logs kata-smoke` prints a kernel release that does not end in `-talos` (a Kata guest kernel), and `hypervisor-flag`; the Pod's node is `<kata-node>`. Repeat on every Kata node. A `-talos` release means the pod ran on plain runc: stop and fix the handler or the extension before going on. The Cloud Hypervisor handler `kata` is the only one on Talos 1.13. This host-side check does not prove the guest has the Landlock ABI 3 and seccomp notification that OpenShell requires; the first sandbox in step 9 does, because OpenShell fails closed without them ([isolation](KUBERNETES.md#sandbox-isolation)).
 
+Verified in the test deployment on four amd64 nodes: the smoke Pod printed the guest kernel `6.18.35` (no `-talos` suffix) and `hypervisor-flag`. The namespace's PodSecurity `restricted` level only warns about the smoke Pod; it runs. An OpenShell sandbox under Kata then passed the runtime bootstrap, so the guest has what OpenShell 0.1.5 needs; its process ran as uid 10001 with `no_new_privs`, a seccomp filter and no capabilities, and the worker recorded tier 3 with the kernel `separate`.
+
 Rollback: `kubectl delete pod kata-smoke`; `kubectl delete runtimeclass kata` (no sandbox may exist); `kubectl label node <node> example.org/kata-capable-` removes a label.
 
 ## 4. The Agent Sandbox controller
 
-OpenShell 0.1.5 needs the Agent Sandbox controller and its CRDs before the chart; the chart installs neither ([OpenShell setup](https://docs.nvidia.com/openshell/kubernetes/setup)). Pin a release rather than `latest`:
+OpenShell 0.1.5 needs the Agent Sandbox controller and its CRDs before the chart; the chart installs neither ([OpenShell setup](https://docs.nvidia.com/openshell/kubernetes/setup)). Pin **v1.0.3**, the release OpenShell 0.1.5's own e2e scripts use; its controller image is multi-arch, so it runs on either kind of node. Apply it server-side:
 
 ```sh
-kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/<release>/sandbox.yaml
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.3/sandbox.yaml
 kubectl -n agent-sandbox-system get pods
 kubectl get crd sandboxes.agents.x-k8s.io
 ```
 
-Verify: the controller Pod is `Running` and the CRD is `Established`. Record the release. The controller image must run on the node it lands on (the cluster mixes arm64 and amd64 nodes; check the manifest's image platforms). After any in-place upgrade of Agent Sandbox, restart the OpenShell gateway so it detects the served API again.
+A `kubectl apply --dry-run=server` of the manifest fails on a first install, because the manifest's own namespace does not exist yet; skip it or create the namespace first.
+
+Verify: the controller Pod is `Running` and the CRD is `Established`. After any in-place upgrade of Agent Sandbox, restart the OpenShell gateway so it detects the served API again.
 
 Rollback: `kubectl delete -f` the same manifest, only while no `Sandbox` exists: deleting the CRD deletes every Sandbox object and may garbage-collect its workspace PVC.
 
 ## 5. OpenShell 0.1.5
 
-The cluster's CNI must enforce ingress and egress NetworkPolicy in every sandbox namespace (Flannel with kube-network-policies does; step 10 proves it). Use cert-manager for the chart's PKI so you can issue client certificates from its CA ([managing certificates](https://docs.nvidia.com/openshell/kubernetes/managing-certificates)). The values carry [the gateway fragment](../examples/kubernetes/gateway-driver.toml):
+The cluster's CNI must enforce ingress and egress NetworkPolicy in every sandbox namespace (Flannel with kube-network-policies does; step 10 proves it). Use cert-manager for the chart's PKI so you can issue client certificates from its CA ([managing certificates](https://docs.nvidia.com/openshell/kubernetes/managing-certificates)). The values carry [the gateway fragment](../examples/kubernetes/gateway-driver.toml); the test deployment confirmed these keys on chart 0.1.5 (`oci://ghcr.io/nvidia/openshell/helm-chart`, appVersion 0.1.5):
 
 ```yaml
 # openshell-values.yaml (private)
-certManager: {enabled: true}
+certManager:
+  enabled: true
+  serverDnsNames: [openshell.openshell.svc.<cluster-domain>]   # only on a cluster domain other than cluster.local
 global:
   image: {tag: "0.1.5"}               # one release for gateway, supervisor and sandbox runtime
 server:
+  grpcEndpoint: https://openshell.openshell.svc:8080   # what supervisors dial; see below
+  dataStorageClass: research-retain   # the gateway's own PVC
+  dataStorageSize: 1Gi
   sandboxNamespace: research-runtimes
   sandboxImagePullSecrets: [{name: ghcr-pull}]
   workspaceDefaultStorageSize: 20Gi
-  workspaceStorageClass: research-retain
+  workspaceStorageClass: research-workspace
   defaultRuntimeClassName: kata
   drivers:
     kubernetes:
       allowDriverConfig: true
       resourceAdmission: {enabled: true}
 ```
+
+The supervisors dial `server.grpcEndpoint`, whose chart default is `https://openshell.openshell.svc.cluster.local:8080`. On a cluster whose domain is not `cluster.local` that name does not resolve and the supervisors cannot reach the gateway (their log says `log push connect failed`). The `.svc` form resolves through the supervisor Pod's search domains on any cluster, and the chart's server certificate covers `openshell.openshell.svc`; adding `openshell.openshell.svc.<cluster-domain>` to `certManager.serverDnsNames` covers the fully qualified name as well. The `dataStorageSize` above is illustrative.
 
 ```sh
 helm show chart oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.5     # confirm appVersion
@@ -215,15 +249,23 @@ helm upgrade --install openshell oci://ghcr.io/nvidia/openshell/helm-chart --ver
 kubectl -n openshell rollout status statefulset/openshell
 ```
 
-The chart has no value for the pod label allowlist, so add it through `gatewayConfig` in the same values file, alongside the example fragment's `allowed_pod_labels = ["sandbox-science.io/job-sandbox"]` (a list of label keys; [why](KUBERNETES.md#gateway-settings-for-profile-placement)): without it the gateway refuses every job sandbox at creation, and with it the bundle's PodDisruptionBudget (step 8) is what makes a node drain wait for running jobs:
+The chart has no value for the pod label allowlist, so add it through `gatewayConfig` in the same values file, alongside the example fragment's `allowed_pod_labels = ["sandbox-science.io/job-sandbox"]` (a list of label keys; [why](KUBERNETES.md#gateway-settings-for-profile-placement)): without it the gateway refuses every job sandbox at creation, and with it the bundle's PodDisruptionBudget (step 8) is what makes a node drain wait for running jobs. `gatewayConfig` takes the TOML table's name as one literal dotted key; a nested map (`openshell: {drivers: ...}`) renders invalid TOML:
 
 ```yaml
 gatewayConfig:
-  openshell.drivers.kubernetes:
+  "openshell.drivers.kubernetes":
     allowed_pod_labels: ["sandbox-science.io/job-sandbox"]
 ```
 
-If the chart rejects a key, the equivalent is `gatewayConfig` (the chart renders it into `gateway.toml`): `gatewayConfig: {openshell.drivers.kubernetes: {allow_driver_config: true, default_runtime_class_name: kata, allowed_pod_labels: ["sandbox-science.io/job-sandbox"], resource_admission: {enabled: true}}}`. Whichever form, the rendered `gateway.toml` must show `allow_driver_config = true`, `default_runtime_class_name = "kata"`, the `allowed_pod_labels` line and resource admission enabled, as in the example fragment. `server.workspaceStorageClass` and the size are creation defaults for each sandbox's PVC. Keep the Helm values and the chart version with the site file.
+The rendered `gateway.toml` must show `allow_driver_config = true`, `default_runtime_class_name = "kata"`, the `allowed_pod_labels` line and resource admission enabled, as in the example fragment. `server.workspaceStorageClass` and the size are creation defaults for each sandbox's PVC. Keep the Helm values and the chart version with the site file. The middleware's registration is added to the gateway later, from the values file that step 7 generates, once the bundle runs (step 8).
+
+**Copy the supervisors' client Secret into the sandbox namespace.** With `server.sandboxNamespace` other than the release namespace, chart 0.1.5 creates the supervisors' client Secret `openshell-client-tls` only in the release namespace, but the supervisor Pods mount it in the sandbox namespace and fail with `secret "openshell-client-tls" not found`. Copy it after the install, and again after each cert-manager renewal of it (yearly by default):
+
+```sh
+kubectl -n openshell get secret openshell-client-tls -o json \
+  | jq '{apiVersion, kind, type, data, metadata: {name: .metadata.name}}' \
+  | kubectl -n research-runtimes apply -f -
+```
 
 The gateway's `gateway-id` (default: the chart's fullname, `openshell`) is the label value that the bundle's `network.runtimes` peer must name: `openshell.ai/component = "supervisor"` and `openshell.ai/gateway-id = "<id>"`. Confirm it after the first sandbox (step 9).
 
@@ -242,7 +284,7 @@ spec:
   duration: 8760h
   renewBefore: 720h
   privateKey: {algorithm: ECDSA, size: 256}
-  issuerRef: {name: <the chart's CA issuer>, kind: Issuer}     # kubectl -n openshell get issuer
+  issuerRef: {name: openshell-ca-issuer, kind: Issuer}         # the chart's CA issuer (namespaced)
 ```
 
 A renewed certificate changes the Secret, and the bundle copies Secret files only at Pod start (changed credentials need an intentional Pod recreation), so renew on a date you choose and recreate the Pod then.
@@ -252,13 +294,13 @@ Assemble one CLI profile per identity, with the keys the bundle expects ([Secret
 | Key | Content |
 | --- | --- |
 | `active-gateway` | exactly `<gateway>` |
-| `gateway-metadata.json` | `{"name":"<gateway>","gateway_endpoint":"https://openshell.openshell.svc.cluster.local:8080","is_remote":false,"gateway_port":0,"auth_mode":"mtls"}` (the 0.1.5 CLI writes `gateway_port` 0 when the URL carries the port; `site` writes this file) |
+| `gateway-metadata.json` | `{"name":"<gateway>","gateway_endpoint":"https://openshell.openshell.svc:8080","is_remote":false,"gateway_port":0,"auth_mode":"mtls"}`, the fields `openshell gateway add --local` writes (`gateway_port` 0 when the URL carries the port; `site` writes this file) |
 | `gateway-ca.crt` | the `ca.crt` of the client Secret (`kubectl -n openshell get secret openshell-client-tls -o jsonpath='{.data.ca\.crt}' \| base64 -d`) |
 | `gateway-tls.crt`, `gateway-tls.key` | the identity's own `tls.crt` and `tls.key` |
 
-Step 7's `site` command writes these from each identity's `ca.crt`, `tls.crt` and `tls.key` (it checks that the certificate is signed by that `ca.crt` and the key is its own), so they need not be assembled by hand. The endpoint name must be one the gateway certificate covers (the chart's internal SANs cover `*.svc.cluster.local`; confirm the Service name with `kubectl -n openshell get svc`, and add `certManager.serverDnsNames` if you use another). Keep the files on the operator's machine only until the Secrets are created (step 7). The manager's files go into its Secret (step 7); the worker's profile is not expanded from Secret keys, so its tree is placed on the pool PVC (step 7).
+Step 7's `site` command writes these from each identity's `ca.crt`, `tls.crt` and `tls.key` (it checks that the certificate is signed by that `ca.crt` and the key is its own), so they need not be assembled by hand. The endpoint name must be one the gateway certificate covers. Use `https://openshell.openshell.svc:8080`: only the trusted manager and worker Pods use it, their search domains complete `.svc` on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc` (confirm the Service name with `kubectl -n openshell get svc`, and add any other name to `certManager.serverDnsNames`). Keep the files on the operator's machine only until the Secrets are created (step 7). The manager's files go into its Secret (step 7); the worker's profile is not expanded from Secret keys, so its tree is placed on the pool PVC (step 7).
 
-Verify, from the operator's machine with the chart's own admin client bundle over `kubectl -n openshell port-forward svc/openshell 8080:8080`: `openshell status` shows `Connected` and `Authentication` not `Failed`. Test each new identity the same way against a copy of its profile. Both must authenticate.
+Verify, from the operator's machine with the chart's own admin client bundle over `kubectl -n openshell port-forward svc/openshell 8080:8080`: `openshell status` shows `Authenticated (mTLS transport)`. Test each new identity the same way against a copy of its profile. Both must authenticate; both did in the test deployment.
 
 Rollback: `helm uninstall openshell -n openshell` leaves the PVCs of existing sandboxes and the Agent Sandbox objects; delete sandboxes through `openshell sandbox delete` first. Removing a client identity means replacing the client CA, which invalidates every identity.
 
@@ -316,14 +358,14 @@ Create each Secret through the site's secure workflow, with exactly the keys the
 | `secrets.cache` (optional) | `cache.toml` | Needs `network.sandboxes` peers |
 | `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key` | The model key is the manager's, issued by the in-cluster model gateway for this instance; the profile files are from 5.1 |
 
-Generate every file with one command, from a private site file beside the bundle TOML ([the template](../examples/kubernetes/site.toml); its keys are in [generate the Secrets](KUBERNETES-BUNDLE.md#generate-the-secrets)): the projects, the model gateway and its `model.key` for the manager, the `orchestrator` image's digest and full source revision, the `minimal` and `crypto-base` digests with their Kata placements (the site's Kata node labels as `node_selector`), the project policy, targets and pool ceiling, the gateway's extension-token public key, and the two client identities of 5.1 as `ca.crt`, `tls.crt` and `tls.key` paths:
+Generate every file with one command, from a private site file beside the bundle TOML ([the template](../examples/kubernetes/site.toml); its keys are in [generate the Secrets](KUBERNETES-BUNDLE.md#generate-the-secrets)): the cluster's `cluster_domain`, the projects, the model gateway and its `model.key` for the manager, the `orchestrator` image's digest and full source revision, the `minimal` and `crypto-base` digests with their Kata placements (the site's Kata node labels as `node_selector`), the project policy, targets and pool ceiling, the gateway's extension-token public key, and the two client identities of 5.1 as `ca.crt`, `tls.crt` and `tls.key` paths:
 
 ```sh
 uv run sandbox-science-kubernetes site --config /path/private-site.toml --output /path/new-secrets
 sh /path/new-secrets/secrets.sh        # one kubectl create secret generic per Secret, --from-file only
 ```
 
-The table above is what it writes, under `secrets/<service>/`: a private CA and the control, worker and middleware certificates for `<name>-<service>.research.svc` (and `.svc.cluster.local`), a 32-byte token per link (`runtime-manager-token.sha256` is the digest of `manager-control.token`, which has no newline), and `control.json`, `control-models.json`, `runtime-manager.json`, `worker.toml` (`isolation_tier = 3`, `node_kernel_releases = ["*-talos"]`, a Kata, amd64 profile for each base profile) and `middleware.toml` with the bundle's cluster bindings. Model aliases come from `[models.*]` in the bundle TOML. It refuses a non-empty output directory. Read its `README.md`: it lists each `TODO(operator)`, among them the gateway's trust of the middleware (`gateway/middleware-ca.crt` and `gateway/middleware-registration.toml` go into the OpenShell chart's gateway configuration) and the project initialization commands. Delete the directory once the Secrets exist; its CA key was never written, so renewal means generating anew.
+The table above is what it writes, under `secrets/<service>/`: a private CA and the control, worker and middleware certificates for `<name>-<service>.research.svc` (and `.svc.<cluster-domain>`), a 32-byte token per link (`runtime-manager-token.sha256` is the digest of `manager-control.token`, which has no newline), and `control.json`, `control-models.json`, `runtime-manager.json`, `worker.toml` (`isolation_tier = 3`, `node_kernel_releases = ["*-talos"]`, a Kata, amd64 profile for each base profile) and `middleware.toml` with the bundle's cluster bindings. A sandbox resolves only fully qualified names (OpenShell's sandbox DNS ignores the Pod's search domains), so the package cache's URL in `worker.toml` and `cache.toml` is `<name>-cache.research.svc.<cluster-domain>` (the targets file must name it so), and so are the agent runtime's control URL and policy hosts in `runtime-manager.json`, since the runtime runs in a sandbox too; an in-cluster `[model] url` must be fully qualified as well (`http://<service>.<namespace>.svc.<cluster-domain>:<port>/v1`); a `[cache]` table must enable at least one ecosystem. Model aliases come from `[models.*]` in the bundle TOML. It refuses a non-empty output directory. Read its `README.md`: it gives the commands that register the middleware with the gateway (a ConfigMap from `gateway/middleware-ca.crt` in `openshell`, and `gateway/openshell-values-middleware.yaml` as a second values file to `helm upgrade`; only the gateway needs the CA, since it ships the PEM to the supervisors itself), each `TODO(operator)` and the project initialization commands. Delete the directory once the Secrets exist; its CA key was never written, so renewal means generating anew.
 
 The pool's OpenShell CLI tree (the worker's profile from 5.1) is not projected from Secret keys. The command writes it under `pool/worker-config/` (`openshell/active_gateway`, `openshell/gateways/<gateway>/metadata.json` and `mtls/{ca.crt,tls.crt,tls.key}`, mode 600); `worker.toml` names it as the CLI's `XDG_CONFIG_HOME`, `/var/lib/sandbox-science/worker-config`. Place it on the pool PVC once the pool Pod runs (step 8), as the README shows.
 
@@ -333,7 +375,7 @@ Rollback: delete a Secret only while no Pod mounts it; a Pod re-reads credential
 
 ## 8. Render, dry-run, apply
 
-The private bundle TOML starts from [the template](../examples/kubernetes-bundle.toml): the six digests, `storage_class = "research-retain"` for app, pool and manager, `app.architecture` and `runtime_manager.architecture` for the arm64 nodes (the `trusted-app` image covers both), `pool.architecture = "amd64"`, the `network.*` peers (DNS labels of the cluster's CoreDNS, the OpenShell gateway at port 8080, the supervisors of `<gateway-id>` in `research-runtimes`), the egress entries of step 6 and the gateway, Garage and package-upstream destinations, and `[sandboxes] namespace = "research-runtimes"` (the chart's `server.sandboxNamespace`), which adds the PodDisruptionBudget for job sandboxes in that namespace.
+The private bundle TOML starts from [the template](../examples/kubernetes-bundle.toml): the six digests, `storage_class = "research-retain"` for app, pool and manager, `app.architecture` and `runtime_manager.architecture` for the arm64 nodes (the `trusted-app` image covers both), `pool.architecture = "amd64"`, the `network.*` peers (DNS labels of the cluster's CoreDNS, the OpenShell gateway's Pods at port 8080, which the runtime manager and the worker reach and which reach the middleware on 50051, the supervisors of `<gateway-id>` in `research-runtimes`), the egress entries of step 6 and the gateway, Garage and package-upstream destinations, and `[sandboxes] namespace = "research-runtimes"` (the chart's `server.sandboxNamespace`), which adds the PodDisruptionBudget for job sandboxes in that namespace.
 
 ```sh
 uv run sandbox-science-kubernetes check  --config /path/private-kubernetes.toml
@@ -352,7 +394,7 @@ Verify the drain protection: `kubectl -n research-runtimes get pdb <name>-job-sa
 
 Rollback: set the three Deployments to zero replicas (`kubectl -n research scale deploy --all --replicas=0`). Never `kubectl delete -f` the whole bundle, and never delete the PVCs.
 
-Now run the artifact `configure` command of step 6 and place the worker's CLI tree of step 7, then restart the pool Pod (`kubectl -n research rollout restart deploy/<name>-pool`).
+Now run the artifact `configure` command of step 6 and place the worker's CLI tree of step 7, then restart the pool Pod (`kubectl -n research rollout restart deploy/<name>-pool`). Then register the middleware with the gateway as the generated README's step 1 shows (the ConfigMap, then `helm upgrade` with `gateway/openshell-values-middleware.yaml`). The gateway restarts, and it connects to each registered middleware at startup and exits (`middleware registration failed: ... could not connect`) if it cannot, so the pool Pod must be ready first. Verify: `kubectl -n openshell rollout status statefulset/openshell` completes and the gateway's log shows no registration failure.
 
 ## 9. Bootstrap the agent runtime
 
@@ -374,7 +416,7 @@ Rollback: `request stop --delete` is the teardown; `request replace` replaces th
 
 ## 10. The three live proofs
 
-The deployment counts as deployed after all three ([D92](KUBERNETES.md#first-deployment-scope-and-proofs)). Make a throwaway project for the sandbox tests, with a policy that lists `github.com` for git, the package cache for pip and one reviewed MCP server, and no other host. Record each result.
+The deployment counts as deployed after all three ([D92](KUBERNETES.md#first-deployment-scope-and-proofs)). Make a throwaway project for the sandbox tests, with a policy that lists `github.com` for git, the package cache for pip and one reviewed MCP server, and no other host. A policy that names a credential provider (`credentials.providers`) makes environment creation fail with `provider '<name>' is not registered in the gateway` until that provider is registered with the gateway: leave providers out of the throwaway policy, or register them first. Record each result.
 
 Operator-side helper (a research sandbox's name is in the worker environment record or `openshell sandbox list`):
 
@@ -386,19 +428,21 @@ $OPENSHELL_EXEC sandbox exec -n <sandbox> --no-tty --no-login-shell -- <command>
 
 ### 10.1 Egress only through OpenShell
 
-In the throwaway project's shell (through the workspace GUI or the agent):
+In the throwaway project's shell (through the workspace GUI or the agent). The `minimal` image has no `git` or `curl`: run the git check in a `crypto-base` project, and the others with Python as shown:
 
 | Check | Command | Expected |
 | --- | --- | --- |
-| git | `git clone --depth 1 https://github.com/<owner>/<small-repo> /tmp/g && echo ok` | `ok` |
+| git | `git clone --depth 1 https://github.com/<owner>/<small-repo> /tmp/g && echo ok` (`crypto-base`) | `ok` |
 | pip through the cache | `pip download --no-deps -d /tmp/p <small-package>` | succeeds; the package cache's log shows the request |
-| MCP | call the reviewed server's read tool from the session | answer returned; an MCP event in the event store |
-| unlisted host | `curl -sS -m 10 https://<unlisted-host>/` | fails with a policy denial; the denial is in the middleware events and the supervisor's logs (`kubectl -n research-runtimes logs -l openshell.ai/component=supervisor`) |
-| raw socket to an IP | `python3 -c "import socket; socket.create_connection(('<public-ip>', 443), 5)"` | exception: timeout or unreachable |
+| MCP | call the reviewed server's read tool from the session | answer returned; an MCP event in the event store (not configured in the test deployment; open) |
+| unlisted host | `python3 -c "import urllib.request; urllib.request.urlopen('https://<unlisted-host>/', timeout=10)"` | fails with a policy denial; the denial is in the middleware events and the supervisor's logs (`kubectl -n research-runtimes logs -l openshell.ai/component=supervisor`) |
+| raw socket to an IP | `python3 -c "import socket; socket.create_connection(('<public-ip>', 443), 5)"` | exception (the test deployment got `EACCES`) |
 | LAN | the same with a LAN address, port 22 or 443 | exception |
 | other pods | the same with a pod IP from `kubectl get pods -A -o wide` (the app Pod, the control Service on 8443, the gateway on 8080, the Kubernetes API Service on 443) | exception |
 
-Also confirm NetworkPolicy enforcement independently of OpenShell: from a plain pod in `research-runtimes` carrying the sandbox workload labels, a new outbound connection must fail. Rendering and the CNI's behavior are separate facts ([enforcement](KUBERNETES.md#sandbox-isolation)).
+What the test deployment saw: a sandbox's DNS answers with synthetic `198.18.0.x` addresses and a transparent proxy enforces the policy, so a direct `connect` to any public, LAN or in-cluster address fails with `EACCES`. Denials appear in the supervisor's OCSF lines as `NET:REFUSE ... DENIED <host> [reason:policy_dns_ineligible]` and `NET:OPEN ... [reason:transparent_tcp_policy_denied]`; an allowed request shows `engine:middleware`.
+
+Also confirm NetworkPolicy enforcement independently of OpenShell: from a plain pod in `research-runtimes` carrying the sandbox workload labels, a new outbound connection must fail. Rendering and the CNI's behavior are separate facts ([enforcement](KUBERNETES.md#sandbox-isolation)). kube-network-policies on this kind of cluster may run with `--fail-open=true` and its NRI integration off: a new Pod's first packets pass before the agent has learned the Pod. In the test deployment a Pod with the workload labels reached a public IP in its first seconds and was blocked after about 20 seconds. So start the test Pod, wait at least 30 seconds, then test. OpenShell's in-guest fence covers that window for sandboxes (the `EACCES` above), but not for other Pods: enabling kube-network-policies' NRI integration, which learns a Pod before it starts, is recommended.
 
 ### 10.2 Kata in effect and tier 3 recorded
 
@@ -472,7 +516,7 @@ Serves the workspace and its preview origin at two host names through Traefik, o
      namespace: research
    spec:
      forwardAuth:
-       address: http://<outpost-service>.<authentik-namespace>.svc.cluster.local:9000/outpost.goauthentik.io/auth/traefik
+       address: http://<outpost-service>.<authentik-namespace>.svc.<cluster-domain>:9000/outpost.goauthentik.io/auth/traefik
        trustForwardHeader: true
        authResponseHeaders: [X-authentik-username, X-authentik-groups, X-authentik-email, X-authentik-name, X-authentik-uid]
    ```
