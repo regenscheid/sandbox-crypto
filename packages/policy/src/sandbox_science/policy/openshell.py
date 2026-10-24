@@ -471,6 +471,24 @@ class McpProxyTarget(StrictModel):
     """Paths the proxy's image provides outside the workdir, such as its interpreter's prefix."""
 
 
+class AgentMcpTarget(StrictModel):
+    """Settings for a sandbox whose agent calls MCP servers directly (the D98 prototype).
+
+    ``middleware`` names the policy middleware's registration, ``project`` the project
+    whose policy and approvals apply, and ``caller`` the name permission requests give
+    the sandbox's calls, as the MCP proxy names its callers. ``binaries`` names the
+    interpreter that runs the agent's MCP client.
+    """
+
+    middleware: Name
+    project: Name
+    caller: Name = "agent-runtime"
+    binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
+    versions: tuple[McpVersion, ...] = Field(default=("2025-11-25",), min_length=1)
+    max_body_bytes: Annotated[int, Field(gt=0)] | None = None
+    filesystem: SandboxFilesystem = SandboxFilesystem()
+
+
 class OrchestratorTarget(StrictModel):
     """Settings for the orchestrator's own sandbox (Z2): the services it may reach.
 
@@ -1257,6 +1275,117 @@ def compile_mcp_proxy(
     """
     project = policy.policy
     findings: list[Finding] = []
+    network_policies = _mcp_server_policies(
+        policy, target, ceiling, floor, findings, admit_escalated=admit_escalated
+    )
+    if project.mcp.proxy.worker_tools != "inherit":
+        findings.append(
+            Finding(
+                Severity.WARNING,
+                "mcp.proxy.worker_tools",
+                "looser at the fence: OpenShell cannot tell callers apart, so the narrower "
+                "worker_tools list is applied only by the MCP proxy",
+            )
+        )
+    return Compiled(
+        policy=OpenShellPolicy(
+            filesystem_policy=_service_filesystem(target.filesystem),
+            landlock=HARD_LANDLOCK,
+            network_policies=network_policies,
+        ),
+        findings=tuple(findings),
+        policy_digest=policy.digest,
+    )
+
+
+def compile_agent_mcp(
+    policy: LoadedPolicy,
+    target: AgentMcpTarget,
+    *,
+    ceiling: PoolCeiling,
+    floor: HardFloor = DEFAULT_FLOOR,
+) -> Compiled:
+    """Compile the MCP endpoints of a sandbox whose agent calls MCP servers directly (D98).
+
+    The prototype of the path that would replace the MCP proxy: each declared server gets
+    the proxy sandbox's inspected ``protocol: mcp`` endpoint, whose native rules allow and
+    deny tools by name, and the policy middleware decides every request OpenShell admits
+    there, as it does a research sandbox's HTTP: tool rules, argument bounds, records with
+    the project, session and run, and escalations held as permission requests. The fence
+    therefore admits the tools the policy escalates by name, which the middleware refuses
+    until they are approved. Raises CompileError when two servers would share an endpoint.
+    """
+    project = policy.policy
+    findings: list[Finding] = []
+    network_policies = _mcp_server_policies(
+        policy, target, ceiling, floor, findings, admit_escalated=True
+    )
+    hosts = sorted(
+        {
+            endpoint.host
+            for entry in network_policies.values()
+            for endpoint in entry.endpoints
+            if endpoint.host is not None
+        }
+    )
+    middlewares: dict[str, NetworkMiddleware] | None = None
+    if hosts:
+        config: dict[str, dict[str, str | int]] = {
+            "policy": {"name": project.metadata.name, "digest": policy.digest},
+            "mcp": {"project": target.project, "caller": target.caller},
+        }
+        middlewares = {
+            "sandbox-science-policy": NetworkMiddleware(
+                middleware=target.middleware,
+                order=0,
+                on_error="fail_closed",
+                endpoints=MiddlewareSelector(include=tuple(hosts)),
+                config=config,
+            )
+        }
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "network_middlewares",
+                "every MCP request the native rules admit is decided by the policy middleware "
+                "before OpenShell injects credentials; escalated calls are refused with "
+                "approval_required until the permission request is approved, and the harness "
+                "calls again",
+            )
+        )
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "mcp.servers",
+                "tools/list answers reach the agent whole: the tools the policy denies are "
+                "listed, and refused when called (the MCP proxy leaves them out)",
+            )
+        )
+    return Compiled(
+        policy=OpenShellPolicy(
+            filesystem_policy=_service_filesystem(target.filesystem),
+            landlock=HARD_LANDLOCK,
+            network_policies=network_policies,
+            network_middlewares=middlewares,
+        ),
+        findings=tuple(findings),
+        policy_digest=policy.digest,
+        hosts=frozenset(hosts),
+    )
+
+
+def _mcp_server_policies(
+    policy: LoadedPolicy,
+    target: McpProxyTarget | AgentMcpTarget,
+    ceiling: PoolCeiling,
+    floor: HardFloor,
+    findings: list[Finding],
+    *,
+    admit_escalated: bool,
+) -> dict[str, NetworkPolicy]:
+    """One inspected ``protocol: mcp`` endpoint per declared server the floor and the
+    ceiling allow, with the tool rules as native rules."""
+    project = policy.policy
     binaries = tuple(Binary(path=path) for path in target.binaries)
     ranges = mcp_server_ranges(ceiling, floor)
     network_policies: dict[str, NetworkPolicy] = {}
@@ -1273,9 +1402,7 @@ def compile_mcp_proxy(
         if reason is not None:
             findings.append(Finding(Severity.WARNING, subject, f"not compiled: {reason}"))
             continue
-        parts = urlsplit(server.url)
-        port = parts.port if parts.port is not None else 443
-        path = parts.path or "/"
+        port, path = mcp_server_endpoint(server)
         key = (server.host, port, path)
         if key in endpoints_seen:
             raise CompileError(
@@ -1307,7 +1434,7 @@ def compile_mcp_proxy(
             rules=rules,
             deny_rules=deny_rules or None,
             mcp=McpSettings(
-                versions=_versions(server, target, subject, findings),
+                versions=_versions(server, target.versions, subject, findings),
                 max_body_bytes=target.max_body_bytes,
             ),
             # An address literal is its own limit; a name could lead anywhere.
@@ -1346,24 +1473,13 @@ def compile_mcp_proxy(
                 "member and the MCP proxy rejects batches",
             )
         )
-    if project.mcp.proxy.worker_tools != "inherit":
-        findings.append(
-            Finding(
-                Severity.WARNING,
-                "mcp.proxy.worker_tools",
-                "looser at the fence: OpenShell cannot tell callers apart, so the narrower "
-                "worker_tools list is applied only by the MCP proxy",
-            )
-        )
-    return Compiled(
-        policy=OpenShellPolicy(
-            filesystem_policy=_service_filesystem(target.filesystem),
-            landlock=HARD_LANDLOCK,
-            network_policies=network_policies,
-        ),
-        findings=tuple(findings),
-        policy_digest=policy.digest,
-    )
+    return network_policies
+
+
+def mcp_server_endpoint(server: McpServer) -> tuple[int, str]:
+    """The port and path of a server's endpoint, as OpenShell matches them."""
+    parts = urlsplit(server.url)
+    return (parts.port if parts.port is not None else 443), (parts.path or "/")
 
 
 _MCP_REVISIONS: Final = frozenset({"2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"})
@@ -1371,7 +1487,7 @@ _STRICT_TOOL_NAME_RE: Final = re.compile(r"[A-Za-z0-9_.*-]{1,128}")
 
 
 def _versions(
-    server: McpServer, target: McpProxyTarget, subject: str, findings: list[Finding]
+    server: McpServer, versions: tuple[str, ...], subject: str, findings: list[Finding]
 ) -> tuple[str, ...]:
     """The MCP revisions OpenShell admits for a server: its own revision when it names one."""
     if server.revision not in _MCP_REVISIONS:
@@ -1380,17 +1496,17 @@ def _versions(
                 Severity.INFO,
                 f"{subject}.revision",
                 f"{server.revision!r} is not an MCP protocol revision; the endpoint admits the "
-                f"targets' revisions {list(target.versions)}",
+                f"targets' revisions {list(versions)}",
             )
         )
-        return target.versions
-    if server.revision not in target.versions:
+        return versions
+    if server.revision not in versions:
         findings.append(
             Finding(
                 Severity.WARNING,
                 f"{subject}.revision",
                 f"the server speaks {server.revision}, which is not among the revisions clients "
-                f"send {list(target.versions)}; OpenShell refuses the others with 403",
+                f"send {list(versions)}; OpenShell refuses the others with 403",
             )
         )
     return (server.revision,)

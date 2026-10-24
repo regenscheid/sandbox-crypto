@@ -6,6 +6,12 @@ The service declares two bindings, both before credential injection:
 - ``HTTP_REQUEST``: every admitted request is decided by the evaluator;
 - ``WEBSOCKET_MESSAGE``: every WebSocket upgrade is denied at preflight, so a
   WebSocket can never carry traffic the policy library has not seen.
+
+With pinned tool lists (``mcp_tool_pins``), it also declares ``HTTP_RESPONSE`` before
+return (``HttpResponsePreReturn``): it reads the answers to the ``tools/list`` requests of
+sandboxes that call MCP servers directly, as they pass, and records a drift from the
+pinned list as a finding. Every other response is skipped at preflight, and none is
+changed or blocked, so event streams pass as they arrive.
 """
 
 from __future__ import annotations
@@ -24,10 +30,12 @@ from ._proto import supervisor_middleware_pb2 as pb
 from .auth import Authenticator, Caller, require_sandbox
 from .errors import AuthError
 from .evaluator import HttpRequestFacts, PolicyMiddleware, Verdict
+from .mcp import ListingCheck
 
 _log = logging.getLogger(__name__)
 
 SERVICE_NAME: Final = "openshell.middleware.v1.SupervisorMiddleware"
+RESPONSE_SERVICE_NAME: Final = "openshell.middleware.v1.HttpResponsePreReturn"
 IMPLEMENTATION_NAME: Final = "sandbox-science/policy-middleware"
 PROTOCOL_MAJOR: Final = 1
 PROTOCOL_MINOR: Final = 0
@@ -48,6 +56,12 @@ SERVER_OPTIONS: Final = (
     ("grpc.http2.max_ping_strikes", 0),
 )
 
+_LISTING_MODES: Final[dict[str, pb.HttpResponseBodyMode]] = {
+    "application/json": pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES,
+    "text/event-stream": pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES,
+}
+"""How a ``tools/list`` answer is read: whole, or an event stream piece by piece, each
+piece passed on as it is read."""
 _MAX_REASON_BYTES: Final = 4096
 _MAX_FINDINGS: Final = 32
 
@@ -87,6 +101,14 @@ class MiddlewareService:
                 pb.SUPERVISOR_MIDDLEWARE_OPERATION_WEBSOCKET_MESSAGE,
             )
         ]
+        if self._middleware.listings is not None:
+            bindings.append(
+                pb.MiddlewareBinding(
+                    operation=pb.SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_RESPONSE,
+                    phase=pb.SUPERVISOR_MIDDLEWARE_PHASE_PRE_RETURN,
+                    max_payload_bytes=self._max_payload_bytes,
+                )
+            )
         return pb.MiddlewareManifest(
             name=IMPLEMENTATION_NAME,
             service_version=_version(),
@@ -174,6 +196,78 @@ class MiddlewareService:
                     # session_start and session_end are notifications without a result.
                     pass
 
+    def evaluate_response(
+        self, requests: Iterator[pb.HttpResponseEvent], context: grpc.ServicerContext
+    ) -> Iterator[pb.HttpResponseEventResult]:
+        """Read a ``tools/list`` answer as it passes, unchanged; skip every other response."""
+        caller = self._caller(context)
+        check: ListingCheck | None = None
+        for event in requests:
+            match event.WhichOneof("event"):
+                case "preflight":
+                    preflight = event.preflight
+                    self._require_sandbox(context, caller, preflight.context.sandbox_id)
+                    check, mode = self._listing_check(preflight)
+                    if check is None:
+                        skip = pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
+                        yield pb.HttpResponseEventResult(preflight_result=skip)
+                        return
+                    inspect = pb.HttpResponsePreflightInspect(body_mode=mode)
+                    yield pb.HttpResponseEventResult(
+                        preflight_result=pb.HttpResponsePreflightResult(inspect=inspect)
+                    )
+                case "body":
+                    unit = event.body
+                    drift = None
+                    if check is not None:
+                        check.feed(unit.data)
+                        drift = check.finish() if unit.end_of_stream else None
+                    findings = (
+                        [
+                            pb.Finding(
+                                type="mcp_tools_drift",
+                                label=drift.server,
+                                count=len(drift.added) + len(drift.removed),
+                                confidence="high",
+                                severity="medium",
+                            )
+                        ]
+                        if drift is not None
+                        else []
+                    )
+                    yield pb.HttpResponseEventResult(
+                        body_result=pb.HttpResponseBodyResult(
+                            sequence=unit.sequence,
+                            pass_through=pb.HttpResponseBodyPassThrough(),
+                            findings=findings,
+                        )
+                    )
+                case "trailers":
+                    yield pb.HttpResponseEventResult(
+                        trailers_result=pb.HttpResponseTrailersResult()
+                    )
+                case _:
+                    pass  # session_end has no result
+
+    def _listing_check(
+        self, preflight: pb.HttpResponsePreflight
+    ) -> tuple[ListingCheck | None, pb.HttpResponseBodyMode]:
+        """How to read a response: a check and its body mode, or no check (skip)."""
+        modes = set(preflight.permitted_body_modes)
+        types = [h.value.lower() for h in preflight.headers if h.name.lower() == "content-type"]
+        media = types[0].split(";", 1)[0].strip() if len(types) == 1 else ""
+        if preflight.status_code != 200 or media not in _LISTING_MODES:
+            return None, pb.HTTP_RESPONSE_BODY_MODE_UNSPECIFIED
+        mode = _LISTING_MODES[media]
+        if mode not in modes:
+            return None, pb.HTTP_RESPONSE_BODY_MODE_UNSPECIFIED
+        check = self._middleware.check_listing(
+            preflight.context.request_id,
+            preflight.context.sandbox_id,
+            stream=media == "text/event-stream",
+        )
+        return check, mode
+
     def _caller(self, context: grpc.ServicerContext) -> Caller:
         authorization = [
             value
@@ -225,6 +319,20 @@ def handler(service: MiddlewareService) -> grpc.GenericRpcHandler:
     )
 
 
+def response_handler(service: MiddlewareService) -> grpc.GenericRpcHandler:
+    """The gRPC method table for ``openshell.middleware.v1.HttpResponsePreReturn``."""
+    return grpc.method_handlers_generic_handler(
+        RESPONSE_SERVICE_NAME,
+        {
+            "Evaluate": grpc.stream_stream_rpc_method_handler(
+                service.evaluate_response,
+                request_deserializer=pb.HttpResponseEvent.FromString,
+                response_serializer=pb.HttpResponseEventResult.SerializeToString,
+            ),
+        },
+    )
+
+
 def build_server(
     service: MiddlewareService,
     *,
@@ -235,7 +343,7 @@ def build_server(
     """Create (but do not start) a server; return it with the port it bound."""
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=workers),
-        handlers=[handler(service)],
+        handlers=[handler(service), response_handler(service)],
         options=list(SERVER_OPTIONS),
     )
     if credentials is None:

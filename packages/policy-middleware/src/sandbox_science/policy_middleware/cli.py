@@ -49,6 +49,7 @@ from .auth import (
 from .errors import MiddlewareError, SettingsError, StoreError
 from .evaluator import PolicyMiddleware
 from .events import OPERATOR, STORE_TIMEOUT, StoreSink
+from .mcp import load_tool_pins
 from .service import MiddlewareService, build_server
 from .settings import Settings, load_settings
 from .store import PolicyStore
@@ -169,6 +170,11 @@ def _serve(settings: Settings) -> int:
             archives=(
                 CacheArchiveLookup(settings.package_cache_url)
                 if settings.package_cache_url is not None
+                else None
+            ),
+            listings=(
+                load_tool_pins(settings.mcp_tool_pins)
+                if settings.mcp_tool_pins is not None
                 else None
             ),
         )

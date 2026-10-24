@@ -44,9 +44,9 @@ SESSION_REQUIRED: Final = "session_required"
 SESSION_UNKNOWN: Final = "session_unknown"
 PROTOCOL_UNSUPPORTED: Final = "protocol_unsupported"
 TOOL_NOT_ADVERTISED: Final = "tool_not_advertised"
-ARGUMENTS_TOO_LARGE: Final = "arguments_too_large"
+ARGUMENTS_TOO_LARGE: Final = policy.ARGUMENTS_TOO_LARGE
 CREDENTIAL_UNAVAILABLE: Final = "credential_unavailable"
-CREDENTIAL_IN_BODY: Final = "credential_in_body"
+CREDENTIAL_IN_BODY: Final = policy.CREDENTIAL_IN_BODY
 PROXY_BUSY: Final = "proxy_busy"
 
 # The server's side.

@@ -10,6 +10,7 @@ state_dir = "/var/lib/sandbox-science/policy-middleware"
 ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal", "10.0.0.2"]
 package_cache_url = "http://127.0.0.1:8090"   # optional: names opam packages in escalations
+mcp_tool_pins = "mcp-tools.json"              # optional: {"<server>": ["<tool>", ...]}
 
 [tls]
 certificate = "tls/middleware.pem"
@@ -88,6 +89,10 @@ class Settings(_Model):
     package_cache_url: _ServiceUrl | None = None
     """The package cache as this host reaches it, without a path. With it, the record of an
     escalated opam archive names the packages the cache's opam index lists for its digest."""
+    mcp_tool_pins: Path | None = None
+    """A JSON file of each MCP server's pinned tool names. With it, the answers to the
+    ``tools/list`` requests of sandboxes that call MCP servers directly are compared with
+    them, and a drift is recorded (``HttpResponsePreReturn``)."""
 
     @property
     def event_store_path(self) -> Path:
@@ -116,7 +121,7 @@ def load_settings(path: Path) -> Settings:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SettingsError(f"cannot read settings {path}: {exc}") from exc
     base = path.parent
-    for key in ("state_dir", "event_store", "ceiling"):
+    for key in ("state_dir", "event_store", "ceiling", "mcp_tool_pins"):
         _resolve(data, key, base)
     for section, keys in (("tls", ("certificate", "private_key")), ("tokens", ("public_key",))):
         table = data.get(section)

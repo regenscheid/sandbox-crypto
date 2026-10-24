@@ -36,6 +36,7 @@ from sandbox_science.policy import (
     classify_http_request,
     classify_package_request,
     evaluate,
+    evaluate_mcp_message,
     evaluate_monitors,
     normalize_host,
 )
@@ -49,6 +50,7 @@ from sandbox_science.policy.approvals import (
     Unrecorded,
     Waiting,
 )
+from sandbox_science.policy.mcp_wire import params_digest
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy.reasons import (
@@ -59,13 +61,25 @@ from sandbox_science.policy.reasons import (
     ESCALATION_TIMED_OUT,
     LAYER_CODES,
     POLICY_UNAVAILABLE,
+    REQUEST_CODES,
     REQUEST_UNCLASSIFIABLE,
+    with_request,
 )
 
 from .archives import MAX_PACKAGES, ArchiveLookup
 from .errors import MiddlewareError, StoreError
 from .events import EventSink
 from .gitproto import GitRequestError, check_upload_pack_request
+from .mcp import (
+    Listing,
+    ListingCheck,
+    McpCall,
+    McpRef,
+    McpRequestError,
+    ToolListings,
+    declared_server,
+    read_call,
+)
 from .meter import EgressMeter
 from .store import PolicyStore, check_digest
 
@@ -100,7 +114,12 @@ _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
 # URL's text and length.
 _PORT_SCHEMES: Final = {80: "http", 443: "https"}
 _HOST_RE: Final = re.compile(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+")
+_NAME_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _MONITOR_REPEAT: Final = timedelta(hours=1)
+
+
+_Payload = Callable[[Mapping[str, object] | None], dict[str, object]]
+"""Builds a record of the request being decided, with extra fields."""
 
 
 class PolicyConfigError(MiddlewareError):
@@ -114,13 +133,15 @@ class PolicyRef:
     ``package_cache`` and ``mcp_proxy`` are where the sandbox's platform services
     listen (host, port), when the compiled policy admits them: requests to the
     cache are package operations, and requests to the MCP proxy go to it, which
-    decides each tool call.
+    decides each tool call. ``mcp`` marks a sandbox whose agent calls the declared
+    MCP servers directly (``compile_agent_mcp``): every request is an MCP call.
     """
 
     name: str
     digest: str
     package_cache: tuple[str, int] | None = None
     mcp_proxy: tuple[str, int] | None = None
+    mcp: McpRef | None = None
 
     def service_hosts(self) -> frozenset[str]:
         """Hosts that serve platform services; other ports on them are refused."""
@@ -175,6 +196,8 @@ class Verdict:
     decision: Decision | None = None
     headers: tuple[tuple[str, str], ...] = ()
     """Request headers to write on an allowed request, replacing any the sandbox sent."""
+    request: int | None = None
+    """The permission request a refusal concerns, when it is known."""
 
     def __post_init__(self) -> None:
         if self.allowed != (self.reason_code == ""):
@@ -187,17 +210,22 @@ def parse_config(config: Mapping[str, object] | None) -> PolicyRef:
     """Read the compiler's middleware config.
 
     ``{"policy": {"name": ..., "digest": ...}}``, optionally with
-    ``"package_cache"`` and ``"mcp_proxy"``, each ``{"host": ..., "port": ...}``.
+    ``"package_cache"`` and ``"mcp_proxy"``, each ``{"host": ..., "port": ...}``, or
+    with ``"mcp": {"project": ..., "caller": ...}`` alone.
     """
     expected = (
         'config must be {"policy": {"name": <policy name>, "digest": <revision>}} and '
-        'optionally "package_cache" and "mcp_proxy", each {"host": <name>, "port": <port>}'
+        'optionally "package_cache" and "mcp_proxy", each {"host": <name>, "port": <port>}, '
+        'or "mcp": {"project": <name>, "caller": <name>}'
     )
-    keys = {"policy", "package_cache", "mcp_proxy"}
+    keys = {"policy", "package_cache", "mcp_proxy", "mcp"}
     if config is None or "policy" not in config or not set(config) <= keys:
         raise PolicyConfigError(expected)
     package_cache = _service(config.get("package_cache"), expected)
     mcp_proxy = _service(config.get("mcp_proxy"), expected)
+    mcp = _mcp_ref(config.get("mcp"), expected)
+    if mcp is not None and (package_cache is not None or mcp_proxy is not None):
+        raise PolicyConfigError(expected)
     entry = config["policy"]
     if not isinstance(entry, Mapping):
         raise PolicyConfigError(expected)
@@ -214,7 +242,26 @@ def parse_config(config: Mapping[str, object] | None) -> PolicyRef:
         check_digest(digest)
     except StoreError as exc:
         raise PolicyConfigError(str(exc)) from exc
-    return PolicyRef(name=name, digest=digest, package_cache=package_cache, mcp_proxy=mcp_proxy)
+    return PolicyRef(
+        name=name, digest=digest, package_cache=package_cache, mcp_proxy=mcp_proxy, mcp=mcp
+    )
+
+
+def _mcp_ref(entry: object, expected: str) -> McpRef | None:
+    if entry is None:
+        return None
+    empty: Mapping[str, object] = {}
+    fields = cast("Mapping[str, object]", entry) if isinstance(entry, Mapping) else empty
+    project, caller = fields.get("project"), fields.get("caller")
+    if (
+        set(fields) != {"project", "caller"}
+        or not isinstance(project, str)
+        or not isinstance(caller, str)
+        or not _NAME_RE.fullmatch(project)
+        or not _NAME_RE.fullmatch(caller)
+    ):
+        raise PolicyConfigError(expected)
+    return McpRef(project=project, caller=caller)
 
 
 def _service(entry: object, expected: str) -> tuple[str, int] | None:
@@ -257,6 +304,7 @@ class PolicyMiddleware:
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         archives: ArchiveLookup | None = None,
         requests: Callable[[int], Iterable[Record]] | None = None,
+        listings: ToolListings | None = None,
     ) -> None:
         """``archives``, when given, names the opam packages of escalated opam archives.
 
@@ -264,7 +312,10 @@ class PolicyMiddleware:
         permission requests and their answers are known
         (``sandbox_science.policy.approvals``). Without it,
         every escalation is recorded and denied, and none can be approved.
+        ``listings`` holds pinned tool lists, against which the tool listings that
+        sandboxes calling MCP servers directly receive are compared.
         """
+        self.listings = listings
         self._store = store
         self._ceiling = ceiling
         self._floor = floor
@@ -335,6 +386,8 @@ class PolicyMiddleware:
             return _deny(POLICY_UNAVAILABLE, str(exc))
         if loaded.policy.metadata.name != ref.name:
             return _deny(CONFIG_INVALID, f"revision {ref.digest} is not policy {ref.name!r}")
+        if ref.mcp is not None:
+            return self._evaluate_mcp(facts, ref.mcp, loaded)
         try:
             destination = (normalize_host(facts.host), facts.port)
         except ValueError as exc:
@@ -389,19 +442,29 @@ class PolicyMiddleware:
         loaded: LoadedPolicy,
         decision: Decision,
         operation: Operation | None = None,
+        *,
+        target: RequestKey | None = None,
+        payload: _Payload | None = None,
     ) -> Verdict:
+        """The verdict for a decision. ``target`` and ``payload`` replace the request's
+        key and records for a request that is not plain HTTP (an MCP call)."""
         findings: tuple[Finding, ...]
+
+        def http_payload(extra: Mapping[str, object] | None) -> dict[str, object]:
+            return self._payload(facts, loaded, decision, operation, extra=extra)
+
+        payload = payload or http_payload
         match decision.action:
             case Action.DENY:
                 return _deny(LAYER_CODES[decision.layer], decision.reason, decision)
             case Action.ESCALATE:
-                answered = self._escalation(facts, loaded, decision, operation)
+                answered = self._escalation(facts, loaded, decision, operation, target, payload)
                 if isinstance(answered, Verdict):
                     return answered
                 findings = answered
             case Action.ALERT:
                 try:
-                    self._record("alert", facts, loaded, decision, operation)
+                    self._events.record("alert", payload(None))
                 except Exception:
                     # An alert lets a request through only with a recorded finding.
                     _log.exception("could not record alert for request %s", facts.request_id)
@@ -424,6 +487,8 @@ class PolicyMiddleware:
         loaded: LoadedPolicy,
         decision: Decision,
         operation: Operation | None,
+        target: RequestKey | None,
+        payload: _Payload,
     ) -> Verdict | tuple[Finding, ...]:
         """Answer an escalated request from its permission request and any answers to it.
 
@@ -433,14 +498,15 @@ class PolicyMiddleware:
         terms = decision.escalation
         if terms is None:  # the library pairs terms with every escalation
             return _deny(APPROVAL_REQUIRED, decision.reason, decision)
-        target = RequestKey.http(
-            facts.sandbox_id,
-            loaded.digest,
-            facts.method.upper(),
-            normalize_host(facts.host),
-            facts.port,
-            facts.path,
-        )
+        if target is None:
+            target = RequestKey.http(
+                facts.sandbox_id,
+                loaded.digest,
+                facts.method.upper(),
+                normalize_host(facts.host),
+                facts.port,
+                facts.path,
+            )
         self._refresh_approvals()
         now = self._now()
         rule = decision.rule or "escalation"
@@ -449,7 +515,7 @@ class PolicyMiddleware:
         def approved(extra: Mapping[str, object]) -> Verdict | tuple[Finding, ...]:
             # An approved request proceeds only once that is recorded.
             try:
-                self._record("approved", facts, loaded, decision, operation, extra=extra)
+                self._events.record("approved", payload(extra))
             except Exception:
                 _log.exception("could not record approved request %s", facts.request_id)
                 return _deny(
@@ -477,22 +543,22 @@ class PolicyMiddleware:
             match resolution:
                 case Denied(answer):
                     reason = f"permission request {answer.request_seq} was denied"
-                    return _deny(APPROVAL_DENIED, reason, decision)
+                    return _deny(APPROVAL_DENIED, reason, decision, answer.request_seq)
                 case Approved(answer):
                     return approved({"approval_seq": answer.seq, "request_seq": answer.request_seq})
                 case Unrecorded():
-                    outcome = self._escalate(facts, loaded, decision, operation, target)
+                    outcome = self._escalate(facts, decision, target, payload)
                     if isinstance(outcome, Verdict):
                         return outcome
                     # Answered or recorded meanwhile: decided as any other request is.
                     resolution = outcome
                 case Waiting(pending):
                     reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
-                    return _deny(APPROVAL_REQUIRED, reason, decision)
+                    return _deny(APPROVAL_REQUIRED, reason, decision, pending.seq)
                 case TimedOut(pending) if pending.on_timeout == "alert":
                     extra = {"timed_out_request": pending.seq}
                     try:
-                        self._record("alert", facts, loaded, decision, operation, extra=extra)
+                        self._events.record("alert", payload(extra))
                     except Exception:
                         _log.exception("could not record alert for request %s", facts.request_id)
                         return _deny(AUDIT_UNAVAILABLE, "the alert could not be recorded", decision)
@@ -503,7 +569,7 @@ class PolicyMiddleware:
                         f"permission request {pending.seq} was not answered"
                         f" within {minutes} minutes"
                     )
-                    return _deny(ESCALATION_TIMED_OUT, reason, decision)
+                    return _deny(ESCALATION_TIMED_OUT, reason, decision, pending.seq)
                 case _:
                     # A state this code does not know refuses: only the cases above proceed.
                     return _deny(
@@ -513,10 +579,9 @@ class PolicyMiddleware:
     def _escalate(
         self,
         facts: HttpRequestFacts,
-        loaded: LoadedPolicy,
         decision: Decision,
-        operation: Operation | None,
         target: RequestKey,
+        payload: _Payload,
     ) -> Verdict | Resolution:
         """Record a permission request for ``target``, once, and refuse: an identical
         escalation evaluated at the same time waits on its fingerprint's lock, then finds
@@ -524,7 +589,7 @@ class PolicyMiddleware:
         caller to decide; every other outcome is a refusal."""
         try:
             # Built before the lock: the opam archive lookup can take a while.
-            payload = self._payload(facts, loaded, decision, operation, target=target)
+            record = payload({"target": target.payload()})
         except Exception:
             _log.exception("could not build the escalation of request %s", facts.request_id)
             return _deny(
@@ -542,7 +607,7 @@ class PolicyMiddleware:
             if not isinstance(resolution, Unrecorded):
                 return resolution
             try:
-                seq = self._events.record("escalation", payload)
+                seq = self._events.record("escalation", record)
             except Exception:
                 # No permission request exists, so the agent must not wait for an approval.
                 _log.exception("could not record escalation of request %s", facts.request_id)
@@ -554,7 +619,135 @@ class PolicyMiddleware:
         finally:
             lock.release()
         named = f" (permission request {seq})" if seq is not None else ""
-        return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
+        return _deny(APPROVAL_REQUIRED, decision.reason + named, decision, seq)
+
+    def check_listing(
+        self, request_id: str, sandbox_id: str, *, stream: bool
+    ) -> ListingCheck | None:
+        """A check of the answer to an allowed ``tools/list`` of ``sandbox_id``'s, or None
+        for any other response, which passes unread."""
+        if self.listings is None:
+            return None
+        listing = self.listings.answer(request_id)
+        if listing is None or listing.sandbox_id != sandbox_id:
+            return None
+        return ListingCheck(
+            self.listings, listing, stream=stream, events=self._events, request_id=request_id
+        )
+
+    def _evaluate_mcp(self, facts: HttpRequestFacts, ref: McpRef, loaded: LoadedPolicy) -> Verdict:
+        """Decide a request of a sandbox whose agent calls the declared MCP servers directly.
+
+        Every request must be one MCP message to a declared server's endpoint, read as the
+        MCP proxy reads one; the library's tool rules decide it, with the orchestrator as
+        its origin, and the call is recorded. Escalations are permission requests keyed as
+        the proxy keys them, and a refusal that concerns one names it in its reason code.
+        """
+        call: McpCall | None = None
+        try:
+            server = declared_server(loaded, normalize_host(facts.host), facts.port, facts.path)
+            if server is None or facts.scheme.lower() != "https":
+                raise McpRequestError(
+                    DESTINATION_FORBIDDEN,
+                    f"{facts.scheme}://{facts.host}:{facts.port} is not a declared MCP server",
+                )
+            call = read_call(
+                server,
+                facts.method,
+                facts.query,
+                facts.headers,
+                facts.body,
+                max_argument_bytes=int(loaded.policy.mcp.proxy.max_argument_bytes),
+            )
+        except McpRequestError as exc:
+            verdict = _deny(exc.code, str(exc))
+        except ValueError as exc:
+            verdict = _deny(REQUEST_UNCLASSIFIABLE, f"malformed destination host: {exc}")
+        else:
+            verdict = self._mcp_verdict(facts, ref, loaded, call)
+        self._record_mcp_call(facts, ref, loaded, call, verdict)
+        return verdict
+
+    def _mcp_verdict(
+        self, facts: HttpRequestFacts, ref: McpRef, loaded: LoadedPolicy, call: McpCall
+    ) -> Verdict:
+        decision = evaluate_mcp_message(
+            call.server, call.message, loaded, ceiling=self._ceiling, floor=self._floor
+        )
+        subject = call.subject(ref, facts.sandbox_id)
+        target = RequestKey.mcp(
+            ref.project,
+            ref.caller,
+            loaded.digest,
+            call.server,
+            call.method,
+            call.tool or "",
+            params_digest(call.params),
+        )
+
+        def payload(extra: Mapping[str, object] | None) -> dict[str, object]:
+            record: dict[str, object] = {
+                **subject,
+                "request_id": facts.request_id,
+                "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
+                "rule": decision.rule,
+                "reason": decision.reason,
+            }
+            if decision.escalation is not None:
+                record["escalation"] = {
+                    "timeout_seconds": int(decision.escalation.timeout.total_seconds()),
+                    "on_timeout": decision.escalation.on_timeout.value,
+                }
+            record.update(extra or {})
+            return record
+
+        verdict = self._verdict(facts, loaded, decision, target=target, payload=payload)
+        if verdict.request is not None and verdict.reason_code in REQUEST_CODES:
+            code = with_request(verdict.reason_code, verdict.request)
+            verdict = dataclasses.replace(verdict, reason_code=code)
+        if verdict.allowed and call.method == "tools/list" and self.listings is not None:
+            listing = Listing(facts.sandbox_id, call.server, subject, call.cursor is None)
+            self.listings.expect(facts.request_id, listing)
+        return verdict
+
+    def _record_mcp_call(
+        self,
+        facts: HttpRequestFacts,
+        ref: McpRef,
+        loaded: LoadedPolicy,
+        call: McpCall | None,
+        verdict: Verdict,
+    ) -> None:
+        """One ``mcp-call`` record for every request, on a best-effort basis, as the MCP
+        proxy writes one: never the arguments, only their size."""
+        decision = verdict.decision
+        subject = (
+            call.subject(ref, facts.sandbox_id)
+            if call is not None
+            else {"project": ref.project, "caller": ref.caller, "sandbox_id": facts.sandbox_id}
+        )
+        payload: dict[str, object] = {
+            **subject,
+            "request_id": facts.request_id,
+            "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
+            "decision": (
+                {"action": decision.action.value, "layer": decision.layer, "rule": decision.rule}
+                if decision is not None
+                else None
+            ),
+            "reason_code": verdict.reason_code or None,
+            "outcome": "admitted" if verdict.allowed else "refused",
+            "sizes": {
+                "body": len(facts.body),
+                **({"params": len(call.params)} if call is not None else {}),
+            },
+        }
+        if verdict.request is not None:
+            payload["permission_request"] = verdict.request
+        try:
+            self._events.record("mcp-call", payload)
+        except Exception:
+            _log.exception("could not record an MCP call of request %s", facts.request_id)
 
     def _monitor_findings(
         self, facts: HttpRequestFacts, loaded: LoadedPolicy
@@ -591,22 +784,6 @@ class PolicyMiddleware:
             except Exception:
                 _log.exception("could not record monitor %s", alert.rule)
         return tuple(findings)
-
-    def _record(
-        self,
-        kind: str,
-        facts: HttpRequestFacts,
-        loaded: LoadedPolicy,
-        decision: Decision,
-        operation: Operation | None = None,
-        *,
-        target: RequestKey | None = None,
-        extra: Mapping[str, object] | None = None,
-    ) -> int | None:
-        """Record the request; return the record's sequence number where the sink tells it."""
-        return self._events.record(
-            kind, self._payload(facts, loaded, decision, operation, target=target, extra=extra)
-        )
 
     def _payload(
         self,
@@ -672,8 +849,12 @@ class PolicyMiddleware:
         return archive
 
 
-def _deny(code: str, reason: str, decision: Decision | None = None) -> Verdict:
-    return Verdict(allowed=False, reason_code=code, reason=reason, decision=decision)
+def _deny(
+    code: str, reason: str, decision: Decision | None = None, request: int | None = None
+) -> Verdict:
+    return Verdict(
+        allowed=False, reason_code=code, reason=reason, decision=decision, request=request
+    )
 
 
 def _header_values(headers: Sequence[tuple[str, str]], name: str) -> list[str]:
