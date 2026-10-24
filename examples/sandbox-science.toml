@@ -64,6 +64,9 @@ listen = "127.0.0.1:8100"
 pool_id = "babbage"
 # The project policy, granted to every project above.
 policy = "policy.yaml"
+# Optional: the config of a worker-side unit (docs/UNIT.md) started before `up`, which runs this
+# worker with the policy middleware and the package cache. `up` then starts no worker of its own.
+# unit = "unit.toml"
 
 [workspace]
 listen = "127.0.0.1:8200"

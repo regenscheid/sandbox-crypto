@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Stop the owner's personal Sandbox Science on babbage (docs/PERSONAL-BABBAGE.md): the
-# launcher first (`sandbox-science down`, which suspends the research sandboxes and deletes
-# the MCP proxy's), then its OpenShell gateway, policy middleware and package cache. It
-# deletes nothing: the projects, the sandboxes' files and the OpenShell state stay under
-# $SS_PERSONAL_ROOT for the next scripts/personal_up.sh.
+# launcher first (`sandbox-science down`, which suspends the research sandboxes through the
+# unit's worker and deletes the MCP proxy's), then the worker-side unit (which stops the
+# worker, the policy middleware and the package cache in that order) and its OpenShell
+# gateway. It deletes nothing: the projects, the sandboxes' files and the OpenShell state
+# stay under $SS_PERSONAL_ROOT for the next scripts/personal_up.sh.
 #
 #   scripts/personal_down.sh [--keep-sandboxes]
 #
-# --keep-sandboxes passes on to `sandbox-science down` and leaves OpenShell running, so the
-# research sandboxes and their kernels stay up for the next start. Settings as personal_up.sh.
+# --keep-sandboxes passes on to `sandbox-science down` and leaves the unit and OpenShell
+# running, so the research sandboxes and their kernels stay up for the next start.
+# Settings as personal_up.sh. The units of the earlier layout ($UNIT-middleware and
+# $UNIT-cache) are stopped too, if one still runs.
 set -uo pipefail
 R=${R:-$(cd "$(dirname "$0")/.." && pwd)}
 CONFIG=${SS_PERSONAL_CONFIG:-$HOME/.config/sandbox-science/personal.toml}
@@ -32,9 +35,11 @@ if active "$UNIT-launcher"; then
   systemctl --user stop "$UNIT-launcher"
 fi
 if [ ${#KEEP[@]} -eq 0 ]; then
+  # The unit first, as the worker stopped with the launcher before the gateway did.
+  systemctl --user stop "$UNIT-unit" 2>/dev/null
   systemctl --user stop "$UNIT-gateway" "$UNIT-middleware" "$UNIT-cache" 2>/dev/null
 fi
-for part in launcher gateway middleware cache; do
+for part in launcher unit gateway; do
   printf '%s-%s: %s\n' "$UNIT" "$part" "$(systemctl --user is-active "$UNIT-$part" 2>/dev/null)"
 done
 exit "$status"

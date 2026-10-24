@@ -753,6 +753,8 @@ daemon loss were checked on OpenShell in
 
 ## Settings
 
+The worker is deployed with the [policy middleware](POLICY-MIDDLEWARE.md) and the [package cache](PACKAGE-CACHE.md) as one [unit](UNIT.md): these settings go in the unit config's `[worker]` section, or in a file it names, and `sandbox-science-unit serve` runs the worker. `sandbox-science-worker serve --settings worker.toml` keeps working, as what the unit runs; starting it as a unit of its own is deprecated for one release.
+
 ```toml
 listen = "127.0.0.1:8100"
 token_file = "worker.token"          # the pool's own token: sandbox-science-worker token --out worker.token

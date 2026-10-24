@@ -9,8 +9,8 @@ deployment is qualified by rendering or schema validation.
 The trusted application image runs control and workspace in one Pod over one block
 PVC; each container mounts only its own directories of it (`control/`, which the
 workspace also reads as the harness's state, and its managed home/config
-directories). A second Pod runs worker and policy middleware over their shared block
-PVC; package cache is optional there. A third Pod, the
+directories). A second Pod, the [worker-side unit](UNIT.md), runs worker and policy middleware over their shared block
+PVC; package cache is optional there. Each of its containers runs `sandbox-science-unit serve --config /etc/sandbox-science/unit.toml --only <service>`, on one unit config the renderer makes as a ConfigMap `<name>-pool-unit` (no credential in it): a section for each service naming the settings file that service's Secret projects at `/private`, and the container's variables as the service's `pass_env`. The local launcher's unit uses the same file shape. The containers stay apart so that each keeps its own credentials, limits and probes; the Pod is ready when all are. A third Pod, the
 [runtime manager](specs/kubernetes-runtime-bootstrap.md), runs the same
 `trusted-app` image as `sandbox-science-runtime-manager serve` over a small PVC of its
 own. It alone holds an OpenShell gateway credential outside the worker, and it alone

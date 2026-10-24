@@ -354,6 +354,13 @@ class WorkerConfig(_Strict):
     """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
     locale, proxies and CA settings). Never a secret: the parts run in the control zone
     (docs/THREAT-MODEL.md), which holds no engine or cluster credentials."""
+    unit: ConfigPath | None = None
+    """The config of the worker-side unit (docs/UNIT.md) that runs the worker with the policy
+    middleware and the package cache, started apart because the OpenShell gateway checks
+    the middleware when it starts. With it, ``up`` starts no worker: it waits for the unit
+    to be healthy, watches it, and never stops it. The unit's ``[worker]`` section must be
+    ``settings_file`` naming the worker settings ``sandbox-science prepare`` writes. Unset:
+    ``up`` starts the worker alone, as before."""
 
 
 class RunServiceConfig(_Strict):

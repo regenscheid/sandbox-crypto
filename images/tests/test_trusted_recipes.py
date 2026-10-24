@@ -154,9 +154,14 @@ def test_revision_covers_locks_packages_and_all_runtime_inputs(profile: str) -> 
         } <= inputs
         assert {"orchestrator", "workspace", "launcher", "policy"} <= set(packages)
     else:
-        assert {"worker", "policy-middleware", "package-cache", "policy", "event-store"} <= set(
-            packages
-        )
+        assert {
+            "worker",
+            "policy-middleware",
+            "package-cache",
+            "policy",
+            "event-store",
+            "launcher",
+        } <= set(packages)
         assert "orchestrator" not in packages
         assert "workspace" not in packages
 
@@ -190,6 +195,9 @@ def test_trusted_native_pins_and_build_contexts_are_explicit() -> None:
         )
         assert "openshell --version" in stages[profile]
     assert "sandbox-science-launcher" in stages["trusted-app"]
+    # The worker pool runs its three services through the launcher's unit entry point.
+    assert "sandbox-science-launcher" in stages["trusted-worker"]
+    assert "sandbox-science-unit --help" in stages["trusted-worker"]
     assert "sandbox-science-policy" in stages["trusted-app"]
     assert "apt_install.sh" not in stages["trusted-python"]
     assert "apt_install.sh" in stages["trusted-worker"]

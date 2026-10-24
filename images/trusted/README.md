@@ -29,7 +29,8 @@ the separate `orchestrator` image. Its immutable web files are at `/usr/share/sa
 and math/figure checker files at `/usr/share/sandbox-science/math`. The Node binary
 is `/usr/local/bin/node`, and the OpenShell CLI `/usr/local/bin/openshell`, the same
 pinned binary as the worker's. `trusted-worker` installs contracts, policy, event store,
-worker, policy middleware and package cache, with `/usr/local/bin/openshell` and
+worker, policy middleware, package cache and the launcher (for `sandbox-science-unit`, the
+entry point of the [worker-side unit](../../docs/UNIT.md) that each pool container runs), with `/usr/local/bin/openshell` and
 snapshot-pinned OpenSSH client/git dependencies. No gateway server, VM driver,
 cluster token or default deployment config is embedded.
 

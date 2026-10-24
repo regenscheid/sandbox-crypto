@@ -33,6 +33,7 @@ import signal
 import socket
 import sys
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -138,6 +139,9 @@ class Running:
     parent_pipe: int | None = None
     """Darwin's write end: EOF tells the part its launcher died."""
     """Times in a row it was started again, for a part that is."""
+    recent: deque[str] = field(default_factory=lambda: deque[str](maxlen=TAIL_LINES))
+    """The part's last lines, for the error shown when it stops: all there is of its output
+    in a supervisor that keeps no log files."""
 
 
 def _append(path: Path) -> int:
@@ -188,8 +192,15 @@ class Supervisor:
         restart_delays: tuple[float, ...] = RESTART_DELAYS,
         restarts: int = RESTARTS,
         steady: float = STEADY,
+        echo: Callable[[str, str], None] | None = None,
+        keep_logs: bool = True,
     ) -> None:
         self.layout = layout
+        self.echo = echo
+        """Called with a part's name and each line it writes, secret ones left out."""
+        self.keep_logs = keep_logs
+        """Whether each part's output goes to its log in ``layout``; the unit's parts
+        write to its own output instead (unit.py)."""
         self.clock, self.restart_delays, self.restarts, self.steady = (
             clock,
             restart_delays,
@@ -225,6 +236,12 @@ class Supervisor:
         await self._wait_ready(running, timeout)
         return running
 
+    def _ending(self, running: Running) -> str:
+        """The end of a part's output, for the error shown when it stops."""
+        if not self.keep_logs:
+            return "its last lines:\n" + "\n".join(f"    {line}" for line in running.recent)
+        return f"the end of its log, {running.log}:\n" + tail(running.log)
+
     async def _wait_ready(self, running: Running, timeout: float) -> None:
         part = running.part
         ready = asyncio.ensure_future(self._ready(running))
@@ -249,12 +266,10 @@ class Supervisor:
                 await running.pump
             raise LauncherError(
                 f"the {part.title} stopped as it started, with status "
-                f"{running.process.returncode}; the end of its log, {running.log}:\n"
-                + tail(running.log)
+                f"{running.process.returncode}; {self._ending(running)}"
             )
         raise LauncherError(
-            f"the {part.title} was not ready within {timeout:g} s; "
-            f"the end of its log, {running.log}:\n" + tail(running.log)
+            f"the {part.title} was not ready within {timeout:g} s; {self._ending(running)}"
         )
 
     async def run(
@@ -346,16 +361,14 @@ class Supervisor:
             if not running.part.restart:
                 return (
                     f"the {running.part.title} stopped by itself, with status "
-                    f"{running.process.returncode}; the end of its log, {running.log}:\n"
-                    + tail(running.log)
+                    f"{running.process.returncode}; {self._ending(running)}"
                 )
             steady = self.clock.monotonic() - running.since >= self.steady
             restarts = 1 if steady else running.restarts + 1
             if restarts > self.restarts:
                 reason = (
                     f"the {running.part.title} kept stopping: it was started again "
-                    f"{self.restarts} times in a row; the end of its log, {running.log}:\n"
-                    + tail(running.log)
+                    f"{self.restarts} times in a row; {self._ending(running)}"
                 )
                 if running.part.required:
                     return reason
@@ -454,7 +467,8 @@ class Supervisor:
 
     async def _spawn(self, part: Part) -> Running:
         log = self.layout.log(part.name)
-        os.close(_append(log))
+        if self.keep_logs:
+            os.close(_append(log))
         if sys.platform == "darwin":
             read_fd, write_fd = os.pipe()
             try:
@@ -488,23 +502,33 @@ class Supervisor:
         stream = running.process.stdout
         if stream is None:  # never: the part's output is a pipe
             return
-        with os.fdopen(_append(running.log), "w", encoding="utf-8") as log:
+        with contextlib.ExitStack() as files:
+            log = (
+                files.enter_context(os.fdopen(_append(running.log), "w", encoding="utf-8"))
+                if self.keep_logs
+                else None
+            )
             pending = b""
             while chunk := await stream.read(CHUNK):
                 *lines, pending = (pending + chunk).split(b"\n")
                 for line in lines:
                     self._line(running, line.decode("utf-8", errors="replace"), log)
-                log.flush()
+                if log is not None:
+                    log.flush()
             if pending:
                 self._line(running, pending.decode("utf-8", errors="replace"), log)
 
-    def _line(self, running: Running, line: str, log: TextIO) -> None:
+    def _line(self, running: Running, line: str, log: TextIO | None) -> None:
         part = running.part
         shown = line
         if part.private is not None and part.private[0].search(line):
             write_private(part.private[1], line.strip() + "\n")
             shown = f"[a private line, in {part.private[1]}]"
-        print(shown, file=log)
+        if log is not None:
+            print(shown, file=log)
+        running.recent.append(shown)
+        if self.echo is not None:
+            self.echo(part.name, shown)
         # Ready only once the line is written, private ones included.
         if part.ready_line is not None and part.ready_line in line:
             running.ready.set()

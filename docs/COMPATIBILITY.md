@@ -35,3 +35,7 @@ The digest is `request_digest` in `contracts/canonical.py`: SHA-256 over a domai
 ## Before independent upgrades
 
 When components must be upgraded independently (M3 placement), the policy changes: responses accept unknown fields (`extra="ignore"`), requests stay strict, changes are additive only, new behavior is gated by `Capabilities.features`, and the version check accepts a range. None of this is built.
+
+## The worker-side unit
+
+The [unit](UNIT.md) runs the worker, the policy middleware and the package cache from one config file whose sections are those services' own settings. Their settings keep this document's rules where they have them; the unit adds none to a service's settings, and refuses unknown sections and unknown `[unit]` keys. A new `[unit]` option has a default that keeps the old behavior. A service's `serve --settings` command and its settings file stay valid as long as the unit runs them (a `settings_file` section names one as it is), so moving a deployment to the unit changes no setting. Running the three as separate units from separate files is deprecated for one release.

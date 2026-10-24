@@ -39,6 +39,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Policy file](POLICY.md) | The project policy file and how requests are decided |
 | [Policy middleware](POLICY-MIDDLEWARE.md) | The OpenShell middleware that decides each sandbox request |
 | [Package cache](PACKAGE-CACHE.md) | The pull-through package cache for research sandboxes |
+| [Worker-side unit](UNIT.md) | The worker, policy middleware and package cache as one deployed, supervised unit with one config file |
 | [Event store](EVENT-STORE.md) | The hash-chained store of monitor evidence, its record kinds and CLI |
 | **Orchestrator** | |
 | [Model profiles](MODEL-PROFILES.md) | Per-role reasoning effort, provider mappings, saved profiles and explicit Resume overrides |

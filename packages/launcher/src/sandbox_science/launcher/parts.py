@@ -19,6 +19,7 @@ each start.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -27,7 +28,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from . import mcp, toml
+from . import mcp, toml, unit
 from .config import LauncherConfig, LauncherError
 from .state import Layout, ensure_token, write_private
 
@@ -85,8 +86,27 @@ def check(config: LauncherConfig) -> None:
         if shutil.which(name, path=str(commands(config))) is None
     )
     problems.extend(_math_problems(config))
+    problems.extend(unit_problems(config))
     if problems:
         raise LauncherError("cannot start:\n" + "\n".join(f"  {problem}" for problem in problems))
+
+
+def unit_problems(config: LauncherConfig) -> list[str]:
+    """What is wrong with the unit config the worker runs in, if there is one."""
+    if config.worker.unit is None:
+        return []
+    try:
+        found = unit.load(config.worker.unit, read=False)
+    except LauncherError as exc:
+        return [str(exc)]
+    worker = found.services["worker"].settings_file
+    expected = Layout(config.state_dir).worker_settings
+    if worker is None or Path(os.path.abspath(worker)) != Path(os.path.abspath(expected)):
+        return [
+            f"{found.path}: [worker] must be settings_file = {str(expected)!r}, the worker "
+            "settings that sandbox-science prepare writes, so the clients' tokens reach it"
+        ]
+    return []
 
 
 def key_problems(config: LauncherConfig) -> list[str]:

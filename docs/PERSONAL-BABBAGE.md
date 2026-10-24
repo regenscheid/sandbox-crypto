@@ -3,24 +3,27 @@
 The gateway URL shown below is a reserved example placeholder. Keep the real endpoint and key
 path in the private configuration outside the repository.
 
-The owner's own Sandbox Science on babbage: a [`sandbox-science up`](QUICKSTART.md) instance that runs for research, apart from the labs. It has its own OpenShell gateway, policy middleware and package cache, its own units, ports and state, and its own config outside the repository. The labs' scripts (`.agents/labs/lab_up.sh`, `lab_down.sh`, the `cm_lab` kit) never start, stop or remove any of it.
+The owner's own Sandbox Science on babbage: a [`sandbox-science up`](QUICKSTART.md) instance that runs for research, apart from the labs. It has its own OpenShell gateway, its own [worker-side unit](UNIT.md) (the worker, policy middleware and package cache as one supervised group), its own units, ports and state, and its own config outside the repository. The labs' scripts (`.agents/labs/lab_up.sh`, `lab_down.sh`, the `cm_lab` kit) never start, stop or remove any of it.
 
 Like the labs' scripts, this is babbage's setup: it assumes OpenShell 0.1.5 at `~/.local/opt/openshell-0.1.5/bin`, the images in the local Docker store, and the repository's `.venv`. Install v0.1.5's release binaries there, all from that one release: its VM driver takes `--parent-liveness-stdin` where v0.1.3's took `--parent-liveness-fd`, so a gateway cannot start a driver from another release.
 
 ## What runs where
 
-[`scripts/personal_up.sh`](../scripts/personal_up.sh) starts it and [`scripts/personal_down.sh`](../scripts/personal_down.sh) stops it. Each part is a transient `systemd-run --user` unit, so it outlives the shell that started it, but not a reboot: after one, run `personal_up.sh` again.
+[`scripts/personal_up.sh`](../scripts/personal_up.sh) starts it and [`scripts/personal_down.sh`](../scripts/personal_down.sh) stops it. Each is a transient `systemd-run --user` unit, so it outlives the shell that started it, but not a reboot: after one, run `personal_up.sh` again. The unit starts first, since the gateway checks the policy middleware when it starts; the launcher then waits for the unit, uses its worker and watches its health, and never stops it.
 
 | Unit | What | Listens on |
 | --- | --- | --- |
+| `ss-personal-unit` | `sandbox-science-unit serve --config openshell/unit.toml`: one process that supervises three, started in this order and stopped in reverse; one log with a `[cache]`, `[middleware]` or `[worker]` prefix on each line | |
+| | the package cache (the sandboxes reach it as `host.openshell.internal:8390`) | 127.0.0.1:8390 |
+| | the policy middleware | 127.0.0.1:50061 |
+| | the worker | 127.0.0.1:8310 |
 | `ss-personal-gateway` | the OpenShell gateway, with the VM driver | 127.0.0.1:17680 |
-| `ss-personal-middleware` | the policy middleware | 127.0.0.1:50061 |
-| `ss-personal-cache` | the package cache (the sandboxes reach it as `host.openshell.internal:8390`) | 127.0.0.1:8390 |
 | `ss-personal-launcher` | `sandbox-science up` and its parts: | |
 | | the GUI | 127.0.0.1:8300 |
 | | the PDF viewer's origin, given by `localhost` (another site from the GUI's) | 127.0.0.1:8301 and [::1]:8301 |
-| | the worker | 127.0.0.1:8310 |
 | | the forward to the MCP proxy's sandbox | 127.0.0.1:18300 |
+
+The unit is healthy when all three of its addresses take connections (`.venv/bin/sandbox-science-unit status --config ~/.local/state/sandbox-science-personal/openshell/unit.toml`, and the unit's lines in `sandbox-science status`). If one of the three stops, the unit stops the other two and exits, and the launcher stops with "the unit is no longer healthy"; run `personal_down.sh` and `personal_up.sh` again.
 
 The labs use `openshell-lab-*` units, `~/.local/state/openshell-lab`, and ports 17670, 50051, 8090, 8080, 8100, 8200, 8201 and 18080; none of these is the personal instance's.
 
@@ -29,10 +32,10 @@ The labs use `openshell-lab-*` units, `~/.local/state/openshell-lab`, and ports 
 | `~/.config/sandbox-science/personal.toml` | the launcher's config (mode 600; [below](#the-config)) |
 | `~/.config/sandbox-science/personal-policy.yaml` | the project policy: `examples/policy.yaml` with crypto-research-mcp's address in place of its placeholder |
 | `~/.local/state/sandbox-science-personal/launcher/` | the launcher's [state directory](QUICKSTART.md#the-state-directory): the control store (`control/`), tokens, the worker's state, `workspace-login`, and `logs/` |
-| `~/.local/state/sandbox-science-personal/openshell/` | OpenShell's state: the gateway's database and certificates, the middleware's state and certificates, the package cache, `gateway.toml`, `targets.yaml`, and `env.sh` |
+| `~/.local/state/sandbox-science-personal/openshell/` | OpenShell's state: the gateway's database and certificates, the middleware's state and certificates, the package cache, `gateway.toml`, `targets.yaml`, the unit's `unit.toml` and `env.sh` |
 | `~/.local/state/sandbox-science-personal/vm/` | the VM driver's state, the sandboxes' disks among it (short, since its sockets' paths must fit in `SUN_LEN`) |
 
-The first `personal_up.sh` creates the OpenShell state: the gateway's certificates and keys, the middleware's own CA and certificate (ten years), the pool ceiling and the policy store. Later runs keep them, and rewrite only the settings files from the script. It also registers the provider `github-readonly`, which the example policy binds and OpenShell needs before it creates a research sandbox, with a placeholder value, as the labs do: public GitHub repositories work without it. To give the sandboxes a real fine-grained read-only token instead, `source ~/.local/state/sandbox-science-personal/openshell/env.sh` and run `openshell provider update github-readonly --credential GITHUB_TOKEN` with the token in that variable; only new research sandboxes get it.
+The first `personal_up.sh` creates the OpenShell state: the gateway's certificates and keys, the middleware's own CA and certificate (ten years), the pool ceiling and the policy store. Later runs keep them, and rewrite only the settings files from the script (`unit.toml`, `gateway.toml`, `targets.yaml`). It also registers the provider `github-readonly`, which the example policy binds and OpenShell needs before it creates a research sandbox, with a placeholder value, as the labs do: public GitHub repositories work without it. To give the sandboxes a real fine-grained read-only token instead, `source ~/.local/state/sandbox-science-personal/openshell/env.sh` and run `openshell provider update github-readonly --credential GITHUB_TOKEN` with the token in that variable; only new research sandboxes get it.
 
 The gateway's database holds the registered providers, crypto-research-mcp's Access token among them, with the key that encrypts them beside it. Never copy, archive or query them.
 
@@ -67,6 +70,7 @@ node = "/usr/bin/node"               # Node 22.12 or newer on the units' PATH
 listen = "127.0.0.1:8310"
 pool_id = "babbage-personal"
 policy = "personal-policy.yaml"
+unit = "~/.local/state/sandbox-science-personal/openshell/unit.toml"   # the worker runs in the unit, started by personal_up.sh
 
 [workspace]
 listen = "127.0.0.1:8300"
@@ -114,18 +118,20 @@ provider_profile = "<the repository>/examples/openshell/profiles/cloudflare-acce
 From the repository's root:
 
 ```sh
-scripts/personal_up.sh        # OpenShell's three units, then the launcher; waits until it runs
-scripts/personal_down.sh      # sandbox-science down, then OpenShell's units; deletes nothing
+scripts/personal_up.sh        # the unit, then the gateway, then the launcher; waits until it runs
+scripts/personal_down.sh      # sandbox-science down, then the unit and the gateway; deletes nothing
 .venv/bin/sandbox-science status --config ~/.config/sandbox-science/personal.toml
 ```
 
 - **Logging in.** The workspace makes a new login address at each start, in the state directory's `workspace-login` (mode 600), never on the screen or in a log: `xdg-open "$(cat ~/.local/state/sandbox-science-personal/launcher/workspace-login)"`. It works until the instance stops. Use the GUI at `http://127.0.0.1:8300/`, not `localhost`, so the PDF viewer works and stays another site (`http://localhost:8301`). A config that still sets `preview_listen = "127.0.0.2:8301"` works too, as another site; drop it to use the default.
-- **Stopping** suspends the research sandboxes, which keep their files and packages, and deletes the MCP proxy's sandbox, which the next start makes again. `personal_down.sh --keep-sandboxes` leaves the sandboxes and OpenShell running, so their kernels are there for the next `personal_up.sh`.
-- **Only OpenShell**: `personal_up.sh --openshell-only` starts the three OpenShell units without the launcher.
+- **Stopping** suspends the research sandboxes, which keep their files and packages, and deletes the MCP proxy's sandbox, which the next start makes again. `personal_down.sh --keep-sandboxes` leaves the sandboxes, the unit and OpenShell running, so their kernels are there for the next `personal_up.sh`; it refuses to reuse a kept unit if the launcher's config now gives the worker other settings (stop everything, then start).
+- **Only OpenShell**: `personal_up.sh --openshell-only` starts the unit and the gateway without the launcher. It still reads `personal.toml`, since the unit's worker takes its settings from it.
 - **The OpenShell CLI** for this instance: `source ~/.local/state/sandbox-science-personal/openshell/env.sh`, then `openshell sandbox list`. It points the XDG directories at the instance, so `gh` does not work in that shell.
-- **Logs.** The parts' own logs are in `~/.local/state/sandbox-science-personal/launcher/logs/` (`worker.log`, `run-service.log`, `workspace.log`, `mcp-forward.log`, `launcher.log`); the units' output is in `journalctl --user -u ss-personal-launcher` (and `-gateway`, `-middleware`, `-cache`).
+- **Logs.** The parts' own logs are in `~/.local/state/sandbox-science-personal/launcher/logs/` (`worker.log`, `run-service.log`, `workspace.log`, `mcp-forward.log`, `launcher.log`); the launcher's output is in `journalctl --user -u ss-personal-launcher`, the gateway's in `-u ss-personal-gateway`, and the unit's, one stream for the cache, the middleware and the worker with each line prefixed by its service, in `-u ss-personal-unit`.
 
-The scripts take their settings from the environment: `SS_PERSONAL_ROOT`, `SS_PERSONAL_CONFIG`, `SS_PERSONAL_UNIT`, the ports, the VMs' size (`VM_VCPUS`, `VM_MEM_MIB`, `VM_DISK_MIB`; 8, 16,384 and 32,768 by default) and `R`, the repository. The defaults are the instance above. They refuse a unit prefix or a root that is the labs'.
+The scripts take their settings from the environment: `SS_PERSONAL_ROOT`, `SS_PERSONAL_CONFIG`, `SS_PERSONAL_UNIT`, the ports, the VMs' size (`VM_VCPUS`, `VM_MEM_MIB`, `VM_DISK_MIB`; 8, 16,384 and 32,768 by default) and `R`, the repository. The defaults are the instance above. They refuse a unit prefix or a root that is the labs'. `personal_up.sh` also refuses to start while `ss-personal-middleware` or `ss-personal-cache` of the earlier layout runs; `personal_down.sh` stops them too.
+
+**Moving from the separate units.** Add the `unit = ...` line above to `[worker]` in `personal.toml`, run `scripts/personal_down.sh` (it stops the earlier `-middleware` and `-cache` units as well), then `scripts/personal_up.sh`. The `middleware.toml` and `cache.toml` it used to write are no longer read; `unit.toml` holds their settings. Nothing else changes: the ports, the state and the sandboxes are the same.
 
 ## Updating to a new main
 

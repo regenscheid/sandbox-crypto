@@ -4,13 +4,15 @@
 ```
 sandbox-science up [--config sandbox-science.toml] [--update-skills]
 sandbox-science down [--config sandbox-science.toml] [--keep-sandboxes]
+sandbox-science prepare [--config sandbox-science.toml]
 sandbox-science status [--config sandbox-science.toml]
 sandbox-science skills update [--config sandbox-science.toml] [--pack NAME ...]
 ```
 
 ``up`` checks the config, makes what the parts need in the state directory, and starts
-the worker, then grants the project policy, makes the projects and opens their
-sessions, imports and pins their skill packs (skills.py), then starts the run service
+the worker (or, with ``[worker] unit``, waits for the unit that runs it, unit.py), then
+grants the project policy, makes the projects and opens their sessions, imports and
+pins their skill packs (skills.py), then starts the run service
 and the workspace, each once the one before is ready. It prints the GUI's address and
 how to log in, and runs until Ctrl-C, SIGTERM, SIGHUP or SIGQUIT (or ``down``), when it
 stops the parts in reverse order, suspending the projects' research sandboxes before
@@ -19,8 +21,10 @@ the worker (sandboxes.py). ``down
 by itself stops the rest, and leaves the sandboxes running. ``status`` exits 0 while an
 instance runs as it should, 3 when none runs, and 4 when something is wrong: a part
 stopped or silent, something left behind by a launcher that was killed, or research
-sandboxes running with the rest stopped. ``skills update`` imports the config's skill
-packs again from their refs and moves the projects' pins to them, saying what changed,
+sandboxes running with the rest stopped. ``prepare`` makes the state directory, the
+tokens and the worker's settings and starts nothing, for a unit that must run before
+``up``. ``skills update`` imports the config's skill packs again from their refs and
+moves the projects' pins to them, saying what changed,
 whether an instance runs or not: runs started before it keep the skills they have.
 """
 
@@ -39,11 +43,22 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import instance, mcp, orchestrator, parts, replacement, sandboxes, skills
+from sandbox_science.contracts.clock import wait_or_sleep
+
+from . import instance, mcp, orchestrator, parts, replacement, sandboxes, skills, unit
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
 from .state import Layout, check_private, write_private
-from .supervise import Part, Running, StopRequested, Supervisor, environment, passed, start_time
+from .supervise import (
+    Part,
+    Running,
+    StopRequested,
+    Supervisor,
+    environment,
+    passed,
+    reachable,
+    start_time,
+)
 
 NOT_RUNNING = 3
 DEGRADED = 4
@@ -61,6 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ("up", "start everything, and stop it all on Ctrl-C"),
         ("down", "stop the instance running from the config's state directory"),
         ("status", "show what runs"),
+        ("prepare", "write the tokens and the worker's settings, and start nothing"),
         ("replace-orchestrator", "replace the agent VM while keeping control and workspace alive"),
         ("skills", "fetch the skill packs again and move the projects' pins"),
     ):
@@ -105,6 +121,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return replacement.request(config)
             case "skills":
                 return update_skills(config, args.pack)
+            case "prepare":
+                return prepare(config)
             case _:
                 return status(config)
     except LauncherError as exc:
@@ -133,6 +151,30 @@ def up(
         )
     finally:
         os.close(held)
+
+
+def prepare(config: LauncherConfig) -> int:
+    """Make the state directory, the tokens and the worker's settings, and start nothing.
+
+    For a worker that runs apart in the unit (``[worker] unit``): the unit starts before
+    ``up`` and needs the settings file ``up`` would write. Prints the settings file's path
+    and the unit config's, or ``none``, as ``key=value`` lines for a script to read.
+    """
+    layout = Layout(config.state_dir)
+    layout.make()
+    held = instance.try_lock(layout)
+    if held is None:
+        raise LauncherError(
+            f"an instance runs from {layout.root}: stop it before preparing, or leave its "
+            "settings as they are"
+        )
+    try:
+        parts.prepare(config)
+    finally:
+        os.close(held)
+    print(f"worker_settings={layout.worker_settings}")
+    print(f"unit={config.worker.unit or 'none'}")
+    return 0
 
 
 def _recorder(
@@ -216,7 +258,7 @@ async def _up(
             config, layout, supervisor, outcome, hurry, refresh=refresh, update=update_skills
         )
         _announce(config, path, layout)
-        reason = await replacement.watch(config, layout, supervisor, replacing)
+        reason = await _watch(config, layout, supervisor, replacing)
         if reason is not None:
             print(f"error: {reason}", file=sys.stderr, flush=True)
             status = 1
@@ -234,6 +276,44 @@ async def _up(
     print("Sandbox Science stopped", flush=True)
     write_private(layout.stopped, outcome.dumps() + "\n")
     return max(status, outcome.report())
+
+
+async def _watch(
+    config: LauncherConfig, layout: Layout, supervisor: Supervisor, replacing: asyncio.Event
+) -> str | None:
+    """Supervise the parts, and a unit that runs apart: it ends the run when it goes."""
+    watching = asyncio.ensure_future(replacement.watch(config, layout, supervisor, replacing))
+    if config.worker.unit is None:
+        return await watching
+    guard = asyncio.ensure_future(
+        unit.unhealthy(unit.load(config.worker.unit), supervisor.stop_requested)
+    )
+    try:
+        done, _ = await asyncio.wait({watching, guard}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (watching, guard):
+            task.cancel()
+        await asyncio.gather(watching, guard, return_exceptions=True)
+    return watching.result() if watching in done else guard.result()
+
+
+async def _adopt_unit(path: Path, supervisor: Supervisor, timeout: float) -> None:
+    """Wait until the unit that runs the worker has all its services answering."""
+    found = unit.load(path)
+    print(f"waiting for the unit {found.path}: {', '.join(found.services)}", flush=True)
+    deadline = supervisor.clock.monotonic() + timeout
+    while True:
+        states = await asyncio.to_thread(unit.health, found)
+        if all(ok for _, _, ok in states):
+            return
+        if supervisor.clock.monotonic() >= deadline:
+            raise LauncherError(
+                f"the unit is not healthy after {timeout:g} s ({unit.describe(states)}): start "
+                f"it first, as scripts/personal_up.sh does (docs/UNIT.md); "
+                f"sandbox-science-unit status --config {found.path} says the same"
+            )
+        if await wait_or_sleep(supervisor.clock, supervisor.stop_requested, 0.5):
+            raise StopRequested
 
 
 def _worker(config: LauncherConfig, layout: Layout) -> Part:
@@ -264,9 +344,12 @@ async def _start(
         await mcp.check_providers(config)
     elif refresh:
         raise LauncherError("--refresh-provider needs [mcp_proxy] provider_env_file")
-    print(f"starting the worker on {config.worker.listen}", flush=True)
     worker_env = passed(config.worker.pass_env)
-    await supervisor.start(_worker(config, layout), timeout)
+    if config.worker.unit is not None:
+        await _adopt_unit(config.worker.unit, supervisor, timeout)
+    else:
+        print(f"starting the worker on {config.worker.listen}", flush=True)
+        await supervisor.start(_worker(config, layout), timeout)
     # Taken just before the worker stops, once the run service and the workspace have.
     api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
     listing = asyncio.ensure_future(sandboxes.keep_listing(api, layout))
@@ -436,10 +519,16 @@ def _down_stopped(config: LauncherConfig, path: Path, layout: Layout, *, keep: b
     known = sandboxes.remembered(layout)
     if keep or known is None:
         return 0  # kept on request, or no worker of this state directory ever listed any
+    # A unit that runs apart has the worker already: it is used, not started.
+    worker = (
+        "using the unit's worker"
+        if config.worker.unit is not None and asyncio.run(reachable(config.worker.listen))
+        else "starting the worker"
+    )
     if sandboxes.Outcome.read(layout.stopped) is None:
         # The last stop said nothing of them (a launcher killed outright): the list may
         # be half a minute old, so the worker lists them again.
-        print("starting the worker to list and suspend the research sandboxes", flush=True)
+        print(f"{worker} to list and suspend the research sandboxes", flush=True)
     else:
         try:
             now = asyncio.run(sandboxes.checked(config, known[1]))
@@ -449,7 +538,7 @@ def _down_stopped(config: LauncherConfig, path: Path, layout: Layout, *, keep: b
         if not running:
             return 0
         print(
-            "starting the worker to suspend the research sandboxes " + sandboxes.describe(running),
+            f"{worker} to suspend the research sandboxes " + sandboxes.describe(running),
             flush=True,
         )
     parts.prepare(config)
@@ -483,7 +572,10 @@ async def _suspend_with_worker(config: LauncherConfig, path: Path, layout: Layou
     )
     outcome = sandboxes.Outcome(tried=True)
     try:
-        await supervisor.start(_worker(config, layout), config.start_timeout)
+        # A worker already answering is the unit's (``[worker] unit``): use it, since a
+        # second worker would not get the state directory's lock.
+        if config.worker.unit is None or not await reachable(config.worker.listen):
+            await supervisor.start(_worker(config, layout), config.start_timeout)
         api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
         await sandboxes.at_stop(api, layout, outcome, hurry)
     except StopRequested:
@@ -551,6 +643,12 @@ def status(config: LauncherConfig) -> int:
         if part.address is not None:
             reach = f", {part.address} " + ("answers" if answers else "is silent")
         print(f"  {part.name}: process {part.pid}, {'running' if running else 'stopped'}{reach}")
+    if config.worker.unit is not None:
+        states = unit.health(unit.load(config.worker.unit))
+        healthy = healthy and all(ok for _, _, ok in states)
+        print(f"  unit (runs apart, {config.worker.unit}):")
+        for name, listen, ok in states:
+            print(f"    {name}: {listen} {'answers' if ok else 'is silent'}")
     made = mcp.recorded(layout)
     if made is not None:
         print(f"  the MCP proxy's sandbox: {made[0]}")

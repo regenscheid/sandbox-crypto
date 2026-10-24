@@ -110,6 +110,8 @@ The store lives in `cache_dir`: `blobs/`, the SQLite index `index.sqlite3`, `tmp
 
 ## Settings
 
+The cache is deployed with the [worker](WORKER.md) and the [policy middleware](POLICY-MIDDLEWARE.md) as one [unit](UNIT.md): these settings go in the unit config's `[cache]` section, or in a file it names, and `sandbox-science-unit serve` runs the cache. `sandbox-science-package-cache serve --settings cache.toml` keeps working, as what the unit runs; starting it as a unit of its own is deprecated for one release.
+
 ```toml
 listen = "127.0.0.1:8090"
 public_url = "http://host.openshell.internal:8090"   # how sandboxes reach the cache; rewritten links use it

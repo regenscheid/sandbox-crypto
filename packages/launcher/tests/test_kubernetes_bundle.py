@@ -6,11 +6,13 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
+import tomllib
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from sandbox_science.launcher import unit
 from sandbox_science.launcher.kubernetes_bundle import render
 from sandbox_science.launcher.kubernetes_cli import main, write_bundle
 from sandbox_science.launcher.kubernetes_config import BundleConfig, BundleError, load
@@ -77,6 +79,7 @@ def objects(config: BundleConfig | None = None) -> list[dict]:
 def test_only_trusted_singletons_and_retained_block_claims():
     items = objects()
     assert {item["kind"] for item in items} == {
+        "ConfigMap",
         "Deployment",
         "PersistentVolumeClaim",
         "Service",
@@ -116,6 +119,118 @@ def test_only_trusted_singletons_and_retained_block_claims():
     assert all("ownerReferences" not in item["metadata"] for item in claims)
     assert "storageClassName" not in claims[0]["spec"]
     assert claims[1]["spec"]["storageClassName"] == "test-block"
+
+
+def pool_containers(data: dict | None = None) -> dict[str, dict]:
+    items = objects(configured(data))
+    pool = next(
+        item
+        for item in items
+        if item["kind"] == "Deployment" and item["metadata"]["name"] == "research-pool"
+    )
+    return {c["name"]: c for c in pool["spec"]["template"]["spec"]["containers"]}
+
+
+def with_cache() -> dict:
+    data = values()
+    data["secrets"]["cache"] = {"name": "test-cache"}
+    data["network"]["sandboxes"] = [
+        {
+            "namespace_labels": {"kubernetes.io/metadata.name": "workloads"},
+            "pod_labels": {"role": "sandbox"},
+        }
+    ]
+    return data
+
+
+def test_pool_services_run_the_unit_entry_point_on_one_config_each_in_its_container():
+    for data, services in (
+        (None, ["worker", "middleware"]),
+        (with_cache(), ["worker", "middleware", "cache"]),
+    ):
+        containers = pool_containers(data)
+        assert list(containers) == services
+        for name, container in containers.items():
+            assert container["command"] == [
+                "sandbox-science-unit",
+                "serve",
+                "--config",
+                "/etc/sandbox-science/unit.toml",
+                "--only",
+                name,
+            ]
+            mount = next(m for m in container["volumeMounts"] if m["name"] == "unit-config")
+            assert mount == {
+                "name": "unit-config",
+                "mountPath": "/etc/sandbox-science",
+                "readOnly": True,
+            }
+            # The services' own commands and settings paths are the unit's to run.
+            assert "--settings" not in container["command"]
+
+
+def unit_toml(data: dict | None = None) -> dict:
+    items = objects(configured(data))
+    config_map = next(item for item in items if item["kind"] == "ConfigMap")
+    assert config_map["metadata"]["name"] == "research-pool-unit"
+    assert list(config_map["data"]) == ["unit.toml"]
+    return tomllib.loads(config_map["data"]["unit.toml"])
+
+
+def test_pool_unit_config_names_each_projected_settings_file_in_the_local_shape():
+    assert unit_toml() == {
+        "unit": {
+            "pass_env": {
+                "worker": ["AWS_EC2_METADATA_DISABLED", "HOME", "PYTHONDONTWRITEBYTECODE"],
+                "middleware": ["AWS_EC2_METADATA_DISABLED", "HOME", "PYTHONDONTWRITEBYTECODE"],
+            }
+        },
+        "worker": {"settings_file": "/private/worker.toml"},
+        "middleware": {"settings_file": "/private/middleware.toml"},
+    }
+    cached = unit_toml(with_cache())
+    assert cached["cache"] == {"settings_file": "/private/cache.toml"}
+    assert set(cached["unit"]["pass_env"]) == {"worker", "middleware", "cache"}
+
+
+def test_pool_unit_config_passes_a_service_the_variables_its_container_has():
+    data = values()
+    data["worker"] = {"environment": {"AWS_REGION": "us-east-1"}}
+    passed = unit_toml(data)["unit"]["pass_env"]
+    assert "AWS_REGION" in passed["worker"]
+    assert "AWS_REGION" not in passed["middleware"]
+    # The container still has its variables, which the unit would otherwise not hand on.
+    worker = pool_containers(data)["worker"]
+    assert {"name": "AWS_REGION", "value": "us-east-1"} in worker["env"]
+
+
+def test_pool_unit_config_is_a_valid_unit_config_for_every_container(tmp_path: Path):
+    """The renderer's file loads in the unit for each ``--only`` with only that service's
+    settings present, as in the container, and as a whole when all three are."""
+    data = with_cache()
+    text = next(i for i in objects(configured(data)) if i["kind"] == "ConfigMap")["data"][
+        "unit.toml"
+    ]
+    config = tmp_path / "unit.toml"
+    config.write_text(text)
+    settings = {
+        "worker": 'listen = "0.0.0.0:8100"\n',
+        "middleware": 'listen = "0.0.0.0:50051"\n',
+        "cache": 'listen = "0.0.0.0:8090"\n',
+    }
+    # /private is the container's; the unit reads the file the config names.
+    private = tmp_path / "private"
+    private.mkdir()
+    rewritten = text.replace("/private", str(private))
+    config.write_text(rewritten)
+    for name, body in settings.items():
+        (private / f"{name}.toml").write_text(body)
+        loaded = unit.load(config, only=[name])
+        assert list(loaded.services) == [name]
+        (private / f"{name}.toml").unlink()
+    for name, body in settings.items():
+        (private / f"{name}.toml").write_text(body)
+    assert list(unit.load(config).services) == ["cache", "middleware", "worker"]
 
 
 def test_credentials_projected_only_to_init_and_each_service_has_private_volume():

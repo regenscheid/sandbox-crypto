@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 sandbox-science = "sandbox_science.launcher.cli:main"
+sandbox-science-unit = "sandbox_science.launcher.unit:main"
 sandbox-science-kubernetes = "sandbox_science.launcher.kubernetes_cli:main"
 sandbox-science-runtime-manager = "sandbox_science.launcher.runtime_manager:main"
 

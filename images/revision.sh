@@ -12,7 +12,7 @@ recipe_packages() {
     orchestrator) packages=(contracts orchestrator) ;;
     mcp-proxy) packages=(contracts policy event-store mcp-proxy) ;;
     trusted-app) packages=(contracts policy launcher orchestrator workspace) ;;
-    trusted-worker) packages=(contracts policy event-store worker policy-middleware package-cache) ;;
+    trusted-worker) packages=(contracts policy event-store worker policy-middleware package-cache launcher) ;;
     *) packages=() ;;
   esac
 }

@@ -105,6 +105,7 @@ def main() -> None:
             "sandbox-science-worker",
             "sandbox-science-policy-middleware",
             "sandbox-science-package-cache",
+            "sandbox-science-unit",
         ):
             command(cli, "--help")
         if command("openshell", "--version").strip() != OPENSHELL_VERSION_OUTPUT:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 
+from . import toml
 from .kubernetes_config import (
     GATEWAY_PROFILE,
     REQUIRED_FILES,
@@ -28,6 +29,11 @@ RUNTIME_CREDENTIALS = "/run/sandbox-science/runtime-credentials"
 CONTROL_PORT = 8443
 MANAGER_PORT = 8444
 SETTINGS_ENV = "SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS"
+UNIT = "sandbox-science-unit"
+UNIT_DIR = "/etc/sandbox-science"
+"""Where the pool Pod's containers read the unit config (a ConfigMap, never a credential)."""
+UNIT_VOLUME = "unit-config"
+POOL_SERVICES = ("worker", "middleware", "cache")
 _INIT = Capacity(
     cpu_request_millis=50, cpu_limit_millis=100, memory_request_mib=32, memory_limit_mib=128
 )
@@ -296,12 +302,10 @@ def _command(config: BundleConfig, name: str) -> list[str]:
             f"{PRIVATE}/worker-ca.crt",
             *config.models.workspace_arguments(),
         ]
-    executable = (
-        "sandbox-science-policy-middleware" if name == "middleware" else f"sandbox-science-{name}"
-    )
-    if name == "cache":
-        executable = "sandbox-science-package-cache"
-    return [executable, "serve", "--settings", f"{PRIVATE}/{name}.toml"]
+    # The pool's services run the unit's entry point on the unit's config, one container
+    # each so that each keeps its own credentials, limits and probes; ``--only`` picks the
+    # container's service from the file all three share (docs/UNIT.md).
+    return [UNIT, "serve", "--config", f"{UNIT_DIR}/unit.toml", "--only", name]
 
 
 def _data_mounts(name: str, capacity: Capacity) -> list[dict[str, object]]:
@@ -323,15 +327,35 @@ def _data_mounts(name: str, capacity: Capacity) -> list[dict[str, object]]:
     ]
 
 
-def _container(
-    config: BundleConfig, name: str, image: str, capacity: Capacity
-) -> dict[str, object]:
-    environment = {
+def _environment(capacity: Capacity) -> dict[str, str]:
+    return {
         "HOME": "/tmp",  # noqa: S108 - existing bounded per-container Pod volume
         "PYTHONDONTWRITEBYTECODE": "1",
         "AWS_EC2_METADATA_DISABLED": "true",
         **(capacity.environment if isinstance(capacity, Service) else {}),
     }
+
+
+def _unit_config(config: BundleConfig) -> str:
+    """The unit config of the pool Pod, in the shape ``sandbox-science up`` and the personal
+    instance use: one section per service, each naming the settings file the bundle already
+    projects from that service's Secret. The unit passes each service the container
+    variables it is given (the unit starts its services with a short environment)."""
+    services = {
+        name: capacity for name, capacity, _ in _roles(config, "pool") if name in POOL_SERVICES
+    }
+    document: dict[str, object] = {}
+    passed = {name: sorted(_environment(capacity)) for name, capacity in services.items()}
+    document["unit"] = {"pass_env": passed}
+    for name in services:
+        document[name] = {"settings_file": f"{PRIVATE}/{name}.toml"}
+    return toml.dumps(document)
+
+
+def _container(
+    config: BundleConfig, name: str, image: str, capacity: Capacity
+) -> dict[str, object]:
+    environment = _environment(capacity)
     if name == MANAGER:
         # `kubectl exec … sandbox-science-runtime-manager request …` inherits this.
         environment[SETTINGS_ENV] = f"{PRIVATE}/runtime-manager.json"
@@ -342,6 +366,8 @@ def _container(
     ]
     if name == "control":
         mounts.append({"name": "runtime-credentials", "mountPath": RUNTIME_CREDENTIALS})
+    if name in POOL_SERVICES:
+        mounts.append({"name": UNIT_VOLUME, "mountPath": UNIT_DIR, "readOnly": True})
     result: dict[str, object] = {
         "name": name,
         "image": image,
@@ -435,6 +461,17 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
         volumes.append(
             {"name": "runtime-credentials", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}
         )
+    if component == "pool":
+        volumes.append(
+            {
+                "name": UNIT_VOLUME,
+                "configMap": {
+                    "name": f"{config.name}-pool-unit",
+                    "defaultMode": 292,
+                    "items": [{"key": "unit.toml", "path": "unit.toml"}],
+                },
+            }
+        )
     return _object(
         config,
         "Deployment",
@@ -474,6 +511,7 @@ def render(config: BundleConfig) -> dict[str, object]:
         _pvc(config, "app", config.app),
         _pvc(config, "pool", config.pool),
         _pvc(config, MANAGER, config.runtime_manager),
+        _object(config, "ConfigMap", "pool-unit", data={"unit.toml": _unit_config(config)}),
         _deployment(config, "app"),
         _deployment(config, "pool"),
         _deployment(config, MANAGER),

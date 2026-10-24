@@ -184,6 +184,11 @@ def serve(
         note("exits")
         sys.exit(4)
     signal.signal(signal.SIGTERM, signal.SIG_IGN if behaviour == "ignore-term" else stopped)
+    for seen in ("LEAK_CHECK", "PASSED_ON"):
+        if name in ("sandbox-science-worker", "sandbox-science-policy-middleware") and (
+            seen in os.environ
+        ):
+            note(f"saw {seen}")
     listener = None
     if address is not None and api is not None:
         host, port = address.rsplit(":", 1)
@@ -229,6 +234,9 @@ match (name, args[:2]):
     case ("sandbox-science-worker", ["serve", *_]):
         settings = tomllib.loads(Path(option("--settings")).read_text())
         serve(settings["listen"], ["worker API on " + settings["listen"]], api=worker_api(settings))
+    case ("sandbox-science-policy-middleware" | "sandbox-science-package-cache", ["serve", *_]):
+        settings = tomllib.loads(Path(option("--settings")).read_text())
+        serve(settings["listen"], [f"{name} serving on " + settings["listen"]])
     case ("sandbox-science-harness", ["project", "show"]):
         # The projects made so far, beside the journal: a project not made is not there.
         note(f"project show {option('--project')}")

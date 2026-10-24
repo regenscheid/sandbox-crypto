@@ -468,9 +468,11 @@ RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss
         -r /run/ss-build/requirements.txt && \
     python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
         sandbox-science-contracts sandbox-science-policy sandbox-science-event-store \
-        sandbox-science-worker sandbox-science-policy-middleware sandbox-science-package-cache && \
+        sandbox-science-worker sandbox-science-policy-middleware sandbox-science-package-cache \
+        sandbox-science-launcher && \
     python -m pip check && sandbox-science-worker --help && \
-    sandbox-science-policy-middleware --help && sandbox-science-package-cache --help
+    sandbox-science-policy-middleware --help && sandbox-science-package-cache --help && \
+    sandbox-science-unit --help
 USER root
 COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
 COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py

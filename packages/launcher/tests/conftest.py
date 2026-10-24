@@ -23,6 +23,8 @@ from sandbox_science.launcher import toml
 ConfigMaker = Callable[..., Path]
 PARTS = (
     "sandbox-science-worker",
+    "sandbox-science-policy-middleware",
+    "sandbox-science-package-cache",
     "sandbox-science-harness",
     "sandbox-science-workspace",
     "sandbox-science-mcp-proxy",
@@ -279,6 +281,8 @@ def site(
     ) -> Launcher:
         fakes = ["FAKE_JOURNAL", "FAKE_PARTS", "FAKE_OPENSHELL"]
         extra = changes.pop("pass_env", {})
+        command = changes.pop("command", "up")
+        unit = changes.pop("unit", None)
         config = make_config(
             {
                 "bin_dir": str(fake_parts),
@@ -288,6 +292,7 @@ def site(
                 "worker": {
                     "listen": f"127.0.0.1:{worker}",
                     "pass_env": [*fakes, *extra.get("worker", [])],
+                    **({} if unit is None else {"unit": str(unit)}),
                 },
                 "run_service": {"pass_env": [*fakes, *extra.get("run_service", [])]},
                 "orchestrator": {
@@ -308,7 +313,7 @@ def site(
             "FAKE_OPENSHELL": str(tmp_path / "openshell.json"),
             **(env or {}),
         }
-        return Launcher(config, environment, "up", *options)
+        return Launcher(config, environment, command, *options)
 
     started: list[Launcher] = []
 
