@@ -18,13 +18,12 @@ import re
 from collections.abc import Mapping
 from typing import Final
 
+from sandbox_science.policy.mcp_wire import PLACEHOLDER_MARK as PLACEHOLDER_MARK
+from sandbox_science.policy.mcp_wire import contains_placeholder as contains_placeholder
 from sandbox_science.policy.model import BearerAuth, HeadersAuth, McpAuth, NoAuth, OAuthAuth
 
 from .errors import RefusalError
 from .reasons import CREDENTIAL_UNAVAILABLE
-
-PLACEHOLDER_MARK: Final = b"openshell:resolve:"
-"""What every OpenShell placeholder starts with."""
 
 _PLACEHOLDER_RE: Final = re.compile(r"openshell:resolve:env:[\x21-\x7e]{1,512}")
 _REFERENCE_RE: Final = re.compile(
@@ -52,11 +51,6 @@ RESERVED_HEADERS: Final = frozenset(
 """Headers the proxy sets itself, which a ``headers`` server entry may not name."""
 
 Headers = tuple[tuple[str, str], ...]
-
-
-def contains_placeholder(body: bytes) -> bool:
-    """Whether a body carries something that reads as an OpenShell placeholder, in any case."""
-    return PLACEHOLDER_MARK in body.lower()
 
 
 def credential_headers(

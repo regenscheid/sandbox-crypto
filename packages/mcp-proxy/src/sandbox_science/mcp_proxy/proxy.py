@@ -27,7 +27,6 @@ policy and these checks have not passed.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -57,6 +56,12 @@ from sandbox_science.policy.approvals import (
     Unrecorded,
     Waiting,
     prepare_answer,
+)
+from sandbox_science.policy.mcp_wire import (
+    MCP_REQUEST_PARAMS,
+    McpWireError,
+    forwarded_params,
+    params_digest,
 )
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import McpVersion
@@ -116,23 +121,11 @@ MAX_RECORDED_TEXT: Final = 256
 MAX_RESPONSE_BYTES: Final = 32 * 1024 * 1024
 """The most of one answer the proxy reads, whatever ``max_response_bytes`` the policy sets."""
 
-PARAMS: Final[Mapping[str, frozenset[str]]] = {
-    "ping": frozenset(),
-    "tools/list": frozenset({"cursor"}),
-    "tools/call": frozenset({"name", "arguments"}),
-    "resources/list": frozenset({"cursor"}),
-    "resources/templates/list": frozenset({"cursor"}),
-    "resources/read": frozenset({"uri"}),
-    "resources/subscribe": frozenset({"uri"}),
-    "resources/unsubscribe": frozenset({"uri"}),
-    "prompts/list": frozenset({"cursor"}),
-    "prompts/get": frozenset({"name", "arguments"}),
-    "completion/complete": frozenset({"ref", "argument", "context"}),
-    "logging/setLevel": frozenset({"level"}),
-}
-"""The parameters MCP (2025-03-26 to 2025-11-25) defines for each request the proxy forwards,
-besides ``_meta``. Anything else is refused: a server whose JSON decoder matches keys without
-regard to case would read ``NAME`` as the tool name the policy never saw."""
+PARAMS: Final = MCP_REQUEST_PARAMS
+"""The parameters MCP defines for each request the proxy forwards, besides ``_meta``
+(the policy library's, which the middleware applies too). Anything else is refused: a
+server whose JSON decoder matches keys without regard to case would read ``NAME`` as the
+tool name the policy never saw."""
 
 PARSE_ERROR: Final = -32700
 INVALID_REQUEST: Final = -32600
@@ -949,7 +942,7 @@ class McpProxy:
             call.server,
             method,
             call.tool or "",
-            hashlib.sha256(params).hexdigest(),
+            params_digest(params),
         )
         await self._refresh_approvals()
         resolution = self._approvals.resolve(key, self._now())
@@ -1126,23 +1119,14 @@ def _forwarded_params(method: str, params: JsonObject | None) -> JsonObject | No
     """The parameters as forwarded: those MCP defines for the method, and nothing else.
 
     ``_meta`` is dropped: it carries progress tokens and other caller metadata
-    the proxy does not relay. A task-augmented request is refused, since it
-    would start work whose result only the task methods return, and the policy
-    denies those. Any other member is refused (see ``PARAMS``).
+    the proxy does not relay (``mcp_wire.forwarded_params``).
     """
-    known = PARAMS.get(method)
-    if known is None:
+    if method not in PARAMS:
         raise RefusalError(REQUEST_UNCLASSIFIABLE, f"the proxy does not forward {method!r}")
-    if params is None:
-        return None
-    if "task" in params:
-        raise RefusalError(REQUEST_UNCLASSIFIABLE, "task-augmented requests are not supported")
-    if not params.keys() - {"_meta"} <= known:
-        raise RefusalError(REQUEST_UNCLASSIFIABLE, f"{method} has parameters MCP does not define")
-    arguments = params.get("arguments")
-    if arguments is not None and not isinstance(arguments, dict):
-        raise RefusalError(REQUEST_UNCLASSIFIABLE, f"{method} arguments must be an object")
-    return {key: params[key] for key in sorted(known) if key in params}
+    try:
+        return forwarded_params(method, params)
+    except McpWireError as exc:
+        raise RefusalError(REQUEST_UNCLASSIFIABLE, str(exc)) from exc
 
 
 def _dumps(value: object) -> bytes:

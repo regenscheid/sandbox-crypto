@@ -13,6 +13,9 @@ from __future__ import annotations
 import re
 from typing import Final, cast
 
+from sandbox_science.policy import mcp_wire
+from sandbox_science.policy.mcp_wire import McpWireError
+
 from .errors import MessageError
 from .jsonrpc import JsonObject
 
@@ -24,19 +27,10 @@ def tool_names(result: JsonObject) -> tuple[list[str], str | None]:
 
     Raises MessageError when the result does not have the shape MCP gives it.
     """
-    tools = result.get("tools")
-    cursor = result.get("nextCursor")
-    if not isinstance(tools, list) or (cursor is not None and not isinstance(cursor, str)):
-        raise MessageError("a tools/list result needs a tools list and a string nextCursor")
-    if cursor == "":
-        cursor = None  # an empty cursor leads nowhere; some servers send it on the last page
-    names: list[str] = []
-    for tool in cast("list[object]", tools):
-        name = cast("JsonObject", tool).get("name") if isinstance(tool, dict) else None
-        if not isinstance(name, str) or not name:
-            raise MessageError("every tool in a tools/list result needs a name")
-        names.append(name)
-    return names, cursor
+    try:
+        return mcp_wire.tool_names(result)
+    except McpWireError as exc:
+        raise MessageError(str(exc)) from exc
 
 
 def withhold_binary(method: str, result: JsonObject) -> tuple[JsonObject, int]:

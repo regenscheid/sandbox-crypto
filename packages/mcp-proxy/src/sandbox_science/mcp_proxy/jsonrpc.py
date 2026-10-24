@@ -4,20 +4,23 @@
 Parsing is strict, so that the proxy and a server cannot read one message two
 ways: duplicate object keys, ``NaN`` and infinities are refused (OpenShell's
 MCP inspection refuses duplicate keys too), and the proxy sends its own
-serialization of what it decided on, never the bytes it received.
+serialization of what it decided on, never the bytes it received. The strict
+JSON and the event-stream parser are the policy library's (``mcp_wire``), which
+the policy middleware reads MCP with too (D98).
 """
 
 from __future__ import annotations
 
-import json
-import math
-import re
 from dataclasses import dataclass
 from typing import Final, cast
 
+from sandbox_science.policy import mcp_wire
+from sandbox_science.policy.mcp_wire import Event as Event
+from sandbox_science.policy.mcp_wire import McpWireError
+
 from .errors import MessageError
 
-JsonObject = dict[str, object]
+JsonObject = mcp_wire.JsonObject
 RequestId = str | int
 
 MAX_ID_LENGTH: Final = 256
@@ -26,49 +29,20 @@ _REQUEST_KEYS: Final = frozenset({"jsonrpc", "id", "method", "params"})
 _RESPONSE_KEYS: Final = frozenset({"jsonrpc", "id", "result", "error"})
 
 
-def _unique_keys(pairs: list[tuple[str, object]]) -> JsonObject:
-    fields: JsonObject = {}
-    for key, value in pairs:
-        if key in fields:
-            raise MessageError("a JSON object has a duplicate key")
-        fields[key] = value
-    return fields
-
-
-def _no_constant(name: str) -> object:
-    raise MessageError(f"{name} is not JSON")
-
-
-def _finite(text: str) -> float:
-    value = float(text)
-    if math.isinf(value):
-        raise MessageError("a number is too large to represent")
-    return value
-
-
 def loads(data: bytes) -> object:
     """Parse UTF-8 JSON; raise MessageError for anything a strict parser would refuse."""
     try:
-        return json.loads(
-            data.decode("utf-8"),
-            object_pairs_hook=_unique_keys,
-            parse_constant=_no_constant,
-            parse_float=_finite,
-        )
-    except (ValueError, RecursionError) as exc:
-        # ValueError covers JSONDecodeError, UnicodeDecodeError and integers
-        # longer than Python converts (sys.get_int_max_str_digits()).
-        raise MessageError(f"not valid JSON: {exc}") from exc
+        return mcp_wire.loads(data)
+    except McpWireError as exc:
+        raise MessageError(str(exc)) from exc
 
 
 def dumps(value: object) -> bytes:
     """Serialize compactly as UTF-8; raise MessageError for values JSON cannot carry."""
     try:
-        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        # A lone surrogate (from a "\ud800" escape) has no UTF-8 encoding.
-        return text.encode("utf-8")
-    except (UnicodeEncodeError, ValueError, TypeError, RecursionError) as exc:
-        raise MessageError(f"cannot serialize JSON: {exc}") from exc
+        return mcp_wire.dumps(value)
+    except McpWireError as exc:
+        raise MessageError(str(exc)) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,94 +173,20 @@ def error(
     return {"jsonrpc": "2.0", "id": request_id, "error": body}
 
 
-@dataclass(frozen=True, slots=True)
-class Event:
-    """One server-sent event; ``type`` is ``message`` unless the server named another."""
-
-    type: str
-    data: str
-    id: str | None
-
-
-_EOL: Final = re.compile(rb"\r\n?|\n")
-_BOM: Final = b"\xef\xbb\xbf"
-
-
-class EventStreamParser:
-    """Incremental parser for ``text/event-stream`` (WHATWG HTML, "Server-sent events").
-
-    Lines end with CRLF, LF or CR, and a blank line ends an event. Lines that
-    start with a colon are comments. An event left without its blank line at
-    the end of the stream is discarded, as the standard says. The caller
-    bounds the bytes it feeds; each byte is scanned once, however small the
-    chunks it arrives in.
-    """
-
-    def __init__(self) -> None:
-        self._buffer = bytearray()
-        self._scanned = 0  # the buffer holds no line end before here
-        self._data: list[str] = []
-        self._type = ""
-        self._last_id: str | None = None
-        self._started = False
+class EventStreamParser(mcp_wire.EventStreamParser):
+    """The library's ``text/event-stream`` parser, raising MessageError for a stream
+    that is not UTF-8."""
 
     def feed(self, chunk: bytes) -> list[Event]:
         """Parse more of the stream; return the events it completed."""
-        self._buffer += chunk
-        if not self._started:
-            if len(self._buffer) < len(_BOM) and _BOM.startswith(bytes(self._buffer)):
-                return []
-            if self._buffer.startswith(_BOM):
-                del self._buffer[: len(_BOM)]
-            self._started = True
-        events: list[Event] = []
-        position = 0
-        while (match := _EOL.search(self._buffer, max(position, self._scanned))) is not None:
-            if match.group() == b"\r" and match.end() == len(self._buffer):
-                break  # the CR may be the first half of a CRLF
-            event = self._line(bytes(self._buffer[position : match.start()]))
-            position = match.end()
-            if event is not None:
-                events.append(event)
-        del self._buffer[:position]
-        # Only a CR at the very end can still start a line end.
-        self._scanned = max(len(self._buffer) - 1, 0)
-        return events
+        try:
+            return super().feed(chunk)
+        except McpWireError as exc:
+            raise MessageError(str(exc)) from exc
 
     def finish(self) -> list[Event]:
-        """End the stream: a CR at its very end ends a line. Return the events completed."""
-        if not self._buffer.endswith(b"\r"):
-            return []
-        event = self._line(bytes(self._buffer[:-1]))
-        self._buffer.clear()
-        self._scanned = 0
-        return [] if event is None else [event]
-
-    def _line(self, raw: bytes) -> Event | None:
+        """End the stream; return the events completed."""
         try:
-            line = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise MessageError("the event stream is not UTF-8") from exc
-        if not line:
-            if not self._data:
-                self._type = ""
-                return None
-            event = Event(self._type or "message", "\n".join(self._data), self._last_id)
-            self._data = []
-            self._type = ""
-            return event
-        if line.startswith(":"):
-            return None
-        name, colon, value = line.partition(":")
-        if colon and value.startswith(" "):
-            value = value[1:]
-        match name:
-            case "data":
-                self._data.append(value)
-            case "event":
-                self._type = value
-            case "id" if "\0" not in value:
-                self._last_id = value
-            case _:
-                pass  # "retry" and unknown fields are ignored
-        return None
+            return super().finish()
+        except McpWireError as exc:
+            raise MessageError(str(exc)) from exc
