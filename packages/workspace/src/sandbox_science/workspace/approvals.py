@@ -11,7 +11,9 @@ escalates, so it never reaches a denied tool. Routes:
 - ``GET …/sessions/{session}/permission-requests``: the session's calls that wait, each
   with its permission request's number, server, tool, the policy's reason and when it
   times out. Never the call's arguments: the proxy keeps only their digest, and the page
-  shows them from the session's own transcript.
+  shows them from the session's own transcript. A delegated run's call names the child
+  that asked, with the brief its parent gave it and the child's own words (D99); one its
+  parent withdrew is not listed, cannot be approved, and is denied at the proxy.
 - ``POST …/permission-requests/{seq}/answer`` with ``{"decision": "once" | "project" |
   "server" | "deny"}``: once approves this call; project remembers the tool for the
   project, server any escalated tool of the server (``approval_settings.py``); deny
@@ -41,6 +43,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import Contract, ErrorKind
 from sandbox_science.orchestrator.approval_settings import Grant, ProjectApprovals
 from sandbox_science.orchestrator.connectors import check_proxy
+from sandbox_science.orchestrator.delegation.requests import ChildRequest, ChildRequests
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.projects import ProjectError
 
@@ -55,6 +58,19 @@ ONCE_HOURS: Final = 1.0
 """How long an approval of one call (its exact arguments) lasts at the proxy."""
 RELAY_SECONDS: Final = 3.0
 MAX_REQUESTS: Final = 256
+
+
+class ChildAsked(Contract):
+    """The delegated run whose call is held (D99): agent-attributed text, never the user's.
+    The workspace sets it from its own records; the proxy's listing never carries it."""
+
+    delegation_id: str
+    run: str
+    kind: str
+    brief: str
+    """What the parent asked the child to do, bounded: the parent agent's words."""
+    words: str
+    """The child's own words at the call, bounded."""
 
 
 class PendingApproval(Contract):
@@ -73,6 +89,8 @@ class PendingApproval(Contract):
     expires_at: datetime
     timed_out: bool
     on_timeout: str
+    child: ChildAsked | None = None
+    """The delegated run that asked, if one did."""
 
 
 class PendingListing(Contract):
@@ -194,7 +212,27 @@ async def session_requests(request: web.Request) -> web.Response:
     if config is None or config.project != project:
         return json_answer(dumps({"requests": []}))
     found = [item for item in await config.client.pending() if item.session == session]
-    return json_answer(dumps({"requests": [item.model_dump(mode="json") for item in found]}))
+    children = await asyncio.to_thread(
+        ChildRequests(context.documents).in_session, project, session
+    )
+    listed = [
+        item.model_copy(update={"child": _asked(children.get(item.seq))})
+        for item in found
+        if (child := children.get(item.seq)) is None or child.withdrawn_by is None
+    ]
+    return json_answer(dumps({"requests": [item.model_dump(mode="json") for item in listed]}))
+
+
+def _asked(child: ChildRequest | None) -> ChildAsked | None:
+    if child is None:
+        return None
+    return ChildAsked(
+        delegation_id=child.delegation_id,
+        run=child.run,
+        kind=child.kind,
+        brief=child.brief,
+        words=child.words,
+    )
 
 
 async def answer(request: web.Request) -> web.Response:
@@ -210,6 +248,14 @@ async def answer(request: web.Request) -> web.Response:
             ErrorKind.INVALID_REQUEST, "an answer is once, project, server or deny"
         ) from None
     config = _configured(request, project)
+    withdrawn = await asyncio.to_thread(
+        ChildRequests(request.app[CONTEXT].documents).withdrawn, project, [seq]
+    )
+    if seq in withdrawn:  # a withdrawal only refuses: the user cannot approve it after
+        raise ProjectError(
+            ErrorKind.CONFLICT,
+            f"permission request {seq} was withdrawn by the agent that delegated its caller",
+        )
     asked = next((item for item in await config.client.pending() if item.seq == seq), None)
     if asked is None:
         raise ProjectError(ErrorKind.CONFLICT, f"permission request {seq} no longer waits")
@@ -264,13 +310,24 @@ async def change_settings(request: web.Request) -> web.Response:
 
 
 async def _relay(app: web.Application) -> None:
-    """Give the proxy each remembered approval again when a call it covers is held."""
+    """Give the proxy each remembered approval again when a call it covers is held, and
+    deny each held call a parent withdrew (D99): a withdrawal only ever refuses."""
     config = app[APPROVALS]
     store = app[CONTEXT].documents
     while True:
         try:
-            for held in await config.client.pending():
+            pending = await config.client.pending()
+            withdrawn = await asyncio.to_thread(
+                ChildRequests(store).withdrawn,
+                config.project,
+                [held.seq for held in pending if held.seq not in config.relayed],
+            )
+            for held in pending:
                 if held.seq in config.relayed or held.timed_out:
+                    continue
+                if held.seq in withdrawn:
+                    await config.client.answer(held.seq, approve=False, scope="call", hours=None)
+                    config.relayed.add(held.seq)
                     continue
                 grant = await asyncio.to_thread(
                     ProjectApprovals(store).covering, config.project, held.server, held.tool

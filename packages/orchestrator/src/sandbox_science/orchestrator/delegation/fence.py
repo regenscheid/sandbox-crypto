@@ -2,11 +2,15 @@
 """A delegated run's plan fence (plans-and-delegation spec, PD-34; question 15).
 
 A delegated run gets no plan tools, so it cannot read the plan again as its parent can.
-Its calls that may change something are refused while the session's plan is a draft,
-once the user has changed the plan since the run started, or once the session was
-closed or opened again. A task's progress on its track is refused once the plan is no
-longer the version it started under (PD-9). The first refusal is kept, and the
-delegation's outcome reports it, so the parent learns why the run stopped.
+The fence gates outward effects only (D99): its calls that may act beyond the session are
+refused while the session's plan is a draft, once the user has changed the plan since
+the run started, or once the session was closed or opened again. Calls whose effects stay
+in the session (computation, session files, installs through the package cache;
+``effects.SESSION_TOOLS``) go on under a draft or an edited plan, which the workspace
+shows instead; they are refused only once the session was closed or opened again. A
+task's progress on its track is refused once the plan is no longer the version it
+started under (PD-9). The first refusal is kept, and the delegation's outcome reports it,
+so the parent learns why the run stopped.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from typing import Final
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.delegation.effects import reach
 from sandbox_science.orchestrator.documents.errors import CONFLICT, POLICY_DENIED
 from sandbox_science.orchestrator.hooks import Effect, Refusal, TurnHook
 from sandbox_science.orchestrator.projects import ProjectStore, SessionSnapshot
@@ -60,12 +65,18 @@ class ChildFence(TurnHook):
         self.granted = granted
 
     async def gate(self, effect: Effect) -> Refusal | None:
+        """A call of an unnamed tool: an ``effect`` is taken to act outward."""
+        return await self.gate_call("", effect)
+
+    async def gate_call(self, tool: str, effect: Effect) -> Refusal | None:
         if effect in ("read", "cancel", "proposal"):
             return None
         if effect == "plan":
             if self.granted is None:
                 return None
             refusal = await threaded(self._progress)
+        elif reach(tool) == "session":
+            refusal = await threaded(self._held)
         else:
             refusal = await threaded(self._check)
         if refusal is not None and self.refused is None:
@@ -87,18 +98,30 @@ class ChildFence(TurnHook):
             )
         return None
 
-    def _check(self) -> Refusal | None:
+    def _held(self) -> Refusal | None:
+        """The session is still the one the run started in: closed or opened again, it
+        allows the run no effects, inside the session or out."""
         context = self.context
         current = self.projects.session_snapshot(context.project_id, context.session_id)
         if current != self.session:
             return Refusal(
                 POLICY_DENIED, "the session was closed or opened again since you started"
             )
+        return None
+
+    def _check(self) -> Refusal | None:
+        """An outward effect also needs an active plan the user has not changed since."""
+        if (held := self._held()) is not None:
+            return held
         summary = self.plans.summary(self.authority)
         if summary is None:
             return None
         if summary.status == "draft":
-            return Refusal(POLICY_DENIED, "the session's plan is a draft, which allows no effects")
+            return Refusal(
+                POLICY_DENIED,
+                "the session's plan is a draft, which allows no effects outside the session; "
+                "computation and the session's files are not affected",
+            )
         for _ in range(PAGES):
             if self.seen >= summary.event_cursor:
                 return None
@@ -109,7 +132,7 @@ class ChildFence(TurnHook):
                 return Refusal(
                     CONFLICT,
                     "plan_changed: the user changed the session's plan since you started; "
-                    "you make no new effects",
+                    "you make no new effects outside the session",
                 )
             self.seen = page.after
             if not page.more:

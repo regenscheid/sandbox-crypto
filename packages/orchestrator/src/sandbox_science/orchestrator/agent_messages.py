@@ -16,7 +16,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import Field
 
@@ -33,6 +33,9 @@ from .model import ToolSpec
 from .projects import RunRecord
 from .runstate import LEASE_SECONDS
 from .worker_client import dump
+
+if TYPE_CHECKING:
+    from .delegation.requests import ChildRequests
 
 SOURCE: Final = "agent_messages"
 MAX_BODY: Final = 4096
@@ -331,6 +334,11 @@ class WaitMessage(Contract):
     timeout_seconds: float = Field(default=60.0, gt=0, le=WAIT_MAX)
 
 
+class Withdrawal(Contract):
+    delegation_id: str = Field(min_length=1, max_length=128)
+    permission_request: int = Field(ge=0)
+
+
 CHILD_SPEC: Final = ToolSpec(
     "message_child",
     "Send a correction, instruction or answer to one running direct child. It is saved "
@@ -369,6 +377,22 @@ STATUS_SPEC: Final = ToolSpec(
         "additionalProperties": False,
     },
 )
+WITHDRAW_SPEC: Final = ToolSpec(
+    "withdraw_child_request",
+    "Withdraw a direct child's call that waits for the user's answer, of which a platform "
+    "notice told you: the call is refused, as a denied one is, and the user is no longer "
+    "asked. Withdraw a request the work no longer needs. Nothing approves a request but "
+    "the user, in the session's chat; you cannot.",
+    {
+        "type": "object",
+        "properties": {
+            "delegation_id": {"type": "string"},
+            "permission_request": {"type": "integer", "minimum": 0},
+        },
+        "required": ["delegation_id", "permission_request"],
+        "additionalProperties": False,
+    },
+)
 WAIT_SPEC: Final = ToolSpec(
     "wait_agent_message",
     "Wait up to timeout_seconds for a new message from your direct parent or child. "
@@ -398,22 +422,29 @@ class AgentMailbox(TurnHook):
         delegation: str | None,
         may_message_child: bool,
         user_arrived: Callable[[], Awaitable[None]] | None = None,
+        requests: ChildRequests | None = None,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
+        """``requests`` are the children's requests that wait for the user: with them, a
+        run that may message its children may also withdraw theirs (D99)."""
         self.store, self.context, self.run = store, context, run
         self.delegation, self.clock = delegation, clock
         self.user_arrived = user_arrived
+        self.requests = requests if may_message_child else None
         self.seen: frozenset[str] = frozenset()
         self.specs = (
             ((CHILD_SPEC,) if may_message_child else ())
             + ((PARENT_SPEC,) if delegation is not None else ())
             + ((STATUS_SPEC, WAIT_SPEC) if may_message_child or delegation is not None else ())
+            + ((WITHDRAW_SPEC,) if self.requests is not None else ())
         )
 
     async def call(
         self, name: str, args: dict[str, Any], operation: str
     ) -> tuple[str, dict[str, Any]]:
         project, session = self.context.project_id, self.context.session_id
+        if name == WITHDRAW_SPEC.name:
+            return await self._withdraw(args)
         if name == "message_child":
             if CHILD_SPEC not in self.specs:
                 raise ControlError(CONFLICT, "this run cannot message a child")
@@ -496,6 +527,27 @@ class AgentMailbox(TurnHook):
             "delivered_run": message.delivered_run,
         }
         return dump(result), {"agent_message": result}
+
+    async def _withdraw(self, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """A child's waiting request, withdrawn by its parent: refused, never approved."""
+        if self.requests is None:
+            raise ControlError(CONFLICT, "this run has no child requests to withdraw")
+        request = Withdrawal.model_validate(args)
+        withdrawn = await threaded(
+            self.requests.withdraw,
+            self.context.project_id,
+            self.context.session_id,
+            parent=self.run,
+            delegation=request.delegation_id,
+            request=request.permission_request,
+        )
+        result = {
+            "permission_request": withdrawn.request,
+            "delegation_id": withdrawn.delegation_id,
+            "state": "withdrawn",
+            "withdrawn_at": withdrawn.withdrawn_at,
+        }
+        return dump(result), {"child_request": result}
 
     async def fresh(self, run: RunView) -> list[AgentMessage]:
         return await threaded(

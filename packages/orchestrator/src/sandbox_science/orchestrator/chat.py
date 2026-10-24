@@ -118,6 +118,8 @@ class RunChat:
         self.shown: Mapping[str, str] = {}
         """The user's messages whose text the run's view holds already, by ID: each
         one's archive ID (docs/specs/context-management.md, CM-29a)."""
+        self.said = ""
+        """The text of the run's latest assistant step: a waiting call's own words."""
 
     async def pending(self) -> list[ChatMessage]:
         """Queued messages this run has not offered yet, oldest first, every page."""
@@ -155,6 +157,8 @@ class RunChat:
 
     async def write(self, kind: EventKind, data: dict[str, Any]) -> None:
         context = self.context
+        if kind == "assistant":
+            self.said = str(data.get("text") or "")
         try:
             await threaded(
                 self.state.append,

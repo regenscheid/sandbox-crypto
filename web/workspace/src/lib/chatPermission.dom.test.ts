@@ -27,9 +27,13 @@ const request: PendingApproval = {
   expires_at: '2026-10-21T18:30:00Z',
   timed_out: false,
   on_timeout: 'deny',
+  child: null,
 };
 
-function card(call: { arguments: string; text: string } | null = null) {
+function card(
+  call: { arguments: string; text: string } | null = null,
+  asked: PendingApproval = request,
+) {
   const sent: string[] = [];
   const target = document.createElement('div');
   document.body.append(target);
@@ -37,7 +41,7 @@ function card(call: { arguments: string; text: string } | null = null) {
     mount(ChatPermission, {
       target,
       props: {
-        request,
+        request: asked,
         call,
         answer: vi.fn(async (decision: string) => {
           sent.push(decision);
@@ -90,6 +94,29 @@ describe('a held tool call', () => {
     button(target, 'Allow').click();
     await settle();
     expect(sent).toEqual(['once', 'deny', 'server', 'project']);
+  });
+});
+
+describe("a delegated agent's held call (D99)", () => {
+  it('names the child, shows its brief and its own words, and still asks the user', () => {
+    const { target } = card(
+      { arguments: '{}', text: 'The main run said this.' },
+      {
+        ...request,
+        child: {
+          delegation_id: 'dlg-' + '0'.repeat(24),
+          run: 'child-run',
+          kind: 'task',
+          brief: 'Find the SNOVA parameter sets.',
+          words: 'Fetching the round-2 page.',
+        },
+      },
+    );
+    expect(target.textContent).toContain('Asked by a delegated agent (task)');
+    expect(target.querySelector('.brief')!.textContent).toContain('Find the SNOVA parameter sets.');
+    expect(target.textContent).toContain('Fetching the round-2 page.');
+    expect(target.textContent).not.toContain('The main run said this.');
+    expect(button(target, 'Allow')).toBeTruthy();
   });
 });
 

@@ -149,8 +149,9 @@ def depth(harness: Harness, value: int) -> None:
 
 
 async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
-    """A plan the user publishes while the child runs is a draft: the child's effects are
-    refused, and the outcome says why."""
+    """A plan the user publishes while the child runs is a draft: the child's outward
+    effects are refused, and the outcome says why, while its work in the session goes on
+    (D99)."""
 
     async def plan() -> None:
         delegating.user_plan()
@@ -160,11 +161,13 @@ async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
         [Reply(calls=[CHECK]), wait(), Reply(calls=[call("plan_read")]), Reply("Fenced.")],
         delegated=[
             Reply(calls=[call("write_file", path="check.txt", content="x")], before=plan),
+            Reply(calls=[call("publish", path="check.txt")]),
             Reply(json.dumps(FENCED)),
         ],
     )
     (child,) = children(delegating, root)
-    (refused,) = results(child)
+    written, refused = results(child)
+    assert "error" not in json.loads(written), written
     error = json.loads(refused)["error"]
     assert error["kind"] == "policy_denied"
     assert "draft" in error["message"]

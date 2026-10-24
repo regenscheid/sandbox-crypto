@@ -12,6 +12,7 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 - [ ] A4. Grants rework (class × server × project, admin ceilings) and GUI cards for network and package requests (D97).
 - [ ] A5. Reads-free defaults: upload-pack to any host, GET/HEAD on any port, read-only POST list, `on_timeout` allow for reads, research-host pre-admission, host cap, source-host list with binary attribution (D95, D97).
 - [ ] A6. Child fence for outward effects only, read connectors for children, child effect cards (D99).
+  - [x] A6 (part): the fence gates outward effects only (interim map `delegation/effects.py`), child effect cards with the child and its brief, parent notice and withdrawal, no parent approval ([DA-7, DA-9, DA-10](../docs/specs/delegated-agents.md)); read connectors for children remain.
 - [ ] A7. Recovery: automatic retries, one-click full-tree Resume without avoidable blocks, idle suspension off (D100).
 - [ ] A8. Budgets: caps off and tracking, child grant approvals removed, soft-cap check-ins, loop detection, reviewer accounting (D102).
 - [ ] A9. Worker, middleware and package cache as one deployed unit with one configuration file (D101).

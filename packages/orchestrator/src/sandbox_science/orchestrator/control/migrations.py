@@ -3194,6 +3194,13 @@ def _artifact_reference_indexes(schema: Schema) -> None:
     schema.execute("CREATE INDEX upload_blob_hash ON user_upload_blobs(sha256,size)")
 
 
+def _child_requests(schema: Schema) -> None:
+    """Version 79: delegated runs' calls that wait for the user, with who asked (D99)."""
+    from sandbox_science.orchestrator.delegation.requests import install
+
+    install(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3272,6 +3279,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _external_user_uploads,
     _artifact_retention,
     _artifact_reference_indexes,
+    _child_requests,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

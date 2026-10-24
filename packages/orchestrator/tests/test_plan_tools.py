@@ -131,6 +131,9 @@ async def read_and_deliver(f):
 READS = {
     "read_file",
     "list_files",
+    "pdf_info",
+    "pdf_pages",
+    "pdf_search",
     "document_list",
     "document_read",
     "show_outline",

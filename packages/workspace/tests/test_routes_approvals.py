@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
+from sandbox_science.orchestrator.delegation.requests import ChildRequests
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace import approvals
 from sandbox_science.workspace.approvals import ApprovalClient
 
@@ -185,8 +190,9 @@ async def test_the_relay_gives_remembered_approvals_again_and_forgets_removed_on
 
 def test_the_listing_is_read_with_every_field_the_proxy_sends() -> None:
     # The proxy's listing (test_proxy.py pins the same set): a field it adds must be
-    # declared here, or the strict model refuses every listing.
-    assert set(approvals.PendingApproval.model_fields) == {
+    # declared here, or the strict model refuses every listing. ``child`` is the
+    # workspace's own, from its records of delegated runs' requests (D99).
+    assert set(approvals.PendingApproval.model_fields) - {"child"} == {
         "seq",
         "server",
         "method",
@@ -200,3 +206,67 @@ def test_the_listing_is_read_with_every_field_the_proxy_sends() -> None:
         "timed_out",
         "on_timeout",
     }
+
+
+async def test_a_childs_held_call_names_the_child_and_its_withdrawal_only_refuses(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    proxy: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D99: the card says which delegated agent asked, with its parent's brief and its own
+    words; a request the parent withdrew is not shown, cannot be approved, and the relay
+    denies it at the proxy, once."""
+    monkeypatch.setattr(approvals, "RELAY_SECONDS", 0.05)
+    delegation = new_id("dlg")
+    store = ProjectStore(state_dir)
+    try:
+        DelegationRecords(store.control).start(
+            "p1",
+            "a",
+            Delegation(
+                delegation_id=delegation, parent="root", run="child", kind="task",
+                brief={"task": "Find the SNOVA parameter sets."},
+                started_at=datetime.now(UTC),
+            ),
+        )  # fmt: skip
+        requests = ChildRequests(store.control)
+        for seq in (21, 22):
+            requests.record(
+                "p1", "a", run="child", delegation=delegation, request=seq,
+                server="papers", tool="fetch", words=f"Fetching for step {seq}.",
+            )  # fmt: skip
+        requests.withdraw("p1", "a", parent="root", delegation=delegation, request=22)
+    finally:
+        store.close()
+    fake, url = proxy
+    fake.hold(20, "crawl")  # the main run's
+    fake.hold(21, "fetch")
+    fake.hold(22, "fetch")
+    client = await client_for(aiohttp_client, state_dir, static_dir, url)
+    shown = await (await client.get("/api/v0/projects/p1/sessions/a/permission-requests")).json()
+    by_seq = {item["seq"]: item for item in shown["requests"]}
+    assert set(by_seq) == {20, 21}
+    assert by_seq[20]["child"] is None
+    assert by_seq[21]["child"] == {
+        "delegation_id": delegation,
+        "run": "child",
+        "kind": "task",
+        "brief": "Find the SNOVA parameter sets.",
+        "words": "Fetching for step 21.",
+    }
+    path = "/api/v0/projects/p1/permission-requests/{}/answer"
+    refused = await post(client, path.format(22), {"decision": "once"}, status=409)
+    assert "withdrawn" in str(refused)
+    for _ in range(100):
+        if fake.answers:
+            break
+        await asyncio.sleep(0.02)
+    assert fake.answers == [(22, {"approve": False, "scope": "call", "hours": None})]
+    # The child's other request is still the user's to answer.
+    await post(client, path.format(21), {"decision": "once"})
+    assert fake.answers[-1] == (
+        21,
+        {"approve": True, "scope": "call", "hours": approvals.ONCE_HOURS},
+    )

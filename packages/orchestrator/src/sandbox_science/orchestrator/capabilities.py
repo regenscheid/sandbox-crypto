@@ -8,7 +8,14 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import cast
 
-from .agent_messages import CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC, AgentMailbox
+from .agent_messages import (
+    CHILD_SPEC,
+    PARENT_SPEC,
+    STATUS_SPEC,
+    WAIT_SPEC,
+    WITHDRAW_SPEC,
+    AgentMailbox,
+)
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .consistency.controller import AUTHOR_SPECS, REVIEW_EFFECTS, ReviewController, Reviews
@@ -134,7 +141,7 @@ RESOURCES = Definition[Resources]("resources", 90, (RESOURCE_SPEC,), 50, lambda 
 MAILBOX = Definition[AgentMailbox](
     "mailbox",
     100,
-    (CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC),
+    (CHILD_SPEC, PARENT_SPEC, STATUS_SPEC, WAIT_SPEC, WITHDRAW_SPEC),
     40,
     lambda current, _: current,
 )
@@ -398,7 +405,11 @@ def mailbox(controller: AgentMailbox) -> Capability:
         group(
             controller.specs,
             lambda name, call: controller.call(name, call.args, call.operation),
-            {spec.name: "read" for spec in controller.specs},
+            # A withdrawal only stops a child's call, as cancelling a job does.
+            {
+                spec.name: "cancel" if spec.name == WITHDRAW_SPEC.name else "read"
+                for spec in controller.specs
+            },
         ),
     )
 

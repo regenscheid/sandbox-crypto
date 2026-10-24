@@ -215,6 +215,15 @@ export interface ChatMessage {
   pins: Record<string, JsonValue>[];
 }
 
+/** The delegated run whose call is held (D99): agent-attributed text, never the user's. The workspace sets it from its own records; the proxy's listing never carries it. */
+export interface ChildAsked {
+  delegation_id: string;
+  run: string;
+  kind: string;
+  brief: string;
+  words: string;
+}
+
 /** A consistency reviewer's check of a quote (CR-4), as the entry view shows it. */
 export interface CitationCheckView {
   check_id: string;
@@ -1602,6 +1611,7 @@ export interface PendingApproval {
   expires_at: string;
   timed_out: boolean;
   on_timeout: string;
+  child: ChildAsked | null;
 }
 
 export interface PendingListing {

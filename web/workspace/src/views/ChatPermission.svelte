@@ -3,7 +3,8 @@
      the agent's own words for why (marked as the agent's), its arguments from the
      session's transcript, and Allow, once, for the project, or for any escalated tool of
      its server, or Deny. The policy decides which calls are held, so no answer here
-     reaches a tool it denies. Every text is shown as text. -->
+     reaches a tool it denies. A delegated agent's call says so, with the brief its parent
+     gave it and its own words (D99). Every text is shown as text. -->
 <script lang="ts">
   import type { PendingApproval } from '../lib/api-types';
   import { clock, firstLine } from '../lib/conversation';
@@ -40,6 +41,8 @@
     },
   ]);
   const chosen = $derived(scopes.find((item) => item.id === scope)!);
+  /** The asking agent's own words: a delegated agent's from its request's record. */
+  const words = $derived(request.child ? request.child.words : (call?.text ?? ''));
   const pretty = $derived.by(() => {
     if (!call?.arguments) return '';
     try {
@@ -68,8 +71,20 @@
       ></span
     >
   </div>
-  {#if call?.text.trim()}
-    <p class="said">{firstLine(call.text, 400)}</p>
+  {#if request.child}
+    <p class="asked-by">
+      Asked by a delegated agent ({visible(request.child.kind)}), not the main agent.
+    </p>
+    {#if request.child.brief.trim()}
+      <details class="brief">
+        <summary>Its brief</summary>
+        <p class="said">{visible(request.child.brief)}</p>
+        <small class="muted">Written by the agent that delegated it.</small>
+      </details>
+    {/if}
+  {/if}
+  {#if words.trim()}
+    <p class="said">{firstLine(words, 400)}</p>
     <small class="muted">Agent-supplied reason.</small>
   {/if}
   <details>
@@ -170,6 +185,14 @@
   .said {
     margin: 0;
     white-space: pre-wrap;
+  }
+  .asked-by {
+    margin: 0;
+    font-size: 13px;
+    color: var(--body-text);
+  }
+  .brief .said {
+    margin-top: 6px;
   }
   details summary {
     cursor: pointer;

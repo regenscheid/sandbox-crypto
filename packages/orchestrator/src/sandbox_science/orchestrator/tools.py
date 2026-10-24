@@ -228,6 +228,8 @@ PDF_SPECS: Final = (
         },
     ),
 )
+PDF_READS: Final = frozenset({"pdf_info", "pdf_pages", "pdf_search"})
+"""The PDF tools that only read (D99); ``pdf_render`` writes a PNG in the session."""
 
 FIND_ARTIFACTS: Final = ToolSpec(
     "find_artifacts",
@@ -560,7 +562,10 @@ class Toolbox:
             "sage": ("effect", _plain(self._sage)),
             RESTART_KERNEL: ("effect", _plain(self._restart)),
             **{
-                spec.name: ("effect", _plain(partial(self._pdf, spec.name.removeprefix("pdf_"))))
+                spec.name: (
+                    "read" if spec.name in PDF_READS else "effect",
+                    _plain(partial(self._pdf, spec.name.removeprefix("pdf_"))),
+                )
                 for spec in PDF_SPECS
             },
             "admit_hosts": ("effect", _plain(self._admit)),
@@ -840,7 +845,7 @@ class Toolbox:
         gates: Sequence[TurnHook],
     ) -> ToolOutcome:
         for gate in gates:
-            refused = await gate.gate(entry.effect)
+            refused = await gate.gate_call(entry.spec.name, entry.effect)
             if refused is not None:
                 return _failure(ErrorKind(refused.kind), refused.message)
         args: dict[str, Any] = {}

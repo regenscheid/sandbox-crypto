@@ -223,6 +223,12 @@ class TurnHook:
         """Before a tool call of this effect class: a refusal, or ``None`` to let it run."""
         return None
 
+    async def gate_call(self, tool: str, effect: Effect) -> Refusal | None:
+        """Before a call of the tool named ``tool``, of this effect class: by default the
+        class's ``gate``. A hook that tells tools of one class apart overrides this, as the
+        delegated runs' fence does (D99)."""
+        return await self.gate(effect)
+
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         """After each tool call, with the outcome the transcript keeps."""
 

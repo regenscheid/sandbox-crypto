@@ -77,6 +77,7 @@ from .delegation.hook import Child, ChildEnd, Deadline, Delegations
 from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
+from .delegation.requests import ChildApproval, ChildRequests
 from .delegation.tracks import TrackTools, grant
 from .documents import DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
@@ -1549,6 +1550,25 @@ class Harness:
             clock=self.clock,
         )
 
+    def _on_approval(
+        self, chat: RunChat | None, admitted: Admitted
+    ) -> Callable[[dict[str, object] | None], Awaitable[None]] | None:
+        """What a run's connector calls report as they wait for the user: the chat's event,
+        and for a delegated run its attributed request and its parent's notice (D99)."""
+        if chat is None:
+            return None
+        delegation = admitted.request.delegation
+        if delegation is None or self.stores is None:
+            return chat.approval
+        control = self.stores.projects.control
+        return ChildApproval(
+            chat,
+            ChildRequests(control, clock=self.clock),
+            AgentMessageStore(control, clock=self.clock),
+            admitted.context,
+            delegation=delegation,
+        )
+
     async def _toolbox(
         self,
         admitted: Admitted,
@@ -1622,7 +1642,7 @@ class Harness:
                 about=self.mcp.about,
                 shown=self.mcp.shown,
                 disabled=settings_of,
-                on_approval=chat.approval if chat is not None else None,
+                on_approval=self._on_approval(chat, admitted),
             )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:
@@ -1785,6 +1805,7 @@ class Harness:
             user_arrived=(
                 chat.arrived if chat is not None and admitted.request.delegation is None else None
             ),
+            requests=ChildRequests(stores.projects.control, clock=self.clock),
             clock=self.clock,
         )
         resources = (
