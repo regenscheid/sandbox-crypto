@@ -76,13 +76,22 @@ def endpoint(url: str) -> ServiceEndpoint:
 
 
 def runtime_target(
-    *, worker: str, model: str, control: str, proxy: str | None, python: str
+    *,
+    worker: str,
+    model: str,
+    control: str,
+    proxy: str | None,
+    python: str,
+    relay_tls: bool = False,
 ) -> OrchestratorTarget:
-    """The services the agent runtime's sandbox may reach, and nothing else."""
+    """The services the agent runtime's sandbox may reach, and nothing else. With
+    ``relay_tls``, OpenShell relays the runtime's own TLS to control and the worker,
+    whose certificates come from a private CA the runtime pins (Kubernetes)."""
+    private = {"relay_tls": relay_tls}
     return OrchestratorTarget(
-        worker_api=endpoint(worker),
+        worker_api=endpoint(worker).model_copy(update=private),
         model_gateway=endpoint(model),
-        state_service=endpoint(control),
+        state_service=endpoint(control).model_copy(update=private),
         mcp_proxy=endpoint(proxy) if proxy is not None else None,
         binaries=(python + "*",),
         filesystem=SandboxFilesystem(

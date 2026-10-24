@@ -309,7 +309,12 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     assert manager.policy.state_service.host == control_host
     assert manager.policy.model_gateway is not None
     assert manager.policy.model_gateway.host == "litellm.litellm.svc.cluster.local"
-    compile_orchestrator(manager.policy)
+    # The runtime completes TLS to control and the worker itself, against their CA.
+    assert manager.policy.state_service.relay_tls
+    assert manager.policy.worker_api.relay_tls
+    assert not manager.policy.model_gateway.relay_tls
+    relayed = compile_orchestrator(manager.policy).network_policies
+    assert relayed["sandbox-science-state-service"].endpoints[0].tls == "skip"
     models = manager.model_copy(
         update={"control_models_file": secrets / "runtime-manager/control-models.json"}
     ).models()

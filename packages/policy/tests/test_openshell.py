@@ -89,6 +89,7 @@ ALLOWED_KEYS = {
     "host",
     "ports",
     "protocol",
+    "tls",
     "enforcement",
     "rules",
     "deny_rules",
@@ -1805,6 +1806,28 @@ def test_the_orchestrator_reaches_only_the_platform_services() -> None:
     document = yaml.safe_load(policy.to_yaml())
     assert schema_keys(document) <= ALLOWED_KEYS
     assert None not in leaf_values(document)
+
+
+def test_a_service_with_its_own_tls_is_relayed_without_inspection() -> None:
+    # On Kubernetes the runtime pins control's private CA; OpenShell's inspecting proxy
+    # would present its own certificate and could not verify control's.
+    control = ServiceEndpoint(host="control.research.svc.cluster.local", port=8443)
+    target = OrchestratorTarget(
+        worker_api=ServiceEndpoint(host="worker.research.svc.cluster.local", port=8100),
+        model_gateway=ServiceEndpoint(host="litellm.litellm.svc.cluster.local", port=4000),
+        state_service=control.model_copy(update={"relay_tls": True}),
+        binaries=("/opt/sandbox-science/bin/python*",),
+    )
+    policy = compile_orchestrator(target)
+    relayed = policy.network_policies["sandbox-science-state-service"].endpoints
+    assert relayed == (Endpoint(host=control.host, ports=(8443,), protocol="tcp", tls="skip"),)
+    inspected = policy.network_policies["sandbox-science-model-gateway"].endpoints[0]
+    assert (inspected.protocol, inspected.tls, inspected.enforcement) == ("rest", None, "enforce")
+    document = yaml.safe_load(policy.to_yaml())
+    assert document["network_policies"]["sandbox-science-state-service"]["endpoints"] == [
+        {"host": control.host, "ports": [8443], "protocol": "tcp", "tls": "skip"}
+    ]
+    assert schema_keys(document) <= ALLOWED_KEYS
 
 
 def test_the_model_gateway_and_mcp_proxy_are_optional_and_cannot_share_the_worker_api() -> None:

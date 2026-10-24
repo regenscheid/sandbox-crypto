@@ -349,6 +349,7 @@ def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings
             control=f"{control}:{CONTROL_PORT}",
             proxy=None,
             python=RuntimeManagerSettings.model_fields["python"].default,
+            relay_tls=True,
         ),
         runtime=site.runtime.profile(),
         recover_infrastructure=site.runtime.recover_infrastructure,

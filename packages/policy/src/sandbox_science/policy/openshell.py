@@ -205,6 +205,9 @@ class Endpoint(_OpenShellModel):
     ports: tuple[int, ...]
     path: str | None = None
     protocol: Literal["tcp", "rest", "mcp"]
+    tls: Literal["skip"] | None = None
+    """``skip`` relays a ``tcp`` endpoint's TLS without terminating it, for a client that
+    completes TLS itself against a CA it pins."""
     enforcement: Literal["enforce"] | None = None
     access: Literal["full", "read-only"] | None = None
     allow_encoded_slash: bool | None = None
@@ -421,6 +424,11 @@ class ServiceEndpoint(StrictModel):
 
     host: Annotated[str, AfterValidator(_service_host)]
     port: Annotated[Port, AfterValidator(_service_port)]
+    relay_tls: bool = False
+    """The client completes TLS itself against a private CA it pins, so OpenShell relays the
+    connection (``protocol: tcp``, ``tls: skip``) and checks only host, port and binary.
+    Its inspecting proxy would present OpenShell's own certificate to the client and
+    could not verify the service's (KRB, the cluster's control and worker Services)."""
 
 
 BinaryPattern = Annotated[str, StringConstraints(pattern=r"^/[!-~]*$")]
@@ -1356,18 +1364,20 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
                 f"the {seen[where]} and the {key} share {service.host}:{service.port}"
             )
         seen[where] = key
+        if service.relay_tls:
+            endpoint = Endpoint(
+                host=service.host, ports=(service.port,), protocol="tcp", tls="skip"
+            )
+        else:
+            endpoint = Endpoint(
+                host=service.host,
+                ports=(service.port,),
+                protocol="rest",
+                enforcement="enforce",
+                access="full",
+            )
         network_policies[f"sandbox-science-{key}"] = NetworkPolicy(
-            name=name,
-            endpoints=(
-                Endpoint(
-                    host=service.host,
-                    ports=(service.port,),
-                    protocol="rest",
-                    enforcement="enforce",
-                    access="full",
-                ),
-            ),
-            binaries=binaries,
+            name=name, endpoints=(endpoint,), binaries=binaries
         )
     return OpenShellPolicy(
         filesystem_policy=_service_filesystem(target.filesystem),
