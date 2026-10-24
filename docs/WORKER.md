@@ -765,7 +765,7 @@ shared_sync = true                   # keep each project's shared/ in step acros
 [openshell]
 daemon = true                        # default: reconnect to a sandbox-lifetime executor
 cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
-python = "/opt/sandbox-science/bin/python"   # with ipykernel and jupyter_client; the base images' interpreter
+python = "/opt/sandbox-science/bin/python"   # default: the base images' interpreter, with ipykernel and jupyter_client; set it only for another image
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"   # where the executor and its helpers are uploaded (the default)
 isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it

@@ -10,7 +10,7 @@ max_artifact_size = 1073741824   # bytes
 
 [openshell]                      # exactly one backend table
 cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
-python = "/sandbox/mamba/envs/tools/bin/python"
+# python = "/opt/sandbox-science/bin/python"   # default: the base images' interpreter, with ipykernel
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"
 isolation_tier = 3               # required: the tier the driver gives (3 for the VM driver)
@@ -150,7 +150,10 @@ class OpenShellBackendSettings(_Model):
     daemon: bool = True
     """Keep the sandbox executor alive across worker bridge disconnections."""
     cli: str = "openshell"
-    python: str = "python3"
+    python: str = "/opt/sandbox-science/bin/python"
+    """The interpreter that runs the executor in a sandbox: the base images' Conda prefix
+    (docs/IMAGES.md), which has ipykernel and jupyter_client. A system ``python3`` has no
+    kernels, so an image without the prefix sets this."""
     project_root: str = "/sandbox/project"
     executor_dir: str = "/sandbox/.sandbox-science"
     isolation_tier: Annotated[int, Field(ge=1, le=3)]

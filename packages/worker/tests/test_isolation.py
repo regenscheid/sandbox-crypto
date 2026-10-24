@@ -379,6 +379,19 @@ def test_the_openshell_backend_must_declare_its_tier(tmp_path: Path) -> None:
     assert settings.openshell.isolation_tier == 2
 
 
+def test_the_openshell_interpreter_defaults_to_the_images_prefix_and_can_be_set(
+    tmp_path: Path,
+) -> None:
+    # The system python3 has no ipykernel, so the executor would offer no kernels there.
+    settings = load_settings(_settings(tmp_path, "[openshell]\nisolation_tier = 3"))
+    assert settings.openshell is not None
+    assert settings.openshell.python == "/opt/sandbox-science/bin/python"
+    explicit = '[openshell]\nisolation_tier = 3\npython = "/usr/bin/python3"'
+    settings = load_settings(_settings(tmp_path, explicit))
+    assert settings.openshell is not None
+    assert settings.openshell.python == "/usr/bin/python3"
+
+
 def test_node_kernel_patterns_are_optional_and_checked(tmp_path: Path) -> None:
     def openshell(patterns: str) -> Path:
         return _settings(
