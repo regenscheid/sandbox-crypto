@@ -404,6 +404,12 @@ RUN --mount=type=bind,from=repository-tools,source=check_licenses.py,target=/tmp
     npm run build && npm run build:math
 
 FROM trusted-python AS trusted-app
+USER root
+ARG UBUNTU_SNAPSHOT
+# The runtime manager's OpenShell CLI uploads the runtime's credentials over SSH.
+RUN --mount=type=bind,source=common/apt_install.sh,target=/run/ss-build/apt_install.sh \
+    bash /run/ss-build/apt_install.sh "${UBUNTU_SNAPSHOT}" openssh-client && \
+    rm -rf /var/lib/apt/lists/*
 USER 1000:1000
 RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss-build/requirements.txt \
     --mount=type=bind,from=wheels,target=/tmp/wheels \

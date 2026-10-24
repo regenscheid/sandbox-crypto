@@ -98,6 +98,7 @@ def main() -> None:
         raise ValueError("trusted service image unexpectedly contains research kernels")
     if profile == "trusted-app":
         asyncio.run(application())
+        command("ssh", "-V")  # the runtime manager's OpenShell uploads
     else:
         if installed & {"sandbox-science-orchestrator", "sandbox-science-workspace"}:
             raise ValueError("worker image unexpectedly includes the agent application")
