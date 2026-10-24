@@ -15,7 +15,7 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 - Effect classes, per-server classifications, argument rules, lockdown modes and the drift test (D95, D96).
 - Grants of a class, a host or a package source, with cards for every request kind (D97).
 - Reads-free defaults: GET/HEAD on any port, upload-pack anywhere, reviewed read-only POST list (D95).
-- A child's fence covers outward effects only (D99).
+- A child's fence covers outward effects only; children get the read-class connector tools (D99).
 - Automatic retries and one Resume for the whole tree; idle suspension off by default (D100).
 - Worker, policy middleware and package cache as one unit (D101).
 - Budgets only track; soft caps are check-ins; one local cost enforcement (D102).
@@ -37,7 +37,6 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 - Run the babbage lab for the direct MCP path, then your decision to retire the MCP proxy or keep it (D98, A2).
 - The workspace's review view for classifications, and proxy-side drift findings (A3).
 - Cards for the direct MCP path's requests (A4).
-- Read connectors for delegated children (A6).
 - The web usage view and a real-model check of the check-ins (A8).
 - Measure shell against kernel use and steer agents to the kernel (A10).
 - First deployment and its three proofs (B3); durability extras, load balancer and Authentik (B4); dashboards, alerts and canaries (B5); job sandboxes (B6, D93).
@@ -47,7 +46,7 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 
 1. Node rebuild to Talos 1.13.12 with Kata on the amd64 nodes: done, per the owner. The repo's checklist names Talos 1.13 and the `kata-containers` extension only.
 2. Cluster preparation per [KUBERNETES-PREP](../docs/KUBERNETES-PREP.md), unverified until run.
-3. Image republish: the published images do not include this branch; rebuild, publish and pin by digest.
+3. Image republish: done from `k8s-sync` at `0eb47d8b` (run 40081031769, 2026-10-24). Multi-arch manifests on `ghcr.io/regenscheid/sandbox-crypto/`: `trusted-app:5ad6e5d6` (`sha256:800e9b27…`), `trusted-worker:56eef211` (`sha256:2939b51f…`), `orchestrator:3cf3bd51` (`sha256:e4913c0d…`), `mcp-proxy:3cf3bd51` (`sha256:cd2929ac…`), `minimal:d3b1f1cf` (`sha256:fe12987d…`), `crypto-base:d3b1f1cf` (`sha256:39419164…`). Pin the full digests from the ghcr package pages when rendering the bundle.
 
 ## Boundaries that stand
 

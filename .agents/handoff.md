@@ -2,7 +2,7 @@
 
 Updated 2026-10-24. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [decisions](../docs/DECISIONS.md) D95-D103 and D92.
 
-- **Branch:** `k8s-sync`, in its own worktree, not pushed. Keep the primary checkout and the personal instance as they are.
+- **Branch:** `k8s-sync`, in its own worktree, pushed to `origin/k8s-sync`; no PR. Keep the primary checkout and the personal instance as they are.
 - **Checks:** the list in [CONVENTIONS](CONVENTIONS.md#language-and-tooling), including `scripts/check_repo_hygiene.py` (it also checks that links resolve). One suite at a time, at most `-n 4`.
 
 ## Next, in order ([backlog](BACKLOG.md#architecture-2026-10-23-implementation-sequence))
@@ -11,10 +11,9 @@ Updated 2026-10-24. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [de
 2. **A3:** the workspace's classification review view; proxy-side drift findings; a babbage lab of the compiled lockdown (D95, D96).
 3. **A4:** cards for the direct path's MCP requests; a babbage lab of the workspace answering network and package requests (D97).
 4. **A5:** code egress by binary stays open for the owner (OpenShell 0.1.5 cannot express it).
-5. **A6:** read connectors for children (D99).
-6. **A8:** the web usage view; a real-model lab of check-ins (D102).
-7. **A10:** measure shell against kernel use in recorded sessions; steer agents to the kernel.
-8. **B3 to B6:** first deployment, durability extras, telemetry rules, job sandboxes (D92, D93, D103).
+5. **A8:** the web usage view; a real-model lab of check-ins (D102).
+6. **A10:** measure shell against kernel use in recorded sessions; steer agents to the kernel.
+7. **B3 to B6:** first deployment, durability extras, telemetry rules, job sandboxes (D92, D93, D103).
 
 ## Gates
 
