@@ -507,3 +507,5 @@ Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
 - 2026-10-20: Kubernetes offline operations now include verified full workspace checkpoints/S3 transport, bounded control-cache maintenance and unpublished trusted-service/TLS deployment preparation. Coordinated recovery sets, cluster-backed writer fences and recorded runtime bootstrap remain separate live qualification gates ([D91](../docs/DECISIONS.md), [operations](../docs/specs/kubernetes-operations.md)).
 
 - 2026-10-22: Kubernetes runtime bootstrap stage 4 (renderer): runtime-manager.json stays in the manager Secret (no TOML `images.runtime`/`runtime`), the Secret gains `control-models.json` and `active-gateway`, and workspace keeps its `control/` subPath because it is the harness state ([renderer as built](../docs/specs/kubernetes-runtime-bootstrap.md#the-renderer-as-built)).
+
+- 2026-10-23: Added the operator's cluster preparation checklist ([KUBERNETES-PREP](../docs/KUBERNETES-PREP.md)): Retain class with Longhorn snapshots and backup to Garage, Kata, Agent Sandbox, OpenShell 0.1.5, Secrets, bootstrap and the three proofs (B1, [D92](../docs/DECISIONS.md)).

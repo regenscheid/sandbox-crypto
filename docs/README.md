@@ -82,6 +82,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Apple Silicon qualification](MAC-ARM64.md) | Native ARM64 images, Mac supervision and OpenShell gates, and the mixed Kubernetes follow-on |
 | [Kubernetes work](KUBERNETES.md) | Mixed-architecture placement, S3-backed artifact retention, PVC lifecycle and cluster qualification gates |
 | [Offline Kubernetes bundle](KUBERNETES-BUNDLE.md) | Private configuration, trusted service images, scoped credentials and deterministic deployment rendering |
+| [Cluster preparation checklist](KUBERNETES-PREP.md) | The operator's ordered steps before and through the first deployment: storage and backups, Kata, Agent Sandbox, OpenShell, Garage, Secrets, bootstrap and the three live proofs |
 | [Mac setup](MAC-SETUP.md) | Prerequisites, mounted-volume config, the Sage MicroVM test, and later full-launch settings |
 | [Execution plan](EXECUTION-PLAN.md) | Execution and deployment requirements and first decisions |
 | [Projects and sessions](PROJECTS-AND-SESSIONS.md) | Project, session and environment ownership |

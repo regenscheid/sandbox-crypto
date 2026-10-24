@@ -322,6 +322,8 @@ and [resource requests](https://kubernetes.io/docs/concepts/configuration/manage
 
 ### First deployment scope and proofs
 
+The operator's step-by-step preparation is in the [cluster preparation checklist](KUBERNETES-PREP.md).
+
 Decided 2026-10-23 ([D92, amended](DECISIONS.md)).
 
 - **In the first deployment:** the app (control and workspace), the worker pool,

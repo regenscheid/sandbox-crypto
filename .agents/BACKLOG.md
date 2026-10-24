@@ -19,7 +19,7 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 
 ### Phase B: cluster
 
-- [ ] B1. Operator prep checklist; Longhorn recurring snapshots with backup to Garage (D92).
+- [x] B1. Operator prep checklist; Longhorn recurring snapshots with backup to Garage (D92) ([checklist](../docs/KUBERNETES-PREP.md); untested on the cluster).
 - [ ] B2. Bundle updates for the combined unit and Loki/Alloy log collection (D101, D103).
 - [ ] B3. First deployment and the three live proofs (D92, [proofs](../docs/KUBERNETES.md#first-deployment-scope-and-proofs)).
 - [ ] B4. Durability extras (cache trimming, replica release and ACK outbox, workspace checkpoints) and the load balancer with Authentik (D92).
