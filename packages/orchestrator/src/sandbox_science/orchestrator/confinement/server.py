@@ -356,6 +356,9 @@ def create_app(settings: ControlSettings) -> web.Application:
                     frozenset(settings.projects),
                     control=documents.control,
                     model_roles=roles,
+                    run_share=(
+                        settings.settings.run_share if settings.settings.cost_limits else None
+                    ),
                 )
                 scope = loops.model_capability
                 gateway = CallbackGateway(

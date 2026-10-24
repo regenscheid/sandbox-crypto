@@ -44,7 +44,7 @@ from .agent_messages import AgentMailbox, AgentMessageStore
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
-from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
+from .chat import EventLog, RunChat, SessionHeld, UserMessages
 from .connector_settings import ProjectConnectors
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
@@ -58,7 +58,6 @@ from .context.history import (
     ViewMeter,
     ceiling,
 )
-from .context.history.delegated import FoldAllowance
 from .context.history.geometry import DEFAULT_SHARES, Shares
 from .context.history.limits import WorkingMemoryLimitError
 from .context.history.retention import fits
@@ -66,7 +65,6 @@ from .context.history.snapshot import inline
 from .context.preparation import FoldLimits, HistoryScope, PreparedContext, prepare_context
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
-from .continuity.grants import TokenGrants
 from .continuity.hook import WorkHook
 from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
@@ -243,18 +241,20 @@ class Settings:
     watcher_calls_per_hour: int = 60
     watcher_first_check: float = 300
     watcher_interval: float = 1800
-    review_token_budget: int = ReviewConfig().token_budget
-    """The tokens one consistency review may use, over all its calls."""
+    review_token_budget: int | None = ReviewConfig().token_budget
+    """An optional cap on the tokens one consistency review may use, over all its calls;
+    none by default (D102)."""
     review_calls_per_hour: int = ReviewConfig().calls_per_hour
     """The reviewer calls a project may make in an hour."""
     recover_interrupted: bool = False
     """Operator policy allowing bounded automatic Resume after infrastructure loss."""
     cost_limits: bool = False
-    """With stores, whether each main run keeps its project's daily cost limit, if the
-    project has one, at its safe points, as the run service's runs do (RS-6c)."""
+    """Whether ``run_share`` applies, as the run service's runs have it (RS-6c). A
+    configured project limit is the model-call journal's in every case (D102)."""
     run_share: float | None = None
     """With ``cost_limits``, the part of a project's daily cost limit one run may use,
-    above 0 and at most 1; ``None``, as by default, for no part of its own."""
+    above 0 and at most 1, which the model-call journal enforces; ``None``, as by
+    default, for no part of its own."""
 
     def __post_init__(self) -> None:
         if not 1 <= self.max_turns <= TURNS_CEILING:
@@ -312,7 +312,7 @@ class RunRequest:
     max_turns: int | None = None
     """A delegated run's turns, at most; ``None`` for the harness's setting."""
     tokens: int | None = None
-    """A delegated run's token limit (``run_budget`` when its calls reach it)."""
+    """A delegated run's soft token cap: it checks in with its parent there (D102)."""
     target: Target | None = None
     """For a check, the entry and revision its result must name."""
     alias: str | None = None
@@ -804,7 +804,10 @@ class Harness:
             if owner is None
             else IntentModel(
                 model,
-                ModelIntents(self.stores.projects.control),
+                ModelIntents(
+                    self.stores.projects.control,
+                    run_share=self.settings.run_share if self.settings.cost_limits else None,
+                ),
                 owner,
                 self.role(admitted.request).alias,
                 kind="delegated" if admitted.request.parent is not None else "main",
@@ -955,8 +958,7 @@ class Harness:
                     if self.prepare_attempt is not None:
                         await stack.enter_async_context(self.prepare_attempt(admitted))
                     memory = await self.memory(admitted)
-                    allowance = self._fold_allowance(admitted)
-                    prepared = await self._prepare_context(admitted, allowance=allowance)
+                    prepared = await self._prepare_context(admitted)
                     folder = prepared.folder if prepared is not None else None
                     view = prepared.view if prepared is not None else None
                     if view is not None:
@@ -971,7 +973,6 @@ class Harness:
                         chat,
                         memory,
                         stop,
-                        allowance=allowance,
                         recovering=recovering,
                     )
                     toolbox = await self._toolbox(
@@ -1032,7 +1033,7 @@ class Harness:
                     if chat is not None:
                         hooks = (
                             *hooks,
-                            *await self._chat_hooks(admitted, chat, discovery, allowance=allowance),
+                            *await self._chat_hooks(admitted, chat, discovery),
                         )
                     if view is not None:
                         hooks = (*hooks, ViewMeter(view))
@@ -1123,22 +1124,7 @@ class Harness:
             limits=self._limits(admitted.request),
         )
 
-    def _fold_allowance(self, admitted: Admitted) -> FoldAllowance | None:
-        request = admitted.request
-        if self.stores is None or request.parent is None or request.tokens is None:
-            return None
-        run = run_name(admitted.started_at, admitted.run_id)
-        return FoldAllowance(
-            self.stores.projects.control,
-            admitted.context,
-            work=request.work or run,
-            run=run,
-            tokens=request.tokens,
-        )
-
-    async def _prepare_context(
-        self, admitted: Admitted, *, allowance: FoldAllowance | None = None
-    ) -> PreparedContext | None:
+    async def _prepare_context(self, admitted: Admitted) -> PreparedContext | None:
         """Resolve role policy, then prepare the attempt's scoped history together."""
         stores, request, context = self.stores, admitted.request, admitted.context
         if stores is None:
@@ -1179,7 +1165,6 @@ class Harness:
             former_model=former,
             learned=self._learned,
             observe_kernels=lambda context: self.client.observe_kernels(context),
-            allowance=allowance or self._fold_allowance(admitted),
             clock=self.clock,
         )
 
@@ -1267,31 +1252,15 @@ class Harness:
         chat: RunChat,
         discovery: SkillDiscovery | None = None,
         *,
-        allowance: FoldAllowance | None = None,
         recovering: bool = False,
     ) -> tuple[TurnHook, ...]:
-        """A run's budget, the user's messages, which reach the model last, and its
-        events, which come last. A delegated run keeps its token limit, and its calls that
-        may change something need its root's lease and the plan's leave (PD-34); the user
-        writes to the root."""
+        """The user's messages, which reach the model last, and the run's events, which
+        come last. No hook keeps a budget (D102): a configured project cost limit is the
+        model-call journal's, and a delegated run's tokens are a soft cap its resource
+        check-ins keep. A delegated run's calls that may change something need its root's
+        lease and the plan's leave (PD-34); the user writes to the root."""
         request = admitted.request
         if request.parent is not None and self.stores is not None:
-            limit = ()
-            if request.tokens is not None:
-                renewed = request.work is not None and await threaded(
-                    TokenGrants(self.stores.projects.control).extended,
-                    request.project,
-                    request.session,
-                    request.work,
-                )
-                limit = (
-                    ModelBudget(
-                        chat,
-                        tokens=request.tokens,
-                        require_cost_limit=renewed,
-                        auxiliary_tokens=allowance.additional if allowance else None,
-                    ),
-                )
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
@@ -1302,11 +1271,9 @@ class Harness:
             )
             # Its result is read from its closing answer once every other hook has had its say.
             outcome = Outcome(request.target, task=request.target is None)
-            return (*limit, SessionHeld(chat), fence, outcome, EventLog(chat))
-        settings = self.settings
-        kept = (ModelBudget(chat, settings.run_share),) if settings.cost_limits else ()
+            return (SessionHeld(chat), fence, outcome, EventLog(chat))
         discover = discovery.about if discovery is not None else None
-        return (*kept, UserMessages(chat, discover), EventLog(chat))
+        return (UserMessages(chat, discover), EventLog(chat))
 
     async def _delegations(
         self,
@@ -1315,13 +1282,11 @@ class Harness:
         memory: Snapshot | None,
         stop: asyncio.Event | None,
         *,
-        allowance: FoldAllowance | None = None,
         recovering: bool = False,
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
         its project lets its runs delegate (PD-33, PD-35); and a delegated task's own, when
-        its main run let it delegate once more (PD-15): tasks on no track, whose tokens are
-        carved from what it has left."""
+        its main run let it delegate once more (PD-15): tasks on no track."""
         stores, context, clock = self.stores, admitted.context, self.clock
         request = admitted.request
         if stores is None or (request.parent is not None and not request.may_delegate):
@@ -1330,9 +1295,6 @@ class Harness:
         limits = await threaded(records.settings, context.project_id)
         # A delegated task its main run allowed delegates once more (PD-15).
         depth = 0 if request.parent is None else 1
-
-        async def over_budget() -> bool:
-            return await threaded(stores.runs.over_cost_limit, context.project_id, clock.now())
 
         async def waiting(ids: Sequence[str] | None) -> None:
             if chat is not None:
@@ -1352,7 +1314,6 @@ class Harness:
             offer=limits.depth >= 1 + depth,
             wake=chat.arrived if chat is not None and depth == 0 else None,
             waiting=waiting,
-            over_budget=over_budget,
             limits=limits,
             refresh_settings=lambda: threaded(records.settings, context.project_id),
             models=ModelChoice(
@@ -1371,8 +1332,6 @@ class Harness:
                 else None
             ),
             depth=depth,
-            tokens=request.tokens if depth > 0 else None,
-            auxiliary_tokens=allowance.additional if allowance else None,
             stop_by=request.stop_by,
             stop=stop,
             recovering=recovering,

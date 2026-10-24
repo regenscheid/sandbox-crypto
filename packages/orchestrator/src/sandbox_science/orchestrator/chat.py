@@ -9,14 +9,9 @@ session's records (``runstate.py``), which its two hooks and its job waits share
   continue (RS-8). After the run's record is saved, the messages a model call saw are
   marked delivered (RS-9). A message, or a work request addressed to the session's
   main agent, also ends a job wait (``RunChat.arrived``).
-- ``ModelBudget`` keeps the project's MAIN budget during a run the service starts
-  (RS-6a): before each model call after the first, the run stops once the project has
-  spent its budget over the last 24 hours (``budget``), or once the run's own calls have
-  used its share of it, or a delegated run's its token limit (``run_budget``); a
-  delegated run whose tokens leave room for one more call makes it its report round
-  (RS-6f). With
-  delegation, the root's share bounds its whole tree, and the tree's calls in flight
-  count toward both (``delegation/budget.py``, PD-38).
+- No hook here keeps a budget: a configured project cost limit is checked by the
+  model-call journal alone (``continuity/models.py``, D102), and the gateway's budget
+  stops a run as before (RS-6d).
 - ``SessionHeld`` refuses a delegated run's calls that may change something once its
   root run no longer holds the session; ``UserMessages`` does the same for the root.
 - ``EventLog`` writes what the run does as events, as it happens (RS-13, RS-14), from
@@ -57,7 +52,6 @@ from .runstate import (
     ChatMessage,
     EventKind,
     RunState,
-    call_tokens,
 )
 from .tool_status import scalar as _scalar
 from .tool_status import tool_outcome as tool_outcome
@@ -194,71 +188,6 @@ class RunChat:
             await self.write("waiting", {"job_ids": None, "mode": None})
         else:
             await self.write("waiting", {"job_ids": wait["job_ids"], "mode": wait["mode"]})
-
-
-class ModelBudget(TurnHook):
-    """The project's daily cost limit, if it has one, kept at the run's safe points
-    (RS-6a, RS-6c), and a delegated run's own token limit (PD-38)."""
-
-    name = "budget"
-
-    def __init__(
-        self,
-        chat: RunChat,
-        share: float | None = None,
-        *,
-        tokens: int | None = None,
-        require_cost_limit: bool = False,
-        auxiliary_tokens: Callable[[], Awaitable[int]] | None = None,
-    ):
-        """``share`` is the part of the project's daily cost limit one run may use, above
-        0 and at most 1, if any; ``tokens`` is a delegated run's limit."""
-        self.chat, self.share, self.tokens = chat, share, tokens
-        self.require_cost_limit = require_cost_limit
-        self.auxiliary_tokens = auxiliary_tokens
-
-    async def halt(self, run: RunView) -> str | None:
-        state, project = self.chat.state, self.chat.context.project_id
-        limit, blocked = await threaded(
-            state.cost_gate,
-            project,
-            self.chat.clock.now(),
-            require_limit=self.require_cost_limit,
-        )
-        if blocked:
-            return "budget"
-        if limit is not None:
-            # Its own calls are among the project's: their events are written as they
-            # return. Unknown costs remain visible but do not fill the local cap.
-            own = sum(usage.cost or 0 for usage in run.context.usage)
-            if self.share is not None and own > 0 and own >= self.share * limit:
-                return "run_budget"
-        # A delegated run stops before a call that would take it past its limit.
-        used = sum(call_tokens(usage) for usage in run.context.usage)
-        if self.auxiliary_tokens is not None:
-            used += await self.auxiliary_tokens()
-        if self.tokens is not None and used + estimate(run) >= self.tokens:
-            return "run_budget"
-        return None
-
-    async def last_call(self, run: RunView) -> str | None:
-        """A delegated run whose tokens leave room for its next call but not for one more
-        after it makes that call its report round (RS-6f), so that it reports what it found
-        rather than stopping without a word."""
-        if self.tokens is None:
-            return None
-        used = sum(call_tokens(usage) for usage in run.context.usage)
-        if self.auxiliary_tokens is not None:
-            used += await self.auxiliary_tokens()
-        # The next call sends at least what the last one sent and answered.
-        last = call_tokens(run.context.usage[-1]) if run.context.usage else 0
-        return "run_budget" if used + 2 * max(estimate(run), last) >= self.tokens else None
-
-
-def estimate(run: RunView) -> int:
-    """What a run's next call may cost: what it sends, as a quarter of its characters
-    with the tool schemas, and an allowance for the answer."""
-    return run.context.size // 4 + ANSWER_TOKENS
 
 
 async def _held(chat: RunChat) -> bool:

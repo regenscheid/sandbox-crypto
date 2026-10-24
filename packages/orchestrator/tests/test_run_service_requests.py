@@ -223,8 +223,8 @@ async def test_a_reached_cost_limit_makes_a_request_wait(harness: Harness) -> No
     async with serving(harness, Reply("Never sent.")) as service:
         await eventually(lambda: (PROJECT, SESSION) in service.waiting_until, timeout=10)
         await asyncio.sleep(0.3)
-    assert harness.gateway.main == []
-    assert len(names(harness)) == 1  # the earlier, priced run alone
+    assert harness.gateway.main == []  # its first paid call was refused locally (D102)
+    assert len(names(harness)) == 2  # the earlier run and the refused one
     assert harness.request_states() == {request: "queued"}
 
 

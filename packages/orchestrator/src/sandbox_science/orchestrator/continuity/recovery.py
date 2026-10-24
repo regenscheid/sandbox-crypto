@@ -31,7 +31,6 @@ from .auto_recovery import mark_transient
 from .blueprints import Blueprints
 from .child_settlement import ChildSettlement
 from .effort import apply_resume_effort
-from .grants import GRANT_EXHAUSTED, TokenGrants
 from .kernels import KernelJournal
 from .plans import Plans
 from .reconcile import Reconciler
@@ -289,9 +288,7 @@ class Recovery:
         except Exception as exc:
             transient = classify(exc)
             reason = (
-                "run_budget"
-                if isinstance(exc, ControlError) and exc.message == GRANT_EXHAUSTED
-                else f"{REASON_PREFIX}{transient}: {type(exc).__name__}: {exc}"
+                f"{REASON_PREFIX}{transient}: {type(exc).__name__}: {exc}"
                 if transient is not None
                 else f"{type(exc).__name__}: {exc}"
             )
@@ -418,22 +415,10 @@ class Recovery:
             raise ControlError(
                 CONFLICT, "recovery configuration changed: session/environment/policy"
             )
-        if await threaded(self.stores.runs.over_cost_limit, self.project, self.harness.clock.now()):
-            raise ControlError(CONFLICT, "model_budget: project budget is exhausted")
-        # The original blueprint is immutable. An explicit USER token grant extends
-        # the same work's cumulative ceiling; lifetime usage is deducted only once.
+        # No local cost or token check here (D102): LiteLLM's budget, or a configured
+        # project limit at the model-call journal, refuses the first paid call instead,
+        # and a child's tokens are a soft cap it checks in on.
         original = TypeAdapter(RunRequest).validate_python(blueprint.request)
-        tokens = original.tokens
-        if tokens is not None:
-            grants = TokenGrants(control)
-            if await threaded(grants.extended, self.project, self.session, work.work):
-                cap = await threaded(self.stores.runs.cost_limit, self.project)
-                if cap is None or cap <= 0:
-                    raise ControlError(CONFLICT, "model_budget: renewed work requires a cost cap")
-            tokens = await threaded(grants.total, self.project, self.session, work.work, tokens)
-            tokens -= await threaded(self.plans.spent_tokens, work.work)
-            if tokens <= 0:
-                raise ControlError(CONFLICT, GRANT_EXHAUSTED)
         alias = request.alias or original.alias
         if alias is None:
             raise ControlError(CONFLICT, "recovery configuration lacks the original model alias")
@@ -531,7 +516,7 @@ class Recovery:
             parent=parent,
             delegation=delegation,
             root=self.run_name,
-            tokens=tokens,
+            tokens=original.tokens,
             message_ids=(),
             requests=False,
             operator=False,

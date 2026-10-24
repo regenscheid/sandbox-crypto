@@ -66,27 +66,28 @@ def _response_usage(project: str, since: datetime | None) -> tuple[str, tuple[ob
     first = "" if since is None else run_name(since, "")
     after = 0.0 if since is None else since.timestamp()
     return (
-        "SELECT j.role, j.usage AS u FROM archive_model_usage j "
+        "SELECT j.role, j.usage AS u, j.session AS sess, j.run AS rn FROM archive_model_usage j "
         "WHERE j.project=? AND j.observed>=? "
         "UNION ALL SELECT CASE c.kind WHEN 'reviewer' THEN 'reviewer' "
         "WHEN 'watcher' THEN 'watcher' WHEN 'embedding' THEN 'embeddings' "
         "WHEN 'skills' THEN 'metadata' ELSE w.role END, "
-        "json_object('cost',json_extract(o.detail,'$.resolution.cost')) "
+        "json_object('cost',json_extract(o.detail,'$.resolution.cost')),o.session,c.run "
         "FROM research_observations o JOIN research_work w USING(project,session,work) "
         "JOIN research_model_calls c ON c.project=o.project AND c.session=o.session "
         "AND c.run=json_extract(o.detail,'$.resolution.run') "
         "AND c.identity=json_extract(o.detail,'$.resolution.identity') "
         "WHERE o.project=? AND o.kind='resolution:model_usage' AND c.created>=? "
         "AND (c.usage IS NULL OR c.kind IN ('main','delegated')) "
-        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'), usage.value "
-        "FROM runs r, json_each(r.record,'$.usage') usage "
+        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'), usage.value, "
+        "r.session_id, r.name FROM runs r, json_each(r.record,'$.usage') usage "
         "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS ("
         "SELECT 1 FROM archive_model_usage j WHERE j.project=r.project_id "
         "AND j.session=r.session_id AND j.run=r.name AND j.ordinal=CAST(usage.key AS INTEGER)+1) "
         "UNION ALL SELECT coalesce((SELECT json_extract(s.data,'$.role') "
         "FROM run_events s WHERE s.project_id=e.project_id AND s.session_id=e.session_id "
-        "AND s.run=e.run AND s.kind='started' LIMIT 1),'main'), json_extract(e.data,'$.usage') "
-        "FROM run_events e WHERE e.project_id=? AND e.run>=? AND e.kind='assistant' "
+        "AND s.run=e.run AND s.kind='started' LIMIT 1),'main'), json_extract(e.data,'$.usage'), "
+        "e.session_id, e.run FROM run_events e "
+        "WHERE e.project_id=? AND e.run>=? AND e.kind='assistant' "
         "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
         "AND r.session_id=e.session_id AND r.name=e.run) "
         "AND NOT EXISTS (SELECT 1 FROM archive_model_usage j WHERE j.project=e.project_id "
@@ -106,19 +107,25 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
     query += (
         " UNION ALL SELECT CASE c.kind WHEN 'reviewer' THEN 'reviewer' "
         "WHEN 'watcher' THEN 'watcher' WHEN 'skills' THEN 'metadata' "
-        "WHEN 'embedding' THEN 'embeddings' ELSE w.role END,c.usage "
+        "WHEN 'embedding' THEN 'embeddings' ELSE w.role END,c.usage,c.session,c.run "
         "FROM research_model_calls c JOIN research_attempts a USING(project,session,run) "
         "JOIN research_work w USING(project,session,work) WHERE c.project=? AND c.created>=? "
         "AND c.kind NOT IN ('main','delegated') AND c.usage IS NOT NULL"
     )
     values += (project, after)
-    sources: tuple[tuple[str, Table, str], ...] = (
-        ("reviewer", "review_calls", "created"),
-        ("watcher", "job_watcher_calls", "requested_at"),
-        ("metadata", "skill_metadata_calls", "created"),
-        ("embeddings", "skill_embedding_calls", "created"),
+    review = "(SELECT {} FROM review_runs v WHERE v.review_id=legacy.review_id)"
+    sources: tuple[tuple[str, Table, str, str], ...] = (
+        (
+            "reviewer",
+            "review_calls",
+            "created",
+            f"{review.format('session')},{review.format('author_run')}",
+        ),
+        ("watcher", "job_watcher_calls", "requested_at", "legacy.session,legacy.run"),
+        ("metadata", "skill_metadata_calls", "created", "NULL,NULL"),
+        ("embeddings", "skill_embedding_calls", "created", "NULL,NULL"),
     )
-    for role, table, made in sources:
+    for role, table, made, scope in sources:
         usage = (
             "json_object('cost',cost,'cost_source',cost_source,"
             "'input_tokens',input_tokens,'output_tokens',output_tokens)"
@@ -126,7 +133,7 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
             else "json_object('cost',cost,'cost_source','gateway')"
         )
         query += (
-            f" UNION ALL SELECT '{role}',{usage} FROM {table} legacy "  # noqa: S608 - fixed tables
+            f" UNION ALL SELECT '{role}',{usage},{scope} FROM {table} legacy "  # noqa: S608 - fixed
             f"WHERE project=? AND {made}>=? AND {fallback(table, 'legacy')}"
         )
         values += (project, after)
@@ -141,16 +148,17 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
     query += (
         " UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM archive_messages m "  # noqa: S608
         "WHERE m.project=c.project AND m.session=c.session AND m.run=c.run "
-        "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item "
+        "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item,c.session,c.run "
         "FROM run_collections c WHERE c.project=? AND c.run>=? AND c.collection='fold_calls' "
         f"AND {fold_copy('c.item', 'c.project', 'c.session', 'c.run', 'collection', 'c.position')} "
-        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'),u.value "
-        "FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
+        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'),u.value,"
+        "r.session_id,r.name FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
         "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS (SELECT 1 FROM run_collections h "
         "WHERE h.project=r.project_id AND h.session=r.session_id AND h.run=r.name "
         "AND h.collection='fold_calls') "
         f"AND {fold_copy('u.value', 'r.project_id', 'r.session_id', 'r.name', 'summary', 'u.key')} "
-        "UNION ALL SELECT 'main',u.value FROM run_events e,json_each(e.data,'$.calls') u "
+        "UNION ALL SELECT 'main',u.value,e.session_id,e.run "
+        "FROM run_events e,json_each(e.data,'$.calls') u "
         "WHERE e.project_id=? AND e.run>=? AND e.kind='fold' "
         "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
         "AND r.session_id=e.session_id AND r.name=e.run) "
@@ -700,14 +708,41 @@ class RunState:
         """
         return self.cost_gate(project, now)[1]
 
-    def cost_gate(
-        self, project: str, now: datetime, *, require_limit: bool = False
-    ) -> tuple[float | None, bool]:
+    def cost_refusal(
+        self, project: str, session: str, run: str, now: datetime, *, share: float | None = None
+    ) -> str | None:
+        """Why a model call is refused for a configured local cost limit, or ``None``.
+
+        The only local cost enforcement (D102): the model-call journal asks this before
+        each paid dispatch, and a refusal reads as the gateway's own budget refusal, so
+        the run stops ``gateway_budget`` with the same durable stop rules. Without a
+        project limit, as by default, nothing is refused. ``share`` is the part of the
+        limit one run may use (``serve --run-share``), if any.
+        """
+        limit, reached = self.cost_gate(project, now)
+        if limit is None:
+            return None
+        if reached:
+            return f"model_budget: the project's local daily cost limit of {limit:g} is reached"
+        if share is not None:
+            with self.control.read() as tx:
+                (own,) = tx.sql.execute(
+                    "SELECT coalesce(sum(json_extract(usage,'$.cost')),0) FROM "
+                    "archive_model_usage WHERE project=? AND session=? AND run=?",
+                    (project, session, run),
+                ).fetchone()
+            if float(own) > 0 and float(own) >= share * limit:
+                return (
+                    f"model_budget: this run used its share ({share:.0%}) of the project's "
+                    f"local daily cost limit of {limit:g}"
+                )
+        return None
+
+    def cost_gate(self, project: str, now: datetime) -> tuple[float | None, bool]:
         """Read cap presence and its observed/reserved spend in one snapshot.
 
-        An explicitly renewed child requires a cap even if an operator removed the
-        project's general limit after issuing the grant. Unknown charges are not
-        assigned zero cost, but cannot alone prove this local limit was reached.
+        Unknown charges are not assigned zero cost, but cannot alone prove this local
+        limit was reached.
         """
         from .continuity.reservations import RESERVATIONS
 
@@ -719,7 +754,7 @@ class RunState:
                 "SELECT daily_cost FROM project_cost_limits WHERE project_id=?", (project,)
             ).fetchone()
             if row is None:
-                return None, require_limit
+                return None, False
             limit = float(row[0])
             spent, unknown = db.execute(
                 "SELECT coalesce(sum(json_extract(u,'$.cost')),0), "  # noqa: S608 - fixed SQL
@@ -827,6 +862,122 @@ class RunState:
             ).fetchall()
         totals = {str(role): float(cost) for role, cost in rows}
         return {role: totals[role] for role in COST_ROLES if role in totals}
+
+    def usage_rows(
+        self, project: str, session: str | None = None
+    ) -> list[tuple[str | None, str | None, str, float | None, int, int, int]]:
+        """Recorded model usage grouped by session, run and role (D102), from the same
+        sources and precedence as ``model_costs``: ``(session, run, role, known cost or
+        None, tokens, calls, unpriced calls)``. A reviewer's call is under the session it
+        reviewed and the author run; the skills' calls have neither."""
+        runs, values = _run_usage(project, None)
+        tokens = (
+            "coalesce(json_extract(u,'$.input_tokens'),0)+"
+            "coalesce(json_extract(u,'$.output_tokens'),0)"
+        )
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT sess,rn,role,sum(json_extract(u,'$.cost')),"  # noqa: S608 - fixed SQL
+                f"count(json_extract(u,'$.cost')),sum({tokens}),count(*),"
+                f"count(*) FILTER (WHERE json_extract(u,'$.cost') IS NULL AND {tokens}>0) "
+                f"FROM ({runs}) WHERE ? IS NULL OR sess=? GROUP BY sess,rn,role",
+                (*values, session, session),
+            ).fetchall()
+        return [
+            (
+                None if sess is None else str(sess),
+                None if rn is None else str(rn),
+                str(role),
+                float(cost) if priced else None,
+                int(used or 0),
+                int(calls),
+                int(unpriced),
+            )
+            for sess, rn, role, cost, priced, used, calls, unpriced in rows
+        ]
+
+    def cost_notices(self, project: str) -> list[tuple[float, str | None, float | None]]:
+        """The project's notification thresholds, lowest first: ``(threshold, when its
+        recorded cost first crossed it, or None, what it had spent then)`` (D102)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT threshold,crossed_at,spent FROM project_cost_notices "
+                "WHERE project_id=? ORDER BY threshold",
+                (project,),
+            ).fetchall()
+        return [(float(t), c, None if v is None else float(v)) for t, c, v in rows]
+
+    def set_cost_notices(self, project: str, thresholds: Sequence[float]) -> None:
+        """Replace the project's notification thresholds; a kept one keeps its crossing.
+        A threshold notifies, never stops: LiteLLM's budget enforces spending."""
+        chosen = sorted({float(value) for value in thresholds})
+        if len(chosen) > 20 or any(not 0 < value <= MAX_COST for value in chosen):
+            raise ControlError(
+                INVALID_REQUEST, f"at most 20 thresholds, each above 0 to {MAX_COST}"
+            )
+        with self.control.write() as tx:
+            if (
+                tx.sql.execute("SELECT 1 FROM projects WHERE project_id = ?", (project,)).fetchone()
+                is None
+            ):
+                raise ControlError(NOT_FOUND, f"no project {project!r}")
+            tx.sql.execute(
+                "DELETE FROM project_cost_notices WHERE project_id=? AND threshold NOT IN "
+                "(SELECT value FROM json_each(?))",
+                (project, json.dumps(chosen)),
+            )
+            for value in chosen:
+                tx.sql.execute(
+                    "INSERT OR IGNORE INTO project_cost_notices VALUES (?,?,NULL,NULL)",
+                    (project, value),
+                )
+
+    def note_cost_crossings(self, project: str) -> list[float]:
+        """Record each threshold the project's known total cost has newly crossed; the
+        thresholds crossed now. Only recorded spending counts; unknown costs never do."""
+        with self.control.read() as tx:
+            open_ = tx.sql.execute(
+                "SELECT 1 FROM project_cost_notices WHERE project_id=? AND crossed_at IS NULL",
+                (project,),
+            ).fetchone()
+        if open_ is None:
+            return []
+        spent = self.model_cost(project) or 0.0
+        with self.control.write() as tx:
+            crossed = [
+                float(row[0])
+                for row in tx.sql.execute(
+                    "SELECT threshold FROM project_cost_notices WHERE project_id=? "
+                    "AND crossed_at IS NULL AND threshold<=? ORDER BY threshold",
+                    (project, spent),
+                ).fetchall()
+            ]
+            for value in crossed:
+                tx.sql.execute(
+                    "UPDATE project_cost_notices SET crossed_at=?,spent=? "
+                    "WHERE project_id=? AND threshold=?",
+                    (self._now().isoformat(), spent, project, value),
+                )
+        for value in crossed:
+            _log.warning(
+                "project %s has recorded %.2f in model costs, past its notice at %g; "
+                "nothing stops for it (D102)",
+                project,
+                spent,
+                value,
+            )
+        return crossed
+
+    def noticed_projects(self) -> list[str]:
+        """Projects with a threshold not yet crossed, for the service's periodic check."""
+        with self.control.read() as tx:
+            return [
+                str(row[0])
+                for row in tx.sql.execute(
+                    "SELECT DISTINCT project_id FROM project_cost_notices "
+                    "WHERE crossed_at IS NULL ORDER BY project_id LIMIT 1000"
+                ).fetchall()
+            ]
 
     def model_costs(self, project: str, since: datetime | None = None) -> dict[CostRole, float]:
         """Known model cost by role in ``COST_ROLES`` order, after ``since`` if given.

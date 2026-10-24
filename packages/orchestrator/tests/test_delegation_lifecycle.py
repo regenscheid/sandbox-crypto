@@ -57,7 +57,7 @@ from .test_delegation import (
     wait,
 )
 from .test_delegation import delegating as delegating
-from .test_run_service import serving
+from .test_run_service import refusal, serving
 
 Message = dict[str, Any]
 
@@ -567,15 +567,21 @@ async def test_a_project_that_stopped_delegating_still_gets_its_outcomes(
     assert later.delivered["delegations"] == [delegation_id]
 
 
-async def test_a_reached_cost_limit_refuses_a_delegation(delegating: Harness) -> None:
+async def test_a_reached_cost_limit_refuses_paid_calls_not_a_delegation(
+    delegating: Harness,
+) -> None:
+    """D102: the delegation is admitted; the model-call journal refuses the child's and
+    the root's next paid calls, as the gateway's budget would."""
     RunState(ProjectStore(delegating.state).control).set_cost_limit(PROJECT, 0.01)
     root = await delegating.run("root", [Reply(calls=[CHECK], cost="0.02")], status=3)
-    refused = json.loads(results(root)[0])["error"]
-    assert refused["kind"] == "unavailable"
-    assert "daily cost limit" in refused["message"]
-    assert "delegations" not in root.summaries
+    started = json.loads(results(root)[0])
+    assert "error" not in started
     assert root.stopped == "gateway_budget"
+    assert refusal(root).startswith("model_budget:")
     assert len(delegating.gateway.main) == 1
+    assert delegating.gateway.children == []
+    (child,) = children(delegating, root)
+    assert child.stopped == "gateway_budget"
 
 
 @pytest.mark.parametrize(

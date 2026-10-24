@@ -66,7 +66,7 @@ from sandbox_science.orchestrator.notices import (
     DELEGATIONS_RUNNING,
 )
 from sandbox_science.orchestrator.projects import RunRecord, run_id_of, run_name
-from sandbox_science.orchestrator.runstate import RunState, call_tokens
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
@@ -239,14 +239,11 @@ class Delegations(TurnHook):
         offer: bool,
         wake: Callable[[], Awaitable[str | None]] | None = None,
         waiting: Callable[[Sequence[str] | None], Awaitable[None]] | None = None,
-        over_budget: Callable[[], Awaitable[bool]] | None = None,
         limits: DelegationSettings | None = None,
         refresh_settings: Callable[[], Awaitable[DelegationSettings]] | None = None,
         models: ModelChoice | None = None,
         track_grant: Callable[[str], Awaitable[PlanRef]] | None = None,
         depth: int = 0,
-        tokens: int | None = None,
-        auxiliary_tokens: Callable[[], Awaitable[int]] | None = None,
         stop_by: Deadline | None = None,
         stop: asyncio.Event | None = None,
         recovering: bool = False,
@@ -257,15 +254,14 @@ class Delegations(TurnHook):
         """``offer`` says whether the run gets the tools; ``max_turns`` initializes the
         parent's remaining calls; children get their role's configured turn allowance.
         ``wake`` returns once the user writes to the session, which ends a wait;
-        ``over_budget`` says whether the project reached its daily cost limit, if it has
-        one. Nothing is reserved for a child: it is bounded by its own tokens and turns
-        (PD-38). Notices
+        Nothing is reserved for a child: its tokens and turns are soft caps its resource
+        check-ins keep (PD-38, D102). Notices
         together take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner = parent, runner
         self.work = work
         self.blueprint = blueprint
-        self.wake, self.over_budget, self.clock = wake, over_budget, clock
+        self.wake, self.clock = wake, clock
         self.waiting = waiting
         self.limits = limits or DelegationSettings()
         """The project's cap and a check's tokens and turns (PD-38)."""
@@ -278,12 +274,6 @@ class Delegations(TurnHook):
         self.track_grant = track_grant
         """The plan version a task on a track works under (PD-9); without it, a task
         names no track."""
-        self.tokens = tokens
-        """The run's own token limit, for a delegated run: its children's tokens are
-        carved from what it has left (PD-15)."""
-        self.tokens_left = tokens
-        self.foreground_tokens = 0
-        self.auxiliary_tokens = auxiliary_tokens
         self.stop_by = stop_by
         self.stop = stop
         """When the run's end must have stopped its children, once its parent cancels
@@ -359,23 +349,9 @@ class Delegations(TurnHook):
                 ErrorKind.UNAVAILABLE, "limit_reached: child cleanup is not durably complete"
             )
         choice = await self._model(brief.model)
-        if self.over_budget is not None and await self.over_budget():
-            raise WorkerAPIError(
-                ErrorKind.UNAVAILABLE, "limit_reached: the project reached its daily cost limit"
-            )
         project, session = self.context.project_id, self.context.session_id
         planned = await (self._check(brief) if isinstance(brief, CheckBrief) else self._task(brief))
-        # Background summary calls may settle or retry during earlier tools or
-        # the awaited admission reads above. Never grant from that old snapshot.
-        await self._remaining_tokens()
-        if self.tokens_left is not None and self.tokens_left <= 0:
-            raise WorkerAPIError(
-                ErrorKind.UNAVAILABLE,
-                "limit_reached: this run has no tokens left to give a delegated run",
-            )
-        tokens = planned.tokens
-        if self.tokens_left is not None:
-            tokens = min(tokens, self.tokens_left)  # carved from what the run has left
+        tokens = planned.tokens  # a soft cap: the child checks in when it reaches it
         delegation_id, run_id = new_id("dlg"), new_id("run")
         started = self.clock.now().astimezone(UTC)
         limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": tokens}
@@ -888,13 +864,6 @@ class Delegations(TurnHook):
         self.returned.clear()
         await self._prune()
         self.turns_left = run.turns_left
-        self.foreground_tokens = sum(call_tokens(usage) for usage in run.context.usage)
-        await self._remaining_tokens()
-
-    async def _remaining_tokens(self) -> None:
-        if self.tokens is not None:
-            extra = await self.auxiliary_tokens() if self.auxiliary_tokens else 0
-            self.tokens_left = self.tokens - self.foreground_tokens - extra
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         running = self._running()

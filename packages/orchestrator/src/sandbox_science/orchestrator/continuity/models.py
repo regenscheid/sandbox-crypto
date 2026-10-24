@@ -29,8 +29,11 @@ from .reservations import UNRESERVED
 
 
 class ModelIntents:
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.control, self.clock = control, clock
+    def __init__(
+        self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK, run_share: float | None = None
+    ) -> None:
+        """``run_share`` is the part of a configured project cost limit one run may use."""
+        self.control, self.clock, self.run_share = control, clock, run_share
 
     def begin(
         self,
@@ -49,8 +52,12 @@ class ModelIntents:
             raise ValueError("invalid model alias")
         from sandbox_science.orchestrator.runstate import RunState
 
-        if RunState(self.control).over_cost_limit(owner.project, self.clock.now()):
-            raise ControlError(CONFLICT, "model_budget: project budget is exhausted")
+        # The one local cost enforcement (D102): off unless a limit is configured.
+        refusal = RunState(self.control).cost_refusal(
+            owner.project, owner.session, owner.run, self.clock.now(), share=self.run_share
+        )
+        if refusal is not None:
+            raise ControlError(CONFLICT, refusal)
         identity = new_id("model")
         with self.control.write() as tx:
             check_owner(tx.sql, owner)

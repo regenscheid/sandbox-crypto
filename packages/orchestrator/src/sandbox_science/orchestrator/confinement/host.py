@@ -530,9 +530,12 @@ class HostLoops:
         *,
         control: ControlStore | None = None,
         model_roles: Mapping[str, frozenset[str]] | None = None,
+        run_share: float | None = None,
     ) -> None:
+        """``run_share`` is the part of a configured project cost limit one run may use."""
         self.channel, self.projects = channel, projects
         self.control, self.model_roles = control, model_roles or {}
+        self.run_share = run_share
         self.attempts: dict[str, Prepared] = {}
         self.owners: dict[str, Ownership] = {}
         self.profiles: dict[str, dict[ModelRole, ModelProfile]] = {}
@@ -574,7 +577,7 @@ class HostLoops:
             if owner is None or self.control is None:
                 raise TransportError("denied", "model capability is absent or revoked")
             with authority(owner):
-                intents = ModelIntents(self.control)
+                intents = ModelIntents(self.control, run_share=self.run_share)
                 if kind is Capability.MODEL_INTENT:
                     request = typed(ModelIntent, value)
                     pinned = self.profiles.get(identity.attempt, {})

@@ -252,7 +252,8 @@ def test_cancelled_prior_attempt_does_not_repeat_auto_queue(projects: ProjectSto
     assert works.queued() == []
 
 
-def test_exhausted_cumulative_token_grant_needs_owner_approval(projects: ProjectStore):
+def test_spent_original_tokens_no_longer_block_automatic_recovery(projects: ProjectStore):
+    """D102: tokens are a soft cap that checks in; no local token grant blocks Resume."""
     works = WorkRecords(projects.control)
     owner = works.admit("p", "s", RUN)
     Blueprints(projects.control).save(
@@ -276,7 +277,7 @@ def test_exhausted_cumulative_token_grant_needs_owner_approval(projects: Project
     failed = record(RUN, stopped="error").model_copy(update={"failure": "model"})
     projects.save_run(failed)
     works.finish(failed)
-    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is not None
 
 
 def test_non_model_failure_does_not_auto_resume(projects: ProjectStore):
@@ -341,13 +342,12 @@ def test_unknown_model_charge_remains_visible_without_blocking_recovery(projects
     assert ModelIntents(projects.control).pending("p", "s", RUN) == (identity,)
 
 
-async def test_service_queues_only_when_cost_gate_allows(harness: Harness):
+async def test_service_queues_even_with_a_reached_local_cost_limit(harness: Harness):
+    """D102: no local cost check blocks automatic Resume; a configured limit refuses the
+    first paid call instead, and that budget stop is not retried."""
     async with serving(harness, serve=False) as service:
         failed_model(service.stores.projects)
         service.runs.set_cost_limit("p", 0)
-        await service.auto_recovery_tick()
-        assert WorkRecords(service.stores.projects.control).queued() == []
-        service.runs.set_cost_limit("p", 100)
         await service.auto_recovery_tick()
         assert len(WorkRecords(service.stores.projects.control).queued()) == 1
 

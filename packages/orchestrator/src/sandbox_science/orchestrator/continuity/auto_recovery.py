@@ -20,8 +20,6 @@ from typing import Final
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, new_id
 from sandbox_science.orchestrator.control import ControlStore
 
-from .grants import grant_total
-from .plans import spent_tokens
 from .records import Ownership, tree_cancelled
 from .recovery_tools import tool_reconcilable
 from .resource_policy import continuation_allowed
@@ -182,24 +180,6 @@ class AutoRecovery:
             if any(
                 not tool_reconcilable(db, project, session, run, operation, name, arguments)
                 for name, run, operation, arguments in pending
-            ):
-                return None
-            # A grant is cumulative across attempts. Only a USER grant decision
-            # can increase it; do not queue a recovery that would immediately
-            # fail before its first model dispatch.
-            grants = db.execute(
-                "SELECT w.work,json_extract(b.snapshot,'$.request.tokens') "
-                "FROM research_work w LEFT JOIN research_blueprints b "
-                "ON b.project=w.project AND b.session=w.session AND b.work=w.work "
-                "WHERE w.project=? AND w.session=? AND w.root=? "
-                "AND w.state NOT IN ('completed','stopped')",
-                (project, session, root),
-            ).fetchall()
-            if any(
-                isinstance(original, int)
-                and spent_tokens(db, project, session, work)
-                >= grant_total(db, project, session, work, original)
-                for work, original in grants
             ):
                 return None
             progress = _progress(db, project, session, root)

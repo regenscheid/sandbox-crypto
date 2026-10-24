@@ -252,6 +252,7 @@ class RunService:
             self._auto_checked = now
             await self.auto_recovery_tick()
             await self.auto_continuation_tick()
+            await self.cost_notice_tick()
 
     async def auto_recovery_tick(self) -> None:
         """Offer bounded transient-failure recovery (D100); dispatch keeps its normal gates."""
@@ -259,8 +260,6 @@ class RunService:
         self._auto_after = page[-1] if len(page) == 100 else ("", "", "")
         for project, session, root in page:
             if (project, session) in self.active:
-                continue
-            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
                 continue
             request = await threaded(self.auto_recovery.queue, project, session, root)
             if request is not None:
@@ -270,14 +269,17 @@ class RunService:
                     request,
                 )
 
+    async def cost_notice_tick(self) -> None:
+        """Record each project's newly crossed cost notice (D102); a notice stops nothing."""
+        for project in await threaded(self.runs.noticed_projects):
+            await threaded(self.runs.note_cost_crossings, project)
+
     async def auto_continuation_tick(self) -> None:
         """Queue one next root for an answered checkpoint with an active plan."""
         page = await threaded(self.auto_continuation.candidates, after=self._continue_after)
         self._continue_after = page[-1] if len(page) == 100 else ("", "", "")
         for project, session, root in page:
             if (project, session) in self.active:
-                continue
-            if await threaded(self.runs.over_cost_limit, project, self.clock.now()):
                 continue
             try:
                 message = await threaded(self.auto_continuation.queue, project, session, root)
@@ -597,14 +599,6 @@ class RunService:
                 return False
             ids = active.message_ids = [message.message_id for message in queued]
             active.request_ids = requests
-            if await threaded(runs.over_cost_limit, project, self.clock.now()):
-                _log.warning("project %s has spent its model budget", project)
-                if queued:
-                    await threaded(runs.refuse, project, session, ids, "budget")
-                else:
-                    # A request cannot be refused: it waits for the window to move on.
-                    self.waiting_until[project, session] = self.clock.monotonic() + MAX_WAIT
-                return False
             # The run is offered every request that waits, held or not.
             self.held.pop((project, session), None)
             request = dataclasses.replace(

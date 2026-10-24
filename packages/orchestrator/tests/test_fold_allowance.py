@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Child summaries share the grant without borrowing another work's context/tokens."""
+"""Child summaries count toward their own work's usage, not another work's (D102: a
+child's tokens are a soft cap; no allowance refuses its folds)."""
 
 from __future__ import annotations
 
@@ -7,16 +8,11 @@ from dataclasses import replace
 
 import pytest
 
-from sandbox_science.orchestrator.chat import ModelBudget, RunChat
-from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history.collections import Collection
-from sandbox_science.orchestrator.context.history.delegated import FoldAllowance
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.plans import spent_tokens
 from sandbox_science.orchestrator.continuity.records import WorkRecords
-from sandbox_science.orchestrator.continuity.token_usage import fold_tokens
 from sandbox_science.orchestrator.harness import Harness, Role, RunRequest, Settings
-from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import GatewayModel, ModelGateway
 from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole, profiles
 from sandbox_science.orchestrator.projects import ModelUsage
@@ -56,35 +52,7 @@ def test_fold_tokens_survive_resume_and_exclude_parent_and_sibling(projects):
     with projects.control.read() as tx:
         assert spent_tokens(tx.sql, "p", "s", CHILD) == 620
         assert spent_tokens(tx.sql, "p", "s", CHILD, run=CONTINUATION) == 100
-        assert fold_tokens(tx.sql, "p", "s", CHILD, run=CHILD) == 520
-        assert fold_tokens(tx.sql, "p", "s", RUN, run=CONTINUATION) == 0
-
-
-async def test_child_folds_reserve_reporting_room_and_count_inflight_tokens(projects):
-    works = WorkRecords(projects.control)
-    works.admit("p", "s", RUN)
-    works.admit("p", "s", CHILD, parent=RUN)
-    allowance = FoldAllowance(projects.control, CONTEXT, work=CHILD, run=CHILD, tokens=12000)
-    state = RunState(projects.control)
-    chat = RunChat(state, CONTEXT, run=CHILD, run_id="child", task="Write a report")
-    budget = ModelBudget(chat, tokens=12000, auxiliary_tokens=allowance.additional)
-    transcript = Transcript(
-        context=AgentContext(messages=[{"role": "user", "content": "A" * 12000}])
-    )
-    assert await budget.halt(transcript) is None
-    assert await allowance.admit([{"role": "user", "content": "B" * 4000}], [])
-    assert 5000 < await allowance.additional() < 5200
-    assert await budget.halt(transcript) == "run_budget"  # pending summary is held
-    assert await budget.last_call(transcript) == "run_budget"
-    # An observed unknown-price summary still counts its tokens; it does not fill a dollar cap.
-    Collection(projects.control, ("p", "s", CHILD), "fold_calls").append(
-        ModelUsage(input_tokens=4000, output_tokens=1000).model_dump(mode="json")
-    )
-    allowance.release()
-    assert await allowance.additional() == 5000
-    assert not await allowance.admit([{"role": "user", "content": "retry"}], [])
-    assert allowance.pending == 0
-    assert not state.over_cost_limit("p", record(RUN).started_at)
+        assert spent_tokens(tx.sql, "p", "s", RUN) == 9020
 
 
 @pytest.mark.parametrize("explicit", [False, True])

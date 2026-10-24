@@ -129,6 +129,13 @@ def runs(harness: Harness) -> RunState:
     return RunState(ProjectStore(harness.state).control)
 
 
+def refusal(record: RunRecord) -> str:
+    """The local cost refusal a ``gateway_budget`` stop's record keeps (D102)."""
+    budget = record.summaries["budget"]
+    assert isinstance(budget, dict)
+    return str(budget["refusal"])
+
+
 def records(harness: Harness) -> list[RunRecord]:
     store = ProjectStore(harness.state)
     return [store.run(PROJECT, SESSION, entry.name) for entry in store.runs(PROJECT, SESSION)]
@@ -323,16 +330,18 @@ async def test_an_interrupted_run_ends_and_its_messages_wait_for_resume(
     }
 
 
-async def test_a_reached_cost_limit_refuses_the_message(harness: Harness) -> None:
+async def test_a_reached_cost_limit_refuses_the_first_paid_call(harness: Harness) -> None:
+    """D102: the run starts; the model-call journal refuses its first call, as the
+    gateway's budget would, and the message waits for the user's Resume."""
     await harness.run("run-1", [Reply("A priced answer.", cost="0.75")])
     runs(harness).set_cost_limit(PROJECT, 0.5)
     post(harness, "m-1", "Expensive question.")
     async with serving(harness, Reply("Never sent.")):
-        await eventually(lambda: states(harness) == {"m-1": "refused"})
-    (message,) = runs(harness).messages(PROJECT, SESSION)
-    assert message.reason == "budget"
+        await eventually(lambda: len(names(harness)) == 2)
+        await eventually(lambda: states(harness) == {"m-1": "held"})
     assert len(harness.gateway.main) == 1  # the earlier run's call alone
-    assert len(names(harness)) == 1
+    (record,) = [r for r in records(harness) if r.stopped == "gateway_budget"]
+    assert refusal(record).startswith("model_budget:")
 
 
 async def test_the_projects_cost_counts_what_the_gateway_priced(harness: Harness) -> None:

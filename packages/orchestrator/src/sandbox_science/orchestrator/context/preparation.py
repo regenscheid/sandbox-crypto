@@ -51,7 +51,7 @@ from .history import (
     session_view,
     settle,
 )
-from .history.delegated import FoldAllowance, delegated_folder
+from .history.delegated import delegated_folder
 from .history.geometry import Shares
 
 _log = logging.getLogger(__name__)
@@ -105,7 +105,6 @@ async def prepare_context(
     former_model: Callable[[str], ChatModel | None],
     learned: MutableMapping[str, int],
     observe_kernels: Callable[[ExecutionContext], Awaitable[KernelObservation]],
-    allowance: FoldAllowance | None = None,
     clock: Clock = SYSTEM_CLOCK,
 ) -> PreparedContext:
     """Reconstruct scoped history and give folding, logging and retrieval one owner."""
@@ -124,7 +123,6 @@ async def prepare_context(
             shares=limits.shares,
             clock=clock,
             model=narrator,
-            allowance=allowance,
         )
     else:
         folder = await _main_folder(

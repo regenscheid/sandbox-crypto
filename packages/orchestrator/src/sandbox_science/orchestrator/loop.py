@@ -83,7 +83,7 @@ POLLS: Final = frozenset(
 runaway guard never counts them as repeated calls, only as failed ones."""
 REPORT_SOURCE: Final = "report"
 """The report round's notice source."""
-MAIN_VERSION: Final = "sandbox-main-14"
+MAIN_VERSION: Final = "sandbox-main-15"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
     "You are a research assistant. Send research code and shell commands through the "
@@ -100,14 +100,13 @@ SYSTEM_PROMPT: Final = (
     "to handle it yourself, create or revise the session plan, or send a targeted update "
     "to a direct child with message_child. A child has not seen the user's message: "
     "include the instruction it needs and the user's archive message ID when forwarding. "
-    "Resource check-ins are not scientific completion. Read the child checkpoint, "
-    "assess progress and use resource_decide to renew soft turns, active time or retained "
-    "artifact allowance within policy, redirect, request a report or pause. When operator "
-    "policy explicitly permits root renewal, you may renew your own soft allowance only "
-    "after saving a checkpoint and new research evidence; repeated calls alone are not "
-    "progress. Hard capacity and execution deadlines cannot be extended this way. "
-    "Token extensions need explicit USER approval of "
-    "exactly 10,000,000 more cumulative tokens. Never infer it from a child request. "
+    "Resource check-ins are not scientific completion. A child that reaches a soft cap "
+    "(tokens, turns, active time or cost) or repeats itself checks in and waits: read its "
+    "summary and answer with resource_decide: extend by one bounded step, redirect with "
+    "corrected instructions, or stop it for its report. Extend only work that is producing "
+    "new evidence. At your own soft cap, compare your progress with the session plan and "
+    "continue only with work that advances it. Spending is enforced by the model gateway, "
+    "not by you. Hard capacity and execution deadlines cannot be extended this way. "
     "Check the child's status and current track before changing its assignment; a plan "
     "revision can invalidate a running child's track grant. Read the relevant pinned "
     "document, artifact or ledger entry before acting on feedback about it. Messages "
@@ -485,6 +484,8 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     except GatewayBudgetError as error:
         _log.warning("the model gateway refused the call for its budget: %s", error)
         transcript.halted, reply = GATEWAY_BUDGET, None
+        # Whose budget it was, the gateway's or a configured local limit, stays on record.
+        transcript.summaries["budget"] = {"refusal": str(error)[:500]}
     transcript.phase = "harness"
     if reply is None:
         return None
