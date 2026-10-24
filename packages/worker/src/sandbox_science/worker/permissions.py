@@ -21,6 +21,7 @@ The store is the middleware's (``events.db`` in its state directory, which the w
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from collections.abc import Iterable, Mapping
@@ -37,6 +38,7 @@ from sandbox_science.policy.approvals import (
     Approvals,
     PermissionRequest,
     RequestKey,
+    prepare_answer,
     withdrawal_payload,
 )
 
@@ -46,6 +48,8 @@ _log = logging.getLogger(__name__)
 
 SOURCE: Final = "worker"
 """The source of the records the worker writes."""
+ANSWERS: Final = "workspace"
+"""The source of the user's answers the workspace relays (D97)."""
 STORE_TIMEOUT: Final = 5.0
 
 
@@ -117,6 +121,52 @@ class Permissions:
     def answer(self, seq: int) -> Answer | None:
         """The newest answer to request ``seq``."""
         return self._approvals.answer_to(seq)
+
+    def unanswered(self) -> list[PermissionRequest]:
+        """The requests nobody answered and the worker did not withdraw, oldest first."""
+        return [r for r in self._approvals.unanswered() if not self._approvals.withdrawn(r.seq)]
+
+    def withdrawn(self, seq: int) -> bool:
+        return self._approvals.withdrawn(seq)
+
+    def escalations(self, seqs: Iterable[int]) -> dict[int, dict[str, object]]:
+        """The payloads of the escalation records ``seqs``, for what their cards show.
+        Blocking."""
+        wanted = set(seqs)
+        if not wanted or not self.path.is_file():
+            return {}
+        found: dict[int, dict[str, object]] = {}
+        try:
+            with StoreReader(self.path, timeout=STORE_TIMEOUT) as reader:
+                for record in reader.records(after=min(wanted) - 1, kinds=(ESCALATION,)):
+                    if record.seq in wanted:
+                        with contextlib.suppress(ValueError):
+                            found[record.seq] = record.data()
+                    if record.seq >= max(wanted):
+                        break
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
+        return found
+
+    def answer_request(
+        self, seq: int, *, approve: bool, scope: str, hours: float | None, now: datetime
+    ) -> tuple[int, str]:
+        """Record the user's answer to request ``seq``, which the workspace relays, as the
+        source ``workspace``: the record's number and kind. ValueError if it cannot be
+        answered so. Blocking."""
+        self.refresh()
+        kind, payload = prepare_answer(
+            self._approvals, seq, approve=approve, scope=scope, hours=hours, now=now
+        )
+        try:
+            record = self._store().append(kind, ANSWERS, payload)
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the answer could not be recorded: {exc}") from exc
+        try:
+            self.refresh()
+        except PermissionStoreError as exc:
+            _log.warning("request %d was answered, but the store cannot be read: %s", seq, exc)
+        return record.seq, kind
 
     def withdraw(self, seq: int, reason: str, now: datetime) -> None:
         """Close request ``seq`` for good, answered or not, as its operation ends: a denial

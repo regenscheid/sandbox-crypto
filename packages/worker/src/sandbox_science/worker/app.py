@@ -75,6 +75,10 @@ from sandbox_science.contracts.documents import (
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.logs import log_context
+from sandbox_science.contracts.permission_requests import (
+    WorkerPermissionAnswer,
+    WorkerPermissionListing,
+)
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import EffectControl, OperationLookupRequest, RecoveryFence
@@ -94,6 +98,8 @@ from .errors import WorkerError
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .operation_lookup import lookup
+from .permission_requests import PermissionDesk, PermissionRequestError
+from .permissions import PermissionStoreError
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .recovery_fence import operator_scope
 from .settings import ClientSettings, token_digest
@@ -106,6 +112,7 @@ _log = logging.getLogger(__name__)
 MANAGER: Final = web.AppKey("manager", ExecutionManager)
 ENVIRONMENTS: Final = web.AppKey("environments", Environments)
 PROVISIONER: Final = web.AppKey("provisioner", Provisioner)
+PERMISSION_DESK: Final = web.AppKey("permission_desk", PermissionDesk)
 DOCUMENT_CATALOG: Final = web.AppKey("document_catalog", DocumentsCatalog)
 CATALOG_WORK: Final = web.AppKey("catalog_work", set[asyncio.Task[CatalogStatus]])
 CATALOG_EXECUTOR: Final = web.AppKey("catalog_executor", ThreadPoolExecutor)
@@ -178,6 +185,7 @@ def create_app(
     provisioner: Provisioner | None = None,
     document_catalog: DocumentsCatalog | None = None,
     *,
+    permission_desk: PermissionDesk | None = None,
     heartbeat: float = EVENT_HEARTBEAT_SECONDS,
     file_write_timeout: float = 300.0,
 ) -> web.Application:
@@ -309,6 +317,15 @@ def create_app(
         app[PROVISIONER] = provisioner
         if environments is not None:
             environments.required_deleted.append(provisioner.forget)
+    if permission_desk is not None:
+        # The user's answers to network and package requests, relayed (D97).
+        app[PERMISSION_DESK] = permission_desk
+        app.add_routes(
+            [
+                web.get("/v1/permission-requests", permission_requests),
+                web.post("/v1/permission-requests/{seq}/answer", answer_permission_request),
+            ]
+        )
     app.add_routes(
         [
             web.get("/v1/ready", readiness),
@@ -905,6 +922,50 @@ async def job_status(request: web.Request) -> web.Response:
 
 
 # Provisioning operations (Conda provisioning, CP-1 to CP-25).
+
+
+def _desk(request: web.Request) -> PermissionDesk:
+    """Only an operator client (the workspace) lists and answers permission requests: the
+    run service's token never answers its own sandbox's requests."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "permission requests need an operator client")
+    return request.app[PERMISSION_DESK]
+
+
+async def permission_requests(request: web.Request) -> web.Response:
+    """A project's unanswered network and package permission requests (D97)."""
+    desk = _desk(request)
+    if set(request.query) != {"project"}:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name exactly one project")
+    project_id = _identifier(request.query["project"], "project")
+    _allowed(request, project_id)
+    now = desk.clock.now()
+    try:
+        found = await asyncio.to_thread(desk.listing, project_id, now)
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(WorkerPermissionListing(requests=found))
+
+
+async def answer_permission_request(request: web.Request) -> web.Response:
+    """The user's answer to one, relayed by the workspace (D97)."""
+    desk = _desk(request)
+    raw = request.match_info["seq"]
+    if not raw.isascii() or not raw.isdigit() or len(raw) > 18:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid permission request")
+    answer = WorkerPermissionAnswer.model_validate_json(await _body(request))
+    client = _client(request)
+    try:
+        answered = await asyncio.to_thread(
+            desk.answer, int(raw), client.allows, answer, desk.clock.now()
+        )
+    except PermissionRequestError as exc:
+        if exc.missing:
+            raise WorkerError(ErrorKind.NOT_FOUND, str(exc)) from None
+        raise WorkerError(ErrorKind.CONFLICT, str(exc)) from None
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+    return _json(answered, status=201)
 
 
 def _provisioner(request: web.Request) -> Provisioner:

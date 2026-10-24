@@ -107,6 +107,9 @@ class ProvisionPermissions:
             "sandbox_id": governing.sandbox_id,
             "project_id": request.context.project_id,
             "environment_id": request.context.environment_id,
+            "session_id": request.context.session_id,
+            # Who asked (D97): the agent through its provisioning tool, or the user.
+            "caller_kind": "user" if request.context.actor == "user" else "agent",
             "provision_id": op.record.provision_id,
             "policy": {
                 "name": governing.policy.policy.metadata.name,
@@ -150,9 +153,9 @@ class ProvisionPermissions:
             outcome=ProvisionOutcome.AWAITING_PERMISSION,
             permission_request=seq,
             next_step=f"Permission request {seq} asks to download the {len(decided.files)} "
-            "package files listed. On the pool host, the user reviews them with "
-            f"`sandbox-science-policy-middleware pending --request {seq}`, then approves the "
-            f"request (`approve --request {seq}`) or denies it. The operation installs once "
+            "package files listed. The user answers it in the workspace's chat, or on the "
+            f"pool host (`sandbox-science-policy-middleware pending --request {seq}`, then "
+            f"`approve --request {seq}` or `deny`). The operation installs once "
             f"it is approved, and ends denied if it is refused or nobody answers within "
             f"{minutes} minutes.",
         )

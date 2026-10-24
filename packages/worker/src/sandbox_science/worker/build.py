@@ -26,6 +26,7 @@ from .environments import Environments, OpenShellCli, confirmed_daemon_loss
 from .lifecycle import UNMANAGED, EnvironmentLifecycle
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
+from .permission_requests import PermissionDesk
 from .permissions import Permissions
 from .provisioner import Provisioner
 from .settings import Settings, SettingsError
@@ -211,5 +212,15 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         if shared is not None:
             environments.deleted.append(shared.forget)
     provisioner = build_provisioner(settings, manager, environments)
-    app = create_app(manager, token, environments, settings.clients, provisioner, documents)
+    desk = (
+        PermissionDesk(
+            provisioner.permissions, lambda: environments.records.listed(None), manager.clock
+        )
+        if provisioner.permissions is not None and environments is not None
+        else None
+    )
+    app = create_app(
+        manager, token, environments, settings.clients, provisioner, documents,
+        permission_desk=desk,
+    )  # fmt: skip
     return WorkerParts(lock, store, documents, shared, environments, manager, provisioner, app)

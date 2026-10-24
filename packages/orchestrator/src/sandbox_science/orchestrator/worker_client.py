@@ -73,6 +73,11 @@ from sandbox_science.contracts.artifact_retention import (
     ArtifactRetentionAcknowledgement,
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.permission_requests import (
+    WorkerPermissionAnswer,
+    WorkerPermissionAnswered,
+    WorkerPermissionListing,
+)
 from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import (
     EffectControl,
@@ -490,6 +495,26 @@ class WorkerClient:
             f"/v1/environments/{environment_id}/provisioning",
             ProvisioningQueue,
             params=_project(project_id),
+        )
+
+    # Network and package permission requests, for the workspace (D97).
+
+    async def permission_requests(self, project_id: str) -> WorkerPermissionListing:
+        """The project's unanswered network and package permission requests."""
+        return await self._call(
+            "GET",
+            "/v1/permission-requests",
+            WorkerPermissionListing,
+            params={"project": project_id},
+            max_bytes=4 * 1024 * 1024,
+        )
+
+    async def answer_permission_request(
+        self, seq: int, answer: WorkerPermissionAnswer
+    ) -> WorkerPermissionAnswered:
+        """Relay the user's answer to one of them."""
+        return await self._call(
+            "POST", f"/v1/permission-requests/{seq}/answer", WorkerPermissionAnswered, answer
         )
 
     # Executions.
