@@ -94,7 +94,7 @@ parameters:
 
 Use `research-retain` for `app.storage_class`, `pool.storage_class` and `runtime_manager.storage_class` in the bundle TOML (the manager's PVC is `ReadWriteOncePod`; Longhorn supports it).
 
-The sandbox workspaces need a faster class of their own. OpenShell copies the image's `/sandbox` tree into every new workspace PVC, and the copy must finish within OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`, not configurable), or the gateway rolls the sandbox back. `crypto-base` seeds its 5.2 GB, about 100,000-file prefix that way: on a 2-replica Longhorn class it took over 4 minutes in the test deployment, and the gateway rolled sandboxes back; a single-replica `strict-local` class brought it to about 2.5 minutes:
+The sandbox workspaces need a faster class of their own. OpenShell copies the image's `/sandbox` tree into every new workspace PVC, and the copy must finish within OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`, not configurable), or the gateway rolls the sandbox back. `crypto-base` seeds its 5.2 GB, about 100,000-file prefix that way: on a 2-replica Longhorn class it took over 4 minutes in the test deployment, and the gateway rolled sandboxes back; a single-replica `strict-local` class brought it to about 2.5 minutes, of which the copy itself (`workspace-init`) took 111 s. With the slimmed images (2.7 GB, about 62,000 files; [prefix layout](IMAGES.md#prefix-layout)) the copy takes 69 s on the same class; a 2-replica class is not yet measured with them:
 
 ```yaml
 apiVersion: storage.k8s.io/v1

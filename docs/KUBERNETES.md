@@ -222,7 +222,8 @@ class and retention are private operator choices. The initial copy must finish w
 OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,
 not configurable), or the gateway rolls the sandbox back: on the owner's cluster
 seeding `crypto-base`'s prefix (about 100k files) into a 2-replica Longhorn volume took
-over 4 minutes, and a single-replica `strict-local` class about 2.5 minutes
+over 4 minutes, and a single-replica `strict-local` class about 2.5 minutes in all,
+of which the copy (`workspace-init`) was 111 s; with the slimmed image below the copy took 69 s
 ([preparation step 2.1](KUBERNETES-PREP.md#21-a-retain-class-for-research-volumes)).
 The owner's decision of 2026-10-24 shrinks what is copied: the research images drop
 documentation, static libraries beside shared ones and Jmol with its Java runtime, and
