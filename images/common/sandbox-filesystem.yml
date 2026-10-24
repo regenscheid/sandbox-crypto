@@ -3,6 +3,8 @@
 # (docs/IMAGES.md). One section suits both images: OpenShell skips a path an image lacks.
 #   /opt/sandbox-science  the Conda prefix: the executor's interpreter, its tools, runtime installs
 #   /var/lib/texmf        TeX's generated formats and file databases (crypto-base)
+# The policy compiler adds /opt/sandbox-science-frozen, crypto-base's frozen trees, read-only to
+# every research sandbox itself (docs/IMAGES.md, "Prefix layout"); test.sh does the same.
 # images/test.sh applies it under a Landlock ruleset like OpenShell's.
 read_only: [/var/lib/texmf]
 read_write: [/opt/sandbox-science]

@@ -4,16 +4,80 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import secrets
 import stat
 import tempfile
 from pathlib import Path
+from typing import cast
 
 PREFIX = Path("/sandbox/.sandbox-science-prefix")
 ALIAS = Path("/opt/sandbox-science")
 MARKER = ".sandbox-science-prefix-id"
+FROZEN = Path("/opt/sandbox-science-frozen")
+"""The image's read-only copy of the prefix's frozen trees (images/common/prefix_layout.py)."""
+FROZEN_MANIFEST = "manifest.json"
+MAX_MANIFEST = 64 * 1024
+_TREE = re.compile(
+    r"[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}(?:/[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}){0,3}"
+)
+
+
+def _frozen_trees() -> list[str]:
+    """The trees the image keeps outside the prefix, from its manifest; none without one."""
+    try:
+        fd = os.open(FROZEN / FROZEN_MANIFEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return []
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("frozen tree manifest is not a regular file")
+        data = os.read(fd, MAX_MANIFEST + 1)
+    finally:
+        os.close(fd)
+    try:
+        manifest: object = json.loads(data) if len(data) <= MAX_MANIFEST else None
+    except ValueError:
+        manifest = None
+    fields = cast(dict[str, object], manifest) if isinstance(manifest, dict) else {}
+    trees = fields.get("trees")
+    entries = cast(list[object], trees) if isinstance(trees, list) else []
+    found = [entry for entry in entries if isinstance(entry, str) and _TREE.fullmatch(entry)]
+    if (
+        fields.get("version") != 1
+        or not isinstance(trees, list)
+        or len(found) != len(entries)
+        or len(found) > 64
+    ):
+        raise OSError("frozen tree manifest is malformed")
+    return found
+
+
+def check_frozen_links() -> None:
+    """Each frozen tree is the image's read-only copy, through the exact link the image left,
+    or, in a prefix seeded before the image moved it, a directory of the prefix's own.
+
+    The links live in the workspace, where research code can replace them: one pointing
+    anywhere else would put other files behind packages the lockfile names unchanged.
+    Raises OSError for any other link, for a link through a linked parent directory, and
+    for a link whose target the image lacks.
+    """
+    for tree in _frozen_trees():
+        place = PREFIX
+        for part in tree.split("/")[:-1]:
+            place = place / part
+            if place.is_symlink() or not place.is_dir():
+                raise OSError(f"frozen tree {tree} sits under a link or a non-directory")
+        link = PREFIX / tree
+        if not link.is_symlink():
+            if link.exists() and not link.is_dir():
+                raise OSError(f"frozen tree {tree} is not a directory")
+            continue
+        expected = FROZEN / tree
+        if os.readlink(link) != str(expected) or expected.is_symlink() or not expected.is_dir():
+            raise OSError(f"frozen tree {tree} links elsewhere than {expected}")
 
 
 def describe(python_prefix: str) -> dict[str, str | int]:
@@ -34,6 +98,7 @@ def describe(python_prefix: str) -> dict[str, str | int]:
         or not (PREFIX / "bin/python").is_file()
     ):
         raise OSError("required workspace prefix layout is missing or incompatible")
+    check_frozen_links()
     marker = PREFIX / MARKER
     if not marker.exists() and not marker.is_symlink():
         # Link a complete, synced identity atomically. Concurrent bridge startups

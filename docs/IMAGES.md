@@ -15,7 +15,7 @@ Research sandboxes start from one of two standard base profiles (D46, D22). The 
 | Profile | Contents | Licensing |
 | --- | --- | --- |
 | `minimal` | Ubuntu 24.04; Python 3.14 with ipykernel and jupyter_client; micromamba for runtime installs | Permissive, apart from the base distribution's runtime libraries; its AMD64 variant is currently in a private GHCR package (tier 2 in [licensing](LICENSING.md)) |
-| `crypto-base` | The same, plus SageMath 10.9 with its `sagemath` kernel, fpylll, fplll, PARI, FLINT, G6K, lattice-estimator, conda-forge's C and C++ compilers, TeX Live 2023 (`latexmk`, `pdflatex`), poppler-utils, qpdf, pdf_oxide and git | Contains GPL tools. The recipe is MIT; the image is built privately and may be copied only to a verified private registry (D46) |
+| `crypto-base` | The same, plus SageMath 10.9 with its `sagemath` kernel (without Jmol and its Java runtime), fpylll, fplll, PARI, FLINT, G6K, lattice-estimator, conda-forge's C and C++ compilers, TeX Live 2023 (`latexmk`, `pdflatex`), poppler-utils, qpdf, pdf_oxide and git | Contains GPL tools. The recipe is MIT; the image is built privately and may be copied only to a verified private registry (D46) |
 | `orchestrator` | Ubuntu 24.04; Python 3.14 with aiohttp, pydantic, PyYAML and the Markdown parser of living documents (markdown-it-py, mdit-py-plugins); the harness (`sandbox-science-harness`) and its contracts, built from this repository. No kernels ([below](#the-orchestrator-image)) | Permissive like `minimal`, which the build checks the same way; the harness is MIT |
 | `mcp-proxy` | Ubuntu 24.04; Python 3.14 with aiohttp, pydantic and PyYAML; the MCP proxy (`sandbox-science-mcp-proxy`) with the contracts, the policy library and the event store, built from this repository; a launcher, `mcp-proxy-run`, as the sandbox's command. No kernels ([below](#the-mcp-proxy-image)) | Permissive like `minimal`, which the build checks the same way; the proxy is MIT |
 
@@ -32,12 +32,13 @@ Every profile follows it; the orchestrator and MCP proxy images differ where [th
   - `bin/` holds the interpreter and every program of the environment, so the executor's `PATH` finds them;
   - `share/jupyter/kernels/` the kernelspecs;
   - `pkgs/` micromamba's package cache, empty in the image. After a lockfile install micromamba keeps the extracted packages there, partly as hard links into the environment, and `micromamba clean -a` leaves them. The build removes them, which saves 96 MB in minimal and 1.1 GB in crypto-base;
-  - `envs/` environments created at runtime.
+  - `envs/` environments created at runtime;
+  - in crypto-base, links to the frozen trees the image keeps read-only under `/opt/sandbox-science-frozen` ([prefix layout](#prefix-layout)).
 - **Runtime installs** go into the prefix: `micromamba install …` and `pip install …` install into the base environment, so kernels see them at once. The real prefix is retained with the writable workspace (D48). An active workspace volume contains all base package bytes as well as runtime installs and research data.
   - `/usr/local/bin/micromamba` sets `MAMBA_ROOT_PREFIX` and `CONDA_PREFIX` to the prefix when they are unset. OpenShell's VM driver does not apply an image's environment variables, and without them micromamba would cache packages under `/sandbox`.
   - The worker's package-client configuration points micromamba, pip and the other clients at the package cache ([package cache](PACKAGE-CACHE.md)). The image sets none of the variables it uses (`CONDARC`, `PIP_CONFIG_FILE`, `CARGO_HOME`, …) and ships no Conda configuration.
 - **Environment variables**, for runtimes that apply them: `PATH` starting with `/opt/sandbox-science/bin`, `HOME=/sandbox`, `MAMBA_ROOT_PREFIX` and `CONDA_PREFIX` naming the prefix, `LANG=C.UTF-8`. Under OpenShell the executor sets `PATH` and `CONDA_PREFIX` itself.
-- **Writable paths** (D48): `/sandbox`, `/opt/sandbox-science`, `/tmp` and `/dev/shm`. Everything else may be read-only.
+- **Writable paths** (D48): `/sandbox`, `/opt/sandbox-science`, `/tmp` and `/dev/shm`. Everything else may be read-only, and `/opt/sandbox-science-frozen` always is.
 - **No image policy.** The images carry no `/etc/openshell/policy.yaml`; the worker always supplies the policy.
 - **Record.** `/usr/share/sandbox-science/image.json` names the profile, the recipe's revision, the base image, the Ubuntu snapshot, the micromamba release, the lockfile's SHA-256 and the trees built from source. It lists every Conda, pip and Ubuntu package with its version and license. The Conda lockfile is beside it. Restoring and rebuilding environments (D22, D48) can start from these.
 - **Labels.**
@@ -64,6 +65,28 @@ sandbox:
 - OpenShell fixes the filesystem section when it creates a sandbox, so the targets file must list these before the worker creates sandboxes from the images.
 - Everything else the images use is under the baseline: micromamba in `/usr/local`, the record in `/usr/share/sandbox-science`, apt's programs in `/usr`. `/bin`, `/lib64` and `/sbin` are links into `/usr`.
 - Without `/var/lib/texmf`, `pdflatex` cannot read its format file. Without `/opt/sandbox-science`, nothing in the prefix runs.
+- The compiler adds `/opt/sandbox-science-frozen` to every research sandbox, read-only (`RESEARCH_IMAGE_READ_ONLY`), so the targets file need not list it: crypto-base's [frozen trees](#prefix-layout) are there, and without it Landlock refuses GAP, Maxima, Giac and the compilers. No filesystem section may name it, or a directory above it such as `/opt`, writable; the targets file is refused if one does.
+
+### Prefix layout
+
+OpenShell copies the image's `/sandbox`, prefix included, into every new environment's workspace (on Kubernetes, a volume, by its init container's `seed-workspace`, which writes and syncs each file and must finish within a fixed 5-minute grace; [Kubernetes](KUBERNETES.md#persistent-research-prefix-increment)). The cost is per file, so the research images keep out of `/sandbox` what a sandbox never reads and what no runtime install may change (the owner's decision of 2026-10-24). `images/common/prefix_layout.py` does it, as root, in the build step that installs the lockfile, so that no image layer keeps what it removes or moves; the record step checks the result (`prefix_layout.py check`) and fails the build otherwise.
+
+**Trimmed** (both research profiles):
+
+- documentation: `share/doc` (license texts stay), `share/man`, `share/gtk-doc` and conda's package test files, `etc/conda/test-files`. `share/info` stays: Maxima reads its help index there as it starts, and it is 65 files;
+- static libraries (`lib*.a`) that have a shared library of the same name beside them, such as `lib/libpari.a` beside `libpari.so`; the linker takes the shared one anyway. The compilers' own archives in their trees (`libgcc.a`, `libstdc++.a`, the sysroot's `libc_nonshared.a`) and an archive with no shared library beside it (NumPy's `libnpymath.a`, ECL's modules) stay;
+- Jmol and its Java runtime (400 MB, 2,400 files), which crypto-base's lockfile no longer has: the environment names `sagelib` and the `sage` metapackage's other dependencies instead of `sage`, whose only addition they were. Sage shows 3D plots with three.js (`threejs-sage`). A runtime `micromamba install sage` or `jmol` would bring Java back; nothing else in the environment depends on them.
+
+**Frozen** (crypto-base): GAP (`share/gap`), Giac (`share/giac`), Maxima's data (`share/maxima`), ECL's library tree (`lib/ecl-24.5.10`) and the compiler toolchain (`lib/gcc`, `libexec/gcc`, `x86_64-conda-linux-gnu` or `aarch64-conda-linux-gnu` with its sysroot) move to `/opt/sandbox-science-frozen/<the same relative path>`, owned by root and writable by nobody else. The prefix keeps an absolute link at each original place, which the workspace copy copies as a link.
+
+- The relative layout is the prefix's, so a relative path from one frozen tree to another, as the compilers use (`lib/gcc/…/../../../../x86_64-conda-linux-gnu/bin`), resolves the same. A relative link that left its tree, such as `lib/gcc/…/libgomp.so -> ../../../libgomp.so`, is rewritten to the absolute path through the prefix.
+- Programs stay out of the frozen trees when they find their libraries through `$ORIGIN`, which the dynamic linker resolves from their real place: Maxima's binary (`lib/maxima`, one file) stays in the prefix. The build's check runs `ldd` on every program and library in the frozen trees.
+- The compilers' own specs (`conda.specs`) name the prefix's `include` and `lib` absolutely, so `gcc p.c -lpari -lgmp` and Sage's `cython()` find the prefix's headers and shared libraries as before.
+- The Conda packages that own a file in a frozen tree are pinned at their installed build in `conda-meta/pinned` (in crypto-base on linux-64: binutils_impl, conda-gcc-specs, ecl, gap-core, gap-defaults, gcc_impl, gfortran_impl, giac, gxx_impl, kernel-headers, ld_impl, libgcc-devel, libstdcxx-devel, maxima and sysroot). micromamba honors it: a solve that would replace one fails (`pin on gap-core ==4.15.1 h60ec763_2 is not installable`) rather than writing through a link into the read-only path, and the worker's provisioning reports that the package is frozen in the image and that only a new image changes it. Packages beside them install and upgrade as before. The pin file is in the workspace, where research code can remove it; the read-only path is what holds.
+- `/opt/sandbox-science-frozen/manifest.json` lists the trees and the pinned packages. The worker's prefix check (`workspace_prefix.py`, in the executor's `hello`) requires each tree to be the image's exact link, or a directory of the prefix's own in a prefix seeded before the image moved it; a link anywhere else, or one behind a linked parent directory, fails the layout and puts the environment on a recovery hold, since it would put other files behind packages the lockfile names unchanged. The split changes no `conda-meta` record or package metadata directory, so the package fingerprint is the one the same packages had before; the build checks that too.
+- Workspace checkpoints store the links as links (`checkpoint_stream.py` never follows one); a checkpoint restores onto an image with the same frozen trees.
+
+In numbers (linux-64, 2026-10-24): crypto-base's `/sandbox` went from 5.34 GB in 100,918 entries to 2.65 GB in 60,897 entries (53,240 files, 1,694 links), and the frozen trees hold 1.64 GB in 24,093 entries. Copying `/sandbox` file by file with a sync after each file, as the seed does, onto a new volume on babbage's NVMe disk took about 500 s before and 290 s after (two runs each; a cluster volume is slower). Most of what remains is Python's `site-packages` (about 42,000 files), which runtime installs change; moving the Python prefix out of the workspace as well (option C) is deferred. `minimal` freezes nothing: it has no heavy trees, and freezing the one linker link its Python brings (`x86_64-conda-linux-gnu/bin/ld`) would pin the linker against a runtime install of the compilers. Its trimming removes 395 documentation and test files and three static libraries (4 MB): minimal's `/sandbox` holds 16,317 entries.
 
 The orchestrator's sandbox gets no devices from the compiler (`compile_orchestrator()`), and needs only the prefix, read-only. The targets file's `orchestrator` entry must list it, beside the interpreter that may reach the services:
 
@@ -154,7 +177,7 @@ Versions in the orchestrator image: Python 3.14.8, aiohttp 3.14.5, pydantic 2.14
 
 The mcp-proxy image's lockfile has 41 packages: the orchestrator image's 44 without the Markdown parser's three, with aiohttp at 3.14.4, as in `uv.lock`.
 
-Notable versions in crypto-base: Python 3.14.8, SageMath 10.9, PARI 2.17.3, fpylll 0.6.4, fplll 5.5.0, FLINT 3.3.1, Singular 4.4.1, GAP 4.15.1, Maxima 5.49.0, GCC 15.3, Cython 3.3.0, TeX Live 2023 (Ubuntu `2023.20240207-1`), poppler-utils 24.02.0, qpdf 11.9.0. The `sage` package brings R and OpenJDK too.
+Notable versions in crypto-base: Python 3.14.8, SageMath 10.9, PARI 2.17.3, fpylll 0.6.4, fplll 5.5.0, FLINT 3.3.1, Singular 4.4.1, GAP 4.15.1, Maxima 5.49.0, GCC 15.3, Cython 3.3.0, TeX Live 2023 (Ubuntu `2023.20240207-1`), poppler-utils 24.02.0, qpdf 11.9.0. The `sage` metapackage's dependencies, which the environment lists, bring R too; OpenJDK, which came with Jmol, is gone ([prefix layout](#prefix-layout)).
 
 TeX comes from Ubuntu (`images/crypto-base/apt-packages.txt`): the LaTeX base, recommended and extra collections, the science, pictures and publishers collections (so llncs, cryptocode, algorithm2e, algorithmicx, siunitx, thmtools, tikz-cd), the recommended fonts and cm-super, so that T1-encoded documents get Type 1 fonts rather than bitmaps. Ubuntu's TeX Live 2023 lacks the IACR classes (iacrtrans, iacrcc); a project can keep them in its own directory.
 
@@ -223,7 +246,7 @@ Build times from empty caches depend mostly on snapshot.ubuntu.com, which served
 | **orchestrator in all** | 71 s with `--no-cache`, 54 s of it for Ubuntu's indexes and `ca-certificates`; 8 s with the shared base stage cached, including the two wheels |
 | **mcp-proxy in all** | 11 s with the shared base stage cached, including the four wheels; its Ubuntu steps are the orchestrator's |
 
-In the orchestrator image the Conda prefix takes 239 MB, mostly Python itself; the harness and its contracts take 0.3 MB. In the mcp-proxy image it takes 241 MB; the proxy and the three packages it imports take 1.2 MB, PyYAML and LibYAML 1.1 MB. In crypto-base the Conda prefix takes 5.2 GB, of which the compilers take 0.76 GB, GAP's data 0.39 GB and OpenJDK 0.3 GB (for Jmol, which the `sage` package brings); TeX takes 0.57 GB.
+In the orchestrator image the Conda prefix takes 239 MB, mostly Python itself; the harness and its contracts take 0.3 MB. In the mcp-proxy image it takes 241 MB; the proxy and the three packages it imports take 1.2 MB, PyYAML and LibYAML 1.1 MB. In crypto-base the Conda prefix took 5.2 GB before its [trimming and frozen trees](#prefix-layout), of which the compilers took 0.76 GB, GAP's data 0.39 GB and OpenJDK 0.3 GB (for Jmol, which the `sage` package brought); TeX takes 0.57 GB. Now `/sandbox` holds 2.65 GB and `/opt/sandbox-science-frozen` 1.64 GB.
 
 ## Lockfiles
 
@@ -240,7 +263,7 @@ After locking, review the diff, build, and update `licenses.txt` if the build as
 `images/test.sh <profile> [image]` runs `images/checks/check_image.py` in the image twice. Each time it runs as uid 1000, with no capabilities, `no-new-privileges`, a read-only root filesystem, a populated workspace volume at `/sandbox` and tmpfs at `/tmp`, and for the research profiles a volume for the Conda prefix:
 
 - **container**: as a container driver would run the image;
-- **landlock**: the same, under a Landlock ruleset like OpenShell's: its baseline, the devices the compiler adds (none for `orchestrator`), and the paths above. A check confirms that the ruleset is in effect.
+- **landlock**: the same, under a Landlock ruleset like OpenShell's: its baseline, the devices and the frozen trees' path the compiler adds (none for `orchestrator`), and the paths above. A check confirms that the ruleset is in effect.
 
 In the research profiles the checks start the worker's executor as the OpenShell backend does (`python -I /sandbox/.sandbox-science/executor.py --stdio --root /sandbox/project`), so kernels start through jupyter_client with the executor's environment. As the worker's first sync of an environment does, the check opens the executor's package admission after `hello` (`package_gate`, generation 0, `ready`): the executor holds it from its start and admits no shell or cell until then. Each shell and cell carries the check's own time limit:
 
@@ -250,6 +273,7 @@ In the research profiles the checks start the worker's executor as the OpenShell
 | `executor` | The executor's `hello` lists `python` and the `jobs` feature, and in crypto-base `sage` and the `pdf` feature too |
 | `python-kernel`, `tools-on-path`, `multiprocessing` | A Python cell runs with the prefix's interpreter; the environment's programs are on `PATH`, and its `python`, the package-command wrappers' stand-in first on `PATH`, runs the prefix's; `multiprocessing` locks, pools and process pools work |
 | `sage-kernel`, `sage-interfaces` | A Sage cell computes in GF(17) and preparses `2^10`; gp and Singular start through pseudo-terminals, and libgap works |
+| `frozen-trees` | crypto-base's [frozen trees](#prefix-layout) are behind the image's exact links, read-only and pinned; GAP, Maxima and Giac answer through Sage, and `gcc -lpari -lgmp` builds and runs a program with the frozen compilers |
 | `fpylll`, `g6k`, `lattice-estimator` | LLL on a 60-dimensional q-ary lattice; a G6K sieve in dimension 50; the primal uSVP estimate for Kyber512 |
 | `latexmk`, `pdftotext`, `pdf-oxide` | `latexmk -pdf` builds an llncs document with T1 fonts, amsmath, cryptocode, algorithmicx, TikZ and cleveref, with no bitmap fonts in the PDF; `pdftotext`, `qpdf --check` and pdf_oxide read the result |
 | `pdf-tools` | The worker's PDF operations ([PDF sources](specs/pdf-sources.md)) through the executor and its helper, copied beside it: page facts, line anchors, search and a page render, with the image's pdf_oxide |

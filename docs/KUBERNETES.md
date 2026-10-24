@@ -198,6 +198,14 @@ Ordinary surviving-daemon reconnect and journal reconciliation retain their
 existing semantics. This is continuity detection, not a snapshot of live kernels
 or independent integrity verification of every installed file.
 
+In crypto-base, some of the prefix's trees are links to the image's read-only
+`/opt/sandbox-science-frozen` ([prefix layout](IMAGES.md#prefix-layout)). The layout
+check requires each to be the image's exact link, or a directory of the prefix's own
+in a prefix seeded before the change; research code can rewrite links in the
+workspace, and one pointing anywhere else fails the layout like a missing prefix.
+The split leaves the package fingerprint unchanged, and checkpoints keep the links
+as links.
+
 Restoring the original prefix and known package fingerprint can release that
 specific hold. A durable pending acknowledgement survives a worker restart; the
 executor revalidates the restored state before aligning its cached baseline, and
@@ -208,14 +216,21 @@ interpreter memory.
 
 An active workspace PVC must fit its full native base prefix, installed packages
 and research data. Upstream's 2 GiB workspace default is too small for `crypto-base`
-(the earlier package measurement was about 5.2 GB before headroom). Storage size,
+(5.3 GB in about 101,000 entries before the 2026-10-24 layout change, 2.65 GB in
+about 61,000 since, before headroom). Storage size,
 class and retention are private operator choices. The initial copy must finish within
 OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,
 not configurable), or the gateway rolls the sandbox back: on the owner's cluster
 seeding `crypto-base`'s prefix (about 100k files) into a 2-replica Longhorn volume took
 over 4 minutes, and a single-replica `strict-local` class about 2.5 minutes
 ([preparation step 2.1](KUBERNETES-PREP.md#21-a-retain-class-for-research-volumes)).
-Keeping the prefix out of `/sandbox` is an open owner decision (backlog). The arm64
+The owner's decision of 2026-10-24 shrinks what is copied: the research images drop
+documentation, static libraries beside shared ones and Jmol with its Java runtime, and
+keep GAP, Giac, Maxima's data, ECL and the compiler toolchain in the read-only image
+path behind links, pinned in Conda ([prefix layout](IMAGES.md#prefix-layout)). A local
+imitation of the seed (every file written and synced, on babbage's NVMe disk) took
+about 290 s instead of about 500 s (two runs each); the cluster's time is not measured yet. Moving
+the Python prefix itself out of `/sandbox` (option C) is deferred. The arm64
 architecture needs live qualification. Upstream interrupted seeding
 does not currently resume a partial copy: preserve that PVC and report the exact
 initialization failure, never delete/reseed it to manufacture successful recovery.

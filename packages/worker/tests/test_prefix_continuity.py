@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -199,6 +201,7 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]
     alias.symlink_to(prefix, target_is_directory=True)
     monkeypatch.setattr(workspace_prefix, "PREFIX", prefix)
     monkeypatch.setattr(workspace_prefix, "ALIAS", alias)
+    monkeypatch.setattr(workspace_prefix, "FROZEN", tmp_path / "no-frozen-trees")
     return prefix, alias
 
 
@@ -240,6 +243,67 @@ def test_invalid_layout_or_identity_never_marks_another_prefix(
     assert list(other.iterdir()) == []
     if failure not in ("bad-marker", "marker-symlink"):
         assert not (prefix / workspace_prefix.MARKER).exists()
+
+
+@pytest.fixture
+def frozen(layout: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """An image's frozen trees, as images/common/prefix_layout.py leaves them."""
+    prefix, _ = layout
+    root = tmp_path / "frozen"
+    for tree in ("share/gap", "lib/gcc"):
+        (root / tree).mkdir(parents=True)
+        (prefix / tree).parent.mkdir(parents=True, exist_ok=True)
+        (prefix / tree).symlink_to(root / tree)
+    manifest = {"version": 1, "trees": ["lib/gcc", "share/gap"], "packages": []}
+    (root / workspace_prefix.FROZEN_MANIFEST).write_text(json.dumps(manifest))
+    monkeypatch.setattr(workspace_prefix, "FROZEN", root)
+    return root
+
+
+def test_frozen_trees_pass_through_the_images_exact_links(
+    layout: tuple[Path, Path], frozen: Path
+) -> None:
+    prefix, alias = layout
+    assert "identity" in workspace_prefix.report(str(alias))
+    # A prefix seeded before the image moved a tree out keeps its own directory.
+    (prefix / "share/gap").unlink()
+    (prefix / "share/gap").mkdir()
+    assert "identity" in workspace_prefix.report(str(alias))
+
+
+def test_no_manifest_means_no_frozen_trees(layout: tuple[Path, Path], tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(workspace_prefix, "FROZEN", tmp_path / "absent")
+    assert "identity" in workspace_prefix.report(str(layout[1]))
+
+
+@pytest.mark.parametrize(
+    "failure", ["elsewhere", "relative", "parent-link", "target-gone", "manifest"]
+)
+def test_a_rewritten_frozen_link_fails_the_layout(
+    layout: tuple[Path, Path], frozen: Path, tmp_path: Path, failure: str
+) -> None:
+    """Research code can rewrite the workspace's links; one that no longer names the image's
+    read-only tree would put other files behind packages the lockfile names unchanged."""
+    prefix, alias = layout
+    elsewhere = tmp_path / "writable-gap"
+    elsewhere.mkdir()
+    link = prefix / "share/gap"
+    if failure == "elsewhere":
+        link.unlink()
+        link.symlink_to(elsewhere)
+    elif failure == "relative":
+        link.unlink()
+        link.symlink_to(os.path.relpath(frozen / "share/gap", link.parent))
+    elif failure == "parent-link":
+        moved = tmp_path / "share"
+        (prefix / "share").rename(moved)
+        (prefix / "share").symlink_to(moved)
+    elif failure == "target-gone":
+        (frozen / "share/gap").rmdir()
+    else:
+        (frozen / workspace_prefix.FROZEN_MANIFEST).write_text('{"version": 1, "trees": ["../x"]}')
+    assert "error" in workspace_prefix.report(str(alias))
+    assert not (prefix / workspace_prefix.MARKER).exists()
 
 
 def test_pending_preserves_every_record_and_detects_interrupted_holder(tmp_path: Path):

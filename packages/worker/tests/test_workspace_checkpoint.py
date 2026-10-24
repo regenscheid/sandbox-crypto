@@ -61,6 +61,10 @@ def tree(root: Path) -> None:
     (prefix / "bin").mkdir()
     (prefix / "bin" / "tool").write_bytes(b"native package bytes")
     (prefix / "bin" / "tool").chmod(0o751)
+    # A frozen tree's link, as crypto-base's prefix has (images/common/prefix_layout.py):
+    # stored as a link, never followed into the image's read-only copy.
+    (prefix / "share").mkdir()
+    (prefix / "share" / "gap").symlink_to("/opt/sandbox-science-frozen/share/gap")
     (root / "research").mkdir()
     (root / "research" / "result").write_text("retained result")
     os.link(root / "research" / "result", root / "hardlink")
@@ -155,6 +159,8 @@ async def test_complete_roundtrip_keeps_prefix_links_modes_and_all_recovery_hold
     assert stat.S_IMODE((restored / "empty").stat().st_mode) == 0o750
     assert stat.S_IMODE(restored.stat().st_mode) == 0o751
     assert os.readlink(restored / "absolute") == "/do-not-follow-this-checkpoint-link"
+    frozen = restored / ".sandbox-science-prefix/share/gap"
+    assert os.readlink(frozen) == "/opt/sandbox-science-frozen/share/gap"
     assert os.readlink(restored / "relative") == "research/result"
     assert (restored / "hardlink").stat().st_ino == (restored / "research/result").stat().st_ino
     assert (root / "research/result").read_text() == "retained result"

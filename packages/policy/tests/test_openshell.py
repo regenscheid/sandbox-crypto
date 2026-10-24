@@ -32,6 +32,7 @@ from sandbox_science.policy.openshell import (
     BASELINE_UNLISTED,
     HARD_LANDLOCK,
     MAX_FILESYSTEM_PATHS,
+    RESEARCH_IMAGE_READ_ONLY,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     AnyOf,
@@ -1660,7 +1661,41 @@ def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
     assert filesystem.include_workdir
     assert {"/dev/ptmx", "/dev/pts", "/dev/shm"} <= set(filesystem.read_write)
     assert filesystem.read_write == (*BASELINE_READ_WRITE, *SANDBOX_DEVICES_READ_WRITE)
-    assert filesystem.read_only == (*BASELINE_READ_ONLY, *SANDBOX_DEVICES_READ_ONLY)
+    assert filesystem.read_only == (
+        *BASELINE_READ_ONLY,
+        *SANDBOX_DEVICES_READ_ONLY,
+        *RESEARCH_IMAGE_READ_ONLY,
+    )
+
+
+def test_a_research_sandbox_reads_the_images_frozen_trees_and_never_writes_them() -> None:
+    # The research images keep GAP, Giac, Maxima's data, ECL and the compilers at
+    # /opt/sandbox-science-frozen, which the prefix in the workspace links to (docs/IMAGES.md).
+    assert RESEARCH_IMAGE_READ_ONLY == ("/opt/sandbox-science-frozen",)
+    filesystem = compile_research(EXAMPLE).policy.filesystem_policy
+    assert filesystem is not None
+    assert "/opt/sandbox-science-frozen" in filesystem.read_only
+    assert not any(
+        path == "/opt/sandbox-science-frozen" or "/opt/sandbox-science-frozen".startswith(path)
+        for path in filesystem.read_write
+    )
+    # The image's own section cannot make them, or a directory above them, writable.
+    for path in ("/opt/sandbox-science-frozen", "/opt"):
+        with pytest.raises(ValidationError, match="stays read-only"):
+            SandboxFilesystem(read_write=(path,))
+    # The prefix beside it is no parent of it and stays writable.
+    target = TARGETS.sandbox.model_copy(
+        update={"filesystem": SandboxFilesystem(read_write=("/opt/sandbox-science",))}
+    )
+    compiled = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
+    assert compiled is not None
+    assert "/opt/sandbox-science" in compiled.read_write
+    assert "/opt/sandbox-science-frozen" in compiled.read_only
+    # The services' sandboxes run images without frozen trees.
+    assert TARGETS.orchestrator is not None
+    orchestrator = compile_orchestrator(TARGETS.orchestrator).filesystem_policy
+    assert orchestrator is not None
+    assert "/opt/sandbox-science-frozen" not in orchestrator.read_only
 
 
 @pytest.mark.parametrize("which", ["research", "orchestrator", "mcp-proxy"])
@@ -1718,7 +1753,12 @@ def test_the_image_paths_are_added_and_writable_wins() -> None:
     )
     filesystem = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
     assert filesystem is not None
-    assert filesystem.read_only == (*BASELINE_READ_ONLY, "/dev/random", "/opt/conda")
+    assert filesystem.read_only == (
+        *BASELINE_READ_ONLY,
+        "/dev/random",
+        *RESEARCH_IMAGE_READ_ONLY,
+        "/opt/conda",
+    )
     assert filesystem.read_write == (*BASELINE_READ_WRITE, *SANDBOX_DEVICES_READ_WRITE, "/data")
 
 
@@ -1754,6 +1794,7 @@ def test_the_path_limit_counts_the_listed_baseline_once() -> None:
         + len(BASELINE_READ_WRITE)
         + len(SANDBOX_DEVICES_READ_ONLY)
         + len(SANDBOX_DEVICES_READ_WRITE)
+        + len(RESEARCH_IMAGE_READ_ONLY)
         + BASELINE_UNLISTED
     )
 

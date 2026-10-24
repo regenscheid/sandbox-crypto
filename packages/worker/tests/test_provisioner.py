@@ -686,6 +686,31 @@ async def test_cp_f4_an_unlisted_channel_is_denied_at_resolve(make_world: Factor
 
 
 @pytest.mark.asyncio
+async def test_a_solve_that_would_change_a_frozen_package_is_refused_as_such(
+    make_world: Factory,
+) -> None:
+    """The research images pin the packages whose files they keep read-only
+    (images/common/prefix_layout.py); a request that would replace one fails its dry run,
+    and the worker says the package is frozen and that a new image changes it."""
+    world = await make_world()
+    (world.prefix.root / "conda-meta" / "pinned").write_text("fpylll==0.5.0=py313h0_0\n")
+    done = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
+    assert (done.outcome, done.reason, done.stage) == ("failed", "resolve_failed", "resolve")
+    assert done.error is not None
+    assert done.error.kind == "invalid_request"
+    assert "fpylll 0.5.0 (py313h0_0)" in done.error.message
+    assert "the image freezes" in done.error.message
+    assert "/opt/sandbox-science-frozen" in done.error.message
+    assert done.next_step == resolution.FROZEN_NEXT_STEP
+    assert "new image" in done.next_step
+    assert world.cache.artifacts() == []
+    # Without a pin in the way, the same request installs.
+    (world.prefix.root / "conda-meta" / "pinned").unlink()
+    again = await world.finished((await world.provision("op-2", conda=["fpylll"]))["provision_id"])
+    assert again.outcome == "completed", again
+
+
+@pytest.mark.asyncio
 async def test_cp_f5_a_failed_post_link_script_leaves_the_environment_needing_recovery(
     make_world: Factory,
 ) -> None:

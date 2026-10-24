@@ -11,6 +11,7 @@ filesystem_policy:
   - /var/log
   - /dev/urandom
   - /dev/random
+  - /opt/sandbox-science-frozen
   read_write:
   - /tmp
   - /dev/null

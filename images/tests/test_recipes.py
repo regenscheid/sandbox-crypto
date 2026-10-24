@@ -28,6 +28,7 @@ from sandbox_science.policy import PoolCeiling, load_policy
 from sandbox_science.policy.openshell import (
     BASELINE_READ_ONLY,
     BASELINE_READ_WRITE,
+    RESEARCH_IMAGE_READ_ONLY,
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     FilesystemPolicy,
@@ -67,6 +68,7 @@ def _load(name: str, path: Path) -> ModuleType:
 
 
 report = _load("image_report", IMAGES / "common" / "image_report.py")
+layout = _load("prefix_layout", IMAGES / "common" / "prefix_layout.py")
 checks = _load("check_image", IMAGES / "checks" / "check_image.py")
 
 
@@ -188,7 +190,9 @@ def test_each_research_profile_locks_the_kernel_packages(profile: str) -> None:
     names = {package["name"] for package in _lockfile(profile)["package"]}
     assert {"python", "ipykernel", "jupyter_client", "pip"} <= names
     if profile == "crypto-base":
-        assert {"sage", "sagelib", "fpylll", "fplll", "pari", "libflint", "cython"} <= names
+        assert {"sagelib", "fpylll", "fplll", "pari", "libflint", "cython"} <= names
+        # Not the `sage` metapackage, whose only addition is Jmol and its Java runtime.
+        assert not {"sage", "jmol", "openjdk"} & names
 
 
 @pytest.mark.parametrize("profile", SERVICE_PROFILES)
@@ -334,6 +338,7 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
 
     assert array("devices_ro") == SANDBOX_DEVICES_READ_ONLY
     assert array("devices_rw") == SANDBOX_DEVICES_READ_WRITE
+    assert array("frozen_ro") == RESEARCH_IMAGE_READ_ONLY == (str(layout.FROZEN),)
     # compile_orchestrator() and compile_mcp_proxy() add none to the services' sandboxes.
     branch = re.search(
         r"^  orchestrator \| mcp-proxy\)$(.*?)^    ;;$",
@@ -343,6 +348,7 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
     assert branch is not None
     assert re.search(r"^    devices_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
     assert re.search(r"^    devices_rw=\(\)$", branch.group(1), flags=re.MULTILINE)
+    assert re.search(r"^    frozen_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
     assert "$here/$profile/filesystem.yml" in branch.group(1)
     for profile in SERVICE_PROFILES:
         assert (IMAGES / profile / "filesystem.yml").is_file()

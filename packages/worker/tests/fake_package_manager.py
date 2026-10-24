@@ -30,8 +30,10 @@ as a failed post-link script does; one whose ``postlink`` is ``slow`` is linked,
 takes half a minute; one whose ``postlink`` is ``lost`` is linked, then kills the
 executor it runs under. Like micromamba, an install honors ``MAMBA_PINNED_PACKAGES``
 (``channel/subdir::name==version=build``, separated by commas): it logs the pins, and
-fails to solve if a package it would link is pinned to another version or build. It
-reaches no network but the cache it is given.
+fails to solve if a package it would link is pinned to another version or build. Its dry
+run honors ``conda-meta/pinned`` (``name==version=build`` lines), as the research images pin
+their frozen packages: a package it would link that is pinned to another build fails the
+solve with micromamba's message. It reaches no network but the cache it is given.
 """
 
 from __future__ import annotations
@@ -390,6 +392,18 @@ def pins() -> dict[str, tuple[str, str]]:
     return pinned
 
 
+def file_pins(prefix: Path) -> dict[str, tuple[str, str]]:
+    """The version and build ``conda-meta/pinned`` holds each package at."""
+    pinned: dict[str, tuple[str, str]] = {}
+    path = prefix / "conda-meta" / "pinned"
+    for line in path.read_text().splitlines() if path.exists() else []:
+        name, _, rest = line.strip().partition("==")
+        version, _, build = rest.partition("=")
+        if name and version and build:
+            pinned[name] = (version, build)
+    return pinned
+
+
 def conda(tool: str, args: list[str]) -> int:
     prefix = Path(sys.prefix)
     command, names = arguments(args)
@@ -397,7 +411,21 @@ def conda(tool: str, args: list[str]) -> int:
         return 0
     names = [spec_name(name) for name in names]
     if "--dry-run" in args:
-        links = [conda_record(name, entry) for name, entry in conda_closure(names, prefix)]
+        planned = conda_closure(names, prefix)
+        frozen = file_pins(prefix)
+        for name, entry in planned:
+            if name in frozen and frozen[name] != (entry["version"], entry["build"]):
+                version, build = frozen[name]
+                problem = (
+                    f"Could not solve for environment specs\n    The following packages are "
+                    f"incompatible\n    ├─ {name} is requested and can be installed;\n    └─ pin "
+                    f"on {name} =={version} {build} is not installable because it requires\n"
+                    f"       └─ {name} =={version} {build}, which conflicts with any installable "
+                    "versions previously reported."
+                )
+                print(json.dumps({"log_history": [{"message": problem}], "success": False}))
+                return 1
+        links = [conda_record(name, entry) for name, entry in planned]
         actions: dict[str, Any] = {"PREFIX": str(prefix)}
         if links:
             actions["LINK"] = links

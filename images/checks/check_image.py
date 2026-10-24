@@ -57,6 +57,8 @@ PROFILES = ("minimal", "crypto-base", "orchestrator", "mcp-proxy")
 SERVICES = ("orchestrator", "mcp-proxy")
 """The platform services' images: no executor or kernels, and a read-only prefix."""
 PREFIX = "/opt/sandbox-science"
+FROZEN = Path("/opt/sandbox-science-frozen")
+"""The research images' frozen trees, which the prefix links to (common/prefix_layout.py)."""
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = (
     "executor.py",
@@ -536,8 +538,10 @@ class Checks:
             expect(bool(records), f"nothing readable in {PREFIX}/conda-meta")
             json.loads(records[0].read_text())
         else:
-            # Runtime installs go into the prefix (D48); multiprocessing needs /dev/shm.
+            # Runtime installs go into the prefix (D48); multiprocessing needs /dev/shm. Its
+            # frozen trees are the image's, read-only (an image without them has none to write).
             allowed += ["/dev/shm", PREFIX]  # noqa: S108
+            refused.append(str(FROZEN))
         wrongly = [path for path in refused if writable(path)]
         missing = [path for path in allowed if not writable(path)]
         expect(not wrongly, f"writable but should not be: {wrongly}")
@@ -654,6 +658,40 @@ class Checks:
         stdout, _ = self.ex().cell(code, language="sage")
         expect(stdout.split() == ["4", "120", "21"], f"output {stdout!r}")
         return f"gp and Singular through pexpect, libgap: {stdout.strip()}"
+
+    def frozen_trees(self) -> str:
+        """GAP's, Giac's, Maxima's and the compilers' trees are the image's read-only copies,
+        each behind the exact link the image left in the prefix, pinned, and in use: Sage's
+        interfaces run them, and the compilers build a program against the prefix's shared
+        libraries."""
+        manifest = json.loads((FROZEN / "manifest.json").read_text())
+        prefix = Path(PREFIX).resolve()
+        for tree in manifest["trees"]:
+            link = prefix / tree
+            expect(link.is_symlink(), f"{link} is not a link")
+            expect(os.readlink(link) == str(FROZEN / tree), f"{link} -> {os.readlink(link)}")
+            expect(not os.access(FROZEN / tree, os.W_OK), f"{FROZEN / tree} is writable")
+        pinned = (prefix / "conda-meta" / "pinned").read_text().splitlines()
+        for package in manifest["packages"]:
+            line = f"{package['name']}=={package['version']}={package['build']}"
+            expect(line in pinned, f"{package['name']} is not pinned")
+        code = "print(gap.eval('Factorial(10)'), maxima('2+2'), giac('3+3'))"
+        stdout, _ = self.ex().cell(code, language="sage")
+        expect(stdout.split() == ["3628800", "4", "6"], f"output {stdout!r}")
+        program = (
+            "#include <pari/pari.h>\n#include <gmp.h>\nint main(void) { pari_init(1000000, 0);"
+            ' pari_printf("%Ps\\n", factor(gp_read_str("2^64+1"))); mpz_t z;'
+            ' mpz_init_set_ui(z, 7); mpz_mul_ui(z, z, 6); gmp_printf("%Zd\\n", z); return 0; }\n'
+        )
+        built = self.ex().shell(
+            f"cd \"$(mktemp -d)\" && printf '%s' '{program}' > p.c && "
+            "gcc -O2 p.c -o p -lpari -lgmp && ./p"
+        )
+        expect(built.split() == ["[274177,", "1;", "67280421310721,", "1]", "42"], f"{built!r}")
+        return (
+            f"{len(manifest['trees'])} trees under {FROZEN}, {len(manifest['packages'])} "
+            f"packages pinned; GAP, Maxima and Giac: {stdout.strip()}; gcc -lpari -lgmp ran"
+        )
 
     def fpylll(self) -> str:
         code = (
@@ -1040,7 +1078,8 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         return names + proxy
     names += ["scheduler-shim", "executor", "python-kernel", "tools-on-path", "multiprocessing"]
     if profile == "crypto-base":
-        names += ["sage-kernel", "sage-interfaces", "fpylll", "g6k", "lattice-estimator"]
+        names += ["sage-kernel", "sage-interfaces", "frozen-trees", "fpylll", "g6k"]
+        names += ["lattice-estimator"]
         names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
     if network:
         names.append("runtime-install")

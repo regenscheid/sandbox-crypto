@@ -7,8 +7,9 @@
 # root filesystem and only the declared paths writable (docs/IMAGES.md, "Tests"):
 #   container  a populated workspace volume at /sandbox for research, tmpfs at /tmp;
 #              services use an empty tmpfs home and their read-only image prefix;
-#   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices the
-#              policy compiler adds to research sandboxes, and the image's filesystem section
+#   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices and
+#              the frozen trees' path the policy compiler adds to research sandboxes, and the
+#              image's filesystem section
 #              (images/common/sandbox-filesystem.yml, or images/<profile>/filesystem.yml for the
 #              orchestrator's and the MCP proxy's sandboxes, which get no devices).
 # IMAGE defaults to the tag build.sh gives. MODES picks the modes (default
@@ -39,6 +40,8 @@ baseline_rw=(/tmp /dev/null /sandbox)
 # The devices the policy compiler adds (sandbox_science.policy.openshell.SANDBOX_DEVICES_*).
 devices_ro=(/dev/random)
 devices_rw=(/dev/full /dev/ptmx /dev/pts /dev/shm /dev/tty /dev/zero)
+# The research images' frozen trees, read-only (...policy.openshell.RESEARCH_IMAGE_READ_ONLY).
+frozen_ro=(/opt/sandbox-science-frozen)
 # The image's own paths, as the targets file lists them.
 filesystem=${FILESYSTEM:-$here/common/sandbox-filesystem.yml}
 # Empty Docker volumes copy the image workspace, matching OpenShell workspace seeding.
@@ -49,6 +52,7 @@ case $profile in
     # stay read-only.
     devices_ro=()
     devices_rw=()
+    frozen_ro=()
     filesystem=${FILESYSTEM:-$here/$profile/filesystem.yml}
     workspace=(--tmpfs /sandbox:rw,exec,uid=1000,gid=1000,mode=0755,size=8g)
     ;;
@@ -75,7 +79,9 @@ if [ "${NETWORK:-1}" != 0 ]; then
 fi
 
 landlock=(python -I /checks/landlock.py)
-for path in "${baseline_ro[@]}" "${devices_ro[@]}" "${image_ro[@]}" /checks; do landlock+=(--ro "$path"); done
+for path in "${baseline_ro[@]}" "${devices_ro[@]}" "${frozen_ro[@]}" "${image_ro[@]}" /checks; do
+  landlock+=(--ro "$path")
+done
 for path in "${baseline_rw[@]}" "${devices_rw[@]}" "${image_rw[@]}"; do landlock+=(--rw "$path"); done
 landlock+=(--)
 

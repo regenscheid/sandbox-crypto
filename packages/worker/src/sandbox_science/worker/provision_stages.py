@@ -474,6 +474,24 @@ class ProvisionStages:
             result = execution.result
             stdout = result.stdout if result is not None else None
             if execution.state is not ExecutionState.SUCCEEDED or stdout is None:
+                stderr = result.stderr if result is not None else None
+                frozen = (
+                    resolution.frozen_refusal(
+                        (stdout.text if stdout is not None else "")
+                        + "\n"
+                        + (stderr.text if stderr is not None else "")
+                    )
+                    if label == "resolve-conda" and execution.state is ExecutionState.FAILED
+                    else None
+                )
+                if frozen is not None:
+                    raise Stop(
+                        ProvisionOutcome.FAILED,
+                        "resolve_failed",
+                        "resolve",
+                        ErrorInfo(kind=ErrorKind.INVALID_REQUEST, message=frozen),
+                        next_step=resolution.FROZEN_NEXT_STEP,
+                    )
                 raise Stop(
                     ProvisionOutcome.FAILED,
                     "resolve_failed",
