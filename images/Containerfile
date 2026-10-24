@@ -247,7 +247,7 @@ RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.
 # these two and uses no index; then the dependencies must check out and the command must run.
 RUN --mount=type=bind,from=wheels,target=/tmp/wheels \
     python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
-        sandbox-science-contracts sandbox-science-orchestrator && \
+        sandbox-science-contracts sandbox-science-policy sandbox-science-orchestrator && \
     python -m pip check && \
     sandbox-science-harness --help >/dev/null
 

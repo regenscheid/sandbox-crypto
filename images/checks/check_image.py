@@ -84,7 +84,11 @@ FEATURES = {"minimal": ["jobs"], "crypto-base": ["jobs", "pdf"]}
 MARKER = "Sandbox Science image check"
 
 HARNESS = f"{PREFIX}/bin/sandbox-science-harness"
-HARNESS_PACKAGES = ("sandbox-science-contracts", "sandbox-science-orchestrator")
+HARNESS_PACKAGES = (
+    "sandbox-science-contracts",
+    "sandbox-science-policy",
+    "sandbox-science-orchestrator",
+)
 HARNESS_DISTS = (*HARNESS_PACKAGES, "aiohttp", "pydantic", "pydantic-core")
 HARNESS_MODULES = (
     "sandbox_science.orchestrator.cli",
