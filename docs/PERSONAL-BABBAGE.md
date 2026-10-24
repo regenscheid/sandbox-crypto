@@ -144,3 +144,7 @@ If the protocol between the parts changed, the worker, run service and workspace
 - `lab_up.sh` and `lab_down.sh` name only `~/.local/state/openshell-lab`, `openshell-lab-*` units and the lab's ports. `lab_down.sh` deletes the lab's sandboxes through the lab's gateway alone, with the lab's `env.sh`.
 - `lab_down.sh`'s last checks leave out processes in `ss-personal-*` units and the VM driver's socket directory under `/tmp` that they hold, so a running personal instance does not read as a lab left behind. Its check for OpenShell paths looks for `~/.local/state/openshell*`, which the personal paths are not.
 - The two gateways are separate, but share the machine, the Docker store and `/tmp`. Running a lab while the personal instance runs has not been exercised; stopping the personal instance first is the safe order.
+
+## Backup and restore
+
+`scripts/personal_backup.sh` snapshots the instance's SQLite stores, artifact and worker blobs, event and policy stores and the two config files into a dated, verified directory (never the OpenShell gateway's database or any key), and `--restore` puts one back. Take one with the instance stopped, between step 1 and step 2 of [updating](#updating-to-a-new-main). The [backup and restore runbook](BACKUP-RESTORE.md) has the details.

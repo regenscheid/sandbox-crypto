@@ -61,9 +61,7 @@ def test_missing_or_empty_output_is_not_an_error() -> None:
     assert "No test run finished" in module.summary("collected 0 items\n", "x")
 
 
-def test_the_summary_is_appended_to_the_step_summary(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_the_summary_is_appended_to_the_step_summary(tmp_path: Path, monkeypatch, capsys) -> None:
     output = tmp_path / "pytest.txt"
     output.write_text(OUTPUT)
     target = tmp_path / "summary.md"

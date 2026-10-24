@@ -28,8 +28,8 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 
 ### Operations
 
-- [ ] Nightly CI green.
-- [ ] Backup and restore runbook, with a snapshot before each migration (D92).
+- [ ] Nightly CI green. Root causes found 2026-10-23 (stale workflow on `main`, the 72-minute `repeat` job, a CPU-starved race in `test_auto_recovery`); the sharded `repeat` jobs with a flake summary are on `k8s-sync-ops`, pending merge to `main` and a green night.
+- [ ] Backup and restore runbook, with a snapshot before each migration (D92). Written ([runbook](../docs/BACKUP-RESTORE.md), `scripts/personal_backup.sh`); still to do: call it from `personal_up.sh` before a migrating start, and a restore trial on babbage.
 - [ ] One OpenShell version constant, checked at launch.
 
 ## Context-focused refactor (2026-10-21)
