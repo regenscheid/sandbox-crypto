@@ -32,6 +32,7 @@ from typing import Final, cast
 
 from sandbox_science.policy import LoadedPolicy, mcp_wire
 from sandbox_science.policy.classification import server_classification
+from sandbox_science.policy.detection import DRIFT_RECORD, DriftLedger, pin_digest
 from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.mcp_answers import Rewrite, rewrite_answer
 from sandbox_science.policy.mcp_wire import ListedTool, McpWireError
@@ -397,8 +398,12 @@ class ListingCheck:
         stream: bool,
         events: EventSink,
         request_id: str,
+        drifts: DriftLedger | None = None,
     ) -> None:
+        """``drifts``, when given, learns of a drift at once: until its server's
+        classification is accepted again, its non-read calls ask (D103)."""
         self._listings, self._listing, self._events = listings, listing, events
+        self._drifts = drifts
         self._request_id = request_id
         self._stream = stream
         self._body = bytearray()
@@ -437,13 +442,16 @@ class ListingCheck:
         return ListingOutcome(rewritten if self._listing.rewrite is not None else body, drift)
 
     def _record(self, drift: Drift) -> None:
+        pinned = self._listing.pin
+        pin = pin_digest(pinned) if pinned is not None else None
         try:
-            self._events.record(
-                "mcp-tools-drift",
+            seq = self._events.record(
+                DRIFT_RECORD,
                 {
                     **self._listing.subject,
                     "request_id": self._request_id,
                     "finding": DRIFT_FINDING,
+                    "pin": pin,
                     "added": list(drift.added[:MAX_DRIFT_NAMES]),
                     "removed": list(drift.removed[:MAX_DRIFT_NAMES]),
                     "changed": list(drift.changed[:MAX_DRIFT_NAMES]),
@@ -456,3 +464,7 @@ class ListingCheck:
             )
         except Exception:
             _log.exception("could not record the tool list drift of %s", drift.server)
+            seq = None
+        if self._drifts is not None:
+            # Escalates even when unrecorded: the drift was seen, whatever the store says.
+            self._drifts.note(drift.server, pin, seq)

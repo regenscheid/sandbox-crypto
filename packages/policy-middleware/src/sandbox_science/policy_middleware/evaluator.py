@@ -15,6 +15,7 @@ import functools
 import logging
 import re
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ from sandbox_science.policy import (
     ClassificationError,
     Decision,
     EgressUsage,
+    EscalationTerms,
     GitOperation,
     HardFloor,
     HttpOperation,
@@ -55,6 +57,21 @@ from sandbox_science.policy.approvals import (
     http_summary,
     network_max_grant,
 )
+from sandbox_science.policy.detection import (
+    ACTION_URL,
+    DAILY_CEILING,
+    HOLD_TIMEOUT,
+    RULE_PREFIX,
+    TOOL_LIST_DRIFT,
+    Call,
+    Detector,
+    DriftLedger,
+    Holds,
+    Subject,
+    action_like,
+    pin_digest,
+)
+from sandbox_science.policy.detection import Finding as Detected
 from sandbox_science.policy.mcp_answers import callable_tools, tool_summary
 from sandbox_science.policy.mcp_wire import listed_tools, params_digest
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
@@ -62,13 +79,18 @@ from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy.reasons import (
     APPROVAL_DENIED,
     APPROVAL_REQUIRED,
+    ARGUMENTS_TOO_LARGE,
     AUDIT_UNAVAILABLE,
+    CREDENTIAL_IN_BODY,
     DESTINATION_FORBIDDEN,
     ESCALATION_TIMED_OUT,
     LAYER_CODES,
+    POLICY_DENIED,
     POLICY_UNAVAILABLE,
+    POOL_CEILING_DENIED,
     REQUEST_CODES,
     REQUEST_UNCLASSIFIABLE,
+    SESSION_HELD,
     with_request,
 )
 
@@ -123,6 +145,25 @@ _PORT_SCHEMES: Final = {80: "http", 443: "https"}
 _HOST_RE: Final = re.compile(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+")
 _NAME_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _MONITOR_REPEAT: Final = timedelta(hours=1)
+_HELD_REFRESH: Final = timedelta(seconds=1)
+"""How often held or drifted calls read the store for the user's answer, at most."""
+_MAX_OUTCOMES: Final = 4096
+"""Allowed requests whose response status the middleware waits for, oldest forgotten first."""
+_REFUSALS: Final = frozenset(
+    {
+        POLICY_DENIED,
+        POOL_CEILING_DENIED,
+        DESTINATION_FORBIDDEN,
+        REQUEST_UNCLASSIFIABLE,
+        APPROVAL_DENIED,
+        ESCALATION_TIMED_OUT,
+        ARGUMENTS_TOO_LARGE,
+        CREDENTIAL_IN_BODY,
+        GIT_REQUEST_INVALID,
+        CREDENTIAL_UNENCRYPTED,
+    }
+)
+"""Refusals the denial streak counts: not a request waiting for an answer, nor a hold."""
 
 
 _LISTINGS_OFF_REASON: Final = (
@@ -317,6 +358,7 @@ class PolicyMiddleware:
         archives: ArchiveLookup | None = None,
         requests: Callable[[int], Iterable[Record]] | None = None,
         listings: ToolListings | None = None,
+        response_statuses: bool = False,
     ) -> None:
         """``archives``, when given, names the opam packages of escalated opam archives.
 
@@ -325,7 +367,9 @@ class PolicyMiddleware:
         (``sandbox_science.policy.approvals``). Without it,
         every escalation is recorded and denied, and none can be approved.
         ``listings`` holds pinned tool lists, against which the tool listings that
-        sandboxes calling MCP servers directly receive are compared.
+        sandboxes calling MCP servers directly receive are compared. With
+        ``response_statuses``, the service reads every response's status, and failures
+        count towards the detection rules (``host-failures``).
         """
         self.listings = listings
         self._store = store
@@ -342,6 +386,18 @@ class PolicyMiddleware:
         self._recording = tuple(threading.Lock() for _ in range(_RECORDING_LOCKS))
         """Held while a permission request is recorded, by its fingerprint: identical
         escalations evaluated at once (on the gRPC thread pool) record one request."""
+        self.response_statuses = response_statuses
+        self._detector = Detector()
+        self._holds = Holds()
+        self._drifts = DriftLedger()
+        self._hold_lock = threading.Lock()
+        self._held_read = datetime.min.replace(tzinfo=UTC)
+        self._hold_projects: dict[str, str] = {}
+        """The project count each open hold's subject counts towards, to clear a ceiling."""
+        self._outcomes: OrderedDict[str, tuple[Subject, str, LoadedPolicy, str, str]] = (
+            OrderedDict()
+        )
+        """Allowed requests whose response status counts, by OpenShell's request id."""
 
     def prime_approvals(self) -> None:
         """Read the permission requests and answers already stored, at startup, so that
@@ -352,10 +408,19 @@ class PolicyMiddleware:
         if self._requests is None:
             return
         try:
-            self._approvals.load(self._requests(self._approvals.last_seq))
+            records = list(self._requests(self._approvals.last_seq))
         except Exception:
             # Without the records no answer is known; the request waits, as before.
             _log.exception("could not read permission requests from the event store")
+            return
+        self._approvals.load(records)
+        self._drifts.load(records)
+        for answered in self._holds.load(records):
+            project = self._hold_projects.pop(answered.subject.key, None)
+            if answered.cleared:
+                # Only new calls hold it again; a stopped session's counts stand.
+                ceiling = answered.rule == DAILY_CEILING
+                self._detector.clear(answered.subject, project if ceiling else None)
 
     def validate_config(self, config: Mapping[str, object] | None) -> str | None:
         """Return why a middleware entry's config is unacceptable, or None if it is valid.
@@ -408,6 +473,34 @@ class PolicyMiddleware:
             destination = (normalize_host(facts.host), facts.port)
         except ValueError as exc:
             return _deny(REQUEST_UNCLASSIFIABLE, f"malformed destination host: {exc}")
+        if destination in (ref.package_cache, ref.mcp_proxy):
+            # Platform services: the cache budgets its own fetches, the proxy its calls.
+            return self._decide_http(facts, loaded, ref, destination)
+        # Research code's requests name no session: its calls are held by sandbox (D103).
+        subject = Subject(facts.sandbox_id)
+        project = f"policy:{loaded.policy.metadata.name}"
+        query = f"?({len(facts.query.encode())} bytes)" if facts.query else ""
+        call = Call(
+            destination[0],
+            facts.method.upper(),
+            f"{facts.port}{facts.path}?{facts.query}",
+            path=facts.path,
+            label=facts.path + query,
+        )
+        held = self._detect(facts.request_id, loaded, subject, project, call, "code")
+        if held is not None:
+            return held
+        verdict = self._decide_http(facts, loaded, ref, destination)
+        return self._counted(facts.request_id, loaded, subject, project, call.host, verdict, "code")
+
+    def _decide_http(
+        self,
+        facts: HttpRequestFacts,
+        loaded: LoadedPolicy,
+        ref: PolicyRef,
+        destination: tuple[str, int],
+    ) -> Verdict:
+        """Decide a request of research code's under its bound policy."""
         # The middleware runs before OpenShell injects provider credentials and
         # cannot see whether a request will get one. OpenShell substitutes a
         # credential only at the hosts the policy binds it to, so a request to
@@ -441,6 +534,7 @@ class PolicyMiddleware:
             )
             return self._verdict(facts, loaded, decision)
         decision = evaluate(operation, loaded, ceiling=self._ceiling, floor=self._floor)
+        decision = _action_url(facts, loaded, operation, decision)
         if decision.action is not Action.DENY and _is_fetch_post(operation):
             try:
                 _check_git_body(facts)
@@ -530,6 +624,8 @@ class PolicyMiddleware:
                 body_digest(facts.body),
             )
             asked = _http_card(facts, operation)
+            if (decision.rule or "").startswith(RULE_PREFIX):
+                asked["max_grant"] = "once"  # a detection's hold is answered call by call
         else:
             asked = card or {"caller_kind": "agent"}  # an MCP call the run service sent (D98)
         self._refresh_approvals()
@@ -659,7 +755,12 @@ class PolicyMiddleware:
         if listing is None or listing.sandbox_id != sandbox_id:
             return None
         return ListingCheck(
-            self.listings, listing, stream=stream, events=self._events, request_id=request_id
+            self.listings,
+            listing,
+            stream=stream,
+            events=self._events,
+            request_id=request_id,
+            drifts=self._drifts,
         )
 
     def _evaluate_mcp(self, facts: HttpRequestFacts, ref: McpRef, loaded: LoadedPolicy) -> Verdict:
@@ -691,7 +792,21 @@ class PolicyMiddleware:
         except ValueError as exc:
             verdict = _deny(REQUEST_UNCLASSIFIABLE, f"malformed destination host: {exc}")
         else:
-            verdict = self._mcp_verdict(facts, ref, loaded, call)
+            subject = Subject(facts.sandbox_id, ref.project, call.session)
+            project = f"project:{ref.project}"
+            target = f"{call.method} {call.tool or ''} {params_digest(call.params)}"
+            counted = Call(server, call.method, target, label=f"{call.method} {call.tool or ''}")
+            host = normalize_host(facts.host)
+            held = self._detect(facts.request_id, loaded, subject, project, counted, "agent")
+            verdict = held or self._counted(
+                facts.request_id,
+                loaded,
+                subject,
+                project,
+                host,
+                self._mcp_verdict(facts, ref, loaded, call),
+                "agent",
+            )
         self._record_mcp_call(facts, ref, loaded, call, verdict)
         return verdict
 
@@ -710,6 +825,7 @@ class PolicyMiddleware:
                 else None
             ),
         )
+        decision = self._drifted(call.server, loaded, decision)
         subject = call.subject(ref, facts.sandbox_id)
         target = RequestKey.mcp(
             ref.project,
@@ -812,6 +928,160 @@ class PolicyMiddleware:
         except Exception:
             _log.exception("could not record an MCP call of request %s", facts.request_id)
 
+    def _drifted(self, server: str, loaded: LoadedPolicy, decision: Decision) -> Decision:
+        """Escalate a non-read call to a server whose tool list drifted from its pin, until
+        its classification is accepted again (D96, D103)."""
+        if (
+            self.listings is None
+            or decision.action not in (Action.ALLOW, Action.ALERT)
+            or decision.effect in (None, "read")
+        ):
+            return decision
+        pin = self.listings.pin(server, loaded.policy.mcp.servers[server])
+        digest = pin_digest(pin) if pin is not None else None
+        if self._drifts.drifted(server, digest) is not None:
+            self._reread()  # the operator's acceptance ends it at once
+        seq = self._drifts.drifted(server, digest)
+        if seq is None:
+            return decision
+        reason = (
+            f"MCP server {server!r}'s tool list drifted from its pinned list (record {seq}): "
+            f"its {decision.effect} calls ask until its classification is accepted again"
+        )
+        return _detected(decision, loaded, TOOL_LIST_DRIFT, reason)
+
+    def _reread(self) -> None:
+        """Read the store for answers to holds and acceptances of drifts, at most once a
+        second: a held subject's calls keep coming."""
+        now = self._now()
+        if now - self._held_read >= _HELD_REFRESH:
+            self._held_read = now
+            self._refresh_approvals()
+
+    def response_status(self, request_id: str, sandbox_id: str, status: int) -> None:
+        """Count a failed response (4xx or 5xx) to an allowed request of ``sandbox_id``'s
+        towards the detection rules; a hold it raises pauses the subject's next calls."""
+        with self._lock:
+            entry = self._outcomes.pop(request_id, None)
+        if entry is None or status < 400:
+            return
+        subject, host, loaded, project, caller = entry
+        if subject.sandbox_id != sandbox_id:
+            return
+        found = self._detector.outcome(
+            loaded.policy.detection, subject, host, self._now(), denied=False
+        )
+        self._judged(request_id, loaded, subject, project, found, caller)
+
+    def _detect(
+        self,
+        request_id: str,
+        loaded: LoadedPolicy,
+        subject: Subject,
+        project: str,
+        call: Call,
+        caller: str,
+    ) -> Verdict | None:
+        """Refuse a held subject's call; count any other, and refuse it when a detection rule
+        holds the subject now. None when the call goes on to be decided."""
+        if self._holds.active(subject) is not None:
+            self._reread()
+        held = self._holds.active(subject)
+        if held is not None:
+            return _held(held, "")
+        found = self._detector.observe(loaded.policy.detection, subject, project, call, self._now())
+        return self._judged(request_id, loaded, subject, project, found, caller)
+
+    def _counted(
+        self,
+        request_id: str,
+        loaded: LoadedPolicy,
+        subject: Subject,
+        project: str,
+        host: str,
+        verdict: Verdict,
+        caller: str,
+    ) -> Verdict:
+        """Count a refusal towards the detection rules, or wait for an allowed request's
+        response status; the verdict stands, and a hold pauses the subject's next calls."""
+        if verdict.allowed:
+            if self.response_statuses and request_id:
+                with self._lock:
+                    self._outcomes[request_id] = (subject, host, loaded, project, caller)
+                    while len(self._outcomes) > _MAX_OUTCOMES:
+                        self._outcomes.popitem(last=False)
+            return verdict
+        if _REQUEST_SUFFIX.sub("", verdict.reason_code) not in _REFUSALS:
+            return verdict
+        settings = loaded.policy.detection
+        found = self._detector.outcome(settings, subject, host, self._now(), denied=True)
+        self._judged(request_id, loaded, subject, project, found, caller)
+        return verdict
+
+    def _judged(
+        self,
+        request_id: str,
+        loaded: LoadedPolicy,
+        subject: Subject,
+        project: str,
+        found: Sequence[Detected],
+        caller: str,
+    ) -> Verdict | None:
+        """Log what the rules saw, and hold the subject if one of them fired: the refusal of
+        the call that fired it, or None."""
+        for finding in found:
+            _log_finding(subject, request_id, finding)
+        fired = next((finding for finding in found if finding.hold), None)
+        if fired is None:
+            return None
+        seq = self._hold(request_id, loaded, subject, project, fired, caller)
+        if seq is None:
+            return _deny(AUDIT_UNAVAILABLE, "the session's hold could not be recorded")
+        return _held(seq, fired.rule)
+
+    def _hold(
+        self,
+        request_id: str,
+        loaded: LoadedPolicy,
+        subject: Subject,
+        project: str,
+        finding: Detected,
+        caller: str,
+    ) -> int | None:
+        """Record a hold of the subject's calls, a permission request for the workspace's
+        card, once; its sequence number (0 when the sink does not say), or None when it
+        could not be recorded."""
+        key = subject.hold_key(finding.rule, self._now())
+        payload: dict[str, object] = {
+            "sandbox_id": subject.sandbox_id,
+            "project": subject.project or None,
+            "session": subject.session or None,
+            "request_id": request_id,
+            "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
+            "rule": RULE_PREFIX + finding.rule,
+            "reason": _hold_reason(finding),
+            "target": key.payload(),
+            "escalation": {
+                "timeout_seconds": int(HOLD_TIMEOUT.total_seconds()),
+                "on_timeout": "deny",
+            },
+            "caller_kind": caller,
+            "max_grant": "once",
+            "hold": {**finding.payload(), "requests": self._detector.recent(subject)},
+        }
+        with self._hold_lock:
+            opened = self._holds.active(subject)
+            if opened is not None:
+                return opened
+            try:
+                seq = self._events.record("escalation", payload)
+            except Exception:
+                _log.exception("could not record the hold of %s", subject.key)
+                return None
+            self._holds.note(seq or 0, key)
+            self._hold_projects[subject.key] = project
+        return seq or 0
+
     def _monitor_findings(
         self, facts: HttpRequestFacts, loaded: LoadedPolicy
     ) -> tuple[Finding, ...]:
@@ -910,6 +1180,92 @@ class PolicyMiddleware:
             if len(packages) > MAX_PACKAGES:
                 archive["more_packages"] = len(packages) - MAX_PACKAGES
         return archive
+
+
+_REQUEST_SUFFIX: Final = re.compile(r"_r[0-9]+$")
+
+
+def _held(seq: int, rule: str) -> Verdict:
+    """The refusal of a held subject's call, naming the hold for the agent."""
+    code = with_request(SESSION_HELD, seq) if seq else SESSION_HELD
+    fired = f" by {RULE_PREFIX}{rule}" if rule else ""
+    reason = f"the session's outward calls are held{fired}, until the user clears the hold"
+    findings = (Finding("detect_hold", rule or "hold", "high"),) if rule else ()
+    return Verdict(allowed=False, reason_code=code, reason=reason, findings=findings)
+
+
+def _hold_reason(finding: Detected) -> str:
+    where = f" to {finding.host}" if finding.host else ""
+    return (
+        f"{finding.count} calls{where} within {finding.window_seconds} s, over the "
+        f"{finding.rule} threshold of {finding.threshold}"
+    )
+
+
+def _log_finding(subject: Subject, request_id: str, finding: Detected) -> None:
+    """A structured record of what a rule saw, for the log pipeline's dashboards (D103)."""
+    _log.info(
+        "detection %s %s: %d of %d within %d s",
+        finding.rule,
+        "holds" if finding.hold else "near miss",
+        finding.count,
+        finding.threshold,
+        finding.window_seconds,
+        extra={
+            "event": "detect_finding",
+            "outcome": "hold" if finding.hold else "near_miss",
+            **finding.payload(),
+            "sandbox_id": subject.sandbox_id,
+            "project": subject.project or None,
+            "session": subject.session or None,
+            "request": request_id,
+        },
+    )
+
+
+def _detected(decision: Decision, loaded: LoadedPolicy, rule: str, reason: str) -> Decision:
+    """A detection rule's escalation of one call that the policy lets through: a permission
+    request of its own, answered once, that denies when nobody answers."""
+    return Decision(
+        action=Action.ESCALATE,
+        layer="policy",
+        reason=reason,
+        rule=RULE_PREFIX + rule,
+        policy_digest=loaded.digest,
+        escalation=EscalationTerms(loaded.policy.escalation.timeout, Action.DENY),
+        effect=decision.effect,
+        max_grant="once",
+    )
+
+
+def _action_url(
+    facts: HttpRequestFacts, loaded: LoadedPolicy, operation: Operation, decision: Decision
+) -> Decision:
+    """Hold a GET or HEAD that the policy lets through when its URL reads as an action."""
+    settings = loaded.policy.detection
+    if (
+        not (settings.enabled and settings.action_urls)
+        or decision.action not in (Action.ALLOW, Action.ALERT)
+        or not isinstance(operation, HttpOperation)
+        or facts.method.upper() not in ("GET", "HEAD")
+        or not action_like(facts.path, facts.query)
+    ):
+        return decision
+    _log.info(
+        "detection %s holds request %s",
+        ACTION_URL,
+        facts.request_id,
+        extra={
+            "event": "detect_finding",
+            "outcome": "hold_call",
+            "rule": ACTION_URL,
+            "host": facts.host,
+            "sandbox_id": facts.sandbox_id,
+            "request": facts.request_id,
+        },
+    )
+    reason = "the URL reads as an action (a token beside a word such as confirm or delete)"
+    return _detected(decision, loaded, ACTION_URL, reason)
 
 
 def _callable_page(

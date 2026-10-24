@@ -12,6 +12,7 @@ admin_hosts = ["gateway.sandbox-science.internal", "10.0.0.2"]
 package_cache_url = "http://127.0.0.1:8090"   # optional: names opam packages in escalations
 mcp_listings = true                           # for direct MCP: filter tool listings (D98)
 mcp_tool_pins = "mcp-tools.json"              # optional: {"<server>": ["<tool>", ...]}
+response_statuses = true                      # optional: count 4xx/5xx for detection (D103)
 
 [tls]
 certificate = "tls/middleware.pem"
@@ -100,6 +101,10 @@ class Settings(_Model):
     mcp_tool_pins: Path | None = None
     """A JSON file of each MCP server's pinned tool names, over its classification's pins;
     it implies ``mcp_listings``."""
+    response_statuses: bool = False
+    """Read every response's status (``HttpResponsePreReturn`` preflight, which costs one
+    exchange per response), so that 4xx and 5xx answers count towards the ``host-failures``
+    detection rule (D103). Without it, only the middleware's own refusals count."""
 
     @property
     def event_store_path(self) -> Path:

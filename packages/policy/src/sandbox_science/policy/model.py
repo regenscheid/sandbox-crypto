@@ -351,6 +351,38 @@ class MonitorRule(StrictModel):
     action: Literal["alert"] = "alert"
 
 
+class Detection(StrictModel):
+    """Detect-and-hold thresholds (D95, D103), which the policy middleware applies to the
+    outward calls of each session: research code's HTTP and git requests by sandbox, the
+    agent's MCP calls by session. Generous by default: about 1,000 calls a day is normal,
+    so velocity and shape decide, and the daily ceiling only stops a runaway."""
+
+    enabled: StrictBool = True
+    host_rate_per_second: Annotated[StrictInt, Field(gt=0)] = 5
+    """Requests to one host per second, sustained over ``host_rate_window``, that hold."""
+    host_rate_window: Duration = timedelta(minutes=1)
+    distinct_hosts: Annotated[StrictInt, Field(gt=0)] = 60
+    """More distinct hosts than this within ``distinct_hosts_window`` hold."""
+    distinct_hosts_window: Duration = timedelta(minutes=10)
+    same_url: Annotated[StrictInt, Field(gt=0)] = 100
+    """The same method and URL this many times within ``shape_window`` holds."""
+    sequential_ids: Annotated[StrictInt, Field(gt=1)] = 50
+    """A run of this many requests to one host whose paths differ only in a number that
+    steps by one, within ``shape_window``, holds (enumeration)."""
+    failures_per_host: Annotated[StrictInt, Field(gt=0)] = 30
+    """Failed responses (4xx or 5xx) or refusals from one host within ``shape_window``."""
+    shape_window: Duration = timedelta(minutes=10)
+    denials: Annotated[StrictInt, Field(gt=0)] = 20
+    """Policy refusals of the session's calls within ``denials_window`` that hold."""
+    denials_window: Duration = timedelta(minutes=5)
+    daily_calls: Annotated[StrictInt, Field(gt=0)] = 20_000
+    """Outward calls per project and UTC day; past it, each session is held."""
+    action_urls: StrictBool = True
+    """Hold a GET or HEAD whose URL reads as an action (a token beside ``confirm``,
+    ``unsubscribe``, ``delete``, ``approve``, ``verify`` and the like) as a permission
+    request of its own."""
+
+
 class ToolRules(StrictModel):
     """Tool-name patterns for ``tools/call``; see docs/POLICY.md, "MCP calls"."""
 
@@ -726,6 +758,7 @@ class ProjectPolicy(StrictModel):
     shared_data: SharedData = SharedData()
     data: Data = Data()
     lockdown: Lockdown = Lockdown()
+    detection: Detection = Detection()
 
     @model_validator(mode="after")
     def _unique_rule_names(self) -> Self:

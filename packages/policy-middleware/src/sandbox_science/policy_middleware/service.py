@@ -7,7 +7,8 @@ The service declares two bindings, both before credential injection:
 - ``WEBSOCKET_MESSAGE``: every WebSocket upgrade is denied at preflight, so a
   WebSocket can never carry traffic the policy library has not seen.
 
-With ``mcp_listings`` (or pinned tool lists, ``mcp_tool_pins``), it also declares
+With ``mcp_listings`` (or pinned tool lists, ``mcp_tool_pins``), or ``response_statuses``
+(whose preflight counts each response's status for the detection rules), it also declares
 ``HTTP_RESPONSE`` before return (``HttpResponsePreReturn``): it reads each answer to a
 ``tools/list`` request of a sandbox that calls MCP servers directly whole, JSON or an
 event stream, passes it on without the tools the policy denies (the others marked, as the
@@ -101,7 +102,7 @@ class MiddlewareService:
                 pb.SUPERVISOR_MIDDLEWARE_OPERATION_WEBSOCKET_MESSAGE,
             )
         ]
-        if self._middleware.listings is not None:
+        if self._middleware.listings is not None or self._middleware.response_statuses:
             bindings.append(
                 pb.MiddlewareBinding(
                     operation=pb.SUPERVISOR_MIDDLEWARE_OPERATION_HTTP_RESPONSE,
@@ -256,6 +257,10 @@ class MiddlewareService:
     ) -> tuple[ListingCheck | None, pb.HttpResponsePreflightResult]:
         """How to treat a response: a check of a listing with the action that reads it
         whole, or no check and skip, or no check and block."""
+        if self._middleware.response_statuses:
+            self._middleware.response_status(
+                preflight.context.request_id, preflight.context.sandbox_id, preflight.status_code
+            )
         modes = set(preflight.permitted_body_modes)
         types = [h.value.lower() for h in preflight.headers if h.name.lower() == "content-type"]
         media = types[0].split(";", 1)[0].strip() if len(types) == 1 else ""

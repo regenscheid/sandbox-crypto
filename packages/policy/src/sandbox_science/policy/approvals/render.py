@@ -21,6 +21,9 @@ def describe(key: RequestKey) -> str:
         return f"{fields['sandbox_id']}  {fields['method']} {where}"
     if key.kind == "packages":
         return f"{fields['sandbox_id']}  install package files for {fields['operation']}"
+    if key.kind == "hold":
+        whose = f"session {fields['session']}" if fields["session"] else "research code"
+        return f"{fields['sandbox_id']}  hold of {whose}'s outward calls ({fields['rule']})"
     return f"{fields['caller']}  {fields['server']} {fields['method']} {fields['tool']}"
 
 

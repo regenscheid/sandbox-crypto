@@ -10,7 +10,13 @@ sandbox-science-policy-middleware pending --settings middleware.toml [--request 
 sandbox-science-policy-middleware approve --settings middleware.toml --request SEQ \
     [--scope host] [--for HOURS]
 sandbox-science-policy-middleware deny --settings middleware.toml --request SEQ
+sandbox-science-policy-middleware accept-tools --settings middleware.toml --server NAME
 ```
+
+``accept-tools`` records that a server whose tool list drifted has had its classification
+reviewed and accepted again: its non-read calls stop asking (D103). Holds of a session's
+calls are permission requests too: ``approve`` clears one, ``deny`` leaves its session
+stopped, as the workspace's card does.
 
 The gateway asks the middleware to validate a compiled sandbox policy before it
 creates the sandbox, so store the project policy first; bind the sandbox once
@@ -35,8 +41,9 @@ import grpc
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
-from sandbox_science.policy.approvals import ALL_SCOPES, KINDS
+from sandbox_science.policy.approvals import ALL_SCOPES
 from sandbox_science.policy.approvals import commands as approval_commands
+from sandbox_science.policy.detection import ACCEPTED_RECORD, RECORD_KINDS
 from sandbox_science.policy.loader import read_limited
 
 from .archives import CacheArchiveLookup
@@ -84,6 +91,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         help="show this request in full, answered or not, with every package file it lists",
     )
+    accept = commands.add_parser(
+        "accept-tools",
+        help="accept a drifted MCP server's classification again, so its calls stop asking",
+    )
+    accept.add_argument("--settings", type=Path, required=True)
+    accept.add_argument("--server", required=True)
     for name, text in (("approve", "approve a permission request"), ("deny", "deny one")):
         answer = commands.add_parser(name, help=text)
         answer.add_argument("--settings", type=Path, required=True)
@@ -116,6 +129,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 removed = PolicyStore(args.state_dir).unbind(args.sandbox)
                 print(f"unbound {args.sandbox}" if removed else f"{args.sandbox} was not bound")
                 return 0
+            case "accept-tools":
+                path = load_settings(args.settings).event_store_path
+                with EventStore(path) as events:
+                    seq = events.append(ACCEPTED_RECORD, OPERATOR, {"server": args.server}).seq
+                print(f"accepted the tool list of {args.server} as record {seq}")
+                return 0
             case "pending":
                 path = load_settings(args.settings).event_store_path
                 return approval_commands.pending(_read_records(path, 0), args.request)
@@ -131,10 +150,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _read_records(path: Path, after: int) -> list[Record]:
-    """Permission requests and answers after ``after``, read with a connection of this
-    thread's own; the store's other records are left in it."""
+    """Permission requests and answers (holds among them) and tool-list drifts and their
+    acceptances after ``after``, read with a connection of this thread's own; the store's
+    other records are left in it."""
     with StoreReader(path) as reader:
-        return list(reader.records(after=after, kinds=KINDS))
+        return list(reader.records(after=after, kinds=RECORD_KINDS))
 
 
 def _answer(path: Path, command: str, seq: int, scope: str | None, hours: float | None) -> int:
@@ -177,6 +197,7 @@ def _serve(settings: Settings) -> int:
                 if settings.mcp_listings
                 else None
             ),
+            response_statuses=settings.response_statuses,
         )
         middleware.prime_approvals()
         return _run(settings, middleware)

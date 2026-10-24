@@ -31,6 +31,7 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 - [ ] B3. First deployment and the three live proofs (D92, [proofs](../docs/KUBERNETES.md#first-deployment-scope-and-proofs)).
 - [ ] B4. Durability extras (cache trimming, replica release and ACK outbox, workspace checkpoints) and the load balancer with Authentik (D92).
 - [ ] B5. Dashboards, alerts, detect-and-hold rules and MCP canaries (D103).
+  - [x] Detect-and-hold rules in the middleware, the `hold` permission request and the workspace's hold card, drift escalation until `accept-tools` (built offline; [detect and hold](../docs/POLICY-MIDDLEWARE.md#detect-and-hold-d103)). Open: dashboards, alerts, canaries, a live check on the cluster.
 - [ ] B6. Job sandboxes, first increment (D93).
   - Built offline (fake CLI): job profiles (Kata only), policy grants, `start_job` `profile`/`inputs`, job environments from the session image, package replay, tier checks, collection to `.jobs/<ID>/files/`, immutable manifest, retention and release, schedule timeout, `lost` on pod loss ([background jobs](../docs/BACKGROUND-JOBS.md#job-sandboxes)). Open: reattach across worker restart, release on session close, GUI columns, the bundle's PodDisruptionBudget, live Kata acceptance.
 

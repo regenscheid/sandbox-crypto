@@ -216,7 +216,30 @@ jobs. The same sandbox policy, network path and environment resource limits appl
 
 ### Monitors
 
-Threshold rules, such as egress volume, live in `monitors`, not in `network.rules`. They never decide whether an operation may proceed; they add findings when usage crosses a threshold. A threshold written as an access rule could never fire: every access rule that matches the same traffic outranks a rule that names no host or method. The example sets none (D95); D103's rate and shape alerts are to take their place.
+Threshold rules, such as egress volume, live in `monitors`, not in `network.rules`. They never decide whether an operation may proceed; they add findings when usage crosses a threshold. A threshold written as an access rule could never fire: every access rule that matches the same traffic outranks a rule that names no host or method. The example sets none (D95); D103's rate and shape rules (`detection`, below) take their place.
+
+### Detection (D103)
+
+`detection` sets the thresholds of the detect-and-hold rules the policy middleware applies to each session's outward calls ([detect and hold](POLICY-MIDDLEWARE.md#detect-and-hold-d103)). A rule that fires holds the session's calls until the user clears the hold in the workspace or stops the session; an action-like GET asks on its own. Each field is optional; the defaults are generous, since about 1,000 calls a day is normal and velocity and shape matter more than totals:
+
+```yaml
+detection:
+  enabled: true              # false: no rule counts or holds; a hold already open stays
+  host_rate_per_second: 5    # more than 5 a second to one host, sustained over ...
+  host_rate_window: 1m       # ... this window (more than 300 calls), holds
+  distinct_hosts: 60         # more than 60 hosts ...
+  distinct_hosts_window: 10m # ... within 10 minutes
+  same_url: 100              # one method and URL more than 100 times within shape_window
+  sequential_ids: 50         # a run of more than 50 paths whose last number steps by one
+  failures_per_host: 30      # more than 30 failed responses or refusals from one host
+  shape_window: 10m
+  denials: 20                # more than 20 refusals ...
+  denials_window: 5m         # ... within 5 minutes
+  daily_calls: 20000         # more than 20,000 calls of the project in a UTC day
+  action_urls: true          # a GET whose URL reads as an action asks on its own
+```
+
+Counts are positive integers and windows positive durations. The settings apply per project policy, so a project that crawls on purpose can raise them, and a revision takes effect for the calls decided under it.
 
 ## What the permissive default allows
 

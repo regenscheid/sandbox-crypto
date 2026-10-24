@@ -9,11 +9,13 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Final, Literal, cast
 
-KeyKind = Literal["http", "mcp", "packages"]
+KeyKind = Literal["http", "mcp", "packages", "hold"]
 KEY_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "http": ("sandbox_id", "policy_digest", "method", "host", "port", "path", "body"),
     "mcp": ("project_id", "caller", "policy_digest", "server", "method", "tool", "arguments"),
     "packages": ("sandbox_id", "policy_digest", "operation", "files"),
+    # A session hold (D103): whose calls it pauses, the rule that raised it and when.
+    "hold": ("project_id", "sandbox_id", "session", "rule", "opened"),
 }
 OPTIONAL_FIELDS: Final[dict[tuple[str, str], str]] = {("http", "body"): ""}
 """Key fields a record from before them may lack, and the value such a record has: an
@@ -26,10 +28,17 @@ SCOPES: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     # workspace's, which answers each call it covers on its own (D97).
     "mcp": {"call": (), "tool": ("arguments",)},
     "packages": {"files": ()},
+    # An approval of a hold clears it; a denial stops the session's runs.
+    "hold": {"session": ()},
 }
 """For each kind, each scope and the key fields it leaves out."""
 ALL_SCOPES: Final = tuple(dict.fromkeys(scope for scopes in SCOPES.values() for scope in scopes))
-DEFAULT_SCOPES: Final[dict[str, str]] = {"http": "request", "mcp": "call", "packages": "files"}
+DEFAULT_SCOPES: Final[dict[str, str]] = {
+    "http": "request",
+    "mcp": "call",
+    "packages": "files",
+    "hold": "session",
+}
 
 
 def body_digest(body: bytes) -> str:
@@ -86,6 +95,14 @@ class RequestKey:
         ``paths`` names by their paths at the package cache. Each operation asks anew, so
         an answer to one never decides another."""
         return cls("packages", (sandbox_id, policy_digest, operation, files_digest(paths)))
+
+    @classmethod
+    def hold(
+        cls, project_id: str, sandbox_id: str, session: str, rule: str, opened: str
+    ) -> RequestKey:
+        """A session hold: ``project_id`` and ``session`` are empty for research code's
+        calls, which name neither; ``opened`` (when, as ISO 8601) makes each hold its own."""
+        return cls("hold", (project_id, sandbox_id, session, rule, opened))
 
     def fields(self) -> dict[str, str | int]:
         return dict(zip(KEY_FIELDS[self.kind], self.values, strict=True))

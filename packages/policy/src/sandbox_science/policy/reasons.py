@@ -33,6 +33,10 @@ ARGUMENTS_TOO_LARGE: Final = "arguments_too_large"
 """An MCP request's parameters exceed ``mcp.proxy.max_argument_bytes``."""
 CREDENTIAL_IN_BODY: Final = "credential_in_body"
 """An MCP request's body carries something that reads as an OpenShell credential placeholder."""
+SESSION_HELD: Final = "session_held"
+"""A detection rule holds the session's outward calls (D103) until the user clears the hold
+in the workspace; sandbox compute goes on. The code names the hold, as
+``session_held_r12``."""
 REQUEST_CODES: Final = frozenset({APPROVAL_REQUIRED, APPROVAL_DENIED, ESCALATION_TIMED_OUT})
 """The codes of refusals that concern a permission request."""
 
