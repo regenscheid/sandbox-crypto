@@ -52,7 +52,7 @@ async def api(
         max_artifact_size=1024,
         state_dir=tmp_path,
     )
-    environment = SimpleNamespace(project_id="p", state=EnvironmentState.READY)
+    environment = SimpleNamespace(project_id="p", state=EnvironmentState.READY, kind="session")
     environments = cast(
         Environments,
         SimpleNamespace(

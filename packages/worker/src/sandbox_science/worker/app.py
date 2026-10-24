@@ -91,10 +91,13 @@ from sandbox_science.contracts.worker import (
     PROTOCOL_VERSION,
     MediaType,
 )
+from sandbox_science.policy import effective_resources
 
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments
 from .errors import WorkerError
+from .job_sandboxes import RESERVED_OPERATION as RESERVED_JOB_OPERATION
+from .job_sandboxes import offers
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .operation_lookup import lookup
@@ -570,6 +573,9 @@ def _context(request: web.Request, context: ExecutionContext, *, hide: bool = Fa
     environment_id = context.environment_id
     info = environments.records.get(environment_id)
     limited = _client(request).projects is not None
+    if info is not None and info.kind == "job":
+        # A job sandbox runs its job only; no client names it (D93, JS-1).
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     if info is None:
         if not limited and environments.handmade(environment_id):
             return
@@ -674,6 +680,8 @@ def _environment(request: web.Request, environments: Environments) -> str:
     environment_id = request.match_info["environment_id"]
     info = environments.get(environment_id)
     _visible(request, info.project_id, f"environment {environment_id!r}")
+    if info.kind == "job":
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     return environment_id
 
 
@@ -686,7 +694,9 @@ async def list_environments(request: web.Request) -> web.Response:
     """The environments of the client's projects, so an operator can see what runs."""
     environments = _environments(request)
     listed = environments.records.listed(_client(request).projects)
-    return _json(EnvironmentList(environments=tuple(listed)))
+    return _json(
+        EnvironmentList(environments=tuple(info for info in listed if info.kind == "session"))
+    )
 
 
 async def suspend_environment(request: web.Request) -> web.Response:
@@ -855,12 +865,28 @@ async def capabilities(request: web.Request) -> web.Response:
         raise WorkerError(ErrorKind.INVALID_REQUEST, "environment_id is required")
     environment_id = _identifier(environment_id, "environment_id")
     environments = request.app.get(ENVIRONMENTS)
+    if environments is not None:
+        info = environments.records.get(environment_id)
+        if info is not None and info.kind == "job":
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     if environments is not None and _client(request).projects is not None:
         info = environments.records.get(environment_id)
         if info is None or info.state is EnvironmentState.DELETED:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         _visible(request, info.project_id, f"environment {environment_id!r}")
-    offered = await request.app[MANAGER].capabilities(environment_id)
+    manager = request.app[MANAGER]
+    offered = await manager.capabilities(environment_id)
+    sandboxes = manager.job_sandboxes
+    if sandboxes is not None and environments is not None:
+        governing = environments.governing(environment_id)
+        if governing is not None:
+            resources = effective_resources(governing.policy.policy, governing.ceiling)[0]
+            profiles = offers(environments.settings, resources)
+            if profiles:
+                features = tuple(dict.fromkeys([*offered.features, "job_sandboxes"]))
+                offered = offered.model_copy(
+                    update={"features": features, "job_profiles": profiles}
+                )
     if environments is not None and environments.settings.admission:
         info = environments.records.get(environment_id)
         if info is not None and info.state is not EnvironmentState.DELETED:
@@ -892,6 +918,12 @@ async def lookup_operation(request: web.Request) -> web.Response:
 async def submit(request: web.Request) -> web.Response:
     execution_request = _REQUEST.validate_json(await _body(request))
     _context(request, execution_request.context)
+    if RESERVED_JOB_OPERATION.fullmatch(execution_request.operation_id):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST,
+            "operation IDs of the form jsb-<24 hex digits>.<step> are the worker's own, for"
+            " job sandboxes' steps",
+        )
     if RESERVED_OPERATION.fullmatch(execution_request.operation_id):
         raise WorkerError(
             ErrorKind.INVALID_REQUEST,
@@ -982,6 +1014,11 @@ def _provision(request: web.Request) -> ProvisionOperation:
     _visible(
         request, operation.request.context.project_id, f"provisioning operation {provision_id}"
     )
+    _not_job_sandbox(
+        request,
+        operation.request.context.environment_id,
+        f"provisioning operation {provision_id}",
+    )
     return operation
 
 
@@ -989,6 +1026,11 @@ async def submit_provision(request: web.Request) -> web.Response:
     """Ask for a capability or packages in an environment: one operation, queued."""
     body = ProvisionRequest.model_validate_json(await _body(request))
     _context(request, body.context, hide=True)  # the agent may name the environment
+    if RESERVED_JOB_OPERATION.fullmatch(body.operation_id):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST,
+            "operation IDs of the form jsb-<24 hex digits>.<step> are the worker's own",
+        )
     operation, created = await _provisioner(request).submit(body)
     return _json(operation, 201 if created else 200)
 
@@ -1235,7 +1277,16 @@ def _execution(request: web.Request) -> Execution:
     execution_id = request.match_info["execution_id"]
     execution = request.app[MANAGER].get(execution_id, _project(request))
     _visible(request, execution.context.project_id, f"execution {execution_id}")
+    _not_job_sandbox(request, execution.context.environment_id, f"execution {execution_id}")
     return execution
+
+
+def _not_job_sandbox(request: web.Request, environment_id: str, what: str) -> None:
+    """A job sandbox's own steps are the worker's: no client reads them (D93, JS-1)."""
+    environments = request.app.get(ENVIRONMENTS)
+    info = environments.records.get(environment_id) if environments is not None else None
+    if info is not None and info.kind == "job":
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no {what}")
 
 
 async def get_execution(request: web.Request) -> web.Response:

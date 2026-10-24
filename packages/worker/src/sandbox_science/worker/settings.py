@@ -26,6 +26,13 @@ ceiling = "pool-ceiling.yaml"    # the same pool ceiling the middleware applies
 profiles = {minimal = "docker.io/library/buildpack-deps:noble-scm"}   # profile -> image
 event_store = "/var/lib/sandbox-science/middleware/events.db"   # optional: the default
 
+[openshell.environments.job_profiles.large]   # optional: job sandbox sizes (D93)
+description = "12 cores, 32 GiB memory, up to 7 days"
+runtime_class_name = "kata"      # required: kata or kata-* (D92)
+node_selector = {"kubernetes.io/arch" = "amd64"}
+requests = {cpu_millicores = 12000, memory_mib = 32768, ephemeral_storage_mib = 65536}
+limits = {cpu_millicores = 12000, memory_mib = 32768, ephemeral_storage_mib = 65536}
+
 [local]                          # development and tests only: no isolation
 python = "/usr/bin/python3"      # default: the worker's own interpreter
 
@@ -42,6 +49,7 @@ Relative paths resolve against the settings file's directory.
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -58,6 +66,11 @@ from pydantic import (
 )
 
 from sandbox_science.contracts import Identifier
+from sandbox_science.contracts.worker import (
+    DEFAULT_COLLECT_MAX_BYTES,
+    DEFAULT_STAGE_MAX_BYTES,
+    JobProfileName,
+)
 
 from .documents_catalog import CatalogLimits
 from .kubernetes import KubernetesProfile
@@ -87,6 +100,42 @@ class LocalBackendSettings(_Model):
     python: str = sys.executable
     daemon: bool = False
     """Opt into the reconnectable executor for development tests; still no isolation."""
+
+
+JOB_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
+"""The longest any job may run (D83), and so a job profile's ceiling."""
+JOB_SANDBOX_LABEL: Final = ("sandbox-science.io/job-sandbox", "true")
+"""The label on every job sandbox's workload Pod (OpenShell 0.1.5 ``allowed_pod_labels``),
+which the deployment's PodDisruptionBudget selects so a drain waits for running jobs."""
+_KATA: Final = re.compile(r"^kata(?:-[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?$")
+
+
+class JobProfile(KubernetesProfile):
+    """A size a job sandbox may have (D93, JS-8): trusted worker configuration, never an
+    agent's. Its Kubernetes settings place the job's own workload Pod; the session
+    environment's CPU and memory caps do not narrow them, since the profile list a
+    project's policy grants is the grant (JS-9)."""
+
+    description: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    """What the agent is told, such as "12 cores, 32 GiB memory, up to 7 days"."""
+    wall_time_max: Annotated[float, Field(gt=0, le=JOB_WALL_TIME_MAX)] = JOB_WALL_TIME_MAX
+    """Seconds a job of this size may run at most; the policy's maximum also applies."""
+    schedule_timeout: Annotated[float, Field(gt=0, le=24 * 3600)] = 1800.0
+    """Seconds the sandbox may wait for a node with room before the job fails (JS-23)."""
+    max_concurrent: Annotated[int, Field(ge=1, le=64)] | None = None
+    """Job sandboxes of this profile at once across the pool; the pool's limit applies too."""
+    stage_max_bytes: Annotated[int, Field(ge=0, le=64 * 1024**3)] = DEFAULT_STAGE_MAX_BYTES
+    """Bytes of inputs copied in (JS-13)."""
+    collect_max_bytes: Annotated[int, Field(ge=0, le=256 * 1024**3)] = DEFAULT_COLLECT_MAX_BYTES
+    """Bytes of files copied back (JS-15); the owner's 4 GiB by default."""
+
+    @model_validator(mode="after")
+    def _kata(self) -> Self:
+        # D92: every sandbox of the first cluster runs under Kata (tier 3); a job profile
+        # without it would place a big job on the node's own kernel.
+        if self.runtime_class_name is None or _KATA.fullmatch(self.runtime_class_name) is None:
+            raise ValueError("a job profile's runtime_class_name must be kata or kata-* (D92)")
+        return self
 
 
 class EnvironmentSettings(_Model):
@@ -127,6 +176,14 @@ class EnvironmentSettings(_Model):
     event_store: Path | None = None
     """The policy middleware's event store, where provisioning operations ask for permission
     (D76): ``events.db`` in ``policy_store`` unless the middleware's settings name another."""
+    job_profiles: dict[JobProfileName, JobProfile] = Field(default_factory=dict, max_length=32)
+    """The sizes a job may ask for its own sandbox in (D93); none, the default, offers none."""
+    max_job_sandboxes: Annotated[int, Field(ge=0, le=64)] = 2
+    """Job sandboxes creating, preparing, running or collecting at once across the pool."""
+    job_retention: Annotated[float, Field(ge=0, le=30 * 24 * 3600)] = 3 * 24 * 3600.0
+    """Seconds a failed job's stopped sandbox is kept, its disk only (JS-25)."""
+    job_retention_per_project: Annotated[int, Field(ge=0, le=16)] = 2
+    """Retained job sandboxes per project; one more releases the oldest early."""
 
     @property
     def event_store_path(self) -> Path:

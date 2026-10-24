@@ -7,6 +7,10 @@
 allow_driver_config = true
 # Applied to sandbox pods whose request names no RuntimeClass.
 default_runtime_class_name = "kata"
+# Pod label keys a sandbox may set (0.1.5 allowed_pod_labels). Job sandboxes (D93) carry
+# sandbox-science.io/job-sandbox=true for the deployment's PodDisruptionBudget.
+# Its place in this section is from the source, not yet seen on a cluster.
+allowed_pod_labels = ["sandbox-science.io/job-sandbox"]
 
 [openshell.drivers.kubernetes.resource_admission]
 # Every RuntimeClass, PriorityClass and PVC a profile names must carry

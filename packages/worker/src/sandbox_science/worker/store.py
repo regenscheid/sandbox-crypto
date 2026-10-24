@@ -34,6 +34,7 @@ from sandbox_science.contracts.output_observations import Gap, OutputPage, Outpu
 
 from .artifact_retention import ArtifactRetention
 from .errors import WorkerError
+from .job_records import JobSandboxRecords
 from .kernel_revisions import KernelStarts
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
@@ -105,6 +106,7 @@ class Store:
         self.kernel_starts = KernelStarts(self._db)
         self.recovery_fences = RecoveryFences(self._db)
         self.artifact_retention = ArtifactRetention(self._db)
+        self.job_sandboxes = JobSandboxRecords(self._db)
         # Each start closes the gate of every environment with an unfinished operation
         # until the provisioner classifies it, and holds one marked for recovery:
         # never infer readiness from the absence of a gate row. A store from before

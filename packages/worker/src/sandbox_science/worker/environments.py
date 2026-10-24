@@ -130,6 +130,24 @@ MAX_NOTICES: Final = 10
 MAX_RECORDED: Final = 512
 """Decisions kept per environment: every admitted one, then the newest refusals."""
 
+JOB_ENVIRONMENT: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,109}-job-[0-9a-f]{12}$")
+"""A job sandbox's environment ID (D93, JS-1): ``<project>-job-<12 hex>``. No client may
+create an environment by such an ID."""
+
+
+def job_environment_id(project_id: str) -> str:
+    """A new job environment ID for the project, within the 128 characters of an ID."""
+    return f"{project_id[:110]}-job-{secrets.token_hex(6)}"
+
+
+class NotReadyError(WorkerError):
+    """A sandbox that was still not ready when its time to become ready ran out."""
+
+
+class ScheduleTimeoutError(WorkerError):
+    """A job sandbox found no node with room within its profile's schedule timeout (JS-23)."""
+
+
 Release = Callable[[str], Awaitable[None]]
 ReleaseIdle = Callable[[str, float], Awaitable[bool]]
 
@@ -363,7 +381,8 @@ class EnvironmentRecords:
         return row == (1,)
 
     def live(self, projects: Iterable[str]) -> list[str]:
-        """The IDs of the projects' environments that are not deleted."""
+        """The IDs of the projects' session environments that are not deleted. Job
+        sandboxes count against the pool's job limits instead (JS-9)."""
         wanted = set(projects)
         with self._lock:
             rows = self._db.execute("SELECT document FROM environments").fetchall()
@@ -371,7 +390,9 @@ class EnvironmentRecords:
         return [
             info.environment_id
             for info in infos
-            if info.project_id in wanted and info.state is not EnvironmentState.DELETED
+            if info.project_id in wanted
+            and info.state is not EnvironmentState.DELETED
+            and info.kind == "session"
         ]
 
     def listed(self, projects: Iterable[str] | None) -> list[EnvironmentInfo]:
@@ -515,6 +536,8 @@ class Environments:
         self.start_backoff = seconds("start_backoff", start_backoff)
         """After a failed start, uses fail at once for this long instead of starting again."""
         self.handmade_sandboxes = frozenset(backend.sandboxes)
+        self.isolation_tier = backend.isolation_tier
+        """The tier the gateway's driver declares; a job sandbox's probe can only lower it."""
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
         self.floor = HardFloor(frozenset(settings.admin_hosts))
@@ -671,6 +694,12 @@ class Environments:
         )
         if self.handmade(request.environment_id):
             raise taken
+        if JOB_ENVIRONMENT.fullmatch(request.environment_id):
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST,
+                f"environment IDs ending in -job- and 12 hex digits are the worker's own, for"
+                f" job sandboxes; choose another than {request.environment_id!r}",
+            )
         async with self._lock(request.environment_id):
             existing = self.records.get(request.environment_id)
             if existing is not None and existing.project_id != request.project_id:
@@ -762,6 +791,137 @@ class Environments:
             self.records.save(ready)
             _log.info("created sandbox %s for environment %s", name, request.environment_id)
             return ready, True
+
+    def architecture(self, environment_id: str) -> str | None:
+        """The ``kubernetes.io/arch`` an environment's sandbox was pinned to, if any."""
+        launch = self.records.driver_config(self.get(environment_id).sandbox)
+        if launch in (None, "{}"):
+            return None
+        try:
+            document: object = json.loads(launch)
+        except json.JSONDecodeError:
+            return None
+        for key in ("kubernetes", "pod", "node_selector", "kubernetes.io/arch"):
+            if not isinstance(document, dict):
+                return None
+            document = cast(dict[str, object], document).get(key)
+        return document if isinstance(document, str) else None
+
+    async def create_job(
+        self,
+        session_environment: str,
+        environment_id: str,
+        job_id: str,
+        launch: str,
+        *,
+        require_workspace_prefix: bool,
+        schedule_timeout: float,
+    ) -> EnvironmentInfo:
+        """Create a job sandbox (D93, JS-1, JS-3, JS-14): a new environment of kind ``job``
+        for one job, from the session environment's recorded image, policy revision and
+        providers, seeded with its admitted hosts. ``launch`` is the job profile's driver
+        configuration. Recorded before creation, so a crash leaves a sandbox known to be
+        the job's; a sandbox not placed within ``schedule_timeout`` raises
+        ``ScheduleTimeoutError`` and is deleted by identity, as any failed creation is."""
+        if JOB_ENVIRONMENT.fullmatch(environment_id) is None:
+            raise WorkerError(ErrorKind.INTERNAL, f"{environment_id!r} is no job environment ID")
+        async with self._lock(environment_id):
+            if self.records.get(environment_id) is not None:
+                raise WorkerError(ErrorKind.CONFLICT, f"job environment {environment_id} exists")
+            session = self.get(session_environment)
+            if session.kind != "session" or session.state not in (
+                EnvironmentState.READY,
+                EnvironmentState.STOPPED,
+            ):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    f"environment {session_environment!r} is {session.state}; a job sandbox"
+                    " starts from a ready session environment",
+                )
+            policy = self._policy(session.policy)
+            compiled = self._compile(policy, session.admitted_hosts)
+            providers = await self._check_providers(policy)
+            if providers != session.providers:
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    "the policy now attaches other providers than the session environment has",
+                )
+            name = new_sandbox_name()
+            while self.records.sandbox_taken(name):
+                name = new_sandbox_name()
+            now = self.clock.now()
+            info = EnvironmentInfo(
+                environment_id=environment_id,
+                project_id=session.project_id,
+                profile=session.profile,
+                image=session.image,
+                sandbox=name,
+                policy=session.policy,
+                providers=providers,
+                state=EnvironmentState.CREATING,
+                findings=_findings(compiled),
+                admitted_hosts=compiled.admitted,
+                created_at=now,
+                updated_at=now,
+                kind="job",
+                job_id=job_id,
+            )
+            self.records.save(
+                info, driver_config=launch, require_workspace_prefix=require_workspace_prefix
+            )
+            try:
+                sandbox_id = await self._create_sandbox(info, compiled, timeout=schedule_timeout)
+                self.store.bind(sandbox_id, session.policy)
+            except BaseException:
+                try:
+                    await _owned(self._cleanup_creation(self.get(environment_id)))
+                except Exception as error:
+                    _log.warning("creation cleanup remains pending for sandbox %s: %s", name, error)
+                raise
+            ready = self.get(environment_id).model_copy(
+                update={
+                    "sandbox_id": sandbox_id,
+                    "state": EnvironmentState.READY,
+                    "updated_at": self.clock.now(),
+                }
+            )
+            self.records.save(ready)
+            _log.info("created job sandbox %s for job %s", name, job_id)
+            return ready
+
+    async def stop_job(self, environment_id: str) -> bool:
+        """Stop a job sandbox to retain it (JS-25): its executor goes, its disk stays, and
+        its CPU and memory are freed. Returns whether OpenShell says it is stopped."""
+        async with self._lock(environment_id):
+            info = self.get(environment_id)
+            if info.kind != "job" or info.state is not EnvironmentState.READY:
+                return info.state is EnvironmentState.STOPPED
+            if self.release is not None:
+                await self.release(environment_id)
+            self.records.save(
+                info.model_copy(
+                    update={"state": EnvironmentState.STOPPED, "updated_at": self.clock.now()}
+                )
+            )
+            try:
+                await self.cli.run("sandbox", "stop", info.sandbox)
+            except WorkerError as error:
+                _log.warning("could not stop job sandbox %s: %s", info.sandbox, error.message)
+                return False
+            return await self._stopped(info, wait=True)
+
+    async def present(self, environment_id: str) -> bool | None:
+        """Whether a job sandbox's own sandbox still runs: False when the gateway says it is
+        gone, another under its name, or in a phase it cannot come back from (pod loss,
+        JS-20); None when the gateway cannot say."""
+        info = self.get(environment_id)
+        try:
+            document = await self.cli.sandbox(info.sandbox)
+        except WorkerError:
+            return None
+        if document is None or document.get("id") != info.sandbox_id:
+            return False
+        return document.get("phase") not in _DEAD_PHASES
 
     async def revise(self, environment_id: str, revision: str) -> EnvironmentInfo:
         """Move a ready environment to another policy revision."""
@@ -1118,6 +1278,8 @@ class Environments:
     # Steps.
 
     def _check_launch_policy(self, info: EnvironmentInfo, policy: LoadedPolicy) -> None:
+        if info.kind == "job":
+            return  # its size is its job profile's, which the policy grants (JS-9)
         try:
             check_pinned_policy(
                 self.records.driver_config(info.sandbox),
@@ -1358,7 +1520,9 @@ class Environments:
                 )
         return tuple(sorted(ref.name for ref in wanted))
 
-    async def _create_sandbox(self, info: EnvironmentInfo, compiled: Compiled) -> str:
+    async def _create_sandbox(
+        self, info: EnvironmentInfo, compiled: Compiled, *, timeout: float | None = None
+    ) -> str:
         name, image = info.sandbox, info.image
         path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
         args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
@@ -1369,7 +1533,15 @@ class Environments:
             args += ["--provider", provider]
         args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
         await self.cli.run(*args, timeout=self.settings.create_timeout)
-        return await self._wait_ready(name, creating=info.environment_id)
+        if timeout is None:
+            return await self._wait_ready(name, creating=info.environment_id)
+        try:
+            return await self._wait_ready(name, timeout, creating=info.environment_id)
+        except NotReadyError as exc:
+            raise ScheduleTimeoutError(
+                ErrorKind.UNAVAILABLE,
+                f"the job sandbox was not placed within {timeout:g} s; no node had room",
+            ) from exc
 
     async def _wait_ready(
         self, name: str, timeout: float | None = None, *, creating: str | None = None
@@ -1400,7 +1572,7 @@ class Environments:
             if document.get("phase") == "Ready" and isinstance(sandbox_id, str) and sandbox_id:
                 return sandbox_id
             if loop.time() > deadline:
-                raise WorkerError(
+                raise NotReadyError(
                     ErrorKind.UNAVAILABLE, f"sandbox {name} was not ready after {limit:.0f} s"
                 )
             await asyncio.sleep(self.poll_seconds)

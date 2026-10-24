@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: MIT
+# Merge this illustrative fragment into a PRIVATE worker config beside
+# worker-placement.toml: the sizes a big job may ask for a sandbox of its own in (D93,
+# docs/specs/job-sandboxes.md). The owner's home-cluster sizes (2026-10-22). Each must
+# fit one real amd64 Kata node with room to spare.
+#
+# A project's policy grants them (docs/POLICY.md, background job resources):
+#   resources:
+#     job_profiles: [medium, large]
+#     job_sandboxes: 1          # at once per project; 0 or unset keeps the feature off
+#
+# The gateway must list the job sandbox label in allowed_pod_labels
+# (gateway-driver.toml), and the deployment needs a PodDisruptionBudget selecting it,
+# so a planned drain waits for running jobs (docs/WORKER.md, job sandboxes).
+[openshell.environments]
+max_job_sandboxes = 2            # at once across the pool
+job_retention = 259200           # seconds a failed job's stopped sandbox is kept (3 days)
+job_retention_per_project = 2
+
+[openshell.environments.job_profiles.medium]
+description = "6 cores, 16 GiB memory, up to 7 days"
+node_selector = { "kubernetes.io/arch" = "amd64" }
+runtime_class_name = "kata"      # required: kata or kata-* (D92)
+# wall_time_max = 604800         # seconds; the default is the 7-day ceiling
+# schedule_timeout = 1800        # seconds waiting for a node with room
+# collect_max_bytes = 4294967296 # copied back to .jobs/<ID>/ (4 GiB)
+# stage_max_bytes = 2147483648   # inputs copied in (2 GiB)
+# max_concurrent = 2             # of this size across the pool
+
+[openshell.environments.job_profiles.medium.requests]
+cpu_millicores = 6000
+memory_mib = 16384
+ephemeral_storage_mib = 16384
+
+[openshell.environments.job_profiles.medium.limits]
+cpu_millicores = 6000
+memory_mib = 16384
+ephemeral_storage_mib = 16384
+
+[openshell.environments.job_profiles.large]
+description = "12 cores, 32 GiB memory, up to 7 days"
+node_selector = { "kubernetes.io/arch" = "amd64" }
+runtime_class_name = "kata"
+
+[openshell.environments.job_profiles.large.requests]
+cpu_millicores = 12000
+memory_mib = 32768
+ephemeral_storage_mib = 32768
+
+[openshell.environments.job_profiles.large.limits]
+cpu_millicores = 12000
+memory_mib = 32768
+ephemeral_storage_mib = 32768

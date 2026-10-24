@@ -19,7 +19,7 @@ import logging
 import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import ValidationError
 
@@ -66,6 +66,9 @@ from .shared_sync import SharedSync
 from .store import Store
 from .timeouts import ManagerTimeouts
 from .usability import Usability
+
+if TYPE_CHECKING:
+    from .job_sandboxes import JobSandboxes, Plan
 
 _log = logging.getLogger(__name__)
 
@@ -118,8 +121,11 @@ class Dispatcher:
         timeouts: ManagerTimeouts,
         shared: SharedSync | None,
         lifecycle: EnvironmentLifecycle,
+        sandboxes: Callable[[], JobSandboxes | None] = lambda: None,
     ) -> None:
         self.store = store
+        self.sandboxes = sandboxes
+        """Job sandboxes (D93), where the worker manages environments and offers them."""
         self.connections = connections
         self.usability = usability
         self.journal = journal
@@ -168,6 +174,7 @@ class Dispatcher:
                 "the environment is fenced until its sandbox executor is safely recycled",
             )
         job: JobDetails | None = None
+        plan: Plan | None = None
         execution_id = new_id("exe")
         if isinstance(request, JobRequest):
             context = request.context
@@ -180,11 +187,19 @@ class Dispatcher:
                 if (job_resources := self.lifecycle.job_resources)
                 else Resources()
             )
+            sandboxes = self.sandboxes()
+            if request.profile is not None:
+                if sandboxes is None:
+                    raise WorkerError(
+                        ErrorKind.UNSUPPORTED, "this worker offers no job sandboxes (D93)"
+                    )
+                plan = sandboxes.admit(request, resources)
             maximum = min(
                 604800.0,
                 resources.job_wall_time_max.total_seconds()
                 if resources.job_wall_time_max
                 else 604800.0,
+                plan.settings.wall_time_max if plan is not None else 604800.0,
             )
             default = min(
                 maximum,
@@ -206,6 +221,8 @@ class Dispatcher:
                 and live.execution.state not in TERMINAL_STATES
                 and live.execution.context.project_id == context.project_id
                 and live.execution.context.session_id == context.session_id
+                # A job sandbox's own execution is its job's, which counts already.
+                and not (sandboxes is not None and sandboxes.owns(live.environment_id))
             ]
             if len(running) >= (resources.jobs_per_environment or 8) or len(session) >= (
                 resources.jobs_per_session or 4
@@ -222,6 +239,8 @@ class Dispatcher:
                 timeout_seconds=timeout,
                 stdout_path=f".jobs/{execution_id}/stdout.log",
                 stderr_path=f".jobs/{execution_id}/stderr.log",
+                profile=plan.profile if plan is not None else None,
+                sandbox=plan.sandbox if plan is not None else None,
             )
         execution = Execution(
             execution_id=execution_id,
@@ -236,10 +255,17 @@ class Dispatcher:
         )
         self.store.insert_execution(execution, digest)
         self.store.remember_request(execution_id, request.model_dump_json())
+        sandboxes = self.sandboxes()
+        if plan is not None and sandboxes is not None:
+            # Before any await: the counts admission read cannot change in between.
+            sandboxes.record(execution, plan)
         live = self.journal.track(execution, request.output_limit_bytes)
         self.journal.state(live, ExecutionState.QUEUED)
         self.store.update_execution(live.execution)
-        self.spawn(self._dispatch(live, request))
+        if plan is not None and sandboxes is not None and isinstance(request, JobRequest):
+            self.spawn(sandboxes.run(live, request, self.journal))
+        else:
+            self.spawn(self._dispatch(live, request))
         return live.execution, True
 
     async def _dispatch(self, live: Live, request: ExecutionRequest) -> None:
@@ -828,6 +854,13 @@ class Dispatcher:
         already_requested = live.cancel_requested
         self.store.cancel_intent(execution_id)
         live.cancel_requested = True
+        sandboxes = self.sandboxes()
+        job = execution.job
+        if job is not None and job.profile is not None and sandboxes is not None:
+            # A job sandbox's run ends the job, after collecting what it wrote.
+            if not already_requested:
+                await sandboxes.cancel(live, self.journal)
+            return live.execution
         if live.dispatched and not already_requested:
             if execution.kind == "job" or (live.channel is not None and live.channel.daemon_token):
                 live.cancel_watchdog = self.spawn(self.watch_cancel(live))

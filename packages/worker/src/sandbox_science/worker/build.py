@@ -23,6 +23,7 @@ from .backends import Backend, LocalBackend, OpenShellBackend
 from .catalog import CatalogError, load_catalog
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments, OpenShellCli, confirmed_daemon_loss
+from .job_sandboxes import JobSandboxes, ManagerPort
 from .lifecycle import UNMANAGED, EnvironmentLifecycle
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
@@ -212,6 +213,10 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         if shared is not None:
             environments.deleted.append(shared.forget)
     provisioner = build_provisioner(settings, manager, environments)
+    if environments is not None and environments.settings.job_profiles:
+        sandboxes = JobSandboxes(environments, store, clock=clock)
+        sandboxes.port = ManagerPort(manager, provisioner)
+        manager.job_sandboxes = sandboxes
     desk = (
         PermissionDesk(
             provisioner.permissions, lambda: environments.records.listed(None), manager.clock

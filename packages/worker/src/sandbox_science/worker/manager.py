@@ -16,7 +16,7 @@ import logging
 import math
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -86,6 +86,9 @@ from .shared_sync import SharedSync
 from .store import Store
 from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
 from .usability import Usability
+
+if TYPE_CHECKING:
+    from .job_sandboxes import JobSandboxes
 
 _log = logging.getLogger(__name__)
 
@@ -239,7 +242,10 @@ class ExecutionManager:
             timeouts=timeouts,
             shared=shared,
             lifecycle=lifecycle,
+            sandboxes=lambda: self.job_sandboxes,
         )
+        self.job_sandboxes: JobSandboxes | None = None
+        """Job sandboxes (D93), set when the worker is built with job profiles."""
 
     # Settings, fixed when the manager is built.
 
@@ -313,6 +319,8 @@ class ExecutionManager:
         """
         self._publication.settle_orphans()
         await self._dispatcher.restore(daemon_enabled=self.backend.daemon)
+        if self.job_sandboxes is not None:
+            await self.job_sandboxes.start()
 
     async def release(self, environment_id: str) -> None:
         """Stop an environment's executor before its sandbox goes away.
@@ -354,6 +362,8 @@ class ExecutionManager:
             raise asyncio.CancelledError
 
     async def _close(self) -> None:
+        if self.job_sandboxes is not None:
+            await self.job_sandboxes.close()
         await self._publication.close()
         tasks = list(self._tasks)
         for task in tasks:
@@ -488,8 +498,31 @@ class ExecutionManager:
         return self._journal.jobs(context, limit, after)
 
     async def job_status(self, execution_id: str, project_id: str | None = None) -> JobStatus:
-        """Read bounded live output without opening a new executor or waiting for the job."""
-        return await self._journal.job_status(execution_id, project_id)
+        """Read bounded live output without opening a new executor or waiting for the job.
+        A job sandbox's status carries its result manifest once it has ended, and its
+        sandbox's current phase, which retention changes after the job's end."""
+        status = await self._journal.job_status(execution_id, project_id)
+        job = status.execution.job
+        if job is None or job.sandbox is None:
+            return status
+        record = self.store.job_sandboxes.get(execution_id)
+        found = self.store.job_sandboxes.manifest(execution_id)
+        if record is not None:
+            sandbox = job.sandbox.model_copy(
+                update={
+                    "phase": record.phase,
+                    "retained_until": record.retained_until,
+                    "collection": record.collection,
+                    "manifest_sha256": found[1] if found is not None else None,
+                }
+            )
+            execution = status.execution.model_copy(
+                update={"job": job.model_copy(update={"sandbox": sandbox})}
+            )
+            status = status.model_copy(update={"execution": execution})
+        if found is not None:
+            status = status.model_copy(update={"manifest": found[0]})
+        return status
 
     def events(
         self, execution_id: str, after: int, *, heartbeat: float | None = None
