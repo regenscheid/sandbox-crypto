@@ -506,18 +506,23 @@ async def test_an_escalation_that_cannot_be_recorded_is_not_left_pending(
 
 
 async def test_an_alert_proceeds_once_recorded(harness: Harness) -> None:
-    harness.bind(harness.policy(default="alert"))
+    alerting = harness.policy().replace(
+        "mcp:\n", "mcp:\n  effects: {unclassified: {action: alert}}\n", 1
+    )
+    harness.bind(alerting)
     session = await harness.initialize()
-    answer = await harness.tool(session, "misc")  # no rule names it
+    answer = await harness.tool(session, "misc")  # no rule names it, and it is unclassified
     assert answer.body["result"]["content"][0]["text"] == "misc: ok"
     [alert] = harness.sink.kinds("alert")
     assert alert["tool"] == "misc"
-    assert "defaults.action is alert" in alert["reason"]
+    assert "unclassified" in alert["reason"]
     assert harness.fake.tool_calls() == ["misc"]
 
 
 async def test_an_alert_that_cannot_be_recorded_is_refused(harness: Harness) -> None:
-    harness.bind(harness.policy(default="alert"))
+    harness.bind(
+        harness.policy().replace("mcp:\n", "mcp:\n  effects: {unclassified: {action: alert}}\n", 1)
+    )
     session = await harness.initialize()
     harness.sink.fail = True
     answer = await harness.tool(session, "misc")

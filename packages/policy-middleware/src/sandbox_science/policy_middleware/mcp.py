@@ -26,7 +26,10 @@ from pathlib import Path
 from typing import Final, cast
 
 from sandbox_science.policy import LoadedPolicy, mcp_wire
-from sandbox_science.policy.mcp_wire import McpWireError
+from sandbox_science.policy.classification import server_classification
+from sandbox_science.policy.effects import EffectClass
+from sandbox_science.policy.mcp_wire import ListedTool, McpWireError
+from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import mcp_server_endpoint
 from sandbox_science.policy.reasons import (
     ARGUMENTS_TOO_LARGE,
@@ -53,7 +56,9 @@ MAX_TRACKED_LISTINGS: Final = 1024
 MAX_LISTING_BYTES: Final = 4 * 1024 * 1024
 """The most of one ``tools/list`` answer the middleware reads; past it, it stops reading."""
 MAX_DRIFT_NAMES: Final = 100
-"""Tool names a drift record lists of those added and of those removed."""
+"""Tool names a drift record lists of those added, removed and changed."""
+DRIFT_FINDING: Final = "tool_list_drift"
+"""The finding a listing that differs from its pin raises (D96)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,17 +226,22 @@ def _bounded(text: str | None) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class Listing:
-    """A ``tools/list`` request whose answer the middleware reads, by OpenShell's request id."""
+    """A ``tools/list`` request whose answer the middleware reads, by OpenShell's request id.
+
+    ``pin`` is the server's pinned tool list, each tool's digest by name (None: the name
+    alone is pinned), or None for a server without one, whose listing gives hints only.
+    """
 
     sandbox_id: str
     server: str
     subject: Mapping[str, object]
     first_page: bool
+    pin: Mapping[str, str | None] | None = None
 
 
 @dataclass
 class _Pages:
-    names: list[str] = field(default_factory=list[str])
+    tools: list[ListedTool] = field(default_factory=list[ListedTool])
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,28 +251,47 @@ class Drift:
     server: str
     added: tuple[str, ...]
     removed: tuple[str, ...]
+    changed: tuple[str, ...] = ()
+    """Pinned tools whose name, description or input schema changed."""
 
 
 class ToolListings:
-    """Compares the tool listings sandboxes receive with pinned lists (D96's drift test).
+    """Reads the tool listings sandboxes receive: their tools' hints, which later calls are
+    decided with, and drift from the pinned lists (D96's drift test).
 
-    A listing can span pages, each its own request: pages are joined per sandbox and server
-    from a first page to one without a cursor. A drift is a finding; it blocks nothing.
+    A server's pin is the operator's, from ``mcp_tool_pins`` (names only), else its
+    classification's (``sandbox_science.policy.classification``), which pins each tool's
+    digest. A listing can span pages, each its own request: pages are joined per sandbox
+    and server from a first page to one without a cursor. A drift is a finding; it blocks
+    nothing.
     """
 
-    def __init__(self, pins: Mapping[str, Sequence[str]]) -> None:
-        self._pins = {server: frozenset(names) for server, names in pins.items()}
+    def __init__(self, pins: Mapping[str, Sequence[str]] | None = None) -> None:
+        self._pins = {server: frozenset(names) for server, names in (pins or {}).items()}
         self._lock = threading.Lock()
         self._waiting: OrderedDict[str, Listing] = OrderedDict()
         self._pages: dict[tuple[str, str], _Pages] = {}
+        self._hints: OrderedDict[tuple[str, str], dict[str, EffectClass]] = OrderedDict()
+
+    def pin(self, name: str, server: McpServer) -> Mapping[str, str | None] | None:
+        """The pinned tool list of server ``name``: the operator's, else its classification's."""
+        if name in self._pins:
+            return dict.fromkeys(self._pins[name])
+        found = server_classification(server)
+        return found.pins if found is not None else None
 
     def pinned(self, server: str) -> bool:
-        """Whether ``server`` has a pinned tool list."""
+        """Whether ``server`` has a pinned tool list from the operator."""
         return server in self._pins
+
+    def hints(self, sandbox_id: str, server: str) -> dict[str, EffectClass]:
+        """The classes the tools of the sandbox's latest complete listing declare."""
+        with self._lock:
+            return dict(self._hints.get((sandbox_id, server), {}))
 
     def expect(self, request_id: str, listing: Listing) -> None:
         """Note an allowed ``tools/list`` request, so that its answer is read."""
-        if not request_id or listing.server not in self._pins:
+        if not request_id:
             return
         with self._lock:
             self._waiting[request_id] = listing
@@ -276,20 +305,36 @@ class ToolListings:
 
     def page(self, listing: Listing, result: Mapping[str, object]) -> Drift | None:
         """Take one page of a listing; the drift once the last page has arrived."""
-        names, cursor = mcp_wire.tool_names(result)
+        _, cursor = mcp_wire.tool_names(result)
+        tools = mcp_wire.listed_tools(result)
         key = (listing.sandbox_id, listing.server)
         with self._lock:
             pages = self._pages.setdefault(key, _Pages())
             if listing.first_page:
-                pages.names = []
-            pages.names += names
+                pages.tools = []
+            pages.tools += tools
             if cursor is not None:
                 return None
-            seen = frozenset(self._pages.pop(key).names)
-        pinned = self._pins[listing.server]
-        if seen == pinned:
+            seen = {tool.name: tool for tool in self._pages.pop(key).tools}
+            self._hints[key] = {name: tool.hint for name, tool in seen.items()}
+            self._hints.move_to_end(key)
+            while len(self._hints) > MAX_TRACKED_LISTINGS:
+                self._hints.popitem(last=False)
+        pinned = listing.pin
+        if pinned is None:
             return None
-        return Drift(listing.server, tuple(sorted(seen - pinned)), tuple(sorted(pinned - seen)))
+        changed = tuple(
+            sorted(
+                name
+                for name, digest in pinned.items()
+                if digest is not None and name in seen and seen[name].digest != digest
+            )
+        )
+        added = tuple(sorted(set(seen) - set(pinned)))
+        removed = tuple(sorted(set(pinned) - set(seen)))
+        if not (added or removed or changed):
+            return None
+        return Drift(listing.server, added, removed, changed)
 
 
 def load_tool_pins(path: Path) -> ToolListings:
@@ -367,9 +412,15 @@ class ListingCheck:
                     {
                         **self._listing.subject,
                         "request_id": self._request_id,
+                        "finding": DRIFT_FINDING,
                         "added": list(drift.added[:MAX_DRIFT_NAMES]),
                         "removed": list(drift.removed[:MAX_DRIFT_NAMES]),
-                        "counts": {"added": len(drift.added), "removed": len(drift.removed)},
+                        "changed": list(drift.changed[:MAX_DRIFT_NAMES]),
+                        "counts": {
+                            "added": len(drift.added),
+                            "removed": len(drift.removed),
+                            "changed": len(drift.changed),
+                        },
                     },
                 )
             except Exception:

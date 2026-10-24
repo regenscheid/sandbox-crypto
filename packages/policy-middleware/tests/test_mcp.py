@@ -157,8 +157,7 @@ def test_an_allowed_read_tool_is_admitted_and_recorded(
     verdict = middleware.evaluate_http(facts(tool_call(READ_TOOL)))
     assert verdict.allowed, verdict.reason
     assert verdict.decision is not None
-    assert verdict.decision.rule is not None
-    assert READ_TOOL in verdict.decision.rule
+    assert (verdict.decision.rule, verdict.decision.effect) == ("mcp.effects.read", "read")
     (call,) = records(events, "mcp-call")
     assert call["project"] == "crypto"
     assert (call["session"], call["run"], call["sandbox_id"]) == ("s-42", "main-1", SANDBOX)
@@ -496,7 +495,7 @@ def test_a_listing_over_an_event_stream_passes_unchanged_and_drift_is_found(
     assert [unit.body_result.sequence for unit in units] == [1, 2, 3]
     assert {unit.body_result.WhichOneof("action") for unit in units} == {"pass_through"}
     assert [len(unit.body_result.findings) for unit in units] == [0, 0, 1]
-    assert units[-1].body_result.findings[0].type == "mcp_tools_drift"
+    assert units[-1].body_result.findings[0].type == "tool_list_drift"
     assert trailers.WhichOneof("result") == "trailers_result"
     (drift,) = records(events, "mcp-tools-drift")
     assert (drift["added"], drift["removed"], drift["session"]) == (["c"], ["b"], "s-42")

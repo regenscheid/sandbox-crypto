@@ -672,7 +672,16 @@ class PolicyMiddleware:
         self, facts: HttpRequestFacts, ref: McpRef, loaded: LoadedPolicy, call: McpCall
     ) -> Verdict:
         decision = evaluate_mcp_message(
-            call.server, call.message, loaded, ceiling=self._ceiling, floor=self._floor
+            call.server,
+            call.message,
+            loaded,
+            ceiling=self._ceiling,
+            floor=self._floor,
+            hints=(
+                self.listings.hints(facts.sandbox_id, call.server)
+                if self.listings is not None
+                else None
+            ),
         )
         subject = call.subject(ref, facts.sandbox_id)
         target = RequestKey.mcp(
@@ -706,7 +715,14 @@ class PolicyMiddleware:
             code = with_request(verdict.reason_code, verdict.request)
             verdict = dataclasses.replace(verdict, reason_code=code)
         if verdict.allowed and call.method == "tools/list" and self.listings is not None:
-            listing = Listing(facts.sandbox_id, call.server, subject, call.cursor is None)
+            server = loaded.policy.mcp.servers[call.server]
+            listing = Listing(
+                facts.sandbox_id,
+                call.server,
+                subject,
+                call.cursor is None,
+                self.listings.pin(call.server, server),
+            )
             self.listings.expect(facts.request_id, listing)
         return verdict
 

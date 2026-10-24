@@ -57,10 +57,12 @@ from sandbox_science.policy.approvals import (
     Waiting,
     prepare_answer,
 )
+from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.mcp_wire import (
     MCP_REQUEST_PARAMS,
     McpWireError,
     forwarded_params,
+    listed_tools,
     params_digest,
 )
 from sandbox_science.policy.model import McpServer
@@ -557,6 +559,7 @@ class McpProxy:
                 origin=call.caller.origin,
                 ceiling=self._ceiling,
                 floor=self._floor,
+                hints=session.tools.hints if session is not None else None,
             )
             call.decision = decision
             if decision.action is Action.DENY:
@@ -788,7 +791,9 @@ class McpProxy:
             cursor = (params or {}).get("cursor")
             try:
                 names, next_cursor = tool_names(result)
-                session.tools.page(cursor if isinstance(cursor, str) else None, names, next_cursor)
+                session.tools.page(
+                    cursor if isinstance(cursor, str) else None, names, next_cursor, _hints(result)
+                )
                 self._metadata.listing(
                     call.caller.project,
                     call.server,
@@ -912,7 +917,7 @@ class McpProxy:
                 raise UpstreamError(UPSTREAM_ERROR, "the server refused tools/list")
             try:
                 names, next_cursor = tool_names(result)
-                session.tools.page(cursor, names, next_cursor)
+                session.tools.page(cursor, names, next_cursor, _hints(result))
                 self._metadata.listing(
                     session.caller.project,
                     session.server,
@@ -1157,6 +1162,11 @@ def _answer(
         content_type="application/json",
         headers=headers,
     )
+
+
+def _hints(result: JsonObject) -> dict[str, EffectClass]:
+    """The classes a listing page's tools declare by their annotations (D96)."""
+    return {tool.name: tool.hint for tool in listed_tools(result)}
 
 
 def _tool_name(tool: object) -> object:

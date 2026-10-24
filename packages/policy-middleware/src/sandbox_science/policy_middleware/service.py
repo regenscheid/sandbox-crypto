@@ -30,7 +30,7 @@ from ._proto import supervisor_middleware_pb2 as pb
 from .auth import Authenticator, Caller, require_sandbox
 from .errors import AuthError
 from .evaluator import HttpRequestFacts, PolicyMiddleware, Verdict
-from .mcp import ListingCheck
+from .mcp import DRIFT_FINDING, ListingCheck
 
 _log = logging.getLogger(__name__)
 
@@ -225,9 +225,9 @@ class MiddlewareService:
                     findings = (
                         [
                             pb.Finding(
-                                type="mcp_tools_drift",
+                                type=DRIFT_FINDING,
                                 label=drift.server,
-                                count=len(drift.added) + len(drift.removed),
+                                count=len(drift.added) + len(drift.removed) + len(drift.changed),
                                 confidence="high",
                                 severity="medium",
                             )

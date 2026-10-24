@@ -16,10 +16,11 @@ import asyncio
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Final
 
+from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.operations import MAX_MCP_NAME_LENGTH
 
 from .callers import Caller
@@ -49,11 +50,28 @@ class AdvertisedTools:
     _partial: OrderedDict[str, frozenset[str]] = field(
         default_factory=OrderedDict[str, frozenset[str]]
     )
+    _hints: dict[str, EffectClass] = field(default_factory=dict[str, EffectClass])
 
-    def page(self, cursor: str | None, names: Iterable[str], next_cursor: str | None) -> None:
-        """Take one page of a listing: the cursor it was asked with, its names and the next."""
+    @property
+    def hints(self) -> dict[str, EffectClass]:
+        """The class each tool of the latest complete listing declares (D96)."""
+        names = self.names or frozenset()
+        return {name: hint for name, hint in self._hints.items() if name in names}
+
+    def page(
+        self,
+        cursor: str | None,
+        names: Iterable[str],
+        next_cursor: str | None,
+        hints: Mapping[str, EffectClass] | None = None,
+    ) -> None:
+        """Take one page of a listing: the cursor it was asked with, its names and the
+        next, and the classes its tools' annotations declare."""
         # The policy refuses longer names, so they could never be called.
         page = frozenset(name for name in names if len(name) <= MAX_MCP_NAME_LENGTH)
+        if cursor is None:
+            self._hints = {}
+        self._hints.update({name: hint for name, hint in (hints or {}).items() if name in page})
         if cursor is None:
             collected = page
         else:
@@ -74,6 +92,7 @@ class AdvertisedTools:
         """Forget the listing, after the server said its tools changed."""
         self.names = None
         self._partial.clear()
+        self._hints = {}
 
 
 @dataclass(eq=False)
