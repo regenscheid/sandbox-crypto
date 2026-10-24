@@ -17,6 +17,8 @@ from sandbox_science.launcher import unit
 from sandbox_science.launcher.config import LauncherError
 from sandbox_science.launcher.unit import UnitConfig
 
+from .conftest import bound_port
+
 GOOD = """
 [worker]
 listen = "127.0.0.1:18100"
@@ -248,9 +250,7 @@ def test_materialize_says_where_to_write_when_the_directory_is_not_writable(
 
 
 def free_address() -> str:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return f"127.0.0.1:{probe.getsockname()[1]}"
+    return f"127.0.0.1:{bound_port()}"
 
 
 def listening(unit_config: UnitConfig) -> list[socket.socket]:

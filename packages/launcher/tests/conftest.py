@@ -163,11 +163,50 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
-def bound_port() -> int:
-    """A loopback port the system has free now, once its probe closes."""
+# Ports the system hands out for ``bind(0)`` and for outgoing connections are one pool
+# (Linux: 32768-60999), so a port found by binding and closing is free only until another
+# test's process, or one of its connections, is given it: the launcher then refused the
+# part's address (``something else listens on``). Tests take ports below that pool
+# instead, where only a deliberate bind can hold one. Each xdist worker has a slice of its
+# own and walks it in order, so two workers never pick the same port and a port is not
+# handed out again until its slice has wrapped.
+PORT_FLOOR = 20000
+PORT_SLICE = 256
+PORT_SLICES = 48
+_cursor: int | None = None
+
+
+def _worker_slice() -> int:
+    name = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    number = int(name[2:]) if name.startswith("gw") and name[2:].isdigit() else 0
+    return number % PORT_SLICES
+
+
+def bindable(port: int) -> bool:
+    """Whether a loopback bind to ``port`` works now, as the launcher's own check does."""
     with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def bound_port(span: int = 1) -> int:
+    """The first of ``span`` consecutive loopback ports that are free now, from this
+    worker's slice, and not offered again by this process until its slice has wrapped."""
+    global _cursor
+    if _cursor is None:
+        # A second pytest run on the machine starts elsewhere in the slice.
+        _cursor = os.getpid() % PORT_SLICE
+    base = PORT_FLOOR + _worker_slice() * PORT_SLICE
+    for _ in range(PORT_SLICE):
+        first = _cursor
+        _cursor = (_cursor + span) % PORT_SLICE
+        if first + span <= PORT_SLICE and all(bindable(base + first + n) for n in range(span)):
+            return base + first
+    raise AssertionError(f"no {span} free loopback ports in {base}-{base + PORT_SLICE - 1}")
 
 
 def free_port(taken: Collection[int], probe: Callable[[], int] = bound_port) -> int:
@@ -184,15 +223,8 @@ def free_port(taken: Collection[int], probe: Callable[[], int] = bound_port) -> 
 
 def free_ports() -> tuple[int, int]:
     """A port for the worker and one for the workspace, whose next port is free too."""
-    while True:
-        sockets = [socket.socket() for _ in range(2)]
-        for item in sockets:
-            item.bind(("127.0.0.1", 0))
-        worker, workspace = (item.getsockname()[1] for item in sockets)
-        for item in sockets:
-            item.close()
-        if workspace + 1 != worker and workspace < 65535:
-            return worker, workspace
+    worker = bound_port()
+    return worker, bound_port(span=2)
 
 
 class Launcher:
