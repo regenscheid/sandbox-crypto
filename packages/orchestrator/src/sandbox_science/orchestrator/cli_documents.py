@@ -58,9 +58,30 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 runs.set_cost_limit(args.project, None)
             elif args.daily_cost_limit is not None:
                 runs.set_cost_limit(args.project, args.daily_cost_limit)
+            if args.no_notify:
+                runs.set_cost_notices(args.project, ())
+            elif args.notify_at is not None:
+                try:
+                    values = [float(v) for v in args.notify_at.split(",") if v.strip()]
+                except ValueError:
+                    print("--notify-at takes amounts separated by commas", file=sys.stderr)
+                    return 2
+                runs.set_cost_notices(args.project, values)
             limit = runs.cost_limit(args.project)
-            said = "no daily cost limit" if limit is None else f"a daily cost limit of {limit:g}"
-            print(f"project {args.project}: {said}, in the gateway's currency")
+            said = (
+                "no local cost limit (LiteLLM's budget enforces spending)"
+                if limit is None
+                else f"a local daily cost limit of {limit:g}"
+            )
+            notices = ", ".join(
+                f"{threshold:g}" + (" (crossed)" if crossed else "")
+                for threshold, crossed, _ in runs.cost_notices(args.project)
+            )
+            print(
+                f"project {args.project}: {said}, in the gateway's currency; "
+                f"notices at: {notices or 'none'}; recorded cost: "
+                f"{runs.model_cost(args.project) or 0:.2f}"
+            )
         case "delegation":
             from .delegation.records import DelegationRecords
 
@@ -77,6 +98,9 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                     "task_turns",
                     "turn_ceiling",
                     "max_token_grant",
+                    "root_tokens",
+                    "soft_cost",
+                    "max_idle_extensions",
                     "research_seconds",
                     "time_ceiling_seconds",
                     "storage_bytes",
@@ -87,6 +111,8 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
             }
             if args.no_research_time_limit:
                 changes["research_seconds"] = None
+            if args.no_soft_cost:
+                changes["soft_cost"] = None
             if args.no_storage_limit:
                 changes["storage_bytes"] = None
             if args.models is not None:  # empty: no choice
@@ -111,6 +137,9 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 f"{found.task_turns} turns; a brief may choose the models: "
                 f"{models}; fallback: {found.fallback or 'none'}; "
                 f"turn ceiling: {found.turn_ceiling}; token ceiling: {found.max_token_grant}; "
+                f"root soft tokens: {found.root_tokens}; soft cost per work: "
+                f"{found.soft_cost if found.soft_cost is not None else 'off'}; extensions "
+                f"without progress: {found.max_idle_extensions}; "
                 f"active seconds: {found.research_seconds or 'off'} "
                 f"(ceiling {found.time_ceiling_seconds}); retained artifact bytes: "
                 f"{found.storage_bytes or 'off'} (ceiling {found.storage_ceiling_bytes}); "
@@ -482,6 +511,14 @@ def add_parsers(commands: Any) -> None:
         "--no-cost-limit", action="store_true", help="budget: remove the daily cost limit"
     )
     projects.add_argument(
+        "--notify-at",
+        metavar="AMOUNTS",
+        help="budget: comma-separated recorded-cost thresholds that notify, never stop",
+    )
+    projects.add_argument(
+        "--no-notify", action="store_true", help="budget: remove the cost notices"
+    )
+    projects.add_argument(
         "--depth",
         type=int,
         choices=(0, 1, 2),
@@ -492,32 +529,51 @@ def add_parsers(commands: Any) -> None:
         "--cap", type=int, help="delegation: delegated runs a session runs at once (10)"
     )
     projects.add_argument(
-        "--check-tokens", type=int, help="delegation: a check's tokens, at most (20000000)"
+        "--check-tokens", type=int, help="delegation: a check's soft token cap (20000000)"
     )
     projects.add_argument(
-        "--check-turns", type=int, help="delegation: a check's turns, at most (300)"
+        "--check-turns", type=int, help="delegation: a check's soft turn cap (300)"
     )
     projects.add_argument(
         "--task-tokens",
         type=int,
-        help="delegation: a task's tokens, at most (20000000; 50000 to 1000000000)",
+        help="delegation: a task's soft token cap (20000000; 50000 to 1000000000)",
     )
     projects.add_argument(
-        "--task-turns", type=int, help="delegation: a task's turns, at most (300; 1 to 10000)"
+        "--task-turns", type=int, help="delegation: a task's soft turn cap (300; 1 to 10000)"
     )
     projects.add_argument(
-        "--turn-ceiling", type=int, help="delegation: cumulative renewable turn ceiling (10000)"
+        "--turn-ceiling",
+        type=int,
+        help="delegation: cumulative turn ceiling, every work's hard turn limit (10000)",
     )
     projects.add_argument(
         "--max-token-grant",
         type=int,
-        help="delegation: USER cumulative token approval ceiling (1000000000)",
+        help="delegation: cumulative ceiling of a soft token cap's extensions (1000000000)",
+    )
+    projects.add_argument(
+        "--root-tokens", type=int, help="delegation: a root's soft token cap (100000000)"
+    )
+    cost = projects.add_mutually_exclusive_group()
+    cost.add_argument(
+        "--soft-cost",
+        type=float,
+        help="delegation: each work's soft cost cap, a check-in, never a stop (25)",
+    )
+    cost.add_argument(
+        "--no-soft-cost", action="store_true", help="delegation: no soft cost check-ins"
+    )
+    projects.add_argument(
+        "--max-idle-extensions",
+        type=int,
+        help="delegation: extensions without new evidence before stop or redirect (3)",
     )
     time = projects.add_mutually_exclusive_group()
     time.add_argument(
         "--research-seconds",
         type=int,
-        help="delegation: optional cumulative observed active-time allowance",
+        help="delegation: each work's soft cumulative active-time cap (14400)",
     )
     time.add_argument(
         "--no-research-time-limit",
@@ -549,8 +605,8 @@ def add_parsers(commands: Any) -> None:
         "--root-resource-renewal",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="delegation: permit root soft-allowance renewal with saved progress; "
-        "tokens still require USER approval",
+        help="delegation: permit the root's own resource_decide renewals with saved "
+        "progress, besides its automatic check-ins",
     )
     projects.add_argument(
         "--models",

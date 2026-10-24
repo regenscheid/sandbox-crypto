@@ -93,7 +93,8 @@ async def test_a_review_of_a_normal_window_finishes_within_the_default_limits(st
     assert run["calls"] == reviewer.calls < ReviewConfig().max_turns
     # The budget counts what the calls used, not the estimates.
     assert run["estimated_tokens"] == run["input_tokens"] + run["output_tokens"]
-    assert run["input_tokens"] + run["output_tokens"] < ReviewConfig().token_budget
+    assert ReviewConfig().token_budget is None  # D102: accounted, never a separate stop
+    assert run["input_tokens"] + run["output_tokens"] < 400000
     assert run["coverage_complete"] == 1
 
 

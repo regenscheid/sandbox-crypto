@@ -1382,9 +1382,14 @@ class ReviewStore:
                 found["state"] != "running"
                 or count >= config.calls_per_hour
                 or found["calls"] >= config.max_turns
-                or max(found["estimated_tokens"], found["input_tokens"] + found["output_tokens"])
-                + estimated_tokens
-                > config.token_budget
+                or (
+                    config.token_budget is not None
+                    and max(
+                        found["estimated_tokens"], found["input_tokens"] + found["output_tokens"]
+                    )
+                    + estimated_tokens
+                    > config.token_budget
+                )
             ):
                 return None
             cursor = db.execute(
@@ -1429,8 +1434,8 @@ class ReviewStore:
                 f"The review's call limit was reached: {config.max_turns} calls without an outcome."
             )
         return (
-            f"The review's token budget was reached: {used:,} of {config.token_budget:,} tokens "
-            f"used {calls}, and the next call needed about {estimated_tokens:,} more."
+            f"The review's token budget was reached: {used:,} of {config.token_budget or 0:,} "
+            f"tokens used {calls}, and the next call needed about {estimated_tokens:,} more."
         )
 
     def call_provenance(self, project: str, session: str, review: str, call: int) -> ProvenanceRead:
@@ -1539,11 +1544,12 @@ class ReviewStore:
                 config = ReviewConfig.model_validate_json(
                     self.load_run(db, project, session, review)["config"]
                 )
-                db.execute(
-                    "UPDATE review_runs SET cap_reached=1 WHERE review_id=? "
-                    "AND input_tokens+output_tokens>=?",
-                    (review, config.token_budget),
-                )
+                if config.token_budget is not None:
+                    db.execute(
+                        "UPDATE review_runs SET cap_reached=1 WHERE review_id=? "
+                        "AND input_tokens+output_tokens>=?",
+                        (review, config.token_budget),
+                    )
 
     def manifest(
         self, project: str, session: str, review: str, *, after: int = 0, limit: int = 10

@@ -3272,6 +3272,21 @@ def _project_grants(schema: Schema) -> None:
     schema.execute("DROP TABLE project_approval_settings")
 
 
+def _cost_notices(schema: Schema) -> None:
+    """Version 81: each project's optional cost notification thresholds, in the gateway's
+    currency, and when its recorded spending first crossed each (D102). A notice never
+    stops a run; LiteLLM's budget is the only cost enforcement by default."""
+    schema.execute(
+        """CREATE TABLE project_cost_notices (
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    threshold REAL NOT NULL CHECK (threshold > 0 AND threshold <= 1000000000),
+    crossed_at TEXT,
+    spent REAL CHECK (spent IS NULL OR spent >= 0),
+    PRIMARY KEY (project_id, threshold)
+) STRICT"""
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3352,6 +3367,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _artifact_reference_indexes,
     _child_requests,
     _project_grants,
+    _cost_notices,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

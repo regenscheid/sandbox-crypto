@@ -1179,6 +1179,44 @@ async def test_with_no_reviewer_configured_reviews_are_off_and_say_so_once(store
 
 @pytest.mark.asyncio
 async def test_final_provider_usage_over_budget_is_capped(store) -> None:
+    """An operator's optional review token budget still caps (D102: none by default)."""
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(token_budget=400000)
+    claim(reviews)
+    review = dispatch(reviews)
+    evidence = anchor(reviews, review)["evidence"]
+    from sandbox_science.orchestrator.model import ModelTurn, ToolCall
+
+    class Overspend:
+        calls = 0
+
+        async def complete(self, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(
+                    None,
+                    (
+                        ToolCall(
+                            "check",
+                            "review_checked",
+                            json.dumps({"statement": "Checked", "evidence": [evidence]}),
+                        ),
+                    ),
+                )
+            return ModelTurn(
+                json.dumps({"outcome": "passed", "summary": "Checked", "cap_reached": False}),
+                input_tokens=400000,
+                output_tokens=100,
+            )
+
+    await ReviewerRunner(reviews, "p", "s", review, "owner", Overspend()).run()
+    assert reviews.run("p", "s", review)["state"] == "capped"
+
+
+@pytest.mark.asyncio
+async def test_a_review_has_no_token_stop_by_default(store) -> None:
+    """D102: the reviewer's calls are accounted under its role; only the gateway's
+    budget stops their spending."""
     reviews, _, _ = store
     claim(reviews)
     review = dispatch(reviews)
@@ -1203,12 +1241,14 @@ async def test_final_provider_usage_over_budget_is_capped(store) -> None:
                 )
             return ModelTurn(
                 json.dumps({"outcome": "passed", "summary": "Checked", "cap_reached": False}),
-                input_tokens=ReviewConfig().token_budget,
+                input_tokens=4_000_000,
                 output_tokens=100,
             )
 
     await ReviewerRunner(reviews, "p", "s", review, "owner", Overspend()).run()
-    assert reviews.run("p", "s", review)["state"] == "capped"
+    run = reviews.run("p", "s", review)
+    assert run["state"] == "passed"
+    assert run["input_tokens"] >= 4_000_000
 
 
 @pytest.mark.asyncio

@@ -195,13 +195,19 @@ def test_the_cli_shows_sets_and_removes_the_cost_limit(
     store(tmp_path)[0].close()
     argv = ["project", "budget", "--state-dir", str(tmp_path), "--project", "p"]
     assert cli.main(argv) == 0
-    assert capsys.readouterr().out == "project p: no daily cost limit, in the gateway's currency\n"
-    assert cli.main([*argv, "--daily-cost-limit", "12.5"]) == 0
     assert capsys.readouterr().out == (
-        "project p: a daily cost limit of 12.5, in the gateway's currency\n"
+        "project p: no local cost limit (LiteLLM's budget enforces spending), in the "
+        "gateway's currency; notices at: none; recorded cost: 0.00\n"
     )
-    assert cli.main([*argv, "--no-cost-limit"]) == 0
-    assert capsys.readouterr().out.startswith("project p: no daily cost limit")
+    assert cli.main([*argv, "--daily-cost-limit", "12.5", "--notify-at", "5,50"]) == 0
+    assert capsys.readouterr().out == (
+        "project p: a local daily cost limit of 12.5, in the gateway's currency; "
+        "notices at: 5, 50; recorded cost: 0.00\n"
+    )
+    assert cli.main([*argv, "--no-cost-limit", "--no-notify"]) == 0
+    assert capsys.readouterr().out.startswith("project p: no local cost limit")
+    assert cli.main([*argv, "--notify-at", "x"]) == 2
+    assert "--notify-at takes amounts" in capsys.readouterr().err
     assert cli.main([*argv, "--daily-cost-limit", "-1"]) == 1
     assert "a daily cost limit is 0 to" in capsys.readouterr().err
 

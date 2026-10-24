@@ -98,8 +98,10 @@ class ReviewConfig(Contract):
     time_seconds: float = Field(default=300, ge=0.01, le=600, allow_inf_nan=False)
     max_input_chars: int = Field(default=300000, ge=4096, le=500000, strict=True)
     max_output_chars: int = Field(default=16000, ge=1024, le=64000, strict=True)
-    token_budget: int = Field(default=400000, ge=1024, le=4000000, strict=True)
-    """The tokens one review may use, input and output over all its calls."""
+    token_budget: int | None = Field(default=None, ge=1024, le=4000000, strict=True)
+    """An operator's optional cap on the tokens one review may use, input and output over
+    all its calls; ``None``, as by default, for none: the reviewer's calls are accounted
+    under its own role, and only the gateway's budget stops their spending (D102)."""
     calls_per_hour: int = Field(default=240, ge=1, le=10000, strict=True)
     """The reviewer calls a project may make in an hour, over all its sessions."""
 

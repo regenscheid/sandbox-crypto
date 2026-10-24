@@ -667,8 +667,8 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--review-token-budget",
         type=int,
         default=review.token_budget,
-        help="the tokens one consistency review may use over all its calls "
-        f"(default {review.token_budget:,})",
+        help="an optional cap on the tokens one consistency review may use over all its "
+        "calls (default none: the gateway's budget alone stops spending)",
     )
     command.add_argument(
         "--review-calls-per-hour",
