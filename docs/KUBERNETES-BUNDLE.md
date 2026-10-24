@@ -323,9 +323,10 @@ worker health/protocol checks with its scoped credential and CA, and inspect run
 connection/drain state separately. Never treat a TCP probe, Pod restart or failed
 runtime handshake as authority to create replacement work or replay an operation.
 
-Workspace and preview listen only at `127.0.0.1:8200` and `127.0.0.1:8201` inside the
-application Pod. No UI Service, ingress or forwarding-header trust is generated.
-After deployment, select the exact application Pod and forward both ports directly:
+By default (no `[ingress]` section) workspace and preview listen only at
+`127.0.0.1:8200` and `127.0.0.1:8201` inside the application Pod. No UI Service,
+ingress or forwarding-header trust is generated. After deployment, select the exact
+application Pod and forward both ports directly:
 
 ```sh
 kubectl -n research port-forward pod/EXACT_APPLICATION_POD 8200:8200 8201:8201
@@ -333,11 +334,104 @@ kubectl -n research port-forward pod/EXACT_APPLICATION_POD 8200:8200 8201:8201
 
 Open the workspace's existing login URL (its token is visible only through the
 trusted operator's logs/workflow); retain the separate preview origin. Do not expose
-this loopback login as a public ingress or add `--allow-remote` to work around it.
-Public origins, secure cookies and authenticated ingress are a separate increment.
+this loopback login by other means or add `--allow-remote` to work around it: the
+only supported route off loopback is the opt-in
+[ingress](#workspace-through-the-clusters-ingress-opt-in).
 Stop/replace Pods only through a recovery-aware operator procedure, preserving PVCs,
 original identities and unfinished effects. This offline increment does not qualify
 cluster isolation, S3 durability, crash recovery, PVC deletion or either architecture.
+
+## Workspace through the cluster's ingress (opt-in)
+
+An `[ingress]` section serves the workspace and its preview origin through the cluster's
+Traefik, over TLS, behind Authentik, instead of `kubectl port-forward` (D92). Without it
+nothing in this section is rendered and the Pod keeps its loopback listeners. The
+renderer makes objects only; the operator creates the Authentik provider, the forward-auth
+`Middleware`, DNS and the issuer ([preparation, step 12](KUBERNETES-PREP.md#12-workspace-through-the-load-balancer-optional)).
+
+```toml
+[workspace]
+allow_remote = true               # required with [ingress], refused without it
+
+[ingress]
+workspace_host = "workspace.example.org"   # documentation-only names
+preview_host = "preview.example.org"       # a separate origin: a name of its own
+issuer = "YOUR_CLUSTER_ISSUER"             # cert-manager issuer; issuer_kind defaults to ClusterIssuer
+authentik_middleware = "authentik-forward-auth"  # a Traefik Middleware in this namespace
+# entry_point = "websecure"       # the HTTPS entry point (default); "web" and "http" are refused
+# ingress_class = "traefik-public" # sets kubernetes.io/ingress.class on the routes, to pick one controller
+
+[[ingress.traefik]]               # the controller's Pods, the only peers let in (1 to 4)
+namespace_labels = { "kubernetes.io/metadata.name" = "traefik-public" }
+pod_labels = { "app.kubernetes.io/name" = "traefik" }
+```
+
+**Validation.** Host names are lowercase DNS names of at least two labels (no wildcard, IP
+address, trailing dot or quote, since the name goes into a route rule); the two differ; the
+issuer and middleware are Kubernetes names; the entry point may not be `web` or `http`
+(TLS required: every route has a `tls` block and its certificate); each controller peer
+selects Pods by namespace labels and Pod labels, never a bare namespace or a CIDR;
+`workspace.allow_remote` is refused without `[ingress]`, and `[ingress]` is refused without
+it (the explicit acknowledgement that the plain-HTTP listener leaves loopback). The
+section has no field that turns authentication off.
+
+**What changes.** The workspace container listens on `0.0.0.0:8200` and `0.0.0.0:8201`
+and gets `--allow-remote --preview-name <preview_host>`; it declares those two ports. For
+each host name the renderer adds:
+
+* a `ClusterIP` Service, `<name>-workspace` (8200) and `<name>-preview` (8201), selecting
+  the application Pod; control's ports are in no Service the ingress reaches;
+* a cert-manager `Certificate` of the same name for that one host, into the Secret
+  `<name>-workspace-tls` or `<name>-preview-tls`;
+* a Traefik `IngressRoute` (`traefik.io/v1alpha1`) of the same name: the HTTPS entry point,
+  a `Host(...)` rule, the Authentik `Middleware` by name and that Secret as its TLS;
+* one additive NetworkPolicy, `<name>-ingress`, on the application Pod: from the
+  `[[ingress.traefik]]` peers to TCP 8200 and 8201, and nothing else. The default-deny and
+  the application policy stay as they are, so no other Pod reaches those ports and nothing
+  else is opened.
+
+**Why `IngressRoute`, not `Ingress`.** The Authentik check is a Traefik `forwardAuth`
+`Middleware`. An `IngressRoute` names it (and the TLS Secret) as fields and sets the entry
+point directly; an `Ingress` can only name it in a `router.middlewares` annotation as
+`<namespace>-<name>@kubernetescrd`, an untyped string. cert-manager's annotation shortcut
+works only on `Ingress` and `Gateway` objects, so the bundle renders the `Certificate`
+explicitly, which also names the Secret the route reads. The cost is a dependency on
+Traefik's CRDs (a cluster that moves to another controller needs another renderer).
+
+**What the workspace supports, and does not.** The workspace has `--allow-remote`,
+`--listen`, `--preview-listen` and `--preview-name`, and nothing more for a proxy: no
+option to trust `X-Forwarded-*` or `Forwarded` headers from a proxy, no public origin or
+scheme, no secure-cookie switch ([workspace](WORKSPACE.md#authentication)). Rendered here
+is exactly what exists, and these follow from the workspace's code:
+
+* It sees plain HTTP from Traefik. A change (any method but GET or HEAD) must carry an
+  `Origin` equal to `<scheme>://<Host>` with the scheme the server sees, `http`; the
+  browser sends `https`. **Writes through the ingress are refused** (403) until the workspace
+  can be told its public origin. Traefik must not rewrite `Origin` to get around this: that
+  would remove the check for every site.
+* The session cookie is Secure only when the server itself sees HTTPS, so it is not
+  marked Secure here. It stays HttpOnly, SameSite=Strict and host-only (no `Domain`), and is
+  named with the port (`...-8200`). Redirect the `web` entry point to HTTPS at Traefik and
+  consider HSTS on the routes' hosts, which a `Headers` middleware can add.
+* The preview origin is announced as `http://<preview_host>:8201`, in the workspace's
+  CSP and links and the viewer's frame ancestors, not `https://<preview_host>`. **The PDF
+  viewer and figure frames do not work through the ingress** until the preview origin can
+  be given by its public origin.
+* With `--allow-remote` the `Host` check is off. The route's `Host(...)` rule and the
+  NetworkPolicy are what keep other names and Pods out; Authentik is checked before the
+  workspace's own login token, which the workspace still needs
+  (`kubectl logs deploy/<name>-app -c workspace`).
+
+So the ingress today carries login and the read-only views; the backlog item "Workspace:
+public origin behind a TLS proxy" adds the missing options and removes these limits.
+Nothing here is qualified on a cluster.
+
+**Both host names behind Authentik.** The preview is framed by the workspace page, so its
+requests carry the Authentik session too. Put both names under one parent domain and use
+one Authentik proxy provider in domain-level mode; names on unrelated domains make the
+frame a third-party context and the browser may drop the cookie. Same-site names are still
+separate origins, which is all D54 needs; the viewer's frames may share the workspace
+page's thread (FG-17, [preview](WORKSPACE.md#the-pdf-viewers-origin)).
 
 ## Log collection
 

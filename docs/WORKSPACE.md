@@ -55,7 +55,7 @@ Open it in a browser on the same machine. The settings of `serve`:
 | `--mcp-project`, `--mcp-service NAME=PURPOSE` | Optional project and top-level MCP service identities for the read-only service browser; `sandbox-science up` passes the safe names and purposes from its configuration. These arguments carry no endpoint or credential |
 | `--model-url`, `--reviewer-model`, `--api-key-file` | The model gateway for math repairs ([math repairs](#math-repairs)) |
 
-The server refuses an address that is not loopback unless `--allow-remote` is given. It speaks plain HTTP, so on another address the login URL and the session cookie cross the network unencrypted, and it then accepts any host name ([authentication](#authentication)). Placing the GUI on another machine is W5's work.
+The server refuses an address that is not loopback unless `--allow-remote` is given. It speaks plain HTTP, so on another address the login URL and the session cookie cross the network unencrypted, and it then accepts any host name ([authentication](#authentication)). Placing the GUI on another machine is W5's work. On a cluster, the Kubernetes bundle's opt-in [ingress](KUBERNETES-BUNDLE.md#workspace-through-the-clusters-ingress-opt-in) runs it with `--allow-remote` behind Traefik and Authentik; the server has no option to trust a proxy's forwarded scheme or to be told its public origin, so changes and the PDF viewer wait for one.
 
 **The server's network reach.** It listens where `--listen` says, and on `--preview-listen` for the PDF viewer. It can contact the model gateway at `--model-url` for math repairs, and the worker at `--worker` for job views, cancellation, kernel observations and provisioning observations. Without either setting it opens no outbound connection.
 

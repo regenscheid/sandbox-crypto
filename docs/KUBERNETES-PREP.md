@@ -347,7 +347,7 @@ kubectl -n research rollout status deploy/<name>-app deploy/<name>-pool deploy/<
 
 Inspect the JSON before applying: image digests, `kubernetes.io/arch` selectors, the storage class and size, the NetworkPolicies, and no Secret value. The renderer never overwrites an existing output file.
 
-Verify: all three Deployments are `Available`; `kubectl -n research get pvc` shows three `Bound` claims on `research-retain` with the recurring jobs attached (Longhorn UI, volume details); the control Service accepts the first connection (`/ready`). Check the runtime manager: `kubectl -n research logs deploy/<name>-runtime-manager` reports waiting, not creating. Reach the GUI by port-forward to the exact application Pod, as [the bundle](KUBERNETES-BUNDLE.md#render-inspect-then-qualify-separately) says.
+Verify: all three Deployments are `Available`; `kubectl -n research get pvc` shows three `Bound` claims on `research-retain` with the recurring jobs attached (Longhorn UI, volume details); the control Service accepts the first connection (`/ready`). Check the runtime manager: `kubectl -n research logs deploy/<name>-runtime-manager` reports waiting, not creating. Reach the GUI by port-forward to the exact application Pod, as [the bundle](KUBERNETES-BUNDLE.md#render-inspect-then-qualify-separately) says (or, later, through the load balancer: step 12).
 
 Rollback: set the three Deployments to zero replicas (`kubectl -n research scale deploy --all --replicas=0`). Never `kubectl delete -f` the whole bundle, and never delete the PVCs.
 
@@ -449,6 +449,48 @@ D103: structured JSON logs from every service, OpenShell's OCSF events and the p
 4. **OpenShell's events.** Turn the supervisors' OCSF JSON on (`openshell settings set --global --key ocsf_json_enabled --value true`) and, if you export over OTLP, add `[openshell.gateway.otlp]` and `[openshell.gateway.otlp.ocsf]` to the gateway's configuration with the Alloy listener's address (the sample's OTLP receiver) as the endpoint; the listener must be reachable from the sandboxes, which the sandbox network policy and a NetworkPolicy must allow. The gateway's metrics listener (`metrics_bind_address`) is for Prometheus, if you run one.
 5. **Check it.** `kubectl -n research logs deploy/<name>-pool -c worker --tail 3` shows JSON lines; in Loki, `{service="worker"} | json` returns the same lines, and `{service="middleware"} | json | event != ""` finds the middleware's records. Trigger the denial of 10.1 and find it by its OCSF line. A container that logs text (no `service` field) is a bundle rendered before this change.
 6. **Keep the proofs' results** (steps 10.1 to 10.3) with the deployment record, and the dashboards and alerts (D103's later steps) wait until the three proofs have passed.
+
+## 12. Workspace through the load balancer (optional)
+
+Serves the workspace and its preview origin at two host names through Traefik, over TLS and behind Authentik, instead of `kubectl port-forward` ([bundle: ingress](KUBERNETES-BUNDLE.md#workspace-through-the-clusters-ingress-opt-in), D92). Do it after step 8 works through the port-forward, and before any stress test. **Read the bundle's list of what the workspace does not yet support**: through the ingress, writes and the PDF viewer wait for the workspace's public-origin work, so this step proves the route, the certificates and the access control, not a full GUI.
+
+1. **Choose the names and the controller.** Two host names under one parent domain you control (`workspace.<domain>`, `preview.<domain>`), and the Traefik that serves them: the one in `traefik-public` for names reached from outside, the one in `traefik` for names reached only inside. Note its Pods' namespace and labels (`kubectl -n traefik-public get pods --show-labels`) for `[[ingress.traefik]]`, its entry point for HTTPS (usually `websecure`), and whether it filters routes by `kubernetes.io/ingress.class`.
+2. **DNS.** Point both names at the controller's MetalLB address (`kubectl -n traefik-public get svc`, the `EXTERNAL-IP`) with A (and AAAA) records. Use no wildcard; the bundle renders no name it was not given.
+3. **The issuer.** The bundle asks an existing cert-manager issuer for one certificate per name. Pick (or create) a `ClusterIssuer`, with HTTP-01 through the controller or DNS-01, and put its name in `ingress.issuer` (`issuer_kind = "Issuer"` for a namespaced one in the bundle's namespace). Verify: `kubectl get clusterissuer` shows it `Ready`.
+4. **Authentik.** In Authentik's admin interface:
+   - Create a *Proxy Provider* in *Forward auth (domain level)* mode, authentication URL `https://<authentik-host>` and cookie domain `<domain>`, so one provider covers both names (single-application mode needs one provider and application per name, and the preview frame must carry the session).
+   - Create an *Application* using it, and bind a policy or group so only the intended people pass. Per D94, an instance has its own application, group and middleware.
+   - Add the application to an *Outpost* (the embedded one or a dedicated one) and note its Service name and port in the Authentik namespace.
+5. **The forward-auth `Middleware`.** Create it in the bundle's namespace (a route reads only its own namespace's middleware unless Traefik allows cross-namespace references). The address and header list are Authentik's documented Traefik form; check them against your Authentik version:
+
+   ```yaml
+   apiVersion: traefik.io/v1alpha1
+   kind: Middleware
+   metadata:
+     name: authentik-forward-auth        # ingress.authentik_middleware
+     namespace: research
+   spec:
+     forwardAuth:
+       address: http://<outpost-service>.<authentik-namespace>.svc.cluster.local:9000/outpost.goauthentik.io/auth/traefik
+       trustForwardHeader: true
+       authResponseHeaders: [X-authentik-username, X-authentik-groups, X-authentik-email, X-authentik-name, X-authentik-uid]
+   ```
+
+   Traefik must be able to reach the outpost; that path, and Traefik's own NetworkPolicy, are the cluster's, not the bundle's.
+6. **The bundle.** Add `[workspace] allow_remote = true`, `[ingress]` and `[[ingress.traefik]]` to the private TOML (see [the template](../examples/kubernetes-bundle.toml)), then `check`, `render`, `kubectl diff` and `apply` as in step 8. The workspace Pod restarts onto the Pod network; the rest of the bundle is unchanged. cert-manager issues the two certificates into `<name>-workspace-tls` and `<name>-preview-tls`.
+
+Verify:
+
+```sh
+kubectl -n research get certificate,ingressroute,svc,networkpolicy -l app.kubernetes.io/part-of=<name>
+kubectl -n research wait certificate/<name>-workspace certificate/<name>-preview --for=condition=Ready --timeout=300s
+curl -sI https://workspace.<domain>/ | head -3        # a redirect to Authentik, never the workspace
+kubectl -n research logs deploy/<name>-app -c workspace | grep 'login?token'
+```
+
+Log in to Authentik in a browser, then open `https://workspace.<domain>/login?token=<token from the log>`; the app should load and its read-only views show. Negative checks: `curl -sk --resolve workspace.<domain>:443:<controller-ip> https://other.<domain>/` is not served (404); from a throwaway Pod in `research` (an approved image with `curl`, outside the bundle's labels), `curl -m 3 http://<app-pod-ip>:8200/` times out, since only the controller's Pods are admitted. Writes (saving a document) are expected to fail with 403 until the workspace's public-origin work, and the PDF viewer likewise.
+
+Rollback: remove `[ingress]` and `workspace.allow_remote` from the TOML, render and apply (the workspace returns to loopback). Apply does not prune: `kubectl -n research delete ingressroute/<name>-workspace ingressroute/<name>-preview certificate/<name>-workspace certificate/<name>-preview service/<name>-workspace service/<name>-preview networkpolicy/<name>-ingress`, then the two TLS Secrets, and remove the DNS records. The PVCs are untouched.
 
 ## Order of the rollback points
 

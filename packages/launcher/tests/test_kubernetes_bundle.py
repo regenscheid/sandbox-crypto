@@ -956,3 +956,206 @@ def test_every_container_logs_json_lines():
     for component in ("app", "pool", "runtime-manager"):
         for container in pod(items, component)["containers"]:
             assert {"name": "SS_LOG_FORMAT", "value": "json"} in container["env"], container["name"]
+
+
+def with_ingress(data: dict | None = None) -> dict:
+    data = values() if data is None else data
+    data["workspace"] = {"allow_remote": True}
+    data["ingress"] = {
+        "workspace_host": "workspace.research.test",
+        "preview_host": "preview.research.test",
+        "issuer": "test-issuer",
+        "authentik_middleware": "test-authentik",
+        "traefik": [
+            {
+                "namespace_labels": {"kubernetes.io/metadata.name": "traefik-public"},
+                "pod_labels": {"app.kubernetes.io/name": "traefik"},
+            }
+        ],
+    }
+    return data
+
+
+def workspace_command(items: list[dict]) -> list[str]:
+    return next(c for c in pod(items, "app")["containers"] if c["name"] == "workspace")["command"]
+
+
+def test_without_ingress_nothing_is_exposed_and_the_workspace_stays_on_loopback():
+    items = objects()
+    kinds = {item["kind"] for item in items}
+    assert not kinds & {"IngressRoute", "Certificate"}
+    assert {item["metadata"]["name"] for item in items if item["kind"] == "Service"} == {
+        "research-control",
+        "research-worker",
+        "research-middleware",
+    }
+    workspace = next(c for c in pod(items, "app")["containers"] if c["name"] == "workspace")
+    assert "ports" not in workspace
+    assert not any(a.startswith("--allow-remote") for a in workspace["command"])
+    assert "--preview-name" not in workspace["command"]
+
+
+def test_ingress_moves_the_workspace_to_the_pod_network_with_its_own_preview_name():
+    command = workspace_command(objects(configured(with_ingress())))
+    assert command[command.index("--listen") + 1] == "0.0.0.0:8200"
+    assert command[command.index("--preview-listen") + 1] == "0.0.0.0:8201"
+    assert "--allow-remote" in command
+    assert command[command.index("--preview-name") + 1] == "preview.research.test"
+    # Nothing else about the command changes.
+    plain = workspace_command(objects())
+    drop = {"--allow-remote", "--preview-name", "preview.research.test"}
+    assert [a for a in command if a not in drop and not a.endswith((":8200", ":8201"))] == [
+        a for a in plain if not a.endswith((":8200", ":8201"))
+    ]
+
+
+def test_ingress_renders_a_service_certificate_and_authenticated_route_per_host():
+    items = objects(configured(with_ingress()))
+    for suffix, host, port in (
+        ("workspace", "workspace.research.test", 8200),
+        ("preview", "preview.research.test", 8201),
+    ):
+        service = named(items, "Service", f"research-{suffix}")
+        assert service["spec"]["type"] == "ClusterIP"
+        assert service["spec"]["selector"] == {
+            "app.kubernetes.io/part-of": "research",
+            "app.kubernetes.io/component": "app",
+        }
+        assert [p["port"] for p in service["spec"]["ports"]] == [port]
+        certificate = named(items, "Certificate", f"research-{suffix}")
+        assert certificate["apiVersion"] == "cert-manager.io/v1"
+        assert certificate["spec"]["dnsNames"] == [host]
+        assert certificate["spec"]["issuerRef"] == {
+            "name": "test-issuer",
+            "kind": "ClusterIssuer",
+            "group": "cert-manager.io",
+        }
+        route = named(items, "IngressRoute", f"research-{suffix}")
+        assert route["apiVersion"] == "traefik.io/v1alpha1"
+        assert route["spec"]["entryPoints"] == ["websecure"]
+        assert route["spec"]["tls"] == {"secretName": certificate["spec"]["secretName"]}
+        (rule,) = route["spec"]["routes"]
+        assert rule["match"] == f"Host(`{host}`)"
+        assert rule["middlewares"] == [{"name": "test-authentik"}]
+        assert rule["services"] == [{"name": f"research-{suffix}", "port": port, "scheme": "http"}]
+        assert "annotations" not in route["metadata"]
+    # Control's ports are never behind a route.
+    exposed = {
+        service["port"]
+        for route in items
+        if route["kind"] == "IngressRoute"
+        for rule in route["spec"]["routes"]
+        for service in rule["services"]
+    }
+    assert exposed == {8200, 8201}
+
+
+def test_ingress_class_and_issuer_kind_are_passed_through():
+    data = with_ingress()
+    data["ingress"] |= {"ingress_class": "traefik-public", "issuer_kind": "Issuer"}
+    items = objects(configured(data))
+    route = named(items, "IngressRoute", "research-workspace")
+    assert route["metadata"]["annotations"] == {"kubernetes.io/ingress.class": "traefik-public"}
+    assert named(items, "Certificate", "research-preview")["spec"]["issuerRef"]["kind"] == "Issuer"
+
+
+def test_ingress_network_policy_admits_only_the_controller_pods_to_the_two_ports():
+    items = objects(configured(with_ingress()))
+    policy = named(items, "NetworkPolicy", "research-ingress")["spec"]
+    assert policy["policyTypes"] == ["Ingress"]
+    assert policy["podSelector"] == {
+        "matchLabels": {
+            "app.kubernetes.io/part-of": "research",
+            "app.kubernetes.io/component": "app",
+        }
+    }
+    (rule,) = policy["ingress"]
+    assert rule["from"] == [
+        {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "traefik-public"}},
+            "podSelector": {"matchLabels": {"app.kubernetes.io/name": "traefik"}},
+        }
+    ]
+    assert rule["ports"] == [{"protocol": "TCP", "port": 8200}, {"protocol": "TCP", "port": 8201}]
+    # No other policy admits anything to those ports, and none opens an egress.
+    for item in items:
+        if item["kind"] != "NetworkPolicy" or item["metadata"]["name"] == "research-ingress":
+            continue
+        for ingress_rule in item["spec"]["ingress"]:
+            assert {p["port"] for p in ingress_rule["ports"]}.isdisjoint({8200, 8201})
+    assert "egress" not in policy
+    # Without ingress the policy does not exist.
+    assert not [i for i in objects() if i["metadata"]["name"] == "research-ingress"]
+
+
+def test_ingress_exposes_no_other_pod():
+    items = objects(configured(with_ingress()))
+    routed = {
+        service["name"]
+        for item in items
+        if item["kind"] == "IngressRoute"
+        for rule in item["spec"]["routes"]
+        for service in rule["services"]
+    }
+    assert routed == {"research-workspace", "research-preview"}
+    for name in routed:
+        selector = named(items, "Service", name)["spec"]["selector"]
+        assert selector["app.kubernetes.io/component"] == "app"
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"workspace_host": "Workspace.research.test"}, "lowercase"),
+        ({"workspace_host": "workspace"}, "lowercase"),
+        ({"workspace_host": "*.research.test"}, "lowercase"),
+        ({"workspace_host": "10.0.0.1"}, "lowercase"),
+        ({"workspace_host": "w.research.test`) || Host(`x.test"}, "lowercase"),
+        ({"workspace_host": "workspace.research.test."}, "lowercase"),
+        ({"preview_host": "workspace.research.test"}, "separate origin"),
+        ({"issuer": "Bad Issuer"}, "issuer"),
+        ({"issuer": ""}, "issuer"),
+        ({"issuer_kind": "Other"}, "issuer_kind"),
+        ({"authentik_middleware": "x/y"}, "authentik_middleware"),
+        ({"entry_point": "web"}, "TLS is required"),
+        ({"entry_point": "http"}, "TLS is required"),
+        ({"traefik": []}, "traefik"),
+        ({"traefik": [{"cidr": "192.0.2.9/32"}]}, "Pods by namespace"),
+        (
+            {"traefik": [{"namespace_labels": {"kubernetes.io/metadata.name": "traefik"}}]},
+            "Pods by namespace",
+        ),
+        ({"unexpected": "x"}, "unexpected"),
+    ],
+)
+def test_ingress_validation_failures(change, message):
+    data = with_ingress()
+    data["ingress"] |= change
+    with pytest.raises(ValidationError, match=message):
+        configured(data)
+
+
+@pytest.mark.parametrize("missing", ["workspace_host", "preview_host", "issuer", "traefik"])
+def test_ingress_requires_hosts_issuer_and_authentication(missing):
+    data = with_ingress()
+    del data["ingress"][missing]
+    with pytest.raises(ValidationError):
+        configured(data)
+    data = with_ingress()
+    del data["ingress"]["authentik_middleware"]
+    with pytest.raises(ValidationError, match="authentik_middleware"):
+        configured(data)
+
+
+def test_allow_remote_requires_ingress_and_ingress_requires_allow_remote():
+    data = values()
+    data["workspace"] = {"allow_remote": True}
+    with pytest.raises(ValidationError, match="requires an \\[ingress\\] section"):
+        configured(data)
+    data = with_ingress()
+    del data["workspace"]
+    with pytest.raises(ValidationError, match="allow_remote = true"):
+        configured(data)
+    data["workspace"] = {"allow_remote": False}
+    with pytest.raises(ValidationError, match="allow_remote = true"):
+        configured(data)

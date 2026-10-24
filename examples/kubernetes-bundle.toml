@@ -105,3 +105,23 @@ scratch_mib = 512
 # AWS_CONFIG_FILE = "/private/s3-config"
 # AWS_PROFILE = "artifact-reader"
 # Add s3-credentials/s3-config to secrets.workspace.extra_files first.
+
+# Optional: serve the workspace and its preview origin through the cluster's Traefik,
+# over TLS and behind Authentik, instead of `kubectl port-forward`. Off by default.
+# Host names here are documentation-only; Authentik, the forward-auth Middleware, DNS and
+# the issuer are the operator's (docs/KUBERNETES-PREP.md step 12). The workspace does not
+# yet support writes or the PDF viewer behind a TLS proxy (docs/KUBERNETES-BUNDLE.md).
+# [workspace]
+# allow_remote = true   # required with [ingress], refused without it
+#
+# [ingress]
+# workspace_host = "workspace.example.org"
+# preview_host = "preview.example.org"     # a separate origin: a name of its own
+# issuer = "YOUR_CLUSTER_ISSUER"           # cert-manager; issuer_kind = "Issuer" for a namespaced one
+# authentik_middleware = "authentik-forward-auth"   # a Traefik Middleware in this namespace
+# # entry_point = "websecure"
+# # ingress_class = "traefik-public"
+#
+# [[ingress.traefik]]   # the controller's Pods: the only peers let in to ports 8200 and 8201
+# namespace_labels = { "kubernetes.io/metadata.name" = "traefik-public" }
+# pod_labels = { "app.kubernetes.io/name" = "traefik" }

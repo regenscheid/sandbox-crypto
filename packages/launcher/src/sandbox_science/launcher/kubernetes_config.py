@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Self, cast
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -24,6 +25,10 @@ from .kubernetes_models import ModelCatalog
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")]
 Port = Annotated[int, Field(strict=True, ge=1, le=65535)]
 Count = Annotated[int, Field(strict=True, ge=1, le=1048576)]
+_HOSTNAME = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)+$"
+)
 _IMAGE = re.compile(r"^[a-z0-9][a-z0-9.:/-]*@sha256:([0-9a-f]{64})$")
 _LABEL = re.compile(
     r"^(?:[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?/)?[A-Za-z0-9][-A-Za-z0-9_.]{0,62}$"
@@ -271,6 +276,70 @@ class Network(Model):
         return peers
 
 
+class Workspace(Service):
+    """The workspace container: loopback only, unless the bundle's ingress is on."""
+
+    allow_remote: bool = False
+    """Listen on the Pod network (``--allow-remote``). Only an authenticated, TLS-terminating
+    ingress may set it: the workspace itself speaks plain HTTP."""
+
+
+def _hostname(value: str) -> str:
+    # The name goes into a Traefik ``Host(`...`)`` rule and a certificate, so only a
+    # lowercase DNS name with at least two labels passes: no wildcard, IP address or quote.
+    if _HOSTNAME.fullmatch(value) is None or not any(
+        char.isalpha() for char in value.rpartition(".")[2]
+    ):
+        raise ValueError("use a lowercase DNS host name with at least two labels")
+    return value
+
+
+Hostname = Annotated[str, AfterValidator(_hostname)]
+_PLAIN_ENTRY_POINTS = frozenset(("web", "http"))
+"""Entry point names that conventionally carry plain HTTP; the ingress requires TLS."""
+
+
+class Ingress(Model):
+    """The opt-in route from a browser to the workspace and its preview origin: Traefik
+    terminates TLS with a cert-manager certificate and asks Authentik (forward auth) before
+    it forwards a request. Absent, nothing leaves the application Pod's loopback."""
+
+    workspace_host: Hostname
+    preview_host: Hostname
+    """The PDF viewer's and figures' origin, apart from the workspace's (D54)."""
+    issuer: Name
+    """The cert-manager issuer that signs both certificates."""
+    issuer_kind: Literal["ClusterIssuer", "Issuer"] = "ClusterIssuer"
+    authentik_middleware: Name
+    """The Traefik forward-auth ``Middleware`` in the bundle's namespace; the operator
+    creates it, with the Authentik provider and outpost it points at."""
+    traefik: Annotated[tuple[Peer, ...], Field(min_length=1, max_length=4)]
+    """The Traefik controller Pods, the only peers admitted to the workspace's ports."""
+    entry_point: Name = "websecure"
+    ingress_class: Name | None = None
+
+    @field_validator("traefik")
+    @classmethod
+    def controller_pods(cls, peers: tuple[Peer, ...]) -> tuple[Peer, ...]:
+        # A bare namespace would admit every Pod in it, a CIDR any workload at an address.
+        if any(peer.cidr is not None or not peer.pod_labels for peer in peers):
+            raise ValueError("select the ingress controller's Pods by namespace and Pod labels")
+        return peers
+
+    @field_validator("entry_point")
+    @classmethod
+    def tls_entry_point(cls, value: str) -> str:
+        if value in _PLAIN_ENTRY_POINTS:
+            raise ValueError("TLS is required: name the HTTPS entry point")
+        return value
+
+    @model_validator(mode="after")
+    def two_origins(self) -> Self:
+        if self.workspace_host == self.preview_host:
+            raise ValueError("the preview needs a host name of its own: it is a separate origin")
+        return self
+
+
 class RuntimeManager(Placement, Capacity):
     """The runtime manager's Pod: its node architecture, PVC and container bounds."""
 
@@ -296,10 +365,21 @@ class BundleConfig(Model):
     network: Network
     models: ModelCatalog
     control: Service = Service()
-    workspace: Service = Service()
+    workspace: Workspace = Workspace()
     worker: Service = Service()
     middleware: Service = Service()
     cache: Service = Service()
+    ingress: Ingress | None = None
+
+    @model_validator(mode="after")
+    def remote_workspace(self) -> Self:
+        # The workspace leaves loopback only behind the ingress that authenticates and
+        # encrypts, and that ingress needs it to (a Pod IP is not loopback).
+        if self.workspace.allow_remote and self.ingress is None:
+            raise ValueError("workspace.allow_remote requires an [ingress] section")
+        if self.ingress is not None and not self.workspace.allow_remote:
+            raise ValueError("an [ingress] section requires workspace.allow_remote = true")
+        return self
 
     @model_validator(mode="after")
     def cache_peers(self) -> Self:

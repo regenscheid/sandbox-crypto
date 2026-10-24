@@ -11,6 +11,7 @@ from .kubernetes_config import (
     REQUIRED_FILES,
     BundleConfig,
     Capacity,
+    Ingress,
     Peer,
     Placement,
     Secret,
@@ -26,6 +27,10 @@ XDG = f"{PRIVATE}/xdg"
 """The manager's OpenShell CLI tree (``XDG_CONFIG_HOME``), built by its copy init."""
 RUNTIME_CREDENTIALS = "/run/sandbox-science/runtime-credentials"
 """Control's memory volume for the runtime token it mints; no other container mounts it."""
+WORKSPACE_PORT = 8200
+PREVIEW_PORT = 8201
+LOOPBACK = "127.0.0.1"
+POD_NETWORK = "0.0.0.0"  # noqa: S104 - every interface of the Pod, only behind the ingress
 CONTROL_PORT = 8443
 MANAGER_PORT = 8444
 SETTINGS_ENV = "SANDBOX_SCIENCE_RUNTIME_MANAGER_SETTINGS"
@@ -58,8 +63,19 @@ def _identity(config: BundleConfig) -> dict[str, str]:
     return {APPLICATION_LABEL: APPLICATION, "app.kubernetes.io/instance": config.name}
 
 
-def _object(config: BundleConfig, kind: str, suffix: str, **fields: object) -> dict[str, object]:
-    api = {"Deployment": "apps/v1", "NetworkPolicy": "networking.k8s.io/v1"}.get(kind, "v1")
+def _object(
+    config: BundleConfig,
+    kind: str,
+    suffix: str,
+    annotations: dict[str, str] | None = None,
+    **fields: object,
+) -> dict[str, object]:
+    api = {
+        "Deployment": "apps/v1",
+        "NetworkPolicy": "networking.k8s.io/v1",
+        "Certificate": "cert-manager.io/v1",
+        "IngressRoute": "traefik.io/v1alpha1",
+    }.get(kind, "v1")
     return {
         "apiVersion": api,
         "kind": kind,
@@ -67,6 +83,7 @@ def _object(config: BundleConfig, kind: str, suffix: str, **fields: object) -> d
             "name": f"{config.name}-{suffix}",
             "namespace": config.namespace,
             "labels": {**_identity(config), **_labels(config)},
+            **({"annotations": annotations} if annotations else {}),
         },
         **fields,
     }
@@ -201,7 +218,87 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
             },
         )
     )
+    if config.ingress is not None:
+        policies.append(_ingress_policy(config, config.ingress))
     return policies
+
+
+def _ingress_policy(config: BundleConfig, ingress: Ingress) -> dict[str, object]:
+    """An additive policy: the ingress controller's Pods may reach the workspace's two
+    listeners and nothing else. It adds no egress and no other port; the default-deny and
+    the app policy still decide everything else."""
+    return _object(
+        config,
+        "NetworkPolicy",
+        "ingress",
+        spec={
+            "podSelector": {"matchLabels": _labels(config, "app")},
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [_peer(peer) for peer in ingress.traefik],
+                    "ports": _ports(WORKSPACE_PORT, PREVIEW_PORT),
+                }
+            ],
+        },
+    )
+
+
+def _routes(config: BundleConfig, ingress: Ingress) -> list[dict[str, object]]:
+    """Per host name: a Service, a certificate and an authenticated Traefik route."""
+    items: list[dict[str, object]] = []
+    for suffix, host, port in (
+        ("workspace", ingress.workspace_host, WORKSPACE_PORT),
+        ("preview", ingress.preview_host, PREVIEW_PORT),
+    ):
+        secret = f"{config.name}-{suffix}-tls"
+        items.append(_service(config, "app", suffix, (suffix, port)))
+        items.append(
+            _object(
+                config,
+                "Certificate",
+                suffix,
+                spec={
+                    "secretName": secret,
+                    "dnsNames": [host],
+                    "issuerRef": {
+                        "name": ingress.issuer,
+                        "kind": ingress.issuer_kind,
+                        "group": "cert-manager.io",
+                    },
+                    "privateKey": {"algorithm": "ECDSA", "size": 256, "rotationPolicy": "Always"},
+                },
+            )
+        )
+        route = _object(
+            config,
+            "IngressRoute",
+            suffix,
+            None
+            if ingress.ingress_class is None
+            else {"kubernetes.io/ingress.class": ingress.ingress_class},
+            spec={
+                "entryPoints": [ingress.entry_point],
+                "routes": [
+                    {
+                        "kind": "Rule",
+                        "match": f"Host(`{host}`)",
+                        # Authentik answers before any request reaches the workspace.
+                        "middlewares": [{"name": ingress.authentik_middleware}],
+                        "services": [
+                            {
+                                "name": f"{config.name}-{suffix}",
+                                "port": port,
+                                "scheme": "http",
+                            }
+                        ],
+                    }
+                ],
+                "tls": {"secretName": secret},
+            },
+        )
+        items.append(route)
+    return items
 
 
 def _service(
@@ -295,6 +392,18 @@ def _command(config: BundleConfig, name: str) -> list[str]:
         return ["sandbox-science-control", "--settings", f"{PRIVATE}/control.json"]
     if name == "workspace":
         worker = f"https://{config.name}-worker.{config.namespace}.svc:8100"
+        ingress = config.ingress
+        # Loopback unless the ingress is on (config requires allow_remote then): the
+        # workspace speaks plain HTTP, so nothing but the authenticated, TLS-terminating
+        # route and its NetworkPolicy may reach the Pod-network listener. Its preview
+        # origin is named by the preview host, which is not loopback, so the listener
+        # takes any Host: Traefik's Host() rule and the NetworkPolicy are the guards.
+        bind = POD_NETWORK if ingress is not None else LOOPBACK
+        remote = (
+            ["--allow-remote", "--preview-name", ingress.preview_host]
+            if ingress is not None
+            else []
+        )
         return [
             "sandbox-science-workspace",
             "serve",
@@ -303,9 +412,10 @@ def _command(config: BundleConfig, name: str) -> list[str]:
             "--static",
             "/usr/share/sandbox-science/workspace",
             "--listen",
-            "127.0.0.1:8200",
+            f"{bind}:{WORKSPACE_PORT}",
             "--preview-listen",
-            "127.0.0.1:8201",
+            f"{bind}:{PREVIEW_PORT}",
+            *remote,
             "--worker",
             worker,
             "--worker-token-file",
@@ -402,6 +512,12 @@ def _container(
             "initialDelaySeconds": 10,
             "periodSeconds": 10,
         }
+    elif name == "workspace" and config.ingress is not None:
+        # Declared for the Services and for people; the listeners are set by the command.
+        result["ports"] = [
+            {"name": "workspace", "containerPort": WORKSPACE_PORT, "protocol": "TCP"},
+            {"name": "preview", "containerPort": PREVIEW_PORT, "protocol": "TCP"},
+        ]
     elif name in ("worker", "middleware", "cache"):
         probe = {"tcpSocket": {"port": {"worker": 8100, "middleware": 50051, "cache": 8090}[name]}}
     if probe is not None:
@@ -533,4 +649,6 @@ def render(config: BundleConfig) -> dict[str, object]:
     ]
     if config.secrets.cache is not None:
         items.append(_service(config, "pool", "cache", ("cache", 8090)))
+    if config.ingress is not None:
+        items.extend(_routes(config, config.ingress))
     return {"apiVersion": "v1", "kind": "List", "items": items}
