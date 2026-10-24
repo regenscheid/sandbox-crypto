@@ -297,6 +297,18 @@ With an `[openshell.environments]` table, the worker creates the sandboxes behin
 
 Sandboxes made outside the worker still work through the static `sandboxes` map.
 
+### Job environments
+
+A job that names a job profile runs in a job environment of its own ([job sandboxes](BACKGROUND-JOBS.md#job-sandboxes), D93): an environment of kind `job` (`EnvironmentInfo.kind`, with `job_id`), ID `<project>-job-<12 hex>`, which no client can create, name, list or count against `max_environments`. Every route that takes an environment, and the reads of its executions and provisioning operations, answers `not_found` for it; operation IDs `jsb-<24 hex>.<step>` are the worker's own.
+
+- **Creating.** The worker records the environment, then creates its sandbox as it does any other, from the session environment's recorded image, policy revision and providers, compiled with the session's admitted hosts, and binds it in the middleware's store under that revision. The job profile's Kubernetes settings are its driver configuration, not narrowed by the policy's CPU and memory caps, with the label `sandbox-science.io/job-sandbox=true` on the workload Pod (the gateway must list the key in `allowed_pod_labels`). A sandbox not ready within the profile's `schedule_timeout` (OpenShell's phase stays pending while no node has room) is deleted by identity, as any failed creation.
+- **Using.** The worker opens an executor there like in any environment it created; a job environment's start does not compare its pinned size with the policy, since its profile is the grant.
+- **Retaining and releasing.** Retention stops the sandbox (disk kept, executor gone); release deletes it by its recorded identity; a sandbox no record names is never deleted.
+
+Job profiles live in `[openshell.environments.job_profiles.NAME]` ([settings](#settings), [example](../examples/kubernetes/job-profiles.toml)); each is a Kubernetes profile, whose `runtime_class_name` must be `kata` or `kata-*`, plus a description, `wall_time_max`, `schedule_timeout`, `max_concurrent`, `stage_max_bytes` and `collect_max_bytes`. A project's policy grants profiles with `resources.job_profiles` and a concurrency with `resources.job_sandboxes` ([policy](POLICY.md#background-job-resources)). The capabilities of an environment whose project has both list the granted profiles (`job_profiles`) and the `job_sandboxes` feature.
+
+**The deployment must protect the label.** A PodDisruptionBudget selecting `sandbox-science.io/job-sandbox: "true"` with `maxUnavailable: 0` makes a planned drain wait for running job sandboxes; the [offline bundle](KUBERNETES-BUNDLE.md) does not render it yet. Unplanned loss still makes the job `lost`. Not verified on a cluster: the driver configuration's `pod.labels` key (the one key the worker sends beyond those `test_kubernetes.py` pins for OpenShell 0.1.5), `allowed_pod_labels`' place in the gateway settings, and whether `talosctl upgrade` honours the budget as `kubectl drain` does.
+
 ## Admission on demand
 
 A sandbox resolves only the host names its compiled policy names. A policy with `*` rules or a non-deny default reaches hosts nobody names in advance, so the worker admits them as they are needed (D69; [policy](POLICY.md), "Mapping to enforcement"):
@@ -792,6 +804,21 @@ admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's a
 admission_interval = 3               # seconds between checks of each environment's drafts
 max_admitted_hosts = 128             # hosts (and other ports) admitted on demand per environment
 # suspend_after = 3600               # optional, off by default (D100): stop sandboxes idle for an hour (W3)
+max_job_sandboxes = 2                # job sandboxes (D93) creating, preparing, running or collecting at once in the pool
+job_retention = 259200               # seconds a failed job's stopped sandbox is kept (3 days)
+job_retention_per_project = 2        # retained job sandboxes per project; one more releases the oldest
+
+[openshell.environments.job_profiles.large]   # optional: sizes a job may ask for its own sandbox in (D93)
+description = "12 cores, 32 GiB memory, up to 7 days"   # what the agent is told
+node_selector = {"kubernetes.io/arch" = "amd64"}
+runtime_class_name = "kata"          # required: kata or kata-* (D92)
+requests = {cpu_millicores = 12000, memory_mib = 32768, ephemeral_storage_mib = 32768}
+limits = {cpu_millicores = 12000, memory_mib = 32768, ephemeral_storage_mib = 32768}
+# wall_time_max = 604800             # seconds, at most 7 days (the default)
+# schedule_timeout = 1800            # seconds waiting for a node with room, at most 24 hours
+# max_concurrent = 1                 # of this size across the pool
+# stage_max_bytes = 2147483648       # inputs copied in (2 GiB)
+# collect_max_bytes = 4294967296     # files copied back (4 GiB)
 
 [[clients]]                          # optional: tokens limited to some projects (needs [openshell.environments])
 name = "orchestrator-p1"

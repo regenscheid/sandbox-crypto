@@ -1,6 +1,10 @@
 # Job sandboxes
 
-Status: Draft design (2026-10-22); not built. It designs D93, a confirmed owner
+Status: First increment implemented, not qualified (2026-10-24): profiles and grants,
+`start_job` with `profile` and `inputs`, package replay, tier checks, collection, the
+manifest, retention and release, the schedule timeout and loss, tested against the fake
+OpenShell CLI only ([background jobs](../BACKGROUND-JOBS.md#job-sandboxes)); no Kata
+acceptance yet. Draft design of 2026-10-22. It designs D93, a confirmed owner
 requirement: a big [background job](../BACKGROUND-JOBS.md) (D83) may run in a new
 sandbox of its own, sized and placed by trusted profiles, inside the same cluster and
 control environment. It extends [tools](tools.md#background-jobs) as the first "batch

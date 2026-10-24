@@ -202,6 +202,8 @@ Background shell jobs (D83) have limits separate from a call's `wall_time`:
 | `job_wall_time_max` | `7d` | Largest explicit job limit; also bounds the default |
 | `jobs_per_session` | 4 | Active accepted jobs per project/session, including queued jobs |
 | `jobs_per_environment` | 8 | Active accepted jobs in an environment, across sessions |
+| `job_profiles` | none | The worker's job profiles a job may name for a sandbox of its own (D93); the list is the grant, and the ceiling's list, if any, the profiles it permits |
+| `job_sandboxes` | 0 | Job sandboxes of the project creating, preparing, running or collecting at once; 0 keeps the feature off |
 
 The pool ceiling clamps each project value; an omitted project value takes the pool's
 value. Durations are positive whole-second policy strings and cannot exceed seven days.

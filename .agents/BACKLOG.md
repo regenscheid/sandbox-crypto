@@ -31,6 +31,7 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 - [ ] B4. Durability extras (cache trimming, replica release and ACK outbox, workspace checkpoints) and the load balancer with Authentik (D92).
 - [ ] B5. Dashboards, alerts, detect-and-hold rules and MCP canaries (D103).
 - [ ] B6. Job sandboxes, first increment (D93).
+  - Built offline (fake CLI): job profiles (Kata only), policy grants, `start_job` `profile`/`inputs`, job environments from the session image, package replay, tier checks, collection to `.jobs/<ID>/files/`, immutable manifest, retention and release, schedule timeout, `lost` on pod loss ([background jobs](../docs/BACKGROUND-JOBS.md#job-sandboxes)). Open: reattach across worker restart, release on session close, GUI columns, the bundle's PodDisruptionBudget, live Kata acceptance.
 
 ### Operations
 

@@ -15,6 +15,64 @@ elapsed time, terminal outcome and failure reason. The existing `read_file`
 tool reads full logs in ranges. All operations bind the job to the current
 project, session and environment. Model arguments cannot replace that context.
 
+## Job sandboxes
+
+A job may run in a new sandbox of its own, sized by a trusted job profile (D93,
+[spec](specs/job-sandboxes.md)): `start_job` takes `profile`, one of the sizes the worker
+grants the project, such as "large: 12 cores, 32 GiB memory, up to 7 days", and `inputs`,
+up to 64 session files or directories to copy in. The harness lists the granted sizes in
+the tool's schema from the worker's capabilities and adds its own `--min-isolation-tier`;
+without granted profiles `start_job` is offered as before. Agents never give CPU,
+memory, placement or pod settings.
+
+The job keeps the session's context, so ownership, Resume, notices and the GUI treat it
+as any job. The worker records it, then:
+
+1. **creates** a [job environment](WORKER.md#job-environments) from the session
+   environment's recorded image, policy revision, providers and admitted hosts. A
+   sandbox not placed within the profile's `schedule_timeout` (30 minutes by default)
+   ends the job `failed` with `capacity_unavailable`, and is deleted by identity;
+2. **prepares** it: the isolation probe runs in the new sandbox, and a tier below the
+   request's minimum or the session environment's ends the job `isolation_insufficient`
+   and releases the sandbox; the session's recorded package changes (its lockfile against
+   the image's packages) are installed at their recorded versions, Conda packages by
+   channel, name, version and build, then pip pins, as provisioning operations through
+   the package cache under the session's policy, and the job sandbox's lockfile must then
+   hold them. A failure ends the job `package_replay_failed` or `environment_mismatch`
+   before its command. Then the inputs are copied to the same paths, following no symlink,
+   within the profile's `stage_max_bytes`;
+3. **runs** the command there; the job is `queued` until now, and `running` from now;
+4. **collects**: the whole logs go to the job's usual `.jobs/<ID>/stdout.log` and
+   `stderr.log`, and each file the command wrote outside `.jobs/` and `shared/` to
+   `.jobs/<ID>/files/<path>`, within the profile's `collect_max_bytes` (4 GiB), 1,000
+   files and 100 MiB a file. `shared/` returns by the ordinary sync. The result's
+   `written_files` names what came back, and the harness records it as artifacts at the
+   completion notice;
+5. **stores the manifest** (`JobResultManifest`) once, with the outcome: profile, image,
+   sandbox, tier and evidence, replayed packages, inputs, collected files and those not
+   collected with why. The store refuses to change it; `job_status` returns it with the
+   digest (`job.sandbox.manifest_sha256`), and `.jobs/<ID>/manifest.json` is a copy the
+   job could have changed;
+6. **releases** the sandbox at once after a success whose collection was complete.
+   Otherwise (failure, timeout, cancellation, an incomplete collection) it stops the
+   sandbox, keeping its disk and freeing CPU and memory, for `job_retention` (3 days),
+   at most `job_retention_per_project` (2) per project: a third releases the oldest.
+   An hourly sweep releases overdue ones. Released files are gone.
+
+A deleted or evicted sandbox, found by looking at it while the job runs, ends the job
+`lost` (`sandbox_lost`); the command is never submitted again. A full count is refused at
+once, before anything is created: an unknown or ungranted profile, the project's
+`job_sandboxes` (default 0, so the feature is off until granted), the profile's
+`max_concurrent` and the pool's `max_job_sandboxes` (2). Job sandboxes count while
+creating, preparing, running or collecting; retained ones only hold disk.
+
+Not yet: a worker restart while a job sandbox's job is unfinished reports the job `lost`
+(its command is never rerun) and retains its sandbox, rather than reattaching it; closing
+a session or deleting its environment cancels the job but does not release its sandbox
+early; live head and tail output of a running job sandbox's job, checkpoints and
+`resume_from` (increment 3), files over 100 MiB (increment 4), the GUI's profile and
+phase columns and "release now", and live Kata acceptance on the cluster.
+
 ## Waiting and the watcher
 
 `wait_jobs` takes distinct `job_ids` and `mode: all` (the default) or `first`.
