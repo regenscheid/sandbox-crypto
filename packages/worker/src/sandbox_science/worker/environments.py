@@ -72,6 +72,7 @@ from sandbox_science.policy.openshell import (
     CompileError,
     FilesystemPolicy,
     LandlockPolicy,
+    admission_entry,
     admission_refusal,
     compile_sandbox,
     load_targets,
@@ -1249,43 +1250,48 @@ class Environments:
     def _settle(
         self, policy: LoadedPolicy, current: Sequence[str], decisions: Sequence[Admission]
     ) -> tuple[Compiled, list[Admission]]:
-        """Compile with the hosts in use and the newly admissible ones, within the limits.
+        """Compile with the entries in use and the newly admissible ones, within the limits.
 
-        Hosts in use come first, so a revision or a new batch never displaces them.
-        Hosts the compiled policy names already need no endpoint of their own. New
-        hosts beyond ``max_admitted_hosts``, or that would make the compiled policy
-        too large, are refused.
+        An entry is a host, or a host with a port that only a ``ports: any`` rule reaches
+        (``admission_entry``). Entries in use come first, so a revision or a new batch never
+        displaces them. Hosts the compiled policy admits already need no entry of their
+        own. New entries beyond ``max_admitted_hosts``, or that would make the compiled
+        policy too large, are refused.
         """
         limit = self.settings.max_admitted_hosts
-        new = [d.host for d in decisions if d.admitted and d.host not in current]
+
+        def entry(decision: Admission) -> str:
+            return admission_entry(policy, decision.host, decision.port)
+
+        new = [entry(d) for d in decisions if d.admitted and entry(d) not in current]
         candidates = list(dict.fromkeys([*current, *new]))
         compiled = self._compile(policy, candidates)
         emitted = set(compiled.admitted)
-        keep = [host for host in candidates if host in emitted]
+        keep = [item for item in candidates if item in emitted]
         refusals: dict[str, str] = {}
         if len(keep) > limit:
-            for host in keep[limit:]:
-                refusals[host] = f"the environment has {limit} hosts admitted on demand, its limit"
+            for item in keep[limit:]:
+                refusals[item] = f"the environment has {limit} hosts admitted on demand, its limit"
             keep = keep[:limit]
         if refusals or len(compiled.policy.to_yaml()) > MAX_POLICY_YAML:
             compiled = self._compile(policy, keep)
             if len(compiled.policy.to_yaml()) > MAX_POLICY_YAML:
-                fresh = [host for host in keep if host not in current]
-                for host in fresh:
-                    refusals[host] = "the sandbox's policy would exceed OpenShell's size limit"
-                keep = [host for host in keep if host in current]
+                fresh = [item for item in keep if item not in current]
+                for item in fresh:
+                    refusals[item] = "the sandbox's policy would exceed OpenShell's size limit"
+                keep = [item for item in keep if item in current]
                 compiled = self._compile(policy, keep)
         settled: list[Admission] = []
         for decision in decisions:
-            host = decision.host
+            key = entry(decision) if decision.admitted else ""
             if not decision.admitted:
                 pass
-            elif host in refusals:
-                decision = replace(decision, admitted=False, reason=refusals[host])
-            elif host in compiled.admitted:
-                if host in current:
+            elif key in refusals:
+                decision = replace(decision, admitted=False, reason=refusals[key])
+            elif key in compiled.admitted:
+                if key in current:
                     decision = replace(decision, reason="admitted already")
-            elif compiled.names(host):
+            elif compiled.admits(decision.host, decision.port):
                 decision = replace(decision, reason="admitted already")
             else:
                 reason = "the compiler did not admit it; see the environment's findings"

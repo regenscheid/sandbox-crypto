@@ -138,9 +138,22 @@ def test_git_fetch_with_git_content_type_is_still_allowed() -> None:
     assert decide("POST", url, content_type=UPLOAD_PACK, has_body=True) is Action.ALLOW
 
 
-def test_git_rules_have_url_limits() -> None:
+def test_git_rules_can_have_url_limits() -> None:
+    # The example no longer sets them (D95), but a policy still can.
+    limited = policy(
+        """
+        network:
+          rules:
+            - name: fetch
+              operation: git
+              match: {hosts: ["*"], git_service: upload-pack}
+              limits: {max_url_bytes: 4096}
+              action: allow
+        """
+    )
     url = "https://github.com/" + "a" * 20_000 + "/info/refs?service=git-upload-pack"
-    assert decide("GET", url) is Action.DENY
+    assert decide("GET", url, limited) is Action.DENY
+    assert decide("GET", url) is Action.ALLOW
 
 
 # Finding 3: "*search*" matched the portal prefix of every tool.
@@ -327,7 +340,7 @@ def test_tied_escalations_take_the_strictest_terms() -> None:
               operation: http
               match: {hosts: ["*"], methods: [GET]}
               action: escalate
-              escalation: {timeout: 5m}
+              escalation: {timeout: 5m, on_timeout: deny}
         """
     )
     request = HttpRequest("GET", "https://example.org/")

@@ -27,6 +27,7 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
+from pydantic import ValidationError
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -1041,18 +1042,18 @@ def admitted_endpoints(setup: Setup, sandbox: str) -> list[str]:
 
 async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
-    eprint = setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    eprint = setup.fake.draft(info.sandbox, "eprint.example.net:443")
     registry = setup.fake.draft(info.sandbox, "pypi.org:443", "/usr/bin/python3.13")
     lan = setup.fake.draft(info.sandbox, "printer.local:443")
     decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
     assert {(d.host, d.admitted) for d in decisions} == {
-        ("eprint.iacr.org", True),
+        ("eprint.example.net", True),
         ("pypi.org", False),
         ("printer.local", False),
     }
     # One revision of the same policy names the admitted host, with the address ranges.
     assert len(setup.fake.calls("policy", "set")) == 1
-    assert admitted_endpoints(setup, info.sandbox) == ["eprint.iacr.org"]
+    assert admitted_endpoints(setup, info.sandbox) == ["eprint.example.net"]
     box = setup.fake.read()["sandboxes"][info.sandbox]["policy"]
     [endpoint] = box["network_policies"]["sandbox-science-admitted"]["endpoints"]
     assert (
@@ -1060,7 +1061,7 @@ async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Se
         == box["network_policies"]["sandbox-science-egress"]["endpoints"][0]["allowed_ips"]
     )
     revised = setup.environments.get("env-1")
-    assert revised.admitted_hosts == ("eprint.iacr.org",)
+    assert revised.admitted_hosts == ("eprint.example.net",)
     assert revised.policy == setup.policy
     assert setup.environments.store.binding(info.sandbox_id or "") == setup.policy
     # Every draft is rejected, never approved, with the decision as the reason.
@@ -1072,7 +1073,7 @@ async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Se
     assert setup.fake.calls("rule", "approve") == []
     recorded = setup.environments.records.admissions("env-1")
     assert {(a.host, a.port, a.admitted) for a in recorded} == {
-        ("eprint.iacr.org", 443, True),
+        ("eprint.example.net", 443, True),
         ("pypi.org", 443, False),
         ("printer.local", 443, False),
     }
@@ -1081,11 +1082,11 @@ async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Se
 async def test_drafts_for_admitted_hosts_need_no_revision(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     watcher = DraftWatcher(setup.environments, 1.0)
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     await watcher.check("env-1", info.sandbox)
     # Another program, raced with the revision; a name the policy names, refused by
     # OpenShell's address check; and nothing pending at all.
-    again = setup.fake.draft(info.sandbox, "eprint.iacr.org:443", "/usr/bin/wget")
+    again = setup.fake.draft(info.sandbox, "eprint.example.net:443", "/usr/bin/wget")
     private = setup.fake.draft(
         info.sandbox,
         "github.com:443",
@@ -1098,7 +1099,60 @@ async def test_drafts_for_admitted_hosts_need_no_revision(setup: Setup) -> None:
     drafts = setup.fake.drafts(info.sandbox)
     assert "admitted already" in drafts[again]["reason"]
     assert "not public" in drafts[private]["reason"]
-    assert setup.environments.get("env-1").admitted_hosts == ("eprint.iacr.org",)
+    assert setup.environments.get("env-1").admitted_hosts == ("eprint.example.net",)
+
+
+async def test_other_ports_are_admitted_on_demand(setup: Setup) -> None:
+    # D95: the example's reads are for any port, and OpenShell endpoints list their
+    # ports, so a refused connection to another port admits that port for that host.
+    info, _ = await setup.environments.create(setup.request())
+    watcher = DraftWatcher(setup.environments, 1.0)
+    setup.fake.draft(info.sandbox, "papers.example.net:8080")
+    setup.fake.draft(info.sandbox, "github.com:8443")  # pre-admitted, on another port
+    control = setup.fake.draft(info.sandbox, "papers.example.net:6443")
+    decisions = await watcher.check("env-1", info.sandbox)
+    assert {(d.host, d.port, d.admitted) for d in decisions} == {
+        ("papers.example.net", 8080, True),
+        ("github.com", 8443, True),
+        ("papers.example.net", 6443, False),
+    }
+    assert "port 6443 is not admitted" in setup.fake.drafts(info.sandbox)[control]["reason"]
+    revised = setup.environments.get("env-1")
+    assert revised.admitted_hosts == ("github.com:8443", "papers.example.net:8080")
+    policies = setup.fake.read()["sandboxes"][info.sandbox]["policy"]["network_policies"]
+    ports = {
+        endpoint["host"]: endpoint["ports"]
+        for section in ("sandbox-science-egress", "sandbox-science-admitted")
+        for endpoint in policies[section]["endpoints"]
+    }
+    assert ports["papers.example.net"] == [8080]
+    assert ports["github.com"] == [80, 8443]  # its HTTPS port is its credential endpoint's
+    # The same port again needs no revision; the default ports of that host do.
+    setup.fake.draft(info.sandbox, "papers.example.net:8080", "/usr/bin/wget")
+    await watcher.check("env-1", info.sandbox)
+    assert len(setup.fake.calls("policy", "set")) == 1
+    setup.fake.draft(info.sandbox, "papers.example.net:443")
+    await watcher.check("env-1", info.sandbox)
+    assert setup.environments.get("env-1").admitted_hosts == (
+        "github.com:8443",
+        "papers.example.net",
+        "papers.example.net:8080",
+    )
+
+
+async def test_the_admission_cap_is_a_setting_above_what_fits() -> None:
+    default = EnvironmentSettings.model_fields["max_admitted_hosts"].default
+    assert default == 128
+    with pytest.raises(ValidationError):
+        EnvironmentSettings.model_validate(
+            {
+                "policy_store": "s",
+                "targets": "t",
+                "ceiling": "c",
+                "profiles": {"minimal": "i"},
+                "max_admitted_hosts": 1025,
+            }
+        )
 
 
 async def test_admission_stops_at_the_environments_limit(setup: Setup) -> None:
@@ -1114,27 +1168,27 @@ async def test_admission_stops_at_the_environments_limit(setup: Setup) -> None:
 
 
 async def test_a_revision_decides_recorded_hosts_again(setup: Setup) -> None:
-    blocked = setup.add(deny_variant(setup.tmp, "blocked.yaml", "eprint.iacr.org"))
+    blocked = setup.add(deny_variant(setup.tmp, "blocked.yaml", "eprint.example.net"))
     info, _ = await setup.environments.create(setup.request(policy=blocked))
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.draft(info.sandbox, "papers.example.net:443")
     await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
     assert setup.environments.get("env-1").admitted_hosts == ("papers.example.net",)
     # The example policy no longer denies the host: the next revision admits it too.
     revised = await setup.environments.revise("env-1", setup.policy)
-    assert revised.admitted_hosts == ("eprint.iacr.org", "papers.example.net")
-    assert admitted_endpoints(setup, info.sandbox) == ["eprint.iacr.org", "papers.example.net"]
+    assert revised.admitted_hosts == ("eprint.example.net", "papers.example.net")
+    assert admitted_endpoints(setup, info.sandbox) == ["eprint.example.net", "papers.example.net"]
     # And back: a revision that denies it drops it again.
     again = await setup.environments.revise("env-1", blocked)
     assert again.admitted_hosts == ("papers.example.net",)
     assert admitted_endpoints(setup, info.sandbox) == ["papers.example.net"]
     decisions = {a.host: a for a in setup.environments.records.admissions("env-1")}
-    assert not decisions["eprint.iacr.org"].admitted
+    assert not decisions["eprint.example.net"].admitted
 
 
 async def test_a_gateway_failure_pauses_admission_for_the_environment(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.update(fail_rules=True)
     watcher = DraftWatcher(setup.environments, 1.0)
     await watcher.check_all()
@@ -1163,7 +1217,7 @@ async def test_a_draft_that_cannot_be_rejected_does_not_stop_the_others(setup: S
 async def test_deleted_environments_are_not_watched(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     await setup.environments.delete("env-1")
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     await DraftWatcher(setup.environments, 1.0).check_all()
     assert setup.fake.calls("rule", "get") == []
 
@@ -1654,16 +1708,16 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(paused: Setup) -> 
 async def test_admission_notices_say_what_was_admitted_and_refused(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     before = datetime.now(UTC)
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.draft(info.sandbox, "pypi.org:443")
     watcher = DraftWatcher(setup.environments, 1.0)
     await watcher.check("env-1", info.sandbox)
     notices = [text for _, text in setup.environments.notices("env-1", before)]
-    assert notices[0].startswith("eprint.iacr.org was admitted on demand")
+    assert notices[0].startswith("eprint.example.net was admitted on demand")
     assert notices[1].startswith("pypi.org:443 was not admitted: ")
     seen = max(at for at, _ in setup.environments.notices("env-1", before))
     # Another program for an admitted host is no news.
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443", "/usr/bin/wget")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443", "/usr/bin/wget")
     await watcher.check("env-1", info.sandbox)
     assert setup.environments.notices("env-1", seen) == []
 
@@ -1672,7 +1726,7 @@ async def test_operators_can_list_an_environments_admissions(
     setup: Setup, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     setup.fake.draft(info.sandbox, "pypi.org:443")
     await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
     settings = tmp_path / "worker.toml"
@@ -1684,7 +1738,7 @@ async def test_operators_can_list_an_environments_admissions(
     )
     assert main(["admissions", "--settings", str(settings), "--environment", "env-1"]) == 0
     out = capsys.readouterr().out
-    assert "admitted eprint.iacr.org" in out
+    assert "admitted eprint.example.net" in out
     assert "pypi.org:443 refused: " in out
     assert main(["admissions", "--settings", str(settings), "--environment", "nope"]) == 1
 
@@ -2431,13 +2485,13 @@ async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(
 
 async def test_a_busy_environment_does_not_hold_up_admission(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     watcher = DraftWatcher(setup.environments, 1.0)
     lock = setup.environments._lock("env-1")
     async with lock:
         assert await watcher.check("env-1", info.sandbox) == ()
     decisions = await watcher.check("env-1", info.sandbox)
-    assert [(d.host, d.admitted) for d in decisions] == [("eprint.iacr.org", True)]
+    assert [(d.host, d.admitted) for d in decisions] == [("eprint.example.net", True)]
 
 
 async def test_clients_are_named_by_their_tokens_digests(
@@ -2528,7 +2582,7 @@ async def test_clients_are_named_by_their_tokens_digests(
 async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> None:
     # One client's revisions must not hold up admission for every project (review of D78).
     info, _ = await setup.environments.create(setup.request())
-    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "eprint.example.net:443")
     real = setup.environments.cli.run
     release = asyncio.Event()
 
@@ -2545,7 +2599,9 @@ async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> N
     watcher = DraftWatcher(setup.environments, 1.0)
     started = time.monotonic()
     assert await watcher.check("env-1", info.sandbox) == ()
-    assert await setup.environments.admit("env-1", [("eprint.iacr.org", 443)], wait=False) is None
+    assert (
+        await setup.environments.admit("env-1", [("eprint.example.net", 443)], wait=False) is None
+    )
     assert time.monotonic() - started < 5
     release.set()
     await revising
@@ -2553,7 +2609,7 @@ async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> N
     setup.environments.cli.run = real
     assert not setup.environments.busy("env-1")
     decisions = await watcher.check("env-1", info.sandbox)
-    assert [(d.host, d.admitted) for d in decisions] == [("eprint.iacr.org", True)]
+    assert [(d.host, d.admitted) for d in decisions] == [("eprint.example.net", True)]
 
 
 async def test_changes_are_logged_by_route_and_cannot_be_forged(
@@ -2663,15 +2719,17 @@ async def test_a_worker_built_on_managed_environments_gets_their_lifecycle(setup
 async def test_hosts_are_admitted_ahead_of_use(api: Api) -> None:
     assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
     path = "/v1/environments/env-a/admissions"
-    body = {"hosts": [{"host": "EPrint.iacr.org"}, {"host": "pypi.org"}, {"host": "printer.local"}]}
+    body = {
+        "hosts": [{"host": "EPrint.example.net"}, {"host": "pypi.org"}, {"host": "printer.local"}]
+    }
     status, result = await api.call("POST", path, A_TOKEN, body)
     assert status == 200, result
     assert {(d["host"], d["port"], d["admitted"]) for d in result["decisions"]} == {
-        ("eprint.iacr.org", 443, True),
+        ("eprint.example.net", 443, True),
         ("pypi.org", 443, False),
         ("printer.local", 443, False),
     }
-    assert result["environment"]["admitted_hosts"] == ["eprint.iacr.org"]
+    assert result["environment"]["admitted_hosts"] == ["eprint.example.net"]
     # One revision for the batch, and none when nothing new is admitted.
     assert len(api.setup.fake.calls("policy", "set")) == 1
     assert (await api.call("POST", path, A_TOKEN, body))[0] == 200

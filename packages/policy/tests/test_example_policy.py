@@ -98,7 +98,8 @@ def test_search_feedback_is_not_allowed_by_the_search_pattern(policy: LoadedPoli
 @pytest.mark.parametrize(
     ("method", "url", "expected", "rule"),
     [
-        ("GET", "https://eprint.iacr.org/2024/123.pdf", Action.ALLOW, "read-only-web"),
+        ("GET", "https://eprint.iacr.org/2024/123.pdf", Action.ALLOW, "research-hosts"),
+        ("GET", "https://example.org/paper.pdf", Action.ALLOW, "read-only-web"),
         ("HEAD", "https://example.org/", Action.ALLOW, "read-only-web"),
         ("POST", "https://example.org/api", Action.ESCALATE, "external-writes"),
         ("DELETE", "https://example.org/x", Action.ESCALATE, "external-writes"),
@@ -126,18 +127,47 @@ def test_search_feedback_is_not_allowed_by_the_search_pattern(policy: LoadedPoli
             Action.ESCALATE,
             "git-push",
         ),
-        # A fetch from a git host the policy does not list: no git rule, so the default applies.
-        ("POST", "https://git.example.org/x.git/git-upload-pack", Action.ESCALATE, None),
-        # Non-default port: no rule names it, so the default applies.
-        ("GET", "https://example.org:8443/", Action.ESCALATE, None),
+        # D95: a fetch from a git host the policy does not list is a read.
+        ("POST", "https://git.example.org/x.git/git-upload-pack", Action.ALLOW, "git-fetch"),
+        ("POST", "https://git.example.org:8443/x.git/git-upload-pack", Action.ALLOW, "git-fetch"),
+        ("POST", "https://git.example.org/x.git/git-receive-pack", Action.ESCALATE, "git-push"),
+        # D95: GET and HEAD on any port are reads.
+        ("GET", "https://example.org:8443/", Action.ALLOW, "read-only-web"),
+        ("GET", "http://example.org:8080/data.csv", Action.ALLOW, "read-only-web"),
+        ("HEAD", "https://gmplib.org:8443/", Action.ALLOW, "source-hosts"),
+        # Reviewed read-only POST endpoints; any other POST asks first.
+        (
+            "POST",
+            "https://api.semanticscholar.org/graph/v1/paper/batch",
+            Action.ALLOW,
+            "semantic-scholar-reads",
+        ),
+        (
+            "POST",
+            "https://api.semanticscholar.org/recommendations/v1/papers/",
+            Action.ALLOW,
+            "semantic-scholar-reads",
+        ),
+        ("POST", "https://export.arxiv.org/api/query", Action.ALLOW, "arxiv-query"),
+        (
+            "POST",
+            "https://api.semanticscholar.org/graph/v1/paper",
+            Action.ESCALATE,
+            "external-writes",
+        ),
+        ("POST", "https://export.arxiv.org/api/other", Action.ESCALATE, "external-writes"),
+        ("PUT", "https://export.arxiv.org/api/query", Action.ESCALATE, "external-writes"),
+        ("POST", "https://api.crossref.org/works", Action.ESCALATE, "external-writes"),
+        # A write on a non-default port: no rule, so the default asks.
+        ("POST", "https://example.org:8443/api", Action.ESCALATE, None),
         # Non-public destinations: a wildcard allow cannot grant them.
         ("GET", "http://192.168.1.10/admin", Action.DENY, "read-only-web"),
         ("GET", "http://nas.local/", Action.DENY, "read-only-web"),
         # Hard floor.
         ("GET", "http://169.254.169.254/latest/meta-data/", Action.DENY, None),
         ("GET", "http://localhost:8080/", Action.DENY, None),
-        # URL length limit on the broad read rule.
-        ("GET", "https://example.org/" + "a" * 5000, Action.DENY, "read-only-web"),
+        # D95 sets no URL length limit on reads.
+        ("GET", "https://example.org/" + "a" * 5000, Action.ALLOW, "read-only-web"),
         # Ambiguous request.
         ("GET", "https://example.org/a/../admin", Action.DENY, None),
         ("GET", "https://example.org/admin;jsessionid=1", Action.DENY, None),
@@ -227,11 +257,69 @@ def test_example_mcp_messages(
     assert decision.action is expected, decision.reason
 
 
-def test_example_large_egress_monitor(policy: LoadedPolicy) -> None:
-    threshold = 500 * 1024**2
-    assert evaluate_monitors(policy, EgressUsage(threshold)) == ()
-    alerts = evaluate_monitors(policy, EgressUsage(threshold + 1))
-    assert [alert.rule for alert in alerts] == ["large-egress"]
+def test_example_sets_no_exfiltration_limits(policy: LoadedPolicy) -> None:
+    # D95: no egress-volume monitor and no URL limits by default; both remain available.
+    assert evaluate_monitors(policy, EgressUsage(10**15)) == ()
+    assert all(rule.limits is None for rule in policy.policy.network.rules)
+
+
+PRE_ADMITTED = (
+    # Research destinations.
+    "eprint.iacr.org",
+    "arxiv.org",
+    "zenodo.org",
+    "huggingface.co",
+    "dblp.org",
+    "www.iacr.org",
+    "csrc.nist.gov",
+    "api.crossref.org",
+    "api.openalex.org",
+    "gitlab.inria.fr",
+    # Code sources (D97).
+    "github.com",
+    "gitlab.com",
+    "codeberg.org",
+    "bitbucket.org",
+    "sourceforge.net",
+    "ftp.gnu.org",
+    "gmplib.org",
+    "flintlib.org",
+    "www.sagemath.org",
+)
+
+
+@pytest.mark.parametrize("host", PRE_ADMITTED)
+def test_research_and_source_hosts_are_named_so_they_need_no_admission(
+    policy: LoadedPolicy, host: str
+) -> None:
+    named = {
+        pattern.value
+        for rule in policy.policy.network.rules
+        if rule.name in ("research-hosts", "source-hosts")
+        for pattern in rule.match.hosts
+    }
+    assert host in named
+    for method in ("GET", "HEAD"):
+        decision = evaluate_request(
+            HttpRequest(method, f"https://{host}/x"), policy, ceiling=CEILING
+        )
+        assert decision.action is Action.ALLOW, decision.reason
+    # Writes to them still ask first, and pushes too.
+    write = evaluate_request(HttpRequest("POST", f"https://{host}/x"), policy, ceiling=CEILING)
+    assert write.action is Action.ESCALATE
+    push = evaluate_request(
+        HttpRequest(
+            "POST",
+            f"https://{host}/r.git/git-receive-pack",
+            content_type="application/x-git-receive-pack-request",
+            has_body=True,
+        ),
+        policy,
+        ceiling=CEILING,
+    )
+    assert (push.action, push.rule) == (Action.ESCALATE, "git-push")
+    assert push.escalation is not None
+    assert push.escalation.on_timeout is Action.DENY
 
 
 def test_example_resources_are_capped_by_the_ceiling(policy: LoadedPolicy) -> None:

@@ -2612,6 +2612,177 @@ def test_git_fetch_rules_may_proceed_as_alert_on_timeout() -> None:
 
 
 @pytest.mark.parametrize(
+    ("operation", "match", "method", "url"),
+    [
+        pytest.param("http", '{hosts: ["*"], methods: [GET, HEAD]}', "GET", "https://example.org/"),
+        pytest.param(
+            "http", "{hosts: [example.org], methods: [HEAD]}", "HEAD", "https://example.org/"
+        ),
+        pytest.param("git", '{hosts: ["*"], git_service: upload-pack}', "POST", FETCH),
+    ],
+)
+def test_reads_proceed_as_alert_on_timeout_by_default(
+    operation: str, match: str, method: str, url: str
+) -> None:
+    # D95: an escalate rule that holds only reads proceeds unanswered unless it says deny.
+    template = """
+        network:
+          rules:
+            - name: reads
+              operation: {operation}
+              match: {match}
+              action: escalate{extra}
+        """
+    lenient = load(template.format(operation=operation, match=match, extra=""))
+    strict = load(
+        template.format(
+            operation=operation,
+            match=match,
+            extra="\n              escalation: {on_timeout: deny}",
+        )
+    )
+    assert escalation_terms(decide_http(lenient, method, url)) == (
+        timedelta(minutes=30),
+        Action.ALERT,
+    )
+    assert escalation_terms(decide_http(strict, method, url)) == (
+        timedelta(minutes=30),
+        Action.DENY,
+    )
+    # A credentialed read still waits for an answer unless the rule allows it.
+    credentialed = decide_http(lenient, method, url, credentialed=True)
+    assert escalation_terms(credentialed) == (timedelta(minutes=30), Action.DENY)
+
+
+@pytest.mark.parametrize(
+    ("operation", "match", "method", "url"),
+    [
+        pytest.param("http", '{hosts: ["*"]}', "GET", "https://example.org/", id="any-method"),
+        pytest.param("http", '{hosts: ["*"], methods: [POST]}', "POST", "https://example.org/"),
+        pytest.param("git", '{hosts: ["*"], git_service: receive-pack}', "POST", PUSH, id="push"),
+    ],
+)
+def test_rules_that_can_hold_a_write_deny_on_timeout(
+    operation: str, match: str, method: str, url: str
+) -> None:
+    policy = load(
+        f"""
+        network:
+          rules:
+            - name: writes
+              operation: {operation}
+              match: {match}
+              action: escalate
+        """
+    )
+    assert escalation_terms(decide_http(policy, method, url)) == (
+        timedelta(minutes=30),
+        Action.DENY,
+    )
+
+
+def test_a_wildcard_read_of_a_non_public_host_never_proceeds_unanswered() -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - name: reads
+              operation: http
+              match: {hosts: ["*"], methods: [GET]}
+              action: escalate
+            - name: nas
+              operation: http
+              match: {hosts: [nas.local], methods: [GET]}
+              action: escalate
+        """
+    )
+    lan = decide_http(policy, "GET", "http://10.0.0.5/")
+    assert lan.action is Action.ESCALATE
+    assert escalation_terms(lan) == (timedelta(minutes=30), Action.DENY)
+    # A rule that names a non-public host exactly may let it proceed, as it may allow it.
+    named = decide_http(policy, "GET", "http://nas.local/")
+    assert escalation_terms(named) == (timedelta(minutes=30), Action.ALERT)
+
+
+def test_unmatched_reads_under_an_escalate_default_still_deny_on_timeout() -> None:
+    # The default is not a read rule: an allowlist policy relies on it (D95 lockdown).
+    policy = load(
+        """
+        network:
+          rules:
+            - {name: a, operation: http, match: {hosts: [a.org]}, action: allow}
+        """
+    )
+    decision = decide_http(policy, "GET", "https://example.org/")
+    assert (decision.action, decision.layer) == (Action.ESCALATE, "default")
+    assert escalation_terms(decision) == (timedelta(minutes=30), Action.DENY)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://example.org/", Action.ALLOW),
+        ("https://example.org:8443/", Action.ALLOW),
+        ("http://example.org:8080/", Action.ALLOW),
+        ("http://example.org:1/", Action.ALLOW),
+    ],
+)
+def test_any_port_rules_match_every_port(url: str, expected: Action) -> None:
+    policy = load(
+        """
+        defaults: {action: deny}
+        network:
+          rules:
+            - name: reads
+              operation: http
+              match: {hosts: ["*"], methods: [GET], ports: any}
+              action: allow
+            - name: fetch
+              operation: git
+              match: {hosts: ["*"], git_service: upload-pack, ports: any}
+              action: allow
+        """
+    )
+    assert decide_http(policy, "GET", url).action is expected
+    git = url.rstrip("/") + "/r.git/git-upload-pack"
+    assert decide_http(policy, "POST", git).rule == "fetch"
+    # Ports are a condition only: a more specific rule still wins on every port.
+    assert decide_http(policy, "POST", url).action is Action.DENY
+
+
+def test_any_port_does_not_make_a_rule_more_specific() -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - name: open
+              operation: http
+              match: {hosts: ["*"], methods: [GET], ports: any}
+              action: allow
+            - {name: held, operation: http, match: {hosts: ["*"], methods: [GET]}, action: escalate}
+        """
+    )
+    # On 443 both match and tie, so the stricter wins; on 8443 only the any-port rule does.
+    assert decide_http(policy, "GET", "https://example.org/").rule == "held"
+    assert decide_http(policy, "GET", "https://example.org:8443/").rule == "open"
+
+
+@pytest.mark.parametrize("ports", ["all", "'*'", "[any]", "'any '"])
+def test_ports_take_numbers_or_any(ports: str) -> None:
+    with pytest.raises(PolicyLoadError):
+        load(
+            f"""
+            network:
+              rules:
+                - name: r
+                  operation: http
+                  match: {{hosts: ["*"], ports: {ports}}}
+                  action: allow
+            """
+        )
+
+
+@pytest.mark.parametrize(
     ("operation", "match"),
     [
         pytest.param("http", '{hosts: ["*"]}', id="http-any-method"),

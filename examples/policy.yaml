@@ -2,7 +2,7 @@
 # load this file, so it stays valid; docs/POLICY.md defines the semantics.
 # A deliberately permissive default: reads and package installs flow freely;
 # side effects outside the project (writes, pushes, state-changing MCP tools)
-# ask first. Cost is not a side effect here: the MCP services limit and bill
+# ask first (D95). Cost is not a side effect here: the MCP services limit and bill
 # their own use.
 
 apiVersion: sandbox-science/v0alpha1
@@ -16,10 +16,11 @@ defaults:
   action: escalate          # allow | alert | escalate | deny
   log: true
 
-# Permission requests that nobody answers are denied. A read-only rule can set
-# its own `escalation: {on_timeout: allow}`, which then proceeds as an alert;
-# add `allow_credentialed: true` to extend that to requests to the hosts a
-# provider credential is bound to (`credentials.providers[].hosts`).
+# Permission requests that nobody answers are denied, except under a read-only
+# rule, where they proceed as an alert unless the rule sets `on_timeout: deny`
+# (D95). Requests to the hosts a provider credential is bound to
+# (`credentials.providers[].hosts`) are denied all the same, unless the rule sets
+# `allow_credentialed: true`.
 escalation:
   timeout: 30m              # per-request wait
   on_timeout: deny          # must be deny policy-wide
@@ -64,23 +65,16 @@ network:
   # sees operations of its own class. Within a class the most specific rule
   # wins, ties go to the most restrictive action. Wildcards never grant
   # non-public destinations (LAN, .local, ...); name those exactly.
+  # Reads are free and recorded, effects are gated (D95): GET and HEAD on any port
+  # and git fetch from any public host are allowed; writes and pushes ask first.
     - name: read-only-web
       operation: http
-      match: { hosts: ["*"], methods: [GET, HEAD] }
-      limits: { max_url_bytes: 4096 }
+      match: { hosts: ["*"], methods: [GET, HEAD], ports: any }
       action: allow
-    - name: external-writes
-      operation: http
-      match: { hosts: ["*"], methods: [POST, PUT, PATCH, DELETE] }
-      action: escalate
-    # Example of a narrower allow overriding the broad write rule:
-    # - name: example-post-search-api
-    #   operation: http
-    #   match: { hosts: [api.example.org], paths: [/v1/search], methods: [POST] }
-    #   action: allow
-    # Sources that builds download themselves (release tarballs, raw files). A
-    # sandbox can resolve only hosts the policy names (docs/POLICY.md, "Admission").
-    - name: source-downloads
+    # Pre-admitted: a sandbox resolves only the hosts the policy names, and admits
+    # others on demand after a refused first connection (docs/POLICY.md,
+    # "Admission"). Naming these spares them that delay. Code sources (D97):
+    - name: source-hosts
       operation: http
       match:
         hosts:
@@ -90,25 +84,81 @@ network:
           - release-assets.githubusercontent.com
           - raw.githubusercontent.com
           - gitlab.com
+          - gitlab.inria.fr
           - codeberg.org
+          - bitbucket.org
+          - sourceforge.net
+          - downloads.sourceforge.net
+          - ftp.gnu.org
+          - ftpmirror.gnu.org
+          - gmplib.org
+          - flintlib.org
+          - www.sagemath.org
+          - mirrors.mit.edu         # one of Sage's download mirrors
         methods: [GET, HEAD]
-      limits: { max_url_bytes: 4096 }
+        ports: any
       action: allow
+    # Research destinations, also pre-admitted:
+    - name: research-hosts
+      operation: http
+      match:
+        hosts:
+          - eprint.iacr.org
+          - www.iacr.org
+          - arxiv.org
+          - export.arxiv.org
+          - zenodo.org
+          - huggingface.co
+          - cdn-lfs.huggingface.co
+          - dblp.org
+          - csrc.nist.gov
+          - nvlpubs.nist.gov
+          - doi.org
+          - api.crossref.org
+          - api.openalex.org
+          - api.semanticscholar.org
+        methods: [GET, HEAD]
+        ports: any
+      action: allow
+    # Reviewed read-only POST endpoints, which override the broad write rule below.
+    # Crossref, OpenAlex and DBLP search with GET only. No GraphQL endpoint is listed:
+    # queries and mutations share one path, which a rule cannot tell apart.
+    # Semantic Scholar's batch lookups, which take a list of IDs in the body:
+    # https://api.semanticscholar.org/api-docs/graph (POST /paper/batch, /author/batch)
+    # and recommendations from positive and negative example papers:
+    # https://api.semanticscholar.org/api-docs/recommendations (POST /papers)
+    - name: semantic-scholar-reads
+      operation: http
+      match:
+        hosts: [api.semanticscholar.org]
+        paths: [/graph/v1/paper/batch, /graph/v1/author/batch, /recommendations/v1/papers]
+        methods: [POST]
+      action: allow
+    # arXiv's query API accepts the same query as GET or POST:
+    # https://info.arxiv.org/help/api/user-manual.html ("Calling the API")
+    - name: arxiv-query
+      operation: http
+      match: { hosts: [export.arxiv.org], paths: [/api/query], methods: [POST] }
+      action: allow
+    - name: external-writes
+      operation: http
+      match: { hosts: ["*"], methods: [POST, PUT, PATCH, DELETE] }
+      action: escalate
     - name: git-fetch
       operation: git
-      match: { hosts: [github.com, gitlab.com, codeberg.org], git_service: upload-pack }
-      limits: { max_url_bytes: 4096 }
+      match: { hosts: ["*"], git_service: upload-pack, ports: any }
       action: allow
     - name: git-push
       operation: git
       match: { hosts: ["*"], git_service: receive-pack }
       action: escalate
+    # An escalate rule that holds only reads proceeds as an alert when nobody answers
+    # (D95); one that can hold a write, as both above, is denied. A read that must
+    # wait for an answer sets `escalation: {on_timeout: deny}`.
 
-# Threshold alerts. They add findings and never decide access.
-monitors:
-  - name: large-egress
-    when: { egress_bytes_per_hour_over: 500Mi }
-    action: alert
+# Threshold alerts (`monitors`, such as egress volume) and URL limits
+# (`limits.max_url_bytes`) bound exfiltration, which D95 leaves out of scope; both
+# remain available (docs/POLICY.md).
 
 mcp:
   proxy:                    # all MCP traffic goes through the MCP proxy (D67)

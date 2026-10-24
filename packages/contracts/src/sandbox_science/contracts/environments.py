@@ -66,7 +66,8 @@ class EnvironmentInfo(Contract):
     """What the policy compiler reported, such as rules OpenShell cannot express exactly."""
     admitted_hosts: tuple[str, ...] = ()
     """Hosts the worker admitted on demand (D69): names the policy reaches without naming
-    them, which the sandbox can resolve only once admitted."""
+    them, which the sandbox can resolve only once admitted, and ``host:port`` for another
+    port of a host that a rule for any port reaches (D95)."""
     created_at: datetime
     updated_at: datetime
 

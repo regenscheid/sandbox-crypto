@@ -48,8 +48,10 @@ from sandbox_science.policy.openshell import (
     SandboxTarget,
     ServiceEndpoint,
     Severity,
+    admission_entry,
     admission_ranges,
     admission_refusal,
+    admitted_ports,
     compile_mcp_proxy,
     compile_orchestrator,
     compile_sandbox,
@@ -223,17 +225,16 @@ def test_example_sandbox_policy() -> None:
         "sandbox-science-credentials",
     ]
     named = entries["sandbox-science-egress"].endpoints
-    # The source-download and git-fetch rules name their hosts, so the sandbox can resolve
-    # them; the '*' rules reach other hosts once the worker admits them on demand.
-    assert [endpoint.host for endpoint in named] == [
-        "codeberg.org",
-        "codeload.github.com",
-        "github.com",
-        "gitlab.com",
-        "objects.githubusercontent.com",
-        "raw.githubusercontent.com",
-        "release-assets.githubusercontent.com",
-    ]
+    # The source-host and research-host rules name their hosts, so the sandbox can
+    # resolve them; the '*' rules reach other hosts once the worker admits them on demand.
+    hosts = [endpoint.host for endpoint in named]
+    assert hosts == sorted(
+        pattern.value
+        for rule in EXAMPLE.policy.network.rules
+        if rule.name in ("source-hosts", "research-hosts")
+        for pattern in rule.match.hosts
+    )
+    assert {"github.com", "gitlab.inria.fr", "eprint.iacr.org", "api.openalex.org"} <= set(hosts)
     for endpoint in named:
         assert (endpoint.protocol, endpoint.enforcement, endpoint.access) == (
             "rest",
@@ -411,6 +412,116 @@ def test_hosts_admitted_on_demand_get_endpoints_like_named_hosts() -> None:
     assert any("2 hosts admitted on demand" in finding.message for finding in compiled.findings)
 
 
+READ_ANY_PORT = (
+    "network:\n  rules:\n"
+    "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET], ports: any}, "
+    "action: allow}\n"
+    "    - {name: api, operation: http, match: {hosts: [api.example.org], ports: any}, "
+    "action: allow}\n"
+)
+
+
+def test_other_ports_are_admitted_on_demand_under_any_port_rules() -> None:
+    # D95: GET on any port is a read. OpenShell endpoints list their ports, so the
+    # compiled policy admits the defaults and the worker adds other ports one by one.
+    policy = network_policy(READ_ANY_PORT, default="deny")
+    assert admitted_ports(policy) == (80, 443)
+    assert admission_entry(policy, "Papers.Example.net", 443) == "papers.example.net"
+    assert admission_entry(policy, "papers.example.net", 8080) == "papers.example.net:8080"
+    assert admission_entry(policy, "2606:4700::1", 8080) == "[2606:4700::1]:8080"
+    for host, port in [("papers.example.net", 8080), ("api.example.org", 8443)]:
+        assert admission_refusal(policy, TARGETS.sandbox, host, port, ceiling=OPEN) is None
+    for port in (6443, 10250):
+        refusal = admission_refusal(policy, TARGETS.sandbox, "x.example.net", port, ceiling=OPEN)
+        assert f"port {port} is not admitted" in (refusal or "")
+    compiled = compile_sandbox(
+        policy,
+        TARGETS.sandbox,
+        ceiling=OPEN,
+        admitted=[
+            "papers.example.net",
+            "papers.example.net:8080",
+            "api.example.org:8443",  # a named host, on another port
+            "data.example.net:9000",  # another port only
+            "[2606:4700::1]:8080",
+            "x.example.net:6443",  # a control-plane port
+            "printer.local:8080",  # not public
+            "pypi.org:8080",  # a registry
+            "bad:port:entry",
+        ],
+    )
+    assert compiled.admitted == (
+        "[2606:4700::1]:8080",
+        "api.example.org:8443",
+        "data.example.net:9000",
+        "papers.example.net",
+        "papers.example.net:8080",
+    )
+    named = {
+        e.host: e for e in compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    }
+    assert named["api.example.org"].ports == (80, 443, 8443)
+    admitted = {
+        e.host: e for e in compiled.policy.network_policies["sandbox-science-admitted"].endpoints
+    }
+    assert admitted["papers.example.net"].ports == (80, 443, 8080)
+    assert admitted["data.example.net"].ports == (9000,)
+    assert admitted["2606:4700::1"].ports == (8080,)
+    assert all(
+        endpoint.allowed_ips == admission_ranges(policy, OPEN) for endpoint in admitted.values()
+    )
+    assert compiled.admits("papers.example.net", 8080)
+    assert compiled.admits("data.example.net", 9000)
+    assert not compiled.admits("data.example.net", 443)
+    assert not compiled.admits("papers.example.net", 8081)
+    refused = [f.subject for f in compiled.findings if "not admitted on demand" in f.message]
+    assert sorted(refused) == [
+        "hosts.bad:port:entry",
+        "hosts.printer.local:8080",
+        "hosts.pypi.org:8080",
+        "hosts.x.example.net:6443",
+    ]
+
+
+def test_other_ports_are_refused_without_an_any_port_rule() -> None:
+    policy = network_policy(READ_ANYWHERE, default="deny")
+    refusal = admission_refusal(policy, TARGETS.sandbox, "x.example.net", 8080, ceiling=OPEN)
+    assert "port 8080 is not admitted" in (refusal or "")
+    compiled = compile_sandbox(
+        policy, TARGETS.sandbox, ceiling=OPEN, admitted=["x.example.net:8080"]
+    )
+    assert compiled.admitted == ()
+    assert "sandbox-science-admitted" not in compiled.policy.network_policies
+
+
+def test_a_closed_any_port_policy_admits_other_ports_of_named_hosts_only() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: api, operation: http, match: {hosts: [api.example.org], ports: any}, "
+        "action: allow}\n",
+        default="deny",
+    )
+    assert admission_refusal(policy, TARGETS.sandbox, "api.example.org", 8443, ceiling=OPEN) is None
+    unnamed = admission_refusal(policy, TARGETS.sandbox, "x.example.org", 8443, ceiling=OPEN)
+    assert "allows no request" in (unnamed or "")
+    assert "reaches only the hosts it names" in (
+        admission_refusal(policy, TARGETS.sandbox, "x.example.org", 443, ceiling=OPEN) or ""
+    )
+    compiled = compile_sandbox(
+        policy,
+        TARGETS.sandbox,
+        ceiling=OPEN,
+        admitted=["api.example.org:8443", "x.example.org:8443"],
+    )
+    assert compiled.admitted == ("api.example.org:8443",)
+    (endpoint,) = compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    assert (endpoint.host, endpoint.ports, endpoint.allowed_ips) == (
+        "api.example.org",
+        (80, 443, 8443),
+        None,
+    )
+
+
 def test_hosts_the_policy_cannot_reach_are_not_admitted_on_demand() -> None:
     policy = network_policy(
         READ_ANYWHERE
@@ -465,16 +576,19 @@ def test_the_example_policy_admits_unnamed_public_hosts_on_demand() -> None:
     def refusal(host: str, port: int = 443) -> str | None:
         return admission_refusal(EXAMPLE, TARGETS.sandbox, host, port, ceiling=OPEN)
 
-    assert refusal("eprint.iacr.org") is None
-    assert refusal("eprint.iacr.org", 80) is None
-    assert refusal("EPRINT.IACR.ORG.") is None
-    assert "port 8443 is not admitted" in (refusal("eprint.iacr.org", 8443) or "")
+    assert refusal("example.org") is None
+    assert refusal("example.org", 80) is None
+    assert refusal("EXAMPLE.ORG.") is None
+    # D95: GET on any port is a read, so other ports are admitted one by one.
+    assert refusal("example.org", 8443) is None
+    assert "port 6443 is not admitted" in (refusal("example.org", 6443) or "")
     assert "package registry" in (refusal("pypi.org") or "")
     assert refusal("github.com") is None
     compiled = compile_research(EXAMPLE)
     assert compiled.names("github.com")
     assert compiled.names("GitHub.com.")
-    assert not compiled.names("eprint.iacr.org")
+    assert compiled.names("eprint.iacr.org")  # pre-admitted
+    assert not compiled.names("example.org")
     # Addresses are admitted on demand too, when public.
     assert refusal("93.184.215.14") is None
     assert "not public" in (refusal("203.0.113.7") or "")
@@ -755,7 +869,7 @@ def test_an_opam_action_the_network_rules_undo_is_reported(action: str) -> None:
     # deliver it, and the example's source-downloads rule allows GitHub.
     (message,) = opam_findings(compile_research(example_with_opam(action)))
     assert message.startswith(f"packages.opam is {action}, which does not hold")
-    assert "rule source-downloads allows that (GET https://github.com/" in message
+    assert "rule source-hosts allows that (GET https://github.com/" in message
 
 
 def test_an_allowed_opam_is_not_reported() -> None:

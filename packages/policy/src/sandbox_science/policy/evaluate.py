@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, NamedTuple, assert_never
 
 from .ceiling import PoolCeiling
@@ -283,10 +283,11 @@ def _rule_terms(
 
     The shortest timeout applies. The operation proceeds as an alert on timeout
     only if every tied rule is read-only and permits it, and no tied rule's limit
-    is exceeded. A request that may carry a credential proceeds only if every
-    tied rule also sets ``allow_credentialed``. The model already restricts
-    ``on_timeout: allow`` to read-only rules; this rechecks it so a hand-built
-    model cannot widen it.
+    is exceeded. A read-only rule permits it unless it sets ``on_timeout: deny``
+    (D95: reads are free and recorded). A request that may carry a credential
+    proceeds only if every tied rule also sets ``allow_credentialed``. The model
+    already restricts ``on_timeout: allow`` to read-only rules; this rechecks it so
+    a hand-built model cannot widen it.
     """
     default = policy.policy.escalation.timeout
     timeout = min(
@@ -295,12 +296,7 @@ def _rule_terms(
         else default
         for rule in rules
     )
-    permitted = all(
-        rule.read_only
-        and rule.escalation is not None
-        and rule.escalation.on_timeout is OnTimeout.ALLOW
-        for rule in rules
-    )
+    permitted = all(rule.read_only and _read_proceeds_on_timeout(rule) for rule in rules)
     credentials_permitted = not credentialed or all(
         rule.escalation is not None and rule.escalation.allow_credentialed for rule in rules
     )
@@ -308,6 +304,11 @@ def _rule_terms(
         Action.ALERT if permitted and credentials_permitted and not limit_exceeded else Action.DENY
     )
     return EscalationTerms(timeout=timeout, on_timeout=on_timeout)
+
+
+def _read_proceeds_on_timeout(rule: HttpRule | GitRule) -> bool:
+    """Whether a read-only rule lets an unanswered request proceed: unless it says deny."""
+    return rule.escalation is None or rule.escalation.on_timeout is not OnTimeout.DENY
 
 
 def _match_rule(
@@ -323,7 +324,9 @@ def _match_rule(
                 host_key = key
     if host_key is None:
         return None
-    if match.ports:
+    if match.ports == "any":
+        pass  # every port (D95): ports are a condition only, never specificity
+    elif match.ports:
         if operation.port not in match.ports:
             return None
     elif operation.port != DEFAULT_PORTS[operation.scheme]:
@@ -594,6 +597,11 @@ def _evaluate_network(
             policy,
             rule=decision.rule,
         )
+    terms = decision.escalation
+    if terms is not None and terms.on_timeout is Action.ALERT and not exact_host and not public:
+        # Proceeding unanswered is an allow, which a wildcard never grants a non-public
+        # destination.
+        return replace(decision, escalation=replace(terms, on_timeout=Action.DENY))
     return decision
 
 

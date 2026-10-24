@@ -136,7 +136,6 @@ def test_an_unmatched_request_follows_the_default(
     [
         pytest.param({"host": "metadata.google.internal"}, "destination_forbidden", id="floor"),
         pytest.param({"host": "10.0.0.5", "scheme": "http", "port": 80}, "policy_denied", id="lan"),
-        pytest.param({"query": "a" * 5000}, "policy_denied", id="url-limit"),
     ],
 )
 def test_denials_carry_the_layer_reason_code(
@@ -237,11 +236,16 @@ def test_ipv6_literals_are_bracketed_for_classification(
 
 
 def test_non_default_ports_are_kept(middleware: PolicyMiddleware, make_facts: FactsFactory) -> None:
-    # read-only-web lists no ports, so it covers 443 only and port 8443 falls to the default.
-    verdict = middleware.evaluate_http(make_facts(port=8443))
-    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
-    assert verdict.decision is not None
-    assert verdict.decision.layer == "default"
+    # read-only-web is for any port (D95); external-writes lists no ports, so it covers
+    # 443 only and a write to port 8443 falls to the default.
+    read = middleware.evaluate_http(make_facts(port=8443))
+    assert read.allowed
+    assert read.decision is not None
+    assert read.decision.rule == "read-only-web"
+    write = middleware.evaluate_http(make_facts(method="DELETE", port=8443))
+    assert write.reason_code == reasons.APPROVAL_REQUIRED
+    assert write.decision is not None
+    assert write.decision.layer == "default"
 
 
 PORTLESS_DENY = """\

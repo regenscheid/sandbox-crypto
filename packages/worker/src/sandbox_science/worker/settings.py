@@ -109,10 +109,14 @@ class EnvironmentSettings(_Model):
     could not resolve, and the policy could allow a request to it, name it in a revision."""
     admission_interval: Annotated[float, Field(ge=0.5, le=300)] = 3.0
     """Seconds between checks of each ready environment's drafts."""
-    max_admitted_hosts: Annotated[int, Field(ge=0, le=100)] = 64
-    """Hosts admitted on demand per environment. Each adds an endpoint with the public
-    address ranges (about 4 KiB of YAML), and OpenShell limits a sandbox's policy to
-    256 KiB; the worker also stops admitting before the compiled policy grows too large."""
+    max_admitted_hosts: Annotated[int, Field(ge=0, le=1024)] = 128
+    """Entries admitted on demand per environment: hosts, and other ports of hosts. Each
+    new host adds an endpoint with the public address ranges (about 4 KiB of YAML), and
+    OpenShell limits a sandbox's policy to 256 KiB, so the worker also stops admitting
+    before the compiled policy grows too large: at about 80 hosts beside a policy that
+    names none, and about 45 beside the example's pre-admitted research hosts. The
+    default is above both, so that size decides; D95 leaves the names a sandbox looks up
+    out of scope, so the count no longer bounds a threat."""
     admin_hosts: tuple[str, ...] = ()
     """The deployment's administration endpoints, as the policy middleware's settings list
     them: the compiler and admission apply the same hard floor."""

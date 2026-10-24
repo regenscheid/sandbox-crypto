@@ -348,8 +348,8 @@ class Compiled:
 
     ``policy_digest`` identifies the project policy revision it came from. For a
     research sandbox, ``hosts`` and ``suffixes`` are the host names its endpoints
-    name, exactly and as ``**.suffix``, and ``admitted`` the hosts admitted on demand
-    among them.
+    name, exactly and as ``**.suffix``, and ``admitted`` the entries admitted on demand
+    among them: hosts, and hosts with another port (``admission_entry``).
     """
 
     policy: OpenShellPolicy
@@ -366,6 +366,22 @@ class Compiled:
         except ValueError:
             return False
         return name in self.hosts or any(name.endswith(f".{suffix}") for suffix in self.suffixes)
+
+    def admits(self, host: str, port: int) -> bool:
+        """Whether an endpoint admits connections to ``host`` on ``port``."""
+        try:
+            name = normalize_host(host)
+        except ValueError:
+            return False
+        for entry in self.policy.network_policies.values():
+            for endpoint in entry.endpoints:
+                if endpoint.host is None or port not in endpoint.ports:
+                    continue
+                if endpoint.host == name or (
+                    endpoint.host.startswith("**.") and name.endswith(endpoint.host[2:])
+                ):
+                    return True
+        return False
 
 
 # Targets: where the platform services run, and what may use them.
@@ -688,8 +704,65 @@ def _reachable(project: ProjectPolicy) -> list[HttpRule | GitRule]:
 
 
 def _ports(reachable: Sequence[HttpRule | GitRule]) -> set[int]:
-    """The ports requests can use: the schemes' defaults and every port a rule names."""
-    return {80, 443} | {port for rule in reachable for port in rule.match.ports}
+    """The ports every endpoint admits: the schemes' defaults and every port a rule names.
+
+    A rule for ``ports: any`` names none: OpenShell endpoints list their ports, so a
+    host's other ports are admitted on demand, one at a time (``admission_entry``).
+    """
+    return {80, 443} | {
+        port for rule in reachable if rule.match.ports != "any" for port in rule.match.ports
+    }
+
+
+def _any_port(reachable: Sequence[HttpRule | GitRule]) -> bool:
+    """Whether some rule that could allow a request matches every port (``ports: any``)."""
+    return any(rule.match.ports == "any" for rule in reachable)
+
+
+def admitted_ports(policy: LoadedPolicy) -> tuple[int, ...]:
+    """The ports every compiled egress endpoint admits; other ports are admitted on demand."""
+    return tuple(sorted(_ports(_reachable(policy.policy)) - CONTROL_PLANE_PORTS))
+
+
+def admission_entry(policy: LoadedPolicy, host: str, port: int) -> str:
+    """How ``compile_sandbox``'s ``admitted`` names a host admitted on demand on ``port``.
+
+    A port every endpoint admits needs only the host: ``example.org``. Another port,
+    which only a ``ports: any`` rule reaches, is named with it: ``example.org:8080``,
+    ``[2001:db8::1]:8080``.
+    """
+    name = normalize_host(host)
+    if port in admitted_ports(policy):
+        return name
+    return f"[{name}]:{port}" if ":" in name else f"{name}:{port}"
+
+
+def _parse_entry(entry: str) -> tuple[str, int | None]:
+    """An ``admitted`` entry's normalized host and port (None: the admitted ports).
+
+    Raises ValueError for one that is not a host, or a host and port.
+    """
+    port: int | None = None
+    host = entry
+    if entry.startswith("["):
+        address, separator, rest = entry[1:].partition("]")
+        if not separator:
+            raise ValueError("an unclosed '['")
+        host = address
+        if rest:
+            if not rest.startswith(":"):
+                raise ValueError("text after ']' that is not a port")
+            port = _entry_port(rest[1:])
+    elif entry.count(":") == 1:
+        host, _, number = entry.partition(":")
+        port = _entry_port(number)
+    return normalize_host(host), port
+
+
+def _entry_port(text: str) -> int:
+    if not text.isascii() or not text.isdigit() or not 0 < int(text) < 65536:
+        raise ValueError(f"{text!r} is not a port")
+    return int(text)
 
 
 def _open_internet(project: ProjectPolicy, reachable: Sequence[HttpRule | GitRule]) -> bool:
@@ -752,10 +825,11 @@ def admission_refusal(
         return f"{host!r} is not a host name: {exc}"
     project = policy.policy
     reachable = _reachable(project)
-    if not _open_internet(project, reachable):
-        return "the policy reaches only the hosts it names, which are admitted already"
     ports = sorted(_ports(reachable) - CONTROL_PLANE_PORTS)
-    if port not in ports:
+    other_port = port not in ports
+    if not _open_internet(project, reachable) and not (other_port and _any_port(reachable)):
+        return "the policy reaches only the hosts it names, which are admitted already"
+    if other_port and (port in CONTROL_PLANE_PORTS or not _any_port(reachable)):
         return f"port {port} is not admitted; the policy admits ports {', '.join(map(str, ports))}"
     service_hosts = {target.package_cache.host, target.mcp_proxy.host}
     return _admission_refusal(policy, name, (port,), service_hosts, ceiling=ceiling, floor=floor)
@@ -822,18 +896,23 @@ def compile_sandbox(
         findings,
     )
 
-    def egress_ports(host: str) -> tuple[int, ...]:
+    # Other ports of hosts admitted on demand (``ports: any`` rules), by host.
+    extra_ports: dict[str, set[int]] = {}
+
+    def egress_ports(host: str, *, default: bool = True) -> tuple[int, ...]:
         # A bound host's other endpoints leave the credential port out, so that
         # none competes with its credential endpoint at equal path specificity.
         # Port 80 is always admitted, so some port remains.
+        ports = set(admitted_ports) if default else set[int]()
+        ports |= extra_ports.get(host, set())
         if host in bound:
-            return tuple(port for port in admitted_ports if port != CREDENTIAL_PORT)
-        return admitted_ports
+            ports.discard(CREDENTIAL_PORT)
+        return tuple(sorted(ports))
 
-    def egress(host: str) -> Endpoint:
+    def egress(host: str, *, default: bool = True) -> Endpoint:
         return Endpoint(
             host=host,
-            ports=egress_ports(host),
+            ports=egress_ports(host, default=default),
             protocol="rest",
             enforcement="enforce",
             access="full",
@@ -854,9 +933,78 @@ def compile_sandbox(
             findings.append(Finding(Severity.WARNING, f"hosts.{host}", f"not admitted: {reason}"))
             continue
         named_hosts.append(host)
-        endpoints.append(egress(host))
     wildcards = _wildcard_hosts(reachable, findings) if open_internet else []
     suffixes = tuple(host.removeprefix("**.") for host in wildcards)
+
+    # Entries the worker admitted on demand: hosts the policy reaches without naming
+    # them, and other ports of hosts that ``ports: any`` rules reach.
+    any_port = _any_port(reachable)
+    on_demand: list[str] = []
+    entries: list[str] = []
+    for raw in sorted(set(admitted)):
+        try:
+            host, port = _parse_entry(raw)
+        except ValueError as exc:
+            findings.append(
+                Finding(Severity.WARNING, f"hosts.{raw}", f"not admitted on demand: {exc}")
+            )
+            continue
+        if port is not None and port not in admitted_ports:
+            if port in CONTROL_PLANE_PORTS or not any_port:
+                reason: str | None = f"port {port} is not admitted"
+            else:
+                reason = _admission_refusal(
+                    policy, host, (port,), service_hosts, ceiling=ceiling, floor=floor
+                )
+            if reason is not None:
+                findings.append(
+                    Finding(Severity.WARNING, f"hosts.{raw}", f"not admitted on demand: {reason}")
+                )
+            elif port not in extra_ports.setdefault(host, set()):
+                extra_ports[host].add(port)
+                entries.append(admission_entry(policy, host, port))
+            continue
+        if not open_internet:
+            reason = "the policy reaches only the hosts it names"
+        else:
+            reason = _admission_refusal(
+                policy, host, admitted_ports, service_hosts, ceiling=ceiling, floor=floor
+            )
+        if reason is not None:
+            findings.append(
+                Finding(Severity.WARNING, f"hosts.{host}", f"not admitted on demand: {reason}")
+            )
+        elif (
+            host not in on_demand
+            and host not in named_hosts
+            and not any(host.endswith(f".{suffix}") for suffix in suffixes)
+        ):
+            on_demand.append(host)
+            entries.append(host)
+    if on_demand:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "network",
+                f"{len(on_demand)} hosts admitted on demand, limited to public address ranges: "
+                + ", ".join(on_demand),
+            )
+        )
+    other_ports = sorted(entry for entry in entries if entry not in on_demand)
+    if other_ports:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "network",
+                f"{len(other_ports)} other ports admitted on demand: " + ", ".join(other_ports),
+            )
+        )
+    # Hosts admitted on other ports only, which no endpoint names otherwise.
+    port_only = sorted(
+        host for host in extra_ports if host not in named_hosts and host not in on_demand
+    )
+
+    endpoints += [egress(host) for host in named_hosts]
     if open_internet:
         # Overlapping OpenShell endpoints must agree on allowed_ips: a wildcard's
         # endpoint and those of the public hosts under it carry the same ranges.
@@ -884,40 +1032,15 @@ def compile_sandbox(
                     "stricter)",
                 )
             )
-
-    # Hosts the worker admitted on demand: hosts the policy reaches without naming them.
-    on_demand: list[str] = []
-    for raw in sorted(set(admitted)):
-        try:
-            host = normalize_host(raw)
-        except ValueError as exc:
-            findings.append(
-                Finding(Severity.WARNING, f"hosts.{raw}", f"not admitted on demand: {exc}")
-            )
-            continue
-        if not open_internet:
-            reason: str | None = "the policy reaches only the hosts it names"
-        else:
-            reason = _admission_refusal(
-                policy, host, admitted_ports, service_hosts, ceiling=ceiling, floor=floor
-            )
-        if reason is not None:
-            findings.append(
-                Finding(Severity.WARNING, f"hosts.{host}", f"not admitted on demand: {reason}")
-            )
-        elif (
-            host not in on_demand
-            and host not in named_hosts
-            and not any(host.endswith(f".{suffix}") for suffix in suffixes)
-        ):
-            on_demand.append(host)
-    if on_demand:
+    if any_port:
         findings.append(
             Finding(
-                Severity.INFO,
+                Severity.WARNING,
                 "network",
-                f"{len(on_demand)} hosts admitted on demand, limited to public address ranges: "
-                + ", ".join(on_demand),
+                "rules for 'ports: any' reach ports other than "
+                + ", ".join(map(str, admitted_ports))
+                + " only once the worker has admitted the host on that port on demand (D69, "
+                "stricter)",
             )
         )
 
@@ -958,10 +1081,13 @@ def compile_sandbox(
         network_policies["sandbox-science-egress"] = NetworkPolicy(
             name="Sandbox Science egress", endpoints=tuple(endpoints), binaries=binaries
         )
-    if on_demand:
+    if on_demand or port_only:
         network_policies["sandbox-science-admitted"] = NetworkPolicy(
             name="Sandbox Science hosts admitted on demand",
-            endpoints=tuple(egress(host) for host in on_demand),
+            endpoints=(
+                *(egress(host) for host in on_demand),
+                *(egress(host, default=False) for host in port_only),
+            ),
             binaries=binaries,
         )
     # The package cache is inspected: the middleware sees every package request
@@ -1099,7 +1225,7 @@ def compile_sandbox(
             if endpoint.host is not None and not endpoint.host.startswith("**.")
         ),
         suffixes=suffixes,
-        admitted=tuple(on_demand),
+        admitted=tuple(entries),
     )
 
 

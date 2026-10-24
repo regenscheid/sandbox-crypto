@@ -52,6 +52,11 @@ HttpMethod = Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS",
 # Strict types: "4_43" or "yes" in quotes must not quietly become 443 or true.
 Port = Annotated[StrictInt, Field(ge=1, le=65535)]
 
+AnyPort = Literal["any"]
+"""``ports: any``: the rule matches every port, not only the scheme's default (D95)."""
+
+Ports = tuple[Port, ...] | AnyPort
+
 
 def _parse_host_pattern(value: object) -> HostPattern:
     if isinstance(value, HostPattern):
@@ -147,7 +152,11 @@ class Escalation(StrictModel):
 
 
 class RuleEscalation(StrictModel):
-    """Per-rule escalation overrides."""
+    """Per-rule escalation overrides.
+
+    ``on_timeout`` unset takes the rule's default: ``allow`` for a read-only rule, so that
+    an unanswered read proceeds as an alert (D95), ``deny`` otherwise.
+    """
 
     timeout: Duration | None = None
     on_timeout: OnTimeout | None = None
@@ -230,7 +239,7 @@ class HttpMatch(StrictModel):
     hosts: tuple[HostPatternField, ...] = Field(min_length=1)
     paths: tuple[PathPrefix, ...] = ()
     methods: tuple[HttpMethod, ...] = ()
-    ports: tuple[Port, ...] = ()
+    ports: Ports = ()
 
 
 class GitMatch(StrictModel):
@@ -239,7 +248,7 @@ class GitMatch(StrictModel):
     hosts: tuple[HostPatternField, ...] = Field(min_length=1)
     paths: tuple[PathPrefix, ...] = ()
     git_service: Literal["upload-pack", "receive-pack"] | None = None
-    ports: tuple[Port, ...] = ()
+    ports: Ports = ()
 
 
 class RuleLimits(StrictModel):
