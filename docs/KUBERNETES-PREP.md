@@ -4,6 +4,23 @@ For the operator of the first Kubernetes deployment ([D92, amended 2026-10-23](D
 
 The cluster this describes: Talos 1.13 with the `kata-containers` extension (3.32.0) on the amd64 nodes, Kubernetes 1.36, Flannel with kube-network-policies, Longhorn v1.12, MetalLB, Traefik, cert-manager, Authentik, an in-cluster model gateway, and Garage S3 outside the cluster. Arm64 Raspberry Pi nodes host trusted pods only.
 
+## Verify before use
+
+This checklist was written from the repository, OpenShell 0.1.5's documentation and
+source, and general Kubernetes practice, without access to the cluster. Confirm these
+against the live tools before relying on them; each is marked where it appears:
+
+- the OpenShell Helm chart's value keys, the `--version` form and the Agent Sandbox
+  release to pin;
+- the chart's CA issuer name and the fields of a client identity's `metadata.json`;
+- Longhorn 1.12's backup-target and recurring-job resource shapes;
+- the `garage` CLI commands;
+- the bundle's container names (`control`, `workspace`, `worker`) and the exact proof
+  commands in step 10, which were not run.
+
+The bundle renders no `imagePullSecrets`; step 1 attaches the pull secret to the
+namespace's default ServiceAccount instead.
+
 ## Placeholders
 
 | Placeholder | Meaning |
