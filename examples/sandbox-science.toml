@@ -107,10 +107,11 @@ OPENSHELL_TELEMETRY_ENABLED = "false"
 policy_store = "~/.local/state/openshell-lab/middleware/state"
 targets = "~/.local/state/openshell-lab/targets.yaml"
 ceiling = "~/.local/state/openshell-lab/middleware/pool-ceiling.yaml"
-# Suspend a project's sandbox after an hour unused, while Sandbox Science runs; its next use
-# starts it again. sandbox-science down, or Ctrl-C to up, suspends them all the same way
-# (down --keep-sandboxes leaves them running).
-suspend_after = 3600.0
+# Idle suspension is off by default: suspending a sandbox loses its kernels' memory, which a
+# long investigation may still need. To suspend a project's sandbox after an hour unused
+# (its next use starts it again), uncomment this. sandbox-science down, or Ctrl-C to up,
+# suspends them all the same way whatever this says (down --keep-sandboxes leaves them running).
+# suspend_after = 3600.0
 
 [openshell.environments.profiles]
 # The tags images/build.sh printed.

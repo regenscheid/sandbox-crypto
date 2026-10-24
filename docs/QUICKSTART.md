@@ -218,7 +218,7 @@ Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from an
 - **`down` with the services stopped.** `down` starts the worker alone to suspend the sandboxes, and stops it again. It does this when OpenShell says one still runs, or, after a launcher that was killed, always, since the last list may be stale.
   - While it runs, `status` says so and exits 4, and another `down` waits for it.
   - A stop signal makes it stop waiting, stop the worker and say what may still run.
-- With `suspend_after` in `[openshell.environments]`, as in the example, the worker also suspends a sandbox nobody has used for that long, while Sandbox Science runs.
+- Idle suspension is off by default (D100), since suspending a sandbox loses its kernels' memory; the example has `suspend_after` in `[openshell.environments]` commented out. Set it and the worker also suspends a sandbox nobody has used for that long, while Sandbox Science runs.
 - To delete the sandboxes, use the OpenShell CLI (`openshell sandbox list`, `openshell sandbox delete`).
 
 ## Status

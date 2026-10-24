@@ -133,7 +133,8 @@ def test_the_example_config_is_a_launcher_config(home: Path) -> None:
     assert config.workspace.static == example.parent / "../web/workspace/dist"
     assert config.workspace.preview() == "127.0.0.1:8201"
     assert config.workspace.preview_name is None  # the workspace's default, localhost
-    assert config.openshell.model_dump()["environments"]["suspend_after"] == 3600.0
+    # Idle suspension is off by default (D100), and the example leaves it off.
+    assert config.openshell.model_dump()["environments"].get("suspend_after") is None
     assert config.run_service.math_checks == example.parent / "../web/workspace/dist-math"
     assert config.model.watcher == config.model.name == config.model.reviewer
     assert config.model.delegated == config.model.name

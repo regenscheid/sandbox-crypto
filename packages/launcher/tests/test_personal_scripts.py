@@ -111,6 +111,25 @@ with open(f"{state}/log.jsonl", "a") as log:
 }
 
 
+# scripts/backup_stores.py, which personal_backup.sh runs: the store checks and the snapshot
+# are not made, only logged, and answer as FAKE_VERSIONS_STATUS and FAKE_BACKUP_STATUS say.
+BACKUP_STORES = r"""
+import json, os, sys
+state = os.environ["FAKE_STATE"]
+with open(f"{state}/log.jsonl", "a") as log:
+    log.write(json.dumps({"call": "backup_stores", "argv": sys.argv[1:]}) + "\n")
+command = sys.argv[1]
+if command == "versions":
+    print("control/control.sqlite3: version 1, this checkout expects 2 (would migrate)")
+    sys.exit(int(os.environ.get("FAKE_VERSIONS_STATUS", "0")))
+if command == "backup":
+    if os.environ.get("FAKE_BACKUP_STATUS", "0") != "0":
+        print("backup_stores: no space left", file=sys.stderr)
+        sys.exit(int(os.environ["FAKE_BACKUP_STATUS"]))
+    print("/backups/20261023T000000Z-before-migration")
+"""
+
+
 def program(directory: Path, name: str, body: str) -> None:
     path = directory / name
     path.write_text(f"#!{sys.executable}\n{body}\n")
@@ -138,6 +157,8 @@ class Instance:
             program(self.os_bin, name, body)
         for name, body in COMMANDS.items():
             program(self.repo / ".venv/bin", name, body)
+        (self.repo / "scripts").mkdir()
+        program(self.repo / "scripts", "backup_stores.py", BACKUP_STORES)
         # What the script makes once and keeps, already there: nothing needs openssl.
         for path in (
             self.openshell / "state/openshell/tls/ca.crt",
@@ -176,6 +197,10 @@ class Instance:
         path = self.state / "log.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def snapshot_calls(self) -> list[list[str]]:
+        """What the scripts asked backup_stores.py to do, one argv each."""
+        return [item["argv"] for item in self.log() if item["call"] == "backup_stores"]
+
     def started(self) -> list[str]:
         return [str(item["unit"]) for item in self.log() if item["call"] == "systemd-run"]
 
@@ -199,6 +224,69 @@ def test_up_starts_one_unit_then_the_gateway_then_the_launcher(instance: Instanc
     called = [item for item in instance.log() if item["call"] == "sandbox-science"]
     assert called[0]["argv"] == ["prepare", "--config", str(instance.config)]
     assert "ss-personal-unit (cache, middleware, worker) and ss-personal-gateway" in done.stdout
+
+
+def test_up_checks_the_store_versions_and_takes_no_snapshot_when_none_would_migrate(
+    instance: Instance,
+) -> None:
+    done = instance.run("personal_up.sh")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [argv[0] for argv in instance.snapshot_calls()] == ["versions"]
+    assert "ss-personal-unit" in instance.started()
+
+
+def test_up_snapshots_before_starting_anything_when_a_store_would_migrate(
+    instance: Instance,
+) -> None:
+    done = instance.run("personal_up.sh", FAKE_VERSIONS_STATUS="3")
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = instance.snapshot_calls()
+    assert [argv[0] for argv in calls] == ["versions", "backup", "verify"]
+    backup = calls[1]
+    assert backup[backup.index("--label") + 1] == "before-migration"
+    assert "--live" not in backup
+    assert "taking a snapshot first" in done.stderr
+    # The snapshot is complete before the first unit starts.
+    order = [item["call"] for item in instance.log()]
+    last_snapshot = max(i for i, call in enumerate(order) if call == "backup_stores")
+    assert last_snapshot < order.index("systemd-run")
+    assert instance.started() == ["ss-personal-unit", "ss-personal-gateway", "ss-personal-launcher"]
+
+
+def test_up_starts_nothing_when_the_snapshot_fails(instance: Instance) -> None:
+    done = instance.run("personal_up.sh", FAKE_VERSIONS_STATUS="3", FAKE_BACKUP_STATUS="1")
+    assert done.returncode == 1
+    assert "the snapshot failed, so nothing was started" in done.stderr
+    assert instance.started() == []
+    assert not instance.unit_config.exists()
+
+
+def test_up_starts_nothing_when_a_store_is_newer_than_the_checkout(instance: Instance) -> None:
+    done = instance.run("personal_up.sh", FAKE_VERSIONS_STATUS="1")
+    assert done.returncode == 1
+    assert "nothing was started" in done.stderr
+    assert [argv[0] for argv in instance.snapshot_calls()] == ["versions"]
+    assert instance.started() == []
+
+
+@pytest.mark.parametrize("how", ["flag", "environment"])
+def test_the_snapshot_can_be_skipped_explicitly(instance: Instance, how: str) -> None:
+    if how == "flag":
+        done = instance.run("personal_up.sh", "--skip-snapshot", FAKE_VERSIONS_STATUS="3")
+    else:
+        done = instance.run(
+            "personal_up.sh", SS_PERSONAL_SKIP_SNAPSHOT="1", FAKE_VERSIONS_STATUS="3"
+        )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert instance.snapshot_calls() == []
+    assert "snapshot: skipped" in done.stderr
+    assert instance.started() == ["ss-personal-unit", "ss-personal-gateway", "ss-personal-launcher"]
+
+
+def test_a_start_refused_for_other_reasons_takes_no_snapshot(instance: Instance) -> None:
+    done = instance.run("personal_up.sh", FAKE_CONFIG_UNIT="none", FAKE_VERSIONS_STATUS="3")
+    assert done.returncode == 1
+    assert instance.snapshot_calls() == []
 
 
 def test_the_unit_is_defined_to_stop_its_services_in_order_and_open_many_files(

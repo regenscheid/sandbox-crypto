@@ -8,12 +8,18 @@
 # starts, and the launcher uses the unit's worker. Everything it makes is under $ROOT and
 # survives a stop: the first run creates it, later runs reuse it.
 #
-#   scripts/personal_up.sh [--openshell-only]
+#   scripts/personal_up.sh [--openshell-only] [--skip-snapshot]
+#
+# Before it starts anything it asks `personal_backup.sh --versions` whether this checkout would
+# migrate a store (migrations only go forward, docs/BACKUP-RESTORE.md). If so it takes a
+# snapshot first (`personal_backup.sh --label before-migration`) and starts nothing if that
+# fails. --skip-snapshot, or SS_PERSONAL_SKIP_SNAPSHOT=1, skips both the check and the snapshot.
 #
 # Settings, from the environment (the defaults are babbage's personal instance):
 #   SS_PERSONAL_ROOT     ~/.local/state/sandbox-science-personal  (OpenShell state in openshell/)
 #   SS_PERSONAL_CONFIG   ~/.config/sandbox-science/personal.toml  (the launcher's config)
 #   SS_PERSONAL_UNIT     ss-personal                              (the units' prefix)
+#   SS_PERSONAL_SKIP_SNAPSHOT  unset; 1 skips the pre-migration snapshot (as --skip-snapshot)
 #   SS_PERSONAL_GATEWAY_PORT 17680, SS_PERSONAL_MIDDLEWARE_PORT 50061,
 #   SS_PERSONAL_CACHE_PORT 8390, SS_PERSONAL_PROXY_PORT 8380      (loopback ports)
 #   VM_VCPUS 8, VM_MEM_MIB 16384, VM_DISK_MIB 32768              (each sandbox's VM)
@@ -33,11 +39,15 @@ CACHE_PORT=${SS_PERSONAL_CACHE_PORT:-8390}
 PROXY_PORT=${SS_PERSONAL_PROXY_PORT:-8380}
 OS_BIN=${OS_BIN:-$HOME/.local/opt/openshell-0.1.5/bin}
 OPENSHELL_ONLY=false
-case "${1:-}" in
-  "") ;;
-  --openshell-only) OPENSHELL_ONLY=true ;;
-  *) echo "usage: $0 [--openshell-only]" >&2; exit 2 ;;
-esac
+SKIP_SNAPSHOT=false
+[ "${SS_PERSONAL_SKIP_SNAPSHOT:-}" = 1 ] && SKIP_SNAPSHOT=true
+for arg in "$@"; do
+  case "$arg" in
+    --openshell-only) OPENSHELL_ONLY=true ;;
+    --skip-snapshot) SKIP_SNAPSHOT=true ;;
+    *) echo "usage: $0 [--openshell-only] [--skip-snapshot]" >&2; exit 2 ;;
+  esac
+done
 case "$UNIT" in openshell-lab*) echo "the units' prefix must not be the labs'" >&2; exit 2 ;; esac
 case "$ROOT" in "$HOME/.local/state/openshell"*) echo "the root must not be under the labs' paths" >&2; exit 2 ;; esac
 
@@ -82,6 +92,35 @@ WORKER_DIGEST=$(sha256sum "$WORKER_SETTINGS" | cut -d' ' -f1)
 if ! $START_OPENSHELL && [ "$(cat "$OS/unit-worker.sha256" 2>/dev/null)" != "$WORKER_DIGEST" ]; then
   echo "the running unit has older worker settings than $CONFIG now gives: scripts/personal_down.sh, then this" >&2
   exit 1
+fi
+
+# A start migrates a store that is older than this checkout, and a migration cannot be
+# undone. So when `--versions` (exit 3) says one would, the snapshot comes first, before
+# anything starts; if it fails, nothing starts. A store newer than the checkout, or a check
+# that cannot tell, would make the start refuse anyway, so it stops here with the reason.
+SELF=$(cd "$(dirname "$0")" && pwd)
+snapshot_before_migration() {
+  local status=0
+  R="$R" "$SELF/personal_backup.sh" --versions || status=$?
+  case "$status" in
+    0) return 0 ;;
+    3)
+      echo "a start would migrate a store: taking a snapshot first (label before-migration)" >&2
+      if ! R="$R" "$SELF/personal_backup.sh" --label before-migration; then
+        echo "the snapshot failed, so nothing was started (fix it, or --skip-snapshot to start without one)" >&2
+        return 1
+      fi
+      ;;
+    *)
+      echo "the stores cannot be started by this checkout (see above), so nothing was started (--skip-snapshot skips this check)" >&2
+      return 1
+      ;;
+  esac
+}
+if $SKIP_SNAPSHOT; then
+  echo "snapshot: skipped (--skip-snapshot or SS_PERSONAL_SKIP_SNAPSHOT)" >&2
+else
+  snapshot_before_migration || exit 1
 fi
 
 start_openshell() {
