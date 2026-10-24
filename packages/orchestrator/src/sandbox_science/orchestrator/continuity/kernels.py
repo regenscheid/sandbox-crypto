@@ -7,7 +7,7 @@ import ast
 import hashlib
 import json
 import sqlite3
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -184,22 +184,30 @@ class KernelJournal:
             self._save_snapshot(tx.sql, encoded)
 
     async def reconcile(
-        self, client: WorkerClient, context: ExecutionContext, *, accept_loss: bool = False
+        self,
+        client: WorkerClient,
+        context: ExecutionContext,
+        *,
+        accept_loss: bool = False,
+        accepted_by: Literal["user", "automatic"] = "user",
     ) -> None:
-        """Bring the work's kernel back, or refuse to go on without it (RC-11).
+        """Bring the work's kernel back, or recompute from recorded history (RC-11, D100).
 
-        A lost kernel that cannot be rebuilt exactly stops recovery, unless ``accept_loss``:
-        the user's own Resume then goes on with the kernel reported lost. The loss is
-        recorded with what was lost, the work expects no kernel, its next cell starts a
-        clean one, and the resumed agent's view says the kernel stopped and its variables
-        are gone (``KERNEL_LINES``). An automatic Resume never accepts a loss."""
+        Without ``accept_loss`` a lost kernel that cannot be rebuilt exactly stops
+        recovery. Every Resume passes it (D100): the loss is recorded with what was lost
+        and who accepted it, the work expects no kernel, its next cell starts a clean one,
+        and the resumed agent's view says the kernel stopped and its variables are gone
+        (``KERNEL_LINES``), so the agent recomputes them from its recorded cells. A partial
+        reconstruction is then acknowledged automatically, with the same provenance record
+        an operator's ``kernel_recompute`` decision leaves, and discarded."""
         pending = await threaded(self._pending_restore)
         if pending is not None:
             work, identity, detail, observed_at = pending
             snapshot_sha256 = detail.get("snapshot_sha256")
-            if not isinstance(snapshot_sha256, str) or not await threaded(
+            acknowledged = isinstance(snapshot_sha256, str) and await threaded(
                 self._recompute_acknowledged, work, observed_at, snapshot_sha256
-            ):
+            )
+            if not acknowledged and not accept_loss:
                 raise ControlError(
                     CONFLICT, "lost_kernel: partial reconstruction needs operator review"
                 )
@@ -208,12 +216,23 @@ class KernelJournal:
             if language not in ("python", "sage") or run != self.scope:
                 raise ControlError(CONFLICT, "lost_kernel: reconstruction scope is uncertain")
             observed = await client.observe_kernels(context)
-            if any(k.language == language and k.run == self.scope for k in observed.kernels):
+            live = any(k.language == language and k.run == self.scope for k in observed.kernels)
+            if live and not accept_loss:
                 raise ControlError(
                     CONFLICT, "lost_kernel: partial kernel is live; close it before recompute"
                 )
-            # No worker effect is needed. Clear the saved lineage atomically after
-            # the explicit decision; the next cell lazily starts a clean kernel.
+            if not acknowledged:
+                await threaded(
+                    self._acknowledge_recompute, work, identity, snapshot_sha256, accepted_by
+                )
+            if live:
+                # Partly rebuilt state is not the recorded state: start a clean
+                # generation in its place. No recorded cell is run again here.
+                await client.restart_kernel(
+                    context, "python" if language == "python" else "sage", self.scope
+                )
+            # Clear the saved lineage atomically after the decision; the next cell
+            # lazily starts a clean kernel.
             await threaded(self._abandon_restore, work, identity)
             return
         expected = await threaded(self._expected)
@@ -234,7 +253,7 @@ class KernelJournal:
             k.language == next(iter(missing))[0] for k in observation.kernels if k.run == self.scope
         ):
             if accept_loss:
-                await threaded(self._accept_loss, missing)
+                await threaded(self._accept_loss, missing, accepted_by)
                 return
             raise ControlError(
                 CONFLICT, "lost_kernel: saved kernel identity or generation is unavailable"
@@ -242,19 +261,42 @@ class KernelJournal:
         language, kernel_id, generation = next(iter(missing))
         if language not in ("python", "sage"):
             if accept_loss:
-                await threaded(self._accept_loss, missing)
+                await threaded(self._accept_loss, missing, accepted_by)
                 return
             raise ControlError(CONFLICT, "lost_kernel: saved kernel language is unavailable")
         typed_language = language
         cells = await threaded(self._replay_cells, language, kernel_id, generation)
         if cells is None:
             if accept_loss:
-                await threaded(self._accept_loss, missing)
+                await threaded(self._accept_loss, missing, accepted_by)
                 return
             raise ControlError(
                 CONFLICT, "lost_kernel: complete replayable cell provenance is unavailable"
             )
         identity = hashlib.sha256(f"{language}\0{kernel_id}\0{generation}".encode()).hexdigest()
+        try:
+            await self._rebuild(client, context, typed_language, identity, cells)
+        except ControlError:
+            if not accept_loss:
+                raise
+            # The exact rebuild failed: acknowledge, discard any partial kernel and
+            # continue with the loss reported (D100). The pending branch never replays.
+            if await threaded(self._pending_restore) is not None:
+                await self.reconcile(client, context, accept_loss=True, accepted_by=accepted_by)
+            else:
+                await threaded(self._accept_loss, missing, accepted_by)
+
+    async def _rebuild(
+        self,
+        client: WorkerClient,
+        context: ExecutionContext,
+        typed_language: Literal["python", "sage"],
+        identity: str,
+        cells: list[dict[str, Any]],
+    ) -> None:
+        """Replay verified literal cells into a fresh kernel, under a durable intent."""
+        language = typed_language
+        kernel_id, generation = cells[0]["kernel_id"], cells[0]["generation"]
         await threaded(self._begin_restore, identity, cells)
         # The durable intent deliberately remains pending if restart/replay has an
         # unknown or failed outcome. An operator can inspect it and choose recovery;
@@ -459,14 +501,48 @@ class KernelJournal:
         work, identity, encoded, observed = rows[0]
         return work, identity, json.loads(encoded), observed
 
-    def _accept_loss(self, missing: set[tuple[str, str, int]]) -> None:
-        """Record the kernels the user accepted as lost, and expect none for the work."""
+    def _acknowledge_recompute(
+        self, work: str, identity: str, snapshot: object, accepted_by: str
+    ) -> None:
+        """The provenance an operator's ``kernel_recompute`` decision leaves, made by Resume."""
+        owner = self.owner
+        detail = json.dumps(
+            {
+                "resolution": {
+                    "kind": "kernel_recompute",
+                    "identity": snapshot if isinstance(snapshot, str) else None,
+                    "restore": identity,
+                    "reason": "lost kernel recomputed from recorded history under Resume",
+                },
+                "operator": accepted_by,
+                "automatic": True,
+            },
+            separators=(",", ":"),
+        )
+        with self.control.write() as tx:
+            check_owner(tx.sql, owner)
+            tx.sql.execute(
+                "INSERT INTO research_observations "
+                "VALUES (?,?,?,'resolution:kernel_recompute',?,?,?) "
+                "ON CONFLICT(project,session,work,kind,identity) DO NOTHING",
+                (
+                    owner.project,
+                    owner.session,
+                    work,
+                    "auto-" + identity,
+                    SYSTEM_CLOCK.now().timestamp(),
+                    detail,
+                ),
+            )
+
+    def _accept_loss(self, missing: set[tuple[str, str, int]], accepted_by: str = "user") -> None:
+        """Record the kernels accepted as lost and by whom; expect none for the work."""
         owner = self.owner
         lost = [
             {"language": language, "kernel_id": kernel_id, "generation": generation}
             for language, kernel_id, generation in sorted(missing)
         ]
-        detail = json.dumps({"lost": lost, "accepted_by": "user"}, separators=(",", ":"))
+        detail = json.dumps({"lost": lost, "accepted_by": accepted_by}, separators=(",", ":"))
         identity = hashlib.sha256(detail.encode()).hexdigest()
         with self.control.write() as tx:
             check_owner(tx.sql, owner)

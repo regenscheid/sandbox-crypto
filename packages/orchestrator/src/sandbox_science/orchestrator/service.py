@@ -40,9 +40,10 @@ from .context.history import Archive, Folder
 from .context.history.markers import Decided, current_decisions
 from .context.history.receipts import Receipts
 from .continuity.auto_continuation import AutoContinuation
-from .continuity.auto_recovery import AutoRecovery
+from .continuity.auto_recovery import AutoRecovery, mark_transient
 from .continuity.records import WorkRecords
 from .continuity.recovery import Recovery
+from .continuity.transient import Transient
 from .control import ControlError
 from .control.errors import BUSY
 from .delegation.records import DelegationRecords
@@ -148,6 +149,9 @@ class RunService:
         self.local_branches: set[asyncio.Task[bool]] = set()
         self.checking: asyncio.Task[int] | None = None
         """The figure checks running, which the next look does not start again."""
+        self.lost: Transient | None = None
+        """Set before ``close`` when the service ends because its runtime or worker was
+        lost rather than shut down: the interrupted trees are then retried (D100)."""
         self.marks: dict[tuple[str, str], tuple[tuple[int, int], tuple[Decided, ...]]] = {}
         """When each session's messages were held for its research state: the ledger's
         mark, and the session's current decisions, whose change queues them again."""
@@ -180,6 +184,19 @@ class RunService:
         for (project, session), value in active:
             if value.run is not None:
                 await self._ended(project, session, value.run)
+                if self.lost is not None:
+                    try:
+                        await threaded(
+                            mark_transient,
+                            self.stores.projects.control,
+                            project,
+                            session,
+                            value.run,
+                            self.lost,
+                            clock=self.clock,
+                        )
+                    except Exception:  # cleanup of the other runs must go on
+                        _log.exception("the %s of run %s was not recorded", self.lost, value.run)
         self.active.clear()
         self.local_branches.clear()
 
@@ -237,7 +254,7 @@ class RunService:
             await self.auto_continuation_tick()
 
     async def auto_recovery_tick(self) -> None:
-        """Offer bounded model-failure recovery; dispatch retains its normal gates."""
+        """Offer bounded transient-failure recovery (D100); dispatch keeps its normal gates."""
         page = await threaded(self.auto_recovery.candidates, after=self._auto_after)
         self._auto_after = page[-1] if len(page) == 100 else ("", "", "")
         for project, session, root in page:
@@ -248,7 +265,7 @@ class RunService:
             request = await threaded(self.auto_recovery.queue, project, session, root)
             if request is not None:
                 _log.info(
-                    "session %s queued automatic Resume %s for saved model failure",
+                    "session %s queued automatic Resume %s for a transient failure",
                     session,
                     request,
                 )

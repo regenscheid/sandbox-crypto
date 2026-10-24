@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.context.history.operations import ToolJournal
 from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
-from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
+from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery, mark_transient
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
@@ -164,13 +165,23 @@ def test_retries_have_durable_backoff_and_stop_after_three_without_progress(
             first = following
 
 
-def test_uncertain_effects_are_not_auto_resumed(projects: ProjectStore):
+def test_irreconcilable_effects_are_not_auto_resumed(projects: ProjectStore):
     failed_model(projects)
     recovery = AutoRecovery(projects.control)
     ToolJournal(projects.control).start(
-        CONTEXT, RUN, "pending-effect", ToolCall("call-1", "shell", "{}")
+        CONTEXT, RUN, "pending-effect", ToolCall("call-1", "mcp__write_remote", "{}")
     )
     assert recovery.queue("p", "s", RUN) is None
+
+
+def test_worker_effects_are_auto_resumed_for_reconciliation_by_identity(projects: ProjectStore):
+    """D100: a pending worker operation is reconciled by its recorded identity, not replayed."""
+    failed_model(projects)
+    ToolJournal(projects.control).start(
+        CONTEXT, RUN, "pending-effect", ToolCall("call-1", "shell", "{}")
+    )
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is not None
+    assert len(ToolJournal(projects.control).pending("p", "s", RUN)) == 1
 
 
 @pytest.mark.parametrize(
@@ -394,3 +405,132 @@ async def test_late_user_correction_does_not_trigger_failure_backoff(harness: Ha
         await service.maintenance_tick()
         assert ("p", "s") not in service.waiting_until
         assert ("p", "s") in await service.waiting_work()
+
+
+def failed_with(projects: ProjectStore, phase: str, transient: str | None) -> None:
+    """A run that failed after the loop classified its failure (D100)."""
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    Blueprints(projects.control).save(
+        owner,
+        Blueprint(context=CONTEXT, request={"project": "p", "session": "s", "task": "Fixture"}),
+    )
+    failed = record(RUN, stopped="error").model_copy(
+        update={
+            "failure": phase,
+            "final_text": None,
+            "summaries": {"failure": {"phase": phase, "transient": transient}},
+        }
+    )
+    projects.save_run(failed)
+    works.finish(failed)
+
+
+@pytest.mark.parametrize(
+    ("phase", "transient", "queued"),
+    [
+        ("model", "gateway_timeout", True),
+        ("model", "incomplete_stream", True),
+        ("model", "network", True),
+        ("tool", "worker_loss", True),
+        ("model", None, False),  # classified permanent, such as a malformed answer
+        ("tool", None, False),
+        ("harness", None, False),
+    ],
+)
+def test_only_failures_classified_transient_are_retried(
+    projects: ProjectStore, phase: str, transient: str | None, queued: bool
+):
+    failed_with(projects, phase, transient)
+    assert (AutoRecovery(projects.control).queue("p", "s", RUN) is not None) is queued
+
+
+def test_each_retry_decision_is_persisted_with_its_cause(projects: ProjectStore):
+    failed_with(projects, "model", "gateway_timeout")
+    request = AutoRecovery(projects.control).queue("p", "s", RUN)
+    with projects.control.read() as tx:
+        (detail,) = tx.sql.execute(
+            "SELECT detail FROM research_observations WHERE kind='auto_resume' AND identity=?",
+            (request,),
+        ).fetchone()
+    saved = json.loads(detail)
+    assert saved["cause"] == "gateway_timeout"
+    assert (saved["streak"], saved["attempts"], saved["delay"]) == (1, 1, 0.0)
+    assert len(saved["progress"]) == 4
+
+
+def test_exhausted_retries_block_the_root_with_a_durable_reason(projects: ProjectStore):
+    failed_with(projects, "model", "gateway_timeout")
+    clock = FakeClock(datetime(2026, 10, 23, tzinfo=UTC))
+    works = WorkRecords(projects.control)
+    for seconds in (0, 30, 60, 120):
+        clock.advance(seconds)
+        request = AutoRecovery(projects.control, clock=clock).queue("p", "s", RUN)
+        if request is None:
+            break
+        works.reject_queued("p", "s", request, "synthetic gateway timeout again")
+    root = works.get("p", "s", RUN)
+    assert root.state == "blocked"
+    assert root.reason is not None
+    assert root.reason.startswith("retries_exhausted: no progress")
+    assert "gateway_timeout" in root.reason
+    with projects.control.read() as tx:
+        assert tx.sql.execute(
+            "SELECT count(*) FROM research_observations WHERE kind='auto_resume_stopped'"
+        ).fetchone() == (1,)
+    assert AutoRecovery(projects.control).candidates() == ()
+    # The user's one Resume still continues the tree.
+    assert works.request("p", "s") is not None
+
+
+def test_persistence_error_is_retried(projects: ProjectStore):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    saved = record(RUN)
+    works.finish(saved, persisted=False)
+    assert works.get("p", "s", RUN).reason == "persistence_error"
+    recovery = AutoRecovery(projects.control)
+    assert recovery.candidates() == (("p", "s", RUN),)
+    assert recovery.queue("p", "s", RUN) is not None
+
+
+def test_bridge_loss_retries_interrupted_work_once_per_loss(projects: ProjectStore):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    works.interrupt_run("p", "s", RUN)
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None  # a plain restart
+    mark_transient(projects.control, "p", "s", RUN, "bridge_loss")
+    recovery = AutoRecovery(projects.control)
+    assert recovery.candidates() == (("p", "s", RUN),)
+    request = recovery.queue("p", "s", RUN)
+    assert request is not None
+    works.reject_queued("p", "s", request, "interrupted")
+    # The loss was retried; a later interruption without a new loss is not that loss.
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
+
+
+def test_a_resume_branch_ended_by_worker_loss_is_retried(projects: ProjectStore):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    works.block("p", "s", RUN, "transient:worker_loss: WorkerAPIError: cannot reach the worker")
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is not None
+
+
+def test_explicit_stop_stays_stopped_after_a_transient_failure(projects: ProjectStore):
+    failed_with(projects, "model", "gateway_timeout")
+    works = WorkRecords(projects.control)
+    works.stop("p", "s", RUN)
+    recovery = AutoRecovery(projects.control, interrupted=True)
+    assert recovery.candidates() == ()
+    assert recovery.queue("p", "s", RUN) is None
+    assert works.get("p", "s", RUN).state == "stopped"
+
+
+def test_a_saved_record_whose_acknowledgement_failed_is_not_run_again(projects: ProjectStore):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    saved = record(RUN)
+    projects.save_run(saved)
+    works.finish(saved, persisted=False)
+    assert works.get("p", "s", RUN).reason == "persistence_error"
+    assert AutoRecovery(projects.control).queue("p", "s", RUN) is None

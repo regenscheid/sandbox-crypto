@@ -919,3 +919,115 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
         await asyncio.gather(running, return_exceptions=True)
         documents.close()
         state.projects.close()
+
+
+FORMERLY_BLOCKING = (
+    "unknown_usage",
+    "lost_kernel",
+    "partial_kernel_restore",
+    "unfinished_children",
+    "persistence_error",
+)
+
+
+@pytest.mark.parametrize("condition", FORMERLY_BLOCKING)
+async def test_automatic_resume_recovers_the_tree_past_a_condition_it_can_handle(
+    tmp_path: Path, condition: str
+):
+    """D100: none of these blocks Resume; the whole tree resumes without a person."""
+    from sandbox_science.contracts import KernelInfo
+    from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery, mark_transient
+    from sandbox_science.orchestrator.continuity.kernels import KernelJournal
+
+    state, documents, works = prepare_tree(tmp_path)
+    control = state.projects.control
+    root_owner = works.owner("p", "s", RUN)
+    assert root_owner is not None
+    identity = None
+    if condition == "unknown_usage":
+        owner = works.owner("p", "s", GRANDCHILD)
+        assert owner is not None
+        with control.write() as tx:
+            tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (GRANDCHILD,))
+        identity = ModelIntents(control).begin(owner, kind="delegated", alias="scripted")
+        works.interrupt("p", "s", RUN)
+    elif condition in ("lost_kernel", "partial_kernel_restore"):
+        with control.write() as tx:
+            tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (RUN,))
+        journal = KernelJournal(control, root_owner, None)
+        await journal.record(
+            KernelObservation(
+                environment_id="env",
+                session_id="s",
+                observed_at=datetime.now(UTC),
+                kernels=(KernelInfo(kernel_id="lost", language="python", generation=1),),
+            )
+        )
+        if condition == "partial_kernel_restore":
+            journal._begin_restore(
+                "e" * 64,
+                [{"code": "x = 1", "language": "python", "kernel_id": "lost",
+                  "generation": 1, "run": None}],
+            )  # fmt: skip
+        works.interrupt("p", "s", RUN)
+    elif condition == "unfinished_children":
+        with control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET reason='unfinished_children' WHERE work=?", (RUN,)
+            )
+        works.block("p", "s", CHILD, "transient:gateway_timeout: ModelError: HTTP 524")
+    else:
+        with control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET reason='persistence_error' WHERE work=?", (GRANDCHILD,)
+            )
+    if condition in ("unknown_usage", "lost_kernel", "partial_kernel_restore"):
+        # The interruption came from a lost bridge, which the service records.
+        mark_transient(control, "p", "s", RUN, "bridge_loss")
+    request = AutoRecovery(control).queue("p", "s", RUN)
+    assert request is not None
+    assert works.resume_source("p", "s", request) == "automatic"
+    worker = RecoveryWorker()
+    harness = Harness(
+        cast(WorkerClient, worker),
+        main("Recovered root"),
+        delegated=Role(
+            ScriptedModel([ModelTurn('{"status":"complete","summary":"Done"}')] * 8), "scripted"
+        ),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    try:
+        sink = Sink()
+        failed = await drive(Recovery(harness, "p", "s", request), sink, asyncio.Event())
+        found = {w.work: (w.state, w.reason) for w in works.page("p", "s", RUN)}
+        assert not failed, (found, sink.errors)
+        assert found[STOPPED] == ("stopped", "user_stop")  # explicit Stop stays stopped
+        assert all(state == "completed" for work, (state, _) in found.items() if work != STOPPED)
+        with control.read() as tx:
+            status = tx.sql.execute(
+                "SELECT status FROM research_resumes WHERE request=?", (request,)
+            ).fetchone()[0]
+            kinds = {
+                kind: json.loads(detail)
+                for kind, detail in tx.sql.execute(
+                    "SELECT kind,detail FROM research_observations WHERE work=?", (RUN,)
+                )
+            }
+        assert status == "finished"
+        if condition == "unknown_usage":
+            # Recorded as unknown and visible; never zero, never a block.
+            assert ModelIntents(control).pending("p", "s", GRANDCHILD) == (identity,)
+        if condition == "lost_kernel":
+            assert kinds["kernel_loss_accepted"] == {
+                "lost": [{"language": "python", "kernel_id": "lost", "generation": 1}],
+                "accepted_by": "automatic",
+            }
+        if condition == "partial_kernel_restore":
+            acknowledged = kinds["resolution:kernel_recompute"]
+            assert acknowledged["automatic"] is True
+            assert acknowledged["operator"] == "automatic"
+            assert kinds["kernel_restore"] == {"state": "abandoned", "operator_recompute": True}
+    finally:
+        documents.close()
+        state.projects.close()

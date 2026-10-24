@@ -27,6 +27,7 @@ from sandbox_science.orchestrator.projects import run_id_of, run_name
 from sandbox_science.orchestrator.run_inputs import RunInputs
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
+from .auto_recovery import mark_transient
 from .blueprints import Blueprints
 from .child_settlement import ChildSettlement
 from .effort import apply_resume_effort
@@ -35,6 +36,7 @@ from .kernels import KernelJournal
 from .plans import Plans
 from .reconcile import Reconciler
 from .records import Ownership, Work, WorkRecords
+from .transient import REASON_PREFIX, classify
 
 if TYPE_CHECKING:
     from sandbox_science.contracts import ExecutionContext
@@ -178,6 +180,20 @@ class Recovery:
                 error = await threaded(self.plans.unfinished)
             except BaseException as exc:
                 error = str(exc) or type(exc).__name__
+                transient = None if stop.is_set() else classify(exc)
+                if transient is not None:
+                    # The worker or bridge was lost under this Resume: recorded, so that
+                    # automatic recovery retries the tree within its bounds (D100).
+                    with suppress(ControlError):
+                        await threaded(
+                            mark_transient,
+                            self.stores.projects.control,
+                            self.project,
+                            self.session,
+                            name,
+                            transient,
+                            clock=self.harness.clock,
+                        )
                 with suppress(ControlError), self.plans.authority(self.epoch, name):
                     if stop.is_set():
                         await threaded(self.records.stop, self.project, self.session, root)
@@ -271,9 +287,12 @@ class Recovery:
             await threaded(self.records.block, self.project, self.session, work_id, "interrupted")
             raise
         except Exception as exc:
+            transient = classify(exc)
             reason = (
                 "run_budget"
                 if isinstance(exc, ControlError) and exc.message == GRANT_EXHAUSTED
+                else f"{REASON_PREFIX}{transient}: {type(exc).__name__}: {exc}"
+                if transient is not None
                 else f"{type(exc).__name__}: {exc}"
             )
             await threaded(
@@ -486,10 +505,13 @@ class Recovery:
         source = await threaded(
             self.records.resume_source, self.project, self.session, self.request
         )
-        # The user's own Resume goes on past a kernel that cannot be rebuilt, reported lost
-        # (RC-11); an automatic one stops there.
+        # Every Resume goes on past a kernel that cannot be rebuilt exactly: the loss is
+        # recorded with who accepted it, and the agent recomputes from its history (D100).
         await KernelJournal(control, owner, work.kernel).reconcile(
-            self.harness.client, authorized_context, accept_loss=source == "operator"
+            self.harness.client,
+            authorized_context,
+            accept_loss=True,
+            accepted_by="user" if source == "operator" else "automatic",
         )
         parent = None if work.parent is None else (await threaded(self.plans.get, work.parent)).run
         async with self._delegation_lock:

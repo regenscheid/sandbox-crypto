@@ -23,6 +23,7 @@ from pydantic import Field, JsonValue, TypeAdapter
 from sandbox_science.contracts.model import Contract, Counter
 from sandbox_science.orchestrator.aio import owned
 from sandbox_science.orchestrator.context.history.limits import WorkingMemoryLimitError
+from sandbox_science.orchestrator.effects import UnknownEffectError
 
 _log = logging.getLogger(__name__)
 
@@ -198,6 +199,11 @@ class Channel:
             reply = Reply(id=frame.id, payload=result)
         except WorkingMemoryLimitError as error:
             reply = Reply(id=frame.id, error="memory_limit", message=str(error)[:512])
+        except UnknownEffectError as error:
+            # The worker was lost mid-operation; the host keeps its intent pending. The
+            # runtime's loop records the kind, so automatic recovery can reconcile and
+            # retry it (D100). The message is the adapter's fixed text.
+            reply = Reply(id=frame.id, error="unavailable", message=str(error)[:512])
         except TransportError as error:
             kind = (
                 error.kind

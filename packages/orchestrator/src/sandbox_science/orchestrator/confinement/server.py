@@ -491,6 +491,10 @@ def create_app(settings: ControlSettings) -> web.Application:
                 if service is not None and service.harness.vectors is not None:
                     cleanup.push_async_callback(service.harness.vectors.close)
                 if service is not None:
+                    if not lifecycle.draining:
+                        # The runtime's connection ended while this service still runs:
+                        # a bridge loss, which automatic recovery retries (D100).
+                        service.lost = "bridge_loss"
                     cleanup.push_async_callback(service.close)
         return socket
 

@@ -30,6 +30,7 @@ from .context.folding import Folds
 from .context.history.collections import Collection, Members
 from .context.history.limits import WorkingMemoryLimitError
 from .context.history.memory import RunMemory
+from .continuity.transient import classify
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
 from .images import IMAGE
 from .kernel_check import KernelCheck
@@ -970,11 +971,18 @@ async def run_task(
                         ) is not None:
                             transcript.stopped = reason
                             transcript.final_text = transcript.answer = None
-                except Exception:
+                except Exception as error:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.
                     _log.exception("run %s failed during %s", run_id, transcript.phase)
+                    first = transcript.failure is None
                     transcript.fail(transcript.phase)
+                    if first:
+                        # A label, not the exception: automatic recovery reads it (D100).
+                        transcript.summaries["failure"] = {
+                            "phase": transcript.phase,
+                            "transient": classify(error),
+                        }
                 except asyncio.CancelledError as error:
                     if not user_cancelled(error, stop):
                         raise
