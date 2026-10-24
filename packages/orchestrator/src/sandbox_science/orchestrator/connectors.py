@@ -43,7 +43,10 @@ connectors are offered only to runs of that project.
 - a call sent whose answer cannot be read is ``no_usable_answer``: the server may have
   done the work, so the harness leaves its intent pending for reconciliation;
 - text results only: the proxy withholds binary content, and the toolbox bounds the
-  text as it bounds any tool result.
+  text as it bounds any tool result. A client that reaches servers directly (D98) gets
+  the binary content itself: with a ``BinarySink`` (``mcp_binaries``), each image, audio
+  block or blob is withheld by the proxy's rule and kept as an artifact, and the model
+  sees the sink's note naming it instead.
 """
 
 from __future__ import annotations
@@ -62,9 +65,12 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from sandbox_science.policy.mcp_answers import binary_contents, withhold_binary
+
 from .delegation.effects import EFFECT_CLASSES, connector_reach
 from .documents.agent_text import hidden_characters
 from .effects import UnknownEffectError
+from .mcp_binaries import BinarySink
 from .model import ToolSpec
 from .worker_client import dump
 
@@ -452,10 +458,14 @@ class Connectors:
         shown: Sequence[str] | None = None,
         disabled: Callable[[], frozenset[str]] | None = None,
         on_approval: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
+        binaries: BinarySink | None = None,
     ) -> None:
         self.client, self.servers, self.session = client, tuple(dict.fromkeys(servers)), session
         self.disabled = disabled
         self.on_approval = on_approval
+        self.binaries = binaries
+        """Keeps a result's binary items (as artifacts) and words the note that replaces
+        each; without it, they are not shown and not kept."""
         """Hears that a call waits for the user's answer to its permission request, and
         that the wait ended (``None``). With it, a call that needs approval waits in place,
         retried as it was made, until the request is answered or times out; without it,
@@ -811,11 +821,27 @@ class Connectors:
             if waiting is not None and self.on_approval is not None:
                 with contextlib.suppress(Exception):
                     await self.on_approval(None)
+        if self.binaries is not None:
+            result = await self._keep_binaries(tool.server, name, result, record)
         text = _text(result)
         if result.get("isError") is True:
             record["error"] = "tool_error"
             return dump({"error": {"kind": "tool_error", "message": text}}), record
         return text, record
+
+    async def _keep_binaries(
+        self, server: str, name: str, result: dict[str, Any], record: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``result`` with each binary item replaced by the sink's note, as the MCP proxy
+        replaces it (``mcp_answers.withhold_binary``); the record counts them."""
+        assert self.binaries is not None  # noqa: S101 - called only with a sink
+        found = binary_contents("tools/call", result)
+        if not found:
+            return result
+        notes = [await self.binaries.keep(server, name, item) for item in found]
+        kept, count = withhold_binary("tools/call", result, lambda item: notes[item.index])
+        record["binary_results"] = count
+        return kept
 
 
 APPROVAL_POLL: Final = (3.0, 10.0)

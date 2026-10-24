@@ -39,6 +39,7 @@ from sandbox_science.orchestrator.mcp_direct import (
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
+from sandbox_science.policy.mcp_answers import Withheld
 from sandbox_science.policy.openshell import AgentMcpTarget, AnyOf, compile_agent_mcp
 from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
@@ -524,3 +525,31 @@ async def test_the_production_check_confirms_a_genuine_hold_and_rejects_a_spoof(
     assert await gateway.check(request, held, replace(genuine, arguments="x")) is False
     with pytest.raises(WorkerAPIError):  # not the run service's project: refused, not probed
         await gateway.check(request, "approval_required", replace(genuine, project="other"))
+
+
+@dataclass
+class KeptBinaries:
+    """A sink that keeps what it is handed and names a made-up artifact."""
+
+    kept: list[tuple[str, str, Withheld]] = field(default_factory=list[tuple[str, str, Withheld]])
+
+    async def keep(self, server: str, tool: str, item: Withheld) -> str:
+        self.kept.append((server, tool, item))
+        return f"[kept as artifact a-{item.index}]"
+
+
+async def test_a_binary_result_is_withheld_from_the_model_and_kept_by_control(
+    gateway: Gateway,
+) -> None:
+    gateway.image = True
+    sink = KeptBinaries()
+    direct, connectors = await connectors_for(gateway)
+    connectors.binaries = sink
+    try:
+        text, record = await connectors.call(READ_TOOL, {"query": "SNOVA"})
+    finally:
+        await direct.close()
+    assert text == f"{READ_TOOL} ran\n[kept as artifact a-0]"
+    assert PNG not in text
+    assert record["binary_results"] == 1
+    assert sink.kept == [(SERVER, READ_TOOL, Withheld(0, "image", "image/png", PNG))]

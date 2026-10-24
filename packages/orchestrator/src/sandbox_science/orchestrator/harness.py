@@ -103,6 +103,7 @@ from .loop import (
 )
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
+from .mcp_binaries import ArtifactBinaries
 from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
@@ -1628,6 +1629,9 @@ class Harness:
                 shown=self.mcp.shown,
                 disabled=settings_of,
                 on_approval=self._on_approval(chat, admitted),
+                # Binary results a direct client gets become artifacts (D98); the proxy's
+                # answers carry none.
+                binaries=ArtifactBinaries(self.client, context),
             )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:
@@ -1716,6 +1720,9 @@ class Harness:
             bundles.append(caps.reviews(reviews, on_close))
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
         bundles.append(caps.artifacts(artifacts, on_close))
+        if connectors is not None:
+            # Kept binary results enter the inventory as the agent's publications do.
+            connectors.binaries = ArtifactBinaries(self.client, context, artifacts)
         await artifacts.drain_retention()
         recorder = FileRecorder(
             artifacts,
