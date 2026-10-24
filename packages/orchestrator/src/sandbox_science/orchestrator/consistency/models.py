@@ -49,6 +49,14 @@ Category = Literal[
     "method",
     "completion",
     "handle_citation",
+    # Cryptographic claims (rubric sandbox-consistency-9), checked from the claim's form.
+    "cost_model",
+    "preconditions",
+    "unqualified_security",
+    "notion",
+    "parameters",
+    "structure_from_naming",
+    "quantum_conflation",
 ]
 Severity = Literal["fail", "warn", "note"]
 ADVISORY_CATEGORIES: Final = ("handle_citation",)

@@ -11,8 +11,9 @@ the window's actions item and each document revision's changed blocks,
 author snapshot's terminal review now listing the run's earlier document revision as
 context (lab 42's B5), ``sandbox-consistency-6`` to take earlier runs' actions as
 context, ``sandbox-consistency-7`` to know that a rejected rebuttal with evidence is a
-challenge, and ``sandbox-consistency-8`` to suggest the handle of a ledger entry an answer
-relies on without naming it; a change to any of them changes what a reviewer sees."""
+challenge, ``sandbox-consistency-8`` to suggest the handle of a ledger entry an answer
+relies on without naming it, and ``sandbox-consistency-9`` to check cryptographic claims
+from their form; a change to any of them changes what a reviewer sees."""
 
 from __future__ import annotations
 
@@ -35,9 +36,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "369596643f3b73619c546c2b7eaae099d7f57f0bf9f3851aa7b80c75a3288f72",
-    "confirmation": "051c8004029a30a6283bf09b7e182dec2049aa2dcc76d64906cebae716192d0e",
-    "fallback": "6b7bc99daf4406415c4d7328026f56100fe1782ef7d1e832db89bbb6bc9482be",
+    "author": "4cef6cc46c1308ee44b658f14a491c445d6c0ea8a22d64231147866b1cd4098b",
+    "confirmation": "6ae15307f7227483d1e32f4ec987b6c1b07d0fa2b06041efa6f047dc65872478",
+    "fallback": "529721381219fc0076c10fd74d967885b339dfe42d60515afe6e05a88ea71bbe",
 }
 
 

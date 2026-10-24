@@ -2,6 +2,7 @@
 
 ## 2026-10-23
 
+- The consistency reviewer checks cryptographic claims (owner): rubric `sandbox-consistency-9` adds seven categories, warn in prose and fail in a saved artifact, and the scientific-writing skill asks the author for the same ([consistency review](../docs/CONSISTENCY-REVIEW.md); D56 amended).
 - Settle the architecture before cluster work (owner): reads free and effects gated, with lockdown modes (D95); effect classes and tool classification (D96); admin ceilings and user grants (D97); MCP enforcement through OpenShell native rules and the middleware, proxy retired if the prototype passes (D98); child fence for outward effects only (D99); automatic transient recovery and one full-tree Resume (D100); worker, middleware and cache as one unit (D101); LiteLLM-only cost enforcement with soft-cap check-ins (D102); telemetry and detect-and-hold (D103). D92's first deployment is narrowed to a stated scope and three live proofs. Work follows the [implementation sequence](BACKLOG.md#architecture-2026-10-23-implementation-sequence).
 
 ## 2026-10-22

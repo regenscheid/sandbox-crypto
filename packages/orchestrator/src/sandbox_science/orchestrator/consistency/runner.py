@@ -7,7 +7,7 @@ import asyncio
 import contextlib
 import json
 import math
-from typing import Final, Literal, cast
+from typing import Final, Literal, cast, get_args
 
 from pydantic import Field, ValidationError
 
@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.view_image import ImageViewer, Viewed, framed
 
 from .citations import record_citation
 from .findings import Findings
-from .models import REVIEWER_MAX_REPLAY_NATIVE_BYTES, ReviewConfig, ReviewerFinish
+from .models import REVIEWER_MAX_REPLAY_NATIVE_BYTES, Category, ReviewConfig, ReviewerFinish
 from .numbers import copied_numbers
 from .prompt_bundle import assemble_reviewer
 from .rubric import RUBRIC, RUBRIC_VERSION
@@ -147,18 +147,7 @@ SPECS = (
         "or a field of a ledger entry (title, statement, status, fields, links, evidence).",
         {
             "severity": {"enum": ["fail", "warn", "note"]},
-            "category": {
-                "enum": [
-                    "missing_action",
-                    "contradicting_value",
-                    "evidence_strength",
-                    "reference",
-                    "artifact_disagreement",
-                    "method",
-                    "completion",
-                    "handle_citation",
-                ]
-            },
+            "category": {"enum": list(get_args(Category))},
             "statement": {"type": "string"},
             "anchors": {"type": "array", "items": {"type": "object"}},
             "remedy": {"type": "string"},

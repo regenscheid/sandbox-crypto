@@ -87,7 +87,7 @@ async def test_the_instruction_is_in_the_system_message_of_every_run_and_does_no
 
 
 def test_the_rubric_and_its_tool_ask_for_a_note_of_the_category() -> None:
-    assert RUBRIC_VERSION == "sandbox-consistency-8"
+    assert RUBRIC_VERSION == "sandbox-consistency-9"
     assert "handle_citation" in RUBRIC
     assert "severity note" in RUBRIC
     assert "It is a suggestion only" in RUBRIC

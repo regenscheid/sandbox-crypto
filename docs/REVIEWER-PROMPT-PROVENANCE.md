@@ -12,7 +12,7 @@ separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
 
 [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py)
 assembles one owned reviewer bundle from the unchanged `RUBRIC`,
-`RUBRIC_VERSION="sandbox-consistency-8"` and ordered six `SPECS` in
+`RUBRIC_VERSION="sandbox-consistency-9"` and ordered six `SPECS` in
 [runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py).
 It reuses MAIN's schema encoder (`prompts.schema_json`), without MAIN's sections.
 
