@@ -22,7 +22,7 @@ from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import Effect
-from sandbox_science.orchestrator.jobs import JobTools
+from sandbox_science.orchestrator.jobs import JOB_SPECS, JobTools
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn, ScriptedModel, ToolCall
 from sandbox_science.orchestrator.plan_tools import (
@@ -890,6 +890,7 @@ async def test_complete_large_plan_bypasses_generic_notice_clipping_without_mark
 
     class Jobs:
         reads = 0
+        specs = JOB_SPECS
 
         def __init__(self):
             self.seen = set()

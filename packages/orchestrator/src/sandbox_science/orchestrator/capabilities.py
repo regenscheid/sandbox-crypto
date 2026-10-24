@@ -284,7 +284,7 @@ def jobs(tool: JobTools | None) -> Capability:
     return JOBS.bind(
         tool,
         group(
-            JOB_SPECS,
+            tool.specs,
             lambda name, call: tool.handlers[name](call.args, call.operation),
             JOB_EFFECTS,
             bound=True,

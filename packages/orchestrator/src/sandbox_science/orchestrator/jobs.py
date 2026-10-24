@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
 import math
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
@@ -23,6 +24,7 @@ from sandbox_science.contracts import (
     ExecutionContext,
     Identifier,
     JobListing,
+    JobProfileOffer,
     JobRequest,
     JobStatus,
 )
@@ -162,6 +164,39 @@ JOB_SPECS = (
 )
 
 
+def start_job_spec(profiles: Sequence[JobProfileOffer]) -> ToolSpec:
+    """``start_job`` as this run offers it: with the job profiles the worker grants the
+    project, built from its capabilities (D93, JS-5), or as before without any. The
+    agent names a size; it never gives CPU, memory or placement."""
+    base = JOB_SPECS[0]
+    if not profiles:
+        return base
+    parameters = copy.deepcopy(base.parameters)
+    sizes = "; ".join(f"{offer.name}: {offer.description}" for offer in profiles)
+    parameters["properties"]["profile"] = {
+        "type": "string",
+        "enum": [offer.name for offer in profiles],
+        "description": (
+            f"Run the job in a new sandbox of its own, of this size ({sizes}). Omit it to run "
+            "in this session's environment. The sandbox starts from this session's image and "
+            "installs the packages this session installed, at the same versions, before the "
+            "command. When the job ends, its logs and the files it wrote are copied back to "
+            ".jobs/<job ID>/ (written files under files/), within a size limit; files under "
+            ".jobs/ and anything left out are deleted with the sandbox, which job_status's "
+            "manifest lists. A sandbox that is evicted or deleted makes the job lost; it is "
+            "never run again."
+        ),
+    }
+    parameters["properties"]["inputs"] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "maxItems": 64,
+        "description": "Only with profile: session workspace files or directories to copy into "
+        "the job's sandbox, at the same paths.",
+    }
+    return ToolSpec(base.name, base.description, parameters)
+
+
 def clipped(text: str, limit: int = OUTPUT_CHARS) -> str:
     """Keep a bounded head and tail, even when the peer did not bound its output."""
     if len(text) <= limit:
@@ -205,7 +240,42 @@ def summary(status: JobStatus, now: datetime) -> dict[str, object]:
         if execution.job is not None
         else {},
         "worker_restart": "running jobs become lost until the executor daemon is available",
+        **_sandbox(status),
     }
+
+
+def _sandbox(status: JobStatus) -> dict[str, object]:
+    """A job sandbox's phase and what came back, for ``job_status`` (JS-18)."""
+    execution = status.execution
+    job = execution.job
+    if job is None or job.sandbox is None:
+        return {}
+    sandbox = job.sandbox
+    value: dict[str, object] = {
+        "sandbox": {
+            "profile": sandbox.profile,
+            "phase": sandbox.phase,
+            "collection": sandbox.collection,
+            "retained_until": sandbox.retained_until.isoformat()
+            if sandbox.retained_until
+            else None,
+            "files": f".jobs/{execution.execution_id}/files/",
+            "manifest_sha256": sandbox.manifest_sha256,
+        }
+    }
+    manifest = status.manifest
+    if manifest is not None:
+        value["manifest"] = {
+            "reason": manifest.reason,
+            "collected": len(manifest.collected),
+            "not_collected": [
+                {"path": clipped(item.path, 512), "reason": item.reason}
+                for item in manifest.not_collected[:20]
+            ],
+            "replayed_packages": len(manifest.packages.conda) + len(manifest.packages.pip),
+            "isolation_tier": manifest.isolation_tier,
+        }
+    return value
 
 
 class JobTools:
@@ -230,9 +300,14 @@ class JobTools:
         on_wait: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
         clock: Clock = SYSTEM_CLOCK,
         memory: Callable[[], MemoryGiven] | None = None,
+        job_profiles: Sequence[JobProfileOffer] = (),
+        min_isolation_tier: int | None = None,
     ) -> None:
         """``memory`` reads the project memory the watcher is given, as it is at each
-        check (PM-8)."""
+        check (PM-8). ``job_profiles`` are those the worker's capabilities offer (D93);
+        ``min_isolation_tier`` is the harness's own, which a job sandbox must meet."""
+        self.job_profiles = tuple(job_profiles)
+        self.min_isolation_tier = min_isolation_tier
         self.bindings: Callable[[], dict[str, str]] | None = None
         self.binding_inventory: Callable[[], str | None] | None = None
         """The run's skill bindings, as its jobs carry them (SK-16)."""
@@ -274,6 +349,11 @@ class JobTools:
             "cancel_job": self.cancel,
             "wait_jobs": self.wait,
         }
+
+    @property
+    def specs(self) -> tuple[ToolSpec, ...]:
+        """The job tools as this run offers them: ``start_job`` names the granted profiles."""
+        return (start_job_spec(self.job_profiles), *JOB_SPECS[1:])
 
     @asynccontextmanager
     async def active(self) -> AsyncGenerator[None]:
@@ -317,8 +397,19 @@ class JobTools:
             "wake_session",
             "timeout_seconds",
         }
+        if self.job_profiles:
+            allowed |= {"profile", "inputs"}
         if set(args) - allowed:
             raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "unknown start_job arguments")
+        if args.get("profile") is not None:
+            if args["profile"] not in {offer.name for offer in self.job_profiles}:
+                raise WorkerAPIError(
+                    ErrorKind.INVALID_REQUEST,
+                    "unknown job profile; offered: "
+                    + ", ".join(offer.name for offer in self.job_profiles),
+                )
+            # The harness's own minimum, never a tool argument (JS-6).
+            args = {**args, "min_isolation_tier": self.min_isolation_tier}
         if args.get("wake_session") is True:
             raise WorkerAPIError(
                 ErrorKind.UNSUPPORTED,

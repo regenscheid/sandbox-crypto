@@ -30,6 +30,7 @@ from sandbox_science.contracts import (
     Clock,
     ExecutionContext,
     Identifier,
+    JobProfileOffer,
     Location,
     new_id,
 )
@@ -414,6 +415,8 @@ class Admitted:
     started_at: datetime
     kernel_reason: str | None = None
     """Why the environment offers no Python kernel, when its executor said."""
+    job_profiles: tuple[JobProfileOffer, ...] = ()
+    """The job sandbox sizes the worker grants the project (D93)."""
 
 
 async def admit(
@@ -482,6 +485,7 @@ async def admit(
         projects is not None,
         started,
         capabilities.kernel_reason,
+        capabilities.job_profiles if "job_sandboxes" in capabilities.features else (),
     )
 
 
@@ -1599,6 +1603,8 @@ class Harness:
                 if stores is not None
                 else None
             ),
+            job_profiles=admitted.job_profiles,
+            min_isolation_tier=settings.min_isolation_tier,
         )
         if "jobs" in features:
             bundles.append(caps.jobs(jobs))

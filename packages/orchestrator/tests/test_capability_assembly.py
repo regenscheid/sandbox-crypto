@@ -45,7 +45,7 @@ def offered(role: str) -> Toolbox:
     delegated = role != "main"
     kwargs = {
         "documents": domain(DOCUMENT_SPECS),
-        "jobs": domain(handlers={spec.name: None for spec in JOB_SPECS}),
+        "jobs": domain(JOB_SPECS, handlers={spec.name: None for spec in JOB_SPECS}),
         "ledger": domain(LEDGER_SPECS),
         "memory": domain(MEMORY_SPECS),
         "tracks": domain(TRACK_SPECS),

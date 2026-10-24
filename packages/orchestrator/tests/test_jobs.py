@@ -21,6 +21,7 @@ from sandbox_science.contracts import (
     ExecutionState,
     JobDetails,
     JobListing,
+    JobProfileOffer,
     JobRequest,
     JobStatus,
     Result,
@@ -28,7 +29,14 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.jobs import WATCHER_PROMPT, JobTools, WatcherAnswer, clipped
+from sandbox_science.orchestrator.jobs import (
+    JOB_SPECS,
+    WATCHER_PROMPT,
+    JobTools,
+    WatcherAnswer,
+    clipped,
+    start_job_spec,
+)
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
@@ -670,3 +678,45 @@ def test_a_job_state_closes_only_a_store_it_opened(tmp_path: Path) -> None:
     own.close()
     with pytest.raises(sqlite3.ProgrammingError):
         connection.execute("SELECT 1")
+
+
+MEDIUM = JobProfileOffer(
+    name="medium",
+    description="6 cores, 16 GiB memory, up to 7 days",
+    cpu_millicores=6000,
+    memory_mib=16384,
+    wall_time_max_seconds=604800,
+)
+
+
+def test_start_job_names_granted_profiles_and_is_unchanged_without() -> None:
+    assert start_job_spec(()) is JOB_SPECS[0]
+    spec = start_job_spec((MEDIUM,))
+    properties = spec.parameters["properties"]
+    assert properties["profile"]["enum"] == ["medium"]
+    assert "6 cores, 16 GiB" in properties["profile"]["description"]
+    assert properties["inputs"]["maxItems"] == 64
+    # The agent names a size, never resources or placement (JS-5).
+    assert not {"cpu", "memory", "node_selector", "runtime_class_name"} & set(properties)
+    assert "profile" not in JOB_SPECS[0].parameters["properties"]
+
+
+async def test_a_sized_job_carries_the_harness_minimum_tier(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    jobs = tools(worker, tmp_path, job_profiles=(MEDIUM,), min_isolation_tier=3)
+    assert jobs.specs[0].parameters["properties"]["profile"]["enum"] == ["medium"]
+    base = {"script": "python big.py", "purpose": "search", "expected_progress": "lines"}
+    await jobs.start({**base, "profile": "medium", "inputs": ["data"]}, "op-1")
+    (request,) = worker.requested
+    assert (request.profile, request.inputs, request.min_isolation_tier) == ("medium", ("data",), 3)
+    # A model's own tier is refused like any unknown argument; a plain job is as before.
+    with pytest.raises(WorkerAPIError):
+        await jobs.start({**base, "profile": "medium", "min_isolation_tier": 0}, "op-2")
+    with pytest.raises(WorkerAPIError, match="unknown job profile"):
+        await jobs.start({**base, "profile": "huge"}, "op-3")
+    await jobs.start(base, "op-4")
+    assert worker.requested[-1].profile is None
+    assert worker.requested[-1].min_isolation_tier is None
+    unsized = tools(FakeWorker(), tmp_path / "unsized")
+    with pytest.raises(WorkerAPIError, match="unknown start_job arguments"):
+        await unsized.start({**base, "profile": "medium"}, "op-5")
