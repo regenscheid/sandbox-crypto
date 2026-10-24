@@ -10,7 +10,7 @@ max_artifact_size = 1073741824   # bytes
 
 [openshell]                      # exactly one backend table
 cli = "~/.local/opt/openshell-0.1.5/bin/openshell"
-# python = "/opt/sandbox-science/bin/python"   # default: the base images' interpreter, with ipykernel
+# python = "/opt/sandbox-science/bin/python"   # default: the base images' interpreter
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"
 isolation_tier = 3               # required: the tier the driver gives (3 for the VM driver)
