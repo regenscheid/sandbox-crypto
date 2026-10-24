@@ -945,9 +945,20 @@ class Dispatcher:
         except Exception:
             _log.exception("could not report execution %s as lost", live.execution.execution_id)
 
+    def sandboxed(self, execution: Execution) -> bool:
+        """Whether the execution is a job sandbox's job, which its run takes to its end."""
+        sandboxes = self.sandboxes()
+        return (
+            sandboxes is not None
+            and execution.job is not None
+            and execution.job.profile is not None
+            and sandboxes.sandbox(execution.execution_id) is not None
+        )
+
     async def restore(self, *, daemon_enabled: bool) -> None:
         """Load the executions a previous worker left unfinished, and reattach those its
-        daemons still run; the others are lost. Nothing is ever resubmitted."""
+        daemons still run; the others are lost, except job sandboxes' jobs, which
+        ``JobSandboxes.start`` resumes. Nothing is ever resubmitted."""
         endpoints = tuple(set(self.store.endpoints()) | set(self.store.pending_recycles()))
         if endpoints and not daemon_enabled:
             raise WorkerError(
@@ -976,6 +987,10 @@ class Dispatcher:
                 live.dispatched = True
                 live.cancel_requested = saved[3] or execution.origin is not None
                 recovery.setdefault(execution.context.environment_id, []).append(live)
+            elif self.sandboxed(execution):
+                # A job sandbox's job is never dispatched itself: its run resumes it
+                # once its own execution in the sandbox is recovered (JS-19).
+                live.cancel_requested = saved is not None and saved[3]
             else:
                 self.lose(live, "the worker that restarted without a recoverable daemon dispatch")
         for environment_id in recovery:

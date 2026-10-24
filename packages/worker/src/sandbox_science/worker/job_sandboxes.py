@@ -26,6 +26,16 @@ The job's execution keeps the session's context (JS-2), so ownership checks, Res
 the GUI see an ordinary job; it stays ``queued`` until its command runs and ends only
 after collection. The steps that need an executor in a sandbox go through ``JobPort``;
 ``ManagerPort`` is the worker's, over the execution manager and the provisioner.
+
+A worker restart does not end the job (JS-19, JS-26). The command's own execution is an
+ordinary daemon job of the job environment, which the worker's recovery reattaches or
+reports lost like any other; ``resume`` then takes the job up from its recorded phase.
+Before its command was dispatched, the job fails (``worker_restarted``) and its sandbox
+is released: nothing ran. Once it was, the job waits for that execution again and
+collects. A command lost with its sandbox, or with a daemon that came back without it,
+makes the job ``lost``, and nothing runs it again. Collection records each file it
+copies back or leaves out, so a restart in the middle copies none of them twice, and an
+ended job's manifest, once stored, is the job's outcome however often it is resumed.
 """
 
 from __future__ import annotations
@@ -37,11 +47,12 @@ import hashlib
 import logging
 import posixpath
 import re
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, Protocol
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -133,6 +144,11 @@ class JobPort(Protocol):
 
     async def submit(self, request: JobRequest) -> Execution: ...
 
+    async def find(self, context: ExecutionContext, operation_id: str) -> Execution | None:
+        """The execution of an operation in ``context``'s project and environment, if one
+        was submitted; never submits one."""
+        ...
+
     async def wait(self, execution_id: str) -> Execution:
         """The execution once it has ended."""
         ...
@@ -201,6 +217,23 @@ class _Run:
     not_collected: list[UncollectedFile] = field(default_factory=list[UncollectedFile])
     complete: bool = True
     notices: list[str] = field(default_factory=list[str])
+
+
+class _Prepared(BaseModel):
+    """What preparation found, recorded before the command (step ``prepared``)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    location: Location | None = None
+    packages: ReplayedPackages = ReplayedPackages()
+    inputs: tuple[ManifestFile, ...] = ()
+
+
+class _Copied(BaseModel):
+    """One file of collection, copied back or left out (step ``copy-<n>``)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    collected: ManifestFile | None = None
+    left: UncollectedFile | None = None
 
 
 def granted(settings: EnvironmentSettings, resources: Resources) -> list[str]:
@@ -348,9 +381,19 @@ class JobSandboxes:
 
     async def run(self, live: Live, request: JobRequest, journal: ExecutionJournal) -> None:
         """Take the job from its sandbox's creation to its end; whatever happens, it ends."""
+        await self._guarded(live, journal, self._run(live, request, journal))
+
+    async def resume(self, live: Live, request: JobRequest, journal: ExecutionJournal) -> None:
+        """Take up a job a previous worker left unfinished, from its recorded phase; its
+        command is never submitted again. Whatever happens, it ends."""
+        await self._guarded(live, journal, self._resume(live, request, journal))
+
+    async def _guarded(
+        self, live: Live, journal: ExecutionJournal, work: Coroutine[object, object, None]
+    ) -> None:
         execution_id = live.execution.execution_id
         try:
-            await self._run(live, request, journal)
+            await work
         except Exception as exc:
             _log.exception("job sandbox of %s failed", execution_id)
             error = ErrorInfo(
@@ -438,6 +481,12 @@ class JobSandboxes:
         if live.cancel_requested:
             await self._cancelled(live, journal, found, release=True)
             return
+        prepared = _Prepared(
+            location=found.location, packages=found.packages, inputs=tuple(found.inputs)
+        )
+        self.records.record_step(
+            execution_id, "prepared", prepared.model_dump_json(), self.clock.now()
+        )
         self._phase(live, journal, "running")
         journal.save(
             live,
@@ -447,7 +496,7 @@ class JobSandboxes:
         )
         journal.state(live, ExecutionState.RUNNING)
         inner_request = JobRequest(
-            operation_id=f"{_operation(execution_id)}.run",
+            operation_id=_run_operation(execution_id),
             context=job_context,
             script=request.script,
             argv=request.argv,
@@ -464,10 +513,77 @@ class JobSandboxes:
         if live.cancel_requested:
             with contextlib.suppress(WorkerError):
                 await port.cancel(inner.execution_id)
-        ended = await self._await(port, inner.execution_id, record.environment_id)
-        if ended is None:
+        await self._complete(live, request, journal, profile, found, inner.execution_id)
+
+    async def _resume(self, live: Live, request: JobRequest, journal: ExecutionJournal) -> None:
+        port = self._port()
+        execution_id = live.execution.execution_id
+        record = self._record(execution_id)
+        found = self._prepared(execution_id)
+        job_context = request.context.model_copy(update={"environment_id": record.environment_id})
+        inner: Execution | None = None
+        if record.phase not in ("creating", "preparing"):
+            inner = await port.find(job_context, _run_operation(execution_id))
+        stored = self.records.manifest(execution_id)
+        if stored is not None:
+            # It ended before the restart; only reporting it was cut short.
+            manifest = stored[0]
+            result = (
+                inner.result
+                if inner is not None and inner.state in TERMINAL_STATES and inner.result
+                else Result(exit_code=manifest.exit_code, signal=manifest.signal)
+            )
+            await self._end(
+                live, journal, found, manifest.outcome, result, manifest.reason,
+                f"the job ended before the worker restarted; see .jobs/{execution_id}"
+                "/manifest.json",
+                release=manifest.outcome is ExecutionState.SUCCEEDED
+                and manifest.collection == "complete",
+            )  # fmt: skip
+            return
+        if inner is None:
+            # Its command was never dispatched (JS-19): nothing ran, and nothing will.
+            await self._end(
+                live, journal, found, ExecutionState.FAILED, Result(), "worker_restarted",
+                "the worker restarted before the job's command was dispatched; nothing ran",
+                release=True,
+            )  # fmt: skip
+            return
+        self._inner[execution_id] = inner.execution_id
+        profile = self.settings.job_profiles.get(record.profile)
+        if profile is None:
+            with contextlib.suppress(WorkerError):
+                await port.cancel(inner.execution_id)
+            await self._end(
+                live, journal, found, ExecutionState.FAILED, Result(), "sandbox_unavailable",
+                f"the pool no longer offers job profile {record.profile!r}, so the job was"
+                " cancelled and its sandbox kept", release=False,
+            )  # fmt: skip
+            return
+        if live.cancel_requested and inner.state not in TERMINAL_STATES:
+            with contextlib.suppress(WorkerError):
+                await port.cancel(inner.execution_id)
+        await self._complete(live, request, journal, profile, found, inner.execution_id)
+
+    async def _complete(
+        self,
+        live: Live,
+        request: JobRequest,
+        journal: ExecutionJournal,
+        profile: JobProfile,
+        found: _Run,
+        inner: str,
+    ) -> None:
+        """Wait for the job's own execution, collect, and end the job."""
+        port = self._port()
+        record = self._record(live.execution.execution_id)
+        job_context = request.context.model_copy(update={"environment_id": record.environment_id})
+        ended = await self._await(port, inner, record.environment_id)
+        if ended is None or (
+            ended.state is ExecutionState.LOST and await self._gone(record.environment_id)
+        ):
             # The sandbox went with its daemon: the outcome is unknown, and the command
-            # is never submitted again (JS-20).
+            # is never submitted again (JS-20). Nothing is left to collect or keep.
             await self._end(
                 live, journal, found, ExecutionState.LOST, Result(), "sandbox_lost",
                 "the job's sandbox was deleted or evicted while the job ran; its outcome is"
@@ -496,6 +612,13 @@ class JobSandboxes:
                 f"the job sandbox runs at isolation tier {tier}; the request or the session"
                 f" environment needs {minimum}",
             )
+
+    async def _gone(self, environment_id: str) -> bool:
+        """Whether the gateway says the job's own sandbox is gone (JS-20)."""
+        try:
+            return await self.environments.present(environment_id) is False
+        except WorkerError:
+            return False
 
     async def _await(self, port: JobPort, inner: str, environment_id: str) -> Execution | None:
         """The job's own execution once it ends; None when its sandbox is lost first."""
@@ -740,11 +863,31 @@ class JobSandboxes:
                     )
             written = written[:MAX_MANIFEST_FILES]
         pairs += [(path, f".jobs/{execution_id}/files/{path}") for path in written]
+        # Each file's outcome is recorded once, in order, so a collection a restart cut
+        # short goes on after the last one recorded and copies none of them again; its
+        # deadline runs from when it first began.
+        now = self.clock.now()
+        began = datetime.fromisoformat(
+            self.records.record_step(execution_id, "collecting", now.isoformat(), now)
+        )
+        steps = self.records.steps(execution_id)
         budget = profile.collect_max_bytes
+        pending: list[tuple[int, str, str]] = []
+        for index, (source, target) in enumerate(pairs):
+            recorded = steps.get(f"copy-{index}")
+            if recorded is None:
+                pending.append((index, source, target))
+            else:
+                budget -= _apply(found, _Copied.model_validate_json(recorded))
+        remaining = max(0.0, self.collect_timeout - (now - began).total_seconds())
         try:
-            async with asyncio.timeout(self.collect_timeout):
-                for source, target in pairs:
-                    budget -= await self._copy_back(source, target, budget, session, job, found)
+            async with asyncio.timeout(remaining):
+                for index, source, target in pending:
+                    copied = await self._copy_back(source, target, budget, session, job)
+                    recorded = self.records.record_step(
+                        execution_id, f"copy-{index}", copied.model_dump_json(), self.clock.now()
+                    )
+                    budget -= _apply(found, _Copied.model_validate_json(recorded))
         except TimeoutError:
             found.complete = False
             found.not_collected.append(
@@ -758,15 +901,11 @@ class JobSandboxes:
         budget: int,
         session: ExecutionContext,
         job: ExecutionContext,
-        found: _Run,
-    ) -> int:
-        """Copy one file back; return the bytes it took, 0 when it was left out."""
+    ) -> _Copied:
+        """Copy one file back, or say why it was left out."""
 
-        def leave(reason: str) -> int:
-            found.complete = False
-            if len(found.not_collected) < MAX_MANIFEST_FILES:
-                found.not_collected.append(UncollectedFile(path=source[:4096], reason=reason[:300]))
-            return 0
+        def leave(reason: str) -> _Copied:
+            return _Copied(left=UncollectedFile(path=source[:4096], reason=reason[:300]))
 
         try:
             validate_relative_path(target)
@@ -786,8 +925,7 @@ class JobSandboxes:
             )
         except WorkerError as error:
             return leave(f"writing it to the session failed: {error.message}")
-        found.collected.append(ManifestFile(path=target, size=len(data), sha256=digest))
-        return len(data)
+        return _Copied(collected=ManifestFile(path=target, size=len(data), sha256=digest))
 
     # The end.
 
@@ -812,45 +950,33 @@ class JobSandboxes:
         *,
         release: bool,
     ) -> None:
-        """Store the manifest, release or retain the sandbox, then end the job."""
+        """Store the manifest, release or retain the sandbox, then end the job. A manifest
+        stored already, before a restart, is the job's outcome and is never rewritten."""
         execution = live.execution
         execution_id = execution.execution_id
-        record = self._record(execution_id)
-        info = self.environments.records.get(record.environment_id)
+        stored = self.records.manifest(execution_id)
+        if stored is None:
+            manifest, digest = self._save_manifest(execution, found, state, result, reason)
+        else:
+            manifest, digest = stored
+            state, reason = manifest.outcome, manifest.reason
+            found = _Run(
+                location=found.location,
+                packages=manifest.packages,
+                inputs=list(manifest.inputs),
+                collected=list(manifest.collected),
+                not_collected=list(manifest.not_collected),
+                complete=manifest.collection == "complete",
+                notices=found.notices,
+            )
         collection: CollectionStatus = "complete" if found.complete else "incomplete"
-        profile = self.settings.job_profiles.get(record.profile)
-        driver = launch_settings(profile) if profile is not None else ""
-        location = found.location
-        manifest = JobResultManifest(
-            job_id=execution_id,
-            attempt_id=execution.attempt_id,
-            profile=record.profile,
-            driver_config_sha256=hashlib.sha256(driver.encode()).hexdigest(),
-            image=info.image if info is not None else "",
-            environment_id=record.environment_id,
-            sandbox_id=info.sandbox_id if info is not None else None,
-            isolation_tier=location.isolation_tier if location is not None else None,
-            isolation_evidence=location.isolation_evidence if location is not None else None,
-            submitted_at=execution.submitted_at,
-            started_at=execution.started_at,
-            ended_at=self.clock.now(),
-            outcome=state,
-            reason=reason,
-            exit_code=result.exit_code,
-            signal=result.signal,
-            packages=found.packages,
-            inputs=tuple(found.inputs),
-            collected=tuple(found.collected),
-            not_collected=tuple(found.not_collected),
-            collection=collection,
-        )
-        digest = self.records.save_manifest(manifest, self.clock.now())
         self.records.update(execution_id, now=self.clock.now(), collection=collection)
         await self._write_copy(execution, manifest, found)
-        if release:
-            await self._release(execution_id)
-        else:
-            await self._retain(execution_id)
+        if self._record(execution_id).phase not in ("released", "retained"):
+            if release or self._closing(execution_id):
+                await self._release(execution_id)
+            else:
+                await self._retain(execution_id)
         current = self._record(execution_id)
         phase = current.phase
         if execution.job is not None and execution.job.sandbox is not None:
@@ -888,6 +1014,46 @@ class JobSandboxes:
         if reason is not None and message is not None:
             update["error"] = ErrorInfo(kind=_KINDS[reason], message=f"{reason}: {message}")
         journal.finish(live, state, result.model_copy(update=update))
+
+    def _save_manifest(
+        self,
+        execution: Execution,
+        found: _Run,
+        state: ExecutionState,
+        result: Result,
+        reason: JobFailureReason | None,
+    ) -> tuple[JobResultManifest, str]:
+        """Store the job's manifest (JS-16), once; return it with its digest."""
+        execution_id = execution.execution_id
+        record = self._record(execution_id)
+        info = self.environments.records.get(record.environment_id)
+        profile = self.settings.job_profiles.get(record.profile)
+        driver = launch_settings(profile) if profile is not None else ""
+        location = found.location
+        manifest = JobResultManifest(
+            job_id=execution_id,
+            attempt_id=execution.attempt_id,
+            profile=record.profile,
+            driver_config_sha256=hashlib.sha256(driver.encode()).hexdigest(),
+            image=info.image if info is not None else "",
+            environment_id=record.environment_id,
+            sandbox_id=info.sandbox_id if info is not None else None,
+            isolation_tier=location.isolation_tier if location is not None else None,
+            isolation_evidence=location.isolation_evidence if location is not None else None,
+            submitted_at=execution.submitted_at,
+            started_at=execution.started_at,
+            ended_at=self.clock.now(),
+            outcome=state,
+            reason=reason,
+            exit_code=result.exit_code,
+            signal=result.signal,
+            packages=found.packages,
+            inputs=tuple(found.inputs),
+            collected=tuple(found.collected),
+            not_collected=tuple(found.not_collected),
+            collection="complete" if found.complete else "incomplete",
+        )
+        return manifest, self.records.save_manifest(manifest, self.clock.now())
 
     async def _write_copy(
         self, execution: Execution, manifest: JobResultManifest, found: _Run
@@ -965,16 +1131,31 @@ class JobSandboxes:
                     released.append(row.execution_id)
         return released
 
-    async def start(self) -> None:
-        """After a restart: a job sandbox's job the previous worker left unfinished was
-        reported lost (its command is never run again), so its sandbox is retained, or
-        released if it was still being created; then overdue retentions are released."""
-        for row in self.records.listed(phases=ACTIVE):
+    async def start(
+        self,
+        journal: ExecutionJournal,
+        spawn: Callable[[Coroutine[object, object, None]], object],
+    ) -> None:
+        """After a restart, once the worker's recovery has reattached or lost the job
+        environments' own executions: resume each job the previous worker left
+        unfinished (``resume``, in a task ``spawn`` starts); retain the sandbox of an
+        active one whose job ended without it, or release it if it was still being
+        created; then release overdue retentions. A row whose job is gone is kept."""
+        for row in self.records.listed():
             execution = self.store.execution(row.execution_id)
             if execution is None:
-                _log.warning("job sandbox %s has no job record; it is kept", row.environment_id)
+                if row.phase in ACTIVE:
+                    _log.warning("job sandbox %s has no job record; it is kept", row.environment_id)
                 continue
             if execution.state not in TERMINAL_STATES:
+                live = journal.live.get(row.execution_id)
+                request = self._request(row.execution_id)
+                if live is None or request is None:
+                    _log.warning("job %s cannot be resumed; its sandbox is kept", row.execution_id)
+                    continue
+                spawn(self.resume(live, request, journal))
+                continue
+            if row.phase not in ACTIVE:
                 continue
             if self.records.manifest(row.execution_id) is None:
                 info = self.environments.records.get(row.environment_id)
@@ -1020,6 +1201,23 @@ class JobSandboxes:
                 await self._sweeper
             self._sweeper = None
 
+    def release_on_close(self, execution: Execution) -> bool:
+        """Have a job sandbox's job release its sandbox when it ends, collected but not
+        retained, as closing its session asks (JS-25). Recorded, so a restarted worker
+        keeps to it. Only the job's own row, of its project and session environment, is
+        marked; returns whether it was."""
+        record = self.records.get(execution.execution_id)
+        if (
+            record is None
+            or record.project_id != execution.context.project_id
+            or record.session_environment != execution.context.environment_id
+        ):
+            return False
+        self.records.record_step(
+            execution.execution_id, "release", '"session_closed"', self.clock.now()
+        )
+        return True
+
     # Reading.
 
     def sandbox(self, execution_id: str) -> JobSandboxRecord | None:
@@ -1042,6 +1240,30 @@ class JobSandboxes:
             raise WorkerError(ErrorKind.INTERNAL, f"no job sandbox record for {execution_id}")
         return record
 
+    def _closing(self, execution_id: str) -> bool:
+        """Whether closing the job's session asked for its sandbox's early release."""
+        return "release" in self.records.steps(execution_id)
+
+    def _prepared(self, execution_id: str) -> _Run:
+        """What the job's preparation found, as recorded before its command."""
+        recorded = self.records.steps(execution_id).get("prepared")
+        if recorded is None:
+            return _Run()
+        prepared = _Prepared.model_validate_json(recorded)
+        return _Run(
+            location=prepared.location, packages=prepared.packages, inputs=list(prepared.inputs)
+        )
+
+    def _request(self, execution_id: str) -> JobRequest | None:
+        """The job's request as the worker stored it at submission."""
+        saved = self.store.recovery(execution_id)
+        if saved is None:
+            return None
+        try:
+            return JobRequest.model_validate_json(saved[0])
+        except ValidationError:
+            return None
+
     def _phase(self, live: Live, journal: ExecutionJournal, phase: JobSandboxPhase) -> None:
         self.records.update(live.execution.execution_id, now=self.clock.now(), phase=phase)
         job = live.execution.job
@@ -1057,6 +1279,22 @@ class _TooLargeError(Exception):
 def _operation(execution_id: str) -> str:
     """The prefix of the worker's own operation IDs for the job's steps."""
     return OPERATION_PREFIX + execution_id.removeprefix("exe-")
+
+
+def _run_operation(execution_id: str) -> str:
+    """The operation ID of the job's own execution in its sandbox: its command."""
+    return f"{_operation(execution_id)}.run"
+
+
+def _apply(found: _Run, copied: _Copied) -> int:
+    """Add one file's collection to what the run found; return the bytes it took."""
+    if copied.collected is not None:
+        found.collected.append(copied.collected)
+        return copied.collected.size
+    found.complete = False
+    if copied.left is not None and len(found.not_collected) < MAX_MANIFEST_FILES:
+        found.not_collected.append(copied.left)
+    return 0
 
 
 def _conda_key(package: CondaPackage) -> tuple[str, ...]:
@@ -1146,6 +1384,15 @@ class ManagerPort:
 
     async def submit(self, request: JobRequest) -> Execution:
         return (await self.manager.submit(request))[0]
+
+    async def find(self, context: ExecutionContext, operation_id: str) -> Execution | None:
+        found = self.manager.store.find_operation(context.project_id, operation_id)
+        if found is None:
+            return None
+        execution = self.manager.get(found[0], context.project_id)
+        if execution.context.environment_id != context.environment_id:
+            return None
+        return execution
 
     async def wait(self, execution_id: str) -> Execution:
         return await self.manager.wait(execution_id)

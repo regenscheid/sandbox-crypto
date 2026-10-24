@@ -9,6 +9,11 @@ environment, and only that record's sandbox is ever deleted (JS-26).
 
 A job's result manifest (JS-16) is stored once. Triggers refuse to change or delete it,
 so a later bug or a second writer cannot rewrite what a job returned.
+
+A job's progress (version 9) is what its run found that a restarted worker needs to
+finish it without doing anything twice: what preparation found, when collection began,
+each file collection copied back or left out, and a session close's early release. Each
+step is recorded once, and the first record holds.
 """
 
 from __future__ import annotations
@@ -63,6 +68,23 @@ def create_schema(db: sqlite3.Connection) -> None:
             f"CREATE TRIGGER job_manifests_immutable_{action.lower()} BEFORE {action}"
             " ON job_manifests BEGIN SELECT RAISE(ABORT, 'job manifests are immutable'); END"
         )
+
+
+def create_progress_schema(db: sqlite3.Connection) -> None:
+    """Append-only worker migration (version 9): each job's recorded steps."""
+    db.execute(
+        """CREATE TABLE job_progress (
+    execution_id TEXT NOT NULL REFERENCES job_sandboxes(execution_id),
+    step TEXT NOT NULL CHECK (length(step) BETWEEN 1 AND 32 AND step NOT GLOB '*[^a-z0-9-]*'),
+    record TEXT NOT NULL CHECK (length(CAST(record AS BLOB)) BETWEEN 2 AND 4194304),
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (execution_id, step)
+) STRICT"""
+    )
+    db.execute(
+        "CREATE TRIGGER job_progress_immutable BEFORE UPDATE ON job_progress"
+        " BEGIN SELECT RAISE(ABORT, 'job progress steps are recorded once'); END"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +194,26 @@ class JobSandboxRecords:
             (manifest.job_id, digest, text, now.isoformat()),
         )
         return digest
+
+    def record_step(self, execution_id: str, step: str, record: str, now: datetime) -> str:
+        """Record one of the job's steps once; return the step's record, the first one
+        when it was recorded already."""
+        self.db.execute(
+            "INSERT INTO job_progress (execution_id,step,record,recorded_at) VALUES (?,?,?,?)"
+            " ON CONFLICT (execution_id, step) DO NOTHING",
+            (execution_id, step, record, now.isoformat()),
+        )
+        found = self.steps(execution_id).get(step)
+        if found is None:
+            raise WorkerError(ErrorKind.INTERNAL, f"step {step} of {execution_id} was not recorded")
+        return found
+
+    def steps(self, execution_id: str) -> dict[str, str]:
+        """The job's recorded steps, by name."""
+        rows = self.db.execute(
+            "SELECT step, record FROM job_progress WHERE execution_id=?", (execution_id,)
+        ).fetchall()
+        return {str(step): str(record) for step, record in rows}
 
     def manifest(self, execution_id: str) -> tuple[JobResultManifest, str] | None:
         row = self.db.execute(

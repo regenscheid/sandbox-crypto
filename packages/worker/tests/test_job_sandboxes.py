@@ -17,10 +17,11 @@ import json
 import os
 import sqlite3
 import tomllib
-from collections.abc import AsyncIterator
+from collections import Counter
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -50,6 +51,7 @@ from sandbox_science.contracts import (
     ProvisionState,
     ReadFileRequest,
     Result,
+    SessionCloseRequest,
     WriteFileRequest,
     WriteFileResult,
     new_id,
@@ -68,6 +70,7 @@ from sandbox_science.worker.identity import execution_digest, same_execution
 from sandbox_science.worker.job_sandboxes import (
     JobFailureError,
     JobSandboxes,
+    ManagerPort,
     launch_settings,
     missing_packages,
     offers,
@@ -75,6 +78,7 @@ from sandbox_science.worker.job_sandboxes import (
 )
 from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.settings import (
     JOB_SANDBOX_LABEL,
     EnvironmentSettings,
@@ -147,9 +151,26 @@ class FakePort:
         self.exit_code = 0
         self.hold = asyncio.Event()
         self.hold.set()
+        self.located = asyncio.Event()
+        """Cleared, the probe of a job sandbox's executor waits: preparation stalls."""
+        self.located.set()
+        self.gates: dict[str, asyncio.Event] = {}
+        """Writes to the session of a path ending so wait for the event."""
+        self.gated: list[str] = []
+        self.write_counts: Counter[tuple[str, str]] = Counter()
         self._jobs: dict[str, Execution] = {}
 
+    def lose_all(self) -> None:
+        """Every job's own execution is lost, as recovery reports one whose daemon went."""
+        for execution_id, execution in self._jobs.items():
+            self._jobs[execution_id] = execution.model_copy(
+                update={"state": ExecutionState.LOST, "result": Result()}
+            )
+        self.hold.set()
+
     async def location(self, environment_id: str) -> Location:
+        if environment_id != SESSION:
+            await self.located.wait()
         tier = self.tiers.get(environment_id, 3)
         return Location(
             pool_id="test",
@@ -195,12 +216,27 @@ class FakePort:
         self._jobs[execution_id] = execution
         return execution.model_copy(update={"state": ExecutionState.QUEUED, "result": None})
 
+    async def find(self, context: ExecutionContext, operation_id: str) -> Execution | None:
+        for execution in self._jobs.values():
+            if (execution.operation_id, execution.context) == (operation_id, context):
+                if self.hold.is_set():
+                    return execution
+                return execution.model_copy(
+                    update={"state": ExecutionState.RUNNING, "result": None}
+                )
+        return None
+
     async def wait(self, execution_id: str) -> Execution:
         await self.hold.wait()
         return self._jobs[execution_id]
 
     async def cancel(self, execution_id: str) -> None:
         self.cancelled.append(execution_id)
+        execution = self._jobs.get(execution_id)
+        if execution is not None and execution.state is not ExecutionState.LOST:
+            self._jobs[execution_id] = execution.model_copy(
+                update={"state": ExecutionState.CANCELLED}
+            )
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
         key = (request.context.environment_id, request.path)
@@ -218,7 +254,13 @@ class FakePort:
         )
 
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
+        environment = request.context.environment_id
+        for suffix, gate in self.gates.items():
+            if environment == SESSION and request.path.endswith(suffix):
+                self.gated.append(request.path)
+                await gate.wait()
         data = base64.b64decode(request.content_b64)
+        self.write_counts[environment, request.path] += 1
         self.files[request.context.environment_id, request.path] = data
         return WriteFileResult(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
 
@@ -321,22 +363,35 @@ class Pool:
 
         self.environments.release = release
         self.store = Store(tmp_path / "worker" / "worker.sqlite3")
-        self.manager = ExecutionManager(
-            self.store,
-            LocalBackend(LocalBackendSettings(), tmp_path / "worker"),
-            Blobs(tmp_path / "worker" / "artifacts"),
-            pool_id="test",
-            max_artifact_size=1 << 20,
-            state_dir=tmp_path / "worker",
-            lifecycle=EnvironmentLifecycle(job_resources=self.environments.job_resources),
-        )
-        self.sandboxes = JobSandboxes(self.environments, self.store, poll_seconds=0.05)
         self.port = FakePort()
-        self.sandboxes.port = self.port
-        self.manager.job_sandboxes = self.sandboxes
+        self.manager, self.sandboxes = self._worker()
         self.policy = self.add(
             granting(tmp_path, job_profiles=["medium", "large"], job_sandboxes=1)
         )
+
+    def _worker(self) -> tuple[ExecutionManager, JobSandboxes]:
+        manager = ExecutionManager(
+            self.store,
+            LocalBackend(LocalBackendSettings(), self.tmp / "worker"),
+            Blobs(self.tmp / "worker" / "artifacts"),
+            pool_id="test",
+            max_artifact_size=1 << 20,
+            state_dir=self.tmp / "worker",
+            lifecycle=EnvironmentLifecycle(job_resources=self.environments.job_resources),
+        )
+        sandboxes = JobSandboxes(self.environments, self.store, poll_seconds=0.05)
+        sandboxes.port = self.port
+        manager.job_sandboxes = sandboxes
+        return manager, sandboxes
+
+    async def restart(self, meanwhile: Callable[[], None] = lambda: None) -> None:
+        """The worker stops, ``meanwhile`` happens, and a new one starts over the same
+        store and sandboxes. The fake port keeps the jobs' own executions, as their
+        daemons do, and stands for the recovery that reattaches or loses them."""
+        await self.manager.close()
+        meanwhile()
+        self.manager, self.sandboxes = self._worker()
+        await self.manager.start()
 
     def add(self, path: Path) -> str:
         return self.environments.store.add_policy(path.read_bytes()).digest
@@ -832,31 +887,248 @@ async def test_cancelling_a_running_job_cancels_its_own_execution(pool: Pool) ->
     assert ended.state in TERMINAL_STATES
 
 
-async def test_after_a_restart_an_unfinished_job_is_lost_and_its_sandbox_kept(
-    tmp_path: Path,
+# Worker restarts (JS-19, JS-20, JS-26) and closing the session (JS-25).
+
+
+def collected_once(pool: Pool, execution_id: str) -> list[str]:
+    """The paths the job's collection wrote to the session, each checked written once."""
+    prefix = f".jobs/{execution_id}/"
+    written = {
+        path: count
+        for (environment, path), count in pool.port.write_counts.items()
+        if environment == SESSION and path.startswith(prefix) and path != prefix + "manifest.json"
+    }
+    assert written
+    assert set(written.values()) == {1}, written
+    return sorted(written)
+
+
+async def test_a_restart_while_the_job_runs_reattaches_it_and_collects_once(pool: Pool) -> None:
+    pool.port.hold.clear()  # the command runs across the restart
+    job, _ = await pool.manager.submit(pool.request(inputs=["data"]))
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    await pool.restart()
+    # The job is still running after the restart, not lost.
+    assert pool.manager.get(job.execution_id).state is ExecutionState.RUNNING
+    pool.port.hold.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.SUCCEEDED, ended.result
+    assert len(pool.port.submitted) == 1  # never submitted again
+    paths = collected_once(pool, job.execution_id)
+    assert f".jobs/{job.execution_id}/files/out/result.txt" in paths
+    status = await pool.manager.job_status(job.execution_id)
+    manifest = status.manifest
+    assert manifest is not None
+    assert manifest.collection == "complete"
+    assert sorted(file.path for file in manifest.collected) == paths
+    # What preparation found before the restart is in the manifest.
+    assert [file.path for file in manifest.inputs] == ["data/input.txt", "data/more/b.bin"]
+    assert manifest.isolation_tier == 3
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    assert pool.sandbox_of(job.execution_id) not in pool.fake.read()["sandboxes"]
+
+
+async def test_a_restart_during_collection_finishes_it_without_duplicates(pool: Pool) -> None:
+    pool.port.writes = {"out/a.txt": b"a", "out/b.txt": b"b", "out/c.txt": b"c"}
+    gate = pool.port.gates["files/out/b.txt"] = asyncio.Event()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.gated), timeout=15)
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "collecting"
+    await pool.restart()  # the worker stops with b.txt's copy under way
+    gate.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.SUCCEEDED, ended.result
+    assert len(pool.port.submitted) == 1
+    paths = collected_once(pool, job.execution_id)
+    files = f".jobs/{job.execution_id}/files/out/"
+    assert [path for path in paths if path.startswith(files)] == [
+        files + name for name in ("a.txt", "b.txt", "c.txt")
+    ]
+    manifest = pool.sandboxes.manifest(job.execution_id)
+    assert manifest is not None
+    assert sorted(file.path for file in manifest.collected) == paths
+    assert manifest.collection == "complete"
+    assert ended.result is not None
+    assert sorted(ended.result.written_files) == paths
+    steps = pool.store.job_sandboxes.steps(job.execution_id)
+    assert {"prepared", "collecting", "copy-0", "copy-4"} <= set(steps)
+
+
+async def test_a_restart_after_the_manifest_reports_it_unchanged(pool: Pool) -> None:
+    gate = pool.port.gates["manifest.json"] = asyncio.Event()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.gated), timeout=15)
+    stored = pool.store.job_sandboxes.manifest(job.execution_id)
+    assert stored is not None  # stored before its copy, the release and the job's end
+    await pool.restart()
+    gate.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.SUCCEEDED
+    assert pool.store.job_sandboxes.manifest(job.execution_id) == stored
+    status = await pool.manager.job_status(job.execution_id)
+    assert status.execution.job is not None
+    assert status.execution.job.sandbox is not None
+    assert status.execution.job.sandbox.manifest_sha256 == stored[1]
+    assert status.execution.job.sandbox.phase == "released"
+    collected_once(pool, job.execution_id)
+
+
+async def test_a_sandbox_gone_at_restart_makes_the_job_lost_and_nothing_reruns_it(
+    pool: Pool,
 ) -> None:
-    pool = Pool(tmp_path)
-    await pool.session()
     pool.port.hold.clear()
     job, _ = await pool.manager.submit(pool.request())
     await eventually(lambda: bool(pool.port.submitted), timeout=15)
-    await pool.manager.close()  # the worker stops; the job's outcome is unknown to it
-    assert pool.manager.get(job.execution_id).state is ExecutionState.LOST
-    restarted = JobSandboxes(pool.environments, pool.store, poll_seconds=0.05)
-    restarted.port = pool.port
-    await restarted.start()
-    try:
+    sandbox = pool.sandbox_of(job.execution_id)
+
+    def gone() -> None:
+        state = pool.fake.read()
+        del state["sandboxes"][sandbox]  # the pod went while the worker was down
+        pool.fake.write(state)
+        pool.port.lose_all()  # recovery found the daemon gone with it
+
+    await pool.restart(gone)
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.LOST
+    assert ended.result is not None
+    assert ended.result.error is not None
+    assert ended.result.error.message.startswith("sandbox_lost")
+    assert len(pool.port.submitted) == 1  # never run again
+    assert len(pool.fake.calls("sandbox", "create")) == 2
+    # Nothing is left to keep: the record is released once the gateway confirms the
+    # recorded sandbox is gone, and holds none of the project's retention places.
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    manifest = pool.sandboxes.manifest(job.execution_id)
+    assert manifest is not None
+    assert (manifest.outcome, manifest.reason) == (ExecutionState.LOST, "sandbox_lost")
+    assert manifest.collected == ()
+
+
+async def test_a_daemon_back_without_the_job_makes_it_lost_and_keeps_the_sandbox(
+    pool: Pool,
+) -> None:
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    # The sandbox stays, but its daemon is a new incarnation that never had the job.
+    await pool.restart(pool.port.lose_all)
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.LOST
+    assert ended.result is not None
+    assert ended.result.error is not None
+    assert ended.result.error.message.startswith("sandbox_lost")
+    assert len(pool.port.submitted) == 1
+    # Loss retains the sandbox, stopped, with what was reached collected (JS-17, JS-25).
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "retained"
+    assert pool.fake.read()["sandboxes"][pool.sandbox_of(job.execution_id)]["phase"] == "Stopped"
+    collected_once(pool, job.execution_id)
+
+
+async def test_a_restart_before_the_command_fails_the_job_and_releases_its_sandbox(
+    pool: Pool,
+) -> None:
+    pool.port.located.clear()  # preparation stalls in the job sandbox
+    job, _ = await pool.manager.submit(pool.request())
+
+    def preparing() -> bool:
         record = pool.store.job_sandboxes.get(job.execution_id)
-        assert record is not None
-        assert record.phase == "retained"
-        manifest = restarted.manifest(job.execution_id)
-        assert manifest is not None
-        assert manifest.reason == "worker_restarted"
-        assert len(pool.port.submitted) == 1
-    finally:
-        await restarted.close()
-        pool.environments.close()
-        pool.store.close()
+        return record is not None and record.phase == "preparing"
+
+    await eventually(preparing, timeout=15)
+    await pool.restart()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.FAILED
+    assert ended.result is not None
+    assert ended.result.error is not None
+    assert ended.result.error.message.startswith("worker_restarted")
+    assert pool.port.submitted == []  # nothing ran, and nothing will
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    assert pool.sandbox_of(job.execution_id) not in pool.fake.read()["sandboxes"]
+
+
+async def test_a_job_an_older_worker_reported_lost_keeps_its_sandbox(pool: Pool) -> None:
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+
+    def lost() -> None:
+        execution = pool.store.execution(job.execution_id)
+        assert execution is not None
+        pool.store.update_execution(execution.model_copy(update={"state": ExecutionState.LOST}))
+
+    await pool.restart(lost)
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "retained"
+    manifest = pool.sandboxes.manifest(job.execution_id)
+    assert manifest is not None
+    assert manifest.reason == "worker_restarted"
+    assert len(pool.port.submitted) == 1
+
+
+async def test_closing_the_session_cancels_the_job_and_releases_its_sandbox(pool: Pool) -> None:
+    pool.port.hold.clear()
+    request = pool.request()
+    job, _ = await pool.manager.submit(request)
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    closing = asyncio.create_task(
+        pool.manager.close_session(SessionCloseRequest(context=request.context))
+    )
+    await eventually(lambda: bool(pool.port.cancelled), timeout=15)
+    pool.port.hold.set()  # the command ends as cancelled
+    await asyncio.wait_for(closing, 30)
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.CANCELLED
+    # Collected, then released without retention, though a cancellation retains otherwise.
+    collected_once(pool, job.execution_id)
+    record = pool.store.job_sandboxes.get(job.execution_id)
+    assert record is not None
+    assert record.phase == "released"
+    assert pool.sandbox_of(job.execution_id) not in pool.fake.read()["sandboxes"]
+
+
+async def test_another_sessions_close_leaves_the_job_alone(pool: Pool) -> None:
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    other = ExecutionContext(project_id="p1", session_id="s2", environment_id=SESSION)
+    await pool.manager.close_session(SessionCloseRequest(context=other))
+    assert pool.port.cancelled == []
+    assert "release" not in pool.store.job_sandboxes.steps(job.execution_id)
+    # Nor is a job of another project marked for release.
+    execution = pool.manager.get(job.execution_id)
+    foreign = execution.model_copy(
+        update={"context": execution.context.model_copy(update={"project_id": "p2"})}
+    )
+    assert not pool.sandboxes.release_on_close(foreign)
+    pool.port.hold.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.SUCCEEDED
+
+
+async def test_the_workers_port_finds_an_operation_without_submitting_it(pool: Pool) -> None:
+    port = ManagerPort(pool.manager, cast(Provisioner, None))
+    context = ExecutionContext(project_id="p1", session_id="s1", environment_id=SESSION)
+    assert await port.find(context, "plain") is None
+    assert pool.store.find_operation("p1", "plain") is None  # nothing was submitted
+    job, _ = await pool.manager.submit(pool.request("plain", script="true", profile=None))
+    found = await port.find(context, "plain")
+    assert found is not None
+    assert found.execution_id == job.execution_id
+    elsewhere = context.model_copy(update={"environment_id": "env-2"})
+    assert await port.find(elsewhere, "plain") is None
+    assert await port.find(context.model_copy(update={"project_id": "p2"}), "plain") is None
+    await asyncio.wait_for(pool.manager.wait(job.execution_id), 60)
 
 
 async def test_a_job_without_a_profile_runs_in_the_session_as_before(pool: Pool) -> None:

@@ -66,12 +66,39 @@ once, before anything is created: an unknown or ungranted profile, the project's
 `max_concurrent` and the pool's `max_job_sandboxes` (2). Job sandboxes count while
 creating, preparing, running or collecting; retained ones only hold disk.
 
-Not yet: a worker restart while a job sandbox's job is unfinished reports the job `lost`
-(its command is never rerun) and retains its sandbox, rather than reattaching it; closing
-a session or deleting its environment cancels the job but does not release its sandbox
-early; live head and tail output of a running job sandbox's job, checkpoints and
+**A worker restart.** The job's command runs as an ordinary daemon job of the job
+environment, so the worker's [recovery](WORKER.md#sandbox-daemon-and-recovery) treats it
+like any other: on start it looks the sandbox up by its recorded name and immutable ID,
+reconnects the bridge and replays the numbered events it missed, or reports that
+execution `lost` when the gateway says the sandbox is gone or a new daemon incarnation
+answers without it. The worker then takes the job up from its recorded phase, never
+submitting its command again:
+
+- **creating or preparing** (the command was not dispatched): the job ends `failed`
+  (`worker_restarted`) and its sandbox is released; nothing ran;
+- **running**: the job waits for its command again, then collects and ends as usual;
+- **collecting**: collection goes on after the last file it recorded, so no file is
+  copied back twice, within the deadline that began before the restart;
+- **ended** (the manifest is stored, the job not yet reported): the stored manifest is
+  the outcome; it is never rewritten.
+
+A command lost with its sandbox ends the job `lost` (`sandbox_lost`) and releases the
+record once deletion by identity confirms the sandbox is gone, so a gone sandbox holds
+none of the project's retention places. A command lost while its sandbox stays (a new
+daemon without it) ends the job `lost` too, collects what it can reach and retains the
+sandbox. Neither is run again. A graceful worker stop leaves a job sandbox's job
+unfinished for the next worker; it is not reported lost.
+
+**Closing the session** cancels a job sandbox's job, collects what it wrote, and releases
+the sandbox without retention. The close waits for the job for the cancel grace (30 s);
+a job still collecting goes on, and still releases its sandbox when it ends, after a
+restart too.
+
+Not yet: deleting the session environment cancels the job but does not release its
+sandbox early; live head and tail output of a running job sandbox's job, checkpoints and
 `resume_from` (increment 3), files over 100 MiB (increment 4), the GUI's profile and
-phase columns and "release now", and live Kata acceptance on the cluster.
+phase columns and "release now", the process test over a real worker restart with local
+daemons, and live Kata acceptance on the cluster.
 
 ## Waiting and the watcher
 

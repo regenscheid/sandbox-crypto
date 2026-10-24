@@ -39,6 +39,7 @@ from sandbox_science.contracts import ErrorKind
 
 from .artifact_retention import create_schema as _artifact_retention
 from .errors import WorkerError
+from .job_records import create_progress_schema as _job_progress
 from .job_records import create_schema as _job_sandboxes
 
 BASELINE: Final = 1
@@ -268,6 +269,7 @@ MIGRATIONS: list[Migration] = [
     _workspace_prefixes,
     _artifact_retention,
     _job_sandboxes,
+    _job_progress,
 ]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 

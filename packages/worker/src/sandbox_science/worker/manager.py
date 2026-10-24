@@ -12,6 +12,7 @@ reaches a terminal state whatever the executor does.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 from collections.abc import AsyncGenerator
@@ -320,7 +321,7 @@ class ExecutionManager:
         self._publication.settle_orphans()
         await self._dispatcher.restore(daemon_enabled=self.backend.daemon)
         if self.job_sandboxes is not None:
-            await self.job_sandboxes.start()
+            await self.job_sandboxes.start(self._journal, self._spawn)
 
     async def release(self, environment_id: str) -> None:
         """Stop an environment's executor before its sandbox goes away.
@@ -379,7 +380,7 @@ class ExecutionManager:
             saved = self.store.recovery(live.execution.execution_id)
             recoverable = (
                 self.backend.daemon and live.dispatched and saved is not None and bool(saved[1])
-            )
+            ) or self._dispatcher.sandboxed(live.execution)
             if live.execution.state not in TERMINAL_STATES and not recoverable:
                 self._dispatcher.lose(live, "the worker")
 
@@ -557,8 +558,28 @@ class ExecutionManager:
                 if job.context.project_id == context.project_id
                 and job.context.session_id == context.session_id
             ]
-            await self._dispatcher.cancel_jobs(jobs)
+            sandboxed = {job.execution_id for job in jobs if self._dispatcher.sandboxed(job)}
+            await asyncio.gather(
+                self._dispatcher.cancel_jobs(
+                    [job for job in jobs if job.execution_id not in sandboxed]
+                ),
+                self._close_job_sandboxes([job for job in jobs if job.execution_id in sandboxed]),
+            )
             return await self._close_session(request)
+
+    async def _close_job_sandboxes(self, jobs: list[Execution]) -> None:
+        """Cancel job sandboxes' jobs, which collect and then release their sandboxes
+        without retention (JS-25). A job still collecting after the cancel grace goes on
+        in the background, and is never reported lost for it."""
+        sandboxes = self.job_sandboxes
+        if not jobs or sandboxes is None:
+            return
+        for job in jobs:
+            sandboxes.release_on_close(job)
+        await asyncio.gather(*(self._dispatcher.cancel(job.execution_id) for job in jobs))
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(self._timeouts.cancel_grace):
+                await asyncio.gather(*(self._journal.wait(job.execution_id) for job in jobs))
 
     async def _close_session(self, request: SessionCloseRequest) -> SessionClosed:
         """Stop the session's kernels; a seam that tests replace to hold a close open."""
