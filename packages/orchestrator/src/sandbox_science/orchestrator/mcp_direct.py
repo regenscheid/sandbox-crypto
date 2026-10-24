@@ -15,18 +15,27 @@ with the middleware's reason code, which for a held call names its permission re
 (``approval_required_r12``). Both become the ``ConnectorError`` the proxy's refusal would,
 so ``Connectors`` waits for an approval and calls again exactly as it does with the proxy.
 
+The server is untrusted, and nothing marks OpenShell's denial as OpenShell's: its body is
+fixed JSON (``error``, ``detail``, the policy's and the middleware's names, ``reason_code``)
+that any server can write, with no header of its own. So a refusal that names a request is
+trusted only when the control side confirms it (``RequestCheck``): the request exists,
+stands as the code says, and is this call's, by project, server, method, tool and the
+digest of the parameters. Anything else is the server's error (``server_error``), never a
+hold: no card, no wait, and the number it named is kept only as ``unconfirmed_request``.
+
 Not wired into the harness's command line: this is the prototype the D98 decision weighs.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol, cast
 
 import aiohttp
 
@@ -45,6 +54,7 @@ RUN_HEADER: Final = "Sandbox-Science-Run"
 _HELD: Final = re.compile(
     r"(approval_required|approval_denied|escalation_timed_out)_r([0-9]{1,18})"
 )
+_HELD_KINDS: Final = frozenset({"approval_required", "approval_denied", "escalation_timed_out"})
 _CODE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PLACEHOLDER: Final = re.compile(r"openshell:resolve:env:[\x21-\x7e]{1,512}")
 
@@ -56,6 +66,39 @@ class DirectServer:
 
     url: str
     credentials: Mapping[str, str] = field(default_factory=dict[str, str])
+
+
+@dataclass(frozen=True)
+class HeldCall:
+    """What a held call's permission request must be keyed by, as the middleware keys it:
+    the project, the declared server, the method, the tool (empty for a method other than
+    ``tools/call``) and the SHA-256 of the parameters MCP defines, as compact JSON."""
+
+    project: str
+    server: str
+    method: str
+    tool: str
+    arguments: str
+
+    def fields(self) -> dict[str, str]:
+        """The fields of a ``RequestKey.mcp`` they fix; its caller and revision are left out."""
+        return {
+            "project_id": self.project,
+            "server": self.server,
+            "method": self.method,
+            "tool": self.tool,
+            "arguments": self.arguments,
+        }
+
+
+class RequestCheck(Protocol):
+    """The control side's word on a refusal that names permission request ``request``
+    with ``reason`` (``approval_required``, ``approval_denied`` or
+    ``escalation_timed_out``): whether the request exists, stands so and concerns ``call``
+    (``Approvals.confirms`` over the permission request records decides it). Blocking: the
+    client calls it in a thread."""
+
+    def __call__(self, request: int, reason: str, call: HeldCall) -> bool: ...
 
 
 class DirectClient:
@@ -71,11 +114,16 @@ class DirectClient:
         self,
         servers: Mapping[str, DirectServer],
         *,
+        project: str,
+        check: RequestCheck | None = None,
         run: str | None = None,
         timeout: float = CALL_SECONDS,
         environ: Mapping[str, str] | None = None,
     ) -> None:
         self._servers = dict(servers)
+        self._project, self._check = project, check
+        """The project whose policy the middleware applies, and the check of held calls:
+        without one, no refusal that names a request is trusted."""
         self._run = run
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._environ = environ if environ is not None else os.environ
@@ -114,8 +162,42 @@ class DirectClient:
                 if self._sessions.get(server) is task:
                     del self._sessions[server]  # the server forgot it: start again, once
                 continue
-            return _result(status, kind, body, request_id)
+            try:
+                return _result(status, kind, body, request_id)
+            except ConnectorError as error:
+                if error.kind in _HELD_KINDS:
+                    await self._confirm(error, server, method, params)
+                raise
         raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _confirm(
+        self, error: ConnectorError, server: str, method: str, params: Mapping[str, object]
+    ) -> None:
+        """Return if the control side confirms that ``error``'s request is this call's and
+        stands as its reason says; raise the server's error otherwise."""
+        request = cast(int, error.data["request"])
+        tool = params.get("name") if method == "tools/call" else None
+        try:
+            call = HeldCall(
+                self._project,
+                server,
+                method,
+                tool if isinstance(tool, str) else "",
+                _digest(params),
+            )
+        except (TypeError, ValueError, RecursionError):
+            raise _unconfirmed(error.kind, request) from None
+        if self._check is None:
+            raise _unconfirmed(error.kind, request)
+        try:
+            confirmed = await asyncio.to_thread(self._check, request, error.kind, call)
+        except Exception as exc:
+            raise ConnectorError(
+                "unavailable",
+                f"permission request {request} could not be checked ({type(exc).__name__})",
+            ) from None
+        if confirmed is not True:
+            raise _unconfirmed(error.kind, request)
 
     async def _start(self, server: str, session: str) -> str | None:
         """Start an MCP session with ``server``; the server's session ID, if it issued one.
@@ -136,7 +218,12 @@ class DirectClient:
             ) as response:
                 found = response.headers.get("Mcp-Session-Id")
                 status, kind, body = response.status, _media(response), await _read(response)
-            _result(status, kind, body, self._ids)
+            try:
+                _result(status, kind, body, self._ids)
+            except ConnectorError as error:
+                if error.kind in _HELD_KINDS:  # no request of initialize is ever confirmed
+                    raise _unconfirmed(error.kind, cast(int, error.data["request"])) from None
+                raise
             async with self._client().post(
                 self._servers[server].url,
                 data=encode_message({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -205,6 +292,28 @@ class DirectClient:
                 raise ConnectorError("unavailable", f"{variable} holds no OpenShell placeholder")
             headers[name] = value
         return headers
+
+
+def _digest(params: Mapping[str, object]) -> str:
+    """The digest the middleware's key holds for a request's parameters: those MCP defines,
+    which are every one but ``_meta`` this client sends, as ``policy.mcp_wire`` encodes them
+    (compact, and in the client's sorted order). Raises ValueError for what JSON cannot
+    hold."""
+    defined = {key: params[key] for key in sorted(params) if key != "_meta"}
+    text = json.dumps(
+        defined, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _unconfirmed(code: str, request: int) -> ConnectorError:
+    """A refusal naming a request the control side does not confirm: the server's words."""
+    return ConnectorError(
+        "server_error",
+        f"the MCP server answered 403 as a refusal ({code}) naming permission request "
+        f"{request}, which is not this call's (untrusted)",
+        {"unconfirmed_request": request},
+    )
 
 
 def _media(response: aiohttp.ClientResponse) -> str:

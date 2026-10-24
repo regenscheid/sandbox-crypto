@@ -40,7 +40,7 @@ Holds therefore fit.
 - **Answers.** The proxy bounds answers (`max_response_bytes`), answers a server's `ping` and refuses its other requests in a stream, and records each call's outcome. Here the harness bounds answers at 8 MiB and declares no capabilities, which the middleware requires.
 - **Callers.** The proxy tells callers apart by token and applies `worker_access` and `worker_tools` to worker code. This path covers the agent runtime only; research sandboxes still cannot reach MCP hosts.
 - **Credentials.** The provider is attached to the agent runtime's sandbox, whose processes hold placeholders, never values; the compiled endpoint admits only the interpreter named as its binary.
-- **A server's 403.** A server can answer with a body that reads as OpenShell's denial and so name a request number of its choosing; through the proxy the same holds for `fence_denied`. Response inspection could block upstream bodies of that shape.
+- **A server's 403.** A server can answer with a body that reads as OpenShell's denial, which nothing marks as OpenShell's own, and name any request number. `DirectClient` trusts a refusal that names a request only when its `RequestCheck` confirms it over the permission request records (`Approvals.confirms`): the request exists, stands as the code says, and is this call's by project, server, method, tool and parameters' digest. Anything else is the server's error (`server_error`, the number kept as `unconfirmed_request`): no card, no wait. The check needs those records, which only the tests give it so far (recommendation 2). Through the proxy the same holds for `fence_denied`.
 - **The tool index** is the harness's already (`Connectors`), as D98 has it.
 
 ## Recommendation
@@ -48,7 +48,7 @@ Holds therefore fit.
 Holds fit, and each proof passes offline, so by D98's rule the proxy should retire, not stay slimmed. Retire it only after:
 
 1. a babbage lab runs `DirectClient` in an agent runtime sandbox against the attack-catalog server through a real OpenShell 0.1.5 gateway, showing the native rules, the middleware on an mcp endpoint, a reason code with its request number reaching the client, the response binding over a real event stream, and placeholders substituted;
-2. the workspace reads and answers the middleware's MCP requests, and its remembered approvals reach the middleware;
+2. the workspace reads and answers the middleware's MCP requests, its remembered approvals reach the middleware, and the harness's `RequestCheck` reads the same requests;
 3. listings lose denied tools and binary results are withheld or become artifact references, by response inspection or in the harness.
 
 Until then the proxy runs as built and the prototype is unwired.

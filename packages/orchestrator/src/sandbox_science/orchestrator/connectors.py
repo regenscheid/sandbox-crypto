@@ -776,6 +776,9 @@ class Connectors:
                     record["error"] = error.kind
                     if error.kind in _ANSWERED and "request" in error.data:
                         record["permission_request"] = error.data["request"]
+                    if "unconfirmed_request" in error.data:
+                        # A server named it: kept to tell, never shown or waited on.
+                        record["unconfirmed_request"] = error.data["unconfirmed_request"]
                     return (
                         dump({"error": {"kind": error.kind, "message": _explain(error)}}),
                         record,

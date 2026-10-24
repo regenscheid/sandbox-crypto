@@ -5,15 +5,17 @@ and how an escalated request stands (``resolve``)."""
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, Literal, Protocol
 
 from pydantic import ValidationError
 
+from sandbox_science.policy.reasons import APPROVAL_DENIED, APPROVAL_REQUIRED, ESCALATION_TIMED_OUT
+
 from . import grants
-from .keys import RequestKey
+from .keys import KEY_FIELDS, RequestKey
 from .records import Answer, AnswerPayload, PermissionRequest, RequestPayload
 
 ESCALATION: Final = "escalation"
@@ -155,6 +157,40 @@ class Approvals:
         if request is None:
             return Unrecorded()
         return TimedOut(request) if request.expired(now) else Waiting(request)
+
+    def confirms(self, seq: int, reason: str, call: Mapping[str, str | int], now: datetime) -> bool:
+        """Whether a refusal with ``reason`` that names request ``seq`` is one ``resolve``
+        gives a call whose key has the fields ``call``: the request exists, and
+
+        - ``approval_required``: it is that call's own request, and it waits or was
+          approved since (the call's next try proceeds);
+        - ``escalation_timed_out``: it is that call's own request, and nobody answered it;
+        - ``approval_denied``: the newest live answer covering the call denies request
+          ``seq``, which a ``tool`` or ``server`` scope lets differ from the call.
+
+        Fields ``call`` leaves out are taken from the request. A component that only
+        relays the refusal (an untrusted server could have written it) checks it here
+        before it shows or waits on a request.
+        """
+        request = self.request(seq)
+        if request is None or not call.keys() <= set(KEY_FIELDS[request.key.kind]):
+            return False
+        fields = {**request.key.fields(), **call}
+        key = RequestKey(
+            request.key.kind, tuple(fields[name] for name in KEY_FIELDS[request.key.kind])
+        )
+        resolution = self.resolve(key, now)
+        if reason == APPROVAL_DENIED:
+            return isinstance(resolution, Denied) and resolution.answer.request_seq == seq
+        if key != request.key:
+            return False
+        if reason == APPROVAL_REQUIRED:
+            return isinstance(resolution, Approved) or (
+                isinstance(resolution, Waiting) and resolution.request.seq == seq
+            )
+        if reason == ESCALATION_TIMED_OUT:
+            return isinstance(resolution, TimedOut) and resolution.request.seq == seq
+        return False
 
     def answer(self, key: RequestKey, now: datetime) -> Answer | None:
         """The newest live answer that covers ``key``: a later answer replaces an earlier one."""

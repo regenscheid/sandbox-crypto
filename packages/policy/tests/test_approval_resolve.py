@@ -117,3 +117,63 @@ def test_a_server_answer_covers_every_tool_of_the_server_and_nothing_else() -> N
     assert not asked.covers(key("fetch"), "tool")
     assert check_scope("mcp", "server") is None
     assert check_scope("http", "server") is not None
+
+
+MCP_KEY = RequestKey.mcp("p1", "orch", DIGEST, "papers", "tools/call", "fetch", "a" * 64)
+
+
+def mcp_call(**changed: str) -> dict[str, str | int]:
+    """The fields a caller that relays a refusal knows: all but the caller and revision."""
+    fields: dict[str, str | int] = {
+        name: value
+        for name, value in MCP_KEY.fields().items()
+        if name not in ("caller", "policy_digest")
+    }
+    return {**fields, **changed}
+
+
+def mcp_answer(seq: int, request_seq: int, kind: str, scope: str = "call") -> Record:
+    payload = {"request_seq": request_seq, "scope": scope, "target": MCP_KEY.payload()}
+    return Record(seq, NOW.isoformat(), kind, payload)
+
+
+def test_a_waiting_request_is_confirmed_only_for_its_own_call() -> None:
+    approvals = Approvals()
+    approvals.load([request(1, key=MCP_KEY)])
+    assert approvals.confirms(1, "approval_required", mcp_call(), NOW)
+    assert not approvals.confirms(1, "approval_required", mcp_call(tool="search"), NOW)
+    assert not approvals.confirms(1, "approval_required", mcp_call(arguments="b" * 64), NOW)
+    assert not approvals.confirms(1, "approval_required", mcp_call(project_id="p2"), NOW)
+    assert not approvals.confirms(1, "approval_required", mcp_call(server="web"), NOW)
+    assert not approvals.confirms(2, "approval_required", mcp_call(), NOW)  # no such request
+    assert not approvals.confirms(1, "approval_required", {"host": "example.org"}, NOW)
+    assert not approvals.confirms(1, "approval_denied", mcp_call(), NOW)  # nobody denied it
+    assert not approvals.confirms(1, "escalation_timed_out", mcp_call(), NOW)
+    assert not approvals.confirms(1, "policy_denied", mcp_call(), NOW)
+
+
+def test_an_answered_request_is_confirmed_as_it_stands() -> None:
+    approvals = Approvals()
+    approvals.load([request(1, key=MCP_KEY), mcp_answer(2, 1, APPROVAL)])
+    # Approved after the refusal: the next try proceeds, so the wait it starts is short.
+    assert approvals.confirms(1, "approval_required", mcp_call(), NOW)
+    approvals.load([mcp_answer(3, 1, DENIAL)])
+    assert not approvals.confirms(1, "approval_required", mcp_call(), NOW)
+    assert approvals.confirms(1, "approval_denied", mcp_call(), NOW)
+    assert not approvals.confirms(1, "approval_denied", mcp_call(arguments="b" * 64), NOW)
+
+
+def test_a_denial_by_tool_is_confirmed_for_the_tool_with_other_arguments() -> None:
+    approvals = Approvals()
+    approvals.load([request(1, key=MCP_KEY), mcp_answer(2, 1, DENIAL, scope="tool")])
+    assert approvals.confirms(1, "approval_denied", mcp_call(arguments="b" * 64), NOW)
+    assert not approvals.confirms(1, "approval_denied", mcp_call(tool="search"), NOW)
+
+
+def test_a_timed_out_request_is_confirmed_as_timed_out_only() -> None:
+    approvals = Approvals()
+    approvals.load([request(1, key=MCP_KEY)])
+    later = NOW + timedelta(minutes=11)
+    assert approvals.confirms(1, "escalation_timed_out", mcp_call(), later)
+    assert not approvals.confirms(1, "escalation_timed_out", mcp_call(tool="search"), later)
+    assert not approvals.confirms(1, "approval_required", mcp_call(), later)
