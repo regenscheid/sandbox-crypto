@@ -55,7 +55,7 @@ What a child cannot do today, and where:
 
 ### Questions to the user
 
-- DA-15. Unchanged. `ask_user` is main-only (PD-41). A child that needs the user's input tells its parent, either with `message_parent` while it goes on (PD-44) or by ending with result status `blocked` and its `open_questions` (PD-17). The parent decides whether to ask the user, in its own question, which the user reads as the parent's.
+- DA-15. Unchanged. `ask_user` is main-only (PD-41). A child that needs the user's input tells its parent, either with `message_parent` while it goes on (PD-44) or by ending with result status `blocked` and its `open_questions` (PD-17). The parent decides whether to ask the user, in its own question, which the user reads as the parent's. *Amended 2026-10-24 by the owner:* a child that lacks context asks its parent the same way, and the parent's answer may carry `references` to its own records (PD-44, CM-37b), which widen what the child's state block holds and its `history_read` may read; the parent need not retell them.
 
 ### Files
 
