@@ -2085,6 +2085,7 @@ export interface ResourceRequest {
   scope: "work" | "project" | "global";
   renewable: boolean;
   summary: CheckInSummary | null;
+  step: number;
 }
 
 export interface ResourceRequestPage {

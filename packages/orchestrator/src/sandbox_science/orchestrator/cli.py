@@ -520,9 +520,10 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--max-turns",
         type=int,
-        help=f"the model calls a main run makes before its report round, a safety net "
-        f"rather than a bound on its work (default {MAX_TURNS:,}; 0 for the default; at "
-        f"most {TURNS_CEILING:,})",
+        help=f"the model calls a main run makes before it pauses and asks the user to "
+        f"continue for another block of as many or to stop (default {MAX_TURNS:,}; 0 for "
+        f"the default; at most {TURNS_CEILING:,}). A run without a state directory has no "
+        f"durable records to pause on and stops there with a report round",
     )
     command.add_argument(
         "--max-input-chars",

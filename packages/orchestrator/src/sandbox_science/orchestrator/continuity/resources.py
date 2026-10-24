@@ -5,6 +5,10 @@ A work's soft caps on tokens, turns, active time and cost, and the loop heuristi
 for a check-in: a request with a bounded state summary that its direct parent answers
 (extend by one step, redirect, or stop), or that the root answers itself against its
 plan, with a notice to the user. Nothing here enforces spending; LiteLLM's budget does.
+
+The root's turn limit is the one soft cap the root does not decide for itself: reaching it
+pauses the research and asks the user to continue for another block of the configured
+size or to stop (``accept``, ``approve``).
 """
 
 from __future__ import annotations
@@ -121,6 +125,9 @@ class ResourceRequest(Contract):
     scope: Literal["work", "project", "global"] = "work"
     renewable: bool = True
     summary: CheckInSummary | None = None
+    step: int = 0
+    """For a root's turn limit, the block of turns a user's continue adds: the run's
+    configured limit. Zero for every other request, whose step is the resource's own."""
 
 
 class ResourceRequestPage(Contract):
@@ -163,11 +170,13 @@ class SafePoint:
     """A child's hard turn limit across its attempts (``turn_ceiling``)."""
     turns: tuple[int, int] = (0, 0)
     """The cumulative turn allowance and its revision. A child's is a soft cap among
-    ``caps``; a root's run keeps its ``max_turns`` as its limit (RS-6f) unless an
-    extension or the opt-in root renewal recorded a larger one."""
+    ``caps``; a root's is its run's ``max_turns``, a soft cap too: at it the user is asked
+    (D102), and an accepted block raises it."""
     progress: int = 0
     storage: tuple[tuple[Resource, int, int, int], ...] = ()
     """The optional retained-artifact allowance: resource, used, total, revision."""
+    turn_block: int = 0
+    """A root's pinned turn limit, the block each accepted continuation adds; 0 for a child."""
 
 
 _SUPERSEDED = (
@@ -193,6 +202,10 @@ def _extended(limits: DelegationSettings, warned: ResourceRequest, action: str) 
         extending and not warned.renewable
     ):
         raise ControlError(INVALID_REQUEST, "this resource is not renewable by that action")
+    if resource == "turns" and warned.step > 0 and warned.parent is None and extending:
+        # The root's turn limit: the user accepts another block of the run's own size. No
+        # ceiling bounds it; the user is asked again at the end of every block.
+        return total + warned.step
     if action == "continue":
         if resource in CAPS and warned.used >= total:
             raise ControlError(INVALID_REQUEST, "a reached soft cap needs extend, redirect or stop")
@@ -234,6 +247,7 @@ class ResourceRequests:
         scope: Literal["work", "project", "global"] = "work",
         renewable: bool = True,
         summary: CheckInSummary | None = None,
+        step: int = 0,
     ) -> ResourceRequest | None:
         """Record one check-in per cumulative cap, attempt and revision; a capacity
         warning at 80%, and every soft cap only when reached (``force``)."""
@@ -282,6 +296,7 @@ class ResourceRequests:
                 scope=scope,
                 renewable=renewable,
                 summary=summary,
+                step=step,
             )
             db.execute(
                 "INSERT INTO research_observations VALUES (?,?,?,'resource_request',?,?,?)",
@@ -384,9 +399,9 @@ class ResourceRequests:
     ) -> ResourceDecision:
         """Explicit USER extension of paused work; never dispatches or resumes it."""
         if not operator.strip() or (
-            request.action not in EXTENSIONS and request.action != "extend"
+            request.action not in EXTENSIONS and request.action not in ("extend", "stop")
         ):
-            raise ControlError(INVALID_REQUEST, "USER approval must name a soft extension")
+            raise ControlError(INVALID_REQUEST, "USER decision must be a soft extension or stop")
         with self.control.write() as tx:
             db = tx.sql
             root = db.execute(
@@ -408,7 +423,16 @@ class ResourceRequests:
             owner = Ownership(
                 project=project, session=session, work=root[0], run=root[1], epoch=root[2]
             )
-            return self._decide(
+            if (
+                request.action == "stop"
+                and not db.execute(
+                    "SELECT 1 FROM research_observations WHERE project=? AND session=? AND work=? "
+                    "AND kind='resource_request' AND json_extract(detail,'$.request_id')=?",
+                    (project, session, owner.work, request.request_id),
+                ).fetchone()
+            ):
+                raise ControlError(INVALID_REQUEST, "a USER stop answers the root's check-in")
+            decision = self._decide(
                 db,
                 owner,
                 ResourceDecisionRequest(
@@ -418,6 +442,34 @@ class ResourceRequests:
                 operator=operator,
                 approval=request,
             )
+            if request.action == "stop":
+                self._stopped(db, owner)
+            return decision
+
+    def _stopped(self, db: sqlite3.Connection, owner: Ownership) -> None:
+        """The user's Stop of a paused tree, as the Stop button records it: the tree is
+        ``stopped`` and its root attempt carries an explicit cancel, so Resume and automatic
+        recovery treat it as stopped."""
+        db.execute(
+            "WITH RECURSIVE tree(work) AS (SELECT work FROM research_work "
+            "WHERE project=? AND session=? AND work=? UNION ALL SELECT w.work "
+            "FROM research_work w JOIN tree p ON w.parent=p.work WHERE w.project=? "
+            "AND w.session=?) UPDATE research_work SET state='stopped',reason='user_stop' "
+            "WHERE project=? AND session=? AND work IN tree AND state!='completed'",
+            (
+                owner.project,
+                owner.session,
+                owner.work,
+                owner.project,
+                owner.session,
+                owner.project,
+                owner.session,
+            ),
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO run_cancels VALUES (?,?,?,?)",
+            (owner.project, owner.session, owner.run, self.clock.now().isoformat()),
+        )
 
     def _decide(
         self,
@@ -615,13 +667,14 @@ class ResourceRequests:
                 turns = int(found[2]) if found[2] else turns
             configured: list[tuple[Resource, int | None]] = [
                 ("tokens", tokens if child else settings.root_tokens),
-                ("turns", turns if child else None),
+                ("turns", turns),
                 ("elapsed_seconds", settings.research_seconds),
                 (
                     "cost",
                     None if settings.soft_cost is None else round(settings.soft_cost * 100),
                 ),
             ]
+            block = 0 if child else initial_allowance(db, owner, "turns", turns)
             caps: list[tuple[Resource, int, int]] = []
             for resource, value in configured:
                 if value is None:
@@ -635,7 +688,7 @@ class ResourceRequests:
                 original = initial_allowance(db, owner, "retained_bytes", settings.storage_bytes)
                 total, revision = soft_grant(db, owner, "retained_bytes", original)
                 storage = (("retained_bytes", retained_bytes(db, owner), total, revision),)
-            turn_total, turn_revision = soft_grant(db, owner, "turns", turns)
+            turn_total, turn_revision = soft_grant(db, owner, "turns", turns if child else block)
             return SafePoint(
                 caps=tuple(caps),
                 used={
@@ -648,6 +701,7 @@ class ResourceRequests:
                 turns=(turn_total, turn_revision),
                 progress=progress,
                 storage=storage,
+                turn_block=block,
             )
 
     def summary(
@@ -720,6 +774,8 @@ class ResourceRequests:
         did not answer in time. One bounded step while the work keeps producing evidence;
         after ``max_idle_extensions`` without, ``None`` asks the user (``ask_user``), and
         otherwise the work stops with its report."""
+        if ask_user and request.resource == "turns" and request.parent is None:
+            return None  # the root's turn limit is the user's to accept, evidence or not
         with self.control.write() as tx:
             db = tx.sql
             check_owner(db, owner)
@@ -764,6 +820,33 @@ class ResourceRequests:
                 automatic=True,
             )
 
+    def accept(self, owner: Ownership, request: ResourceRequest, reason: str) -> ResourceDecision:
+        """The user's explicit Resume of a root at its turn limit: the same decision as the
+        card's continue, one more block, recorded against the new attempt's check-in."""
+        with self.control.write() as tx:
+            db = tx.sql
+            check_owner(db, owner)
+            existing = db.execute(
+                "SELECT detail FROM research_observations WHERE project=? AND session=? "
+                "AND work=? AND kind='resource_decision' AND identity=?",
+                (owner.project, owner.session, owner.work, request.request_id),
+            ).fetchone()
+            if existing is not None:
+                return ResourceDecision.model_validate_json(existing[0])
+            return self._record(
+                db,
+                owner,
+                request,
+                ResourceDecisionRequest(
+                    request_id=request.request_id, action="extend", reason=reason
+                ),
+                parent_run=owner.run,
+                operation="resume:" + request.request_id,
+                total=_extended(settings_in(db, owner.project), request, "extend"),
+                progress=work_progress(db, owner),
+                operator="resume",
+            )
+
     def notify(self, owner: Ownership, request: ResourceRequest, note: str) -> None:
         """Tell the user, as a run event the session's chat shows: a notice, never a
         question (D102)."""
@@ -795,10 +878,6 @@ class ResourceRequests:
                     ),
                 ),
             )
-
-    def root_enabled(self, owner: Ownership) -> bool:
-        with self.control.read() as tx:
-            return settings_in(tx.sql, owner.project).root_resource_renewal
 
     def decisions(self, owner: Ownership) -> list[ResourceDecision]:
         with self.control.read() as tx:

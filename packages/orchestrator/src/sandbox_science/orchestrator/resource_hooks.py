@@ -11,7 +11,10 @@ cost) and recorded use. At a cap, or when a loop heuristic trips, the work check
   within ``wait_seconds`` gets the root's rule applied for it;
 - the root checks itself: one step while it keeps producing evidence, with a notice to
   the user and to itself to compare its progress with its plan. After
-  ``max_idle_extensions`` steps in a row without evidence it pauses and the user is asked.
+  ``max_idle_extensions`` steps in a row without evidence it pauses and the user is asked;
+- the root's turn limit is the user's: reaching it records a check-in, pauses the run
+  without further model calls (``turn_limit``) and asks the user to continue for another
+  block of the same size or to stop. An explicit Resume is the same acceptance.
 
 The loop heuristics are counters over what the run already records: the same tool with
 the same arguments, the same error, turns without new evidence, and the same answer
@@ -25,7 +28,7 @@ import hashlib
 import json
 from collections import Counter
 from collections.abc import Awaitable, Callable
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.accounting import account
@@ -34,6 +37,7 @@ from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.continuity.records import Ownership
 from sandbox_science.orchestrator.continuity.resource_policy import STOPPING
 from sandbox_science.orchestrator.continuity.resources import (
+    Resource,
     ResourceDecision,
     ResourceDecisionRequest,
     ResourceRequest,
@@ -46,6 +50,8 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import dump
 
 SOURCE = "resources"
+Due = tuple[Resource, int, int, int, str | None, str | None]
+"""A check-in's resource, use, total, cap revision, and a rule and detail, if it has any."""
 SAME_CALL: Final = 8
 """Calls of one tool with the same arguments in an attempt that ask for a check-in."""
 SAME_ERROR: Final = 6
@@ -113,8 +119,14 @@ class Resources(TurnHook):
         clock: Clock = SYSTEM_CLOCK,
         poll_seconds: float = 1.0,
         wait_seconds: float = WAIT_SECONDS,
+        resume_source: Literal["operator", "automatic"] | None = None,
     ):
         self.store, self.owner, self.clock = store, owner, clock
+        self.resume_source = resume_source
+        self.paused: dict[str, Any] | None = None
+        """The root's turn-limit check-in this run paused at, for the run's record."""
+        self.resumed = False
+        """Whether the attempt's start was checked for an explicit Resume at the turn limit."""
         self.turns, self.tokens, self.delegated = turns, tokens, delegated
         self.specs = (SPEC, USAGE_SPEC)
         self.inventory = inventory
@@ -292,7 +304,7 @@ class Resources(TurnHook):
         used = {**point.used, "turns": point.prior_turns + run.turns}
         due = next(
             (
-                (resource, used[resource], total, revision, None, None)
+                self._due(resource, used, total, revision)
                 for resource, total, revision in point.caps
                 if used.get(resource, 0) >= total
             ),
@@ -303,6 +315,22 @@ class Resources(TurnHook):
             due = ("loop", count, threshold, self.loops, rule, detail)
         if due is None:
             return None
+        return await self._request(run, point, used, due)
+
+    def _due(self, resource: Resource, used: dict[str, int], total: int, revision: int) -> Due:
+        """A reached soft cap's check-in: the root's turn limit names its rule."""
+        if resource == "turns" and not self.delegated:
+            detail = f"{used['turns']:,} of {total:,} model calls: the run's turn limit"
+            return resource, used[resource], total, revision, "turns", detail
+        return resource, used[resource], total, revision, None, None
+
+    async def _request(
+        self,
+        run: RunView,
+        point: SafePoint,
+        used: dict[str, int],
+        due: Due,
+    ) -> ResourceRequest | None:
         resource, value, total, revision, rule, detail = due
         summary = await threaded(
             self.store.summary,
@@ -323,6 +351,7 @@ class Resources(TurnHook):
             revision=revision,
             force=True,
             summary=summary,
+            step=point.turn_block if resource == "turns" and not self.delegated else 0,
         )
 
     async def _decided(self, request: ResourceRequest) -> ResourceDecision | str:
@@ -350,10 +379,30 @@ class Resources(TurnHook):
         point = self.point or await self._point(run)
         if self.delegated:
             return max(0, point.hard_turns - point.prior_turns)
-        total, revision = point.turns
-        if revision > 0 or await threaded(self.store.root_enabled, self.owner):
-            return max(0, total - point.prior_turns)
-        return None
+        if not self.resumed:
+            self.resumed = True
+            point = await self._resume_accepted(run, point)
+        return max(0, point.turns[0] - point.prior_turns)
+
+    async def _resume_accepted(self, run: RunView, point: SafePoint) -> SafePoint:
+        """An explicit Resume of a root that is at its turn limit is the user's decision to
+        continue, the same as the card's: one more block, recorded as the user's. Automatic
+        recovery resumes only after a recorded acceptance."""
+        total, _ = point.turns
+        if self.resume_source != "operator" or not 0 < total <= point.prior_turns:
+            return point
+        used = {**point.used, "turns": point.prior_turns}
+        request = await self._request(
+            run, point, used, self._due("turns", used, total, point.turns[1])
+        )
+        if request is not None:
+            await threaded(
+                self.store.accept,
+                self.owner,
+                request,
+                "Resume: the user continued past the turn limit.",
+            )
+        return await self._point(run)
 
     async def halt(self, run: RunView) -> str | None:
         decisions = await threaded(self.store.decisions, self.owner)
@@ -373,6 +422,23 @@ class Resources(TurnHook):
         self._reset()
         if not self.delegated:
             decision = await threaded(self.store.self_check, self.owner, request, ask_user=True)
+            if decision is None and request.resource == "turns":
+                await threaded(
+                    self.store.notify,
+                    self.owner,
+                    request,
+                    f"The research reached its turn limit, {request.total:,} model calls, and is "
+                    f"paused. Continue for {request.step:,} more turns or stop it in the chat; "
+                    "Resume continues it too.",
+                )
+                self.paused = {
+                    "check_in": request.request_id,
+                    "resource": "turns",
+                    "used": request.used,
+                    "total": request.total,
+                    "step": request.step,
+                }
+                return "turn_limit"
             if decision is None:
                 await threaded(
                     self.store.notify,
@@ -404,6 +470,9 @@ class Resources(TurnHook):
     async def finishing(self, run: RunView, stopped: str) -> str | None:
         await self._point(run)  # the attempt's last active-time sample
         return None
+
+    def summary(self) -> object | None:
+        return self.paused
 
     # --- Notices ----------------------------------------------------------------------
 

@@ -23,17 +23,21 @@ cumulative across its attempts and each a project delegation setting:
 | Cap | Default | Step | Ceiling |
 | --- | --- | --- | --- |
 | Tokens (input plus output, folds included) | a check's or task's `check_tokens`/`task_tokens`, 20,000,000; a root's `root_tokens`, 100,000,000 | 20,000,000 | `max_token_grant` (1,000,000,000) |
-| Turns (foreground model calls; an unknown dispatch counts, folds do not), a child's only | `check_turns`/`task_turns`, 300 | 300 | `turn_ceiling` (10,000) |
+| Turns (foreground model calls; an unknown dispatch counts, folds do not) | a child's `check_turns`/`task_turns`, 300; a root's run `max_turns`, 2,000 | a child's 300; a root's, a block as large as its limit, accepted by the user | a child's `turn_ceiling` (10,000); a root has none |
 | Active time (observed seconds, waiting for a decision excluded) | `research_seconds`, 14,400 | 3,600 | `time_ceiling_seconds` (604,800) |
 | Cost (known journaled cost plus explicit reservations; unpriced calls add nothing) | `soft_cost`, 25.00 in the gateway's currency | 25.00 | none |
 
 A root's initial caps are pinned when first observed, so later default changes do not
 move them; a child's come from its immutable blueprint. `research_seconds` and
 `soft_cost` may be turned off (`--no-research-time-limit`, `--no-soft-cost`). A child's
-only turn limit is `turn_ceiling`, cumulative across attempts. A root keeps its run's
-`max_turns` (2,000 by default) as its safety net, as does a run without durable records,
-with the runaway guard ([run service](run-service.md), RS-6f); a recorded extension or
-the opt-in root renewal raises it.
+only turn limit is `turn_ceiling`, cumulative across attempts. A root's turn limit is its
+run's `max_turns` (2,000 by default; `serve --max-turns N` and `run --max-turns N` mean
+"ask at N", not "stop at N"), a soft cap like the others, with one difference: at it the
+root does not extend itself but pauses and asks the user ([the root](#check-ins)). The
+runaway guard ([run service](run-service.md), RS-6f) still stops a run that repeats itself,
+and the model gateway's budget still bounds spending; no further hard turn limit applies
+to a root. Only a run without durable records (`run` without a state directory) has none
+to pause on, so it keeps `max_turns` as a hard stop with its report round.
 
 Resume deducts nothing and grants nothing: the caps follow the work, and usage records
 (the model-call journal, fold calls and reservations) are kept as before.
@@ -81,6 +85,23 @@ offers one step (`extend`, an audited USER decision against the exact paused att
 allowance), and Resume continues. The opt-in `root_resource_renewal` still lets the root
 model decide its own check-in with `resource_decide` after saving a checkpoint and new
 evidence.
+
+**The root's turn limit** is the user's to accept (the owner, 2026-10-24). Reaching it
+records a check-in (resource `turns`, rule `turns`, the root's use, latest answer and
+evidence counter, with a `step` equal to the configured limit) and pauses the run without
+further model calls (`turn_limit`); the session's chat shows a notice and a card. The user
+answers on the card:
+
+- **Continue** accepts one more block of `step` turns (2,000 by default), recorded as an
+  audited USER `extend` against the exact paused attempt and allowance, and the approved
+  tree resumes automatically as for any approved turn extension. No ceiling bounds the
+  total; the card asks again at the end of each block, whatever the evidence.
+- **Stop** ends the research as an explicit USER Stop: the tree is `stopped`
+  (`user_stop`) with a recorded cancel, so Resume and automatic recovery leave it alone.
+
+An explicit Resume of a root at its limit is the same acceptance of one block, recorded as
+the user's decision on the new attempt's check-in. The check-in is a durable record: the
+card survives a restart and shows as historical once a newer attempt exists.
 
 Decisions are idempotent under the tool operation. They require the current direct
 parent, recipient attempt and session epoch; stale or competing decisions are refused, a

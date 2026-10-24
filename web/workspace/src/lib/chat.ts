@@ -449,6 +449,9 @@ export function stoppedText(data: Record<string, unknown>): string {
     const detail = text(data['detail']);
     said += ` Reason: ${visible(reason)}${detail ? `: ${visible(detail)}` : ''}.`;
   }
+  // The root's turn limit asks the user; it pauses without a report round (D102).
+  if (stopped === 'turn_limit' && reason === 'check_in')
+    return `The research paused at its turn limit, ${visible(text(data['detail']))}. Continue or stop it in the check-in below; Resume continues it too.`;
   // What tripped the runaway guard (run service, RS-6f).
   const detail = text(data['detail']);
   if (stopped === 'runaway' && detail) said += ` It saw ${visible(detail)}.`;

@@ -18,6 +18,9 @@
   const current = (item: ResourceRequest) =>
     !item.superseded && !['completed', 'stopped'].includes(item.work_state);
 
+  /** The root's turn limit: a question the chat asks outright, not a panel to open. */
+  const turnLimit = (item: ResourceRequest) =>
+    item.resource === 'turns' && item.parent === null && item.step > 0;
   const label = (item: ResourceRequest) =>
     ({
       tokens: 'tokens',
@@ -55,7 +58,8 @@
     <summary>Research check-ins</summary>
     <p class="muted">
       At a soft cap or a repeated pattern an agent checks in: a child's parent extends, redirects or
-      stops it, and the root checks itself against its plan. Nothing here stops spending; the model
+      stops it, and the root checks itself against its plan. The root's turn limit is yours: the
+      research pauses there until you continue or stop it. Nothing here stops spending; the model
       gateway's budget does.
     </p>
     <ul>
@@ -102,7 +106,9 @@
           {#if item.checkpoint_message_id}
             <a href={messageHref(projectId, item.checkpoint_message_id)}>Read checkpoint</a>
           {/if}
-          {#if current(item) && !item.decision && item.renewable && ['tokens', 'turns', 'elapsed_seconds', 'cost', 'loop', 'retained_bytes'].includes(item.resource) && ['paused', 'blocked'].includes(item.work_state)}
+          {#if turnLimit(item) && current(item) && !item.decision && ['paused', 'blocked'].includes(item.work_state)}
+            <ResourceAllowance {path} {item} />
+          {:else if current(item) && !item.decision && item.renewable && ['tokens', 'turns', 'elapsed_seconds', 'cost', 'loop', 'retained_bytes'].includes(item.resource) && ['paused', 'blocked'].includes(item.work_state)}
             <button
               class="subtle"
               onclick={() => (selected = selected === item.request_id ? null : item.request_id)}

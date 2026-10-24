@@ -1802,6 +1802,7 @@ class Harness:
                 delegated=delegated,
                 inventory=inventory,
                 clock=self.clock,
+                resume_source=admitted.request.resume_source,
             )
             if context.authority is not None
             else None

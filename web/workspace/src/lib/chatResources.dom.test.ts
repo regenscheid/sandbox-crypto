@@ -38,6 +38,7 @@ const notice: ResourceRequest = {
   scope: 'work',
   renewable: true,
   summary: null,
+  step: 0,
 };
 const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
@@ -224,4 +225,116 @@ it('never offers to extend hard retention capacity', async () => {
   await settle();
   expect(target.textContent).toContain('Hard retention capacity');
   expect(target.textContent).not.toContain('Review resource allowance');
+});
+
+const limit: ResourceRequest = {
+  ...notice,
+  request_id: 'resource-turns',
+  parent: null,
+  resource: 'turns',
+  used: 2000,
+  total: 2000,
+  step: 2000,
+  work_state: 'paused',
+  summary: {
+    brief: 'b',
+    produced: [],
+    recent: [],
+    answer: 'The second lemma holds.',
+    rule: 'turns',
+    detail: '2000 of 2000 model calls: the run turn limit',
+    tokens: 0,
+    turns: 2000,
+    seconds: 0,
+    cost: 0,
+    progress: 0,
+  },
+};
+
+it('asks the user at the root turn limit and sends continue for one more block', async () => {
+  const writes: unknown[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method === 'POST') {
+        writes.push(JSON.parse(String(init.body)));
+        return reply({ total: 4000, operator: 'user' });
+      }
+      return reply({ requests: [limit], next_after: null });
+    }),
+  );
+  const target = view();
+  await settle();
+  // The question is asked outright, with no panel to open first.
+  expect(target.textContent).toContain('reached its turn limit and is paused');
+  expect(target.textContent).not.toContain('Review resource allowance');
+  button(target, 'Continue for 2,000 more turns').click();
+  await settle();
+  expect(writes).toEqual([
+    {
+      request_id: 'resource-turns',
+      current: work,
+      epoch: 2,
+      total: 2000,
+      action: 'extend',
+      reason: 'Continue from the saved research checkpoint.',
+    },
+  ]);
+  expect(target.textContent).toContain('eligible for automatic Resume');
+});
+
+it('stops the research from the root turn limit card, once', async () => {
+  const writes: unknown[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method === 'POST') {
+        writes.push(JSON.parse(String(init.body)));
+        return reply({ total: 2000, operator: 'user' });
+      }
+      return reply({ requests: [limit], next_after: null });
+    }),
+  );
+  const target = view();
+  await settle();
+  const stop = button(target, 'Stop the research');
+  stop.click();
+  stop.click();
+  await settle();
+  expect(writes).toEqual([
+    {
+      request_id: 'resource-turns',
+      current: work,
+      epoch: 2,
+      total: 2000,
+      action: 'stop',
+      reason: 'Continue from the saved research checkpoint.',
+    },
+  ]);
+  expect(target.textContent).toContain('Research stopped');
+});
+
+it('shows a decided root turn limit as history and offers nothing more', async () => {
+  const decided = {
+    ...limit,
+    decision: {
+      request: { request_id: 'resource-turns', action: 'stop' as const, reason: 'Enough' },
+      parent_run: work,
+      operation: 'user-resource:resource-turns',
+      total: 2000,
+      observed: 1,
+      operator: 'user',
+      progress: 0,
+      resource: 'turns' as const,
+      automatic: false,
+    },
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => reply({ requests: [decided], next_after: null })),
+  );
+  const target = view();
+  await settle();
+  expect(target.textContent).toContain('User decision: stop');
+  expect(target.querySelector('button.subtle')).toBeNull();
 });

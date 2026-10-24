@@ -453,7 +453,13 @@ class EventLog(TurnHook):
 
 def _context_stop(record: RunRecord) -> dict[str, Any]:
     """Why a run that folds stopped for its context, as its folds say (CM-43 to CM-45);
-    or what tripped the runaway guard (RS-6f)."""
+    or what tripped the runaway guard (RS-6f); or that the root's turn limit is a check-in
+    waiting for the user (D102)."""
+    resources = record.summaries.get("resources")
+    if record.stopped == "turn_limit" and isinstance(resources, dict):
+        # A root that paused at its turn limit asks the user, with no report round (D102).
+        found = cast(dict[str, Any], resources)
+        return {"reason": "check_in", "detail": f"{found.get('total', 0):,} model calls"}
     runaway = record.summaries.get("runaway")
     if record.stopped == "runaway" and isinstance(runaway, dict):
         found = cast(dict[str, Any], runaway)

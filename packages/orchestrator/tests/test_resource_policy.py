@@ -227,9 +227,9 @@ async def test_hard_retention_pressure_is_visible_not_renewable(projects):
         documents.close()
 
 
-async def test_a_roots_turns_stay_its_runs_limit(projects):
-    """D102 keeps the root's ``max_turns`` as its safety net (RS-6f); its soft caps are
-    tokens, active time and cost, which check in without stopping."""
+async def test_a_root_that_answers_within_its_turns_is_not_checked_in(projects):
+    """The root's turn limit is a check-in the user answers (``test_root_turn_check_in.py``),
+    and an answer that stands at the limit is neither a check-in nor a stop."""
     _, parent, _, store = setup(projects)
 
     class Continue(TurnHook):

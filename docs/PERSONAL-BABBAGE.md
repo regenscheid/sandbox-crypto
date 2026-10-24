@@ -110,7 +110,7 @@ provider_profile = "<the repository>/examples/openshell/profiles/cloudflare-acce
     --state-dir ~/.local/state/sandbox-science-personal/launcher/control --project crypto --depth 2
   ```
 
-- **Long runs.** A main run makes up to 2,000 model calls by default, and a delegated task up to 300 calls and 5,000,000 tokens; at a limit, the run's last call reports what it found, and a runaway guard stops a run that repeats itself ([run service](specs/run-service.md), RS-6f). `[run_service] max_turns` sets the main runs' limit; `project delegation --task-turns N --task-tokens N` the tasks'. A setting written before these defaults rose reads its old task defaults (20 turns, 200,000 tokens) as the new ones.
+- **Long runs.** A main run makes up to 2,000 model calls by default, and a delegated task up to 300 calls and 5,000,000 tokens; a delegated task at its limit checks in with its parent, a main run at its turn limit pauses and asks you in the chat to continue for another block of as many or to stop, and a runaway guard stops a run that repeats itself ([run service](specs/run-service.md), RS-6f). `[run_service] max_turns` sets the main runs' limit; `project delegation --task-turns N --task-tokens N` the tasks'. A setting written before these defaults rose reads its old task defaults (20 turns, 200,000 tokens) as the new ones.
 - **The policy file** is written from the example by `.agents/labs/launcher_config.py`'s `mcp_policy`, as the labs' is.
 
 ## Starting, stopping, status
