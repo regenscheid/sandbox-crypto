@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-// A connector tool call held for the user's answer (D76): the card shows what is asked
-// and the call's arguments from the transcript, and each choice sends its decision.
+// A request held for the user's answer (D76, D97): the card shows a structured summary of
+// what is asked, the call's arguments from the transcript folded away, only the scopes the
+// request's ceiling allows, and each choice sends its decision.
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import ChatPermission from '../views/ChatPermission.svelte';
@@ -28,6 +29,37 @@ const request: PendingApproval = {
   timed_out: false,
   on_timeout: 'deny',
   child: null,
+  kind: 'mcp',
+  caller_kind: 'agent',
+  effect: 'write',
+  max_grant: 'project',
+  summary: { url: 'https://www.washingtonpost.com/', host: 'www.washingtonpost.com' },
+  http: null,
+  packages: null,
+  scopes: ['once', 'session', 'project'],
+};
+
+const network: PendingApproval = {
+  ...request,
+  seq: 30,
+  kind: 'network',
+  server: '',
+  tool: '',
+  method: 'POST',
+  caller_kind: 'code',
+  effect: null,
+  max_grant: 'once',
+  summary: {},
+  http: {
+    method: 'POST',
+    host: 'api.example.org',
+    port: 443,
+    path: '/v1/items',
+    size: 41,
+    content_type: 'application/json',
+    fields: { title: 'A draft', tags: '[2 items]' },
+  },
+  scopes: ['once'],
 };
 
 function card(
@@ -74,7 +106,14 @@ describe('a held tool call', () => {
     expect(target.querySelector('pre')!.textContent).toContain('"max_chars": 12000');
   });
 
-  it('allows once by default, for the project or the server when chosen, or denies', async () => {
+  it('shows the significant arguments and the effect class', () => {
+    const { target } = card();
+    const summary = target.querySelector('.summary')!.textContent!;
+    expect(summary).toContain('www.washingtonpost.com');
+    expect(summary).toContain('write');
+  });
+
+  it('allows once by default, for the session or the project when chosen, or denies', async () => {
     const { target, sent } = card();
     button(target, 'Allow').click();
     await settle();
@@ -82,9 +121,10 @@ describe('a held tool call', () => {
     await settle();
     target.querySelector<HTMLButtonElement>('[aria-label="Choose how long to allow"]')!.click();
     flushSync();
-    button(target, 'Any tool in crypto-research-mcp').click();
+    expect(target.textContent).toContain('Any write call to crypto-research-mcp');
+    button(target, 'This session').click();
     flushSync();
-    expect(button(target, 'Allow').textContent).toContain('Any tool in crypto-research-mcp');
+    expect(button(target, 'Allow').textContent).toContain('This session');
     button(target, 'Allow').click();
     await settle();
     target.querySelector<HTMLButtonElement>('[aria-label="Choose how long to allow"]')!.click();
@@ -93,7 +133,53 @@ describe('a held tool call', () => {
     flushSync();
     button(target, 'Allow').click();
     await settle();
-    expect(sent).toEqual(['once', 'deny', 'server', 'project']);
+    expect(sent).toEqual(['once', 'deny', 'session', 'project']);
+  });
+
+  it('offers only the scopes the ceiling allows', () => {
+    const { target } = card(null, { ...request, effect: 'unclassified', scopes: ['once'] });
+    expect(target.querySelector('[aria-label="Choose how long to allow"]')).toBeNull();
+    expect(button(target, 'Allow').textContent).toContain('once');
+  });
+});
+
+describe("research code's network request (D97)", () => {
+  it('shows method, host, path, content type, size and the body fields folded', async () => {
+    const { target, sent } = card(null, network);
+    expect(target.textContent).toContain('Let research code POST api.example.org?');
+    expect(target.textContent).toContain('Asked by research code.');
+    const rows = target.querySelector('.summary')!.textContent!;
+    for (const part of ['/v1/items', 'application/json', '41 bytes', 'api.example.org:443'])
+      expect(rows).toContain(part);
+    const folded = target.querySelector('details')!;
+    expect(folded.open).toBe(false);
+    expect(folded.textContent).toContain('A draft');
+    expect(target.querySelector('[aria-label="Choose how long to allow"]')).toBeNull();
+    button(target, 'Allow').click();
+    await settle();
+    expect(sent).toEqual(['once']);
+  });
+
+  it("shows a package request's sources and the agent's words", () => {
+    const { target } = card(null, {
+      ...network,
+      kind: 'packages',
+      http: null,
+      caller_kind: 'agent',
+      max_grant: 'project',
+      packages: {
+        sources: [{ ecosystem: 'conda', channel: 'conda-forge' }],
+        files: 3,
+        asked: 'Conda: sage',
+        purpose: 'Sage for the lattice estimates.',
+        package: null,
+      },
+      scopes: ['once', 'session', 'project'],
+    });
+    expect(target.textContent).toContain('Install these packages?');
+    expect(target.textContent).toContain('conda (conda-forge)');
+    expect(target.textContent).toContain('Sage for the lattice estimates.');
+    expect(target.textContent).toContain('Agent-supplied reason.');
   });
 });
 

@@ -5,12 +5,13 @@
   import { browserState } from '../lib/browserState';
   import { post } from '../lib/http';
   import { api } from '../lib/api';
-  import type { ApprovalSettings, ConnectorSettings, McpInventory } from '../lib/api-types';
+  import type { ConnectorSettings, McpInventory } from '../lib/api-types';
   import { guardedWrite } from '../lib/mutation';
   import { formatTime } from '../lib/format';
   import { projectHref } from '../lib/router';
   import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
+  import GrantsPanel from './GrantsPanel.svelte';
   import PaneResizer from './PaneResizer.svelte';
 
   let { projectId }: { projectId: string } = $props();
@@ -112,45 +113,8 @@
     }
   }
 
-  // The tool calls the user approved for the whole project, which they may take back.
-  let remembered = $state<ApprovalSettings | null>(null);
-  async function forget(server: string, tool: string | null) {
-    if (remembered === null || toggling) return;
-    const grants = remembered.grants.filter(
-      (grant) => !(grant.server === server && (grant.tool ?? null) === tool),
-    );
-    toggling = true;
-    toggleError = null;
-    try {
-      remembered = await guardedWrite(
-        'approvals',
-        projectId,
-        { expected: remembered.revision, grants },
-        (change) => api.changeApprovalSettings(projectId, change),
-      );
-    } catch (caught) {
-      toggleError = caught;
-      try {
-        remembered = await api.approvalSettings(projectId);
-      } catch {
-        // Keep the first error shown.
-      }
-    } finally {
-      toggling = false;
-    }
-  }
-
   async function load() {
     try {
-      api.approvalSettings(projectId).then(
-        (found) => {
-          // A server without these settings answers something else: show none.
-          remembered = Array.isArray(found?.grants) ? found : null;
-        },
-        () => {
-          remembered = null;
-        },
-      );
       api.connectorSettings(projectId).then(
         (found) => {
           settings = Array.isArray(found?.disabled) ? found : null;
@@ -186,6 +150,7 @@
   result shown for a service may not be its latest run. Viewing never invokes a tool. Use Check
   availability for a bounded metadata listing through the proxy.
 </p>
+<GrantsPanel {projectId} />
 {#if error}<ErrorMessage {error} />
   <p role="status">Inventory refresh failed; any retained observation is previous data.</p>
   <button type="button" onclick={() => void load()}>Retry inventory</button>
@@ -272,26 +237,6 @@
             >
           </div>
           {#if toggleError}<ErrorMessage error={toggleError} />{/if}
-        {/if}
-        {#if remembered}
-          {@const mine = remembered.grants.filter((grant) => grant.server === current.name)}
-          <div class="remembered">
-            <strong>Approved for this project</strong>
-            {#each mine as grant (grant.tool ?? '*')}
-              <div class="remembered-row">
-                <span>{grant.tool ? visible(grant.tool) : 'Any tool the policy asks about'}</span
-                ><button
-                  type="button"
-                  disabled={toggling}
-                  onclick={() => void forget(grant.server, grant.tool ?? null)}>Remove</button
-                >
-              </div>
-            {:else}
-              <small class="muted"
-                >None. Calls the policy asks about wait for your answer in the chat.</small
-              >
-            {/each}
-          </div>
         {/if}
         <p>
           Proxy: {current.proxy_status ?? 'unknown'}{#if current.proxy_checked_at}
@@ -442,21 +387,6 @@
 {/if}
 
 <style>
-  .remembered {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin: 0 0 12px;
-  }
-  .remembered-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 6px 10px;
-    border: 1px solid var(--border, #ccc);
-    border-radius: 8px;
-  }
   .connector-switch {
     display: flex;
     flex-wrap: wrap;

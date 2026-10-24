@@ -46,7 +46,7 @@
   import { idle, submit } from '../lib/submit';
   import ChatPermission from './ChatPermission.svelte';
   import ChatQuestion from './ChatQuestion.svelte';
-  import { api } from '../lib/api';
+  import { api, type PermissionDecision } from '../lib/api';
   import type { PendingApproval } from '../lib/api-types';
   import { heldCall } from '../lib/conversation';
   import ChatRecovery from './ChatRecovery.svelte';
@@ -127,7 +127,8 @@
       (!draft.text.trim() && !attachments.length) ||
       tooLong,
   );
-  // Connector calls the proxy holds for the user's answer (D76), polled with the chat.
+  // Requests that wait for the user's answer (D76, D97): connector calls the proxy holds,
+  // and research code's network and package requests, polled with the chat.
   let permissions = $state<PendingApproval[]>([]);
   $effect(() => {
     const project = projectId,
@@ -151,12 +152,11 @@
         .map((message) => message.message_id),
     ),
   );
-  async function answerPermission(
-    request: PendingApproval,
-    decision: 'once' | 'project' | 'server' | 'deny',
-  ) {
-    await api.answerPermission(projectId, request.seq, decision);
-    permissions = permissions.filter((item) => item.seq !== request.seq);
+  async function answerPermission(request: PendingApproval, decision: PermissionDecision) {
+    await api.answerPermission(projectId, request, decision);
+    permissions = permissions.filter(
+      (item) => !(item.seq === request.seq && item.kind === request.kind),
+    );
   }
   $effect(() => {
     signals = chat
@@ -288,10 +288,10 @@
       <ChatRecovery {projectId} {sessionId} {held} busy={asking.busy} {closed} {resume} />
       {#if asking.error}<ErrorMessage error={asking.error} />{/if}
     {/if}
-    {#each permissions as request (request.seq)}
+    {#each permissions as request (`${request.kind}:${request.seq}`)}
       <ChatPermission
         {request}
-        call={heldCall(transcript, request.tool)}
+        call={request.kind === 'mcp' ? heldCall(transcript, request.tool) : null}
         answer={(decision) => answerPermission(request, decision)}
       />
     {/each}

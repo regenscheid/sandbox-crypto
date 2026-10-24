@@ -22,8 +22,8 @@ import type {
   RevisionListing,
   ConnectorSettings,
   AnswerResult,
-  ApprovalSettings,
-  Grant,
+  GrantListing,
+  PendingApproval,
   PendingListing,
   Category,
   FoldProposalList,
@@ -72,6 +72,9 @@ export { ApiError };
 export type ProjectSummary = ProjectListing['projects'][number];
 export type Session = SessionView;
 export type Project = ProjectView;
+/** An answer to a permission request: once, a grant for the session or the project, or a
+ * refusal. The server refuses a scope the request's ceiling does not allow. */
+export type PermissionDecision = 'once' | 'session' | 'project' | 'deny';
 export type { RunEntry, SessionDetail };
 
 export interface MacroContext {
@@ -639,7 +642,8 @@ export const api = {
   skills: (project: string) => get<ProjectSkills>(`/projects/${part(project)}/skills`),
   /** Safe configured MCP service identity and bounded historical run observations. */
   mcpServices: (project: string) => get<McpInventory>(`/projects/${part(project)}/mcp-services`),
-  /** The session's connector tool calls the MCP proxy holds for the user's answer. */
+  /** The requests that wait for the user's answer in the session (D76, D97): connector
+   * tool calls the MCP proxy holds, and research code's network and package requests. */
   permissionRequests: (project: string, session: string, signal?: AbortSignal) =>
     get<PendingListing>(
       `/projects/${part(project)}/sessions/${part(session)}/permission-requests`,
@@ -647,18 +651,17 @@ export const api = {
     ),
   answerPermission: (
     project: string,
-    seq: number,
-    decision: 'once' | 'project' | 'server' | 'deny',
+    request: { seq: number; kind: PendingApproval['kind'] },
+    decision: PermissionDecision,
   ) =>
-    post<AnswerResult>(`/projects/${part(project)}/permission-requests/${seq}/answer`, {
+    post<AnswerResult>(`/projects/${part(project)}/permission-requests/${request.seq}/answer`, {
       decision,
+      kind: request.kind,
     }),
-  approvalSettings: (project: string) =>
-    get<ApprovalSettings>(`/projects/${part(project)}/approvals/settings`),
-  changeApprovalSettings: (
-    project: string,
-    change: { expected: number; grants: Grant[]; operation_id: string },
-  ) => post<ApprovalSettings>(`/projects/${part(project)}/approvals/settings`, change),
+  /** The project's grants, with their last use (D97). */
+  grants: (project: string) => get<GrantListing>(`/projects/${part(project)}/grants`),
+  revokeGrant: (project: string, grant: string) =>
+    post<GrantListing>(`/projects/${part(project)}/grants/${part(grant)}/revoke`, {}),
   /** Which configured connectors the project's user turned off. */
   connectorSettings: (project: string) =>
     get<ConnectorSettings>(`/projects/${part(project)}/mcp-services/settings`),

@@ -76,7 +76,7 @@ it('keeps configured, observed, and unknown service states distinct without live
   const urls = fetcher.mock.calls.map((call) => String((call as unknown[])[0]));
   expect(urls.filter((url) => url.endsWith('/mcp-services'))).toHaveLength(1);
   expect(
-    urls.filter((url) => !/\/(mcp-services|mcp-services\/settings|approvals\/settings)$/.test(url)),
+    urls.filter((url) => !/\/(mcp-services|mcp-services\/settings|grants)$/.test(url)),
   ).toEqual([]);
 });
 
@@ -117,7 +117,7 @@ it('checks availability only after an explicit action and never calls a tool', a
   document.body.append(target);
   mounted.push(mount(McpServices, { target, props: { projectId: 'check-p' } }));
   await settle();
-  expect(requests.filter((item) => !item.endsWith('/settings'))).toEqual([
+  expect(requests.filter((item) => !/\/(settings|grants)$/.test(item))).toEqual([
     'GET /api/v0/projects/check-p/mcp-services',
   ]);
   [...target.querySelectorAll<HTMLButtonElement>('button')]
