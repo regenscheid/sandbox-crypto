@@ -17,9 +17,9 @@ import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
-from .decision import Action, most_restrictive
+from .decision import Action, Decision, most_restrictive
 from .effects import (
     BROWSE_ENABLED,
     CATALOG,
@@ -35,6 +35,10 @@ from .loader import parse_model, read_limited
 from .model import McpServer, ProjectPolicy
 
 Source = Literal["policy", "classification", "hint", "none"]
+
+EFFECT_META: Final = "sandbox-science/effect"
+"""The ``_meta`` key under which the MCP proxy tells its callers a listed tool's class:
+``read`` when every call of it is a read, otherwise a class a call can have."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,3 +197,17 @@ def classified_names(server: McpServer) -> frozenset[str]:
     """Every tool the server's classification and ``classify`` entries name."""
     found = server_classification(server)
     return frozenset(server.classify) | (frozenset(found.tools) if found else frozenset[str]())
+
+
+def listed_effect(server: McpServer, tool: str, decision: Decision) -> str:
+    """What a caller is told of a listed tool's class (``EFFECT_META``), from its decision as a
+    call without arguments: ``read`` only when no argument can make a call of it more."""
+    name = tool.removeprefix(server.tool_prefix or "")
+    effect = decision.effect or EffectClass.UNCLASSIFIED.value
+    if name not in classified_names(server):
+        return effect
+    possible = possible_classes(server, name)
+    if possible == frozenset({EffectClass.READ}):
+        return EffectClass.READ.value
+    others = sorted(possible - {EffectClass.READ})
+    return effect if effect != EffectClass.READ.value else others[0].value

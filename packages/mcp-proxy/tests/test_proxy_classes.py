@@ -84,3 +84,33 @@ async def test_locked_mcp_refuses_a_tool_the_policy_does_not_name(harness: Harne
     assert body["error"]["data"]["reason"] == "policy_denied"
     known = await harness.tool(session, "e-print-mcp_search_eprint", {"query": "SNOVA"})
     assert outcome(known.body) == "allow"
+
+
+async def test_listings_tell_callers_each_tools_class(harness: Harness) -> None:
+    harness.fake.tools = [
+        "e-print-mcp_search_eprint",
+        "firecrawl-mcp_firecrawl_scrape",
+        "firecrawl-mcp_firecrawl_feedback",
+        "e-print-mcp_brand_new",
+    ]
+    tools = [
+        {
+            "name": name,
+            "inputSchema": {"type": "object"},
+            "_meta": {"sandbox-science/effect": "read"},
+        }
+        for name in harness.fake.tools
+    ]
+    harness.fake.listing = lambda _: {"tools": tools}
+    harness.bind(classified(harness))
+    session = await harness.initialize()
+    listed: Any = (await harness.call(session, "tools/list", {})).body
+    effects = {
+        tool["name"]: tool["_meta"]["sandbox-science/effect"] for tool in listed["result"]["tools"]
+    }
+    assert effects == {
+        "e-print-mcp_search_eprint": "read",
+        "firecrawl-mcp_firecrawl_scrape": "browse",  # a call with actions is not a read
+        "firecrawl-mcp_firecrawl_feedback": "write",
+        "e-print-mcp_brand_new": "unclassified",  # the server's own word is replaced
+    }

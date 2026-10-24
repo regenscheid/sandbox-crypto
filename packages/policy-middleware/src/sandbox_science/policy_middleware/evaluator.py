@@ -701,6 +701,8 @@ class PolicyMiddleware:
                 "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
                 "rule": decision.rule,
                 "reason": decision.reason,
+                "effect": decision.effect,
+                "max_grant": decision.max_grant,
             }
             if decision.escalation is not None:
                 record["escalation"] = {
@@ -747,7 +749,16 @@ class PolicyMiddleware:
             "request_id": facts.request_id,
             "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
             "decision": (
-                {"action": decision.action.value, "layer": decision.layer, "rule": decision.rule}
+                {
+                    "action": decision.action.value,
+                    "layer": decision.layer,
+                    "rule": decision.rule,
+                    **(
+                        {"effect": decision.effect, "max_grant": decision.max_grant}
+                        if decision.effect is not None
+                        else {}
+                    ),
+                }
                 if decision is not None
                 else None
             ),

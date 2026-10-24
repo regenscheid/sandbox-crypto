@@ -57,6 +57,7 @@ from sandbox_science.policy.approvals import (
     Waiting,
     prepare_answer,
 )
+from sandbox_science.policy.classification import EFFECT_META, listed_effect
 from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.mcp_wire import (
     MCP_REQUEST_PARAMS,
@@ -193,6 +194,7 @@ class Call:
         payload = self.subject()
         payload["rule"] = decision.rule
         payload["reason"] = decision.reason
+        payload.update(_class_fields(decision))
         if decision.escalation is not None:
             payload["escalation"] = {
                 "timeout_seconds": int(decision.escalation.timeout.total_seconds()),
@@ -205,7 +207,12 @@ class Call:
         payload = self.subject()
         decision = self.decision
         payload["decision"] = (
-            {"action": decision.action.value, "layer": decision.layer, "rule": decision.rule}
+            {
+                "action": decision.action.value,
+                "layer": decision.layer,
+                "rule": decision.rule,
+                **_class_fields(decision),
+            }
             if decision is not None
             else None
         )
@@ -818,6 +825,7 @@ class McpProxy:
         tools = result.get("tools")
         if not isinstance(tools, list):
             return result
+        server = loaded.policy.mcp.servers[call.server]
         kept: list[object] = []
         denied = 0
         for tool in cast("list[object]", tools):
@@ -835,6 +843,7 @@ class McpProxy:
                 if decision.action is Action.DENY:
                     denied += 1
                     continue
+                tool = _with_effect(tool, listed_effect(server, name, decision))
             kept.append(tool)
         if denied:
             call.stream["denied_tools"] = denied
@@ -1162,6 +1171,24 @@ def _answer(
         content_type="application/json",
         headers=headers,
     )
+
+
+def _class_fields(decision: Decision) -> dict[str, object]:
+    """A tool call's effect class and grant ceiling, for records (D96, D97)."""
+    if decision.effect is None:
+        return {}
+    return {"effect": decision.effect, "max_grant": decision.max_grant}
+
+
+def _with_effect(tool: object, effect: str) -> object:
+    """A listed tool with the proxy's word on its class in ``_meta``, over any server's."""
+    if not isinstance(tool, dict):
+        return tool
+    fields = cast("JsonObject", tool)
+    meta = fields.get("_meta")
+    own = dict(cast("JsonObject", meta)) if isinstance(meta, dict) else {}
+    own[EFFECT_META] = effect
+    return {**fields, "_meta": own}
 
 
 def _hints(result: JsonObject) -> dict[str, EffectClass]:

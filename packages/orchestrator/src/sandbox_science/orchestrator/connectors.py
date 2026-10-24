@@ -27,8 +27,11 @@ connectors are offered only to runs of that project.
   the reason, the first ``mcp_tools`` call lists it once more, and the run's record and
   its ``started`` event keep it (lab 41, B4: one failed listing left a run without
   connectors, and nothing said so);
-- each with the effect class ``effect``, since the policy marks no connector tool
-  read-only, so the plan fence applies;
+- each with the effect class ``effect``, so the plan fence applies. The MCP proxy also
+  says each listed tool's D96 class (``sandbox-science/effect`` in its ``_meta``), which
+  the tool keeps and each call's record names with its reach
+  (``delegation.effects.connector_reach``); a client that reaches servers directly passes
+  the server's own listing, whose word on that is not taken;
 - what a server says about a tool is untrusted. Its description loses control and
   invisible characters, is bounded and is framed as the server's. Its input schema is
   rebuilt from structural keywords only, with no text but property names and bounded
@@ -59,6 +62,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from .delegation.effects import EFFECT_CLASSES, connector_reach
 from .documents.agent_text import hidden_characters
 from .effects import UnknownEffectError
 from .model import ToolSpec
@@ -73,6 +77,8 @@ SESSION_HEADER: Final = "Sandbox-Science-Session"
 REFUSED: Final = -31001
 """The proxy's own JSON-RPC error code: it refused the call (its ``data.reason`` says why)."""
 UPSTREAM_FAILED: Final = -31002
+EFFECT_META: Final = "sandbox-science/effect"
+"""Where the MCP proxy puts a listed tool's D96 class (the policy library's ``EFFECT_META``)."""
 MAX_ANSWER_BYTES: Final = 8 * 1024 * 1024
 MAX_DESCRIPTION: Final = 2000
 MAX_SCHEMA_BYTES: Final = 16 * 1024
@@ -160,6 +166,9 @@ class ProxyClient:
     callers, and starts it again once if the proxy no longer knows it (a restart). It
     never follows a redirect.
     """
+
+    classifies: Final = True
+    """Its listings carry the proxy's class of each tool (``EFFECT_META``)."""
 
     def __init__(self, url: str, token: str, *, timeout: float = CALL_SECONDS) -> None:
         self.url = url.rstrip("/")
@@ -364,6 +373,8 @@ class ConnectorTool:
     spec: ToolSpec
     purpose: str = ""
     """The first line of what the server says it does, bounded: the index shows it."""
+    effect_class: str | None = None
+    """The tool's D96 class as the MCP proxy says it, or None when no proxy said one."""
 
     @property
     def group(self) -> str:
@@ -563,7 +574,9 @@ class Connectors:
                     self.refused.add(name)
                     continue
                 spec = _spec(server, name, tool)
-                offered_tool = ConnectorTool(server, spec, purpose(tool.get("description")))
+                offered_tool = ConnectorTool(
+                    server, spec, purpose(tool.get("description")), self._effect_class(tool)
+                )
                 if (
                     offered >= MAX_TOOLS_PER_SERVER
                     or len(self.tools) >= MAX_TOOLS
@@ -593,6 +606,14 @@ class Connectors:
                 "name a configured server, or SERVER/BEHIND for one behind a portal",
                 key,
             )
+
+    def _effect_class(self, tool: Mapping[str, Any]) -> str | None:
+        """The class the MCP proxy gives a listed tool; a server's own word is not taken."""
+        if not getattr(self.client, "classifies", False):
+            return None
+        meta = tool.get("_meta")
+        said = cast(Mapping[str, Any], meta).get(EFFECT_META) if isinstance(meta, dict) else None
+        return said if isinstance(said, str) and said in EFFECT_CLASSES else None
 
     def index(self) -> str:
         """The connector tools as the model first sees them: by server, each named with
@@ -731,6 +752,9 @@ class Connectors:
         """Call a connector tool: its text for the model, and the record to keep."""
         tool = self.tools[name]
         record: dict[str, Any] = {"connector": tool.server}
+        if tool.effect_class is not None:
+            record["effect_class"] = tool.effect_class
+            record["reach"] = connector_reach(tool.effect_class)
         if self.disabled is not None and tool.server in await asyncio.to_thread(self.disabled):
             record["error"] = "connector_disabled"
             message = (

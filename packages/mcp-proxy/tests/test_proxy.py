@@ -390,6 +390,9 @@ async def test_an_allowed_tool_is_forwarded_with_credentials_in_headers_only(
         "action": "allow",
         "layer": "policy",
         "rule": "mcp.servers.papers.tools.allow[search]",
+        # Allowed by name: the tool has no class but unclassified, and needs no grant.
+        "effect": "unclassified",
+        "max_grant": "none",
     }
     assert record["outcome"] == "forwarded"
     assert record["sizes"]["params"] == len(json.dumps(call["params"], separators=(",", ":")))

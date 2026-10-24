@@ -10,9 +10,13 @@ tool of the ``effect`` class is outward for the fence: connector tools (the prox
 the ones the policy escalates), host admissions, publishing, delegating, and the
 ledger's and documents' writes.
 
-This is the interim classification. D96's effect classes (``read``, ``write``,
-``communicate``, ``browse``, ``unclassified``) replace it; until then a new built-in tool
-is outward unless it is named here, so it is gated until someone classes it.
+This is the interim classification of built-in tools; a new built-in tool is outward unless
+it is named here, so it is gated until someone classes it. Connector tools take D96's
+effect classes instead (``connector_reach``): the MCP proxy, which classifies each call
+under the project's policy, tells its callers each listed tool's class, and only a tool
+whose every call is a ``read`` stays in the session. Delegated runs are offered no
+connector tools today, so the fence meets none; the harness records each connector call's
+class and reach.
 """
 
 from __future__ import annotations
@@ -39,6 +43,18 @@ SESSION_TOOLS: Final = frozenset(
 gate lets through."""
 
 
+EFFECT_CLASSES: Final = frozenset(
+    {"read", "write", "communicate", "browse", "admin", "unclassified"}
+)
+"""D96's effect classes, as the MCP proxy names them (``sandbox-science/effect``)."""
+
+
 def reach(tool: str) -> Reach:
     """Where a call of ``tool``, of the ``effect`` class, can act: outward unless named."""
     return "session" if tool in SESSION_TOOLS else "outward"
+
+
+def connector_reach(effect_class: str | None) -> Reach:
+    """Where a connector call can act, by its tool's effect class: a ``read`` stays in the
+    session; any other class, or none known, is outward."""
+    return "session" if effect_class == "read" else "outward"

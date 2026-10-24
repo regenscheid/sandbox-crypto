@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import unicodedata
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -91,6 +91,9 @@ mcp:
         escalate: [crawl]
         deny: ["admin_*"]
 """
+
+UNCLASSIFIED = {"effect_class": "unclassified", "reach": "outward"}
+"""What the proxy says of the test policy's tools: none is classified (D96)."""
 
 
 @dataclass
@@ -187,7 +190,7 @@ async def test_an_allowed_call_answers_with_the_servers_text(
 ) -> None:
     text, record = await connectors.call("search", {"query": "lattices"})
     assert text == "search: ok"
-    assert record == {"connector": "papers"}
+    assert record == {"connector": "papers", **UNCLASSIFIED}
     assert proxied.fake.tool_calls() == ["search"]
     image, _ = await connectors.call("image", {})
     assert image.startswith("a figure")
@@ -219,7 +222,7 @@ async def test_an_escalated_call_waits_for_the_operator(
     proxied.approve(request)  # the operator, through the proxy's command line
     again, record = await connectors.call("crawl", {"url": "https://example.org/a"})
     assert again.startswith("crawl")
-    assert record == {"connector": "papers"}
+    assert record == {"connector": "papers", **UNCLASSIFIED}
 
 
 async def test_a_session_the_proxy_forgot_is_started_again(proxied: Proxied) -> None:
@@ -371,7 +374,7 @@ async def test_an_answer_longer_than_one_read_is_read_whole(proxied: Proxied) ->
         text, record = await connectors.call("large", {})
     finally:
         await client.close()
-    assert record == {"connector": "papers"}
+    assert record == {"connector": "papers", **UNCLASSIFIED}
     assert len(text) == 2_000_000
     assert len(connectors.specs) == len(proxied.fake.tools) - 2  # not the admin_ tools
 
@@ -604,7 +607,7 @@ async def test_an_approved_call_matches_whatever_order_its_arguments_come_in(
     _, record = await connectors.call("crawl", {"url": "https://example.org/a", "depth": 1})
     proxied.approve(record["permission_request"])
     again, record = await connectors.call("crawl", {"depth": 1, "url": "https://example.org/a"})
-    assert record == {"connector": "papers"}, again
+    assert record == {"connector": "papers", **UNCLASSIFIED}, again
 
 
 async def test_a_servers_error_speaks_only_for_the_server(
@@ -1308,7 +1311,7 @@ async def test_a_connector_the_user_turns_off_takes_no_more_calls(proxied: Proxi
         off.add("papers")  # turned off during the run
         text, record = await connectors.call("search", {"query": "codes"})
         assert error_of(text)["kind"] == "connector_disabled"
-        assert record == {"connector": "papers", "error": "connector_disabled"}
+        assert record == {"connector": "papers", **UNCLASSIFIED, "error": "connector_disabled"}
         assert proxied.fake.tool_calls() == ["search"]  # the refused call never left
     finally:
         await client.close()
@@ -1392,3 +1395,37 @@ async def test_a_denied_call_stops_waiting_and_says_not_to_call_again(
         assert proxied.fake.tool_calls() == []
     finally:
         await client.close()
+
+
+class ListingClient:
+    """A client whose only server lists two tools, each with a class in its ``_meta``."""
+
+    def __init__(self, *, classifies: bool) -> None:
+        self.classifies = classifies
+
+    async def request(
+        self, server: str, method: str, params: Mapping[str, object], *, session: str
+    ) -> dict[str, Any]:
+        if method == "tools/call":
+            return {"content": [{"type": "text", "text": "ok"}]}
+        meta = "sandbox-science/effect"
+        return {
+            "tools": [
+                {"name": "find", "inputSchema": {"type": "object"}, "_meta": {meta: "read"}},
+                {"name": "post", "inputSchema": {"type": "object"}, "_meta": {meta: "nonsense"}},
+            ]
+        }
+
+
+@pytest.mark.parametrize("classifies", [True, False])
+async def test_a_connector_calls_reach_follows_the_proxys_class(classifies: bool) -> None:
+    """D96: only the proxy's word on a tool's class is taken; a read stays in the session."""
+    connectors = Connectors(ListingClient(classifies=classifies), ["papers"], session="s-1")
+    await connectors.load()
+    _, found = await connectors.call("find", {})
+    _, posted = await connectors.call("post", {})
+    if classifies:
+        assert (found["effect_class"], found["reach"]) == ("read", "session")
+    else:
+        assert "effect_class" not in found  # a server's own listing is not believed
+    assert "effect_class" not in posted  # not a class
