@@ -50,11 +50,17 @@ from sandbox_science.contracts import (
     StreamOutput,
     WriteFileRequest,
 )
+from sandbox_science.contracts.worker import Language
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.harness import describe_isolation, save, tier_in_effect
+from sandbox_science.orchestrator.harness import (
+    describe_isolation,
+    kernel_note,
+    save,
+    tier_in_effect,
+)
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
@@ -400,6 +406,37 @@ def test_the_toolbox_offers_the_kernels_the_environment_has() -> None:
     assert restart.parameters["properties"]["language"]["enum"] == ["python", "sage"]
     none = {spec.name for spec in Toolbox(client, CONTEXT, languages=()).specs}
     assert not none & {"python", "sage", "restart_kernel"}
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+@pytest.mark.parametrize("languages", [("python",), ("sage",), ("python", "sage")])
+def test_the_kernel_tools_come_before_shell_and_steer_computation_to_a_kernel(
+    languages: tuple[Language, ...],
+) -> None:
+    """The model reads its tools in order, and the kernels are the default for computation:
+    each kernel tool the environment offers precedes ``shell``, and the descriptions say
+    which is for what (agents ran 1,169 shell calls in the SNOVA run)."""
+    client = WorkerClient("http://127.0.0.1:9", TOKEN)
+    specs = {spec.name: spec for spec in Toolbox(client, CONTEXT, languages=languages).specs}
+    names = list(specs)
+    assert names[: len(languages)] == list(languages)
+    assert names.index("shell") == len(languages)
+    for language in languages:
+        described = specs[language].description
+        assert "persistent" in described
+        assert "The default for" in described
+        assert "exploration" in described
+    assert "Not for computation that belongs in a kernel cell" in specs["shell"].description
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_a_run_notes_its_kernels_and_says_why_python_can_be_missing() -> None:
+    assert kernel_note(("python", "sage")) == "kernels: python, sage"
+    for languages in ((), ("sage",)):
+        note = kernel_note(languages)
+        assert note.startswith("kernels: no python kernel, so the run has no python tool")
+        assert "ipykernel" in note
+    assert "offered: sage" in kernel_note(("sage",))
 
 
 class AdmittingClient(WorkerClient):

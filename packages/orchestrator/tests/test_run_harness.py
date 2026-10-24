@@ -75,7 +75,9 @@ def main(*replies: str) -> Role:
     return Role(ScriptedModel([ModelTurn(reply) for reply in replies]), "scripted")
 
 
-async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path: Path) -> None:
+async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     documents = DocumentStore(store_path(tmp_path), producer="harness")
@@ -115,6 +117,13 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
         "folds",  # the geometry, folds and rebuilds of the run's view
     ]
     assert sink.notes[0].startswith("worker: pool p")
+    # This worker offers no kernels: the run says so, and the log warns, since its agent
+    # then has no python tool.
+    assert sink.notes[1].startswith("kernels: no python kernel, so the run has no python tool")
+    assert any(
+        record.levelname == "WARNING" and "no python kernel" in record.getMessage()
+        for record in caplog.records
+    )
     assert (
         await save(
             finished.fields(), finished.status, finished.hooks, projects=projects, error=print

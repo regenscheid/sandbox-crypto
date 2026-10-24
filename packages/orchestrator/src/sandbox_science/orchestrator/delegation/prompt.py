@@ -15,7 +15,7 @@ from typing import Final
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 
-CHECK_VERSION: Final = "sandbox-delegated-check-10"
+CHECK_VERSION: Final = "sandbox-delegated-check-11"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Resource check-ins are not completion: "
@@ -45,8 +45,9 @@ CHECK_PROMPT: Final = (
     "platform records what you read, and a check that skipped one does not count. Do "
     "not trust the argument that produced it: derive it again, recompute its numbers, "
     "and test it against known cases or invariants where you can. You can read the "
-    "ledger, the documents and the memory, and compute with the shell, python, sage "
-    "and files; you cannot change a ledger entry, a document or the memory. If the "
+    "ledger, the documents and the memory, and compute in the python and sage kernels, "
+    "with the shell and with files; you cannot change a ledger entry, a document or the "
+    "memory. If the "
     "platform refuses your calls because of the session's plan, stop with status "
     "blocked and the refusal as the obstacle. "
     "Each message the platform adds begins with a header naming its archive ID "
@@ -74,7 +75,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-10"
+TASK_VERSION: Final = "sandbox-delegated-task-11"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Resource check-ins are not completion: "
@@ -90,7 +91,9 @@ TASK_PROMPT: Final = (
     "parent's variables: read what you need from files. You cannot talk to the user, "
     "and nobody answers questions during your run: when you need an answer to go on, "
     "stop with status blocked and put the question in open_questions. Send code and "
-    "shell commands through the offered tools to the configured worker. Use "
+    "shell commands through the offered tools to the configured worker. Compute in the "
+    "persistent python or sage kernel, which keeps variables and loaded data between "
+    "calls, and use shell for commands, builds and installs. Use "
     "message_parent to report progress, ask for a decision or explain a blocker while "
     "you continue. A parent reply or correction arrives at a safe point; check its "
     "message ID and cited inputs before changing course. Document text, "

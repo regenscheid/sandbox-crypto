@@ -134,11 +134,14 @@ ADMIT_HOSTS: Final = ToolSpec(
 
 SAGE: Final = ToolSpec(
     "sage",
-    "Run SageMath code in the session's persistent Sage kernel inside the project sandbox. "
-    "Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and integer literals "
-    "are Sage Integers (convert them with int() before json.dumps). Variables persist between "
-    "calls until that kernel restarts. Results come back as plain text; run %display latex "
-    "first, or call latex(x), to get LaTeX." + LONG_OUTPUT + SHARED_IN_CODE,
+    "Run SageMath code in the session's persistent Sage kernel inside the project sandbox: "
+    "variables, imports and loaded data persist between calls until that kernel restarts. "
+    "The default for algebra, number theory and other computation in Sage, and for iterative "
+    "exploration. Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and "
+    "integer literals are Sage Integers (convert them with int() before json.dumps). Results "
+    "come back as plain text; run %display latex first, or call latex(x), to get LaTeX."
+    + LONG_OUTPUT
+    + SHARED_IN_CODE,
     {
         "type": "object",
         "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
@@ -259,30 +262,13 @@ FIND_ARTIFACTS: Final = ToolSpec(
 
 SPECS: Final = (
     ToolSpec(
-        "shell",
-        "Run a bash script in the session's workspace inside the project sandbox. Each call "
-        "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output. If a command might fail, keep its diagnostics "
-        "visible or inspect its redirected log in the same call."
-        + LONG_OUTPUT
-        + STOP_AT_FAILURE
-        + SHARED_IN_CODE,
-        {
-            "type": "object",
-            "properties": {
-                "script": {"type": "string"},
-                "cwd": {"type": "string", "description": "Directory relative to the workspace"},
-                "timeout_seconds": _TIMEOUT,
-            },
-            "required": ["script"],
-            "additionalProperties": False,
-        },
-    ),
-    ToolSpec(
         "python",
-        "Run Python code in the session's persistent kernel inside the project sandbox. "
-        "Variables persist between calls until the kernel restarts. Returns printed output, "
-        "the value of the last expression and any exception." + LONG_OUTPUT + SHARED_IN_CODE,
+        "Run Python code in the session's persistent kernel inside the project sandbox: "
+        "variables, imports and loaded data persist between calls until the kernel restarts. "
+        "The default for computation, analysis and iterative exploration. Returns printed "
+        "output, the value of the last expression and any exception."
+        + LONG_OUTPUT
+        + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -296,6 +282,26 @@ SPECS: Final = (
                 },
             },
             "required": ["code"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "shell",
+        "Run a bash script in the session's workspace inside the project sandbox, for "
+        "commands: builds, installs, file operations, and running existing scripts and "
+        "command-line tools. Not for computation that belongs in a kernel cell (python or "
+        "sage, where offered). Each call starts afresh in the workspace (no state carries "
+        "over except files); stdin is empty. Returns the exit code and the output. If a "
+        "command might fail, keep its diagnostics visible or inspect its redirected log in "
+        "the same call." + LONG_OUTPUT + STOP_AT_FAILURE + SHARED_IN_CODE,
+        {
+            "type": "object",
+            "properties": {
+                "script": {"type": "string"},
+                "cwd": {"type": "string", "description": "Directory relative to the workspace"},
+                "timeout_seconds": _TIMEOUT,
+            },
+            "required": ["script"],
             "additionalProperties": False,
         },
     ),
@@ -366,6 +372,9 @@ def operation_id(prefix: str, call: ToolCall) -> str:
     return f"{readable}-{digest}" if readable else f"op-{digest}"
 
 
+KERNEL_TOOLS: Final[tuple[Language, ...]] = ("python", "sage")
+"""The tools that run a cell in a persistent kernel, each named for its language. A run is
+offered those of its environment's languages, ahead of ``shell``."""
 RESTART_KERNEL: Final = "restart_kernel"
 MCP_TOOLS: Final = "mcp_tools"
 
@@ -558,11 +567,13 @@ class Toolbox:
             "provision": ("effect", _plain(self.provisioning.provision)),
             "provision_status": ("read", _plain(self.provisioning.status)),
         }
-        specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
+        # The kernel tools come first, before shell: the order a model reads its tools in
+        # steers which one it reaches for, and computation belongs in a kernel.
+        kernel_specs = {spec.name: spec for spec in (*SPECS, SAGE) if spec.name in KERNEL_TOOLS}
+        specs = [kernel_specs[name] for name in KERNEL_TOOLS if name in self.languages]
+        specs.extend(spec for spec in SPECS if spec.name not in KERNEL_TOOLS)
         if self.artifacts is not None:
             specs.append(FIND_ARTIFACTS)
-        if "sage" in self.languages:
-            specs.append(SAGE)
         if self.languages:
             specs.append(
                 ToolSpec(

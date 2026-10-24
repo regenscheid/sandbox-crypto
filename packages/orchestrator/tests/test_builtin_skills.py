@@ -181,3 +181,18 @@ def test_json_examples_parse_and_links_stay_in_the_pack(skill: str) -> None:
             continue
         target = posixpath.normpath(posixpath.join(skill, href.partition("#")[0]))
         assert target in files, f"{skill}: the link {href} names no file of the pack"
+
+
+def test_the_computation_skill_leads_with_the_kernels() -> None:
+    """Exploration belongs in a persistent kernel: the computation skill names the kernel
+    tools before ``shell``, teaches the kernel workflow before the state-loss warning, and
+    describes itself kernels first, as the index shows it."""
+    names = inline_code(body("computation"))
+    assert names.index("python") < names.index("shell")
+    assert names.index("sage") < names.index("shell")
+    text = body("computation")
+    assert text.index("## Explore in a kernel") < text.index("A kernel loses its state")
+    assert text.index("1. Set up in one cell") < text.index("A kernel loses its state")
+    front = (PACK / "computation" / "SKILL.md").read_text(encoding="utf-8").partition("\n---\n")[0]
+    (description,) = [line for line in front.splitlines() if line.startswith("description:")]
+    assert description.index("kernels") < description.index("shell")

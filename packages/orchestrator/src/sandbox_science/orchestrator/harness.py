@@ -379,6 +379,20 @@ class RunSink(Protocol):
     async def tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None: ...
 
 
+def kernel_note(languages: Sequence[str]) -> str:
+    """What a run's progress says of the kernels its environment offers, which are the kernel
+    tools its agent gets. Without a Python kernel the agent has no ``python`` tool, and
+    computes through ``shell`` alone: the note says why that can be."""
+    if "python" in languages:
+        return f"kernels: {', '.join(languages)}"
+    others = f"; offered: {', '.join(languages)}" if languages else ""
+    return (
+        "kernels: no python kernel, so the run has no python tool"
+        f"{others}. An executor offers Python only where its interpreter has ipykernel, "
+        "jupyter_client and the python3 kernelspec"
+    )
+
+
 class IsolationRefusedError(Exception):
     """The worker offers less isolation than the run requires; nothing ran."""
 
@@ -452,6 +466,7 @@ async def admit(
         f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
         f"{location.sandbox_id}, host {location.hostname}, {describe_isolation(location)}"
     )
+    sink.note(kernel_note(capabilities.languages))
     return Admitted(
         request,
         request.run_id or new_id("run"),
@@ -1553,6 +1568,9 @@ class Harness:
         watcher, reviewer = self.watcher, self.reviewer_role(admitted.request)
         context, run_id = admitted.context, admitted.run_id
         languages, features = admitted.languages, admitted.features
+        if "python" not in languages:
+            # Rare but silent otherwise: the agent then computes only through shell.
+            _log.warning("run %s: %s", admitted.run_id, kernel_note(languages))
         role = admitted.request.role
         delegated = role == "delegated"
         bundles: list[caps.Capability] = []
