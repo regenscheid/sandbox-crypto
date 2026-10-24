@@ -759,6 +759,47 @@ async def test_an_execution_waits_no_longer_than_its_time_limit(worker: Worker) 
 
 
 @pytest.mark.asyncio
+async def test_waiting_behind_an_install_does_not_count_against_a_calls_limit(
+    worker: Worker,
+) -> None:
+    # CP-12: a call queued behind an install gets its whole limit once it starts.
+    await worker.call("op-0", script="true")
+    gate = worker.root.parent / "gate"
+    install = await worker.begin(
+        "op-install", "s1", script=f"FAKEPM_GATE={gate} pip install gamma", timeout_seconds=60
+    )
+    await worker.logged("start gamma")
+    waiting = await worker.begin("op-waiting", "s2", script="echo ran", timeout_seconds=1)
+    await asyncio.sleep(2.5)
+    status, queued = await worker.get(f"/v1/executions/{waiting}")
+    assert (status, queued["state"]) == (200, "queued")
+    gate.touch()
+    later = await worker.finish(waiting)
+    assert later["state"] == "succeeded", later["result"]
+    assert later["result"]["stdout"]["text"] == "ran\n"
+    assert (await worker.finish(install))["state"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_waiting_behind_a_package_command_ends_with_the_longest_running_limit(
+    worker: Worker,
+) -> None:
+    # CP-12: the wait may last as long as an attempt beside it may run, which bounds a
+    # package command it runs, and no longer.
+    await worker.call("op-0", script="true")
+    beside = await worker.begin("op-beside", "s1", script="sleep 30", timeout_seconds=3)
+    await worker.until_state(beside, "running")
+    started = time.monotonic()
+    with held(worker.state):
+        busy = await worker.call("op-busy", "s2", script="echo ran", timeout_seconds=1)
+    waited = time.monotonic() - started
+    assert busy["state"] == "timed_out"
+    assert "did not start" in busy["result"]["error"]["message"]
+    assert 1.5 < waited < 20
+    assert (await worker.finish(beside))["state"] == "timed_out"
+
+
+@pytest.mark.asyncio
 async def test_a_cell_waits_for_a_package_command_and_pip_in_a_kernel_takes_its_turn(
     worker: Worker,
 ) -> None:

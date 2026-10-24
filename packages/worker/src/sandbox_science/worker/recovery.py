@@ -175,6 +175,7 @@ class DaemonRecovery:
                     self.clock.now() - (live.execution.started_at or live.execution.submitted_at)
                 ).total_seconds(),
             )
+            live.time_limit = live.time_limit or time_limit(request)
             live.watchdog = self.hooks.spawn(self.hooks.watch(live, time_limit(request) - elapsed))
 
     async def _recover_once(self, environment_id: str, *, startup: bool) -> bool:

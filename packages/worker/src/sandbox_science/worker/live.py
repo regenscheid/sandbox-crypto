@@ -60,6 +60,10 @@ class Live:
     """What syncing the project's shared files told before the execution ran (D79)."""
     dispatched_at: float = 0.0
     """When the request went to the executor, by the monotonic clock."""
+    time_limit: float | None = None
+    """The request's time limit, which the executor counts from the start (CP-12)."""
+    running_at: float | None = None
+    """When the executor reported it running, by the monotonic clock."""
     final: tuple[ExecutionState, Result] | None = None
     """The executor's outcome, held while the shared files sync after it (D79)."""
     ended_at: float = 0.0

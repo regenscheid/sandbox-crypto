@@ -703,6 +703,38 @@ async def test_h2_run_gives_up_when_no_result_comes() -> None:
     assert raised.value.kind is ErrorKind.UNAVAILABLE
 
 
+async def test_a_call_queued_behind_an_install_gets_its_whole_limit_once_it_starts() -> None:
+    # CP-12: the time a call waits behind a package command does not count against its
+    # limit, so the harness counts the limit from the call's start, not its submission.
+    async def submit(request: web.Request) -> web.Response:
+        return web.json_response({**EXECUTION, "state": "queued"}, status=201)
+
+    async def events(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        for _ in range(15):  # queued most of the limit and grace from submission
+            await response.write(b"\n")
+            await asyncio.sleep(0.1)
+        await response.write(_event(1, type="state", state="running"))
+        for _ in range(15):  # past them, within them from the start
+            await response.write(b"\n")
+            await asyncio.sleep(0.1)
+        await response.write(_event(2, type="result", execution=EXECUTION))
+        await response.write_eof()
+        return response
+
+    app = fake_worker_app()
+    app.router.add_post("/v1/executions", submit)
+    app.router.add_get("/v1/executions/exe-1/events", events)
+    request = ShellRequest(operation_id="op-1", context=CONTEXT, script="true", timeout_seconds=1)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), TOKEN, result_grace=1) as client,
+    ):
+        execution = await asyncio.wait_for(client.run(request), 10)
+    assert execution.state == "succeeded"
+
+
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
 def test_m4_tool_results_are_bounded_as_a_whole() -> None:
     # 20,000 displays gave the model 149 KB; a 300 KB exception message, 600 KB.

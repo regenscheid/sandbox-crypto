@@ -78,6 +78,25 @@ MAX_EVENTS = 100_000
 MAX_WRITTEN = 1000
 
 
+def watch_deadline(
+    live: Live, timeout: float, *, now: float, grace: float, beside_running: bool
+) -> float | None:
+    """When the watchdog looks at ``live`` again, or None to cancel it now (CP-12).
+
+    A running execution has its limit (the request's, else ``timeout``) from its start,
+    plus the grace. A queued one waits on while another execution of its environment
+    runs: the executor holds it behind a package command no longer than that command's
+    own attempt may run.
+    """
+    limit = live.time_limit if live.time_limit is not None else timeout
+    if live.running_at is not None:
+        end = live.running_at + limit + grace
+        return end if end > now else None
+    if live.execution.state is ExecutionState.QUEUED and beside_running:
+        return now + grace
+    return None
+
+
 class Dispatcher:
     """Executions from submission to their end, through each environment's executor."""
 
@@ -380,15 +399,37 @@ class Dispatcher:
         self.store.observation_dispatch(
             live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
         )
-        live.watchdog = self.spawn(self.watch(live, time_limit(request)))
+        live.time_limit = time_limit(request)
+        live.watchdog = self.spawn(self.watch(live, live.time_limit))
         await channel.request(request.kind, **fields)
         if channel.daemon_token is not None:
             self.recovery.poll(request.context.environment_id, channel)
 
     async def watch(self, live: Live, timeout: float) -> None:
-        await self.clock.sleep(max(0, timeout + self.timeouts.watchdog_grace))
-        if live.execution.state in TERMINAL_STATES or live.final is not None:
-            return
+        """Cancel an execution that overran its limit, then lose one that never reports.
+
+        The executor counts the limit from when the execution starts, since waiting
+        behind a package command does not count (CP-12), so the watchdog waits on while
+        the execution is queued beside a running one, and counts from its start.
+        """
+        grace = self.timeouts.watchdog_grace
+        deadline: float | None = self.clock.monotonic() + max(0.0, timeout) + grace
+        while deadline is not None:
+            await self.clock.sleep(max(0.0, deadline - self.clock.monotonic()))
+            if live.execution.state in TERMINAL_STATES or live.final is not None:
+                return
+            deadline = watch_deadline(
+                live,
+                timeout,
+                now=self.clock.monotonic(),
+                grace=grace,
+                beside_running=any(
+                    other is not live
+                    and other.environment_id == live.environment_id
+                    and other.execution.state is ExecutionState.RUNNING
+                    for other in self.journal.live.values()
+                ),
+            )
         _log.warning("execution %s overran its limit; cancelling it", live.execution.execution_id)
         with contextlib.suppress(WorkerError):
             await self.cancel(live.execution.execution_id)
@@ -477,6 +518,7 @@ class Dispatcher:
         kind = message.get("event")
         if kind == "state" and message.get("state") == "running":
             if live.execution.state is ExecutionState.QUEUED:
+                live.running_at = self.clock.monotonic()
                 update: dict[str, Any] = {
                     "state": ExecutionState.RUNNING,
                     "started_at": self.clock.now(),

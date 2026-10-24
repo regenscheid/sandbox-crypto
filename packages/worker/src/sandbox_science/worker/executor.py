@@ -313,6 +313,13 @@ class Running:
     captures: dict[str, Capture] = field(default_factory=dict[str, Capture])
     log_error: str | None = None
     waited: float = 0.0
+    """Seconds of its time limit used before it started, such as a cell's wait behind
+    another cell. Waiting behind package commands is not among them (CP-12)."""
+    install_waited: float = 0.0
+    """Seconds it waited behind package commands before it started, which its time limit
+    does not cover (CP-12)."""
+    deadline: float | None = None
+    """When its time limit ends, by the monotonic clock, once it runs."""
     admitted: float = field(default_factory=time.monotonic)
     package_operation: str = ""
     package_generation: int = -1
@@ -323,7 +330,6 @@ class Running:
     bindings_dropped: tuple[str, ...] = ()
     """The skill bindings left out as naming the environment's own variables, which the
     result names for the run's notice."""
-    """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
 def _not_retired(kernel: Kernel) -> None:
@@ -702,6 +708,7 @@ class Executor:
             max_commands=MAX_COMMANDS,
             max_owners=MAX_OWNERS,
             max_runs=MAX_RUNS,
+            install_bound=self.install_bound,
         )
         self.binding_inventory = binding_inventory.Inventory()
         self.binding_inventory_lock = asyncio.Lock()
@@ -997,12 +1004,30 @@ class Executor:
                 )
             return self.admission.baseline(fingerprint)
 
+    def install_bound(self, running: Running, fallback: float) -> float:
+        """Until when ``running`` may wait behind a package command (CP-12), by the
+        monotonic clock.
+
+        The wait does not count against its own time limit, but it may not outlast the
+        command's: a package command runs within an attempt beside it, which ends at its
+        own limit. So the bound is the latest limit among those attempts, and at least
+        ``fallback``, which the caller sets to its own limit from the start of the wait,
+        for a lock that no running attempt can be holding.
+        """
+        limits = (
+            other.deadline
+            for other in self.lifecycle.running.values()
+            if other is not running and other.deadline is not None
+        )
+        return max([fallback, *limits])
+
     async def begin(self, running: Running, timeout: float) -> str | None:
         """Wait while a package command changes the environment, then look at it (CP-12).
 
         Returns the packages' fingerprint as the attempt starts, after reporting what
-        changed before it. Attempts already running are not held up. The wait counts
-        against the attempt's time limit (``running.waited``): past it, _BusyError.
+        changed before it. Attempts already running are not held up. The wait does not
+        count against the attempt's time limit (``running.install_waited``); it ends at
+        ``install_bound``, then _BusyError.
         """
         if self.provisioning is None:
             return None
@@ -1018,12 +1043,13 @@ class Executor:
                 break
             if running.cancel_requested:
                 raise _NotStartedError
-            waited = self.clock.monotonic() - started
-            if waited >= timeout:
-                raise _BusyError(waited, await asyncio.to_thread(self.packages.holding))
-            await self.clock.sleep(min(delay, timeout - waited))
+            now = self.clock.monotonic()
+            bound = self.install_bound(running, started + timeout)
+            if now >= bound:
+                raise _BusyError(now - started, await asyncio.to_thread(self.packages.holding))
+            await self.clock.sleep(min(delay, bound - now))
             delay = min(2 * delay, PACKAGE_POLL)
-        running.waited = self.clock.monotonic() - started
+        running.install_waited += self.clock.monotonic() - started
         try:
             await self.admission.observing.acquire()
         except BaseException:
@@ -1157,17 +1183,26 @@ class Executor:
         epoch: int | None = None
         try:
             if self.provisioning is not None:
+                # Waiting behind a package command does not count against the limit
+                # (CP-12), but ends at install_bound.
+                waiting_since: float | None = None
                 while held is None:
                     if running.cancel_requested:
                         raise _NotStartedError
-                    if self.clock.monotonic() - running.admitted >= timeout:
-                        raise _BusyError(self.clock.monotonic() - running.admitted, None)
+                    now = self.clock.monotonic()
+                    since = now if waiting_since is None else waiting_since
+                    charged = since - running.admitted - running.install_waited
+                    if charged >= timeout or now >= self.install_bound(running, since + timeout):
+                        raise _BusyError(now - running.admitted, None)
                     try:
                         held = self.packages.try_lock(exclusive=False)
                     except OSError:
                         break  # damaged lock: start is explicitly unknown
                     if held is None:
+                        waiting_since = since
                         await self.clock.sleep(0.05)
+                if waiting_since is not None:
+                    running.install_waited += self.clock.monotonic() - waiting_since
                 if held is not None:
                     async with self.admission.observing:
                         if running.kind == "cell":
@@ -1423,8 +1458,10 @@ class Executor:
             if running.cancel_requested:  # asked for while the command was starting
                 self.spawn(self.terminate(running))
             timed_out = False
+            remaining = max(0.0, timeout - running.waited)
+            running.deadline = self.clock.monotonic() + remaining
             try:
-                await asyncio.wait_for(process.wait(), max(0.0, timeout - running.waited))
+                await asyncio.wait_for(process.wait(), remaining)
             except TimeoutError:
                 timed_out = True
                 await self.terminate(running)
@@ -1756,6 +1793,7 @@ class Executor:
         if msg_id is None:
             msg_id = client.execute(code, store_history=True, allow_stdin=False)
         deadline = self.clock.monotonic() + max(0.0, timeout - running.waited)
+        running.deadline = deadline
         interrupted_at: float | None = None
         timed_out = False
         cell = CellMessages(msg_id, limit, captures, outputs)

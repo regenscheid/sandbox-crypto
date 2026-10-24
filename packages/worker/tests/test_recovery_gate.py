@@ -393,19 +393,22 @@ async def test_snapshot_waiter_cannot_spawn_after_recovery_ack(
 
 
 @pytest.mark.asyncio
-async def test_gate_wait_uses_original_timeout_budget(tmp_path: Path) -> None:
+async def test_gate_wait_does_not_use_the_timeout_budget(tmp_path: Path) -> None:
+    # CP-12: waiting while a package operation holds the gate is not charged to the call.
     guest = Guest(tmp_path)
     await guest.gate(1, "hold", "prv-first")
     running = executor.Running("waiting", "shell")
 
-    async def launch() -> float:
+    async def launch() -> tuple[float, float]:
         async with guest.executor.admission.launch(running, 1):
-            return running.waited
+            return running.waited, running.install_waited
 
     pending = asyncio.create_task(launch())
     await asyncio.sleep(0.1)
     await guest.gate(2, "ready")
-    assert 0.09 <= await pending < 1
+    waited, install_waited = await pending
+    assert waited < 0.09
+    assert 0.09 <= install_waited < 1
     with pytest.raises(executor.ToolError, match="stale"):
         await guest.gate(1, "ready")
     with pytest.raises(executor.ToolError, match="invalid"):

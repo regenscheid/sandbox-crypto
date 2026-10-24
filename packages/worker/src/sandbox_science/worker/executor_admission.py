@@ -35,6 +35,12 @@ class _Change:
     """The journal records it accounts for, which leave the journal once it is sent."""
 
 
+def _own_limit(running: Running, fallback: float) -> float:
+    """An install bound that knows no other attempts: the waiting attempt's own limit."""
+    del running
+    return fallback
+
+
 class Admission:
     """Own gate generations, permits, observation serialization and revision identity.
 
@@ -57,8 +63,11 @@ class Admission:
         max_commands: int,
         max_owners: int,
         max_runs: int,
+        install_bound: Callable[[Running, float], float] | None = None,
     ) -> None:
         self.clock = clock
+        self.install_bound: Callable[[Running, float], float] = install_bound or _own_limit
+        """Until when an attempt may wait while a package operation holds the gate (CP-12)."""
         self.closed = closed
         self.error = error
         self.busy = busy
@@ -153,7 +162,13 @@ class Admission:
 
     @contextlib.asynccontextmanager
     async def launch(self, running: Running, timeout: float):
-        """Wait without retaining the launch lock; serialize the final launch with hold ACK."""
+        """Wait without retaining the launch lock; serialize the final launch with hold ACK.
+
+        Waiting while a package operation holds the gate does not count against the
+        attempt's time limit (CP-12, ``running.install_waited``); it ends at
+        ``install_bound``.
+        """
+        held_since: float | None = None
         while True:
             await self.launch_lock.acquire()
             if self.closed():
@@ -179,13 +194,21 @@ class Admission:
             self.launch_lock.release()
             if running.cancel_requested:
                 raise self.not_started
-            if self.clock.monotonic() - running.admitted >= timeout:
-                raise self.busy(self.clock.monotonic() - running.admitted, None)
+            now = self.clock.monotonic()
+            held_since = now if held_since is None else held_since
+            charged = held_since - running.admitted - running.install_waited
+            if charged >= timeout or now >= self.install_bound(running, held_since + timeout):
+                raise self.busy(now - running.admitted, None)
             await self.clock.sleep(0.05)
         try:
+            if held_since is not None:
+                running.install_waited += self.clock.monotonic() - held_since
             if running.cancel_requested:
                 raise self.not_started
-            running.waited = max(running.waited, self.clock.monotonic() - running.admitted)
+            running.waited = max(
+                running.waited,
+                self.clock.monotonic() - running.admitted - running.install_waited,
+            )
             if running.waited >= timeout:
                 raise self.busy(running.waited, None)
             yield

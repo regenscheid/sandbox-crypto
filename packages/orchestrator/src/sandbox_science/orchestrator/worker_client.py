@@ -62,6 +62,7 @@ from sandbox_science.contracts import (
     StageCheckRequest,
     StagePutRequest,
     StagePutResult,
+    StateEvent,
     WorkerErrorResponse,
     WriteFileRequest,
     WriteFileResult,
@@ -604,14 +605,20 @@ class WorkerClient:
         if limit is None:
             # A job without a limit of its own has the policy's default, which the worker set.
             limit = execution.job.timeout_seconds if execution.job is not None else 0.0
+        loop = asyncio.get_running_loop()
         try:
-            async with asyncio.timeout(limit + self.result_grace):
+            async with asyncio.timeout(limit + self.result_grace) as scope:
                 async with contextlib.aclosing(events):
                     async for event in events:
                         if on_event is not None:
                             await on_event(event)
                         if isinstance(event, ResultEvent):
                             return event.execution
+                        if isinstance(event, StateEvent) and event.state == "running":
+                            # The limit counts from the start: waiting behind a package
+                            # command in the environment does not count (CP-12).
+                            when = scope.when() or 0.0
+                            scope.reschedule(max(when, loop.time() + limit + self.result_grace))
         except TimeoutError as exc:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
