@@ -1,25 +1,24 @@
 # SPDX-License-Identifier: MIT
 """What the proxy reads from results, and what it changes in them before callers see them.
 
-Binary content is withheld. The policy asks for binary results as artifact
-references (``mcp.proxy.binary_results: artifact``), which are not built yet;
-until they are, image and audio blocks and blob resources are replaced by a
-text note naming their type and size, rather than passing base64 into model
-context (docs/MCP-CONNECTORS.md, "Not built yet").
+Binary content is withheld (``sandbox_science.policy.mcp_answers``): image and audio
+blocks and blob resources are replaced by a text note naming their type and size, rather
+than passing base64 into model context. The proxy cannot reach control's artifact store,
+so the bytes are dropped here; on the direct path (D98) the harness keeps them as
+artifacts instead (docs/MCP-CONNECTORS.md).
 """
 
 from __future__ import annotations
 
-import re
-from typing import Final, cast
+from typing import Final
 
-from sandbox_science.policy import mcp_wire
+from sandbox_science.policy import mcp_answers, mcp_wire
 from sandbox_science.policy.mcp_wire import McpWireError
 
 from .errors import MessageError
 from .jsonrpc import JsonObject
 
-_MIME_RE: Final = re.compile(r"[A-Za-z0-9.+-]{1,64}/[A-Za-z0-9.+-]{1,64}")
+_NOTE: Final = mcp_answers.withheld_note("the MCP proxy")
 
 
 def tool_names(result: JsonObject) -> tuple[list[str], str | None]:
@@ -34,76 +33,6 @@ def tool_names(result: JsonObject) -> tuple[list[str], str | None]:
 
 
 def withhold_binary(method: str, result: JsonObject) -> tuple[JsonObject, int]:
-    """Replace binary content in a result with text notes; return the result and how many."""
-    match method:
-        case "tools/call":
-            key = "content"
-        case "prompts/get":
-            key = "messages"
-        case "resources/read":
-            key = "contents"
-        case _:
-            return result, 0
-    items = result.get(key)
-    if not isinstance(items, list):
-        return result, 0
-    kept: list[object] = []
-    withheld = 0
-    for item in cast("list[object]", items):
-        replacement = _replacement(method, item)
-        if replacement is not None:
-            withheld += 1
-        kept.append(item if replacement is None else replacement)
-    return {**result, key: kept}, withheld
-
-
-def _replacement(method: str, item: object) -> JsonObject | None:
-    """What replaces one item of a result's content, or None to keep it."""
-    if method == "tools/call":
-        return _note_block(item)
-    if method == "resources/read":
-        return _note_resource(item)
-    if not isinstance(item, dict):  # a prompts/get message: its content is one block
-        return None
-    message = cast("JsonObject", item)
-    block = _note_block(message.get("content"))
-    return None if block is None else {**message, "content": block}
-
-
-def _note(mime: object, data: object) -> str:
-    kind = mime if isinstance(mime, str) and _MIME_RE.fullmatch(mime) else "binary data"
-    size = len(data) if isinstance(data, str) else 0
-    return (
-        f"[{kind} withheld by the MCP proxy: {size} bytes of base64; binary results are not "
-        "passed inline]"
-    )
-
-
-def _note_block(value: object) -> JsonObject | None:
-    """A text block in place of an image, audio or blob-resource content block, or None."""
-    if not isinstance(value, dict):
-        return None
-    block = cast("JsonObject", value)
-    kind = block.get("type")
-    if kind in ("image", "audio"):
-        return {"type": "text", "text": _note(block.get("mimeType"), block.get("data"))}
-    resource = block.get("resource")
-    if kind == "resource" and isinstance(resource, dict):
-        entry = cast("JsonObject", resource)
-        if "blob" in entry:
-            return {"type": "text", "text": _note(entry.get("mimeType"), entry.get("blob"))}
-    return None
-
-
-def _note_resource(value: object) -> JsonObject | None:
-    """A text resource entry in place of a blob entry of ``resources/read``, or None."""
-    if not isinstance(value, dict) or "blob" not in value:
-        return None
-    entry = cast("JsonObject", value)
-    replacement: JsonObject = {
-        "mimeType": "text/plain",
-        "text": _note(entry.get("mimeType"), entry.get("blob")),
-    }
-    if "uri" in entry:
-        replacement["uri"] = entry["uri"]
-    return replacement
+    """Replace binary content in a result with text notes; return the result and how many.
+    The rule is the policy library's, which the policy middleware's path shares (D98)."""
+    return mcp_answers.withhold_binary(method, result, _NOTE)

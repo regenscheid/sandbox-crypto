@@ -139,7 +139,7 @@ def answer_listing(
     check = middleware.check_listing("list-1", SANDBOX, stream=False)
     assert check is not None
     check.feed(json.dumps({"jsonrpc": "2.0", "id": 7, "result": {"tools": tools}}).encode())
-    return check.finish()
+    return check.finish().drift
 
 
 def test_the_pinned_listing_is_no_drift_and_a_changed_schema_is(

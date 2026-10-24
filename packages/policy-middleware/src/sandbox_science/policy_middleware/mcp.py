@@ -8,6 +8,11 @@ admits there, the middleware reads the JSON-RPC message as the MCP proxy reads o
 (``sandbox_science.policy.mcp_wire``), and the evaluator decides it with the library's tool
 rules and records it.
 
+The answers to its ``tools/list`` requests are read whole before the sandbox gets them
+(``ListingCheck``): the tools the policy denies are dropped and the rest marked with their
+class and whether they escalate, as the MCP proxy does (``sandbox_science.policy.
+mcp_answers``), and a drift from the server's pinned list is a finding.
+
 The ``Sandbox-Science-Session`` and ``Sandbox-Science-Run`` headers come from the agent's
 sandbox, so they are attribution, never authorization: they are recorded with the call and
 its permission request, and are part of no request's key or an approval's scope.
@@ -28,6 +33,7 @@ from typing import Final, cast
 from sandbox_science.policy import LoadedPolicy, mcp_wire
 from sandbox_science.policy.classification import server_classification
 from sandbox_science.policy.effects import EffectClass
+from sandbox_science.policy.mcp_answers import Rewrite, rewrite_answer
 from sandbox_science.policy.mcp_wire import ListedTool, McpWireError
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import mcp_server_endpoint
@@ -54,7 +60,14 @@ MAX_RECORDED_TEXT: Final = 256
 MAX_TRACKED_LISTINGS: Final = 1024
 """``tools/list`` requests whose answers the middleware waits for, oldest forgotten first."""
 MAX_LISTING_BYTES: Final = 4 * 1024 * 1024
-"""The most of one ``tools/list`` answer the middleware reads; past it, it stops reading."""
+"""The most of one ``tools/list`` answer the middleware reads; past it, the answer is
+blocked."""
+LISTING_BLOCKED: Final = "tool_listing_unreadable"
+"""A ``tools/list`` answer the middleware could not read strictly, or whose whole body it
+could not inspect: blocked, since passing it would offer the agent tools it cannot use."""
+LISTINGS_OFF: Final = "mcp_listings_off"
+"""A sandbox that calls MCP servers directly, served by a middleware that does not inspect
+their answers (``mcp_listings``): its listings would keep denied tools, so it is refused."""
 MAX_DRIFT_NAMES: Final = 100
 """Tool names a drift record lists of those added, removed and changed."""
 DRIFT_FINDING: Final = "tool_list_drift"
@@ -237,6 +250,11 @@ class Listing:
     subject: Mapping[str, object]
     first_page: bool
     pin: Mapping[str, str | None] | None = None
+    rpc_id: str | int = ""
+    """The JSON-RPC id of the ``tools/list`` request, whose response is rewritten."""
+    rewrite: Rewrite | None = None
+    """How a page is changed before the sandbox sees it: its denied tools dropped and the
+    rest marked (``mcp_answers.callable_tools``)."""
 
 
 @dataclass
@@ -356,9 +374,20 @@ def load_tool_pins(path: Path) -> ToolListings:
     return ToolListings(pins)
 
 
+@dataclass(frozen=True, slots=True)
+class ListingOutcome:
+    """What becomes of one ``tools/list`` answer: the bytes the sandbox gets, or None when
+    the answer cannot be read and is blocked, and any drift from the pinned list."""
+
+    body: bytes | None
+    drift: Drift | None = None
+
+
 class ListingCheck:
-    """Reads one ``tools/list`` answer as it passes to the sandbox, JSON or an event stream,
-    and never changes it. At its end, a drift from the pinned list is recorded."""
+    """Reads one whole ``tools/list`` answer, JSON or an event stream, before the sandbox
+    gets it: a drift from the pinned list is recorded, and the answer is rewritten without
+    the tools the policy denies (D98, as the MCP proxy does). An answer that cannot be read
+    strictly is blocked, never passed unread: the agent would see tools it cannot use."""
 
     def __init__(
         self,
@@ -371,64 +400,59 @@ class ListingCheck:
     ) -> None:
         self._listings, self._listing, self._events = listings, listing, events
         self._request_id = request_id
-        self._parser = mcp_wire.EventStreamParser() if stream else None
+        self._stream = stream
         self._body = bytearray()
-        self._results: list[Mapping[str, object]] = []
-        self._read = 0
+        self._over = False
 
     def feed(self, data: bytes) -> None:
-        """Read the next piece of the answer."""
-        self._read += len(data)
-        if self._read > MAX_LISTING_BYTES:
+        """Take the next piece of the answer."""
+        if len(self._body) + len(data) > MAX_LISTING_BYTES:
+            self._over = True
             return
-        try:
-            if self._parser is None:
-                self._body += data
-            else:
-                for event in self._parser.feed(data):
-                    if event.type == "message" and event.data:
-                        self._take(mcp_wire.loads(event.data.encode("utf-8")))
-        except McpWireError:
-            _log.warning("unreadable tools/list answer to request %s", self._request_id)
-            self._read = MAX_LISTING_BYTES + 1
+        self._body += data
 
-    def finish(self) -> Drift | None:
-        """End the answer; the drift, recorded, if its listing is complete and differs."""
-        if self._read > MAX_LISTING_BYTES:
-            return None
+    def finish(self) -> ListingOutcome:
+        """End the answer: the bytes to pass on, and its drift, recorded."""
+        if self._over:
+            _log.warning("tools/list answer to request %s is too large", self._request_id)
+            return ListingOutcome(None)
+        body = bytes(self._body)
+        results: list[Mapping[str, object]] = []
+
+        def read(result: dict[str, object]) -> dict[str, object]:
+            results.append(result)
+            rewrite = self._listing.rewrite
+            return rewrite(result) if rewrite is not None else result
+
         try:
-            if self._parser is None:
-                self._take(mcp_wire.loads(bytes(self._body)))
-            if not self._results:
-                return None
-            drift = self._listings.page(self._listing, self._results[0])
+            rewritten = rewrite_answer(
+                body, stream=self._stream, request_id=self._listing.rpc_id, rewrite=read
+            )
+            drift = self._listings.page(self._listing, results[0]) if results else None
         except McpWireError:
             _log.warning("unreadable tools/list answer to request %s", self._request_id)
-            return None
+            return ListingOutcome(None)
         if drift is not None:
-            try:
-                self._events.record(
-                    "mcp-tools-drift",
-                    {
-                        **self._listing.subject,
-                        "request_id": self._request_id,
-                        "finding": DRIFT_FINDING,
-                        "added": list(drift.added[:MAX_DRIFT_NAMES]),
-                        "removed": list(drift.removed[:MAX_DRIFT_NAMES]),
-                        "changed": list(drift.changed[:MAX_DRIFT_NAMES]),
-                        "counts": {
-                            "added": len(drift.added),
-                            "removed": len(drift.removed),
-                            "changed": len(drift.changed),
-                        },
-                    },
-                )
-            except Exception:
-                _log.exception("could not record the tool list drift of %s", drift.server)
-        return drift
+            self._record(drift)
+        return ListingOutcome(rewritten if self._listing.rewrite is not None else body, drift)
 
-    def _take(self, value: object) -> None:
-        message = cast("dict[str, object]", value) if isinstance(value, dict) else None
-        result = message.get("result") if message is not None else None
-        if isinstance(result, dict):
-            self._results.append(cast("dict[str, object]", result))
+    def _record(self, drift: Drift) -> None:
+        try:
+            self._events.record(
+                "mcp-tools-drift",
+                {
+                    **self._listing.subject,
+                    "request_id": self._request_id,
+                    "finding": DRIFT_FINDING,
+                    "added": list(drift.added[:MAX_DRIFT_NAMES]),
+                    "removed": list(drift.removed[:MAX_DRIFT_NAMES]),
+                    "changed": list(drift.changed[:MAX_DRIFT_NAMES]),
+                    "counts": {
+                        "added": len(drift.added),
+                        "removed": len(drift.removed),
+                        "changed": len(drift.changed),
+                    },
+                },
+            )
+        except Exception:
+            _log.exception("could not record the tool list drift of %s", drift.server)

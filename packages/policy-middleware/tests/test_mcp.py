@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import grpc
 import pytest
@@ -470,35 +470,54 @@ def test_other_responses_and_their_event_streams_are_skipped(
     assert unknown.preflight_result.WhichOneof("action") == "skip"
 
 
-def test_a_listing_over_an_event_stream_passes_unchanged_and_drift_is_found(
+def body_of(result: Any) -> bytes:
+    """The bytes a body result passes on: its replacement."""
+    assert result.body_result.WhichOneof("action") == "transform", result
+    return result.body_result.transform.data
+
+
+def sse_messages(body: bytes) -> list[dict[str, Any]]:
+    return [
+        json.loads(line[len(b"data: ") :])
+        for line in body.splitlines()
+        if line.startswith(b"data: ")
+    ]
+
+
+def test_a_listing_over_an_event_stream_is_read_whole_rewritten_and_drift_is_found(
     channel: grpc.Channel,
     middleware: PolicyMiddleware,
     facts: Callable[..., HttpRequestFacts],
     events: EventStore,
 ) -> None:
     assert middleware.evaluate_http(facts(message("tools/list", {}), request_id="list-1")).allowed
-    stream = sse({"jsonrpc": "2.0", "method": "notifications/message"}, listing(["a", "c"]))
-    pieces = [stream[:17], stream[17:60], stream[60:]]
+    notice = {"jsonrpc": "2.0", "method": "notifications/message", "params": {"level": "info"}}
+    stream = sse(notice, listing(["a", "c", DENIED_TOOL]))
     results = respond(
         channel,
         [
             preflight("list-1", "text/event-stream; charset=utf-8"),
-            *body_units(*pieces),
+            *body_units(stream),
             pb.HttpResponseEvent(trailers=pb.HttpResponseTrailers()),
         ],
     )
-    preflight_result, *units, trailers = results
+    preflight_result, unit, trailers = results
     assert (
         preflight_result.preflight_result.inspect.body_mode
-        == pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES
+        == pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES
     )
-    assert [unit.body_result.sequence for unit in units] == [1, 2, 3]
-    assert {unit.body_result.WhichOneof("action") for unit in units} == {"pass_through"}
-    assert [len(unit.body_result.findings) for unit in units] == [0, 0, 1]
-    assert units[-1].body_result.findings[0].type == "tool_list_drift"
+    passed, answer = sse_messages(body_of(unit))
+    assert passed == notice  # other messages of the stream pass as they were
+    assert [tool["name"] for tool in answer["result"]["tools"]] == ["a", "c"]
+    assert [finding.type for finding in unit.body_result.findings] == ["tool_list_drift"]
     assert trailers.WhichOneof("result") == "trailers_result"
     (drift,) = records(events, "mcp-tools-drift")
-    assert (drift["added"], drift["removed"], drift["session"]) == (["c"], ["b"], "s-42")
+    # Drift is judged on the server's own listing, denied tools included.
+    assert (drift["added"], drift["removed"], drift["session"]) == (
+        ["c", DENIED_TOOL],
+        ["b"],
+        "s-42",
+    )
 
 
 def test_a_paged_json_listing_that_matches_its_pin_is_no_drift(
@@ -522,9 +541,151 @@ def test_a_paged_json_listing_that_matches_its_pin_is_no_drift(
         assert (
             first.preflight_result.inspect.body_mode == pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES
         )
-        assert unit.body_result.WhichOneof("action") == "pass_through"
+        rewritten = json.loads(body_of(unit))
+        sent = cast("dict[str, Any]", answer["result"])
+        assert rewritten["result"]["tools"] == [
+            {**tool, "_meta": {"sandbox-science/effect": "unclassified",
+                               "sandbox-science/escalates": True}}
+            for tool in sent["tools"]
+        ]  # fmt: skip
+        assert rewritten["result"].get("nextCursor") == sent.get("nextCursor")
         assert not unit.body_result.findings
     assert records(events, "mcp-tools-drift") == []
+
+
+def test_listings_lose_denied_tools_and_mark_escalating_ones_over_the_servers_word(
+    channel: grpc.Channel, middleware: PolicyMiddleware, facts: Callable[..., HttpRequestFacts]
+) -> None:
+    spoofed = {"sandbox-science/effect": "read", "sandbox-science/escalates": True, "x": 1}
+    tools = [
+        {"name": READ_TOOL, "inputSchema": {"type": "object"}, "_meta": spoofed},
+        {"name": ESCALATED_TOOL, "inputSchema": {"type": "object"}},
+        {"name": DENIED_TOOL, "inputSchema": {"type": "object"}, "_meta": spoofed},
+    ]
+    answer = {"jsonrpc": "2.0", "id": 7, "result": {"tools": tools}}
+    assert middleware.evaluate_http(facts(message("tools/list", {}), request_id="list-2")).allowed
+    _, unit = respond(
+        channel, [preflight("list-2", "application/json"), *body_units(json.dumps(answer).encode())]
+    )
+    kept = {tool["name"]: tool["_meta"] for tool in json.loads(body_of(unit))["result"]["tools"]}
+    assert set(kept) == {READ_TOOL, ESCALATED_TOOL}
+    # The server's own marks are replaced: a read does not escalate, whatever it said.
+    assert kept[READ_TOOL] == {"sandbox-science/effect": "read", "x": 1}
+    assert kept[ESCALATED_TOOL]["sandbox-science/escalates"] is True
+    assert kept[ESCALATED_TOOL]["sandbox-science/effect"] != "read"
+
+
+def test_the_same_page_reads_alike_through_the_proxys_rule(
+    middleware: PolicyMiddleware, example: LoadedPolicy
+) -> None:
+    from sandbox_science.policy.mcp_answers import callable_tools
+
+    result: dict[str, object] = {
+        "tools": [{"name": name} for name in (READ_TOOL, ESCALATED_TOOL, DENIED_TOOL)]
+    }
+    kept, denied = callable_tools(SERVER, result, example, ceiling=PoolCeiling.unrestricted())
+    assert denied == 1
+    assert [
+        cast("dict[str, Any]", tool)["name"] for tool in cast("list[object]", kept["tools"])
+    ] == [
+        READ_TOOL,
+        ESCALATED_TOOL,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content_type", "body", "modes"),
+    [
+        pytest.param("application/json", b"{not json", None, id="unreadable"),
+        pytest.param(
+            "application/json",
+            b'{"jsonrpc":"2.0","id":7,"result":{"tools":[{"name":"a"}],"tools":[]}}',
+            None,
+            id="duplicate-key",
+        ),
+        pytest.param(
+            "application/json",
+            b'{"jsonrpc":"2.0","id":7,"result":{"tools":{}}}',
+            None,
+            id="malformed",
+        ),
+        pytest.param("text/plain", b"", None, id="other-media"),
+        pytest.param(
+            "application/json",
+            b"",
+            [pb.HTTP_RESPONSE_BODY_MODE_HEADERS_ONLY, pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES],
+            id="not-whole",
+        ),
+    ],
+)
+def test_a_listing_that_cannot_be_read_whole_is_blocked(
+    channel: grpc.Channel,
+    middleware: PolicyMiddleware,
+    facts: Callable[..., HttpRequestFacts],
+    content_type: str,
+    body: bytes,
+    modes: list[Any] | None,
+) -> None:
+    assert middleware.evaluate_http(facts(message("tools/list", {}), request_id="list-3")).allowed
+    head = preflight("list-3", content_type)
+    if modes is not None:
+        del head.preflight.permitted_body_modes[:]
+        head.preflight.permitted_body_modes.extend(modes)
+    results = respond(channel, [head, *body_units(body)])
+    first = results[0].preflight_result
+    if first.WhichOneof("action") == "block_delivery":
+        assert first.reason_code == "tool_listing_unreadable"
+        return
+    assert first.WhichOneof("action") == "inspect"
+    unit = results[1].body_result
+    assert (unit.WhichOneof("action"), unit.reason_code) == (
+        "block_delivery",
+        "tool_listing_unreadable",
+    )
+
+
+def test_an_error_answer_to_a_listing_passes(
+    channel: grpc.Channel, middleware: PolicyMiddleware, facts: Callable[..., HttpRequestFacts]
+) -> None:
+    assert middleware.evaluate_http(facts(message("tools/list", {}), request_id="list-4")).allowed
+    (result,) = respond(channel, [preflight("list-4", "application/json", status=500)])
+    assert result.preflight_result.WhichOneof("action") == "skip"
+
+
+def test_without_listing_inspection_a_direct_sandbox_is_refused(
+    store: PolicyStore,
+    example: LoadedPolicy,
+    events: EventStore,
+    facts: Callable[..., HttpRequestFacts],
+) -> None:
+    bare = PolicyMiddleware(
+        store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=StoreSink(events)
+    )
+    problem = bare.validate_config(mcp_config(example))
+    assert problem is not None
+    assert "mcp_listings" in problem
+    verdict = bare.evaluate_http(facts(tool_call(READ_TOOL)))
+    assert verdict.reason_code == "mcp_listings_off"
+
+
+def test_an_escalation_records_the_calls_summary_for_its_card(
+    middleware: PolicyMiddleware, facts: Callable[..., HttpRequestFacts], events: EventStore
+) -> None:
+    arguments: dict[str, object] = {
+        "page": "https://example.org/watch",
+        "email": "a@example.org",
+        "name": "w",
+    }
+    assert not middleware.evaluate_http(facts(tool_call(ESCALATED_TOOL, arguments))).allowed
+    (escalation,) = records(events, "escalation")
+    assert escalation["caller_kind"] == "agent"
+    assert escalation["summary"] == {
+        "recipient": "a@example.org",
+        "url": "https://example.org/watch",
+        "host": "example.org",
+        "title": "w",
+    }
+    assert escalation["effect"] == "communicate"
 
 
 def test_the_compiled_config_is_the_one_the_middleware_reads(example: LoadedPolicy) -> None:

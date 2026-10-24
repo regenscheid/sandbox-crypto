@@ -10,7 +10,7 @@ state_dir = "/var/lib/sandbox-science/policy-middleware"
 ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal", "10.0.0.2"]
 package_cache_url = "http://127.0.0.1:8090"   # optional: names opam packages in escalations
-mcp_listings = true                           # optional: read MCP tool listings (hints, drift)
+mcp_listings = true                           # for direct MCP: filter tool listings (D98)
 mcp_tool_pins = "mcp-tools.json"              # optional: {"<server>": ["<tool>", ...]}
 
 [tls]
@@ -92,9 +92,11 @@ class Settings(_Model):
     escalated opam archive names the packages the cache's opam index lists for its digest."""
     mcp_listings: bool = False
     """Read the answers to the ``tools/list`` requests of sandboxes that call MCP servers
-    directly (``HttpResponsePreReturn``): their tools' hints decide later calls of tools the
-    policy does not classify, and a listing that differs from its server's pinned list, the
-    classification's or ``mcp_tool_pins``, is a ``tool_list_drift`` finding (D96)."""
+    directly (``HttpResponsePreReturn``), whole: the tools the policy denies are dropped
+    and the rest marked before the agent sees them, their hints decide later calls of tools
+    the policy does not classify, and a listing that differs from its server's pinned list,
+    the classification's or ``mcp_tool_pins``, is a ``tool_list_drift`` finding (D96).
+    Without it, such sandboxes are refused (``mcp_listings_off``)."""
     mcp_tool_pins: Path | None = None
     """A JSON file of each MCP server's pinned tool names, over its classification's pins;
     it implies ``mcp_listings``."""

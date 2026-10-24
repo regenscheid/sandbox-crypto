@@ -55,11 +55,10 @@ from sandbox_science.policy.approvals import (
     TimedOut,
     Unrecorded,
     Waiting,
-    call_summary,
     prepare_answer,
 )
-from sandbox_science.policy.classification import EFFECT_META, listed_effect, tool_entry
 from sandbox_science.policy.effects import EffectClass
+from sandbox_science.policy.mcp_answers import callable_tools, tool_summary
 from sandbox_science.policy.mcp_wire import (
     MCP_REQUEST_PARAMS,
     McpWireError,
@@ -846,34 +845,20 @@ class McpProxy:
     def _callable(self, call: Call, loaded: LoadedPolicy, result: JsonObject) -> JsonObject:
         """A ``tools/list`` page without the tools the caller's policy denies, judged as
         a call by name alone, so an agent is not offered what it can never call (lab 39,
-        B5). Escalated tools stay: they ask the operator. The proxy's own record of the
-        server's tools keeps them all, and a call to a left-out tool is still refused."""
-        tools = result.get("tools")
-        if not isinstance(tools, list):
-            return result
-        server = loaded.policy.mcp.servers[call.server]
-        kept: list[object] = []
-        denied = 0
-        for tool in cast("list[object]", tools):
-            name = _tool_name(tool)
-            if isinstance(name, str):
-                message = jsonrpc.request(0, "tools/call", {"name": name, "arguments": {}})
-                decision = evaluate_mcp_message(
-                    call.server,
-                    message,
-                    loaded,
-                    origin=call.caller.origin,
-                    ceiling=self._ceiling,
-                    floor=self._floor,
-                )
-                if decision.action is Action.DENY:
-                    denied += 1
-                    continue
-                tool = _with_effect(tool, listed_effect(server, name, decision))
-            kept.append(tool)
+        B5). Escalated tools stay, marked: they ask the operator. The proxy's own record of
+        the server's tools keeps them all, and a call to a left-out tool is still refused.
+        The rule is the policy library's, which the policy middleware's path shares."""
+        kept, denied = callable_tools(
+            call.server,
+            result,
+            loaded,
+            ceiling=self._ceiling,
+            floor=self._floor,
+            origin=call.caller.origin,
+        )
         if denied:
             call.stream["denied_tools"] = denied
-        return {**result, "tools": kept}
+        return kept
 
     async def _notify(
         self, call: Call, server: McpServer, session: Session, message: Notification
@@ -1222,13 +1207,7 @@ def caller_kind(kind: str) -> str:
 
 def _call_summary(server: McpServer, tool: str | None, params: object) -> dict[str, str]:
     """A tool call's significant arguments, from its server's classification (D97)."""
-    if tool is None or not isinstance(params, dict):
-        return {}
-    entry = tool_entry(server, tool.removeprefix(server.tool_prefix or ""))
-    arguments = cast(dict[str, object], params).get("arguments")
-    if entry is None or not entry.significant or not isinstance(arguments, dict):
-        return {}
-    return call_summary(entry.significant, cast(dict[str, object], arguments))
+    return tool_summary(server, tool, params)
 
 
 def _class_fields(decision: Decision) -> dict[str, object]:
@@ -1238,25 +1217,9 @@ def _class_fields(decision: Decision) -> dict[str, object]:
     return {"effect": decision.effect, "max_grant": decision.max_grant}
 
 
-def _with_effect(tool: object, effect: str) -> object:
-    """A listed tool with the proxy's word on its class in ``_meta``, over any server's."""
-    if not isinstance(tool, dict):
-        return tool
-    fields = cast("JsonObject", tool)
-    meta = fields.get("_meta")
-    own = dict(cast("JsonObject", meta)) if isinstance(meta, dict) else {}
-    own[EFFECT_META] = effect
-    return {**fields, "_meta": own}
-
-
 def _hints(result: JsonObject) -> dict[str, EffectClass]:
     """The classes a listing page's tools declare by their annotations (D96)."""
     return {tool.name: tool.hint for tool in listed_tools(result)}
-
-
-def _tool_name(tool: object) -> object:
-    """A listed tool's name, as the server gave it."""
-    return cast("JsonObject", tool).get("name") if isinstance(tool, dict) else None
 
 
 def _server_answer(payload: JsonObject, headers: Mapping[str, str] | None = None) -> web.Response:

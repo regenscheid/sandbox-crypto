@@ -11,6 +11,7 @@ to enforcement").
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 import re
 import threading
@@ -54,7 +55,8 @@ from sandbox_science.policy.approvals import (
     http_summary,
     network_max_grant,
 )
-from sandbox_science.policy.mcp_wire import params_digest
+from sandbox_science.policy.mcp_answers import callable_tools, tool_summary
+from sandbox_science.policy.mcp_wire import listed_tools, params_digest
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy.reasons import (
@@ -75,6 +77,7 @@ from .errors import MiddlewareError, StoreError
 from .events import EventSink
 from .gitproto import GitRequestError, check_upload_pack_request
 from .mcp import (
+    LISTINGS_OFF,
     Listing,
     ListingCheck,
     McpCall,
@@ -121,6 +124,11 @@ _HOST_RE: Final = re.compile(r"[A-Za-z0-9._-]+|[0-9A-Fa-f:.]+")
 _NAME_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _MONITOR_REPEAT: Final = timedelta(hours=1)
 
+
+_LISTINGS_OFF_REASON: Final = (
+    "a sandbox that calls MCP servers directly needs a middleware that reads their tool "
+    "listings (mcp_listings = true), so that the agent is offered no tool it cannot use"
+)
 
 _Payload = Callable[[Mapping[str, object] | None], dict[str, object]]
 """Builds a record of the request being decided, with extra fields."""
@@ -364,6 +372,8 @@ class PolicyMiddleware:
             return (
                 f"revision {ref.digest} is policy {loaded.policy.metadata.name!r}, not {ref.name!r}"
             )
+        if ref.mcp is not None and self.listings is None:
+            return _LISTINGS_OFF_REASON
         return None
 
     def evaluate_http(self, facts: HttpRequestFacts) -> Verdict:
@@ -391,6 +401,8 @@ class PolicyMiddleware:
         if loaded.policy.metadata.name != ref.name:
             return _deny(CONFIG_INVALID, f"revision {ref.digest} is not policy {ref.name!r}")
         if ref.mcp is not None:
+            if self.listings is None:
+                return _deny(LISTINGS_OFF, _LISTINGS_OFF_REASON)
             return self._evaluate_mcp(facts, ref.mcp, loaded)
         try:
             destination = (normalize_host(facts.host), facts.port)
@@ -449,9 +461,11 @@ class PolicyMiddleware:
         *,
         target: RequestKey | None = None,
         payload: _Payload | None = None,
+        card: Mapping[str, object] | None = None,
     ) -> Verdict:
-        """The verdict for a decision. ``target`` and ``payload`` replace the request's
-        key and records for a request that is not plain HTTP (an MCP call)."""
+        """The verdict for a decision. ``target``, ``payload`` and ``card`` replace the
+        request's key, records and what its permission request's card shows for a request
+        that is not plain HTTP (an MCP call)."""
         findings: tuple[Finding, ...]
 
         def http_payload(extra: Mapping[str, object] | None) -> dict[str, object]:
@@ -462,7 +476,9 @@ class PolicyMiddleware:
             case Action.DENY:
                 return _deny(LAYER_CODES[decision.layer], decision.reason, decision)
             case Action.ESCALATE:
-                answered = self._escalation(facts, loaded, decision, operation, target, payload)
+                answered = self._escalation(
+                    facts, loaded, decision, operation, target, payload, card
+                )
                 if isinstance(answered, Verdict):
                     return answered
                 findings = answered
@@ -493,6 +509,7 @@ class PolicyMiddleware:
         operation: Operation | None,
         target: RequestKey | None,
         payload: _Payload,
+        card: Mapping[str, object] | None = None,
     ) -> Verdict | tuple[Finding, ...]:
         """Answer an escalated request from its permission request and any answers to it.
 
@@ -514,7 +531,7 @@ class PolicyMiddleware:
             )
             asked = _http_card(facts, operation)
         else:
-            asked = {"caller_kind": "agent"}  # an MCP call the run service sent (D98)
+            asked = card or {"caller_kind": "agent"}  # an MCP call the run service sent (D98)
         self._refresh_approvals()
         now = self._now()
         rule = decision.rule or "escalation"
@@ -722,18 +739,27 @@ class PolicyMiddleware:
             record.update(extra or {})
             return record
 
-        verdict = self._verdict(facts, loaded, decision, target=target, payload=payload)
+        server = loaded.policy.mcp.servers[call.server]
+        card = {
+            "caller_kind": "agent",
+            # The call's significant arguments for its card, as the MCP proxy records them.
+            "summary": tool_summary(server, call.tool, call.message.get("params")),
+        }
+        verdict = self._verdict(facts, loaded, decision, target=target, payload=payload, card=card)
         if verdict.request is not None and verdict.reason_code in REQUEST_CODES:
             code = with_request(verdict.reason_code, verdict.request)
             verdict = dataclasses.replace(verdict, reason_code=code)
         if verdict.allowed and call.method == "tools/list" and self.listings is not None:
-            server = loaded.policy.mcp.servers[call.server]
             listing = Listing(
                 facts.sandbox_id,
                 call.server,
                 subject,
                 call.cursor is None,
                 self.listings.pin(call.server, server),
+                rpc_id=cast("str | int", call.message.get("id", "")),
+                rewrite=functools.partial(
+                    _callable_page, call.server, loaded, self._ceiling, self._floor
+                ),
             )
             self.listings.expect(facts.request_id, listing)
         return verdict
@@ -884,6 +910,20 @@ class PolicyMiddleware:
             if len(packages) > MAX_PACKAGES:
                 archive["more_packages"] = len(packages) - MAX_PACKAGES
         return archive
+
+
+def _callable_page(
+    server: str,
+    loaded: LoadedPolicy,
+    ceiling: PoolCeiling,
+    floor: HardFloor,
+    result: dict[str, object],
+) -> dict[str, object]:
+    """A listing page as the agent gets it: without the tools the policy denies it, the rest
+    marked, each judged with the hint this page gives it (D96), as its later calls are."""
+    hints = {tool.name: tool.hint for tool in listed_tools(result)}
+    kept, _ = callable_tools(server, result, loaded, ceiling=ceiling, floor=floor, hints=hints)
+    return kept
 
 
 def _http_card(facts: HttpRequestFacts, operation: Operation | None) -> dict[str, object]:

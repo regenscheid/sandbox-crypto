@@ -7,11 +7,13 @@ The service declares two bindings, both before credential injection:
 - ``WEBSOCKET_MESSAGE``: every WebSocket upgrade is denied at preflight, so a
   WebSocket can never carry traffic the policy library has not seen.
 
-With pinned tool lists (``mcp_tool_pins``), it also declares ``HTTP_RESPONSE`` before
-return (``HttpResponsePreReturn``): it reads the answers to the ``tools/list`` requests of
-sandboxes that call MCP servers directly, as they pass, and records a drift from the
-pinned list as a finding. Every other response is skipped at preflight, and none is
-changed or blocked, so event streams pass as they arrive.
+With ``mcp_listings`` (or pinned tool lists, ``mcp_tool_pins``), it also declares
+``HTTP_RESPONSE`` before return (``HttpResponsePreReturn``): it reads each answer to a
+``tools/list`` request of a sandbox that calls MCP servers directly whole, JSON or an
+event stream, passes it on without the tools the policy denies (the others marked, as the
+MCP proxy does), and records a drift from the pinned list as a finding. A listing it
+cannot read is blocked. Every other response is skipped at preflight and passes unchanged
+as it arrives.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from ._proto import supervisor_middleware_pb2 as pb
 from .auth import Authenticator, Caller, require_sandbox
 from .errors import AuthError
 from .evaluator import HttpRequestFacts, PolicyMiddleware, Verdict
-from .mcp import DRIFT_FINDING, ListingCheck
+from .mcp import DRIFT_FINDING, LISTING_BLOCKED, ListingCheck
 
 _log = logging.getLogger(__name__)
 
@@ -56,12 +58,10 @@ SERVER_OPTIONS: Final = (
     ("grpc.http2.max_ping_strikes", 0),
 )
 
-_LISTING_MODES: Final[dict[str, pb.HttpResponseBodyMode]] = {
-    "application/json": pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES,
-    "text/event-stream": pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES,
-}
-"""How a ``tools/list`` answer is read: whole, or an event stream piece by piece, each
-piece passed on as it is read."""
+_LISTING_MEDIA: Final = frozenset({"application/json", "text/event-stream"})
+"""The media a ``tools/list`` answer may have: JSON, or an event stream that ends with the
+response. Either is read whole (``WHOLE_BODY_BYTES``), since an event stream's 64 KiB
+pieces cannot be rewritten one by one; any other is blocked."""
 _MAX_REASON_BYTES: Final = 4096
 _MAX_FINDINGS: Final = 32
 
@@ -199,7 +199,8 @@ class MiddlewareService:
     def evaluate_response(
         self, requests: Iterator[pb.HttpResponseEvent], context: grpc.ServicerContext
     ) -> Iterator[pb.HttpResponseEventResult]:
-        """Read a ``tools/list`` answer as it passes, unchanged; skip every other response."""
+        """Read a ``tools/list`` answer whole and pass it on without the tools the policy
+        denies; skip every other response. A listing that cannot be read is blocked."""
         caller = self._caller(context)
         check: ListingCheck | None = None
         for event in requests:
@@ -207,21 +208,22 @@ class MiddlewareService:
                 case "preflight":
                     preflight = event.preflight
                     self._require_sandbox(context, caller, preflight.context.sandbox_id)
-                    check, mode = self._listing_check(preflight)
+                    check, action = self._listing_check(preflight)
+                    yield pb.HttpResponseEventResult(preflight_result=action)
                     if check is None:
-                        skip = pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
-                        yield pb.HttpResponseEventResult(preflight_result=skip)
                         return
-                    inspect = pb.HttpResponsePreflightInspect(body_mode=mode)
-                    yield pb.HttpResponseEventResult(
-                        preflight_result=pb.HttpResponsePreflightResult(inspect=inspect)
-                    )
                 case "body":
                     unit = event.body
-                    drift = None
-                    if check is not None:
-                        check.feed(unit.data)
-                        drift = check.finish() if unit.end_of_stream else None
+                    if check is None or not unit.end_of_stream:
+                        # A whole body comes as one final unit; anything else is not read.
+                        yield _blocked_unit(unit.sequence)
+                        return
+                    check.feed(unit.data)
+                    outcome = check.finish()
+                    if outcome.body is None:
+                        yield _blocked_unit(unit.sequence)
+                        return
+                    drift = outcome.drift
                     findings = (
                         [
                             pb.Finding(
@@ -238,7 +240,7 @@ class MiddlewareService:
                     yield pb.HttpResponseEventResult(
                         body_result=pb.HttpResponseBodyResult(
                             sequence=unit.sequence,
-                            pass_through=pb.HttpResponseBodyPassThrough(),
+                            transform=pb.HttpResponseBodyTransform(data=outcome.body),
                             findings=findings,
                         )
                     )
@@ -251,22 +253,28 @@ class MiddlewareService:
 
     def _listing_check(
         self, preflight: pb.HttpResponsePreflight
-    ) -> tuple[ListingCheck | None, pb.HttpResponseBodyMode]:
-        """How to read a response: a check and its body mode, or no check (skip)."""
+    ) -> tuple[ListingCheck | None, pb.HttpResponsePreflightResult]:
+        """How to treat a response: a check of a listing with the action that reads it
+        whole, or no check and skip, or no check and block."""
         modes = set(preflight.permitted_body_modes)
         types = [h.value.lower() for h in preflight.headers if h.name.lower() == "content-type"]
         media = types[0].split(";", 1)[0].strip() if len(types) == 1 else ""
-        if preflight.status_code != 200 or media not in _LISTING_MODES:
-            return None, pb.HTTP_RESPONSE_BODY_MODE_UNSPECIFIED
-        mode = _LISTING_MODES[media]
-        if mode not in modes:
-            return None, pb.HTTP_RESPONSE_BODY_MODE_UNSPECIFIED
         check = self._middleware.check_listing(
             preflight.context.request_id,
             preflight.context.sandbox_id,
             stream=media == "text/event-stream",
         )
-        return check, mode
+        if check is None or preflight.status_code != 200:
+            # Not a listing's answer, or no result: a client reads no tools from an error.
+            return None, pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
+        if media not in _LISTING_MEDIA or pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES not in modes:
+            return None, pb.HttpResponsePreflightResult(
+                block_delivery=pb.HttpResponseBlockDelivery(), reason_code=LISTING_BLOCKED
+            )
+        inspect = pb.HttpResponsePreflightInspect(
+            body_mode=pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES
+        )
+        return check, pb.HttpResponsePreflightResult(inspect=inspect)
 
     def _caller(self, context: grpc.ServicerContext) -> Caller:
         authorization = [
@@ -373,6 +381,16 @@ def _negotiation_problem(request: pb.MiddlewareDescribeRequest) -> str | None:
     if CONTRACT_CAPABILITY not in gateway.supported_capabilities:
         return f"the gateway does not support {CONTRACT_CAPABILITY}"
     return None
+
+
+def _blocked_unit(sequence: int) -> pb.HttpResponseEventResult:
+    return pb.HttpResponseEventResult(
+        body_result=pb.HttpResponseBodyResult(
+            sequence=sequence,
+            block_delivery=pb.HttpResponseBlockDelivery(),
+            reason_code=LISTING_BLOCKED,
+        )
+    )
 
 
 def _result(verdict: Verdict) -> pb.HttpRequestResult:
