@@ -1159,3 +1159,130 @@ def test_allow_remote_requires_ingress_and_ingress_requires_allow_remote():
     data["workspace"] = {"allow_remote": False}
     with pytest.raises(ValidationError, match="allow_remote = true"):
         configured(data)
+
+
+def instance(name: str, namespace: str, *, ingress: bool = False) -> list[dict]:
+    data = with_ingress() if ingress else values()
+    data["name"] = name
+    data["namespace"] = namespace
+    data["secrets"] = {
+        role: {"name": f"{name}-{role.replace('_', '-')}"}
+        for role in ("control", "workspace", "worker", "middleware", "runtime_manager")
+    }
+    if ingress:
+        data["ingress"]["workspace_host"] = f"workspace.{name}.{namespace}.test"
+        data["ingress"]["preview_host"] = f"preview.{name}.{namespace}.test"
+    return objects(configured(data))
+
+
+def identity(item: dict) -> tuple[str, str, str]:
+    metadata = item["metadata"]
+    return item["kind"], metadata["namespace"], metadata["name"]
+
+
+def secret_names(deployment: dict) -> set[str]:
+    volumes = deployment["spec"]["template"]["spec"]["volumes"]
+    return {v["secret"]["secretName"] for v in volumes if "secret" in v}
+
+
+def selected(policy_spec_or_selector: dict) -> dict[str, str]:
+    return policy_spec_or_selector["matchLabels"]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (("research", "shared"), ("research-b", "shared")),
+        (("research", "shared"), ("research", "other")),
+        (("research", "shared"), ("research-pool", "shared")),
+        (("research", "shared"), ("research-runtime", "shared")),
+        (("research-app", "shared"), ("research", "shared")),
+    ],
+)
+@pytest.mark.parametrize("ingress", [False, True])
+def test_two_instances_coexist_without_collisions(first, second, ingress):
+    one = instance(*first, ingress=ingress)
+    two = instance(*second, ingress=ingress)
+    # No object of one is an object of the other.
+    assert not {identity(i) for i in one} & {identity(i) for i in two}
+    assert len({identity(i) for i in one}) == len(one)
+    shared_namespace = first[1] == second[1]
+    # Every selector and policy of an instance is bound to its own part-of label, so
+    # that two instances in one namespace never select each other's Pods.
+    for items, name in ((one, first[0]), (two, second[0])):
+        for item in items:
+            assert item["metadata"]["labels"]["app.kubernetes.io/part-of"] == name
+            assert item["metadata"]["labels"]["app.kubernetes.io/instance"] == name
+            if item["kind"] == "Deployment":
+                assert selected(item["spec"]["selector"])["app.kubernetes.io/part-of"] == name
+                template = item["spec"]["template"]["metadata"]["labels"]
+                assert template["app.kubernetes.io/part-of"] == name
+            if item["kind"] == "Service":
+                assert item["spec"]["selector"]["app.kubernetes.io/part-of"] == name
+            if item["kind"] == "NetworkPolicy":
+                spec = item["spec"]
+                assert selected(spec["podSelector"])["app.kubernetes.io/part-of"] == name
+                # A peer inside the namespace (a podSelector with no namespace) is the
+                # instance's own Pods.
+                for rule in (*spec.get("ingress", []), *spec.get("egress", [])):
+                    for peer in (*rule.get("from", []), *rule.get("to", [])):
+                        if "podSelector" in peer and "namespaceSelector" not in peer:
+                            part = selected(peer["podSelector"])["app.kubernetes.io/part-of"]
+                            assert part == name
+    # Pods of one never match a selector of the other.
+    for items, other, other_name in ((one, two, second[0]), (two, one, first[0])):
+        if not shared_namespace:
+            continue
+        for item in items:
+            if item["kind"] == "Deployment":
+                labels = item["spec"]["template"]["metadata"]["labels"]
+                for policy in other:
+                    if policy["kind"] == "NetworkPolicy":
+                        wanted = selected(policy["spec"]["podSelector"])
+                        assert not all(labels.get(k) == v for k, v in wanted.items()), other_name
+    # Claims and Secrets are distinct objects (qualified by namespace) and each Pod mounts
+    # only its own instance's claims and Secrets.
+    for items, others in ((one, two), (two, one)):
+        namespace = items[0]["metadata"]["namespace"]
+        own_claims = {i["metadata"]["name"] for i in items if i["kind"] == "PersistentVolumeClaim"}
+        other_claims = {identity(i)[1:] for i in others if i["kind"] == "PersistentVolumeClaim"}
+        assert all((namespace, claim) not in other_claims for claim in own_claims)
+        other_secrets = {
+            (i["metadata"]["namespace"], name)
+            for i in others
+            if i["kind"] == "Deployment"
+            for name in secret_names(i)
+        }
+        for deployment in (i for i in items if i["kind"] == "Deployment"):
+            volumes = deployment["spec"]["template"]["spec"]["volumes"]
+            claims = {
+                v["persistentVolumeClaim"]["claimName"]
+                for v in volumes
+                if "persistentVolumeClaim" in v
+            }
+            assert claims <= own_claims
+            assert {(namespace, name) for name in secret_names(deployment)}.isdisjoint(
+                other_secrets
+            )
+    if ingress:
+        hosts = [
+            {i["spec"]["routes"][0]["match"] for i in x if i["kind"] == "IngressRoute"}
+            for x in (one, two)
+        ]
+        assert not hosts[0] & hosts[1]
+        tls = [
+            {
+                (i["metadata"]["namespace"], i["spec"]["secretName"])
+                for i in x
+                if i["kind"] == "Certificate"
+            }
+            for x in (one, two)
+        ]
+        assert not tls[0] & tls[1]
+        assert len(tls[0] | tls[1]) == 4
+        for items in (one, two):
+            services = {i["metadata"]["name"] for i in items if i["kind"] == "Service"}
+            for route in (i for i in items if i["kind"] == "IngressRoute"):
+                assert {
+                    s["name"] for r in route["spec"]["routes"] for s in r["services"]
+                } <= services

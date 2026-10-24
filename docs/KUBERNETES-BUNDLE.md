@@ -433,6 +433,37 @@ frame a third-party context and the browser may drop the cookie. Same-site names
 separate origins, which is all D54 needs; the viewer's frames may share the workspace
 page's thread (FG-17, [preview](WORKSPACE.md#the-pdf-viewers-origin)).
 
+## Two instances on one cluster
+
+D94 gives each trust group a complete instance: its own bundle, normally its own namespace.
+The renderer is shown to keep two bundles apart (tests render pairs with different `name`s in
+one namespace, the same `name` in two namespaces, and names that are prefixes of each other,
+with and without ingress): every object name is `<name>-<role>`, so two names never produce
+one object (`name` is at most 40 characters); every Pod, Deployment selector, Service
+selector and NetworkPolicy carries and selects `app.kubernetes.io/part-of: <name>`, so the
+default-deny, the application, pool and manager policies and the ingress policy select only
+their own instance's Pods, and an in-namespace peer is always the same instance's Pods; the
+PVCs, the pool ConfigMap, the TLS Secrets and the Certificates are named by instance. Two
+bundles with the same `name` in different namespaces differ only by namespace, which
+Kubernetes separates.
+
+What the renderer cannot make distinct, the operator does, per instance:
+
+| Per instance | Why |
+| --- | --- |
+| Namespace (recommended), `name`, the Secrets named under `[secrets]` | The bundle references Secrets by name and cannot see another bundle's; two instances naming one Secret share its credentials. Separate namespaces also keep Secret access and the pull secret apart |
+| `ingress.workspace_host` and `ingress.preview_host`, and an Authentik application and forward-auth `Middleware` | Host names are cluster-wide: two routes with one name make Traefik pick one. The Authentik application's group decides who may log in |
+| An OpenShell workspace on the shared gateway and the instance's own CLI client identity (`runtime_manager.openshell_gateway` and the profile keys in its Secret) | One OpenShell workspace per user (D94) keeps one instance's sandboxes and policies from the other's |
+| A Garage bucket and keys (`<instance>-artifacts`, `-control`, `-workspace`, `-checkpoint`) | A bucket and key per user ([preparation, step 6](KUBERNETES-PREP.md#6-garage-artifacts)) |
+| A LiteLLM key and budget (the runtime manager's `model.key` and the keys control's settings use) | The model gateway enforces each instance's budget and shows its spend by key |
+| Worker tokens, CAs and certificates for the `<name>-worker`, `-control` and `-middleware` Service names | Certificates cover one instance's Service DNS names |
+
+One limit is the network's. `network.runtimes` admits the supervisors of one gateway
+(`openshell.ai/gateway-id`) to control's port 8443, so two instances on one gateway whose
+sandboxes share a namespace admit each other's supervisors at the network; only the
+runtime token (KRB-6) then decides which connection control accepts. Give each instance its
+own sandbox namespace (and select it in `network.runtimes`) where OpenShell allows it.
+
 ## Log collection
 
 The first deployment collects every service's logs into Loki through Alloy (D103). The bundle renders nothing for Loki or Alloy: the operator installs both ([preparation, step 11](KUBERNETES-PREP.md#11-log-collection)). The bundle makes the logs collectable.
