@@ -11,6 +11,8 @@ from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.documents_catalog import DocumentsCatalog
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.permission_requests import PermissionDesk
+from sandbox_science.worker.permissions import Permissions
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
@@ -48,8 +50,12 @@ async def registered_routes(tmp_path: Path) -> set[Route]:
         state_dir=tmp_path,
     )
     try:
-        # The document-catalog routes are registered only with a catalog: include them.
-        app = create_app(manager, "test-secret-pool-token", document_catalog=catalog)
+        # The document-catalog and permission routes are registered only with a catalog
+        # and a permission desk: include them.
+        desk = PermissionDesk(Permissions(tmp_path / "events.db"), list)
+        app = create_app(
+            manager, "test-secret-pool-token", document_catalog=catalog, permission_desk=desk
+        )
         return {
             _canonical(route.method, route.resource.canonical)
             for route in app.router.routes()

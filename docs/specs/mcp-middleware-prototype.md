@@ -48,7 +48,7 @@ Holds therefore fit.
 Holds fit, and each proof passes offline, so by D98's rule the proxy should retire, not stay slimmed. Retire it only after:
 
 1. a babbage lab runs `DirectClient` in an agent runtime sandbox against the attack-catalog server through a real OpenShell 0.1.5 gateway, showing the native rules, the middleware on an mcp endpoint, a reason code with its request number reaching the client, the response binding over a real event stream, and placeholders substituted;
-2. the workspace reads and answers the middleware's MCP requests, its remembered approvals reach the middleware, and the harness's `RequestCheck` reads the same requests;
+2. the workspace reads and answers the middleware's MCP requests, its grants reach the middleware, and the harness's `RequestCheck` reads the same requests;
 3. listings lose denied tools and binary results are withheld or become artifact references, by response inspection or in the harness.
 
 Until then the proxy runs as built and the prototype is unwired.

@@ -616,9 +616,13 @@ async def test_cp_f3_an_escalated_install_is_denied_then_approved(make_world: Fa
     assert seq is not None
     assert first.next_step is not None
     assert f"approve --request {seq}" in first.next_step
+    assert "workspace's chat" in first.next_step
     [request] = [record for record in world.records() if record.seq == seq]
     payload = request.data()
     assert (request.kind, request.source) == ("escalation", "worker")
+    # Who asked, and in which session, for the request's card (D97).
+    assert payload["caller_kind"] == "agent"
+    assert isinstance(payload["session_id"], str)
     target = payload["target"]
     assert isinstance(target, dict)
     assert target["kind"] == "packages"

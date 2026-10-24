@@ -189,7 +189,7 @@ All fixtures are `scripted`: the agents, the proxy's servers and the user's acti
 All decided by the owner on 2026-10-21.
 
 1. **Holding a child's processes to its write area.** DA-19 binds the file tools only; a child's shell can still write anywhere the session's sandbox can. *Decided:* required, but after the first build. It needs per-run mounts, with the session read-only and the write area writable, once the confinement work allows it. Until then, the write area is a convention that the file tools enforce.
-2. **Per-run approval scopes**, such as an approval for one child only. *Decided:* no. Approvals stay once or project-wide, and the run is attribution (DA-4).
+2. **Per-run approval scopes**, such as an approval for one child only. *Decided:* no. Approvals stay once, for the session or project-wide (grants, D97), and the run is attribution (DA-4).
 3. **Check children and connectors.** *Decided:* only tools classed `read` (DA-1, DA-7). Most connector methods only read.
 4. **A connector budget per delegation.** *Decided:* no separate budget. Calls count toward the project's cost limit, and the outcome reports how many the child made.
 
