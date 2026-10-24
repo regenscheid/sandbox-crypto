@@ -96,9 +96,9 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
         sort_keys=True,
     )
     expected = {
-        "main": "c441afb87f065ef41d7fabc652227befde874fc230ac9e40d27cd7eac2dc5e65",
-        "task": "7fe67931360937c492a204d75a911fbdcacd9f68575056e0633e75ae3cecefe6",
-        "check": "37478442c5ec7dde4832ec7d64f8b92723a411dcc8d68df65166bc8aaefb0409",
+        "main": "239a3395e5c4d8691134334f1243e9df4a3583fd0bfe1f4db07c5ca779e83407",
+        "task": "58e23b4b31cf0b3bac542e58272b7b5803d26f7a24c2349fa82fd843ec2bf396",
+        "check": "d53a38f1959543ffea98de7fe9148f0e34c3919d91bad3dd4ca96b727c7d7acd",
     }
     assert hashlib.sha256(encoded.encode()).hexdigest() == expected[role]
     assert toolbox.specs == tuple(entry.spec for entry in toolbox.entries.values())

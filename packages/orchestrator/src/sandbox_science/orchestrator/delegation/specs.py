@@ -25,6 +25,8 @@ from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
+from .references import MAX_SPAN, SCHEMA, References
+
 MAX_NOTE: Final = 500
 MAX_WAITED: Final = 10
 
@@ -85,6 +87,9 @@ class TaskBrief(Contract):
     delegate: bool = False
     """Whether the child may delegate tasks of its own, once more: only a main run's
     task, in a project whose depth is 2 (PD-15)."""
+    references: References = ()
+    """Records of the parent's own the child starts with, materialized into its state
+    block and readable with its ``history_read`` (PD-11, CM-37b)."""
 
 
 class CheckBrief(Contract):
@@ -102,6 +107,12 @@ def brief_of(args: dict[str, Any]) -> CheckBrief | TaskBrief:
     check; a brief that names both is refused."""
     if "task" in args and "check" in args:
         raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "a brief is a check or a task, not both")
+    if "task" not in args and "references" in args:
+        raise WorkerAPIError(
+            ErrorKind.POLICY_DENIED,
+            "reference_refused: a check takes no references: it sees only its brief, "
+            "never its parent's records (LG-17, CM-37a)",
+        )
     return TaskBrief.model_validate(args) if "task" in args else CheckBrief.model_validate(args)
 
 
@@ -126,7 +137,8 @@ SPECS: Final = (
         "check whether the entry holds at that revision, and lists the entry's evidence as "
         "its inputs; your note, if any, reaches it as the requester's note, not evidence. "
         "A task (task) is yours to write: what to do, the context it needs (context), and "
-        "the inputs it should read (inputs); it works under a delegated agent's authority. "
+        "the inputs it should read (inputs), and your records (references); it works "
+        "under a delegated agent's authority. "
         "It runs while you go on; this returns its delegation_id at once. Its report "
         "reaches you as a delegation notice, or as the result of wait_delegations. You "
         "cannot give your final answer while it runs. Its result is its claim: a status "
@@ -186,6 +198,12 @@ SPECS: Final = (
                     "description": "For a task, optional: the issue it works on, such as I-2; "
                     "its outcome, what it dismissed and the obstructions it claims are "
                     "recorded there as work",
+                },
+                "references": {
+                    **SCHEMA,
+                    "description": "For a task, optional: your records for its state "
+                    "block, each a message (msg-…), from and to (at most "
+                    f"{MAX_SPAN} positions of your run), entry or file",
                 },
             },
             "additionalProperties": False,

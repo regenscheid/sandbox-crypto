@@ -3287,6 +3287,30 @@ def _cost_notices(schema: Schema) -> None:
     )
 
 
+def _agent_message_references(schema: Schema) -> None:
+    """Version 82: an agent message's references to its sender's records, which a
+    parent's ``message_child`` carries to its task (PD-44, CM-37b), kept with the message
+    and as unchangeable as its body. A message written before carries none."""
+    schema.execute(
+        "ALTER TABLE agent_messages ADD COLUMN refs TEXT NOT NULL DEFAULT '[]' "
+        "CHECK (json_valid(refs) AND json_type(refs) = 'array' "
+        "AND length(CAST(refs AS BLOB)) <= 32768)"
+    )
+    schema.execute("DROP TRIGGER agent_messages_kept")
+    schema.execute(
+        """CREATE TRIGGER agent_messages_kept BEFORE UPDATE ON agent_messages
+WHEN NEW.message_id IS NOT OLD.message_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.operation_id IS NOT OLD.operation_id
+OR NEW.sender_run IS NOT OLD.sender_run
+OR NEW.sender_delegation IS NOT OLD.sender_delegation
+OR NEW.recipient_delegation IS NOT OLD.recipient_delegation
+OR NEW.body IS NOT OLD.body OR NEW.created_at IS NOT OLD.created_at
+OR NEW.refs IS NOT OLD.refs
+OR OLD.delivered_run IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'an agent message is kept'); END"""
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3368,6 +3392,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _child_requests,
     _project_grants,
     _cost_notices,
+    _agent_message_references,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

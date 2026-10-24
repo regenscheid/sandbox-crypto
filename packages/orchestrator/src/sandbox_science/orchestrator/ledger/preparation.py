@@ -203,18 +203,23 @@ def agent_mutation(mutation: Mutation) -> Mutation:
 
 def anchor_scope(db: sqlite3.Connection, project: str, author: Author) -> anchoring.Scope:
     """Where ``author``'s anchors on the archive may point (CM-37, PD-13): an agent's,
-    its own session; a delegated agent's, its own run and the messages its brief names."""
+    its own session; a delegated agent's, its own run, the messages its brief names, and
+    the records its parent referenced for it (CM-37b), so that a referenced tool result
+    anchors its observations, by the parent's archive ID."""
+    from sandbox_science.orchestrator.delegation.references import readable_for  # no cycle
+
     if author.kind != "agent" or author.session_id is None:
         return anchoring.Scope()
     if author.role != "delegated":
         return anchoring.Scope(session=author.session_id, run=author.run_id)
     inputs: frozenset[str] = frozenset()
-    for run, brief in db.execute(
-        "SELECT run,brief FROM delegations WHERE project_id=? AND session_id=?",
+    for delegation, run, brief in db.execute(
+        "SELECT delegation_id,run,brief FROM delegations WHERE project_id=? AND session_id=?",
         (project, author.session_id),
     ):
         if author.run_id is not None and run_id_of(run) == author.run_id:
-            inputs = anchoring.briefed(brief)
+            referenced = readable_for(db, project, author.session_id, delegation, run)
+            inputs = anchoring.briefed(brief) | referenced
     return anchoring.Scope(
         session=author.session_id, run=author.run_id, delegated=True, inputs=inputs
     )

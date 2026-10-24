@@ -16,7 +16,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import Field
 
@@ -26,7 +26,14 @@ from sandbox_science.contracts.model import Contract
 from .agent_message_routes import received_by, recipient_state, recipient_target, work_for_run
 from .aio import threaded
 from .control import ControlError, ControlStore
-from .control.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND
+from .control.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED
+from .delegation.references import (
+    MAX_REFERENCES,
+    ReferenceInput,
+    References,
+    message_part,
+    resolve,
+)
 from .documents.agent_text import agent_text
 from .hooks import Closing, Notice, Point, RunView, TurnHook
 from .model import ToolSpec
@@ -61,9 +68,12 @@ class AgentMessage:
     body: str
     created_at: str
     delivered_run: str | None
+    references: tuple[dict[str, Any], ...] = ()
+    """The sender's records it references, as resolved (PD-44, CM-37b)."""
 
 
 def _row(row: tuple[object, ...]) -> AgentMessage:
+    refs: object = json.loads(str(row[7]))
     return AgentMessage(
         str(row[0]),
         str(row[1]),
@@ -72,12 +82,13 @@ def _row(row: tuple[object, ...]) -> AgentMessage:
         str(row[4]),
         str(row[5]),
         None if row[6] is None else str(row[6]),
+        tuple(cast(list[dict[str, Any]], refs)) if isinstance(refs, list) else (),
     )
 
 
 _COLUMNS: Final = (
     "message_id, sender_run, sender_delegation, recipient_delegation, body, "
-    "created_at, delivered_run"
+    "created_at, delivered_run, refs"
 )
 
 
@@ -132,6 +143,7 @@ class AgentMessageStore:
         sender: str,
         recipient: str | None,
         body: str,
+        references: tuple[dict[str, Any], ...] = (),
     ) -> AgentMessage | None:
         row = db.execute(
             f"SELECT {_COLUMNS} FROM agent_messages WHERE project_id=? AND session_id=? "  # noqa: S608 - fixed columns
@@ -141,7 +153,12 @@ class AgentMessageStore:
         if row is None:
             return None
         found = _row(row)
-        if (found.sender_run, found.recipient_delegation, found.body) != (sender, recipient, body):
+        if (found.sender_run, found.recipient_delegation, found.body, found.references) != (
+            sender,
+            recipient,
+            body,
+            references,
+        ):
             raise ControlError(CONFLICT, f"operation {operation!r} sent another message")
         return found
 
@@ -155,12 +172,13 @@ class AgentMessageStore:
         sender_delegation: str | None,
         recipient: str | None,
         body: str,
+        references: tuple[dict[str, Any], ...] = (),
     ) -> AgentMessage:
         message_id = new_id("agm")
         db.execute(
             "INSERT INTO agent_messages (message_id,project_id,session_id,operation_id,"
-            "sender_run,sender_delegation,recipient_delegation,body,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "sender_run,sender_delegation,recipient_delegation,body,created_at,refs) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 message_id,
                 project,
@@ -171,6 +189,7 @@ class AgentMessageStore:
                 recipient,
                 body,
                 self.clock.now().astimezone(UTC).isoformat(),
+                json.dumps(list(references)),
             ),
         )
         row = db.execute(
@@ -190,15 +209,26 @@ class AgentMessageStore:
         target: str,
         body: str,
         operation: str,
+        references: tuple[dict[str, Any], ...] = (),
     ) -> AgentMessage:
+        """A message to the running direct child ``target``, with the sender's records it
+        references, as ``resolve`` checked them; a check takes none (CM-37a)."""
         body = _body(body)
         with self.control.write() as tx:
             db = tx.sql
-            if found := self._existing(db, project, session, operation, sender, target, body):
+            if found := self._existing(
+                db, project, session, operation, sender, target, body, references
+            ):
                 return found
             parent, _, ended = self._delegation(db, project, session, target)
             if parent != sender or ended is not None:
                 raise ControlError(CONFLICT, "only a running direct child may receive a message")
+            if references and _kind(db, project, session, target) != "task":
+                raise ControlError(
+                    POLICY_DENIED,
+                    "reference_refused: a check takes no references: it sees only its brief, "
+                    "never its parent's records (LG-17, CM-37a)",
+                )
             root = sender
             if sender_delegation is not None:
                 ancestor, run, sender_ended = self._delegation(
@@ -209,7 +239,15 @@ class AgentMessageStore:
                 root, _ = self._ancestor(db, project, session, ancestor)
             self._live(db, project, session, root)
             return self._insert(
-                db, project, session, operation, sender, sender_delegation, target, body
+                db,
+                project,
+                session,
+                operation,
+                sender,
+                sender_delegation,
+                target,
+                body,
+                references,
             )
 
     def send_parent(
@@ -310,6 +348,14 @@ class AgentMessageStore:
         return state is not None and state[1]
 
 
+def _kind(db: sqlite3.Connection, project: str, session: str, delegation: str) -> str:
+    row = db.execute(
+        "SELECT kind FROM delegations WHERE project_id=? AND session_id=? AND delegation_id=?",
+        (project, session, delegation),
+    ).fetchone()
+    return "" if row is None else str(row[0])
+
+
 def _body(text: str) -> str:
     cleaned = agent_text(text.strip(), "the agent message")
     if not 1 <= len(cleaned.encode()) <= MAX_BODY:
@@ -320,6 +366,7 @@ def _body(text: str) -> str:
 class ChildMessage(Contract):
     delegation_id: str
     text: str = Field(min_length=1)
+    references: References = ()
 
 
 class ParentMessage(Contract):
@@ -344,12 +391,20 @@ CHILD_SPEC: Final = ToolSpec(
     "Send a correction, instruction or answer to one running direct child. It is saved "
     "once and shown at that child's next model-call safe point. Name the user message "
     "or pinned record behind a changed instruction; the child has not seen your chat. "
-    "A queued receipt is not proof the child saw it; check agent_message_status.",
+    "To give a task context it lacks, reference your records (references) instead of "
+    "retelling them. A queued receipt is not proof the child saw it; check "
+    "agent_message_status.",
     {
         "type": "object",
         "properties": {
             "delegation_id": {"type": "string"},
             "text": {"type": "string", "maxLength": MAX_BODY},
+            "references": {
+                "type": "array",
+                "maxItems": MAX_REFERENCES,
+                "items": {"type": "object"},
+                "description": "Optional, for a task: as delegate's references",
+            },
         },
         "required": ["delegation_id", "text"],
         "additionalProperties": False,
@@ -449,6 +504,9 @@ class AgentMailbox(TurnHook):
             if CHILD_SPEC not in self.specs:
                 raise ControlError(CONFLICT, "this run cannot message a child")
             request = ChildMessage.model_validate(args)
+            references = (
+                await threaded(self._references, request.references) if request.references else ()
+            )
             message = await threaded(
                 self.store.send_child,
                 project,
@@ -458,6 +516,7 @@ class AgentMailbox(TurnHook):
                 request.delegation_id,
                 request.text,
                 operation,
+                references,
             )
         elif name == "message_parent":
             if self.delegation is None:
@@ -528,6 +587,18 @@ class AgentMailbox(TurnHook):
         }
         return dump(result), {"agent_message": result}
 
+    def _references(self, items: tuple[ReferenceInput, ...]) -> tuple[dict[str, Any], ...]:
+        """The message's references, checked where this run may read (PD-44, PD-11)."""
+        with self.store.control.read() as tx:
+            return resolve(
+                tx.sql,
+                self.context.project_id,
+                self.context.session_id,
+                self.run,
+                delegated=self.delegation is not None,
+                items=items,
+            )
+
     async def _withdraw(self, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """A child's waiting request, withdrawn by its parent: refused, never approved."""
         if self.requests is None:
@@ -559,33 +630,48 @@ class AgentMailbox(TurnHook):
         )
 
     def _notices(self, messages: list[AgentMessage]) -> tuple[Notice, ...]:
-        return tuple(
-            Notice(
-                self.name,
-                (message.message_id,),
-                UNDELIVERED
-                if self.delegation is None and message.recipient_delegation is not None
-                else NOTICE,
-                {
-                    "message_id": message.message_id,
-                    "sender_run": message.sender_run,
-                    "sender_delegation": message.sender_delegation,
-                    "recipient_delegation": message.recipient_delegation,
-                    "text": message.body,
-                    "sent_at": message.created_at,
-                },
+        """Each message as its notice; a task's shows the records it references, which
+        its archived notice then makes readable (CM-37b), and a root's delivery failure
+        names them as resolved."""
+        found: list[Notice] = []
+        for message in messages:
+            payload: dict[str, Any] = {
+                "message_id": message.message_id,
+                "sender_run": message.sender_run,
+                "sender_delegation": message.sender_delegation,
+                "recipient_delegation": message.recipient_delegation,
+                "text": message.body,
+                "sent_at": message.created_at,
+            }
+            if message.references:
+                payload["references"] = (
+                    list(message.references)
+                    if self.delegation is None
+                    else self._referenced(message.message_id)
+                )
+            failed = self.delegation is None and message.recipient_delegation is not None
+            found.append(
+                Notice(self.name, (message.message_id,), UNDELIVERED if failed else NOTICE, payload)
             )
-            for message in messages
-        )
+        return tuple(found)
+
+    def _referenced(self, message: str) -> str | None:
+        assert self.delegation is not None  # noqa: S101 - a delegated recipient's
+        with self.store.control.read() as tx:
+            return message_part(
+                tx.sql, self.context.project_id, self.context.session_id, self.delegation, message
+            )
 
     async def notices(self, point: Point, run: RunView) -> tuple[Notice, ...]:
-        return self._notices(await self.fresh(run)) if point == "turn" else ()
+        if point != "turn":
+            return ()
+        return await threaded(self._notices, await self.fresh(run))
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         if run.turns_left <= 0:
             return Closing()
         found = await self.fresh(run)
-        return Closing("continue", self._notices(found)) if found else Closing()
+        return Closing("continue", await threaded(self._notices, found)) if found else Closing()
 
     async def acknowledge(self, record: RunRecord) -> None:
         ids = list(record.delivered.get(self.name, ()))

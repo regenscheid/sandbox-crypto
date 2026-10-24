@@ -74,6 +74,7 @@ from .models import Choice, ModelChoice
 from .outcome import Target, proof_reads
 from .prompt import brief_text, check_task, evidence_line, task_text
 from .records import Delegation, DelegationRecords, DelegationSettings, Ended, Ending
+from .references import ReferenceInput, resolve
 from .specs import CheckBrief, Named, TaskBrief, WaitRequest, brief_of, offered
 from .work import record_work
 
@@ -476,6 +477,12 @@ class Delegations(TurnHook):
                 )
             written["delegate"] = True
             shown["delegate"] = True
+        if brief.references:
+            # Checked where the parent may read (PD-11, PD-13): its own run and its
+            # descendants, or a main run's session; the brief keeps them as resolved.
+            resolved = await threaded(self._references, brief.references)
+            written["references"] = list(resolved)
+            shown["references"] = len(resolved)
         issue = None
         if brief.issue is not None:
             found = await threaded(self.ledger.entry, self.context.project_id, brief.issue)
@@ -496,6 +503,7 @@ class Delegations(TurnHook):
                 track=brief.track,
                 issue=issue,
                 delegate=brief.delegate,
+                references=bool(brief.references),
             ),
             self.limits.task_turns,
             self.limits.task_tokens,
@@ -504,6 +512,18 @@ class Delegations(TurnHook):
             track,
             brief.delegate,
         )
+
+    def _references(self, items: Sequence[ReferenceInput]) -> tuple[JsonValue, ...]:
+        context = self.context
+        with self.records.control.read() as tx:
+            return resolve(
+                tx.sql,
+                context.project_id,
+                context.session_id,
+                self.parent,
+                delegated=self.depth > 0,
+                items=items,
+            )
 
     async def _model(self, asked: str | None) -> Choice | None:
         """The model the child calls (PD-28, PD-30); ``None`` for the harness's, when it

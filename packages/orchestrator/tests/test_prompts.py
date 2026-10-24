@@ -69,6 +69,7 @@ GOLDEN = {
         "a37f12e337620c81928a5203073b1d6656c6ed713b110528b165d91c1e38960f"
     ),
     "sandbox-delegated-task-13": "5100c90d70c6c6d7874f802f7117f655943073b896ad6f568702d0849223bf20",
+    "sandbox-delegated-task-14": "282c8f5ce712c22144077103fc20efa141eedb9ed1185284f77ee0713231d5e1",
     "sandbox-delegated-check-12": (
         "d7aedb60054af516dbcf4d434c40316b54417a3550856bfb5745f39aa1bc7c19"
     ),
@@ -158,6 +159,7 @@ GOLDEN = {
     "sandbox-task-constraints-1": (
         "5c0a224ad9bba6d3803ebf613e5b4df51e0341425b6f7e8b95244294d9f81681"
     ),
+    "sandbox-referenced-1": "53d8f0c92d3cfb623a246a3eaab31836e02796330d59453ba1dda6e52606966a",
     "sandbox-notice-redelivered-1": (
         "706f5ef5f1441a5194177af083185c8eb53cf9f9b31cfd7bb5609d3e666b4726"
     ),

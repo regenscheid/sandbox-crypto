@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
@@ -25,6 +26,7 @@ async def delegated_folder(
     brief: str,
     constraints: str | None,
     ceiling: int,
+    refresh: Callable[[], str | None] | None = None,
     chunk: int | None,
     shares: Shares,
     clock: Clock = SYSTEM_CLOCK,
@@ -32,13 +34,22 @@ async def delegated_folder(
 ) -> Folder:
     """Reuse the fold engine on this child's work only, pinning its original brief.
 
-    Narrative enrichment uses the child's pinned caller; its tokens are recorded with
-    the child's usage, which a soft cap checks in on rather than refusing (D102).
+    ``refresh`` gives the state block's own part again at each rebuild, as the records
+    have it then, such as the references of the messages shown since (CM-37b); without
+    it, ``constraints`` stays. Narrative enrichment uses the child's pinned caller; its
+    tokens are recorded with the child's usage, which a soft cap checks in on rather
+    than refusing (D102).
     """
-    text = "Delegated work brief (unchanged):\n" + brief
-    if constraints:
-        text += "\n\n" + constraints
-    digest = Rendered(text)
+    pinned = "Delegated work brief (unchanged):\n" + brief
+
+    def pinning(block: str | None) -> str:
+        return pinned + ("\n\n" + block if block else "")
+
+    text = pinning(constraints)
+
+    def digest(_: int) -> Rendered:
+        return Rendered(text if refresh is None else pinning(refresh()))
+
     start = geometry(ceiling, 0, chunk, shares)
     # The first call already receives the brief as its task message. Pin it in the
     # state block once rebuilding could fold that original task out of the raw tail.
@@ -62,7 +73,7 @@ async def delegated_folder(
         start=start,
         ceiling=ceiling,
         chunk=chunk,
-        digest=lambda _: digest,
+        digest=digest,
         clock=clock,
         model=model,
     )

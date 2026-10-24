@@ -694,15 +694,18 @@ class Archive:
         start: int,
         end: int,
         runs: Sequence[str] | None = None,
+        messages: Set[str] = frozenset(),
         limit: int = PAGE,
     ) -> list[dict[str, object]]:
-        """Bounded range of message labels, including messages too large to load whole."""
+        """Bounded range of message labels, including messages too large to load whole:
+        of ``runs`` when given, and the ``messages`` named besides them."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT message_id,session,position,run,parent,created,role,kind,source,"
                 "call_id,model "
                 "FROM archive_messages WHERE project=? AND session=? AND position>=? "
-                "AND position<=? AND (? IS NULL OR run IN (SELECT value FROM json_each(?))) "
+                "AND position<=? AND (? IS NULL OR run IN (SELECT value FROM json_each(?)) "
+                "OR message_id IN (SELECT value FROM json_each(?))) "
                 "ORDER BY position LIMIT ?",
                 (
                     project,
@@ -711,6 +714,7 @@ class Archive:
                     end,
                     json.dumps(runs) if runs is not None else None,
                     json.dumps(runs) if runs is not None else None,
+                    json.dumps(sorted(messages)),
                     max(1, min(limit, PAGE)),
                 ),
             ).fetchall()

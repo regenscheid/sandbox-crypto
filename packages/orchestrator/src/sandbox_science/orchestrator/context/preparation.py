@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
+from sandbox_science.orchestrator.delegation.references import readable_for, state_block
 from sandbox_science.orchestrator.digest import Digest, Rendered, constraints_block, render
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.ledger import Ledger
@@ -118,6 +119,8 @@ async def prepare_context(
             parent=scope.parent,
             brief=brief,
             constraints=block,
+            # A rebuild's state block holds the references of the messages shown since.
+            refresh=functools.partial(task_block, documents, scope, delegation, clock=clock),
             ceiling=limits.ceiling,
             chunk=limits.chunk,
             shares=limits.shares,
@@ -153,8 +156,21 @@ async def prepare_context(
             context,
             run=name,
             delegated=scope.parent is not None,
+            granted=(
+                functools.partial(_granted, projects, context, delegation, name)
+                if scope.parent is not None and delegation is not None
+                else None
+            ),
         ),
     )
+
+
+def _granted(
+    projects: ProjectStore, context: ExecutionContext, delegation: str, run: str
+) -> frozenset[str]:
+    """The messages a delegated run's parent referenced for it, from the records."""
+    with projects.control.read() as tx:
+        return readable_for(tx.sql, context.project_id, context.session_id, delegation, run)
 
 
 async def _main_folder(
@@ -288,7 +304,9 @@ def task_block(
     documents: DocumentStore, scope: HistoryScope, delegation: str | None, *, clock: Clock
 ) -> str | None:
     """A delegated task's state block: the user's standing constraints, each with the
-    user's words beside it (CM-37a). A check gets none, nor anything else."""
+    user's words beside it (CM-37a), then the records its parent referenced, in its
+    brief and in the messages it was shown (CM-37b), all from the records, so that a
+    restarted run rebuilds the same. A check gets none, nor anything else."""
     project, session = scope.context.project_id, scope.context.session_id
     if delegation is None:
         return None
@@ -297,10 +315,15 @@ def task_block(
         if records.get(project, session, delegation).kind != "task":
             return None
         lines = Digest(Ledger(documents)).constraints(project, session)
+        with documents.control.read() as tx:
+            referenced = state_block(tx.sql, project, session, delegation, scope.run)
     except (ControlError, DocumentError) as error:  # no record of it: no constraints
         _log.warning("no state block for delegated run %s: %s", scope.run, error)
         return None
-    return TASK_CONSTRAINTS.text + "\n" + constraints_block(lines) if lines else None
+    parts = [TASK_CONSTRAINTS.text + "\n" + constraints_block(lines)] if lines else []
+    if referenced:
+        parts.append(referenced)
+    return "\n\n".join(parts) or None
 
 
 def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> int | None:
