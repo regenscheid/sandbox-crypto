@@ -107,6 +107,20 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 
 Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-PLAN.md)). The context refactor is separate from `dev`; implementation, runtime qualification and deployment are distinct.
 
+## Loop composition (2026-10-24)
+
+Moving the tool loop's cross-cutting concerns into composable pieces, one at a time and without behavior change ([composition points](../docs/ARCHITECTURE.md#the-loops-composition-points)).
+
+- [x] Wrap points for model and tool calls (`TurnHook.wrap_model_call`, `wrap_tool_call`, `wraps.py`); the context error's fold and retry (`OverflowRetry`), the model refusals (`ModelRefusals`) and the runaway guard (`Runaway`) moved behind them, pinned by `test_loop_calls.py`; a confined attempt refuses a hook that wraps calls.
+- [ ] Remaining steps, each with characterization tests first:
+  - [ ] The report round as one piece: `_report`, its `not_run` results and `_runaway`, asked by the loop at its limits; the confined host's `not_run` check (`confinement/host.py`) must keep matching it.
+  - [ ] The runaway guard whole: its closing-answer count (`Runaway.answer`) through a closing observer instead of the loop's call.
+  - [ ] Limits before a model call as one step: the turn ceiling, `REPORT_ROOM` and the hooks' `last_call`; `_halt` and `_out_of_room` as one stop routine.
+  - [ ] After a tool call: notice attachment (`_attach`), image messages and tool-record retention as after-tool steps.
+  - [ ] Tool failures and gates: once the file-tool work in `tools.py` has landed, consider moving `Toolbox.call`'s failure conversion and gate loop behind `wrap_tool_call`.
+  - [ ] Wraps in confined attempts: carry them over the runtime channel, or keep the host's refusal; decide before a subsystem needs one.
+  - [ ] Transient model retries stay in `GatewayModel._call` (HTTP status, `Retry-After`) unless a retry must see the run's state.
+
 ## Research continuity after the SNOVA acceptance run
 
 - [x] Qualify the integrated bounded automatic Resume of a saved model-phase failure against a live OpenShell interruption. The isolated real-model campaign recovered the same root/child tree, preserved the research sandbox and work identities, exchanged correction/final messages, consumed the handback and finished without replacement child work; evidence is archived in `/var/tmp/ss-recovery-evidence-a4addfda`. Personal deployment remains separate.

@@ -66,6 +66,26 @@ Implement work-organizing skills, main/delegated/reviewer model settings and aut
 
 The orchestrator never mounts worker workspaces directly. It reads results through the worker API and artifact repository, and treats them as untrusted input: no symlink following, size and type limits, and no in-process parsing or rendering of rich formats.
 
+### The loop's composition points
+
+The tool loop (`orchestrator/loop.py`) is composed of turn hooks (`hooks.py`) and wraps (`wraps.py`). A hook is one subsystem's part in a run; hooks run in a fixed order, which is the order their notices reach the model, and the loop alone applies the delivery rules. A wrap goes around one call and is given its next step, so it can act before and after it, try it again or answer in its place. The points, with the nearest middleware point of LangChain's Deep Agents for comparison:
+
+| Point | When | Deep Agents |
+| --- | --- | --- |
+| `lease`, `notices("start")` | for the whole run; once before the first turn | `before_agent` |
+| `turn_limit`, `halt`, `last_call`, `notices("turn")`, `consumption` | before each model call | `before_model` |
+| `wrap_model_call` | around each attempt at a model call, retries and the report round's included | `wrap_model_call` |
+| `model_returned` | after each successful model call | `after_model` |
+| `wrap_tool_call` | around each tool call that runs, once its intent is saved | `wrap_tool_call` |
+| `gate`, `gate_call` | inside the toolbox, before a tool runs: a refusal becomes its error | part of `wrap_tool_call` |
+| `notices("tool")`, `observe_tool` | after each tool call, on its result | none |
+| `closing`, `accept` | at a closing answer: accept, continue, respond, retry or stop | `after_model` with a jump |
+| `finishing`, `summary`, `acknowledge` | after the loop ends; after the run's record is saved | `after_agent` |
+
+The loop's own wraps hold its run's transcript and come outermost. Around a model call: `OverflowRetry`, which folds the conversation after a context error and tries again while a fold makes room (CM-43 to CM-45), then `ModelRefusals`, which ends the call without a reply on a context error or the gateway's budget refusal, the latter halting the run. Around a tool call: `Runaway`, the runaway guard (RS-6f), which so sees each outcome before notices ride on it. The hooks' wraps come inside these, the first hook outermost. Retries of a failed HTTP request stay in the model client (`GatewayModel`), a tool's own failures become its outcome in `Toolbox.call`, and retrying a failed run is automatic recovery's (D100).
+
+Wraps run where the loop runs. In a confined attempt the runtime's hooks are proxies over a channel that carries no wrap, so the host refuses a hook that overrides one rather than skip it. Still inline in the loop: the turn ceiling, the report round with its `not_run` results, the halt and out-of-room stops, closing decisions, and notice attachment ([backlog](../.agents/BACKLOG.md#loop-composition-2026-10-24)).
+
 ## Worker lifetimes and API
 
 The user confirmed a persistent container per project, provisioned from a base image, with optional separate session/workbook containers and same-project data sharing. [Ownership details](PROJECTS-AND-SESSIONS.md).

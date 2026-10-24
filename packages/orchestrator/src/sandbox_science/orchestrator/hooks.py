@@ -24,11 +24,17 @@ Hooks run in a fixed order, which is the order their notices reach the model. A 
 hook is asked about a closing answer first, and again after every hook accepted it.
 Leases are taken in hook order and released in reverse; each lease releases what it
 holds whatever happened to the others.
+
+A hook may also wrap each model call and each tool call (``wrap_model_call``,
+``wrap_tool_call``), the first hook outermost, inside the loop's own wraps
+(``wraps.py``). Wraps run where the loop runs: a confined attempt's hooks are proxies
+over a channel that carries none, so the host refuses a hook that overrides one
+(``wraps_calls``).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
@@ -50,6 +56,14 @@ Effect = Literal["read", "cancel", "effect", "plan", "proposal"]
 ``proposal`` tools nothing until the user accepts what they propose (a project memory
 proposal): the plan fence lets them pass, but a run that no longer holds its session
 may not make one."""
+
+type ModelHandler = Callable[[], Awaitable[ModelTurn | None]]
+"""The next step of a model call: the reply, or ``None`` when none came. Its innermost
+step raises the model's errors, and answers ``None`` with no call made when the
+conversation is past the run's budget."""
+
+type ToolHandler = Callable[[ToolCall, str], Awaitable[ToolOutcome]]
+"""The next step of a tool call, given the call and its operation ID: its outcome."""
 
 RESPONSE_ROUNDS: Final = 2
 """Closing answers a run may take back to respond to findings, whatever their source."""
@@ -229,6 +243,21 @@ class TurnHook:
         delegated runs' fence does (D99)."""
         return await self.gate(effect)
 
+    async def wrap_model_call(self, run: RunView, handler: ModelHandler) -> ModelTurn | None:
+        """Around each attempt at a model call, the attempts after a fold among them, and
+        the report round's: ``handler`` makes it. A wrap may act before and after it, try
+        it again, or answer in its place; the default calls it once."""
+        return await handler()
+
+    async def wrap_tool_call(
+        self, run: RunView, call: ToolCall, operation: str, handler: ToolHandler
+    ) -> ToolOutcome:
+        """Around each tool call the run makes, once its intent is saved: ``handler`` runs
+        it, through the gates. What a wrap returns is the outcome the runaway guard, the
+        tool point's notices and the transcript see. The report round's calls, which do
+        not run, pass no wrap. The default calls it once."""
+        return await handler(call, operation)
+
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         """After each tool call, with the outcome the transcript keeps."""
 
@@ -251,6 +280,16 @@ class TurnHook:
 
     async def acknowledge(self, record: RunRecord) -> None:
         """After the record is saved: settle what it names as delivered."""
+
+
+def overrides(hook: TurnHook, name: str) -> bool:
+    """Whether ``hook``'s class replaces the ``TurnHook`` method ``name``."""
+    return getattr(type(hook), name) is not getattr(TurnHook, name)
+
+
+def wraps_calls(hook: TurnHook) -> bool:
+    """Whether ``hook`` overrides a wrap point, which only an unconfined loop can run."""
+    return overrides(hook, "wrap_model_call") or overrides(hook, "wrap_tool_call")
 
 
 @asynccontextmanager

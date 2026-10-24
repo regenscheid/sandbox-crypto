@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from collections.abc import (
     AsyncGenerator,
@@ -31,20 +30,20 @@ from .context.history.collections import Collection, Members
 from .context.history.limits import WorkingMemoryLimitError
 from .context.history.memory import RunMemory
 from .continuity.transient import classify
-from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
+from .hooks import (
+    RESPONSE_ROUNDS,
+    Appended,
+    MessageLog,
+    ModelHandler,
+    Notice,
+    Point,
+    ToolHandler,
+    TurnHook,
+)
 from .images import IMAGE
 from .kernel_check import KernelCheck
 from .memory_prompt import MemoryGiven
-from .model import (
-    GATEWAY_BUDGET,
-    AssistantMessage,
-    ChatModel,
-    ContextLimitError,
-    GatewayBudgetError,
-    Message,
-    ModelTurn,
-    ToolCall,
-)
+from .model import AssistantMessage, ChatModel, Message, ModelTurn, ToolCall
 from .notices import REPORT
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
@@ -53,6 +52,17 @@ from .prompts import Section, assemble, schema_json
 from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
+from .wraps import POLLS as POLLS
+from .wraps import RUNAWAY as RUNAWAY
+from .wraps import (
+    ModelRefusals,
+    OverflowRetry,
+    Runaway,
+    hook_model_wraps,
+    hook_tool_wraps,
+    wrap_model,
+    wrap_tool,
+)
 
 MAX_TURNS: Final = 2_000
 """A run's model calls by default, before its report round: a safety net, not a bound on
@@ -63,24 +73,6 @@ TURNS_CEILING: Final = 100_000
 REPORT_ROOM: Final = 8
 """A run that does not fold takes its report round once its conversation passes all but
 this part of its ``max_input_chars`` (one eighth), which leaves room for the call."""
-RUNAWAY: Final = 25
-"""The runaway guard's count: tool calls in a row that failed with the same error, or
-that made the same call with the same arguments and got the same result, or answers in a
-row that a closing held back (RS-6f)."""
-POLLS: Final = frozenset(
-    {
-        "wait_jobs",
-        "job_status",
-        "list_jobs",
-        "wait_delegations",
-        "wait_agent_message",
-        "delegation_status",
-        "provision_status",
-        "track_progress",
-    }
-)
-"""Tools that watch something change: the same answer again is time passing, so the
-runaway guard never counts them as repeated calls, only as failed ones."""
 REPORT_SOURCE: Final = "report"
 """The report round's notice source."""
 MAIN_VERSION: Final = "sandbox-main-15"
@@ -464,34 +456,58 @@ def attach_notices(
     outcome.record.update(extra)
 
 
-async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -> ModelTurn | None:
-    """The model's reply, or ``None`` when the conversation is too long for the model:
-    longer than the run's budget, or than the model's context as the gateway says; or
-    when the gateway refused the call for its budget, which ``halted`` then says. No
-    model call saw the notices offered since the last one.
+def _model_call(
+    model: ChatModel, toolbox: Toolbox, transcript: Transcript, hooks: Sequence[TurnHook]
+) -> ModelHandler:
+    """The run's model call: the reply, or ``None`` when the conversation is too long for
+    the model, longer than the run's budget or than the model's context as the gateway
+    says, once no fold makes room; or when the gateway refused the call for its budget,
+    which ``halted`` then says. No model call saw the notices offered since the last one.
+    Its wraps, outermost first: the fold and retry on a context error, the refusals that
+    end the call without a reply, then each hook's (``wraps.py``).
     """
+
+    async def attempt() -> ModelTurn | None:
+        return await _attempt(model, toolbox, transcript)
+
+    wraps = [OverflowRetry(transcript).wrap, ModelRefusals(transcript).wrap]
+    return wrap_model(attempt, [*wraps, *hook_model_wraps(hooks, transcript)])
+
+
+async def _attempt(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -> ModelTurn | None:
+    """One attempt at the model call, which raises the model's errors: ``None``, with no
+    call made, when the conversation is longer than the run's budget."""
     size = transcript.context.size
     if size > transcript.context.max_input_chars:
         _log.warning("the conversation, %d characters, exceeds the run's budget", size)
         return None
     transcript.phase = "model"
     transcript.overflowed = False
-    try:
-        reply = await transcript.context.complete(model, toolbox.specs)
-    except ContextLimitError as error:
-        _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
-        reply, transcript.overflowed = None, True
-    except GatewayBudgetError as error:
-        _log.warning("the model gateway refused the call for its budget: %s", error)
-        transcript.halted, reply = GATEWAY_BUDGET, None
-        # Whose budget it was, the gateway's or a configured local limit, stays on record.
-        transcript.summaries["budget"] = {"refusal": str(error)[:500]}
+    reply = await transcript.context.complete(model, toolbox.specs)
     transcript.phase = "harness"
-    if reply is None:
-        return None
     transcript.pending = None
     transcript.context.record_reply(reply, input_size=size)
     return reply
+
+
+def _tool_call(
+    toolbox: Toolbox,
+    transcript: Transcript,
+    hooks: Sequence[TurnHook],
+    guard: Runaway,
+    model: str | None,
+) -> ToolHandler:
+    """A tool call of a reply from ``model``, once its intent is saved: the toolbox runs
+    it, through every hook's gate. Its wraps, outermost first: the runaway guard, then
+    each hook's (``wraps.py``)."""
+
+    async def dispatch(call: ToolCall, operation: str) -> ToolOutcome:
+        transcript.phase = "tool"
+        outcome = await toolbox.call(call, operation, model=model, gates=hooks)
+        transcript.phase = "harness"
+        return outcome
+
+    return wrap_tool(dispatch, [guard.wrap, *hook_tool_wraps(hooks, transcript)])
 
 
 async def _turn_limit(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
@@ -536,67 +552,6 @@ async def _out_of_room(hooks: Sequence[TurnHook], transcript: Transcript) -> Non
         await _closing(hooks, transcript, transcript.pending)
 
 
-@dataclass
-class Runaway:
-    """The runaway guard (RS-6f): a cheap check that stops a run repeating itself without
-    progress, and never one that works. It trips at ``limit`` in a row of one of:
-
-    - tool calls that failed with the same error, the same kind and the same message,
-      whatever the tool or its arguments;
-    - tool calls of the same tool with the same arguments that got the same result,
-      other than ``POLLS``, whose same answer is time passing;
-    - closing answers that a hook held back for another turn (a ``retry``), with no
-      tool call between them.
-
-    Anything else in between starts the count again.
-    """
-
-    limit: int = RUNAWAY
-    key: tuple[str, ...] | None = None
-    count: int = 0
-    tripped: dict[str, str] | None = None
-    """What tripped it: the rule and its detail, which the run's record keeps."""
-
-    def call(self, call: ToolCall, outcome: ToolOutcome) -> None:
-        """A tool call made, with its outcome before any notice rides on it."""
-        error = outcome.record.get("error")
-        digest = hashlib.sha256(outcome.text.encode("utf-8", "replace")).hexdigest()
-        if error is not None:
-            self._seen(("same_error", str(error), digest), f"failed with the same error ({error})")
-        elif call.name in POLLS:
-            self._seen(None, "")
-        else:
-            arguments = hashlib.sha256(call.arguments.encode("utf-8", "replace")).hexdigest()
-            self._seen(
-                ("same_call", call.name, arguments, digest),
-                f"made the same {call.name} call with the same arguments and got the same result",
-            )
-
-    def answer(self, held: bool) -> None:
-        """A closing answer, and whether a hook held it back for another turn."""
-        if held:
-            self._seen(("held",), "", calls=False)
-        else:
-            self._seen(None, "")
-
-    def _seen(self, key: tuple[str, ...] | None, what: str, *, calls: bool = True) -> None:
-        if key is None or key != self.key:
-            self.key, self.count = key, 0
-        if key is None:
-            return
-        self.count += 1
-        if self.count >= self.limit and self.tripped is None:
-            rule = key[0]
-            if calls:
-                detail = f"the last {self.count} tool calls {what}"
-            else:
-                detail = (
-                    f"the last {self.count} answers were held back for another turn, with "
-                    "no tool call between them"
-                )
-            self.tripped = {"rule": rule, "detail": detail}
-
-
 def not_run(reason: str) -> ToolOutcome:
     """The result of a tool call the report round does not run."""
     message = f"not_run: the run reached a limit ({reason}); this call did not run"
@@ -625,8 +580,7 @@ async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple
 
 
 async def _report(
-    model: ChatModel,
-    toolbox: Toolbox,
+    complete: ModelHandler,
     transcript: Transcript,
     hooks: Sequence[TurnHook],
     reason: str,
@@ -666,11 +620,7 @@ async def _report(
     await _offer(transcript, (notice,))
     transcript.turns += 1
     await _consumption(hooks, transcript)
-    reply = await _complete(model, toolbox, transcript)
-    while reply is None and transcript.overflowed:
-        if not await transcript.context.overflow(call_index=transcript.turns):
-            break
-        reply = await _complete(model, toolbox, transcript)
+    reply = await complete()
     transcript.halted = reason
     if reply is None:
         return
@@ -709,6 +659,7 @@ async def _run_task(
         await _append(transcript, {"role": "user", "content": task}, Appended("task"))
     await _notices(hooks, "start", transcript)
     revision = toolbox.revision
+    complete = _model_call(model, toolbox, transcript, hooks)
     guard = Runaway()
     while True:
         await _turn_limit(hooks, transcript)
@@ -718,7 +669,7 @@ async def _run_task(
         if await _halted(hooks, transcript):
             return transcript
         if turn and (last := await _last_call(hooks, transcript)) is not None:
-            await _report(model, toolbox, transcript, hooks, *last)
+            await _report(complete, transcript, hooks, *last)
             return transcript
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
@@ -726,12 +677,7 @@ async def _run_task(
             await _out_of_room(hooks, transcript)
             return transcript
         await _consumption(hooks, transcript)
-        reply = await _complete(model, toolbox, transcript)
-        # A context error folds once and tries once more; the fold engine says when not.
-        while reply is None and transcript.overflowed:
-            if not await transcript.context.overflow(call_index=transcript.turns):
-                break
-            reply = await _complete(model, toolbox, transcript)
+        reply = await complete()
         if reply is None:
             if transcript.halted is not None:  # the gateway's budget is spent
                 await _halt(hooks, transcript, transcript.halted)
@@ -749,19 +695,17 @@ async def _run_task(
                 transcript.pending = reply.text
                 guard.answer(transcript.held > held)
                 if guard.tripped is not None:
-                    await _runaway(model, toolbox, transcript, hooks, guard.tripped)
+                    await _runaway(complete, transcript, hooks, guard.tripped)
                     return transcript
                 continue
             return transcript
         viewed: list[tuple[Notice, str]] = []
+        dispatch = _tool_call(toolbox, transcript, hooks, guard, reply.model)
         for call in reply.tool_calls:
             operation = operation_id(f"{run_id}-t{turn}", call)
             if transcript.context.log is not None:
                 await transcript.context.log.start_tool(call, operation)
-            transcript.phase = "tool"
-            outcome = await toolbox.call(call, operation, model=reply.model, gates=hooks)
-            transcript.phase = "harness"
-            guard.call(call, outcome)  # before any notice rides on its result
+            outcome = await dispatch(call, operation)  # the guard saw it before any notice
             await _attach(hooks, transcript, outcome, toolbox.output_chars)
             await _append(
                 transcript,
@@ -812,18 +756,17 @@ async def _run_task(
             revision = toolbox.revision
             transcript.context.tools_chars = len(schema_json(toolbox.specs))
         if guard.tripped is not None:
-            await _runaway(model, toolbox, transcript, hooks, guard.tripped)
+            await _runaway(complete, transcript, hooks, guard.tripped)
             return transcript
     turns = transcript.max_turns
     await _report(
-        model, toolbox, transcript, hooks, "turn_limit", f"its turn limit, {turns:,} model calls"
+        complete, transcript, hooks, "turn_limit", f"its turn limit, {turns:,} model calls"
     )
     return transcript
 
 
 async def _runaway(
-    model: ChatModel,
-    toolbox: Toolbox,
+    complete: ModelHandler,
     transcript: Transcript,
     hooks: Sequence[TurnHook],
     tripped: dict[str, str],
@@ -833,7 +776,7 @@ async def _runaway(
     _log.warning("the runaway guard stopped the run: %s", tripped["detail"])
     transcript.summaries["runaway"] = {**tripped, "count": RUNAWAY}
     detail = f"the runaway guard: {tripped['detail']}"
-    await _report(model, toolbox, transcript, hooks, "runaway", detail)
+    await _report(complete, transcript, hooks, "runaway", detail)
 
 
 def _sections(

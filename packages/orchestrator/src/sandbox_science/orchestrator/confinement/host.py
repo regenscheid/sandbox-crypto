@@ -27,7 +27,14 @@ from sandbox_science.orchestrator.continuity.records import (
     check_owner,
 )
 from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
+from sandbox_science.orchestrator.hooks import (
+    Appended,
+    Closing,
+    MessageLog,
+    Notice,
+    TurnHook,
+    wraps_calls,
+)
 from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.kernel_check import KernelCheck
 from sandbox_science.orchestrator.loop import (
@@ -683,13 +690,18 @@ class HostLoops:
         """Match Harness.loop_runner; options are its internal run_task keyword arguments."""
         if toolbox.context.project_id not in self.projects:
             raise TransportError("denied", "project is outside this control capability")
+        hooks = tuple(cast(Sequence[TurnHook], options.get("hooks") or toolbox.turn_hooks()))
+        if any(wraps_calls(hook) for hook in hooks):
+            # The runtime's proxies of these hooks carry no wrap: it would be skipped.
+            raise TransportError(
+                "denied", "a hook that wraps model or tool calls cannot be confined"
+            )
         if not isinstance(model, CallbackModel):
             raise TransportError("denied", "host model execution is forbidden in confined mode")
         log = cast(MessageLog | None, options.get("log"))
         if not isinstance(log, RunArchive):
             raise TransportError("denied", "confined attempts require durable archive logging")
         identity = self.model_capability()
-        hooks = tuple(cast(Sequence[TurnHook], options.get("hooks") or toolbox.turn_hooks()))
         if self.control is None:
             self.control = log.archive.control
         given = RunGiven(
