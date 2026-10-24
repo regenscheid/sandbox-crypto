@@ -3202,7 +3202,7 @@ def _child_requests(schema: Schema) -> None:
 
 
 def _project_grants(schema: Schema) -> None:
-    """Version 81: grants of a class on a server, a host or a package source, for a
+    """Version 80: grants of a class on a server, a host or a package source, for a
     session or the project (D97), in place of remembered tool and server approvals.
 
     Each remembered tool approval becomes a grant of the tool's class on its server, as
