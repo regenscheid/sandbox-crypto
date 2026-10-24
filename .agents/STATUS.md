@@ -4,7 +4,7 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 
 ## Phase and focus
 
-- `k8s-sync` is the integration branch. It is `k8s` plus `origin/dev` (`3918ccd0`), then the settled architecture (D95-D103, D92 amended) built on top. Nothing is pushed.
+- `k8s-sync` is the integration branch. It is `k8s` plus `origin/dev` (`3918ccd0`), then the settled architecture (D95-D103, D92 amended) built on top. It is pushed to `origin/k8s-sync`; no PR is open and nothing is merged into `dev`.
 - `dev` is unchanged except PR #520. `main` is unchanged.
 - The nightly runs the workflow file on `main`, so the sharded flake-measuring jobs reach it only when merged there. Nightly CI is not yet green.
 - No cluster, personal instance or preserved SNOVA service has been touched by this work.
@@ -37,7 +37,6 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 - Run the babbage lab for the direct MCP path, then your decision to retire the MCP proxy or keep it (D98, A2).
 - The workspace's review view for classifications, and proxy-side drift findings (A3).
 - Cards for the direct MCP path's requests (A4).
-- Code egress by binary: OpenShell 0.1.5 cannot express it, so this waits on you (A5).
 - Read connectors for delegated children (A6).
 - The web usage view and a real-model check of the check-ins (A8).
 - Measure shell against kernel use and steer agents to the kernel (A10).
