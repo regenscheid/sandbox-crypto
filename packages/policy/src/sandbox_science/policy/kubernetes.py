@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from decimal import ROUND_FLOOR, Decimal
 from typing import Annotated, Self, cast
 
@@ -55,6 +56,21 @@ def check_pinned_policy(driver_json: str | None, cap: Resources) -> None:
         )
 
 
+def check_labels(labels: dict[str, str], what: str = "labels") -> dict[str, str]:
+    """Kubernetes label keys (an optional DNS prefix and a name) and values; ValueError."""
+    for key, value in labels.items():
+        prefix, separator, name = key.rpartition("/")
+        name = name if separator else key
+        if _LABEL.fullmatch(name) is None or (value and _LABEL.fullmatch(value) is None):
+            raise ValueError(f"{what} contains an invalid label name or value")
+        if separator and (
+            len(prefix) > 253
+            or any(_DNS_PART.fullmatch(part) is None for part in prefix.split("."))
+        ):
+            raise ValueError(f"{what} contains an invalid DNS prefix")
+    return labels
+
+
 class KubernetesResources(BaseModel):
     """Explicit requests or limits; integers avoid ambiguous Kubernetes units."""
 
@@ -86,17 +102,7 @@ class KubernetesProfile(BaseModel):
     @field_validator("node_selector")
     @classmethod
     def _labels(cls, labels: dict[str, str]) -> dict[str, str]:
-        for key, value in labels.items():
-            prefix, separator, name = key.rpartition("/")
-            name = name if separator else key
-            if _LABEL.fullmatch(name) is None or (value and _LABEL.fullmatch(value) is None):
-                raise ValueError("node_selector contains an invalid label name or value")
-            if separator and (
-                len(prefix) > 253
-                or any(_DNS_PART.fullmatch(part) is None for part in prefix.split("."))
-            ):
-                raise ValueError("node_selector contains an invalid DNS prefix")
-        return labels
+        return check_labels(labels, "node_selector")
 
     @model_validator(mode="after")
     def _capacity(self) -> Self:
@@ -109,11 +115,13 @@ class KubernetesProfile(BaseModel):
                 raise ValueError(f"{field} request exceeds its limit")
         return self
 
-    def driver_json(self, cap: Resources) -> str:
+    def driver_json(self, cap: Resources, *, labels: Mapping[str, str] | None = None) -> str:
         """Render v0.1.3's typed config, narrowing CPU/memory by project/pool caps.
 
         Ephemeral storage is not the persistent workspace's disk allowance. PVC
         capacity and archive/restore remain separate lifecycle configuration.
+        ``labels`` go on the workload Pod, keys the gateway's ``allowed_pod_labels``
+        must list (OpenShell 0.1.5); only the worker's own constants are passed.
         """
         cpu = self.limits.cpu_millicores
         memory = self.limits.memory_mib * 1024**2
@@ -127,6 +135,8 @@ class KubernetesProfile(BaseModel):
         pod: dict[str, object] = {"node_selector": self.node_selector}
         if self.runtime_class_name is not None:
             pod["runtime_class_name"] = self.runtime_class_name
+        if labels:
+            pod["labels"] = dict(sorted(check_labels(dict(labels)).items()))
         resources = {
             "requests": {
                 "cpu": f"{self.requests.cpu_millicores}m",

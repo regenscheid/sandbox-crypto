@@ -167,6 +167,10 @@ class RuleEscalation(StrictModel):
     """With ``on_timeout: allow``, also let a request to a credentialed host proceed."""
 
 
+JobProfileName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+"""A job profile's name, as the worker's settings give it (D93)."""
+
+
 class Resources(StrictModel):
     """Resource requests or caps. ``None`` means no limit at this layer."""
 
@@ -179,6 +183,12 @@ class Resources(StrictModel):
     job_wall_time_max: Annotated[Duration, Field(le=timedelta(days=7))] | None = None
     jobs_per_session: Annotated[StrictInt, Field(gt=0, le=1024)] | None = None
     jobs_per_environment: Annotated[StrictInt, Field(gt=0, le=1024)] | None = None
+    job_profiles: tuple[JobProfileName, ...] | None = Field(default=None, max_length=32)
+    """The worker's job profiles (D93) a project may run a job sandbox with; the list is
+    the grant. In a pool ceiling, the profiles any project may be granted."""
+    job_sandboxes: Annotated[StrictInt, Field(ge=0, le=64)] | None = None
+    """Job sandboxes a project may have creating, preparing, running or collecting at
+    once (D93); unset at both layers means 0, so the feature is off until granted."""
     model_budget_usd_per_day: Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)] | None = None
 
 

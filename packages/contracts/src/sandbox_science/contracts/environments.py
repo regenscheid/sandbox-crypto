@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints
 
@@ -70,6 +70,11 @@ class EnvironmentInfo(Contract):
     port of a host that a rule for any port reaches (D95)."""
     created_at: datetime
     updated_at: datetime
+    kind: Literal["session", "job"] = "session"
+    """``job`` for a job sandbox (D93): made by the worker for one job, from a session
+    environment's image and policy, and named by no agent tool (JS-1)."""
+    job_id: Identifier | None = None
+    """For a job sandbox: the job's execution ID."""
 
 
 class HostPort(Contract):
