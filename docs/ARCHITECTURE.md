@@ -2,9 +2,26 @@
 
 Date: 2026-10-10. This is the design proposal, kept as written except where the repository has since settled a point. The parts built so far run all-local on babbage (phase 1) and are described in the as-built pages: [worker](WORKER.md), [workspace](WORKSPACE.md), [policy middleware](POLICY-MIDDLEWARE.md), [package cache](PACKAGE-CACHE.md), [event store](EVENT-STORE.md), [living documents](LIVING-DOCUMENTS.md) and [consistency review](CONSISTENCY-REVIEW.md). No Kubernetes or remote deployment has been tested.
 
+## Settled architecture (2026-10-23)
+
+Confirmed by the owner; mostly not built. The [decisions](DECISIONS.md) hold the detail, the [threat model](THREAT-MODEL.md#reads-and-effects) the security rule, and the [architecture audit](../.agents/docs/agent-reports/architecture-audit-2026-10-23.md) the state it starts from.
+
+- **Threat model (D95):** protect the owner's systems, third parties and the research record; workflow confidentiality is out of scope. Reads are free and recorded, effects are gated.
+- **Lockdown modes (D95):** per project, network `open-reads` or `allowlist` and MCP `declared` or `locked`, compiled into OpenShell rules and the middleware.
+- **Effect classes (D96):** `read`, `write`, `communicate`, `browse`, `admin`, `unclassified`, from tool names, argument rules and, for unmentioned tools, MCP hints; browser automation off unless an admin enables it; admin-reviewed, model-drafted classifications with a drift test.
+- **Approvals and grants (D97):** admin ceilings per class and server; persistent, revocable user grants per class, server and project; cards built from a call's significant arguments.
+- **Research-code egress (D97):** packages through the cache; git and downloads from listed source hosts, attributed by binary; everything else escalates.
+- **MCP enforcement (D98):** OpenShell native `protocol: mcp` rules and the supervisor middleware; the MCP proxy retires if the prototype passes.
+- **Delegated agents (D99):** fenced for outward effects only; their effect requests are cards in the session chat that the parent can withdraw.
+- **Recovery (D100):** automatic bounded retries for transient failures; one Resume restarts the whole tree; only Stop, budget refusal, policy denial, an irreconcilable effect or a real context limit keeps a run stopped.
+- **Deployment unit (D101):** worker, policy middleware and package cache run as one supervised unit with one configuration file; control and workspace stay separate for now.
+- **Budgets (D102):** LiteLLM is the only cost enforcement; project and run budgets track; soft caps and loop heuristics trigger check-ins with the parent.
+- **Telemetry (D103):** logs and OpenShell events into Loki through Alloy from the first cluster deployment; dashboards, alerts and detect-and-hold rules follow.
+- **First cluster deployment (D92, D43):** Kata at tier 3 on amd64 with OpenShell 0.1.5, Garage artifacts and Longhorn snapshots, counted as deployed after three live proofs; job sandboxes (D93) and a second instance (D94) come later ([first deployment](KUBERNETES.md#first-deployment-scope-and-proofs)).
+
 ## Component boundary
 
-**Implemented locally, 2026-10-17 (D47):** the normal launcher runs the agent-facing orchestrator in a restricted OpenShell sandbox separate from research workloads. Parent and child model loops, prompt assembly and model adapters share this orchestration sandbox. A trusted host control service owns durable state, scoped worker/tool capabilities and the environment leases; the worker controller, gateway and enforcement services stay outside both sandboxes. Fixed authenticated capabilities carry bounded requests and results, with no generic SQL, host filesystem or method-dispatch API. The UI and durable state survive orchestrator replacement; interrupted trees require explicit Resume. See [orchestrator confinement](specs/orchestrator-confinement.md) and [research continuity](specs/research-continuity.md).
+**Implemented locally, 2026-10-17 (D47):** the normal launcher runs the agent-facing orchestrator in a restricted OpenShell sandbox separate from research workloads. Parent and child model loops, prompt assembly and model adapters share this orchestration sandbox. A trusted host control service owns durable state, scoped worker/tool capabilities and the environment leases; the worker controller, gateway and enforcement services stay outside both sandboxes. Fixed authenticated capabilities carry bounded requests and results, with no generic SQL, host filesystem or method-dispatch API. The UI and durable state survive orchestrator replacement; as built, interrupted trees require explicit Resume (automatic transient recovery and one full-tree Resume are decided in D100). See [orchestrator confinement](specs/orchestrator-confinement.md) and [research continuity](specs/research-continuity.md).
 
 ```mermaid
 flowchart LR
@@ -25,6 +42,8 @@ flowchart LR
   O --> V
 ```
 
+**MCP enforcement (D98, decided 2026-10-23):** MCP calls move to OpenShell's native `protocol: mcp` rules and the supervisor middleware, with the tool index on the control side. The MCP proxy that this page and [MCP connectors](MCP-CONNECTORS.md) describe remains until the prototype's outcome, which retires it or slims it to MCP only.
+
 The GUI, orchestrator/harness, and compute pools have independent packaging and endpoint configuration. The harness initially remains with orchestration. Splitting the model loop into another service is not required to achieve execution isolation.
 
 Logical modules share project/resource identity, immutable artifacts and revisions, typed anchors, durable event delivery, scoped permission decisions, and execution/environment adapters. Document, ledger, review and permission modules can initially live in the control application with its supported store. Share these mechanisms without merging scientific result status, review resolution and monitor verdicts. The [planning consistency review](../.agents/planning-consistency-review-2026-10-10.md) (historical) explains the reuse choices; the [implementation plan](IMPLEMENTATION-PLAN.md) defines ownership and ordered work.
@@ -37,7 +56,7 @@ Generated scientific code, shell commands, parsers, compilers, package operation
 
 ## Reimplemented harness
 
-The harness is new code (D11). CScience is the behavior reference; no Claude Science code, prompts, schemas or assets are used (D03, D56). Build it from MIT-compatible components (D55): a model-access library or gateway, the project's own small MCP client for the MCP proxy, and own code for skills, plans, delegation, review scheduling and findings. OpenScience Desktop upstream (MIT) and OpenCode (MIT) are reuse candidates. The Claude Agent SDK is not, because it drives the proprietary Claude Code CLI.
+The harness is new code (D11). CScience is the behavior reference; no Claude Science code, prompts, schemas or assets are used (D03, D56). Build it from MIT-compatible components (D55): a model-access library or gateway, the project's own small MCP client (for the MCP proxy as built; D98 sets the direction), and own code for skills, plans, delegation, review scheduling and findings. OpenScience Desktop upstream (MIT) and OpenCode (MIT) are reuse candidates. The Claude Agent SDK is not, because it drives the proprietary Claude Code CLI.
 
 Because the harness is written against the worker API from the start, it has **no local execution path**. Shell, kernel, package-manager, parser, renderer and execution-bearing MCP tools are worker API calls. This removes the main risk of the adaptation approach, which was a forgotten code path still running beside the orchestrator.
 

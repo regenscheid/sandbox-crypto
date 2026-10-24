@@ -2,6 +2,8 @@
 
 The format is confirmed (D62), and so are the evaluation details below (D68). The `sandbox_science.policy` library ([packages/policy](../packages/policy)) implements them. The user wants permissions to stay policy-based and to be defined in a YAML file that is quite permissive by default, with a configurable timeout after which unanswered requests fall back to deny. This document defines the semantics. The example is [examples/policy.yaml](../examples/policy.yaml); the library's tests load it, so it stays valid.
 
+**Decided, not yet built (2026-10-23):** reads are free and recorded and effects are gated, with per-project lockdown modes (network `open-reads` or `allowlist`, MCP `declared` or `locked`) (D95); effect classes and per-server tool classification (D96); admin ceilings and user grants per class, server and project (D97); and MCP enforcement through OpenShell native rules and the middleware (D98). See the [decisions](DECISIONS.md) and [threat model](THREAT-MODEL.md#reads-and-effects). Under D95, `limits.max_url_bytes`, the upload-pack body checks and the egress-volume monitor are no longer required and stay until removed. The text below describes the policy as built.
+
 ## Layers and precedence
 
 Three layers combine for every operation. A lower layer can only narrow what the layer above allows.

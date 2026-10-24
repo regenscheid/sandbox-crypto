@@ -319,3 +319,29 @@ and [pinned chart](https://github.com/NVIDIA/OpenShell/tree/v0.1.5/deploy/helm/o
 are the runtime integration sources. Kubernetes documents
 [persistent volume lifecycle](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
 and [resource requests](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/).
+
+### First deployment scope and proofs
+
+Decided 2026-10-23 ([D92, amended](DECISIONS.md)).
+
+- **In the first deployment:** the app (control and workspace), the worker pool,
+  the runtime manager, OpenShell 0.1.5, Kata on the amd64 nodes, Garage artifacts,
+  prefix continuity, credential generations, Longhorn recurring snapshots with
+  backup to Garage from the start, the GUI by `kubectl port-forward`, and log
+  collection into Loki through Alloy (D103). Worker, policy middleware and package
+  cache deploy as one unit (D101). Size the app and pool volumes generously (about
+  100 GiB and 200 GiB) and switch cache trimming on at about 70% use.
+- **Before any research stress test:** cache trimming (maintenance cursor), worker
+  replica release with the ACK outbox, workspace checkpoints to Garage, and the GUI
+  through the load balancer with Authentik.
+- **Later:** job sandboxes (D93) and a second instance (D94).
+
+It counts as deployed after three live proofs:
+
+1. Egress only through OpenShell: a git clone from GitHub, pip through the cache
+   and MCP work; an unlisted host fails with a policy denial; a raw socket to an IP
+   fails; the LAN and other pods are unreachable.
+2. Kata in effect on the workload pod with tier 3 recorded; a runc-scheduled
+   sandbox is recorded at tier 1 through `node_kernel_releases`.
+3. Manager cycle: bootstrap; after the app and manager pods are killed, reconnect
+   to the same sandbox ID; explicit replace; control history intact.

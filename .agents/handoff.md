@@ -1,6 +1,6 @@
 # Handoff
 
-Updated 2026-10-22. Active work is `k8s-sync`: `k8s` with `origin/dev` (`3918ccd0`) merged in, not pushed. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md) and [Kubernetes work](../docs/KUBERNETES.md). Next is deployment to the owner's cluster.
+Updated 2026-10-23. Active work is `k8s-sync`: `k8s` with `origin/dev` (`3918ccd0`) merged in, not pushed. The architecture is settled (D95–D103, amended D92, [decisions](../docs/DECISIONS.md)). Next is the [implementation sequence](BACKLOG.md#architecture-2026-10-23-implementation-sequence): Phase A before the cluster, starting with the middleware MCP prototype (A2), then effect classes, grants, reads-free defaults, the child fence, recovery, budgets, the combined worker unit and kernel use (A3–A10); then Phase B, the cluster: operator prep, bundle updates with log collection, the first deployment and its three live proofs (B1–B3), followed by durability extras, telemetry rules and job sandboxes. Read [STATUS.md](STATUS.md), [BACKLOG.md](BACKLOG.md), [CONVENTIONS.md](CONVENTIONS.md) and [Kubernetes work](../docs/KUBERNETES.md).
 
 Earlier dev context: updated 2026-10-21. Work is on `agent-context-refactor` from `origin/dev`
 `391cb7a7`, merged with `1ad689e3`. Services are unchanged. Read [STATUS.md](STATUS.md),

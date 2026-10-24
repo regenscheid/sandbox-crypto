@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-23
+
+- Settle the architecture before cluster work (owner): reads free and effects gated, with lockdown modes (D95); effect classes and tool classification (D96); admin ceilings and user grants (D97); MCP enforcement through OpenShell native rules and the middleware, proxy retired if the prototype passes (D98); child fence for outward effects only (D99); automatic transient recovery and one full-tree Resume (D100); worker, middleware and cache as one unit (D101); LiteLLM-only cost enforcement with soft-cap check-ins (D102); telemetry and detect-and-hold (D103). D92's first deployment is narrowed to a stated scope and three live proofs. Work follows the [implementation sequence](BACKLOG.md#architecture-2026-10-23-implementation-sequence).
+
 ## 2026-10-22
 
 - Owner decisions on cluster delivery: job sandboxes sized 6 cores/16 GiB and 12 cores/32 GiB with package replay and drain protection; the runtime manager gets its own pod, starts first by `kubectl exec` and reconnects automatically, with on-demand starts later; the web GUI will go through the cluster load balancer with authentication.

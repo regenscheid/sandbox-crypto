@@ -1,5 +1,7 @@
 # Status
 
+Settled architecture (2026-10-23): D95–D103 and amended D92 in the [decisions](../docs/DECISIONS.md); work follows the [implementation sequence](BACKLOG.md#architecture-2026-10-23-implementation-sequence).
+
 Architecture audit (2026-10-23): [report](docs/agent-reports/architecture-audit-2026-10-23.md). Containment boundaries sound; gates key on tool names not effects; routine reads still escalate with a CLI-only approval path; ~5k lines of cluster-only durability unused; nightly CI red. Architecture decisions to settle before cluster work are listed there.
 
 Updated 2026-10-22. `k8s-sync` merges `origin/dev` (`3918ccd0`) into `k8s` (`5990f3b0`). Dev schema migrations keep versions 74–75; the Kubernetes upload/retention/index migrations are renumbered 76–78, and the Kubernetes decision is D92 (dev's D91 is the context refactor). No cluster was accessed or deployed; image publication remains deferred.

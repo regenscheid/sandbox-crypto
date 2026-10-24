@@ -1,5 +1,37 @@
 # Backlog
 
+## Architecture 2026-10-23: implementation sequence
+
+Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
+
+### Phase A: before the cluster
+
+- [x] A1. Record the settled architecture in the docs ([decisions](../docs/DECISIONS.md), [threat model](../docs/THREAT-MODEL.md#reads-and-effects)).
+- [ ] A2. Middleware MCP prototype against the attack-catalog server and the proxy decision (D98).
+- [ ] A3. Effect classes, per-server classifications, argument rules, hints default, browser-automation switch, lockdown modes, LLM-drafted classification helper and drift test (D95, D96).
+- [ ] A4. Grants rework (class × server × project, admin ceilings) and GUI cards for network and package requests (D97).
+- [ ] A5. Reads-free defaults: upload-pack to any host, GET/HEAD on any port, read-only POST list, `on_timeout` allow for reads, research-host pre-admission, host cap, source-host list with binary attribution (D95, D97).
+- [ ] A6. Child fence for outward effects only, read connectors for children, child effect cards (D99).
+- [ ] A7. Recovery: automatic retries, one-click full-tree Resume without avoidable blocks, idle suspension off (D100).
+- [ ] A8. Budgets: caps off and tracking, child grant approvals removed, soft-cap check-ins, loop detection, reviewer accounting (D102).
+- [ ] A9. Worker, middleware and package cache as one deployed unit with one configuration file (D101).
+- [ ] A10. Kernel use: measure the shell-vs-kernel (`python`/`sage` cell) mix in recorded sessions (SNOVA archive: 1,169 shell calls); review the computation skill and the tool order and descriptions that steer agents to shell; make the kernel the default for iterative computation; keep kernel state reliable (idle suspension off, provenance-based recompute, D100).
+
+### Phase B: cluster
+
+- [ ] B1. Operator prep checklist; Longhorn recurring snapshots with backup to Garage (D92).
+- [ ] B2. Bundle updates for the combined unit and Loki/Alloy log collection (D101, D103).
+- [ ] B3. First deployment and the three live proofs (D92, [proofs](../docs/KUBERNETES.md#first-deployment-scope-and-proofs)).
+- [ ] B4. Durability extras (cache trimming, replica release and ACK outbox, workspace checkpoints) and the load balancer with Authentik (D92).
+- [ ] B5. Dashboards, alerts, detect-and-hold rules and MCP canaries (D103).
+- [ ] B6. Job sandboxes, first increment (D93).
+
+### Operations
+
+- [ ] Nightly CI green.
+- [ ] Backup and restore runbook, with a snapshot before each migration (D92).
+- [ ] One OpenShell version constant, checked at launch.
+
 ## Context-focused refactor (2026-10-21)
 
 - [x] Consolidate context/history/folding/retrieval and diagnostics under `orchestrator/context/`.
