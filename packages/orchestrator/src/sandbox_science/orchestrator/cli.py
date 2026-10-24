@@ -60,6 +60,8 @@ from sandbox_science.contracts import ErrorKind, Identifier
 from sandbox_science.contracts.logs import configure_logging
 
 from .chat import session_lease
+from .cli_classify import add_parser as add_classify_parser
+from .cli_classify import classify_draft
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
 from .cli_skills import add_parser as add_skills_parser
 from .cli_skills import embedding_alias, skills
@@ -828,7 +830,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_parsers(commands)
     add_skills_parser(commands)
+    add_classify_parser(commands)
     args = parser.parse_args(argv)
+    if args.command == "classify-draft":
+        return classify_draft(args)
     if args.command == "skills":
         if args.action == "import" and args.archive is not None and args.ref is not None:
             parser.error("--ref goes with --git")

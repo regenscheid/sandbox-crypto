@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "MIT AND Apache-2.0"
 dependencies = [
     "sandbox-science-contracts",
+    "sandbox-science-policy",
     "aiohttp>=3.10",
     "markdown-it-py==4.2.0",
     "mdit-py-plugins==0.6.1",
@@ -26,6 +27,7 @@ s3 = [
 
 [tool.uv.sources]
 sandbox-science-contracts = { workspace = true }
+sandbox-science-policy = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.25"]

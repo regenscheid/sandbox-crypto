@@ -1744,6 +1744,7 @@ dependencies = [
     { name = "mdit-py-plugins" },
     { name = "pyyaml" },
     { name = "sandbox-science-contracts" },
+    { name = "sandbox-science-policy" },
 ]
 
 [package.optional-dependencies]
@@ -1759,6 +1760,7 @@ requires-dist = [
     { name = "mdit-py-plugins", specifier = "==0.6.1" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
+    { name = "sandbox-science-policy", editable = "packages/policy" },
 ]
 provides-extras = ["s3"]
 
