@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: MIT
+name: kubernetes-smoke
+
+# The Kubernetes bundle has no other CI coverage: its renderer's tests run offline. Weekly
+# and on demand (not on pull requests), this renders the example bundle and gives it to a
+# real API server, which does what the offline tests cannot: admission validation and
+# defaulting for every object. It needs a `kind` cluster only: no OpenShell, no Kata, no CNI
+# that enforces NetworkPolicy and no image pull, because `--dry-run=server` never schedules a
+# Pod. It qualifies the bundle's schema, not the deployment ([bundle docs](docs/KUBERNETES-BUNDLE.md)).
+on:
+  schedule:
+    - cron: "17 7 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kubernetes-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Every tool is a pinned release whose SHA-256 is checked below. kind's node image is
+  # pinned by digest, from kind v0.33.0's release notes. The Kubernetes version of the
+  # cluster, of kubectl and of the schemas is one: 1.36.4.
+  KIND_VERSION: v0.33.0
+  KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+  KIND_NODE_IMAGE: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+  KUBECTL_VERSION: v1.36.4
+  KUBECTL_SHA256: 8b8f088da2dab964f853b38464033b1be15ede2839eca751482357c45abdd05a
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  # A commit of yannh/kubernetes-json-schema, so the schemas cannot change under the job.
+  SCHEMA_COMMIT: f7d855e49c34b039c9ef2196444910275e31e09e
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked --package sandbox-science-launcher
+
+      - name: Install kind, kubectl and kubeconform
+        run: |
+          set -euo pipefail
+          tools="${RUNNER_TEMP}/tools"
+          mkdir -p "${tools}"
+          fetch() {  # fetch URL FILE SHA256
+            curl -fsSL --retry 3 -o "$2" "$1"
+            echo "$3  $2" | sha256sum --check --strict -
+          }
+          fetch "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64" \
+            "${tools}/kind" "${KIND_SHA256}"
+          fetch "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+            "${tools}/kubectl" "${KUBECTL_SHA256}"
+          fetch "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            "${tools}/kubeconform.tar.gz" "${KUBECONFORM_SHA256}"
+          tar -xzf "${tools}/kubeconform.tar.gz" -C "${tools}" kubeconform
+          chmod +x "${tools}/kind" "${tools}/kubectl" "${tools}/kubeconform"
+          echo "${tools}" >> "${GITHUB_PATH}"
+
+      # The example's image pins are comments: the renderer refuses a placeholder, so the job
+      # fills them with a dummy digest on a reserved `.test` registry that nothing pulls.
+      # A change to the example that stops these substitutions fails the render, loudly.
+      - name: Render the example bundle
+        run: |
+          set -euo pipefail
+          digest="sha256:$(printf 'a%.0s' {1..64})"
+          sed -e "s|^# app = .*|app = \"registry.ci.test/trusted-app@${digest}\"|" \
+              -e "s|^# worker = .*|worker = \"registry.ci.test/trusted-worker@${digest}\"|" \
+              examples/kubernetes-bundle.toml > "${RUNNER_TEMP}/bundle.toml"
+          uv run --no-sync sandbox-science-kubernetes render \
+            --config "${RUNNER_TEMP}/bundle.toml" --output "${RUNNER_TEMP}/bundle.json"
+          python3 -c "
+          import json, collections, sys
+          items = json.load(open(sys.argv[1]))['items']
+          counts = collections.Counter(i['kind'] for i in items)
+          print('## Rendered bundle')
+          for kind, n in sorted(counts.items()): print(f'- {kind}: {n}')
+          " "${RUNNER_TEMP}/bundle.json" | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      # Offline, strict (unknown fields fail), against the cluster's version and the two
+      # before it that the bundle's reports used. `-schema-location` replaces the default
+      # (the schema repository's moving `master`) with the pinned commit.
+      - name: Validate against the Kubernetes schemas
+        run: |
+          set -euo pipefail
+          for version in 1.34.0 1.35.0 1.36.4; do
+            kubeconform -strict -summary -kubernetes-version "${version}" \
+              -schema-location "https://raw.githubusercontent.com/yannh/kubernetes-json-schema/${SCHEMA_COMMIT}/{{.NormalizedKubernetesVersion}}-standalone{{.StrictSuffix}}/{{.ResourceKind}}{{.KindSuffix}}.json" \
+              "${RUNNER_TEMP}/bundle.json" | tee -a "${GITHUB_STEP_SUMMARY}"
+          done
+
+      - name: Create a single-node cluster
+        run: |
+          kind create cluster --name smoke --image "${KIND_NODE_IMAGE}" --wait 180s
+          kubectl version
+          kubectl get nodes -o wide
+
+      # The bundle holds no Namespace, as the operator creates it (docs/KUBERNETES-PREP.md),
+      # so the job creates the one the example names. A dry run needs no Secret, image or
+      # storage class to exist; admission validates each object as the API server would.
+      - name: Server-side dry run
+        run: |
+          set -euo pipefail
+          namespace="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['items'][0]['metadata']['namespace'])" "${RUNNER_TEMP}/bundle.json")"
+          kubectl create namespace "${namespace}"
+          kubectl apply --dry-run=server -f "${RUNNER_TEMP}/bundle.json" | tee "${RUNNER_TEMP}/dry-run.txt"
+          {
+            echo "## kubectl apply --dry-run=server (Kubernetes 1.36.4)"
+            echo '```'
+            cat "${RUNNER_TEMP}/dry-run.txt"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Delete the cluster
+        if: always()
+        run: kind delete cluster --name smoke
