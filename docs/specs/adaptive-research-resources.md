@@ -23,15 +23,17 @@ cumulative across its attempts and each a project delegation setting:
 | Cap | Default | Step | Ceiling |
 | --- | --- | --- | --- |
 | Tokens (input plus output, folds included) | a check's or task's `check_tokens`/`task_tokens`, 20,000,000; a root's `root_tokens`, 100,000,000 | 20,000,000 | `max_token_grant` (1,000,000,000) |
-| Turns (foreground model calls; an unknown dispatch counts, folds do not) | a child's `check_turns`/`task_turns`, 300; a root's run `max_turns`, 2,000 | 300 | `turn_ceiling` (10,000) |
+| Turns (foreground model calls; an unknown dispatch counts, folds do not), a child's only | `check_turns`/`task_turns`, 300 | 300 | `turn_ceiling` (10,000) |
 | Active time (observed seconds, waiting for a decision excluded) | `research_seconds`, 14,400 | 3,600 | `time_ceiling_seconds` (604,800) |
 | Cost (known journaled cost plus explicit reservations; unpriced calls add nothing) | `soft_cost`, 25.00 in the gateway's currency | 25.00 | none |
 
 A root's initial caps are pinned when first observed, so later default changes do not
 move them; a child's come from its immutable blueprint. `research_seconds` and
-`soft_cost` may be turned off (`--no-research-time-limit`, `--no-soft-cost`). The only
-turn limit is `turn_ceiling`, cumulative across attempts; a run without durable records
-keeps its own `max_turns` and the runaway guard ([run service](run-service.md), RS-6f).
+`soft_cost` may be turned off (`--no-research-time-limit`, `--no-soft-cost`). A child's
+only turn limit is `turn_ceiling`, cumulative across attempts. A root keeps its run's
+`max_turns` (2,000 by default) as its safety net, as does a run without durable records,
+with the runaway guard ([run service](run-service.md), RS-6f); a recorded extension or
+the opt-in root renewal raises it.
 
 Resume deducts nothing and grants nothing: the caps follow the work, and usage records
 (the model-call journal, fold calls and reservations) are kept as before.
