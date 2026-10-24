@@ -22,7 +22,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import CHECK, REPORT, RESULT, children, configure, started, wait
+from .test_delegation import CHECK, REPORT, RESULT, children, configure, decide, started, wait
 from .test_delegation import delegating as delegating
 
 
@@ -52,19 +52,19 @@ async def test_a_checks_outcome_is_work_on_the_entry_it_checked(delegating: Harn
 
 
 async def test_a_check_without_a_result_ends_its_work_at_a_limit(delegating: Harness) -> None:
-    """The child used its one turn on a call: it stopped at its turn limit, with no
-    result, and its work ended ``limit``: its time ran out."""
+    """The child used its one soft turn on a call and checked in; its parent stopped it,
+    with no result, and its work ended ``limit``: its time ran out (D102)."""
     configure(delegating, check_turns=1)
     root = await delegating.run(
         "root",
-        [Reply(calls=[CHECK]), wait(), Reply("Done.")],
-        delegated=[Reply(calls=[call("ledger_read", entry="C-1", revision=1)])],
+        [Reply(calls=[CHECK]), wait(), decide("stop"), wait(), Reply("Done.")],
+        delegated=[Reply(calls=[call("ledger_read", entry="C-1", revision=1)]), Reply(None)],
         status=3,
     )
     assert root.stopped == "unfinished_children"
     (work,) = recorded(delegating)
     assert (work.ending, work.limit) == ("limit", "time")
-    assert work.references[0]["note"] == "limit_reached, turn_limit: no result"
+    assert work.references[0]["note"] == "limit_reached, resource_report: no result"
 
 
 def made(brief: dict[str, object]) -> Delegation:

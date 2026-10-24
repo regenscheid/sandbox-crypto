@@ -25,7 +25,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, configure, delegation, results, started, wait
+from .test_delegation import children, configure, decide, delegation, results, started, wait
 from .test_delegation import delegating as delegating
 from .test_ledger import MAIN
 from .test_ledger_delegated_check import link
@@ -270,49 +270,39 @@ PARTIAL = "Partial: a^16 mod 17 is 1 for a = 1..8; a = 9..16 is not done yet."
 
 
 @pytest.mark.parametrize(
-    ("limits", "replies", "stopped"),
+    ("limits", "replies"),
     [
-        # Its turns run out while it works.
-        ({"task_turns": 2}, [Reply(calls=[call("no_such_tool")])] * 2, "turn_limit"),
-        # Its tokens leave room for one more call (the owner's lab, 2026-10-16).
-        (
-            {"task_tokens": 50_000},
-            [Reply(calls=[call("no_such_tool")], tokens=20_000)],
-            "run_budget",
-        ),
+        # Its soft turn cap is reached while it works.
+        ({"task_turns": 2}, [Reply(calls=[call("no_such_tool")]), Reply(calls=[call("other")])]),
+        # Its soft token cap is reached by its first call.
+        ({"task_tokens": 50_000}, [Reply(calls=[call("no_such_tool")], tokens=60_000)]),
     ],
 )
-async def test_a_task_at_a_limit_reports_what_it_found_to_its_parent(
-    delegating: Harness, limits: dict[str, int], replies: list[Reply], stopped: str
+async def test_a_task_at_a_soft_cap_checks_in_and_reports_when_stopped(
+    delegating: Harness, limits: dict[str, int], replies: list[Reply]
 ) -> None:
-    """RS-6f, PD-19: a task stopped by a limit while it works takes a report round, whose
-    answer reaches its parent as the delegation's report; it ended ``limit_reached``, and
-    the report gives no result (one stands only for a run that answered)."""
+    """D102, RS-6f, PD-19: a task at a soft cap checks in and waits; its parent's stop
+    makes its next call its report round, whose answer reaches the parent as the
+    delegation's report; it ended ``limit_reached``, with no result."""
     configure(delegating, depth=1, **limits)
     root = await delegating.run(
         "root",
-        [Reply(calls=[TASK]), wait(), Reply("Done.")],
+        [Reply(calls=[TASK]), wait(), decide("stop"), wait(), Reply("Done.")],
         delegated=[*replies, Reply(PARTIAL)],
         status=3,
     )
-    assert root.stopped == "unfinished_children"
+    assert root.stopped == "unfinished_children"  # its stopped child's work stays open
     (child,) = children(delegating, root)
-    assert (child.stopped, child.final_text) == (stopped, PARTIAL)
+    assert (child.stopped, child.final_text) == ("resource_report", PARTIAL)
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
     assert (found.ended, found.stopped, found.report, found.result) == (
         "limit_reached",
-        stopped,
+        "resource_report",
         PARTIAL,
         None,
     )
-    waited = json.loads(results(root)[1])
-    if "tool_result" in waited:
-        waited = json.loads(waited["tool_result"])
-    # The child's warning can wake the parent before its bounded report round ends.
-    # Either ordering is valid; the durable delegation record above must retain the
-    # report even when this particular wait returned the resource check-in first.
-    assert waited["reason"] in {"ended", "resource_request"}
-    if waited["reason"] == "ended":
-        (reported,) = waited["delegations"]
-        assert reported["answer"] == PARTIAL
+    checked_in = json.loads(results(root)[1])
+    assert checked_in.get("reason", "resource_request") == "resource_request"
+    decided = json.loads(results(root)[2])
+    assert decided["request"]["action"] == "stop"

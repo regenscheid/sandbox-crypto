@@ -189,7 +189,8 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         "a check gets 20000000 tokens and 300 turns, a task 20000000 tokens and 300 turns; a brief "
         "may choose the models: none; "
         "fallback: none; turn ceiling: 10000; token ceiling: 1000000000; "
-        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
+        "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
@@ -198,14 +199,16 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         "delegated runs at once; a check gets 20000000 tokens and 4 turns, a task 20000000 "
         "tokens and 300 turns; a brief may choose the models: none; fallback: none; "
         "turn ceiling: 10000; token ceiling: 1000000000; "
-        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
+        "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0
     assert capsys.readouterr().out.endswith(
         "a brief may choose the models: checker-b, anthropic/opus; fallback: main; "
         "turn ceiling: 10000; token ceiling: 1000000000; "
-        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
+        "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False\n"
     )
     assert cli.main([*argv, "--check-tokens", "10"]) == 1
@@ -224,7 +227,8 @@ def test_the_cli_shows_and_changes_the_whole_setting(
     assert capsys.readouterr().out.endswith(
         "the models: none; fallback: none; "
         "turn ceiling: 10000; token ceiling: 1000000000; "
-        "active seconds: off (ceiling 604800); retained artifact bytes: off "
+        "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
+        "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False\n"
     )
 

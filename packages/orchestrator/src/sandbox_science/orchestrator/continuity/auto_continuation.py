@@ -102,8 +102,8 @@ class AutoContinuation:
             f"The active research plan {ref.plan_id} version {ref.version} remains open "
             "after the previous root answered. Read the current plan, recent child "
             "outcomes, documents and artifacts, then pursue the next justified research "
-            "step. Record progress and evidence in the plan. Respect existing token "
-            "grants and cost limits; do not repeat settled work or claim an unverified result. "
+            "step. Record progress and evidence in the plan. Do not repeat settled "
+            "work or claim an unverified result. "
             "If no useful step remains, update the plan's status and explain why."
         )
 

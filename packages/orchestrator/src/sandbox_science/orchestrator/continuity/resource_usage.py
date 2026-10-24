@@ -72,3 +72,59 @@ def research_progress(db: sqlite3.Connection, owner: Ownership) -> int:
         ),
     ).fetchone()
     return int(row[0])
+
+
+def work_progress(db: sqlite3.Connection, owner: Ownership) -> int:
+    """New evidence for a soft cap's no-progress bound (D102): a root's is the session's
+    (``research_progress``); a child's, the artifact revisions its attempts published and
+    its children that completed. Model calls and resource decisions are not progress."""
+    row = db.execute(
+        "SELECT parent FROM research_work WHERE project=? AND session=? AND work=?",
+        (owner.project, owner.session, owner.work),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return research_progress(db, owner)
+    found = db.execute(
+        "SELECT (SELECT count(*) FROM artifact_revisions r WHERE r.project=? "
+        "AND json_extract(r.record,'$.publication.context.session_id')=? "
+        "AND EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=r.project "
+        "AND a.session=? AND a.work=? AND substr(a.run,instr(a.run,'-')+1)="
+        "json_extract(r.record,'$.publication.run_id'))) + "
+        "(SELECT count(*) FROM research_work WHERE project=? AND session=? AND parent=? "
+        "AND state='completed')",
+        (
+            owner.project,
+            owner.session,
+            owner.session,
+            owner.work,
+            owner.project,
+            owner.session,
+            owner.work,
+        ),
+    ).fetchone()
+    return int(found[0])
+
+
+def produced(db: sqlite3.Connection, owner: Ownership, *, limit: int = 12) -> tuple[str, ...]:
+    """What the work produced, newest first, for its check-in summary: artifact revisions
+    its attempts published and its completed children, by name only."""
+    rows = db.execute(
+        "SELECT 'artifact '||r.artifact||' revision '||r.number FROM artifact_revisions r "
+        "WHERE r.project=? AND json_extract(r.record,'$.publication.context.session_id')=? "
+        "AND EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=r.project "
+        "AND a.session=? AND a.work=? AND substr(a.run,instr(a.run,'-')+1)="
+        "json_extract(r.record,'$.publication.run_id')) "
+        "UNION ALL SELECT 'completed child '||work FROM research_work "
+        "WHERE project=? AND session=? AND parent=? AND state='completed' LIMIT ?",
+        (
+            owner.project,
+            owner.session,
+            owner.session,
+            owner.work,
+            owner.project,
+            owner.session,
+            owner.work,
+            limit,
+        ),
+    ).fetchall()
+    return tuple(str(row[0])[:200] for row in rows)

@@ -20,7 +20,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator import chat, cli
+from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.chat import RunChat, SessionHeld
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.history import Archive, body, geometry, session_view
@@ -112,6 +112,19 @@ def wait(mode: str = "all") -> Reply:
             for found in _ID.findall(str(message["content"]))
         ]
         return [call("wait_delegations", delegation_ids=list(dict.fromkeys(found)), mode=mode)]
+
+    return Reply(calls_from=calls)
+
+
+_RESOURCE = re.compile(r"resource-[0-9a-f]{24}")
+
+
+def decide(action: str = "stop", reason: str = "Report what you found.") -> Reply:
+    """A call that answers the latest child check-in the run was shown (D102)."""
+
+    def calls(messages: list[Message]) -> list[tuple[str, dict[str, Any]]]:
+        found = [found for message in messages for found in _RESOURCE.findall(str(message))]
+        return [call("resource_decide", request_id=found[-1], action=action, reason=reason)]
 
     return Reply(calls_from=calls)
 
@@ -530,25 +543,21 @@ async def test_a_session_runs_at_most_its_cap_of_checks_at_once(delegating: Harn
     assert len(started(root)) == 1
 
 
-async def test_a_check_stops_at_its_token_limit(
-    delegating: Harness, monkeypatch: pytest.MonkeyPatch
+async def test_a_check_past_its_soft_token_cap_checks_in_and_its_parent_extends_it(
+    delegating: Harness,
 ) -> None:
-    """PD-19, PD-38: a child that used its tokens ends limit_reached, its record kept.
-    Its first call, as estimated, is past the project's smallest token limit."""
+    """PD-38, D102: no estimate refuses a check's call; at its soft token cap it checks
+    in, its parent extends it by one step, and it answers."""
     configure(delegating, check_tokens=50_000)
-    monkeypatch.setattr(chat, "ANSWER_TOKENS", 60_000)
     root = await delegating.run(
         "root",
-        [Reply(calls=[CHECK]), wait(), Reply("The check ran out of budget.")],
-        status=3,
+        [Reply(calls=[CHECK]), wait(), decide("extend", "Finish the check."), wait(), Reply("Ok.")],
+        delegated=[Reply(calls=[call("ledger_read", entry="C-1")], tokens=60_000), Reply(REPORT)],
     )
-    assert root.stopped == "unfinished_children"
     (child,) = children(delegating, root)
-    assert child.stopped == "run_budget"
-    assert child.tools == []
-    (delegation_id,) = started(root)
-    outcome = delegation(delegating, delegation_id)
-    assert (outcome.ended, outcome.report) == ("limit_reached", None)
+    assert child.stopped == "answered"
+    decided = json.loads(results(root)[2])
+    assert (decided["request"]["action"], decided["total"]) == ("extend", 20_050_000)
 
 
 def test_a_delegations_outcome_is_written_once(tmp_path: Path) -> None:

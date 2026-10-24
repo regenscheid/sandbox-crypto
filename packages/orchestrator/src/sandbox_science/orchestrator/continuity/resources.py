@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: MIT
-"""Durable research check-ins and parent decisions, separate from hard budgets."""
+"""Durable research check-ins and parent decisions (D102), separate from hard limits.
+
+A work's soft caps on tokens, turns, active time and cost, and the loop heuristics, ask
+for a check-in: a request with a bounded state summary that its direct parent answers
+(extend by one step, redirect, or stop), or that the root answers itself against its
+plan, with a notice to the user. Nothing here enforces spending; LiteLLM's budget does.
+"""
 
 from __future__ import annotations
 
 import json
 import math
 import sqlite3
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import Field
@@ -13,16 +20,19 @@ from pydantic import Field
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract, new_id
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
-from sandbox_science.orchestrator.delegation.records import settings_in
+from sandbox_science.orchestrator.delegation.records import DelegationSettings, settings_in
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import RunName
 
-from .grants import grant_total
 from .records import Ownership, State, check_owner, tree_cancelled
 from .resource_policy import (
+    CAPS,
     EXTENSIONS,
+    GRANTED,
+    STOPPING,
     ceiling,
     extension,
+    idle_extensions,
     initial_allowance,
     soft_grant,
 )
@@ -32,8 +42,14 @@ from .resource_policy import (
 from .resource_policy import (
     Resource as Resource,
 )
-from .resource_usage import research_progress, retained_bytes, sample_elapsed
-from .token_usage import spent_tokens
+from .resource_usage import (
+    produced,
+    research_progress,
+    retained_bytes,
+    sample_elapsed,
+    work_progress,
+)
+from .token_usage import spent_cost, spent_tokens
 
 
 class ResourceDecisionRequest(Contract):
@@ -49,6 +65,32 @@ class ResourceDecision(Contract):
     total: int
     observed: float
     operator: str | None = None
+    progress: int = 0
+    """The work's evidence counter when decided, for the no-progress bound."""
+    resource: Resource | None = None
+    """The resource it decided; ``None`` in records made before D102."""
+    automatic: bool = False
+    """Made by the platform: the root's own check-in, or a parent that did not answer."""
+
+
+class CheckInSummary(Contract):
+    """The bounded state a check-in delivers: the brief, what the work produced and
+    what it did last, with its recorded use (D102)."""
+
+    brief: str = Field(default="", max_length=2000)
+    produced: tuple[str, ...] = Field(default=(), max_length=12)
+    recent: tuple[str, ...] = Field(default=(), max_length=10)
+    """Its latest tool calls, oldest first, each its tool and whether it failed."""
+    answer: str | None = Field(default=None, max_length=1000)
+    """The head of its latest answer text."""
+    rule: str | None = Field(default=None, max_length=40)
+    """For a loop check-in, the heuristic: ``same_call``, ``same_error``, ``no_progress``
+    or ``same_output``."""
+    detail: str | None = Field(default=None, max_length=300)
+    tokens: int = 0
+    turns: int = 0
+    seconds: int = 0
+    cost: float = 0.0
     progress: int = 0
 
 
@@ -75,10 +117,10 @@ class ResourceRequest(Contract):
     task: str = ""
     work_state: State = "running"
     superseded: bool = False
-    user_grant_revision: int | None = None
     decision: ResourceDecision | None = None
     scope: Literal["work", "project", "global"] = "work"
     renewable: bool = True
+    summary: CheckInSummary | None = None
 
 
 class ResourceRequestPage(Contract):
@@ -108,8 +150,73 @@ def turn_grant(db: sqlite3.Connection, owner: Ownership, original: int) -> tuple
     return soft_grant(db, owner, "turns", original)
 
 
+@dataclass(frozen=True)
+class SafePoint:
+    """One safe point's soft caps and recorded use, read in one transaction."""
+
+    caps: tuple[tuple[Resource, int, int], ...]
+    """Each enabled soft cap: its resource, cumulative total and revision."""
+    used: dict[str, int]
+    """Recorded use by resource; turns before this attempt are ``prior_turns``."""
+    prior_turns: int
+    hard_turns: int
+    """A child's hard turn limit across its attempts (``turn_ceiling``)."""
+    turns: tuple[int, int] = (0, 0)
+    """The cumulative turn allowance and its revision. A child's is a soft cap among
+    ``caps``; a root's run keeps its ``max_turns`` as its limit (RS-6f) unless an
+    extension or the opt-in root renewal recorded a larger one."""
+    progress: int = 0
+    storage: tuple[tuple[Resource, int, int, int], ...] = ()
+    """The optional retained-artifact allowance: resource, used, total, revision."""
+
+
+_SUPERSEDED = (
+    "EXISTS (SELECT 1 FROM research_observations t WHERE t.project={o}.project "  # noqa: S608
+    "AND t.session={o}.session AND t.work={o}.work AND t.kind='resource_decision' "
+    "AND json_extract(t.detail,'$.request.action') NOT IN ('stop','report','pause') "
+    "AND json_extract(t.detail,'$.total')>json_extract({o}.detail,'$.total') AND "
+    + GRANTED.format(d="t.detail", r="json_extract({o}.detail,'$.resource')")
+    + ")"
+)
+"""A fixed SQL condition: a later extension of the same resource superseded request
+``{o}``."""
+
+
+def _extended(limits: DelegationSettings, warned: ResourceRequest, action: str) -> int:
+    """The request's cap after ``action``: one bounded step for an extension or a redirect
+    of a soft cap, its total otherwise. A loop check-in's extension changes no cap."""
+    resource, total = warned.resource, warned.total
+    if action in STOPPING or action == "pause":
+        return total
+    extending = action == "extend" or action in EXTENSIONS
+    if (action in EXTENSIONS and EXTENSIONS[action][0] != resource) or (
+        extending and not warned.renewable
+    ):
+        raise ControlError(INVALID_REQUEST, "this resource is not renewable by that action")
+    if action == "continue":
+        if resource in CAPS and warned.used >= total:
+            raise ControlError(INVALID_REQUEST, "a reached soft cap needs extend, redirect or stop")
+        return total
+    named = extension(resource)
+    if named is None or not warned.renewable:
+        if extending and resource != "loop":
+            raise ControlError(INVALID_REQUEST, "this resource is not renewable by that action")
+        return total  # a redirect of hard capacity is guidance only
+    if (resource == "elapsed_seconds" and limits.research_seconds is None) or (
+        resource == "retained_bytes" and limits.storage_bytes is None
+    ):
+        raise ControlError(CONFLICT, "the optional resource allowance is disabled")
+    _, step, _ = EXTENSIONS[named]
+    maximum = ceiling(limits, named)
+    if maximum is not None and total >= maximum:
+        raise ControlError(
+            CONFLICT, "configured cumulative resource ceiling reached: stop this work"
+        )
+    return total + step if maximum is None else min(total + step, maximum)
+
+
 class ResourceRequests:
-    """One warning per cumulative grant, durable across process loss and Resume."""
+    """One check-in per cumulative cap, durable across process loss and Resume."""
 
     def __init__(self, control: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK):
         self.control = control.control if isinstance(control, DocumentStore) else control
@@ -126,7 +233,10 @@ class ResourceRequests:
         force: bool = False,
         scope: Literal["work", "project", "global"] = "work",
         renewable: bool = True,
+        summary: CheckInSummary | None = None,
     ) -> ResourceRequest | None:
+        """Record one check-in per cumulative cap, attempt and revision; a capacity
+        warning at 80%, and every soft cap only when reached (``force``)."""
         if total <= 0 or (not force and used * 5 < total * 4):
             return None
         identity = f"{resource}-{scope}-{revision}-{owner.run}" + ("-exhausted" if force else "")
@@ -171,6 +281,7 @@ class ResourceRequests:
                 task=str(brief[0] or "")[:300] if brief else "",
                 scope=scope,
                 renewable=renewable,
+                summary=summary,
             )
             db.execute(
                 "INSERT INTO research_observations VALUES (?,?,?,'resource_request',?,?,?)",
@@ -198,7 +309,9 @@ class ResourceRequests:
                 raise ControlError(INVALID_REQUEST, "invalid resource page cursor") from None
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT r.detail,d.detail,w.state,w.current FROM research_observations r "
+                "SELECT r.detail,d.detail,w.state,w.current,"  # noqa: S608 - fixed SQL
+                + _SUPERSEDED.format(o="r")
+                + " FROM research_observations r "
                 "JOIN research_work w USING(project,session,work) LEFT JOIN "
                 "research_observations d ON d.project=r.project AND d.session=r.session "
                 "AND d.work=r.work AND d.kind='resource_decision' "
@@ -208,57 +321,24 @@ class ResourceRequests:
                 "ORDER BY r.observed DESC,json_extract(r.detail,'$.request_id') DESC LIMIT 101",
                 (project, session, stamp, cursor),
             ).fetchall()
-        items = tuple(
-            ResourceRequest.model_validate_json(r).model_copy(
-                update={
-                    "decision": ResourceDecision.model_validate_json(d) if d else None,
-                    "work_state": state,
-                    "superseded": ResourceRequest.model_validate_json(r).current != current,
-                }
-            )
-            for r, d, state, current in rows[:100]
-        )
-        with self.control.read() as tx:
-            items = tuple(
+        items: list[ResourceRequest] = []
+        for r, d, state, current, superseded in rows[:100]:
+            item = ResourceRequest.model_validate_json(r)
+            items.append(
                 item.model_copy(
                     update={
-                        "user_grant_revision": self._resolved(tx.sql, project, session, item),
-                        "superseded": item.superseded
-                        or (
-                            extension(item.resource) is not None
-                            and tx.sql.execute(
-                                "SELECT 1 FROM research_observations WHERE project=? "
-                                "AND session=? AND work=? AND kind='resource_decision' "
-                                "AND json_extract(detail,'$.request.action')=? "
-                                "AND json_extract(detail,'$.total')>? LIMIT 1",
-                                (project, session, item.work, extension(item.resource), item.total),
-                            ).fetchone()
-                            is not None
-                        ),
+                        "decision": ResourceDecision.model_validate_json(d) if d else None,
+                        "work_state": state,
+                        "superseded": item.current != current or bool(superseded),
                     }
                 )
-                for item in items
             )
         return ResourceRequestPage(
-            requests=items,
+            requests=tuple(items),
             next_after=f"{items[-1].created_at}|{items[-1].request_id}"
             if len(rows) > 100
             else None,
         )
-
-    @staticmethod
-    def _resolved(
-        db: sqlite3.Connection, project: str, session: str, item: ResourceRequest
-    ) -> int | None:
-        if item.resource != "tokens":
-            return None
-        row = db.execute(
-            "SELECT max(CAST(identity AS INTEGER)) FROM research_observations WHERE project=? "
-            "AND session=? AND work=? AND kind='token_grant' "
-            "AND json_extract(detail,'$.request.total_tokens')>?",
-            (project, session, item.work, item.total),
-        ).fetchone()
-        return int(row[0]) if row and row[0] is not None else None
 
     def pending(
         self,
@@ -269,7 +349,7 @@ class ResourceRequests:
     ) -> list[ResourceRequest]:
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT o.detail FROM research_observations o JOIN research_work w "
+                "SELECT o.detail FROM research_observations o JOIN research_work w "  # noqa: S608
                 "USING(project,session,work) WHERE o.project=? AND o.session=? "
                 "AND o.kind='resource_request' AND w.state NOT IN ('completed','stopped') "
                 "AND (w.parent=? OR w.work=?) AND json_extract(o.detail,'$.current')=w.current "
@@ -278,18 +358,7 @@ class ResourceRequests:
                 "AND NOT EXISTS (SELECT 1 FROM research_observations d WHERE d.project=o.project "
                 "AND d.session=o.session AND d.work=o.work AND d.kind='resource_decision' "
                 "AND d.identity=json_extract(o.detail,'$.request_id')) "
-                "AND NOT EXISTS (SELECT 1 FROM research_observations t WHERE t.project=o.project "
-                "AND t.session=o.session AND t.work=o.work AND t.kind='resource_decision' "
-                "AND json_extract(t.detail,'$.request.action')=CASE "
-                "json_extract(o.detail,'$.resource') WHEN 'turns' THEN 'extend_turns' "
-                "WHEN 'elapsed_seconds' THEN 'extend_time' WHEN 'retained_bytes' "
-                "THEN 'extend_storage' END "
-                "AND json_extract(t.detail,'$.total')>json_extract(o.detail,'$.total')) "
-                "AND NOT EXISTS (SELECT 1 FROM research_observations g WHERE g.project=o.project "
-                "AND g.session=o.session AND g.work=o.work AND g.kind='token_grant' "
-                "AND json_extract(o.detail,'$.resource')='tokens' "
-                "AND json_extract(g.detail,'$.request.total_tokens')>"
-                "json_extract(o.detail,'$.total')) "
+                "AND NOT " + _SUPERSEDED.format(o="o") + " "
                 "ORDER BY o.observed LIMIT 4",
                 (
                     owner.project,
@@ -314,7 +383,9 @@ class ResourceRequests:
         self, project: str, session: str, request: ResourceApprovalRequest, *, operator: str
     ) -> ResourceDecision:
         """Explicit USER extension of paused work; never dispatches or resumes it."""
-        if not operator.strip() or request.action not in EXTENSIONS:
+        if not operator.strip() or (
+            request.action not in EXTENSIONS and request.action != "extend"
+        ):
             raise ControlError(INVALID_REQUEST, "USER approval must name a soft extension")
         with self.control.write() as tx:
             db = tx.sql
@@ -410,14 +481,14 @@ class ResourceRequests:
             or approval.total != warned.total
         ):
             raise ControlError(CONFLICT, "paused resource attempt or allowance changed")
-        total, progress = warned.total, 0
         target = Ownership(
             project=owner.project, session=owner.session, work=work, run=current, epoch=owner.epoch
         )
-        _, latest = soft_grant(db, target, warned.resource, total)
-        if latest and latest != total:
+        _, latest = soft_grant(db, target, warned.resource, warned.total)
+        if latest and latest != warned.total:
             raise ControlError(CONFLICT, "resource grant revision changed")
         limits = settings_in(db, owner.project)
+        progress = work_progress(db, target)
         if self_renewal:
             if not limits.root_resource_renewal or request.action not in EXTENSIONS:
                 raise ControlError(CONFLICT, "root self-renewal is not enabled for this action")
@@ -440,33 +511,61 @@ class ResourceRequests:
                 raise ControlError(
                     CONFLICT, "save a checkpoint and new research evidence before self-renewal"
                 )
-        if request.action in EXTENSIONS:
-            kind, increment, _ = EXTENSIONS[request.action]
-            if warned.resource != kind or not warned.renewable:
-                raise ControlError(INVALID_REQUEST, "this resource is not renewable by that action")
-            if (kind == "elapsed_seconds" and limits.research_seconds is None) or (
-                kind == "retained_bytes" and limits.storage_bytes is None
-            ):
-                raise ControlError(CONFLICT, "the optional resource allowance is disabled")
-            maximum = ceiling(limits, request.action)
-            if total >= maximum:
-                raise ControlError(CONFLICT, "configured cumulative resource ceiling reached")
-            total = min(total + increment, maximum)
+        total = _extended(limits, warned, request.action)
+        if (
+            request.action not in STOPPING
+            and request.action not in ("pause", "redirect")
+            and operator is None
+            and idle_extensions(db, target, progress) >= limits.max_idle_extensions
+        ):
+            raise ControlError(
+                CONFLICT,
+                f"{limits.max_idle_extensions} extensions in a row without new evidence: "
+                "stop or redirect this work",
+            )
+        return self._record(
+            db,
+            target,
+            warned,
+            request,
+            parent_run=owner.run,
+            operation=operation,
+            total=total,
+            progress=progress,
+            operator=operator,
+        )
+
+    def _record(
+        self,
+        db: sqlite3.Connection,
+        target: Ownership,
+        warned: ResourceRequest,
+        request: ResourceDecisionRequest,
+        *,
+        parent_run: str,
+        operation: str,
+        total: int,
+        progress: int,
+        operator: str | None = None,
+        automatic: bool = False,
+    ) -> ResourceDecision:
         decision = ResourceDecision(
             request=request,
-            parent_run=owner.run,
+            parent_run=parent_run,
             operation=operation,
             total=total,
             observed=self.clock.now().timestamp(),
             operator=operator,
             progress=progress,
+            resource=warned.resource,
+            automatic=automatic,
         )
         db.execute(
             "INSERT INTO research_observations VALUES (?,?,?,'resource_decision',?,?,?)",
             (
-                owner.project,
-                owner.session,
-                work,
+                target.project,
+                target.session,
+                target.work,
                 request.request_id,
                 decision.observed,
                 decision.model_dump_json(),
@@ -474,14 +573,19 @@ class ResourceRequests:
         )
         return decision
 
-    def sample(
-        self, owner: Ownership, *, seconds: int
-    ) -> tuple[tuple[Resource, int, int, int], ...]:
-        """Observe active time and optional logical retained-byte allowances safely."""
+    def safe_point(
+        self, owner: Ownership, *, seconds: int, turns: int, tokens: int | None
+    ) -> SafePoint:
+        """Sample active time, then read every soft cap and its recorded use at once.
+
+        ``turns`` and ``tokens`` are the attempt's configured caps; a child's original
+        blueprint names its own, and a root's are pinned when first observed.
+        """
         with self.control.write() as tx:
             db = tx.sql
             elapsed = sample_elapsed(db, owner, seconds, self.clock.now().timestamp())
             settings = settings_in(db, owner.project)
+            progress = work_progress(db, owner)
             if not db.execute(
                 "SELECT 1 FROM research_observations WHERE project=? AND session=? "
                 "AND work=? AND kind='resource_progress' AND identity='initial'",
@@ -498,62 +602,203 @@ class ResourceRequests:
                         str(research_progress(db, owner)),
                     ),
                 )
-            samples: list[tuple[Resource, int, int, int]] = []
-            for kind, configured in (
+            found = db.execute(
+                "SELECT w.parent,json_extract(b.snapshot,'$.request.tokens'),"
+                "json_extract(b.snapshot,'$.request.max_turns') FROM research_work w "
+                "LEFT JOIN research_blueprints b USING(project,session,work) "
+                "WHERE w.project=? AND w.session=? AND w.work=?",
+                (owner.project, owner.session, owner.work),
+            ).fetchone()
+            child = found is not None and found[0] is not None
+            if found is not None and child:
+                tokens = int(found[1]) if found[1] else tokens
+                turns = int(found[2]) if found[2] else turns
+            configured: list[tuple[Resource, int | None]] = [
+                ("tokens", tokens if child else settings.root_tokens),
+                ("turns", turns if child else None),
                 ("elapsed_seconds", settings.research_seconds),
-                ("retained_bytes", settings.storage_bytes),
+                (
+                    "cost",
+                    None if settings.soft_cost is None else round(settings.soft_cost * 100),
+                ),
+            ]
+            caps: list[tuple[Resource, int, int]] = []
+            for resource, value in configured:
+                if value is None:
+                    continue
+                pinned = child and resource in ("tokens", "turns")  # the blueprint's own
+                original = value if pinned else initial_allowance(db, owner, resource, value)
+                total, revision = soft_grant(db, owner, resource, original)
+                caps.append((resource, total, revision))
+            storage: tuple[tuple[Resource, int, int, int], ...] = ()
+            if settings.storage_bytes is not None:
+                original = initial_allowance(db, owner, "retained_bytes", settings.storage_bytes)
+                total, revision = soft_grant(db, owner, "retained_bytes", original)
+                storage = (("retained_bytes", retained_bytes(db, owner), total, revision),)
+            turn_total, turn_revision = soft_grant(db, owner, "turns", turns)
+            return SafePoint(
+                caps=tuple(caps),
+                used={
+                    "tokens": spent_tokens(db, owner.project, owner.session, owner.work),
+                    "elapsed_seconds": elapsed,
+                    "cost": round(spent_cost(db, owner.project, owner.session, owner.work) * 100),
+                },
+                prior_turns=turn_usage(db, owner, previous=True),
+                hard_turns=max(settings.turn_ceiling, turn_total),
+                turns=(turn_total, turn_revision),
+                progress=progress,
+                storage=storage,
+            )
+
+    def summary(
+        self,
+        owner: Ownership,
+        *,
+        recent: tuple[str, ...] = (),
+        answer: str | None = None,
+        rule: str | None = None,
+        detail: str | None = None,
+        used: dict[str, int] | None = None,
+        turns: int = 0,
+    ) -> CheckInSummary:
+        """The bounded state a check-in delivers to the parent: its brief from the
+        work's blueprint, what it produced, and the caller's recent activity."""
+        with self.control.read() as tx:
+            db = tx.sql
+            brief = db.execute(
+                "SELECT json_extract(snapshot,'$.request.task') FROM research_blueprints "
+                "WHERE project=? AND session=? AND work=?",
+                (owner.project, owner.session, owner.work),
+            ).fetchone()
+            made = produced(db, owner)
+            progress = work_progress(db, owner)
+        used = used or {}
+        return CheckInSummary(
+            brief=str(brief[0] or "")[:2000] if brief else "",
+            produced=made,
+            recent=tuple(item[:300] for item in recent[-10:]),
+            answer=None if answer is None else answer[:1000],
+            rule=rule,
+            detail=None if detail is None else detail[:300],
+            tokens=used.get("tokens", 0),
+            turns=turns,
+            seconds=used.get("elapsed_seconds", 0),
+            cost=used.get("cost", 0) / 100,
+            progress=progress,
+        )
+
+    def awaited(
+        self, owner: Ownership, request_id: str
+    ) -> ResourceDecision | Literal["ended"] | None:
+        """The decision a waiting child's check-in got, ``"ended"`` once its work stopped
+        or its tree was cancelled, or ``None`` while it waits."""
+        with self.control.read() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT detail FROM research_observations WHERE project=? AND session=? "
+                "AND work=? AND kind='resource_decision' AND identity=?",
+                (owner.project, owner.session, owner.work, request_id),
+            ).fetchone()
+            if row is not None:
+                return ResourceDecision.model_validate_json(row[0])
+            state = db.execute(
+                "SELECT state,root FROM research_work WHERE project=? AND session=? AND work=?",
+                (owner.project, owner.session, owner.work),
+            ).fetchone()
+            if (
+                state is None
+                or state[0] not in ("running", "waiting")
+                or tree_cancelled(db, owner.project, owner.session, state[1])
             ):
-                if configured is not None:
-                    original = initial_allowance(db, owner, kind, configured)
-                    total, revision = soft_grant(db, owner, kind, original)
-                    used = elapsed if kind == "elapsed_seconds" else retained_bytes(db, owner)
-                    samples.append(
-                        (
-                            "elapsed_seconds" if kind == "elapsed_seconds" else "retained_bytes",
-                            used,
-                            total,
-                            revision,
-                        )
-                    )
-            return tuple(samples)
+                return "ended"
+            return None
+
+    def self_check(
+        self, owner: Ownership, request: ResourceRequest, *, ask_user: bool
+    ) -> ResourceDecision | None:
+        """Decide a check-in nobody else will: the root's own, or a child's whose parent
+        did not answer in time. One bounded step while the work keeps producing evidence;
+        after ``max_idle_extensions`` without, ``None`` asks the user (``ask_user``), and
+        otherwise the work stops with its report."""
+        with self.control.write() as tx:
+            db = tx.sql
+            check_owner(db, owner)
+            existing = db.execute(
+                "SELECT detail FROM research_observations WHERE project=? AND session=? "
+                "AND work=? AND kind='resource_decision' AND identity=?",
+                (owner.project, owner.session, owner.work, request.request_id),
+            ).fetchone()
+            if existing is not None:
+                return ResourceDecision.model_validate_json(existing[0])
+            limits = settings_in(db, owner.project)
+            progress = work_progress(db, owner)
+            action: Action = "extend"
+            total = request.total
+            if idle_extensions(db, owner, progress) < limits.max_idle_extensions:
+                try:
+                    total = _extended(limits, request, "extend")
+                except ControlError:
+                    action = "stop"
+            else:
+                action = "stop"
+            if action == "stop" and ask_user:
+                return None
+            reason = (
+                "Automatic check-in: the work recorded new evidence or has extensions left "
+                "without it; one bounded step."
+                if action == "extend"
+                else f"Automatic check-in: {limits.max_idle_extensions} extensions in a row "
+                "without new evidence, or a ceiling; report and stop."
+            )
+            return self._record(
+                db,
+                owner,
+                request,
+                ResourceDecisionRequest(
+                    request_id=request.request_id, action=action, reason=reason
+                ),
+                parent_run=owner.run,
+                operation="check-in:" + request.request_id,
+                total=total,
+                progress=progress,
+                automatic=True,
+            )
+
+    def notify(self, owner: Ownership, request: ResourceRequest, note: str) -> None:
+        """Tell the user, as a run event the session's chat shows: a notice, never a
+        question (D102)."""
+        with self.control.write() as tx:
+            db = tx.sql
+            (last,) = db.execute(
+                "SELECT coalesce(max(seq),0) FROM run_events "
+                "WHERE project_id=? AND session_id=? AND run=?",
+                (owner.project, owner.session, owner.run),
+            ).fetchone()
+            db.execute(
+                "INSERT INTO run_events VALUES (?,?,?,?,?,'notice',?)",
+                (
+                    owner.project,
+                    owner.session,
+                    owner.run,
+                    last + 1,
+                    self.clock.now().isoformat(),
+                    json.dumps(
+                        {
+                            "source": "resources",
+                            "ids": [request.request_id],
+                            "text": note[:500],
+                            "request_id": request.request_id,
+                            "resource": request.resource,
+                            "used": request.used,
+                            "total": request.total,
+                        }
+                    ),
+                ),
+            )
 
     def root_enabled(self, owner: Ownership) -> bool:
         with self.control.read() as tx:
             return settings_in(tx.sql, owner.project).root_resource_renewal
-
-    def limits(
-        self, owner: Ownership, *, turns: int, tokens: int | None
-    ) -> tuple[int, int, int, int, int]:
-        """Cumulative grants, revisions and prior-attempt turns for one current owner."""
-        with self.control.read() as tx:
-            db = tx.sql
-            original = db.execute(
-                "SELECT json_extract(snapshot,'$.request.tokens'),"
-                "json_extract(snapshot,'$.request.max_turns') FROM research_blueprints "
-                "WHERE project=? AND session=? AND work=?",
-                (owner.project, owner.session, owner.work),
-            ).fetchone()
-            if original:
-                tokens, turns = original[0] or tokens, original[1] or turns
-            turn_total, turn_revision = turn_grant(db, owner, turns)
-            token_total = grant_total(db, owner.project, owner.session, owner.work, tokens or 0)
-            revision = db.execute(
-                "SELECT count(*) FROM research_observations WHERE project=? AND session=? "
-                "AND work=? "
-                "AND kind='token_grant'",
-                (owner.project, owner.session, owner.work),
-            ).fetchone()[0]
-            return (
-                turn_total,
-                turn_revision,
-                token_total,
-                int(revision),
-                turn_usage(db, owner, previous=True),
-            )
-
-    def used_tokens(self, owner: Ownership) -> int:
-        with self.control.read() as tx:
-            return spent_tokens(tx.sql, owner.project, owner.session, owner.work)
 
     def decisions(self, owner: Ownership) -> list[ResourceDecision]:
         with self.control.read() as tx:

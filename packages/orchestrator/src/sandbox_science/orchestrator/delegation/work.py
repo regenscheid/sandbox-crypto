@@ -40,7 +40,18 @@ NOTE_CHARS: Final = 1000
 LIMITS: Final = {"context_limit": "context"}
 """What ran out, by how the run stopped; a turn or budget limit is ``time``, and a
 failure, a cancel or an interruption ``tools``."""
-_TIME: Final = frozenset({"turn_limit", "run_budget", "budget", "gateway_budget", "cost_limit"})
+_TIME: Final = frozenset(
+    {
+        "turn_limit",
+        "run_budget",
+        "budget",
+        "gateway_budget",
+        "cost_limit",
+        "resource_report",
+        "resource_pause",
+        "resource_time",
+    }
+)
 OUTCOME: Final = "outcome"
 """The key of the outcome's record, which the others are part of."""
 

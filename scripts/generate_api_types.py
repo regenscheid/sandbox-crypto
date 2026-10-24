@@ -36,13 +36,13 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.orchestrator.accounting import UsageAccount
 from sandbox_science.orchestrator.connector_settings import ConnectorSettings
 from sandbox_science.orchestrator.context.history.captured import (
     CapturedCalls,
     ContextParts,
     ContextText,
 )
-from sandbox_science.orchestrator.continuity.grants import TokenGrantDecision, TokenGrantStatus
 from sandbox_science.orchestrator.continuity.resources import ResourceRequestPage
 from sandbox_science.orchestrator.continuity.status import StatusPage
 from sandbox_science.orchestrator.documents.annotations import CHANGE as COMMENT_CHANGE
@@ -119,8 +119,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     UploadPage,
     StatusPage,
     ResourceRequestPage,
-    TokenGrantStatus,
-    TokenGrantDecision,
+    UsageAccount,
     HistoryChunk,
     HistoryPage,
     CapturedCalls,

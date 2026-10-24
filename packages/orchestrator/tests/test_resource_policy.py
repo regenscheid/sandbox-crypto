@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
-"""Optional time/storage policy remains recoverable and never widens hard capacity."""
+"""Active time checks in (D102); storage stays recoverable and never widens hard capacity."""
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
@@ -20,7 +22,7 @@ from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import run_id_of
 from sandbox_science.orchestrator.resource_hooks import Resources
-from sandbox_science.testing import FakeClock
+from sandbox_science.testing import FakeClock, eventually
 
 from .test_artifact_inventory import record as publish
 from .test_resource_requests import decide, setup
@@ -47,48 +49,51 @@ def artifact(projects, run=RUN, data=b"new proof", operation="proof"):
         documents.close()
 
 
-async def test_time_warns_and_pauses_at_safe_point_without_call_then_parent_extends(projects):
+def sample(store, owner, *, seconds, resource="elapsed_seconds"):
+    """The active-time cap, if on, or the retained-artifact allowance, if on."""
+    point = store.safe_point(owner, seconds=seconds, turns=300, tokens=None)
+    if resource == "retained_bytes":
+        return point.storage
+    return tuple(
+        (found, point.used["elapsed_seconds"], total, revision)
+        for found, total, revision in point.caps
+        if found == resource
+    )
+
+
+async def test_active_time_checks_in_without_a_call_then_the_parent_extends_it(projects):
     _, parent, child, store = setup(projects)
     DelegationRecords(projects.control).configure("p", research_seconds=10, time_ceiling_seconds=30)
     clock = FakeClock()
     hook = Resources(store, child, turns=300, tokens=20_000_000, delegated=True, clock=clock)
     clock.advance(8)
     assert await hook.halt(Transcript(context=AgentContext(messages=[]))) is None
-    warning = store.pending(parent)[0]
-    assert warning.resource == "elapsed_seconds"
-    assert warning.used == 8
+    assert store.pending(parent) == []  # no warning below the cap
     clock.advance(2)
-    assert await hook.halt(Transcript(context=AgentContext(messages=[]))) == "resource_time"
-    model = ScriptedModel([])
-
-    async def unused(request):
-        raise AssertionError("no tool dispatch")
-
-    result = await run_task(
-        model, toolbox(unused), task="Continue", run_id="child", max_turns=300, hooks=(hook,)
-    )
-    assert result.turns == 0
-    assert result.stopped == "resource_time"
-    assert decide(store, parent, warning, action="extend_time").total == 30
-    assert await hook.halt(Transcript(context=AgentContext(messages=[]))) is None
+    waiting = asyncio.create_task(hook.halt(Transcript(context=AgentContext(messages=[]))))
+    await eventually(lambda: bool(store.pending(parent)))
+    (request,) = store.pending(parent)
+    assert (request.resource, request.used, request.total) == ("elapsed_seconds", 10, 10)
+    assert not waiting.done()
+    assert decide(store, parent, request, action="extend_time").total == 30
+    await eventually(lambda: clock.sleepers > 0)
+    clock.advance(1)
+    assert await asyncio.wait_for(waiting, 2) is None
     assert store.pending(parent) == []
-    with projects.control.read() as tx:
-        assert continuation_allowed(tx.sql, child, "resource_time")
-    clock.advance(20)
-    assert await hook.halt(Transcript(context=AgentContext(messages=[]))) == "resource_time"
+    third = store.observe(child, "elapsed_seconds", used=30, total=30, revision=30, force=True)
     with pytest.raises(ControlError, match="ceiling"):
-        decide(store, parent, store.pending(parent)[0], action="extend_time", operation="next")
+        decide(store, parent, third, action="extend_time", operation="next")
 
 
 def test_time_samples_monotone_and_initial_allowance_pinned(projects):
     _, _, child, store = setup(projects)
     settings = DelegationRecords(projects.control)
     settings.configure("p", research_seconds=100)
-    assert store.sample(child, seconds=80) == (("elapsed_seconds", 80, 100, 0),)
+    assert sample(store, child, seconds=80) == (("elapsed_seconds", 80, 100, 0),)
     settings.configure("p", research_seconds=1000)
-    assert store.sample(child, seconds=40) == (("elapsed_seconds", 80, 100, 0),)
+    assert sample(store, child, seconds=40) == (("elapsed_seconds", 80, 100, 0),)
     settings.configure("p", research_seconds=None)
-    assert store.sample(child, seconds=90) == ()
+    assert sample(store, child, seconds=90) == ()
 
 
 def test_retained_bytes_scoped_to_work_and_prior_attempts_not_all_session(projects):
@@ -96,11 +101,13 @@ def test_retained_bytes_scoped_to_work_and_prior_attempts_not_all_session(projec
     DelegationRecords(projects.control).configure("p", storage_bytes=10, storage_ceiling_bytes=20)
     artifact(projects, CHILD, b"12345678")
     artifact(projects, RUN, b"unrelated root content", "other")
-    assert store.sample(child, seconds=0) == (("retained_bytes", 8, 10, 0),)
+    assert sample(store, child, seconds=0, resource="retained_bytes") == (
+        ("retained_bytes", 8, 10, 0),
+    )
     warning = store.observe(child, "retained_bytes", used=8, total=10, revision=0)
     assert warning is not None
     assert decide(store, parent, warning, action="extend_storage").total == 20
-    assert store.sample(child, seconds=0)[0][2:] == (20, 20)
+    assert sample(store, child, seconds=0, resource="retained_bytes")[0][2:] == (20, 20)
 
 
 def test_root_renewal_opt_in_requires_checkpoint_and_new_evidence(projects):
@@ -170,7 +177,7 @@ def test_approved_soft_limit_automatically_resumes_original_tree(projects, root,
     DelegationRecords(projects.control).configure("p", **settings)
     if not timed:
         artifact(projects, owner.run, b"0123456789")
-    assert store.sample(owner, seconds=10)[0][1:3] == (10, 10)
+    assert sample(store, owner, seconds=10, resource=resource)[0][1:3] == (10, 10)
     warning = store.observe(owner, resource, used=10, total=10, revision=0)
     assert warning is not None
     works.finish(record(CHILD, stopped="answered" if root else reason))
@@ -220,57 +227,36 @@ async def test_hard_retention_pressure_is_visible_not_renewable(projects):
         documents.close()
 
 
-async def test_root_turn_renewal_reaches_loop_without_extra_closing_call(projects):
+async def test_a_roots_turns_stay_its_runs_limit(projects):
+    """D102 keeps the root's ``max_turns`` as its safety net (RS-6f); its soft caps are
+    tokens, active time and cost, which check in without stopping."""
     _, parent, _, store = setup(projects)
-    DelegationRecords(projects.control).configure("p", root_resource_renewal=True)
-
-    published = False
-
-    class RootAware(ScriptedModel):
-        async def complete(self, messages, tools):
-            nonlocal published
-            if not published:
-                published = True
-                artifact(projects, operation="root-proof")
-                Archive(projects.control).append(
-                    "p", "s", RUN, Entry("assistant", "assistant", "Verified a new lemma")
-                )
-            for warning in store.pending(parent):
-                decide(store, parent, warning)
-            return await super().complete(messages, tools)
 
     class Continue(TurnHook):
         async def closing(self, run, answer):
-            return (
-                Closing("continue", (Notice("fixture", (), "another step", {}),))
-                if run.turns < 7
-                else Closing()
-            )
+            return Closing("continue", (Notice("fixture", (), "another step", {}),))
 
     async def unused(request):
         raise AssertionError("no tool call")
 
     hook = Resources(store, parent, turns=5, tokens=None, delegated=False)
     result = await run_task(
-        RootAware([ModelTurn("Progress")] * 7),
+        ScriptedModel([ModelTurn(f"Progress {n}") for n in range(6)]),
         toolbox(unused),
         task="Research",
         run_id="root",
         max_turns=5,
         hooks=(hook, Continue()),
     )
-    assert result.stopped == "answered"
-    assert result.turns == 7
-    decision = store.page("p", "s").requests[0].decision
-    assert decision is not None
-    assert decision.total == 305
+    assert (result.stopped, result.turns) == ("answered", 5)  # its last answer stands
+    assert store.page("p", "s").requests == ()
 
 
 def test_old_session_evidence_does_not_enable_a_new_root_renewal(projects):
     _, parent, _, store = setup(projects)
     artifact(projects, operation="old-result")
     DelegationRecords(projects.control).configure("p", root_resource_renewal=True)
-    store.sample(parent, seconds=0)
+    sample(store, parent, seconds=0)
     Archive(projects.control).append("p", "s", RUN, Entry("assistant", "assistant", "Checkpoint"))
     warning = store.observe(parent, "turns", used=4, total=5, revision=0)
     with pytest.raises(ControlError, match="new research evidence"):

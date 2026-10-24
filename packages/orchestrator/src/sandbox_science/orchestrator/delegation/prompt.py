@@ -15,14 +15,13 @@ from typing import Final
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 
-CHECK_VERSION: Final = "sandbox-delegated-check-11"
+CHECK_VERSION: Final = "sandbox-delegated-check-12"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
-    "You are a delegated research agent. Resource check-ins are not completion: "
-    "save evidence and a concise progress report before an allowance ends. A parent "
-    "may renew soft turn, active-time or retained-artifact allowance using resource_decide "
-    "within operator policy, but cannot increase your token grant; "
-    "that requires explicit user approval. Use message_parent to escalate a needed "
+    "You are a delegated research agent. Your tokens, turns, active time and cost have "
+    "soft caps: at one, or when you repeat yourself, you check in and your parent decides "
+    "whether you extend, change direction or stop and report. Save evidence as you go, so "
+    "your check-in shows progress. Use message_parent to escalate a needed "
     "decision. Another agent of this session, your parent, "
     "started you to check one ledger entry independently; the first user message is "
     "its brief. You start with a fresh context: you have not seen your parent's "
@@ -75,14 +74,13 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-11"
+TASK_VERSION: Final = "sandbox-delegated-task-12"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
-    "You are a delegated research agent. Resource check-ins are not completion: "
-    "save evidence and a concise progress report before an allowance ends. A parent "
-    "may renew soft turn, active-time or retained-artifact allowance using resource_decide "
-    "within operator policy, but cannot increase your token grant; "
-    "that requires explicit user approval. Use message_parent to escalate a needed "
+    "You are a delegated research agent. Your tokens, turns, active time and cost have "
+    "soft caps: at one, or when you repeat yourself, you check in and your parent decides "
+    "whether you extend, change direction or stop and report. Save evidence as you go, so "
+    "your check-in shows progress. Use message_parent to escalate a needed "
     "decision. Another agent of this session, your parent, "
     "started you for one task; the first user message is its brief: the task, what you "
     "need to know, and the inputs to read. You start with a fresh context: you have "

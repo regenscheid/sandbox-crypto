@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Research check-ins renew turns, preserve tokens and survive root-level Resume."""
+"""Research check-ins (D102): soft caps and loop heuristics ask the parent, never stop."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.auto_recovery import AutoRecovery
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
-from sandbox_science.orchestrator.continuity.grants import TokenGrantRequest, TokenGrants
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.continuity.resource_policy import soft_grant
 from sandbox_science.orchestrator.continuity.resources import (
     Action,
     ResourceDecisionRequest,
@@ -30,11 +30,10 @@ from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ModelUsage
 from sandbox_science.orchestrator.resource_hooks import Resources
-from sandbox_science.orchestrator.runstate import RunState
 
 from .test_tool_journal import CONTEXT, RUN, toolbox
 from .test_tool_journal import projects as projects
-from .test_work_ownership import CHILD, GRANDCHILD, record
+from .test_work_ownership import CHILD, record
 
 
 def setup(projects, *, turns=5, tokens=20_000_000):
@@ -69,6 +68,11 @@ def setup(projects, *, turns=5, tokens=20_000_000):
     return works, parent, child, ResourceRequests(projects.control)
 
 
+def granted(projects, owner, resource, original):
+    with projects.control.read() as tx:
+        return soft_grant(tx.sql, owner, resource, original)
+
+
 def decide(store, parent, request, action: Action = "extend_turns", operation="op-resource"):
     return store.decide(
         parent,
@@ -101,7 +105,7 @@ def test_warning_checkpoint_deduplication_decision_and_ownership(projects):
     with pytest.raises(ControlError, match="another decision"):
         decide(requests, parent, first, action="pause")
     assert requests.pending(parent) == []
-    assert requests.limits(child, turns=5, tokens=20_000_000)[:2] == (305, 305)
+    assert granted(projects, child, "turns", 5) == (305, 305)
     works.stop("p", "s", CHILD)
     assert requests.observe(child, "tokens", used=19_000_000, total=20_000_000, revision=0) is None
 
@@ -122,7 +126,8 @@ async def test_parent_actions_are_durable_and_token_grants_do_not_change(project
     assert (await hook.last_call(Transcript(context=AgentContext(messages=[])))) == (
         "resource_report" if action == "report" else None
     )
-    assert TokenGrants(projects.control).total("p", "s", CHILD, 20_000_000) == 20_000_000
+    redirected = 40_000_000 if action == "redirect" else 20_000_000
+    assert granted(projects, child, "tokens", 20_000_000)[0] == redirected
 
 
 async def test_waiting_parent_wakes_without_extra_model_calls(projects):
@@ -166,14 +171,10 @@ def test_extension_supersedes_other_requests_for_the_old_allowance(projects):
 
 
 async def test_parent_turn_extension_reaches_running_loop(projects):
+    """At its soft turn cap the child checks in and waits, making no model call, until its
+    parent extends it by one bounded step; then it goes on and answers."""
     _, parent, child, requests = setup(projects)
-
-    class ParentAware(ScriptedModel):
-        async def complete(self, messages, tools):
-            pending = requests.pending(parent)
-            if pending:
-                decide(requests, parent, pending[0])
-            return await super().complete(messages, tools)
+    seen: list[int] = []
 
     class Continue(TurnHook):
         async def closing(self, run, answer):
@@ -186,21 +187,37 @@ async def test_parent_turn_extension_reaches_running_loop(projects):
     async def unused(request):
         raise AssertionError("no tool call expected")
 
-    model = ParentAware([ModelTurn("Progress")] * 7)
-    hook = Resources(requests, child, turns=5, tokens=20_000_000, delegated=True)
+    class Counting(ScriptedModel):
+        async def complete(self, messages, tools):
+            seen.append(len(requests.pending(parent)))
+            return await super().complete(messages, tools)
+
+    async def as_parent():
+        while not (pending := requests.pending(parent)):
+            await asyncio.sleep(0.01)
+        decide(requests, parent, pending[0], action="extend")
+
+    hook = Resources(requests, child, turns=5, tokens=20_000_000, delegated=True, poll_seconds=0.01)
+    parent_task = asyncio.create_task(as_parent())
     result = await run_task(
-        model,
+        Counting([ModelTurn(f"Progress {n}") for n in range(7)]),
         toolbox(unused),
         task="Fixture",
         run_id="child",
         max_turns=5,
         hooks=(hook, Continue()),
     )
+    await asyncio.wait_for(parent_task, 2)
     assert result.stopped == "answered"
     assert result.turns == 7
-    decision = requests.page("p", "s").requests[0].decision
-    assert decision is not None
-    assert decision.total == 305
+    assert seen == [0] * 7  # no model call while the check-in waited
+    (request,) = requests.page("p", "s").requests
+    assert request.resource == "turns"
+    assert request.summary is not None
+    assert request.summary.brief == "Derive and verify a lemma"
+    assert request.summary.turns == 5
+    assert request.decision is not None
+    assert request.decision.total == 305
 
 
 def test_turn_accounting_counts_unknown_once_and_excludes_fold(projects):
@@ -239,174 +256,6 @@ def test_paused_turn_grant_can_queue_same_tree_once(projects):
     assert AutoRecovery(projects.control).queue("p", "s", RUN) is None
 
 
-def test_exact_user_increment_and_resolution_projection(projects):
-    works, _, child, requests = setup(projects)
-    warning = requests.observe(child, "tokens", used=19_000_000, total=20_000_000, revision=0)
-    assert warning is not None
-    grants = TokenGrants(projects.control)
-    assert grants.status("p", "s", CHILD).next_total_tokens is None
-    works.interrupt("p", "s", RUN)
-    RunState(projects.control).set_cost_limit("p", 100)
-    status = grants.status("p", "s", CHILD)
-    assert status.next_total_tokens == 30_000_000
-    request = TokenGrantRequest(
-        work=CHILD,
-        current=CHILD,
-        epoch=1,
-        expected_revision=0,
-        total_tokens=30_000_000,
-        reason="USER approved the next experiment",
-    )
-    with pytest.raises(ControlError, match="exactly 10,000,000"):
-        grants.renew_next(
-            "p", "s", request.model_copy(update={"total_tokens": 25_000_000}), operator="user"
-        )
-    first = grants.renew_next("p", "s", request, operator="user")
-    assert grants.renew_next("p", "s", request, operator="user") == first
-    assert grants.status("p", "s", CHILD).total_tokens == 30_000_000
-    assert requests.page("p", "s").requests[0].user_grant_revision == 1
-
-
-def test_nested_user_increment_never_overallocates_parent(projects):
-    works, _, _child, _ = setup(projects)
-    leaf = works.admit("p", "s", GRANDCHILD, parent=CHILD)
-    Blueprints(projects.control).save(
-        leaf,
-        Blueprint(
-            context=CONTEXT,
-            request={
-                "project": "p",
-                "session": "s",
-                "task": "Check lemma",
-                "tokens": 20_000_000,
-                "max_turns": 5,
-            },
-        ),
-    )
-    works.interrupt("p", "s", RUN)
-    RunState(projects.control).set_cost_limit("p", 100)
-    status = TokenGrants(projects.control).status("p", "s", GRANDCHILD)
-    assert status.next_total_tokens is None
-    assert status.blocked_reason is not None
-    assert "Ancestor" in status.blocked_reason
-    assert status.blocked_ancestor_work == CHILD
-
-
-def test_completed_sibling_descendants_still_consume_parent_tokens(projects):
-    works, _, _, _ = setup(projects, tokens=40_000_000)
-    sibling = "20261016T030003000000Z-sibling-1"
-    descendant = "20261016T030004000000Z-descendant-1"
-    for work, parent, tokens in (
-        (GRANDCHILD, CHILD, 20_000_000),
-        (sibling, CHILD, 20_000_000),
-        (descendant, sibling, 15_000_000),
-    ):
-        owner = works.admit("p", "s", work, parent=parent)
-        Blueprints(projects.control).save(
-            owner,
-            Blueprint(
-                context=CONTEXT,
-                request={"project": "p", "session": "s", "task": "Lemma", "tokens": tokens},
-            ),
-        )
-    for work, used in ((CHILD, 1_000_000), (sibling, 1_000_000), (descendant, 15_000_000)):
-        Archive(projects.control).append(
-            "p",
-            "s",
-            work,
-            Entry("assistant", "assistant", "Observed work"),
-            model_usage=AnsweredUsage(
-                ordinal=1,
-                observed_at=datetime.now(UTC),
-                usage=ModelUsage(input_tokens=used, output_tokens=0),
-            ),
-        )
-    works.finish(record(descendant))
-    works.finish(record(sibling))
-    works.interrupt("p", "s", RUN)
-    RunState(projects.control).set_cost_limit("p", 100)
-    status = TokenGrants(projects.control).status("p", "s", GRANDCHILD)
-    assert status.next_total_tokens is None
-    assert status.blocked_ancestor_work == CHILD
-
-
-def test_late_receipts_do_not_count_the_same_parent_commitment_twice(projects):
-    works, _, _, _ = setup(projects, tokens=30_000_000)
-    owner = works.admit("p", "s", GRANDCHILD, parent=CHILD)
-    Blueprints(projects.control).save(
-        owner,
-        Blueprint(
-            context=CONTEXT,
-            request={"project": "p", "session": "s", "task": "Lemma", "tokens": 20_000_000},
-        ),
-    )
-    Archive(projects.control).append(
-        "p",
-        "s",
-        GRANDCHILD,
-        Entry("assistant", "assistant", "Late usage receipt"),
-        model_usage=AnsweredUsage(
-            ordinal=1,
-            observed_at=datetime.now(UTC),
-            usage=ModelUsage(input_tokens=25_000_000, output_tokens=0),
-        ),
-    )
-    works.interrupt("p", "s", RUN)
-    RunState(projects.control).set_cost_limit("p", 100)
-    status = TokenGrants(projects.control).status("p", "s", GRANDCHILD)
-    assert status.next_total_tokens == 30_000_000
-    assert status.blocked_ancestor_work is None
-
-
-def test_nested_increment_uses_existing_parent_allocation_only_once(projects):
-    works, _, _, _ = setup(projects, tokens=40_000_000)
-    great_grandchild = "20261016T030003000000Z-greatgrandchild-1"
-    for work, parent, tokens in (
-        (GRANDCHILD, CHILD, 40_000_000),
-        (great_grandchild, GRANDCHILD, 20_000_000),
-    ):
-        owner = works.admit("p", "s", work, parent=parent)
-        Blueprints(projects.control).save(
-            owner,
-            Blueprint(
-                context=CONTEXT,
-                request={"project": "p", "session": "s", "task": "Lemma", "tokens": tokens},
-            ),
-        )
-        DelegationRecords(projects.control).start(
-            "p",
-            "s",
-            Delegation(
-                delegation_id=new_id("dlg"),
-                parent=parent,
-                run=work,
-                kind="task",
-                brief={},
-                started_at=datetime.now(UTC),
-            ),
-        )
-    works.interrupt("p", "s", RUN)
-    RunState(projects.control).set_cost_limit("p", 100)
-    grants = TokenGrants(projects.control)
-    status = grants.status("p", "s", great_grandchild)
-    assert status.next_total_tokens == 30_000_000
-    assert status.blocked_reason is None
-    decision = grants.renew_next(
-        "p",
-        "s",
-        TokenGrantRequest(
-            work=great_grandchild,
-            current=great_grandchild,
-            epoch=1,
-            expected_revision=0,
-            total_tokens=30_000_000,
-            reason="USER approved one more increment within the parent's existing allocation",
-        ),
-        operator="user",
-    )
-    assert decision.request.total_tokens == 30_000_000
-
-
 async def test_own_warning_does_not_spend_an_extra_closing_call(projects):
     _, parent, child, requests = setup(projects)
 
@@ -422,7 +271,7 @@ async def test_own_warning_does_not_spend_an_extra_closing_call(projects):
         raise AssertionError("no tool call expected")
 
     result = await run_task(
-        ScriptedModel([ModelTurn("Progress")] * 4),
+        ScriptedModel([ModelTurn(f"Progress {n}") for n in range(4)]),
         toolbox(unused),
         task="Fixture",
         run_id="child",
@@ -431,4 +280,4 @@ async def test_own_warning_does_not_spend_an_extra_closing_call(projects):
     )
     assert result.stopped == "answered"
     assert result.turns == 4
-    assert len(requests.pending(parent)) == 1
+    assert requests.pending(parent) == []  # below its soft caps: no check-in at all

@@ -19,7 +19,7 @@ from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .test_recovery_effects import PassiveWorker
-from .test_resource_requests import setup
+from .test_resource_requests import granted, setup
 from .test_tool_journal import CONTEXT, RUN
 from .test_tool_journal import projects as projects
 from .test_work_ownership import CHILD
@@ -67,7 +67,7 @@ async def test_original_resource_receipt_restores_response_without_repeating_dec
             mode="json"
         )
         assert journal.pending("p", "s", RUN) == []
-        assert store.limits(child, turns=5, tokens=20_000_000)[:2] == (305, 305)
+        assert granted(projects, child, "turns", 5) == (305, 305)
         with projects.control.read() as tx:
             assert tx.sql.execute(
                 "SELECT count(*) FROM research_observations WHERE kind='resource_decision'"

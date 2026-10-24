@@ -103,6 +103,12 @@ MAX_TURNS: Final = 10_000
 """The most turns a project may give a check or a task."""
 MAX_TOKENS: Final = 1_000_000_000
 """The most tokens a project may give a check or a task."""
+ROOT_TOKENS: Final = 100_000_000
+"""A root's soft token cap by default: a check-in against its plan, never a stop (D102)."""
+SOFT_COST: Final = 25.0
+"""Each work's soft cost cap by default, in the gateway's currency (D102)."""
+RESEARCH_SECONDS: Final = 14_400
+"""Each work's soft active-time cap by default: four hours, a check-in (D102)."""
 FORMER_DEFAULTS: Final = {"task_tokens": 200_000, "task_turns": 20}
 """A task's limits by default before 2026-10-16. A setting written then holds every
 limit, its defaults among them: one of these values in it is read as the default, so
@@ -124,22 +130,32 @@ class DelegationSettings(Contract):
     cap: int = Field(default=10, ge=1, le=20)
     """Delegated runs a session's tree runs at once."""
     check_tokens: int = Field(default=TASK_TOKENS, ge=50_000, le=MAX_TOKENS)
-    """A check's tokens, at most: a bound on a runaway check (PD-38)."""
+    """A check's soft token cap: it checks in with its parent there (PD-38, D102)."""
     check_turns: int = Field(default=TASK_TURNS, ge=1, le=MAX_TURNS)
-    """A check's turns, at most, independently of its parent's remaining calls."""
+    """A check's soft turn cap, independently of its parent's remaining calls."""
     task_tokens: int = Field(default=TASK_TOKENS, ge=50_000, le=MAX_TOKENS)
-    """A task's tokens, at most (PD-11, PD-38): a bound on a runaway task, not on its
-    work."""
+    """A task's soft token cap (PD-11, PD-38): a check-in with its parent, not a bound on
+    its work (D102)."""
     task_turns: int = Field(default=TASK_TURNS, ge=1, le=MAX_TURNS)
-    """A task's turns, at most, independently of its parent's remaining calls."""
+    """A task's soft turn cap, independently of its parent's remaining calls."""
     turn_ceiling: int = Field(default=MAX_TURNS, ge=1, le=MAX_TURNS)
-    """Cumulative turns a direct parent may approve; initial explicit turns remain.
-    Lowering this does not revoke an existing recorded grant.
+    """Cumulative turns extensions may reach, and every work's hard turn limit across its
+    attempts. Lowering this does not revoke an existing recorded extension.
     """
     max_token_grant: int = Field(default=MAX_TOKENS, ge=50_000, le=MAX_TOKENS)
-    """Hard ceiling for explicit USER token extensions, separate from initial grants."""
-    research_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
-    """Optional cumulative observed active-time allowance, independent of tool deadlines."""
+    """The cumulative soft token cap extensions may reach (D102; it named the retired
+    USER token approvals' ceiling)."""
+    root_tokens: int = Field(default=ROOT_TOKENS, ge=50_000, le=MAX_TOKENS)
+    """A root's soft token cap: it checks itself against its plan there (D102)."""
+    soft_cost: float | None = Field(default=SOFT_COST, gt=0, le=1_000_000)
+    """Each work's soft cost cap, in the gateway's currency, a check-in; ``None`` turns
+    it off. It never stops spending: LiteLLM's budget does."""
+    max_idle_extensions: int = Field(default=3, ge=1, le=100)
+    """Extensions in a row without new evidence after which a parent must stop or
+    redirect its child, and the root asks the user (D102)."""
+    research_seconds: int | None = Field(default=RESEARCH_SECONDS, ge=1, le=31_536_000)
+    """Each work's soft cumulative observed active time, independent of tool deadlines;
+    ``None`` turns it off."""
     time_ceiling_seconds: int = Field(default=604_800, ge=1, le=31_536_000)
     storage_bytes: int | None = Field(default=None, ge=1, le=256 * 1024**3)
     """Optional retained-artifact allowance; not research-VM disk usage."""

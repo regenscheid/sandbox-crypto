@@ -172,11 +172,15 @@ async def test_production_child_narrates_on_its_own_alias_and_grant(delegating: 
     delegating.gateway.enrich = [
         Reply(json.dumps({"narrative": "Exact child evidence remains available.", "keys": []}))
     ] * 8
-    notes = Reply("Child-only evidence. " + "observation " * 9000, calls=[("plan_read", {})])
+    # Distinct answers: the same text again and again would be a loop check-in (D102).
+    notes = [
+        Reply(f"Child-only evidence {n}. " + "observation " * 9000, calls=[("plan_read", {})])
+        for n in range(6)
+    ]
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],
-        delegated=[notes] * 6 + [Reply(json.dumps(DONE))],
+        delegated=[*notes, Reply(json.dumps(DONE))],
         task="PARENT PRIVATE REASONING",
         options=[
             *ENRICHED,
