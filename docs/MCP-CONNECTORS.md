@@ -2,7 +2,7 @@
 
 Confirmed: D64, and D66 and D67 with the design this page proposes. The MCP proxy is built ([as built](#the-mcp-proxy-as-built)); the connector auth service is not, and M2 does not need it. The user's requirements:
 
-**Decided, not yet built (2026-10-23):** MCP enforcement moves to OpenShell native `protocol: mcp` rules and the supervisor middleware, and the MCP proxy retires if a prototype passes (D98); tools are classified by effect, with hints for unmentioned tools and a drift test (D96); grants are per class, server and project under admin ceilings (D97); and MCP lockdown is `declared` or `locked` per project (D95). See the [decisions](DECISIONS.md). The D98 prototype is built offline and unwired: the agent's client calling servers directly, decided by native rules and the middleware ([prototype](specs/mcp-middleware-prototype.md)). The text below describes the connectors as built.
+**Decided (2026-10-23), partly built:** MCP enforcement moves to OpenShell native `protocol: mcp` rules and the supervisor middleware, and the MCP proxy retires if a prototype passes (D98); tools are classified by effect, with hints for unmentioned tools and a drift test (D96, built: [classification files](#classification-files)); grants are per class, server and project under admin ceilings (D97: the ceilings are stored and validated, grants are not built); and MCP lockdown is `declared` or `locked` per project (D95, built). See the [decisions](DECISIONS.md). The D98 prototype is built offline and unwired: the agent's client calling servers directly, decided by native rules and the middleware ([prototype](specs/mcp-middleware-prototype.md)). The text below describes the connectors as built.
 
 - crypto-research-mcp is the phase 1 connector; others are added later.
 - MCP services authenticate mainly with OAuth.
@@ -50,7 +50,7 @@ Sources: the [MCP authorization specification, 2025-11-25](https://github.com/mo
 
 The per-caller proxy credential still matters: it stops other sandboxes and projects from using the proxy. It is not, by itself, a per-session identity.
 
-**Policy.** The proxy evaluates the project's `mcp.servers` tool rules (`allow`/`escalate`/`deny`, most restrictive wins) before forwarding. `escalate` creates a durable permission request through the shared workflow, with the policy's timeout and deny fallback. The outbound OpenShell `protocol: mcp` rules repeat the allow/deny lists, as defense in depth.
+**Policy.** The proxy decides each call with the policy library before forwarding: the project's `mcp.servers` tool rules (`allow`/`escalate`/`deny`, most restrictive wins) for the tools they name, and otherwise the call's [effect class](POLICY.md#effect-classes-d96-d97), with its arguments. `escalate` creates a durable permission request through the shared workflow, with the policy's timeout and deny fallback. The outbound OpenShell `protocol: mcp` rules repeat the decisions by tool name, as defense in depth.
 
 **Other duties:**
 
@@ -109,7 +109,7 @@ A refusal is a JSON-RPC error with code -31001, meaning nothing was sent, and th
 
 Of a caller's notifications, only `notifications/cancelled` for a call in flight goes upstream, under the proxy's id for that call and without the caller's reason text. The others have nothing upstream to refer to.
 
-**What a listing offers.** A caller's `tools/list` page leaves out the tools the project's policy denies, each judged as a call by its name alone, so an agent is not offered a tool it can never call (lab 39, B5); escalated tools stay, since they ask the operator. The call's record counts them (`denied_tools`). The proxy's own record of the server's tools keeps them all, and a call to a left-out tool is refused as before.
+**What a listing offers.** A caller's `tools/list` page leaves out the tools the project's policy denies, each judged as a call by its name alone, so an agent is not offered a tool it can never call (lab 39, B5); escalated tools stay, since they ask the operator. The call's record counts them (`denied_tools`). The proxy's own record of the server's tools keeps them all, and a call to a left-out tool is refused as before. Each tool it offers carries the proxy's word on its class in `_meta` (`sandbox-science/effect`, over any key of that name the server sent): `read` only when no argument can make a call of it more. The harness records each connector call's class and reach with it (read stays in the session, anything else is outward). The proxy also keeps the hints of the session's latest complete listing (`readOnlyHint`), which decide the tools the policy does not classify.
 
 **What comes back.** Answers are read within `mcp.proxy.max_response_bytes`, and never more than 32 MiB, as they arrive, as JSON or as an event stream that ends with the response (2025-03-26 servers may batch messages in one event). Compressed answers are refused. The session id a server issues must be visible ASCII with nothing that reads as a placeholder, since the proxy sends it back in a header. In a stream, the proxy answers `ping` and refuses other server requests with error -32601, at most 16 per answer. It notes `notifications/tools/list_changed` and drops the other notifications. Image and audio blocks and blob resources are replaced by a text note naming their type and size, until binary results become artifact references.
 
@@ -122,7 +122,7 @@ Of a caller's notifications, only `notifications/cancelled` for a call in flight
 - `escalation`: a pending permission request, with the attribution, server, MCP session, method, tool, policy revision, rule, reason, escalation terms and its `target` key;
 - `approved`: a call that went through on an approval, naming the approval and the request;
 - `alert`: the same fields, stored before the call proceeds;
-- `mcp-call`: one record for every message an authenticated caller sends, with the same subject, the decision (action, layer, rule), the reason code, the outcome (`forwarded`, `server_error`, `refused`, `failed` or `local`), the sizes of the request, the parameters and the answer, what a stream carried, and the duration. It is written on a best-effort basis, like the middleware's monitor findings.
+- `mcp-call`: one record for every message an authenticated caller sends, with the same subject, the decision (action, layer, rule and, for a tool call, its effect class and grant ceiling, which `escalation` and `alert` records carry too), the reason code, the outcome (`forwarded`, `server_error`, `refused`, `failed` or `local`), the sizes of the request, the parameters and the answer, what a stream carried, and the duration. It is written on a best-effort basis, like the middleware's monitor findings.
 
 Argument values and results are never recorded.
 
@@ -248,6 +248,32 @@ Tested against the proxy and its fake server in one process (`packages/orchestra
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
 
 
+## Classification files
+
+A server's tools are classified by effect (D96) in checked-in files that the policy names with `mcp.servers.<server>.classification: <name>`: every `*.yaml` under `packages/policy/src/sandbox_science/policy/classifications/<name>/`, read in the policy files' strict dialect. A portal gets one file per server behind it, each for the tools whose names start with its `prefix`; no tool may be in two files. The admin reviews each file, and only the accepted file decides calls ([effect classes](POLICY.md#effect-classes-d96-d97)).
+
+```yaml
+apiVersion: sandbox-science/v0alpha1
+kind: ToolClassification
+server: crypto-research-mcp
+prefix: firecrawl-mcp_
+pinned: "2026-10-24"
+tools:
+  firecrawl-mcp_firecrawl_scrape:
+    class: read
+    reason: "Fetches one page's content; browser actions and profile saves are effects (H1)."
+    sha256: 867de81d8da507fb45731a6423e9a6a431a44d063bce75773880507f5aedf748
+    significant: {url: url}
+    rules:
+      - {argument: actions, present: true, class: browse}
+      - {argument: profile.saveChanges, equals: true, class: write}
+```
+
+- **Entries.** Each tool has its `class`, a one-line `reason`, its `sha256` pin, argument `rules`, and its `significant` arguments by kind (`url`, `host`, `recipient`, `title`, `size`, `query`), which A4's approval cards will summarize a call by.
+- **crypto-research-mcp** has a file for each of `attack-catalog`, `e-print`, `firecrawl`, `nist-csrc`, `nist`, `paper-search`, `patent-search` and `web-fetch`, and one for the portal's own tools, from the pinned schemas and the 2026-10-23 audit's H1. Firecrawl `scrape`, `crawl` and `search` are reads whose page `actions` are `browse`, whose `profile.saveChanges: true` is `write`, and whose `webhook` (crawl) is `communicate`; `agent`, `interact` and `interact_stop` are `browse`; monitors that notify later (`monitor_create`, `monitor_update`) are `communicate`, and `monitor_run` and `monitor_delete` are `write`; both feedback tools are `write`; the ePrint and NIST corpus refreshes and the portal's toggles are `admin`. Every other tool is a `read`, including the billed searches (cost is the services' to control) and the fetches that fill a server's cache (D95).
+- **Pins and drift.** A pin is the SHA-256 of a tool's name, description and input schema as sorted compact JSON (`mcp_wire.tool_digest`). The pinned listings are test fixtures (`packages/policy/tests/fixtures/mcp-tools/<server>/<group>.json`, captured 2026-10-24 from the listing an MCP client saw, without annotations), and `test_classification.py` fails, with a diff, when a file's pins differ from them, and when a rule or significant argument names an argument the pinned schema lacks. A tool classified from an earlier listing that the pinned one lacks has no `sha256` and is not pinned. At run time the policy middleware, with `mcp_listings = true` in its settings, reads the answers to the `tools/list` requests of sandboxes that call servers directly, keeps their tools' hints, and records a `tool_list_drift` finding (an `mcp-tools-drift` record naming the tools added, removed and changed) when a complete listing differs from the classification's pins, or from the operator's `mcp_tool_pins`, which names tools only and wins where it names a server. A drift blocks nothing: the tool's class still decides, and a changed tool is reviewed and pinned again.
+- **Drafting a file.** `sandbox-science-harness classify-draft SERVER --tools tools.json --prefix firecrawl-mcp_ --model-url URL --model ALIAS --api-key-file KEY --out draft.yaml` asks the gateway's model once to propose each tool's class, reason, rules and significant arguments, and writes a draft pinned to the listing's digests. The tool list is the server's text, so the prompt frames it as data, and the answer is read as data: a class outside the closed set, a rule or argument the tool's schema lacks, and a tool the list lacks are dropped, and a tool the answer leaves out is `unclassified`. The draft is a convenience; the admin edits and accepts it, and only the checked-in file counts.
+
 ## Approvals in the workspace
 
 The owner decided on 2026-10-21 that the policy may route a tool call to the user: a tool the policy escalates waits for the user's answer in the workspace's chat. The policy still decides which calls are asked about; the user can never allow a tool the policy denies.
@@ -342,13 +368,13 @@ Checked on 2026-10-14 with the owner's service token, outside the proxy:
 - **Access alone works.** An MCP `initialize` carrying `CF-Access-Client-Id` and `CF-Access-Client-Secret` got a normal answer (server `cloudflare-mcp-portal`, protocol 2025-11-25). Without a valid client ID the server answers 401 with an OAuth `WWW-Authenticate` challenge, so OAuth stays a possible second route, and nothing needs it.
 - **What the token sees.** After the owner added a Service Auth policy for each server, the token sees 72 tools from seven servers: `attack-catalog-mcp`, `e-print-mcp`, `firecrawl-mcp`, `nist-csrc-mcp`, `paper-search-mcp`, `patent-search-mcp` and `web-fetch-mcp`; and three portal tools (`portal_list_servers`, `portal_toggle_servers`, `portal_toggle_single_server`).
 - **Cost and escalation.** The services are self-hosted and effectively free, and cost control is theirs in any case. The policy escalates a tool for what it does (feedback, corpus refreshes, live browser sessions, monitors), not for what it costs. A project policy that allows all of the research servers' tools escalates none of them, and then `compile-policy --admit-escalated` is not needed for this server. The `portal_*` tools that change which servers are enabled stay denied to agents.
-- **The example policy.** `examples/policy.yaml` was checked against the 78 tools listed on 2026-10-10 (a test fixture pins each tool's outcome). The listing of 2026-10-15 had 72: the seven `nist-mcp_*` tools were gone, and `firecrawl_monitor_delete` was new. A tool the policy does not name asks first, so a server revision that adds tools stays safe.
+- **The example policy.** `examples/policy.yaml` decides crypto-research-mcp's tools by their [classification](#classification-files), pinned to the listing captured on 2026-10-24 (71 tools: the seven research servers and the portal's three). The listing of 2026-10-10 had 78 and that of 2026-10-15 had 72: the seven `nist-mcp_*` tools are classified from the 2026-10-10 notes but not pinned, and so is `firecrawl_monitor_delete`, which the 2026-10-15 listing had. A tool nothing classifies asks first unless its hints say it only reads, so a server revision that adds tools stays safe; under `lockdown.mcp: locked` it is unavailable until named.
 
 ### The harness MCP client: decisions (D-08)
 
 The proxy side and the harness's client are built ([the harness's client](#the-harnesss-client)). Decided on 2026-10-14 by the coordinator under the owner's autonomy mandate; question 6 was answered by a check:
 
-1. **How agents see connector tools.** *Decided, as recommended:* the tools each configured server lists through the proxy, listed at a run's start and offered to MAIN under their prefixed names, each with the effect class `effect`, so the plan fence applies. *Amended on 2026-10-15 (lab 39, B5):* the proxy's listing leaves out the tools the policy denies, such as the `portal_*` tools, so they are not offered at all.
+1. **How agents see connector tools.** *Decided, as recommended:* the tools each configured server lists through the proxy, listed at a run's start and offered to MAIN under their prefixed names, each with the effect class `effect`, so the plan fence applies. *Amended on 2026-10-15 (lab 39, B5):* the proxy's listing leaves out the tools the policy denies, such as the `portal_*` tools, so they are not offered at all. *Amended on 2026-10-24 (D96, A3):* each also keeps the D96 class the proxy says, which its calls' records name with their reach.
 2. **The orchestrator's proxy token.** *Decided, as recommended:* the orchestrator's token goes in a file only the harness reads, like the worker token, until callers are identified by the platform (backlog).
 3. **Escalated tools.** *Decided:* through the proxy's existing escalation path. An escalated call is refused with `approval_required` and recorded as a permission request; the operator answers with `sandbox-science-mcp-proxy pending` and `approve` or `deny` (owner decision 1: approvals through the CLI for M2; amended 2026-10-21 by the owner: the user answers in the workspace's chat), and the agent sees the refusal until then, as for any other escalation, and calls again. For an approval to take effect, the proxy sandbox's fence has to admit the tool: `compile-policy --admit-escalated`, opt-in and off by default, admits the tools the policy escalates by name, until approved tools are compiled into the fence one by one (above, backlog). A policy that escalates no tool of a server needs no such admission for it.
 4. **Results.** *Decided, as recommended:* text results bounded as tool results are now; binary results as artifact references once that is built.

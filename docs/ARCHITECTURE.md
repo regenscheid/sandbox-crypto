@@ -10,7 +10,7 @@ Confirmed by the owner; mostly not built. The [decisions](DECISIONS.md) hold the
 - **Lockdown modes (D95):** per project, network `open-reads` or `allowlist` and MCP `declared` or `locked`, compiled into OpenShell rules and the middleware.
 - **Effect classes (D96):** `read`, `write`, `communicate`, `browse`, `admin`, `unclassified`, from tool names, argument rules and, for unmentioned tools, MCP hints; browser automation off unless an admin enables it; admin-reviewed, model-drafted classifications with a drift test.
 - **Approvals and grants (D97):** admin ceilings per class and server; persistent, revocable user grants per class, server and project; cards built from a call's significant arguments.
-- **Research-code egress (D97):** packages through the cache; git and downloads from listed source hosts, attributed by binary; everything else escalates.
+- **Research-code egress (D97, amended 2026-10-24):** packages through the cache; git and downloads from listed source hosts, by host, since OpenShell cannot attribute them by binary; everything else escalates.
 - **MCP enforcement (D98):** OpenShell native `protocol: mcp` rules and the supervisor middleware; the MCP proxy retires if the prototype passes.
 - **Delegated agents (D99):** fenced for outward effects only; their effect requests are cards in the session chat that the parent can withdraw.
 - **Recovery (D100):** automatic bounded retries for transient failures; one Resume restarts the whole tree; only Stop, budget refusal, policy denial, an irreconcilable effect or a real context limit keeps a run stopped.
