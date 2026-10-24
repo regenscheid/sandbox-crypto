@@ -79,7 +79,7 @@ pod_labels = { "openshell.ai/component" = "supervisor", "openshell.ai/gateway-id
 
 [[network.supervisors]]
 namespace_labels = { "kubernetes.io/metadata.name" = "research-runtimes" }
-pod_labels = { "openshell.ai/component" = "supervisor" }   # the label OpenShell 0.1.5 gives supervisor Pods
+pod_labels = { "openshell.ai/component" = "supervisor" }   # the label OpenShell gives supervisor Pods
 
 # The OpenShell gateway's Pods and ports. The runtime manager and the worker reach it, each
 # with its own client identity (the worker creates every research sandbox), and the

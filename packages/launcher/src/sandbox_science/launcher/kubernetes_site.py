@@ -38,6 +38,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION
 from sandbox_science.policy import load_ceiling, load_policy
 from sandbox_science.policy.errors import PolicyLoadError
 from sandbox_science.policy.openshell import load_targets
@@ -619,8 +620,8 @@ token, generate a new directory, replace every Secret and recreate the Pods.
 {fence}sh
 kubectl -n {gateway_ns} create configmap {name}-middleware-ca \\
   --from-file=ca.crt=gateway/middleware-ca.crt
-helm upgrade openshell oci://ghcr.io/nvidia/openshell/helm-chart --version 0.1.5 -n {gateway_ns} \\
-  -f openshell-values.yaml -f {GATEWAY_VALUES}
+helm upgrade openshell oci://ghcr.io/nvidia/openshell/helm-chart \\
+  --version {OPENSHELL_VERSION} -n {gateway_ns} -f openshell-values.yaml -f {GATEWAY_VALUES}
 {fence}
 
 2. Place the CLI tree on the pool PVC (UID 1000, modes kept), then restart the pool:
