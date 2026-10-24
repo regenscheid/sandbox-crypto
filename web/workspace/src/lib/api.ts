@@ -73,8 +73,9 @@ export type ProjectSummary = ProjectListing['projects'][number];
 export type Session = SessionView;
 export type Project = ProjectView;
 /** An answer to a permission request: once, a grant for the session or the project, or a
- * refusal. The server refuses a scope the request's ceiling does not allow. */
-export type PermissionDecision = 'once' | 'session' | 'project' | 'deny';
+ * refusal. The server refuses a scope the request's ceiling does not allow. A hold of the
+ * session's calls (D103) is cleared, or its session stopped, instead. */
+export type PermissionDecision = 'once' | 'session' | 'project' | 'deny' | 'clear' | 'stop';
 export type { RunEntry, SessionDetail };
 
 export interface MacroContext {
@@ -654,12 +655,15 @@ export const api = {
     project: string,
     request: { seq: number; kind: PendingApproval['kind']; source?: PendingApproval['source'] },
     decision: PermissionDecision,
+    session: string | null = null,
   ) =>
     post<AnswerResult>(`/projects/${part(project)}/permission-requests/${request.seq}/answer`, {
       decision,
       kind: request.kind,
       // Who holds it: the MCP proxy, or the worker for the policy middleware (D98).
       source: request.source ?? null,
+      // The session whose run a stopped hold stops, when the hold names none (D103).
+      session,
     }),
   /** The project's grants, with their last use (D97). */
   grants: (project: string) => get<GrantListing>(`/projects/${part(project)}/grants`),

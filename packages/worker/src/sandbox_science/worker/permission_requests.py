@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentInfo
 from sandbox_science.contracts.permission_requests import (
     MAX_LISTED,
+    HoldAsked,
     HttpSummary,
     McpAsked,
     PackagesAsked,
@@ -50,6 +51,7 @@ _SCOPES = {
     "network": ("request", "host"),
     "packages": ("request", "files"),
     "mcp": ("call",),
+    "hold": ("session",),
 }
 _GRANTS = frozenset({"none", "once", "session", "project"})
 
@@ -90,6 +92,8 @@ class PermissionDesk:
             payload = payloads.get(request.seq, {})
             if request.key.kind == "mcp":
                 found = _described_call(request, payload, project_id, now)
+            elif request.key.kind == "hold":
+                found = _described_hold(request, payload, project_id)
             else:
                 owner = owners[str(request.key.fields()["sandbox_id"])]
                 found = _described(request, payload, owner, now)
@@ -126,9 +130,9 @@ class PermissionDesk:
         """Whose request it is: an MCP call's key names its project; a sandbox's request
         is its environment's project's, if the worker owns the environment."""
         fields = request.key.fields()
-        if request.key.kind == "mcp":
+        if request.key.kind == "mcp" or (request.key.kind == "hold" and fields["project_id"]):
             return str(fields["project_id"])
-        if request.key.kind not in ("http", "packages"):
+        if request.key.kind not in ("http", "packages", "hold"):
             return None
         owner = owners.get(str(fields["sandbox_id"]))
         return owner.project_id if owner is not None else None
@@ -169,8 +173,8 @@ class PermissionDesk:
 
 
 def _kind(request: PermissionRequest, payload: Mapping[str, object]) -> str:
-    if request.key.kind == "mcp":
-        return "mcp"
+    if request.key.kind in ("mcp", "hold"):
+        return request.key.kind
     return "packages" if request.key.kind == "packages" or "package" in payload else "network"
 
 
@@ -198,6 +202,8 @@ def _described(
                 path=str(fields["path"])[:600], size=0,
             )  # fmt: skip
         ceiling = network_max_grant(method).value
+        if payload.get("max_grant") == "once":
+            ceiling = "once"  # a detection rule's hold of one call (D103)
     else:
         ceiling = PACKAGES_MAX_GRANT.value
     if kind == "packages":
@@ -266,6 +272,37 @@ def _described_call(
                 "recorded_at": request.recorded,
                 "expires_at": request.recorded + request.timeout,
                 "timed_out": request.expired(now),
+                "on_timeout": request.on_timeout,
+            }
+        )
+    except ValidationError:
+        return None  # a record this listing cannot show is not offered for an answer
+
+
+def _described_hold(
+    request: PermissionRequest, payload: Mapping[str, object], project_id: str
+) -> WorkerPermissionRequest | None:
+    """A detection rule's hold of a session's outward calls (D103): the agent's session, or
+    research code's sandbox, whose environment's sessions all show it."""
+    session = request.key.fields()["session"]
+    recorded = payload.get("policy")
+    policy = cast(dict[str, object], recorded) if isinstance(recorded, dict) else {}
+    try:
+        return WorkerPermissionRequest.model_validate(
+            {
+                "seq": request.seq,
+                "kind": "hold",
+                "project_id": project_id,
+                "session_id": session or None,
+                "caller_kind": "agent" if payload.get("caller_kind") == "agent" else "code",
+                "policy": _text(policy.get("digest")) or "",
+                "rule": _text(payload.get("rule")),
+                "reason": _text(payload.get("reason")),
+                "max_grant": "once",
+                "hold": HoldAsked.model_validate(payload.get("hold")),
+                "recorded_at": request.recorded,
+                "expires_at": request.recorded + request.timeout,
+                "timed_out": False,  # a hold lasts until it is answered
                 "on_timeout": request.on_timeout,
             }
         )

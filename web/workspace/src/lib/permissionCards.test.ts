@@ -26,6 +26,7 @@ const base: PendingApproval = {
   summary: {},
   http: null,
   packages: null,
+  hold: null,
   scopes: ['once', 'project'],
 };
 

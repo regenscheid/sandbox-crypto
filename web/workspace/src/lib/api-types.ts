@@ -40,7 +40,7 @@ export interface Answer {
 export interface AnswerResult {
   seq: number;
   decision: string;
-  kind: "mcp" | "network" | "packages";
+  kind: "mcp" | "network" | "packages" | "hold";
   source: "proxy" | "worker";
   granted: ProjectGrant[];
 }
@@ -1173,6 +1173,13 @@ export interface HeldBinding {
   reason: string;
 }
 
+/** One of the calls before a hold, as its card lists it: never a query or arguments. */
+export interface HeldCall {
+  method: string;
+  host: string;
+  target: string;
+}
+
 export interface HistoryChunk {
   collection: string;
   offset: number;
@@ -1210,6 +1217,16 @@ export interface HistoryRevision {
   added: string[];
   moved: string[];
   removed: string[];
+}
+
+/** A hold of a session's outward calls by a detection rule (D103): what the rule saw. Clearing it resumes the calls; stopping it stops the session's runs. */
+export interface HoldAsked {
+  rule: string;
+  count: number;
+  threshold: number;
+  window_seconds: number;
+  host: string | null;
+  requests: HeldCall[];
 }
 
 /** An HTTP or git request as its card shows it: never the body. */
@@ -1643,7 +1660,7 @@ export interface PatchRecord {
 /** A request that waits for the user's answer, as its card shows it. */
 export interface PendingApproval {
   seq: number;
-  kind: "mcp" | "network" | "packages";
+  kind: "mcp" | "network" | "packages" | "hold";
   source: "proxy" | "worker";
   server: string;
   tool: string;
@@ -1663,6 +1680,7 @@ export interface PendingApproval {
   summary: Record<string, string>;
   http: HttpSummary | null;
   packages: PackagesAsked | null;
+  hold: HoldAsked | null;
   scopes: string[];
 }
 

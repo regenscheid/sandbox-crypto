@@ -20,6 +20,8 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.event_store import EventStore
+from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy_middleware.cli import _read_records
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
@@ -230,3 +232,84 @@ async def test_a_direct_call_is_never_answered_through_the_proxy_or_beyond_its_c
     other = request_of(middleware.call({"id": "monitor-4"}))
     body = {"decision": "once", "kind": "network", "source": "worker"}
     await post(client, ANSWER.format(other), body, 409)
+
+
+READ_TOOL = "attack-catalog-mcp_search_attacks"
+
+
+@pytest.fixture
+def hammered(tmp_path: Path, events: EventStore) -> Middleware:
+    """The real middleware under a policy whose same-URL threshold is two calls (D103)."""
+    store = PolicyStore(tmp_path / "middleware")
+    text = (ROOT / "examples" / "policy.yaml").read_text() + "detection:\n  same_url: 2\n"
+    loaded = store.add_policy(text.encode())
+    store.bind("sbx-agent", loaded.digest)
+    decider = PolicyMiddleware(
+        store,
+        ceiling=PoolCeiling.unrestricted(),
+        floor=HardFloor(),
+        events=StoreSink(events),
+        requests=partial(_read_records, events.path),
+        listings=ToolListings(),
+    )
+    config: dict[str, object] = {
+        "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
+        "mcp": {"project": "p1", "caller": "agent-runtime"},
+    }
+    return Middleware(decider, config)
+
+
+def search(middleware: Middleware) -> str:
+    """One tools/call of a read tool, always the same: '' if admitted, else the code."""
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call"}
+    body["params"] = {"name": READ_TOOL, "arguments": {"query": "SNOVA"}}
+    middleware.calls += 1
+    facts = HttpRequestFacts(
+        sandbox_id="sbx-agent", request_id=f"s-{middleware.calls}", scheme="https",
+        host="mcp.example.invalid", port=443, method="POST", path="/crypto-research",
+        query="", body=json.dumps(body).encode(), config=middleware.config,
+        headers=(("content-type", "application/json"), ("sandbox-science-session", "a")),
+    )  # fmt: skip
+    return middleware.middleware.evaluate_http(facts).reason_code
+
+
+def held_seq(code: str) -> int:
+    match = re.fullmatch(r"session_held_r([0-9]+)", code)
+    assert match is not None, code
+    return int(match.group(1))
+
+
+async def test_a_hold_is_a_card_the_user_clears_or_stops(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    hammered: Middleware,
+    worker_url: str,
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=worker_url)
+    assert search(hammered) == ""
+    assert search(hammered) == ""
+    seq = held_seq(search(hammered))
+    card = (await shown(client))[seq]
+    assert (card["kind"], card["source"], card["session"], card["scopes"]) == (
+        "hold", "worker", "a", [],
+    )  # fmt: skip
+    assert (card["hold"]["rule"], card["hold"]["count"], card["rule"]) == (
+        "same-url", 3, "detect.same-url",
+    )  # fmt: skip
+    assert seq not in await shown(client, "c")  # the agent's hold is its session's
+    # A hold takes clear or stop, and nothing else does.
+    await post(client, ANSWER.format(seq), {"decision": "once", "kind": "hold"}, 400)
+    await post(client, ANSWER.format(seq), {"decision": "project", "kind": "hold"}, 400)
+    result = await post(client, ANSWER.format(seq), {"decision": "clear", "kind": "hold"})
+    assert (result["decision"], result["kind"]) == ("clear", "hold")
+    await until(lambda: search(hammered) == "")  # cleared: the counts start again
+    # Held again, and stopped: the session's live run is cancelled.
+    state = RunState(ProjectStore(state_dir).control)
+    state.acquire("p1", "a", "run-x", "holder")
+    assert search(hammered) == ""
+    again = held_seq(search(hammered))
+    assert again > seq
+    await post(client, ANSWER.format(again), {"decision": "stop", "kind": "hold"})
+    assert state.cancelled("p1", "a", "run-x")
+    assert again not in await shown(client)

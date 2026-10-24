@@ -44,6 +44,7 @@
   } from '../lib/questions';
   import type { ChatSignals } from '../lib/sessionStatus';
   import { idle, submit } from '../lib/submit';
+  import ChatHold from './ChatHold.svelte';
   import ChatPermission from './ChatPermission.svelte';
   import ChatQuestion from './ChatQuestion.svelte';
   import { api, type PermissionDecision } from '../lib/api';
@@ -153,7 +154,7 @@
     ),
   );
   async function answerPermission(request: PendingApproval, decision: PermissionDecision) {
-    await api.answerPermission(projectId, request, decision);
+    await api.answerPermission(projectId, request, decision, sessionId);
     permissions = permissions.filter(
       (item) =>
         !(item.seq === request.seq && item.kind === request.kind && item.source === request.source),
@@ -290,11 +291,15 @@
       {#if asking.error}<ErrorMessage error={asking.error} />{/if}
     {/if}
     {#each permissions as request (`${request.source}:${request.kind}:${request.seq}`)}
-      <ChatPermission
-        {request}
-        call={request.kind === 'mcp' ? heldCall(transcript, request.tool) : null}
-        answer={(decision) => answerPermission(request, decision)}
-      />
+      {#if request.kind === 'hold'}
+        <ChatHold {request} answer={(decision) => answerPermission(request, decision)} />
+      {:else}
+        <ChatPermission
+          {request}
+          call={request.kind === 'mcp' ? heldCall(transcript, request.tool) : null}
+          answer={(decision) => answerPermission(request, decision)}
+        />
+      {/if}
     {/each}
     {#each open as question (question.question_id)}
       <ChatQuestion

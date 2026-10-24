@@ -37,6 +37,7 @@ const request: PendingApproval = {
   summary: { url: 'https://www.washingtonpost.com/', host: 'www.washingtonpost.com' },
   http: null,
   packages: null,
+  hold: null,
   scopes: ['once', 'session', 'project'],
 };
 

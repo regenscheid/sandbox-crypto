@@ -77,13 +77,35 @@ class McpAsked(Contract):
     """The call's significant arguments, by kind (url, host, recipient, title, size, query)."""
 
 
+class HeldCall(Contract):
+    """One of the calls before a hold, as its card lists it: never a query or arguments."""
+
+    method: Text
+    host: Text
+    target: Text
+    """A URL's path, with its query's size only, or an MCP method and tool."""
+
+
+class HoldAsked(Contract):
+    """A hold of a session's outward calls by a detection rule (D103): what the rule saw.
+    Clearing it resumes the calls; stopping it stops the session's runs."""
+
+    rule: Text
+    count: Annotated[int, Field(ge=0)]
+    threshold: Annotated[int, Field(ge=0)]
+    window_seconds: Annotated[int, Field(ge=0)]
+    host: Text | None = None
+    requests: list[HeldCall] = Field(default_factory=list[HeldCall], max_length=5)
+    """The subject's latest calls, newest last."""
+
+
 class WorkerPermissionRequest(Contract):
     """One unanswered permission request of a project: a sandbox's network or package
-    request, or an MCP call of the project's agent."""
+    request, an MCP call of the project's agent, or a hold of a session's calls."""
 
     seq: Annotated[int, Field(ge=1)]
     """Its sequence number in the middleware's event store."""
-    kind: Literal["network", "packages", "mcp"]
+    kind: Literal["network", "packages", "mcp", "hold"]
     project_id: Identifier
     environment_id: Identifier | None = None
     """The environment whose sandbox asked; an MCP call names none."""
@@ -99,6 +121,7 @@ class WorkerPermissionRequest(Contract):
     http: HttpSummary | None = None
     packages: PackagesAsked | None = None
     mcp: McpAsked | None = None
+    hold: HoldAsked | None = None
     recorded_at: AwareDatetime
     expires_at: AwareDatetime
     timed_out: bool
@@ -112,10 +135,11 @@ class WorkerPermissionListing(Contract):
 class WorkerPermissionAnswer(Contract):
     """The user's answer, which the workspace relays: approve or deny, with the ledger's
     scope (``request`` or ``host`` for a network request, ``files`` for a file set,
-    ``call`` for an MCP call) and for an approval how long it lasts."""
+    ``call`` for an MCP call, ``session`` for a hold, which an approval clears) and for an
+    approval how long it lasts."""
 
     approve: bool
-    scope: Literal["request", "host", "files", "call"]
+    scope: Literal["request", "host", "files", "call", "session"]
     hours: Annotated[float, Field(gt=0, le=MAX_ANSWER_HOURS)] | None = None
 
 

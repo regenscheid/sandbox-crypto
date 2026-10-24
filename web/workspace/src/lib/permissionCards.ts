@@ -6,7 +6,7 @@ import type { PermissionDecision } from './api';
 import type { PendingApproval, ProjectGrant } from './api-types';
 
 export interface ScopeChoice {
-  id: Exclude<PermissionDecision, 'deny'>;
+  id: Exclude<PermissionDecision, 'deny' | 'clear' | 'stop'>;
   label: string;
   detail: string;
 }
@@ -85,6 +85,29 @@ export function askedBy(request: PendingApproval): string {
   if (request.caller_kind === 'code') return 'research code';
   if (request.caller_kind === 'user') return 'you';
   return 'the agent';
+}
+
+const RULES: Record<string, string> = {
+  'host-rate': 'a sustained burst of calls to one host',
+  'host-spread': 'calls to very many hosts within minutes',
+  'same-url': 'the same URL called again and again',
+  'sequential-ids': 'URLs that step through numbers one by one',
+  'host-failures': 'repeated failures from one host',
+  'denial-streak': 'many refused calls in a short time',
+  'daily-ceiling': "the project's daily ceiling of calls",
+};
+
+/** What a hold of the session's calls (D103) says it saw, in words. */
+export function holdSummary(request: PendingApproval): string {
+  const hold = request.hold;
+  if (!hold) return 'A detection rule paused this session’s outward calls.';
+  const what = RULES[hold.rule] ?? hold.rule;
+  const where = hold.host ? ` to ${hold.host}` : '';
+  const minutes =
+    hold.window_seconds >= 120
+      ? `${Math.round(hold.window_seconds / 60)} minutes`
+      : `${hold.window_seconds} seconds`;
+  return `Paused for ${what}: ${hold.count} calls${where} within ${minutes}, over the threshold of ${hold.threshold}.`;
 }
 
 /** A grant, in words: what it covers. */

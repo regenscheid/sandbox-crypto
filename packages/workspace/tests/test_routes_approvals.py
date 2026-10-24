@@ -443,10 +443,10 @@ def test_the_listing_is_read_with_every_field_the_proxy_sends() -> None:
     # The proxy's listing (test_proxy.py pins the same set): a field it adds must be
     # declared here, or the strict model refuses every listing. The rest are the
     # workspace's own: ``child`` from its records of delegated runs' requests (D99), the
-    # kind, the worker's request summaries and the scopes it offers (D97), and the source
-    # that holds the request (D98).
+    # kind, the worker's request summaries and the scopes it offers (D97), the source
+    # that holds the request (D98), and what a detection rule's hold saw (D103).
     assert set(approvals.PendingApproval.model_fields) - {
-        "child", "kind", "http", "packages", "scopes", "source",
+        "child", "kind", "http", "packages", "scopes", "source", "hold",
     } == {
         "seq", "server", "method", "tool", "policy", "session", "rule", "reason",
         "recorded_at", "expires_at", "timed_out", "on_timeout", "caller_kind", "effect",

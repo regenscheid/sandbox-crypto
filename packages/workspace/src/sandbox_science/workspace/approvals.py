@@ -17,6 +17,11 @@ Three kinds of request reach the chat, from two sources:
   and ``packages``: a provisioning operation's file set, or a package file research code
   fetched through the package cache. The worker lists and records answers to them, for
   the workspace's operator client only (``source: worker``).
+- ``hold``: a detection rule's hold of a session's outward calls (D103), which the
+  middleware raised: the agent's MCP calls by session, or research code's by sandbox,
+  shown in every session of the project. ``clear`` resumes the calls; ``stop`` stops the
+  session's run (the one the card names, else the one it is answered in) and leaves its
+  counts standing, so that calls that go on hold it again. Sandbox compute goes on.
 
 A card carries a structured summary, never the payload: the tool and its significant
 arguments, or the method, host, path, content type, size and a JSON body's top-level
@@ -30,9 +35,10 @@ Routes:
 - ``GET …/sessions/{session}/permission-requests``: the requests that wait in the session,
   with network and package requests that name no session in every session of the project.
 - ``POST …/permission-requests/{seq}/answer`` with ``{"decision": "once" | "session" |
-  "project" | "deny", "kind": "mcp" | "network" | "packages", "source": "proxy" |
-  "worker" | null, "hours": null | number}``. Without ``source``, an MCP call is the
-  proxy's and anything else the worker's.
+  "project" | "deny" | "clear" | "stop", "kind": "mcp" | "network" | "packages" | "hold",
+  "source": "proxy" | "worker" | null, "hours": null | number, "session": null | id}``;
+  ``clear`` and ``stop`` answer a hold only, ``session`` names the one to stop. Without
+  ``source``, an MCP call is the proxy's and anything else the worker's.
   ``hours`` gives a session or project grant an expiry; without it, it lasts until revoked.
 - ``GET …/grants``: the project's grants, with when each was last used; ``POST
   …/grants/{grant}/revoke`` ends one at once.
@@ -58,8 +64,9 @@ import aiohttp
 from aiohttp import web
 from pydantic import Field, TypeAdapter, ValidationError
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract, ErrorKind
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract, ErrorKind, Identifier
 from sandbox_science.contracts.permission_requests import (
+    HoldAsked,
     HttpSummary,
     PackagesAsked,
     WorkerPermissionAnswer,
@@ -76,6 +83,7 @@ from sandbox_science.orchestrator.project_grants import (
     ProjectGrants,
 )
 from sandbox_science.orchestrator.projects import ProjectError
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import normalize_host
 from sandbox_science.policy.approvals import offered
@@ -95,7 +103,7 @@ ONCE_HOURS: Final = 1.0
 """How long an approval of one request (its exact arguments or body) lasts."""
 RELAY_SECONDS: Final = 3.0
 MAX_REQUESTS: Final = 256
-Kind = Literal["mcp", "network", "packages"]
+Kind = Literal["mcp", "network", "packages", "hold"]
 Source = Literal["proxy", "worker"]
 """Where a request is read and answered: the MCP proxy, or the worker, which holds the
 policy middleware's event store. Their sequence numbers are separate."""
@@ -147,6 +155,8 @@ class PendingApproval(Contract):
     query)."""
     http: HttpSummary | None = None
     packages: PackagesAsked | None = None
+    hold: HoldAsked | None = None
+    """What a detection rule saw, for a hold of the session's calls (D103)."""
     scopes: list[str] = Field(default_factory=list[str])
     """The answers its ceiling allows, narrowest first; set by the workspace."""
 
@@ -156,10 +166,12 @@ class PendingListing(Contract):
 
 
 class Decision(Contract):
-    decision: Literal["once", "session", "project", "deny"]
+    decision: Literal["once", "session", "project", "deny", "clear", "stop"]
     kind: Kind = "mcp"
     source: Source | None = None
     hours: float | None = Field(default=None, gt=0, le=MAX_GRANT_HOURS)
+    session: Identifier | None = None
+    """For ``stop``: the session whose run stops, when the hold names none."""
 
     @property
     def via(self) -> Source:
@@ -319,6 +331,8 @@ def asked_of(item: PendingApproval) -> Asked:
 
 
 def _offered(item: PendingApproval) -> PendingApproval:
+    if item.kind == "hold":
+        return item.model_copy(update={"scopes": []})  # cleared or stopped, never granted
     asked = asked_of(item)
     scopes = offered(item.max_grant, item.effect, session=item.session is not None)
     usable = [scope for scope in scopes if asked.grantable(scope) is None]
@@ -348,6 +362,7 @@ def _from_worker(found: WorkerPermissionRequest) -> PendingApproval:
         max_grant=found.max_grant,
         http=found.http,
         packages=found.packages,
+        hold=found.hold,
     )
 
 
@@ -466,6 +481,12 @@ async def answer(request: web.Request) -> web.Response:
     held = next((item for item in pending if item.seq == seq and item.kind == decision.kind), None)
     if held is None:
         raise ProjectError(ErrorKind.CONFLICT, f"permission request {seq} no longer waits")
+    if (held.kind == "hold") != (decision.decision in ("clear", "stop")):
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "a hold is cleared or stopped, and only a hold is"
+        )
+    if held.kind == "hold":
+        return await _answer_hold(request, project, config, held, decision)
     asked = asked_of(held)
     if decision.decision != "deny" and decision.decision not in _offered(held).scopes:
         # The ceiling is the server's to enforce, whatever a client sends (D97).
@@ -491,6 +512,33 @@ async def answer(request: web.Request) -> web.Response:
     result = AnswerResult(
         seq=seq, decision=decision.decision, kind=held.kind, source=held.source, granted=granted
     )
+    return json_answer(dumps(result.model_dump(mode="json")))
+
+
+async def _answer_hold(
+    request: web.Request,
+    project: str,
+    config: Configuration,
+    held: PendingApproval,
+    decision: Decision,
+) -> web.Response:
+    """Clear a hold, which resumes the session's outward calls, or stop the session's run
+    and leave the hold answered: calls that go on raise a new one."""
+    context = request.app[CONTEXT]
+    session = held.session or decision.session
+    if decision.decision == "stop":
+        if session is None:
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "stop names the session to stop")
+
+        def stop() -> None:
+            session_record(context.projects, project, session)
+            lease = RunState(context.documents).lease(project, session)
+            if lease is not None:
+                RunState(context.writer).cancel(project, session, lease.run)
+
+        await asyncio.to_thread(stop)
+    await _send(config, held, approve=decision.decision == "clear", scope="session", hours=None)
+    result = AnswerResult(seq=held.seq, decision=decision.decision, kind="hold", source="worker")
     return json_answer(dumps(result.model_dump(mode="json")))
 
 
@@ -556,6 +604,8 @@ async def _relay_worker(
         return
     for project in projects:
         for held in await _worker_pending(config.worker, project):
+            if held.kind == "hold":
+                continue  # only the user clears a hold
             if ("worker", held.seq) not in config.relayed and not held.timed_out:
                 await _relay_one(config, store, writer, project, held, "worker")
 

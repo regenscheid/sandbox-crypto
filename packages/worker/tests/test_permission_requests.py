@@ -285,3 +285,61 @@ async def test_a_refusal_is_confirmed_only_for_its_own_call_and_project(
         headers=headers("harness"),
     )
     assert malformed.status == 400
+
+
+def hold(store: EventStore, key: RequestKey, caller: str) -> int:
+    payload = {
+        "target": key.payload(),
+        "escalation": {"timeout_seconds": 30 * 86400, "on_timeout": "deny"},
+        "rule": "detect.same-url",
+        "reason": "101 calls to a.org within 600 s",
+        "caller_kind": caller,
+        "policy": {"name": "p", "digest": DIGEST},
+        "max_grant": "once",
+        "hold": {
+            "rule": "same-url", "count": 101, "threshold": 100, "window_seconds": 600,
+            "host": "a.org", "requests": [{"method": "GET", "host": "a.org", "target": "/x"}],
+        },
+    }  # fmt: skip
+    return store.append("escalation", "policy-middleware", payload).seq
+
+
+async def test_holds_of_a_sessions_calls_are_listed_and_cleared_or_stopped(
+    api: tuple[TestClient[Any, Any], EventStore, Permissions],
+) -> None:
+    # D103: research code's hold is its sandbox's, whose environment names the project;
+    # the agent's is its session's, which its key names.
+    client, sink, _ = api
+    stamp = "2026-10-24T12:00:00.000000+00:00"
+    code = hold(sink, RequestKey.hold("", "sbx-1", "", "same-url", stamp), "code")
+    agent = hold(sink, RequestKey.hold("p1", "sbx-a", "s-1", "same-url", stamp), "agent")
+    hold(sink, RequestKey.hold("", "sbx-2", "", "same-url", stamp), "code")  # p2's
+    hold(sink, RequestKey.hold("p2", "sbx-b", "s-9", "same-url", stamp), "agent")  # p2's
+    listed = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
+    requests = (await listed.json())["requests"]
+    assert [(item["seq"], item["kind"]) for item in requests] == [(code, "hold"), (agent, "hold")]
+    first, second = requests
+    assert (first["session_id"], first["caller_kind"], second["session_id"]) == (
+        None, "code", "s-1",
+    )  # fmt: skip
+    assert first["hold"]["requests"] == [{"method": "GET", "host": "a.org", "target": "/x"}]
+    assert (first["max_grant"], first["timed_out"], first["rule"]) == (
+        "once", False, "detect.same-url",
+    )  # fmt: skip
+    path = "/v1/permission-requests/{}/answer"
+    wrong = await client.post(
+        path.format(code), json={"approve": True, "scope": "host"}, headers=headers("workspace")
+    )
+    assert wrong.status == 409
+    for seq, approve in ((code, True), (agent, False)):
+        answered = await client.post(
+            path.format(seq),
+            json={"approve": approve, "scope": "session"},
+            headers=headers("workspace"),
+        )
+        assert answered.status == 201, await answered.text()
+    with StoreReader(sink.path) as reader:
+        answers = [r.kind for r in reader.records(kinds=KINDS) if r.kind != "escalation"]
+    assert answers == ["approval", "denial"]
+    left = await client.get("/v1/permission-requests?project=p1", headers=headers("workspace"))
+    assert (await left.json())["requests"] == []
