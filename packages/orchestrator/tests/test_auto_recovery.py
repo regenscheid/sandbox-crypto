@@ -402,7 +402,15 @@ async def test_late_user_correction_does_not_trigger_failure_backoff(harness: Ha
         await eventually(
             lambda: WorkRecords(service.stores.projects.control).queued() == [], timeout=10
         )
-        await service.maintenance_tick()
+
+        async def ended() -> bool:
+            # The tick is what drops a finished run from ``active``; ``waiting_work``
+            # leaves out a session with a run in flight, and ``waiting_until`` is set only
+            # as the run ends, so both checks below mean something only after this.
+            await service.maintenance_tick()
+            return ("p", "s") not in service.active
+
+        await eventually(ended, describe="the resumed run to end")
         assert ("p", "s") not in service.waiting_until
         assert ("p", "s") in await service.waiting_work()
 
