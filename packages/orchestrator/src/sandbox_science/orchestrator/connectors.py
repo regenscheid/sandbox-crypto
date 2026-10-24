@@ -54,7 +54,7 @@ import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol, cast
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -180,7 +180,7 @@ class ProxyClient:
         self, server: str, method: str, params: Mapping[str, object], *, session: str
     ) -> dict[str, Any]:
         """``method``'s result from ``server``; ``session`` names the asking session."""
-        message = _body(
+        message = encode_message(
             {"jsonrpc": "2.0", "id": self._next(), "method": method, "params": dict(params)}
         )
         for attempt in (1, 2):
@@ -221,7 +221,7 @@ class ProxyClient:
         try:
             async with self._client().post(
                 f"{self.url}/mcp/{server}",
-                data=_body(message),
+                data=encode_message(message),
                 headers=self._headers(session, None),
                 allow_redirects=False,
             ) as response:
@@ -233,7 +233,7 @@ class ProxyClient:
                 raise ConnectorError("unavailable", f"the proxy started no session for {server}")
             async with self._client().post(
                 f"{self.url}/mcp/{server}",
-                data=_body({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+                data=encode_message({"jsonrpc": "2.0", "method": "notifications/initialized"}),
                 headers=self._headers(session, found),
                 allow_redirects=False,
             ) as response:
@@ -294,7 +294,7 @@ class ProxyClient:
         return self._ids
 
 
-def _body(message: Mapping[str, object]) -> bytes:
+def encode_message(message: Mapping[str, object]) -> bytes:
     """A message with its keys sorted, so the same arguments are the same request: a call
     approved for the operator matches it when it comes again. A message JSON cannot hold
     is never sent (``not_sent``)."""
@@ -414,12 +414,25 @@ def purpose(description: object) -> str:
     return text if len(text) <= PURPOSE_CHARS else text[: PURPOSE_CHARS - 1].rstrip() + "…"
 
 
+class McpClient(Protocol):
+    """What ``Connectors`` asks of its client: the MCP proxy's (``ProxyClient``), or one that
+    reaches declared servers straight through OpenShell (``mcp_direct``, the D98 prototype).
+    A refusal is a ``ConnectorError`` whose kind is its reason, and a held call's names its
+    permission request in ``data["request"]``."""
+
+    async def request(
+        self, server: str, method: str, params: Mapping[str, object], *, session: str
+    ) -> dict[str, Any]:
+        """``method``'s result from ``server``; ``session`` names the asking session."""
+        ...
+
+
 class Connectors:
     """One run's connector tools, from ``servers`` behind the proxy (see the module)."""
 
     def __init__(
         self,
-        client: ProxyClient,
+        client: McpClient,
         servers: Sequence[str],
         *,
         session: str,
