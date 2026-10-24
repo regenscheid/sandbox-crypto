@@ -181,6 +181,18 @@ class ProjectGrants:
             ).fetchall()
         return [str(row[0]) for row in rows]
 
+    def projects_with_worker_grants(self) -> list[str]:
+        """The projects that hold any grant: those whose requests at the worker (research
+        code's, and the agent's MCP calls the middleware holds, D98) a relay need look at."""
+        if self.documents.control.missing:
+            return []
+        with self.documents.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT DISTINCT project FROM project_grants "
+                "WHERE revoked_at IS NULL ORDER BY project"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def covering(self, project: str, asked: Asked, now: datetime) -> list[ProjectGrant]:
         return covering(self.listing(project).grants, asked, now)
 

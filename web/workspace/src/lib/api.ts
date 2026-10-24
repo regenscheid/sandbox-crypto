@@ -643,7 +643,8 @@ export const api = {
   /** Safe configured MCP service identity and bounded historical run observations. */
   mcpServices: (project: string) => get<McpInventory>(`/projects/${part(project)}/mcp-services`),
   /** The requests that wait for the user's answer in the session (D76, D97): connector
-   * tool calls the MCP proxy holds, and research code's network and package requests. */
+   * tool calls the MCP proxy or the policy middleware holds, and research code's network
+   * and package requests. */
   permissionRequests: (project: string, session: string, signal?: AbortSignal) =>
     get<PendingListing>(
       `/projects/${part(project)}/sessions/${part(session)}/permission-requests`,
@@ -651,12 +652,14 @@ export const api = {
     ),
   answerPermission: (
     project: string,
-    request: { seq: number; kind: PendingApproval['kind'] },
+    request: { seq: number; kind: PendingApproval['kind']; source?: PendingApproval['source'] },
     decision: PermissionDecision,
   ) =>
     post<AnswerResult>(`/projects/${part(project)}/permission-requests/${request.seq}/answer`, {
       decision,
       kind: request.kind,
+      // Who holds it: the MCP proxy, or the worker for the policy middleware (D98).
+      source: request.source ?? null,
     }),
   /** The project's grants, with their last use (D97). */
   grants: (project: string) => get<GrantListing>(`/projects/${part(project)}/grants`),

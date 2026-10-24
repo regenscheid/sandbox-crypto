@@ -2,11 +2,12 @@
 // What the cards and the Grants panel say of requests and grants (D97).
 import { describe, expect, it } from 'vitest';
 import type { PendingApproval, ProjectGrant } from './api-types';
-import { cardTitle, grantLabel, scopeChoices } from './permissionCards';
+import { cardTitle, grantLabel, scopeChoices, summaryRows } from './permissionCards';
 
 const base: PendingApproval = {
   seq: 1,
   kind: 'mcp',
+  source: 'proxy',
   server: 'papers',
   tool: 'submit',
   method: 'tools/call',
@@ -27,6 +28,16 @@ const base: PendingApproval = {
   packages: null,
   scopes: ['once', 'project'],
 };
+
+describe('cards of held tool calls', () => {
+  it('read alike whether the MCP proxy or the policy middleware holds the call', () => {
+    const direct: PendingApproval = { ...base, source: 'worker', summary: { title: 'm-1' } };
+    const proxied: PendingApproval = { ...direct, source: 'proxy' };
+    expect(cardTitle(direct)).toBe(cardTitle(proxied));
+    expect(summaryRows(direct)).toEqual(summaryRows(proxied));
+    expect(scopeChoices(direct)).toEqual(scopeChoices(proxied));
+  });
+});
 
 describe('scope choices', () => {
   it('follow the scopes the server offers, and always include once', () => {

@@ -3,17 +3,20 @@
 waits as a card, and the user allows it once, for the session or for the project, within
 the request's ceiling, or denies it.
 
-Three kinds of request reach the chat:
+Three kinds of request reach the chat, from two sources:
 
-- ``mcp``: a connector tool call the MCP proxy holds. The workspace reads and answers the
-  project's requests as an operator caller of the proxy, a token of its own that makes no
-  MCP call. A delegated run's call names the child that asked, with the brief its parent
-  gave it and the child's own words (D99); one its parent withdrew is not listed, cannot
-  be approved, and is denied at the proxy.
+- ``mcp``: a connector tool call held by the MCP proxy (``source: proxy``) or, for an
+  agent that calls servers straight through OpenShell (D98), by the policy middleware
+  (``source: worker``). The workspace reads and answers the proxy's as an operator caller
+  of the proxy, a token of its own that makes no MCP call, and the middleware's through
+  the worker, as below; either card shows the same fields and takes the same answers. A
+  delegated run's proxy call names the child that asked, with the brief its parent gave
+  it and the child's own words (D99); one its parent withdrew is not listed, cannot be
+  approved, and is denied at the proxy.
 - ``network``: an HTTP or git request of research code the policy middleware escalated,
   and ``packages``: a provisioning operation's file set, or a package file research code
   fetched through the package cache. The worker lists and records answers to them, for
-  the workspace's operator client only.
+  the workspace's operator client only (``source: worker``).
 
 A card carries a structured summary, never the payload: the tool and its significant
 arguments, or the method, host, path, content type, size and a JSON body's top-level
@@ -27,7 +30,9 @@ Routes:
 - ``GET …/sessions/{session}/permission-requests``: the requests that wait in the session,
   with network and package requests that name no session in every session of the project.
 - ``POST …/permission-requests/{seq}/answer`` with ``{"decision": "once" | "session" |
-  "project" | "deny", "kind": "mcp" | "network" | "packages", "hours": null | number}``.
+  "project" | "deny", "kind": "mcp" | "network" | "packages", "source": "proxy" |
+  "worker" | null, "hours": null | number}``. Without ``source``, an MCP call is the
+  proxy's and anything else the worker's.
   ``hours`` gives a session or project grant an expiry; without it, it lasts until revoked.
 - ``GET …/grants``: the project's grants, with when each was last used; ``POST
   …/grants/{grant}/revoke`` ends one at once.
@@ -91,6 +96,9 @@ ONCE_HOURS: Final = 1.0
 RELAY_SECONDS: Final = 3.0
 MAX_REQUESTS: Final = 256
 Kind = Literal["mcp", "network", "packages"]
+Source = Literal["proxy", "worker"]
+"""Where a request is read and answered: the MCP proxy, or the worker, which holds the
+policy middleware's event store. Their sequence numbers are separate."""
 
 
 class ChildAsked(Contract):
@@ -111,6 +119,8 @@ class PendingApproval(Contract):
 
     seq: int
     kind: Kind = "mcp"
+    source: Source = "proxy"
+    """Set by the workspace; a proxy's listing never decides it."""
     server: str = ""
     tool: str = ""
     method: str = ""
@@ -148,13 +158,20 @@ class PendingListing(Contract):
 class Decision(Contract):
     decision: Literal["once", "session", "project", "deny"]
     kind: Kind = "mcp"
+    source: Source | None = None
     hours: float | None = Field(default=None, gt=0, le=MAX_GRANT_HOURS)
+
+    @property
+    def via(self) -> Source:
+        """Where the request is answered: as asked, else the proxy for an MCP call."""
+        return self.source or ("proxy" if self.kind == "mcp" else "worker")
 
 
 class AnswerResult(Contract):
     seq: int
     decision: str
     kind: Kind = "mcp"
+    source: Source = "proxy"
     granted: list[ProjectGrant] = Field(default_factory=list[ProjectGrant])
 
 
@@ -184,9 +201,9 @@ class ApprovalClient:
                 found = PendingListing.model_validate_json(raw)
             except ValidationError:
                 raise ProjectError(ErrorKind.UNAVAILABLE, "the MCP proxy answered badly") from None
-            # The proxy's word on kind and scopes is not taken: these are MCP calls.
+            # The proxy's word on kind, source and scopes is not taken: these are its calls.
             return [
-                item.model_copy(update={"kind": "mcp", "scopes": []})
+                item.model_copy(update={"kind": "mcp", "source": "proxy", "scopes": []})
                 for item in found.requests[:MAX_REQUESTS]
             ]
 
@@ -309,10 +326,16 @@ def _offered(item: PendingApproval) -> PendingApproval:
 
 
 def _from_worker(found: WorkerPermissionRequest) -> PendingApproval:
+    call = found.mcp if found.kind == "mcp" else None
     return PendingApproval(
         seq=found.seq,
         kind=found.kind,
-        method=found.http.method if found.http else "",
+        source="worker",
+        server=call.server if call else "",
+        tool=call.tool if call else "",
+        effect=call.effect if call else None,
+        summary=dict(call.summary) if call else {},
+        method=call.method if call else found.http.method if found.http else "",
         policy=found.policy,
         session=found.session_id,
         rule=found.rule,
@@ -374,7 +397,8 @@ def _asked(child: ChildRequest | None) -> ChildAsked | None:
 
 def ledger_answer(item: PendingApproval, decision: str) -> tuple[str, float | None]:
     """The scope and hours of the answer the proxy or the middleware records: the request
-    itself, or for a host grant the host's reads in that sandbox."""
+    itself (an MCP call with its exact arguments, whoever holds it), or for a host grant
+    the host's reads in that sandbox."""
     approve = decision != "deny"
     if item.kind == "mcp":
         return "call", (None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS)
@@ -385,10 +409,15 @@ def ledger_answer(item: PendingApproval, decision: str) -> tuple[str, float | No
     return "request", (None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS)
 
 
+def _relay_key(item: PendingApproval) -> str:
+    """How the relay notes an answered request: by its source's numbering."""
+    return "mcp" if item.source == "proxy" else "worker"
+
+
 async def _send(
     config: Configuration, item: PendingApproval, *, approve: bool, scope: str, hours: float | None
 ) -> None:
-    if item.kind == "mcp":
+    if item.source == "proxy":
         if config.client is None:
             raise ProjectError(ErrorKind.NOT_FOUND, "tool calls are not answered here")
         await config.client.answer(item.seq, approve=approve, scope=scope, hours=hours)
@@ -419,7 +448,9 @@ async def answer(request: web.Request) -> web.Response:
     config = request.app.get(APPROVALS)
     if config is None:
         raise ProjectError(ErrorKind.NOT_FOUND, "this project's requests are not answered here")
-    if decision.kind == "mcp":
+    if decision.via == "proxy":
+        if decision.kind != "mcp":
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "the MCP proxy holds tool calls only")
         proxy = _proxy(request, project)
         withdrawn = await asyncio.to_thread(
             ChildRequests(context.documents).withdrawn, project, [seq]
@@ -456,9 +487,10 @@ async def answer(request: web.Request) -> web.Response:
             ProjectGrants(context.writer).used,
             project, [grant.grant_id for grant in granted], config.clock.now(),
         )  # fmt: skip
-    source = "mcp" if held.kind == "mcp" else "worker"
-    config.relayed.add((source, seq))
-    result = AnswerResult(seq=seq, decision=decision.decision, kind=held.kind, granted=granted)
+    config.relayed.add((_relay_key(held), seq))
+    result = AnswerResult(
+        seq=seq, decision=decision.decision, kind=held.kind, source=held.source, granted=granted
+    )
     return json_answer(dumps(result.model_dump(mode="json")))
 
 
@@ -540,7 +572,7 @@ async def _relay(app: web.Application) -> None:
                     await _relay_mcp(config, store, writer)
                 else:
                     projects = await asyncio.to_thread(
-                        ProjectGrants(store).projects_with_code_grants
+                        ProjectGrants(store).projects_with_worker_grants
                     )
                     await _relay_worker(config, store, writer, projects)
             except asyncio.CancelledError:

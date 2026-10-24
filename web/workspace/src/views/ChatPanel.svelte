@@ -155,7 +155,8 @@
   async function answerPermission(request: PendingApproval, decision: PermissionDecision) {
     await api.answerPermission(projectId, request, decision);
     permissions = permissions.filter(
-      (item) => !(item.seq === request.seq && item.kind === request.kind),
+      (item) =>
+        !(item.seq === request.seq && item.kind === request.kind && item.source === request.source),
     );
   }
   $effect(() => {
@@ -288,7 +289,7 @@
       <ChatRecovery {projectId} {sessionId} {held} busy={asking.busy} {closed} {resume} />
       {#if asking.error}<ErrorMessage error={asking.error} />{/if}
     {/if}
-    {#each permissions as request (`${request.kind}:${request.seq}`)}
+    {#each permissions as request (`${request.source}:${request.kind}:${request.seq}`)}
       <ChatPermission
         {request}
         call={request.kind === 'mcp' ? heldCall(transcript, request.tool) : null}

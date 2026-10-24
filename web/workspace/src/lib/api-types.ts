@@ -41,6 +41,7 @@ export interface AnswerResult {
   seq: number;
   decision: string;
   kind: "mcp" | "network" | "packages";
+  source: "proxy" | "worker";
   granted: ProjectGrant[];
 }
 
@@ -1643,6 +1644,7 @@ export interface PatchRecord {
 export interface PendingApproval {
   seq: number;
   kind: "mcp" | "network" | "packages";
+  source: "proxy" | "worker";
   server: string;
   tool: string;
   method: string;
