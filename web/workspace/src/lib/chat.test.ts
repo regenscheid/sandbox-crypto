@@ -386,6 +386,13 @@ describe('the transcript of a run', () => {
     ]);
   });
 
+  it("shows a root's soft-cap check-in notice in its own words (D102)", () => {
+    const said = 'The research reached a soft cost check-in and continues; nothing was stopped.';
+    expect(
+      chatEntries([event(1, 'notice', { source: 'resources', ids: ['resource-1'], text: said })]),
+    ).toEqual([{ kind: 'note', seq: 1, text: said, problem: false }]);
+  });
+
   it('shows what each event says, as text', () => {
     const entries = chatEntries([
       event(1, 'started', { run_id: 'r1', message_ids: ['m1'] }),

@@ -26,6 +26,7 @@ from typing import Self
 from aiohttp import web
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier, PolicyRevision
+from sandbox_science.orchestrator.accounting import UsageAccount, account
 from sandbox_science.orchestrator.projects import (
     ProjectError,
     ProjectRecord,
@@ -152,6 +153,7 @@ class SessionDetail(Contract):
 def add_routes(app: web.Application) -> None:
     app.router.add_get("/api/v0/projects", projects)
     app.router.add_get("/api/v0/projects/{project}", project)
+    app.router.add_get("/api/v0/projects/{project}/usage", usage)
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}", session)
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}/runs/{run}", run)
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}/tree", tree)
@@ -168,6 +170,19 @@ async def project(request: web.Request) -> web.Response:
     return await json_response(
         request, lambda: ProjectAnswer(project=_project(request.app[CONTEXT].projects, found))
     )
+
+
+async def usage(request: web.Request) -> web.Response:
+    """The project's recorded spend and tokens by session, run and role, its optional
+    local limit and its cost notices (D102). Accounting only."""
+    found = request.match_info["project"]
+    store = request.app[CONTEXT].projects
+
+    def read() -> UsageAccount:
+        store.get(found)
+        return account(RunState(store), found)
+
+    return await json_response(request, read)
 
 
 async def session(request: web.Request) -> web.Response:

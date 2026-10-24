@@ -9,7 +9,6 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, Identifier
-from sandbox_science.orchestrator.continuity.grants import TokenGrantRequest, TokenGrants
 from sandbox_science.orchestrator.continuity.resolutions import RecoveryControls, Resolution
 from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.projects import ProjectError, RunName
@@ -27,7 +26,6 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, status)
     app.router.add_get(PATH + "/works/{work}", pending)
     app.router.add_post(PATH + "/resolve", resolve)
-    app.router.add_post(PATH + "/token-grants", grant_tokens)
 
 
 def _cursor(request: web.Request, name: str, *, run: bool = False) -> str:
@@ -117,25 +115,6 @@ async def resolve(request: web.Request) -> web.Response:
         return (
             RecoveryControls(context.writer)
             .resolve(project, session, body, operator=USER_ID or "user")
-            .model_dump_json()
-        )
-
-    return json_answer(await asyncio.to_thread(write))
-
-
-async def grant_tokens(request: web.Request) -> web.Response:
-    project, session = identifier(request, "project"), identifier(request, "session")
-    try:
-        body = TokenGrantRequest.model_validate(await json_body(request, "USER token grant"))
-    except ValidationError as error:
-        raise ProjectError(ErrorKind.INVALID_REQUEST, error.errors()[0]["msg"][:300]) from None
-    context = request.app[CONTEXT]
-
-    def write() -> str:
-        session_record(context.projects, project, session)
-        return (
-            TokenGrants(context.writer)
-            .renew(project, session, body, operator=USER_ID or "user")
             .model_dump_json()
         )
 

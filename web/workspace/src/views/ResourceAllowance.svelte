@@ -13,12 +13,17 @@
   let result = $state<ResourceDecision | null>(null);
   const controller = new AbortController();
   let disposed = false;
+  const labels: Record<string, string> = {
+    tokens: '20,000,000 more tokens',
+    turns: '300 more turns',
+    elapsed_seconds: '1 more active hour',
+    cost: '25.00 more of soft cost',
+    loop: 'continuing past the loop check-in',
+  };
   const extension = $derived(
-    item.resource === 'turns'
-      ? { action: 'extend_turns', label: '300 more turns' }
-      : item.resource === 'elapsed_seconds'
-        ? { action: 'extend_time', label: '1 more active hour' }
-        : { action: 'extend_storage', label: '1 GiB more retained artifact space' },
+    item.resource === 'retained_bytes'
+      ? { action: 'extend_storage', label: '1 GiB more retained artifact space' }
+      : { action: 'extend', label: labels[item.resource] ?? 'one more step' },
   );
   onDestroy(() => {
     disposed = true;
@@ -65,8 +70,8 @@
   {:else}
     <p>
       Up to {extension.label}, bounded by project policy. The entire research tree must be idle.
-      Approval allows automatic Resume when its other checks pass. Tokens, worker capacity and
-      execution deadlines stay unchanged.
+      Approval allows automatic Resume when its other checks pass. Spending limits, worker capacity
+      and execution deadlines stay unchanged.
     </p>
     <label
       >Reason for continuing<textarea bind:value={reason} maxlength="2000" rows="2"

@@ -191,30 +191,12 @@ async def test_resolution_validates_explicit_cost_and_stale_epoch(
     assert pending["models"][0]["identity"] == identity
 
 
-async def test_token_grant_route_requires_login_origin_and_exact_child(
+async def test_the_user_token_grant_route_is_gone(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
+    """D102: a child's tokens are a soft cap that checks in with its parent."""
     seed_child(state_dir)
-    body = {
-        "work": CHILD,
-        "current": CHILD,
-        "epoch": 1,
-        "expected_revision": 0,
-        "total_tokens": 500_000,
-        "reason": "The evidence check is still productive.",
-    }
-    anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
-    await error_of(
-        await anonymous.post(ROOT + "/token-grants", json=body, headers=origin(anonymous)),
-        401,
-        "policy_denied",
-    )
     client = await workspace(aiohttp_client, state_dir, static_dir)
-    assert (await client.post(ROOT + "/token-grants", json=body)).status == 403
-    granted = await client.post(ROOT + "/token-grants", json=body, headers=origin(client))
-    assert granted.status == 200, await granted.text()
-    decision = await granted.json()
-    assert decision["request"]["total_tokens"] == 500_000
-    assert decision["operator"] == "user"
-    repeated = await client.post(ROOT + "/token-grants", json=body, headers=origin(client))
-    assert await repeated.json() == decision
+    body = {"work": CHILD, "current": CHILD, "epoch": 1, "expected_revision": 0}
+    response = await client.post(ROOT + "/token-grants", json=body, headers=origin(client))
+    assert response.status in (404, 405)  # no route writes a grant

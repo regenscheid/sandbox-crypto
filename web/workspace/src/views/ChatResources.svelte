@@ -5,7 +5,6 @@
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { messageHref } from '../lib/router';
   import PollStatus from './PollStatus.svelte';
-  import TokenAllowance from './TokenAllowance.svelte';
   import ResourceAllowance from './ResourceAllowance.svelte';
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
@@ -24,6 +23,8 @@
       tokens: 'tokens',
       turns: 'turns',
       elapsed_seconds: 'observed active seconds',
+      cost: 'hundredths of the cost currency',
+      loop: 'repeats (a loop check-in)',
       retained_bytes: 'retained artifact bytes',
       retention_bytes: 'retention capacity bytes',
       retention_revisions: 'retained revisions',
@@ -50,16 +51,12 @@
 
 <PollStatus phase={pollState.phase} hasData={page !== null} what="Research check-ins" />
 {#if page && (page.requests.length > 0 || after)}
-  <details
-    class="resources"
-    open={page.requests.some(
-      (item) => current(item) && !item.decision && item.user_grant_revision === null,
-    )}
-  >
+  <details class="resources" open={page.requests.some((item) => current(item) && !item.decision)}>
     <summary>Research check-ins</summary>
     <p class="muted">
-      Agents ask their parents to review progress before reaching an allowance. Token increases
-      require your approval.
+      At a soft cap or a repeated pattern an agent checks in: a child's parent extends, redirects or
+      stops it, and the root checks itself against its plan. Nothing here stops spending; the model
+      gateway's budget does.
     </p>
     <ul>
       {#each page.requests as item (item.request_id)}
@@ -81,15 +78,16 @@
               with the operator.
             </p>
           {/if}
-          {#if item.user_grant_revision !== null}
-            <p>Token extension recorded by the user.</p>
-          {:else if item.decision}
+          {#if item.summary?.detail}<p class="muted">{item.summary.detail}</p>{/if}
+          {#if item.decision}
             <p>
               {item.decision.operator
                 ? 'User decision'
-                : item.parent
-                  ? 'Parent decision'
-                  : 'Root policy decision'}: {item.decision.request.action.replaceAll('_', ' ')}. {item
+                : item.decision.automatic
+                  ? 'Automatic check-in'
+                  : item.parent
+                    ? 'Parent decision'
+                    : 'Root policy decision'}: {item.decision.request.action.replaceAll('_', ' ')}. {item
                 .decision.request.reason}
             </p>
           {:else if !current(item)}
@@ -104,17 +102,7 @@
           {#if item.checkpoint_message_id}
             <a href={messageHref(projectId, item.checkpoint_message_id)}>Read checkpoint</a>
           {/if}
-          {#if current(item) && item.resource === 'tokens' && item.parent && item.user_grant_revision === null}
-            <button
-              class="subtle"
-              onclick={() => (selected = selected === item.request_id ? null : item.request_id)}
-              >Review token allowance</button
-            >
-            {#if selected === item.request_id}
-              <TokenAllowance {path} work={item.work} warningTotal={item.total} />
-            {/if}
-          {/if}
-          {#if current(item) && !item.decision && item.renewable && ['turns', 'elapsed_seconds', 'retained_bytes'].includes(item.resource) && ['paused', 'blocked'].includes(item.work_state)}
+          {#if current(item) && !item.decision && item.renewable && ['tokens', 'turns', 'elapsed_seconds', 'cost', 'loop', 'retained_bytes'].includes(item.resource) && ['paused', 'blocked'].includes(item.work_state)}
             <button
               class="subtle"
               onclick={() => (selected = selected === item.request_id ? null : item.request_id)}

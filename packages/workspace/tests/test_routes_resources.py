@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: MIT
-"""Resource snapshots are scoped reads; one USER approval adds exactly ten million."""
+"""Resource check-ins and usage accounts are scoped reads; no token approvals remain (D102)."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.context.history import Archive, Entry
+from sandbox_science.orchestrator.context.history.usage import AnsweredUsage
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
+from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.continuity.resources import ResourceRequests
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 
 from .route_support import ClientFactory, context_of, error_of, origin, workspace
@@ -52,8 +56,7 @@ def seed_resources(state_dir: Path) -> None:
         )
         works.interrupt("p1", "a", RUN)
         works.block("p1", "a", CHILD, "run_budget")
-        delegations.configure("p1", max_token_grant=50_000_000)
-        RunState(store.control).set_cost_limit("p1", 100)
+        RunState(store.control).set_cost_notices("p1", [5.0])
     finally:
         store.close()
 
@@ -64,7 +67,7 @@ async def test_resource_views_are_authenticated_scoped_and_cursor_validated(
     seed_resources(state_dir)
     anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
     await error_of(await anonymous.get(ROOT + "/resources"), 401, "policy_denied")
-    await error_of(await anonymous.get(ROOT + "/token-grants/" + CHILD), 401, "policy_denied")
+    await error_of(await anonymous.get(ROOT + "/usage"), 401, "policy_denied")
     client = await workspace(aiohttp_client, state_dir, static_dir)
     response = await client.get(ROOT + "/resources")
     assert response.status == 200, await response.text()
@@ -79,62 +82,61 @@ async def test_resource_views_are_authenticated_scoped_and_cursor_validated(
         "not_found",
     )
     await error_of(
-        await client.get(ROOT.replace("/projects/p1/", "/projects/p2/") + "/token-grants/" + CHILD),
+        await client.get(ROOT.replace("/projects/p1/", "/projects/p2/") + "/usage"),
         404,
         "not_found",
     )
 
 
-async def test_increment_requires_origin_exact_amount_and_fresh_revision(
+async def test_token_approvals_are_gone_and_usage_is_accounted_by_role(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
     seed_resources(state_dir)
+    store = ProjectStore(state_dir)
+    try:
+        for ordinal, (run, cost) in enumerate(((RUN, 1.5), (CHILD, 0.5)), 1):
+            Archive(store.control).append(
+                "p1",
+                "a",
+                run,
+                Entry("assistant", "assistant", "An answer"),
+                model_usage=AnsweredUsage(
+                    ordinal=ordinal,
+                    observed_at=datetime.now(UTC),
+                    usage=ModelUsage(input_tokens=100, output_tokens=10, cost=cost),
+                ),
+            )
+        owner = WorkRecords(store.control).owner("p1", "a", CHILD)
+        assert owner is not None
+        with store.control.write() as tx:
+            tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (CHILD,))
+        intents = ModelIntents(store.control)
+        identity = intents.begin(owner, kind="reviewer", alias="fixture")
+        intents.observe(owner, identity, ModelUsage(input_tokens=100, output_tokens=10, cost=0.25))
+        RunState(store.control).note_cost_crossings("p1")
+    finally:
+        store.close()
     client = await workspace(aiohttp_client, state_dir, static_dir)
-    status = await (await client.get(ROOT + "/token-grants/" + CHILD)).json()
-    assert status["total_tokens"] == 20_000_000
-    assert status["next_total_tokens"] == 30_000_000
-    body = {
-        "work": CHILD,
-        "current": status["current"],
-        "epoch": status["epoch"],
-        "expected_revision": status["revision"],
-        "total_tokens": status["next_total_tokens"],
-        "reason": "Review confirms this branch is making useful progress.",
-    }
-    assert (await client.post(ROOT + "/token-grants/next", json=body)).status == 403
-    anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
-    await error_of(
-        await anonymous.post(ROOT + "/token-grants/next", json=body, headers=origin(anonymous)),
-        401,
-        "policy_denied",
-    )
-    await error_of(
-        await client.post(
-            ROOT + "/token-grants/next",
-            json={**body, "total_tokens": 40_000_000},
-            headers=origin(client),
-        ),
-        400,
-        "invalid_request",
-    )
-    granted = await client.post(ROOT + "/token-grants/next", json=body, headers=origin(client))
-    assert granted.status == 200, await granted.text()
-    decision = await granted.json()
-    assert decision["revision"] == 1
-    assert decision["operator"] == "user"
-    repeated = await client.post(ROOT + "/token-grants/next", json=body, headers=origin(client))
-    assert await repeated.json() == decision
-    await error_of(
-        await client.post(
-            ROOT + "/token-grants/next",
-            json={**body, "total_tokens": 40_000_000},
-            headers=origin(client),
-        ),
-        409,
-        "conflict",
-    )
-    page = await (await client.get(ROOT + "/resources")).json()
-    assert page["requests"][0]["user_grant_revision"] == 1
+    for path in ("/token-grants/" + CHILD, "/token-grants/next", "/token-grants"):
+        assert (await client.get(ROOT + path)).status == 404
+        posted = await client.post(ROOT + path, json={}, headers=origin(client))
+        assert posted.status in (404, 405)  # no route writes a grant
+    response = await client.get(ROOT + "/usage")
+    assert response.status == 200, await response.text()
+    account = await response.json()
+    assert account["session"] == "a"
+    assert account["daily_cost_limit"] is None
+    roles = {item["role"]: item for item in account["total"]["by_role"]}
+    assert roles["reviewer"]["cost"] == 0.25
+    assert roles["reviewer"]["tokens"] == 110
+    assert {item["run"] for item in account["runs"]} == {RUN, CHILD}
+    assert account["notices"] == [
+        {"threshold": 5.0, "crossed_at": None, "spent": None}
+    ]  # 2.25 recorded: not crossed
+    project = await (await client.get("/api/v0/projects/p1/usage")).json()
+    assert project["total"]["cost"] == 2.25
+    assert [item["session"] for item in project["sessions"]] == ["a"]
+    await error_of(await client.get(ROOT + "/usage?x=1"), 400, "invalid_request")
 
 
 async def test_user_soft_extension_is_scoped_origin_checked_and_never_resumes(

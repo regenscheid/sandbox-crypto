@@ -604,10 +604,12 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
       });
     else if (kind === 'notice') {
       const ids = list(data['ids']).map(String).join(', ');
+      // A notice for the user, such as a root's soft-cap check-in (D102), says itself.
+      const said = text(data['text']);
       entries.push({
         kind: 'note',
         seq,
-        text: `Notices from ${text(data['source'])}: ${ids}.`,
+        text: said || `Notices from ${text(data['source'])}: ${ids}.`,
         problem: false,
       });
     } else if (kind === 'waiting' && 'permission_request' in data) {

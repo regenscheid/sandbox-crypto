@@ -210,6 +210,21 @@ export interface ChatMessage {
   pins: Record<string, JsonValue>[];
 }
 
+/** The bounded state a check-in delivers: the brief, what the work produced and what it did last, with its recorded use (D102). */
+export interface CheckInSummary {
+  brief: string;
+  produced: string[];
+  recent: string[];
+  answer: string | null;
+  rule: string | null;
+  detail: string | null;
+  tokens: number;
+  turns: number;
+  seconds: number;
+  cost: number;
+  progress: number;
+}
+
 /** The delegated run whose call is held (D99): agent-attributed text, never the user's. The workspace sets it from its own records; the proxy's listing never carries it. */
 export interface ChildAsked {
   delegation_id: string;
@@ -513,6 +528,12 @@ export interface ContextTimelinePage {
   more_events: boolean;
   more_auxiliary: boolean;
   coverage: string;
+}
+
+export interface CostNotice {
+  threshold: number;
+  crossed_at: string | null;
+  spent: number | null;
 }
 
 /** A project whose record cannot be read, listed with the store's error. */
@@ -2035,11 +2056,13 @@ export interface ResourceDecision {
   observed: number;
   operator: string | null;
   progress: number;
+  resource: "tokens" | "turns" | "elapsed_seconds" | "cost" | "loop" | "retained_bytes" | "retention_bytes" | "retention_revisions" | "retention_operations" | "retention_metadata_bytes" | null;
+  automatic: boolean;
 }
 
 export interface ResourceDecisionRequest {
   request_id: string;
-  action: "continue" | "redirect" | "report" | "pause" | "extend_turns" | "extend_time" | "extend_storage";
+  action: "extend" | "redirect" | "stop" | "continue" | "report" | "pause" | "extend_turns" | "extend_time" | "extend_storage" | "extend_tokens" | "extend_cost";
   reason: string;
 }
 
@@ -2049,7 +2072,7 @@ export interface ResourceRequest {
   current: string;
   epoch: number;
   parent: string | null;
-  resource: "tokens" | "turns" | "elapsed_seconds" | "retained_bytes" | "retention_bytes" | "retention_revisions" | "retention_operations" | "retention_metadata_bytes";
+  resource: "tokens" | "turns" | "elapsed_seconds" | "cost" | "loop" | "retained_bytes" | "retention_bytes" | "retention_revisions" | "retention_operations" | "retention_metadata_bytes";
   grant_revision: number;
   used: number;
   total: number;
@@ -2058,10 +2081,10 @@ export interface ResourceRequest {
   task: string;
   work_state: "running" | "waiting" | "paused" | "blocked" | "completed" | "stopped";
   superseded: boolean;
-  user_grant_revision: number | null;
   decision: ResourceDecision | null;
   scope: "work" | "project" | "global";
   renewable: boolean;
+  summary: CheckInSummary | null;
 }
 
 export interface ResourceRequestPage {
@@ -2173,6 +2196,14 @@ export interface RoleCost {
   total: number;
 }
 
+export interface RoleUsage {
+  role: string;
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
+}
+
 /** A run a session keeps, named by when it started and its run ID, with its place in the session's tree of runs. */
 export interface RunEntry {
   name: string;
@@ -2203,6 +2234,17 @@ export interface RunTree {
   runs: TreeRun[];
   delegations: Delegation[];
   delegations_total: number;
+}
+
+/** One scope's recorded usage: the whole project, a session or a run. */
+export interface ScopeUsage {
+  session: string | null;
+  run: string | null;
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
+  by_role: RoleUsage[];
 }
 
 export interface SessionDetail {
@@ -2335,36 +2377,6 @@ export interface TimelineFold {
   tokens_estimate: number | null;
 }
 
-export interface TokenGrantDecision {
-  request: TokenGrantRequest;
-  revision: number;
-  previous_total: number;
-  operator: string;
-  message_id: string;
-  observed: number;
-}
-
-export interface TokenGrantRequest {
-  work: string;
-  current: string;
-  epoch: number;
-  expected_revision: number;
-  total_tokens: number;
-  reason: string;
-}
-
-export interface TokenGrantStatus {
-  work: string;
-  current: string;
-  epoch: number;
-  revision: number;
-  total_tokens: number;
-  used_tokens: number;
-  next_total_tokens: number | null;
-  blocked_reason: string | null;
-  blocked_ancestor_work: string | null;
-}
-
 /** One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing. */
 export interface ToolRecordChunk {
   message: string;
@@ -2406,6 +2418,17 @@ export interface TreeRun {
 export interface UploadPage {
   uploads: UserUpload[];
   next_after: number | null;
+}
+
+/** What a project, or one of its sessions, has spent, as recorded. */
+export interface UsageAccount {
+  project: string;
+  session: string | null;
+  total: ScopeUsage;
+  sessions: ScopeUsage[];
+  runs: ScopeUsage[];
+  daily_cost_limit: number | null;
+  notices: CostNotice[];
 }
 
 export interface UserUpload {
