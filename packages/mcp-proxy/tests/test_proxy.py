@@ -1330,7 +1330,14 @@ async def test_an_operator_lists_its_projects_waiting_requests_without_arguments
         "expires_at",
         "timed_out",
         "on_timeout",
+        "caller_kind",
+        "effect",
+        "max_grant",
+        "summary",
     }
+    # The run service's call (D97): a class grant may cover it, research code's never.
+    assert item["caller_kind"] == "agent"
+    assert item["summary"] == {}  # the test policy classifies nothing significant
     assert "example.org" not in json.dumps(listed.body)  # only the digest is kept
     other = await harness.operator("GET", "/permission-requests", caller="other-operator")
     assert other.body == {"requests": []}  # another project's operator sees none
@@ -1339,28 +1346,30 @@ async def test_an_operator_lists_its_projects_waiting_requests_without_arguments
     assert (await harness.operator("GET", "/permission-requests", caller="")).status == 401
 
 
-async def test_an_operators_server_wide_approval_covers_every_escalated_tool_only(
-    harness: Harness,
-) -> None:
+async def test_an_operators_tool_approval_covers_that_tool_only(harness: Harness) -> None:
     harness.bind(harness.policy(default="escalate"))
     session = await harness.initialize()
     seq = request_of(await harness.tool(session, "crawl", {"url": "https://example.org/a"}))
     path = f"/permission-requests/{seq}/answer"
-    for bad in ({"approve": True, "scope": "host"}, {"approve": "yes", "scope": "call"}, {}):
+    for bad in (
+        {"approve": True, "scope": "host"},
+        {"approve": True, "scope": "server"},  # no scope reaches other tools (D97)
+        {"approve": "yes", "scope": "call"},
+        {},
+    ):
         assert (await harness.operator("POST", path, bad)).status == 400
     assert (
         await harness.operator(
-            "POST", path, {"approve": True, "scope": "server"}, caller="other-operator"
+            "POST", path, {"approve": True, "scope": "tool"}, caller="other-operator"
         )
     ).status == 404
-    answered = await harness.operator("POST", path, {"approve": True, "scope": "server"})
+    answered = await harness.operator("POST", path, {"approve": True, "scope": "tool"})
     assert answered.status == 201
     assert answered.body["kind"] == "approval"
     assert "result" in (await harness.tool(session, "crawl", {"url": "https://x.example"})).body
-    # A tool the default escalates is covered too; a denied tool never is.
-    assert "result" in (await harness.tool(session, "misc", {})).body
+    # Another tool the default escalates is asked about; a denied tool is never reached.
+    assert reason(await harness.tool(session, "misc", {})) == "approval_required"
     assert reason(await harness.tool(session, "admin_reset", {})) == "policy_denied"
-    assert (await harness.operator("GET", "/permission-requests")).body == {"requests": []}
 
 
 async def test_an_operator_makes_no_mcp_calls(harness: Harness) -> None:

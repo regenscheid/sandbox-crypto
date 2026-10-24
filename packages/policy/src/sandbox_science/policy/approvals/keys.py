@@ -11,20 +11,30 @@ from typing import Final, Literal, cast
 
 KeyKind = Literal["http", "mcp", "packages"]
 KEY_FIELDS: Final[dict[str, tuple[str, ...]]] = {
-    "http": ("sandbox_id", "policy_digest", "method", "host", "port", "path"),
+    "http": ("sandbox_id", "policy_digest", "method", "host", "port", "path", "body"),
     "mcp": ("project_id", "caller", "policy_digest", "server", "method", "tool", "arguments"),
     "packages": ("sandbox_id", "policy_digest", "operation", "files"),
 }
+OPTIONAL_FIELDS: Final[dict[tuple[str, str], str]] = {("http", "body"): ""}
+"""Key fields a record from before them may lack, and the value such a record has: an
+``http`` key without ``body`` is one of a request recorded before body digests (M1)."""
 SCOPES: Final[dict[str, dict[str, tuple[str, ...]]]] = {
-    "http": {"request": (), "host": ("path",)},
-    # ``server`` covers every escalated call of the server's method for the project: the
-    # policy still decides which calls escalate, so it never reaches a denied tool.
-    "mcp": {"call": (), "tool": ("arguments",), "server": ("tool", "arguments")},
+    # ``request`` is the exact request, its body included (M1); ``host`` every path and
+    # body on the host and port with that method.
+    "http": {"request": (), "host": ("path", "body")},
+    # No scope reaches other tools of a server: a grant of a class on a server is the
+    # workspace's, which answers each call it covers on its own (D97).
+    "mcp": {"call": (), "tool": ("arguments",)},
     "packages": {"files": ()},
 }
 """For each kind, each scope and the key fields it leaves out."""
 ALL_SCOPES: Final = tuple(dict.fromkeys(scope for scopes in SCOPES.values() for scope in scopes))
 DEFAULT_SCOPES: Final[dict[str, str]] = {"http": "request", "mcp": "call", "packages": "files"}
+
+
+def body_digest(body: bytes) -> str:
+    """The digest an ``http`` key holds for a request's body: empty for no body (M1)."""
+    return hashlib.sha256(body).hexdigest() if body else ""
 
 
 def files_digest(paths: Iterable[str]) -> str:
@@ -42,9 +52,17 @@ class RequestKey:
 
     @classmethod
     def http(
-        cls, sandbox_id: str, policy_digest: str, method: str, host: str, port: int, path: str
+        cls,
+        sandbox_id: str,
+        policy_digest: str,
+        method: str,
+        host: str,
+        port: int,
+        path: str,
+        body: str = "",
     ) -> RequestKey:
-        return cls("http", (sandbox_id, policy_digest, method, host, port, path))
+        """``body`` is the request body's digest (``body_digest``), never the body."""
+        return cls("http", (sandbox_id, policy_digest, method, host, port, path, body))
 
     @classmethod
     def mcp(
@@ -96,7 +114,7 @@ class RequestKey:
             return None
         values: list[str | int] = []
         for name in KEY_FIELDS[str(kind)]:
-            value = data.get(name)
+            value = data.get(name, OPTIONAL_FIELDS.get((kind, name)))
             if name == "port":
                 if not isinstance(value, int) or isinstance(value, bool):
                     return None

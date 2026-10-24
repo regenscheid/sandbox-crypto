@@ -41,6 +41,7 @@ from sandbox_science.policy import (
     normalize_host,
 )
 from sandbox_science.policy.approvals import (
+    PACKAGES_MAX_GRANT,
     Approvals,
     Approved,
     Denied,
@@ -49,6 +50,9 @@ from sandbox_science.policy.approvals import (
     TimedOut,
     Unrecorded,
     Waiting,
+    body_digest,
+    http_summary,
+    network_max_grant,
 )
 from sandbox_science.policy.mcp_wire import params_digest
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
@@ -506,7 +510,11 @@ class PolicyMiddleware:
                 normalize_host(facts.host),
                 facts.port,
                 facts.path,
+                body_digest(facts.body),
             )
+            asked = _http_card(facts, operation)
+        else:
+            asked = {"caller_kind": "agent"}  # an MCP call the run service sent (D98)
         self._refresh_approvals()
         now = self._now()
         rule = decision.rule or "escalation"
@@ -547,7 +555,7 @@ class PolicyMiddleware:
                 case Approved(answer):
                     return approved({"approval_seq": answer.seq, "request_seq": answer.request_seq})
                 case Unrecorded():
-                    outcome = self._escalate(facts, decision, target, payload)
+                    outcome = self._escalate(facts, decision, target, payload, asked)
                     if isinstance(outcome, Verdict):
                         return outcome
                     # Answered or recorded meanwhile: decided as any other request is.
@@ -582,14 +590,16 @@ class PolicyMiddleware:
         decision: Decision,
         target: RequestKey,
         payload: _Payload,
+        asked: Mapping[str, object],
     ) -> Verdict | Resolution:
         """Record a permission request for ``target``, once, and refuse: an identical
         escalation evaluated at the same time waits on its fingerprint's lock, then finds
         the request recorded. A request answered or recorded meanwhile is returned for the
-        caller to decide; every other outcome is a refusal."""
+        caller to decide; every other outcome is a refusal. ``asked`` is what the request's
+        card shows and its grants compare (D97)."""
         try:
             # Built before the lock: the opam archive lookup can take a while.
-            record = payload({"target": target.payload()})
+            record = payload({**asked, "target": target.payload()})
         except Exception:
             _log.exception("could not build the escalation of request %s", facts.request_id)
             return _deny(
@@ -874,6 +884,33 @@ class PolicyMiddleware:
             if len(packages) > MAX_PACKAGES:
                 archive["more_packages"] = len(packages) - MAX_PACKAGES
         return archive
+
+
+def _http_card(facts: HttpRequestFacts, operation: Operation | None) -> dict[str, object]:
+    """What an escalated request's card shows and its grants compare (D97): research code
+    asked; its method, host, path, content type and size, and a JSON body's top-level
+    fields, never the body; the widest grant for it; and for a package file, which."""
+    types = _header_values(facts.headers, "content-type")
+    card: dict[str, object] = {
+        "caller_kind": "code",
+        "summary": http_summary(
+            facts.method.upper(),
+            facts.host,
+            facts.port,
+            facts.path,
+            types[0] if len(types) == 1 else None,
+            facts.body,
+        ),
+        "max_grant": network_max_grant(facts.method).value,
+    }
+    if isinstance(operation, PackageOperation):
+        card["package"] = {
+            "ecosystem": operation.ecosystem,
+            "name": operation.name,
+            "channel": operation.channel,
+        }
+        card["max_grant"] = PACKAGES_MAX_GRANT.value
+    return card
 
 
 def _deny(

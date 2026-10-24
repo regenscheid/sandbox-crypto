@@ -55,9 +55,10 @@ from sandbox_science.policy.approvals import (
     TimedOut,
     Unrecorded,
     Waiting,
+    call_summary,
     prepare_answer,
 )
-from sandbox_science.policy.classification import EFFECT_META, listed_effect
+from sandbox_science.policy.classification import EFFECT_META, listed_effect, tool_entry
 from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.mcp_wire import (
     MCP_REQUEST_PARAMS,
@@ -192,6 +193,7 @@ class Call:
     def finding(self, decision: Decision) -> dict[str, object]:
         """An escalation or alert record."""
         payload = self.subject()
+        payload["caller_kind"] = caller_kind(self.caller.kind)
         payload["rule"] = decision.rule
         payload["reason"] = decision.reason
         payload.update(_class_fields(decision))
@@ -366,8 +368,9 @@ class McpProxy:
     async def _permission_requests(self, request: web.Request) -> web.Response:
         """The operator's project's MCP permission requests nobody answered, oldest first,
         each with the call's server, method and tool, the session the call came from, the
-        rule's reason, and when it times out. Never the call's arguments: the request
-        holds only their digest."""
+        rule's reason, and when it times out, and for its card and grants (D97) the
+        caller's kind, the call's effect class and ceiling and its significant arguments.
+        Never the call's arguments: the request holds only their digest."""
         caller = self._authenticate(request)
         if isinstance(caller, web.Response):
             return caller
@@ -399,6 +402,10 @@ class McpProxy:
                     "expires_at": (found.recorded + found.timeout).isoformat(timespec="seconds"),
                     "timed_out": found.expired(now),
                     "on_timeout": found.on_timeout,
+                    "caller_kind": detail.get("caller_kind"),
+                    "effect": detail.get("effect"),
+                    "max_grant": detail.get("max_grant"),
+                    "summary": detail.get("summary", {}),
                 }
             )
         return web.json_response({"requests": items}, headers={hdrs.CACHE_CONTROL: "no-store"})
@@ -421,18 +428,36 @@ class McpProxy:
                 if isinstance(attribution, dict)
                 else None
             )
+            kind = (
+                cast(dict[str, object], attribution).get("kind")
+                if isinstance(attribution, dict)
+                else None
+            )
+            summary = data.get("summary")
             found[record.seq] = {
                 "session": session if isinstance(session, str) else None,
                 "rule": data.get("rule") if isinstance(data.get("rule"), str) else None,
                 "reason": data.get("reason") if isinstance(data.get("reason"), str) else None,
+                # From the attribution, which every record has: a record from before
+                # caller kinds were recorded is told apart the same way.
+                "caller_kind": caller_kind(kind) if isinstance(kind, str) else "code",
+                "effect": _text(data.get("effect")),
+                "max_grant": _text(data.get("max_grant")),
+                "summary": {
+                    str(name): str(value)
+                    for name, value in cast(dict[object, object], summary).items()
+                    if isinstance(name, str) and isinstance(value, str)
+                }
+                if isinstance(summary, dict)
+                else {},
             }
         return found
 
     async def _answer_request(self, request: web.Request) -> web.Response:
         """An operator's approval or denial of one of its project's MCP permission
-        requests: ``{"approve": bool, "scope": "call" | "tool" | "server", "hours": null |
-        number}``. An answer only ever covers calls the policy escalates (``resolve`` is
-        asked of nothing else), so no scope reaches a denied tool."""
+        requests: ``{"approve": bool, "scope": "call" | "tool", "hours": null | number}``.
+        An answer only ever covers calls the policy escalates (``resolve`` is asked of
+        nothing else), so no scope reaches a denied tool."""
         caller = self._authenticate(request)
         if isinstance(caller, web.Response):
             return caller
@@ -768,7 +793,8 @@ class McpProxy:
             # The library refuses tools/call without a string name, so call.tool is set.
             await self._check_advertised(loaded, session, target, call.tool or "")
         if decision.action is Action.ESCALATE:
-            await self._escalation(call, loaded, decision, message.method, encoded)
+            summary = _call_summary(server, call.tool, params)
+            await self._escalation(call, loaded, decision, message.method, encoded, summary)
         elif decision.action is Action.ALERT:
             try:
                 await self._events.record("alert", call.finding(decision))
@@ -943,11 +969,18 @@ class McpProxy:
         raise UpstreamError(UPSTREAM_ERROR, f"tools/list has more than {MAX_LIST_PAGES} pages")
 
     async def _escalation(
-        self, call: Call, loaded: LoadedPolicy, decision: Decision, method: str, params: bytes
+        self,
+        call: Call,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        method: str,
+        params: bytes,
+        summary: Mapping[str, str] | None = None,
     ) -> None:
         """Answer an escalated call from its permission request (D76); raise unless it proceeds.
 
-        The key holds a digest of the parameters, never the parameters themselves.
+        The key holds a digest of the parameters, never the parameters themselves; the
+        request's record holds the call's significant arguments (``summary``, D97).
         """
         key = RequestKey.mcp(
             call.caller.project,
@@ -986,7 +1019,7 @@ class McpProxy:
                     return
                 case Unrecorded():
                     # Answered or recorded meanwhile: decided as any other call is.
-                    resolution = await self._escalate(call, decision, key)
+                    resolution = await self._escalate(call, decision, key, summary or {})
                     continue
                 case Waiting(pending):
                     raise RefusalError(
@@ -1034,7 +1067,9 @@ class McpProxy:
         if self._requests is not None:
             await asyncio.to_thread(self._load_approvals)
 
-    async def _escalate(self, call: Call, decision: Decision, key: RequestKey) -> Resolution:
+    async def _escalate(
+        self, call: Call, decision: Decision, key: RequestKey, summary: Mapping[str, str]
+    ) -> Resolution:
         """Record a permission request for ``key``, once, and refuse the call: an identical
         call handled at the same time waits on its fingerprint's lock, then finds the
         request recorded. A request answered or recorded meanwhile is returned for the
@@ -1047,7 +1082,8 @@ class McpProxy:
                 return resolution
             try:
                 seq = await self._events.record(
-                    "escalation", {**call.finding(decision), "target": key.payload()}
+                    "escalation",
+                    {**call.finding(decision), "summary": dict(summary), "target": key.payload()},
                 )
             except Exception as exc:
                 # No permission request exists, so the caller must not wait for an approval.
@@ -1171,6 +1207,28 @@ def _answer(
         content_type="application/json",
         headers=headers,
     )
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def caller_kind(kind: str) -> str:
+    """Who a call comes from, as grants tell them apart (D97): ``agent`` for the run
+    service's calls, ``code`` for research code's (a worker caller). Class grants cover
+    only an agent's calls."""
+    return "agent" if kind == "orchestrator" else "code"
+
+
+def _call_summary(server: McpServer, tool: str | None, params: object) -> dict[str, str]:
+    """A tool call's significant arguments, from its server's classification (D97)."""
+    if tool is None or not isinstance(params, dict):
+        return {}
+    entry = tool_entry(server, tool.removeprefix(server.tool_prefix or ""))
+    arguments = cast(dict[str, object], params).get("arguments")
+    if entry is None or not entry.significant or not isinstance(arguments, dict):
+        return {}
+    return call_summary(entry.significant, cast(dict[str, object], arguments))
 
 
 def _class_fields(decision: Decision) -> dict[str, object]:

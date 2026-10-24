@@ -123,7 +123,8 @@ class Approvals:
                 return
             request = PermissionRequest.from_record(record.seq, recorded, payload)
             self._requests[record.seq] = request
-            self._by_fingerprint.setdefault(request.key.fingerprint(), record.seq)
+            # The newest: a request asked again after its approval expired replaces it.
+            self._by_fingerprint[request.key.fingerprint()] = record.seq
             return
         try:
             answer = AnswerPayload.model_validate(data)
@@ -149,13 +150,18 @@ class Approvals:
     def resolve(self, key: RequestKey, now: datetime) -> Resolution:
         """How a request with ``key`` stands: the one state machine the policy middleware
         and the MCP proxy share. The newest live answer covering it decides; without one,
-        its recorded request waits until the rule's timeout."""
+        its recorded request waits until the rule's timeout. A request whose own answer was
+        an approval that has expired is asked again: it is unrecorded, so the next try
+        records a new request instead of taking the old one's timeout."""
         answer = self.answer(key, now)
         if answer is not None:
             return Denied(answer) if answer.kind == "denial" else Approved(answer)
         request = self.pending(key)
         if request is None:
             return Unrecorded()
+        own = self.answer_to(request.seq)
+        if own is not None and own.kind == "approval":
+            return Unrecorded()  # it expired, or ``answer`` would have found it
         return TimedOut(request) if request.expired(now) else Waiting(request)
 
     def confirms(self, seq: int, reason: str, call: Mapping[str, str | int], now: datetime) -> bool:

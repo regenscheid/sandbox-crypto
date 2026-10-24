@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: MIT
 """The middleware's records in the event store, and failing closed when the store fails."""
 
+import hashlib
+import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -104,7 +107,19 @@ def test_escalations_alerts_and_monitor_findings_are_stored(
             "query_bytes": len(PRIVATE_QUERY),
         },
         "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
-        # What an answer to this permission request covers (D76).
+        # What the request's card shows and its grants compare (D97): research code
+        # asked, a write is granted once at most, and the body is summarized by its size.
+        "caller_kind": "code",
+        "max_grant": "once",
+        "summary": {
+            "method": "POST",
+            "host": "example.org",
+            "port": 443,
+            "path": "/v1/items",
+            "size": len(PRIVATE_BODY),
+        },
+        # What an answer to this permission request covers (D76), with the body's
+        # digest, so that an answer to one body is not one to another (M1).
         "target": {
             "kind": "http",
             "sandbox_id": "sbx-0001",
@@ -113,6 +128,7 @@ def test_escalations_alerts_and_monitor_findings_are_stored(
             "host": "example.org",
             "port": 443,
             "path": "/v1/items",
+            "body": hashlib.sha256(PRIVATE_BODY).hexdigest(),
         },
     }
     assert records[1][2]["rule"] == "watched"
@@ -137,6 +153,28 @@ def test_query_strings_and_bodies_never_reach_the_disk(
     for file in files:
         data = file.read_bytes()
         assert b"test-secret" not in data, file.name
+
+
+def test_a_json_bodys_top_level_fields_are_summarized_truncated(
+    recording: PolicyMiddleware, facts: FactsFactory, events: EventStore
+) -> None:
+    body = json.dumps({"title": "x" * 500, "draft": True, "tags": ["a", "b"], "n": 3}).encode()
+    recording.evaluate_http(
+        facts(
+            method="POST",
+            path="/v1/items",
+            body=body,
+            headers=(("content-type", "application/json"),),
+        )
+    )
+    summary: dict[str, Any] = cast(dict[str, Any], stored(events)[0][2]["summary"])
+    assert summary["content_type"] == "application/json"
+    assert summary["size"] == len(body)
+    fields = summary["fields"]
+    assert set(fields) == {"title", "draft", "tags", "n"}
+    assert len(fields["title"]) == 160
+    assert fields["title"].endswith("…")
+    assert (fields["draft"], fields["tags"], fields["n"]) == ("true", "[2 items]", "3")
 
 
 def test_an_alert_that_cannot_be_stored_is_denied(

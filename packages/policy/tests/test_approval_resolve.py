@@ -95,28 +95,62 @@ def test_an_answer_covers_only_what_its_scope_covers() -> None:
     assert isinstance(approvals.resolve(OTHER_PATH, NOW), Approved)
 
 
-def test_a_server_answer_covers_every_tool_of_the_server_and_nothing_else() -> None:
+def test_no_answer_covers_another_tool_of_a_server() -> None:
+    """A grant of a class on a server is the workspace's (D97): the ledger has no scope
+    that reaches another tool, which a later revision of the server may have added."""
     from sandbox_science.policy.approvals.keys import RequestKey, check_scope
 
-    def key(
-        tool: str, arguments: str = "a" * 64, server: str = "papers", caller: str = "orch"
-    ) -> RequestKey:
-        return RequestKey.mcp("p1", caller, "sha256:p", server, "tools/call", tool, arguments)
+    def key(tool: str, arguments: str = "a" * 64) -> RequestKey:
+        return RequestKey.mcp("p1", "orch", "sha256:p", "papers", "tools/call", tool, arguments)
 
     asked = key("search")
-    assert asked.covers(key("fetch", "b" * 64), "server")
-    assert not asked.covers(key("search", server="web"), "server")  # another server
-    assert not asked.covers(key("search", caller="other"), "server")  # another caller
-    assert not asked.covers(
-        RequestKey.mcp("p2", "orch", "sha256:p", "papers", "tools/call", "x", "a" * 64), "server"
-    )  # another project
-    assert not asked.covers(
-        RequestKey.mcp("p1", "orch", "sha256:q", "papers", "tools/call", "x", "a" * 64), "server"
-    )  # another policy revision
+    assert check_scope("mcp", "server") is not None
+    assert not asked.covers(key("fetch", "b" * 64), "server")
     assert asked.covers(key("search", "b" * 64), "tool")
     assert not asked.covers(key("fetch"), "tool")
-    assert check_scope("mcp", "server") is None
     assert check_scope("http", "server") is not None
+
+
+def test_an_old_server_answer_record_is_skipped() -> None:
+    mcp = RequestKey.mcp("p1", "orch", DIGEST, "papers", "tools/call", "fetch", "a" * 64)
+    approvals = Approvals()
+    old = Record(1, NOW.isoformat(), ESCALATION, {
+        "target": mcp.payload(), "escalation": {"timeout_seconds": 600, "on_timeout": "deny"},
+    })  # fmt: skip
+    answered = Record(2, NOW.isoformat(), APPROVAL, {
+        "request_seq": 1, "scope": "server", "target": mcp.payload(),
+    })  # fmt: skip
+    approvals.load([old, answered])
+    assert isinstance(approvals.resolve(mcp, NOW), Waiting)
+
+
+def test_an_http_key_holds_a_body_digest_that_old_records_lack() -> None:
+    from sandbox_science.policy.approvals import body_digest
+
+    assert body_digest(b"") == ""
+    with_body = RequestKey.http(
+        "sb", DIGEST, "POST", "example.org", 443, "/items", body_digest(b"x")
+    )
+    assert not KEY.covers(with_body, "request")  # another body
+    assert KEY.covers(with_body, "host")  # a host answer covers any body
+    old = {name: value for name, value in KEY.payload().items() if name != "body"}
+    assert RequestKey.from_payload(old) == KEY  # recorded before body digests: no body
+
+
+def test_an_expired_approval_asks_again() -> None:
+    approvals = Approvals()
+    later = NOW + timedelta(hours=2)
+    approvals.load(
+        [request(1), answer(2, 1, APPROVAL, expires=(NOW + timedelta(hours=1)).isoformat())]
+    )
+    assert isinstance(approvals.resolve(KEY, NOW), Approved)
+    # Not the old request's timeout (which would deny it for good): unrecorded, so the
+    # component records a new request for the user to answer.
+    assert approvals.resolve(KEY, later) == Unrecorded()
+    approvals.load([Record(3, later.isoformat(), ESCALATION, request(3).payload)])
+    found = approvals.resolve(KEY, later)
+    assert isinstance(found, Waiting)
+    assert found.request.seq == 3
 
 
 MCP_KEY = RequestKey.mcp("p1", "orch", DIGEST, "papers", "tools/call", "fetch", "a" * 64)
