@@ -40,13 +40,8 @@ export interface Answer {
 export interface AnswerResult {
   seq: number;
   decision: string;
-  remembered: Grant | null;
-}
-
-export interface ApprovalSettings {
-  project: string;
-  revision: number;
-  grants: Grant[];
+  kind: "mcp" | "network" | "packages";
+  granted: ProjectGrant[];
 }
 
 /** An artifact at its latest revision, and who made that revision. */
@@ -1144,9 +1139,9 @@ export interface GoalOutcome {
   remaining_work: string[];
 }
 
-export interface Grant {
-  server: string;
-  tool: string | null;
+export interface GrantListing {
+  project: string;
+  grants: ProjectGrant[];
 }
 
 /** A derived binding the project's runs do not set, and why (SK-31). */
@@ -1193,6 +1188,17 @@ export interface HistoryRevision {
   added: string[];
   moved: string[];
   removed: string[];
+}
+
+/** An HTTP or git request as its card shows it: never the body. */
+export interface HttpSummary {
+  method: string;
+  host: string;
+  port: number;
+  path: string;
+  size: number;
+  content_type: string | null;
+  fields: Record<string, string>;
 }
 
 export interface IndexStatus {
@@ -1570,6 +1576,21 @@ export interface Origin {
   position: number | null;
 }
 
+/** Where escalated package files come from, as package grants compare them: the ecosystem and, for conda, the channel. */
+export interface PackageSource {
+  ecosystem: string;
+  channel: string | null;
+}
+
+/** What a package request asks to install. */
+export interface PackagesAsked {
+  sources: PackageSource[];
+  files: number;
+  asked: string | null;
+  purpose: string | null;
+  package: string | null;
+}
+
 export interface PatchPreview {
   patch: PatchRecord;
   base: number;
@@ -1597,9 +1618,10 @@ export interface PatchRecord {
   decided_by?: DocumentAuthor | null;
 }
 
-/** A call the proxy holds for the user's answer. */
+/** A request that waits for the user's answer, as its card shows it. */
 export interface PendingApproval {
   seq: number;
+  kind: "mcp" | "network" | "packages";
   server: string;
   tool: string;
   method: string;
@@ -1612,6 +1634,13 @@ export interface PendingApproval {
   timed_out: boolean;
   on_timeout: string;
   child: ChildAsked | null;
+  caller_kind: string;
+  effect: string | null;
+  max_grant: string | null;
+  summary: Record<string, string>;
+  http: HttpSummary | null;
+  packages: PackagesAsked | null;
+  scopes: string[];
 }
 
 export interface PendingListing {
@@ -1742,6 +1771,24 @@ export interface ProbeResult {
 
 export interface ProjectAnswer {
   project: ProjectView;
+}
+
+/** One grant, as the Grants panel lists it. */
+export interface ProjectGrant {
+  grant_id: string;
+  kind: "mcp" | "network" | "packages";
+  scope: "session" | "project";
+  session: string | null;
+  server: string | null;
+  effect: string | null;
+  host: string | null;
+  methods: "read" | null;
+  ecosystem: string | null;
+  channel: string | null;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  uses: number;
 }
 
 export interface ProjectListing {

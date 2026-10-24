@@ -3201,6 +3201,77 @@ def _child_requests(schema: Schema) -> None:
     install(schema)
 
 
+def _project_grants(schema: Schema) -> None:
+    """Version 81: grants of a class on a server, a host or a package source, for a
+    session or the project (D97), in place of remembered tool and server approvals.
+
+    Each remembered tool approval becomes a grant of the tool's class on its server, as
+    the checked-in classification of the server's name classifies the tool, where that
+    class may be granted for a project (``write`` under the shipped ceilings). A tool it
+    does not classify is ``unclassified``, which is never granted wider than once, so
+    that approval is dropped, as is one whose class allows no project grant. A
+    server-wide approval is dropped: it covered tools the server adds later, of any
+    class (the 2026-10-23 audit's H2). Revoked grants are kept, with when."""
+    schema.execute("""CREATE TABLE project_grants (
+    grant_id TEXT PRIMARY KEY,
+    project TEXT NOT NULL REFERENCES projects(project_id),
+    kind TEXT NOT NULL CHECK (kind IN ('mcp','network','packages')),
+    scope TEXT NOT NULL CHECK (scope IN ('session','project')),
+    session TEXT CHECK ((scope = 'session') = (session IS NOT NULL)),
+    server TEXT,
+    effect TEXT,
+    host TEXT,
+    methods TEXT,
+    ecosystem TEXT,
+    channel TEXT,
+    subject TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_used_at TEXT,
+    uses INTEGER NOT NULL DEFAULT 0 CHECK (uses >= 0),
+    author TEXT NOT NULL,
+    revoked_at TEXT,
+    CHECK (kind <> 'mcp' OR (server IS NOT NULL AND effect IS NOT NULL
+        AND effect <> 'unclassified')),
+    CHECK (kind <> 'network' OR (host IS NOT NULL AND methods = 'read')),
+    CHECK (kind <> 'packages' OR ecosystem IS NOT NULL)
+) STRICT""")
+    schema.execute(
+        "CREATE UNIQUE INDEX project_grants_live ON project_grants "
+        "(project, subject, scope, coalesce(session, '')) WHERE revoked_at IS NULL"
+    )
+    schema.execute("CREATE INDEX project_grants_project ON project_grants (project, revoked_at)")
+    from datetime import UTC, datetime
+    from secrets import token_hex
+
+    from sandbox_science.policy.classification import catalog, catalog_names
+    from sandbox_science.policy.effects import SHIPPED, MaxGrant
+
+    now = datetime.now(UTC).isoformat(timespec="seconds")
+    known = catalog_names()
+    rows = schema.execute("SELECT project, grants, author FROM project_approval_settings")
+    for project, grants, author in rows.fetchall():
+        kept: set[tuple[str, str]] = set()
+        for grant in json.loads(grants):
+            server, tool = grant.get("server"), grant.get("tool")
+            if not isinstance(server, str) or not isinstance(tool, str) or server not in known:
+                continue  # server-wide, or a server no classification names
+            entry = catalog(server).tools.get(tool)
+            if entry is None or SHIPPED[entry.effect].max_grant is not MaxGrant.PROJECT:
+                continue
+            kept.add((server, entry.effect.value))
+        for server, effect in sorted(kept):
+            schema.execute(
+                "INSERT INTO project_grants (grant_id,project,kind,scope,server,effect,"
+                "subject,created_at,author) VALUES (?,?,'mcp','project',?,?,?,?,?)",
+                (
+                    "grant-" + token_hex(10), project, server, effect,
+                    json.dumps(["mcp", effect, server]), now, author,
+                ),
+            )  # fmt: skip
+    schema.execute("DROP TABLE project_approval_settings")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3280,6 +3351,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _artifact_retention,
     _artifact_reference_indexes,
     _child_requests,
+    _project_grants,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

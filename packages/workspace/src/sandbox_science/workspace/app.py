@@ -383,10 +383,11 @@ def create_app(
         approvals,
     ):
         feature.add_routes(app)
-    if mcp_approvals is not None:
-        if mcp_project is None:
-            raise ValueError("MCP approvals need an explicit project scope")
-        approvals.configure(app, mcp_project, mcp_approvals)
+    if mcp_approvals is not None and mcp_project is None:
+        raise ValueError("MCP approvals need an explicit project scope")
+    if mcp_approvals is not None or job_worker is not None:
+        # Cards for tool calls the proxy holds, and network and package requests (D97).
+        approvals.configure(app, mcp_project, mcp_approvals, job_worker)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)

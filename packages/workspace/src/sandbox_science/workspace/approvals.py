@@ -1,29 +1,42 @@
 # SPDX-License-Identifier: MIT
-"""The user's answers to connector tool calls the policy escalates (D76; owner decision,
-2026-10-21): the chat shows a call that waits, and the user allows it once, for the
-project, or for any escalated tool of its server, or denies it.
+"""The user's answers to permission requests (D76, D97): the chat shows each request that
+waits as a card, and the user allows it once, for the session or for the project, within
+the request's ceiling, or denies it.
 
-The MCP proxy holds each such call and is the only authority on it: the workspace reads
-and answers its project's permission requests as an operator caller, a token of its own
-that makes no MCP call. Whatever the scope, an answer covers only calls the policy
-escalates, so it never reaches a denied tool. Routes:
+Three kinds of request reach the chat:
 
-- ``GET …/sessions/{session}/permission-requests``: the session's calls that wait, each
-  with its permission request's number, server, tool, the policy's reason and when it
-  times out. Never the call's arguments: the proxy keeps only their digest, and the page
-  shows them from the session's own transcript. A delegated run's call names the child
-  that asked, with the brief its parent gave it and the child's own words (D99); one its
-  parent withdrew is not listed, cannot be approved, and is denied at the proxy.
-- ``POST …/permission-requests/{seq}/answer`` with ``{"decision": "once" | "project" |
-  "server" | "deny"}``: once approves this call; project remembers the tool for the
-  project, server any escalated tool of the server (``approval_settings.py``); deny
-  refuses this call.
-- ``GET`` and ``POST …/approvals/settings``: the remembered approvals, which the user may
-  remove, at the revision read.
+- ``mcp``: a connector tool call the MCP proxy holds. The workspace reads and answers the
+  project's requests as an operator caller of the proxy, a token of its own that makes no
+  MCP call. A delegated run's call names the child that asked, with the brief its parent
+  gave it and the child's own words (D99); one its parent withdrew is not listed, cannot
+  be approved, and is denied at the proxy.
+- ``network``: an HTTP or git request of research code the policy middleware escalated,
+  and ``packages``: a provisioning operation's file set, or a package file research code
+  fetched through the package cache. The worker lists and records answers to them, for
+  the workspace's operator client only.
 
-A remembered approval is given to the proxy for ``GRANT_HOURS`` at a time: the relay
-gives it again when a call it covers is held, so removing it here ends it soon after,
-and it outlasts the proxy's own records, which a relaunch does not keep.
+A card carries a structured summary, never the payload: the tool and its significant
+arguments, or the method, host, path, content type, size and a JSON body's top-level
+fields. ``scopes`` lists the answers the request's ceiling allows, and the server refuses
+any other, whatever a client sends. A grant (``orchestrator.project_grants``) covers an
+effect class on one server, a host for research code's reads, or a package source; a
+class grant never covers research code's call, nor a host grant the agent's.
+
+Routes:
+
+- ``GET …/sessions/{session}/permission-requests``: the requests that wait in the session,
+  with network and package requests that name no session in every session of the project.
+- ``POST …/permission-requests/{seq}/answer`` with ``{"decision": "once" | "session" |
+  "project" | "deny", "kind": "mcp" | "network" | "packages", "hours": null | number}``.
+  ``hours`` gives a session or project grant an expiry; without it, it lasts until revoked.
+- ``GET …/grants``: the project's grants, with when each was last used; ``POST
+  …/grants/{grant}/revoke`` ends one at once.
+
+The relay answers each new request a grant covers, and notes the grant's use. It answers
+the request itself (an MCP call with its exact arguments, so a grant never stretches to a
+call of another class) or, for a host grant, the host's reads for that sandbox and policy
+revision; each such answer lasts minutes, so a revoked grant stops reaching the proxy and
+the middleware soon after, and covers nothing new at once.
 """
 
 from __future__ import annotations
@@ -31,21 +44,36 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import secrets
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Literal
 
 import aiohttp
 from aiohttp import web
-from pydantic import TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
-from sandbox_science.contracts import Contract, ErrorKind
-from sandbox_science.orchestrator.approval_settings import Grant, ProjectApprovals
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract, ErrorKind
+from sandbox_science.contracts.permission_requests import (
+    HttpSummary,
+    PackagesAsked,
+    WorkerPermissionAnswer,
+    WorkerPermissionRequest,
+)
 from sandbox_science.orchestrator.connectors import check_proxy
 from sandbox_science.orchestrator.delegation.requests import ChildRequest, ChildRequests
 from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.project_grants import (
+    MAX_GRANT_HOURS,
+    Asked,
+    GrantListing,
+    ProjectGrant,
+    ProjectGrants,
+)
 from sandbox_science.orchestrator.projects import ProjectError
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.policy import normalize_host
+from sandbox_science.policy.approvals import offered
 
 from .context import CONTEXT, identifier, json_answer, json_body, session_record
 from .requests import document_answer, dumps
@@ -53,11 +81,16 @@ from .requests import document_answer, dumps
 _log = logging.getLogger(__name__)
 
 GRANT_HOURS: Final = 0.25
-"""How long the proxy holds a remembered approval it was given, in hours."""
+"""How long an answer the relay gives a proxy for one call lasts, in hours."""
+HOST_HOURS: Final = 1.0
+"""How long the relay's answer for a host grant lets the middleware pass the host's reads
+for one sandbox and policy revision, in hours: research code is refused once an hour at
+most, while a revoked grant stops reaching the middleware within the hour."""
 ONCE_HOURS: Final = 1.0
-"""How long an approval of one call (its exact arguments) lasts at the proxy."""
+"""How long an approval of one request (its exact arguments or body) lasts."""
 RELAY_SECONDS: Final = 3.0
 MAX_REQUESTS: Final = 256
+Kind = Literal["mcp", "network", "packages"]
 
 
 class ChildAsked(Contract):
@@ -74,14 +107,15 @@ class ChildAsked(Contract):
 
 
 class PendingApproval(Contract):
-    """A call the proxy holds for the user's answer."""
+    """A request that waits for the user's answer, as its card shows it."""
 
     seq: int
-    server: str
-    tool: str
-    method: str
+    kind: Kind = "mcp"
+    server: str = ""
+    tool: str = ""
+    method: str = ""
     policy: str
-    """The policy revision the call was held under."""
+    """The policy revision the request was held under."""
     session: str | None = None
     rule: str | None = None
     reason: str | None = None
@@ -91,6 +125,20 @@ class PendingApproval(Contract):
     on_timeout: str
     child: ChildAsked | None = None
     """The delegated run that asked, if one did."""
+    caller_kind: str = "code"
+    """``agent``, ``code`` or ``user``: a proxy that does not say is taken as code's, which
+    no class grant covers."""
+    effect: str | None = None
+    """A tool call's effect class (D96)."""
+    max_grant: str | None = None
+    """The widest grant the policy allows for it (D97)."""
+    summary: dict[str, str] = Field(default_factory=dict[str, str])
+    """A tool call's significant arguments, by kind (url, host, recipient, title, size,
+    query)."""
+    http: HttpSummary | None = None
+    packages: PackagesAsked | None = None
+    scopes: list[str] = Field(default_factory=list[str])
+    """The answers its ceiling allows, narrowest first; set by the workspace."""
 
 
 class PendingListing(Contract):
@@ -98,13 +146,16 @@ class PendingListing(Contract):
 
 
 class Decision(Contract):
-    decision: Literal["once", "project", "server", "deny"]
+    decision: Literal["once", "session", "project", "deny"]
+    kind: Kind = "mcp"
+    hours: float | None = Field(default=None, gt=0, le=MAX_GRANT_HOURS)
 
 
 class AnswerResult(Contract):
     seq: int
     decision: str
-    remembered: Grant | None = None
+    kind: Kind = "mcp"
+    granted: list[ProjectGrant] = Field(default_factory=list[ProjectGrant])
 
 
 class ApprovalClient:
@@ -133,7 +184,11 @@ class ApprovalClient:
                 found = PendingListing.model_validate_json(raw)
             except ValidationError:
                 raise ProjectError(ErrorKind.UNAVAILABLE, "the MCP proxy answered badly") from None
-            return found.requests[:MAX_REQUESTS]
+            # The proxy's word on kind and scopes is not taken: these are MCP calls.
+            return [
+                item.model_copy(update={"kind": "mcp", "scopes": []})
+                for item in found.requests[:MAX_REQUESTS]
+            ]
 
     async def answer(self, seq: int, *, approve: bool, scope: str, hours: float | None) -> None:
         body = {"approve": approve, "scope": scope, "hours": hours}
@@ -160,13 +215,16 @@ class ApprovalClient:
 
 @dataclass
 class Configuration:
-    project: str
-    client: ApprovalClient
-    relayed: set[int] = field(default_factory=set[int])
-    """Requests the relay answered, so it answers each once."""
+    project: str | None
+    """The project whose MCP calls are answered here, if the proxy is configured."""
+    client: ApprovalClient | None
+    worker: WorkerClient | None = None
+    clock: Clock = SYSTEM_CLOCK
+    relayed: set[tuple[str, int]] = field(default_factory=set[tuple[str, int]])
+    """Requests the relay answered, by source, so it answers each once."""
 
 
-APPROVALS: Final = web.AppKey("mcp_approvals", Configuration)
+APPROVALS: Final = web.AppKey("approvals", Configuration)
 _SEQ: Final = TypeAdapter(int)
 
 
@@ -175,13 +233,20 @@ def add_routes(app: web.Application) -> None:
         "/api/v0/projects/{project}/sessions/{session}/permission-requests", session_requests
     )
     app.router.add_post("/api/v0/projects/{project}/permission-requests/{seq}/answer", answer)
-    app.router.add_get("/api/v0/projects/{project}/approvals/settings", settings)
-    app.router.add_post("/api/v0/projects/{project}/approvals/settings", change_settings)
+    app.router.add_get("/api/v0/projects/{project}/grants", grants)
+    app.router.add_post("/api/v0/projects/{project}/grants/{grant}/revoke", revoke)
 
 
-def configure(app: web.Application, project: str, client: ApprovalClient) -> None:
-    """Answer the project's requests from the workspace, and relay remembered approvals."""
-    app[APPROVALS] = Configuration(project, client)
+def configure(
+    app: web.Application,
+    project: str | None,
+    client: ApprovalClient | None,
+    worker: WorkerClient | None,
+    clock: Clock = SYSTEM_CLOCK,
+) -> None:
+    """Answer requests from the workspace: the project's MCP calls through ``client``, and
+    network and package requests through ``worker``; and relay grants."""
+    app[APPROVALS] = Configuration(project if client else None, client, worker, clock)
     relay: list[asyncio.Task[None]] = []
 
     async def start(running: web.Application) -> None:
@@ -197,11 +262,75 @@ def configure(app: web.Application, project: str, client: ApprovalClient) -> Non
     app.on_cleanup.append(stop)
 
 
-def _configured(request: web.Request, project: str) -> Configuration:
+def _proxy(request: web.Request, project: str) -> ApprovalClient:
     config = request.app.get(APPROVALS)
-    if config is None or config.project != project:
+    if config is None or config.client is None or config.project != project:
         raise ProjectError(ErrorKind.NOT_FOUND, "this project's tool calls are not answered here")
-    return config
+    return config.client
+
+
+def _worker(request: web.Request) -> WorkerClient:
+    config = request.app.get(APPROVALS)
+    if config is None or config.worker is None:
+        raise ProjectError(
+            ErrorKind.NOT_FOUND, "network and package requests are not answered here"
+        )
+    return config.worker
+
+
+def asked_of(item: PendingApproval) -> Asked:
+    """What a request asks for, as grants compare it."""
+    if item.kind == "mcp":
+        return Asked(
+            "mcp", item.caller_kind, item.session, item.max_grant,
+            server=item.server, effect=item.effect,
+        )  # fmt: skip
+    if item.kind == "network" and item.http is not None:
+        try:
+            host = normalize_host(item.http.host)
+        except ValueError:
+            host = None
+        return Asked(
+            "network", item.caller_kind, item.session, item.max_grant,
+            host=host, method=item.http.method.upper(),
+        )  # fmt: skip
+    sources = tuple(
+        (source.ecosystem, source.channel)
+        for source in (item.packages.sources if item.packages else [])
+    )
+    return Asked("packages", item.caller_kind, item.session, item.max_grant, sources=sources)
+
+
+def _offered(item: PendingApproval) -> PendingApproval:
+    asked = asked_of(item)
+    scopes = offered(item.max_grant, item.effect, session=item.session is not None)
+    usable = [scope for scope in scopes if asked.grantable(scope) is None]
+    return item.model_copy(update={"scopes": usable})
+
+
+def _from_worker(found: WorkerPermissionRequest) -> PendingApproval:
+    return PendingApproval(
+        seq=found.seq,
+        kind=found.kind,
+        method=found.http.method if found.http else "",
+        policy=found.policy,
+        session=found.session_id,
+        rule=found.rule,
+        reason=found.reason,
+        recorded_at=found.recorded_at,
+        expires_at=found.expires_at,
+        timed_out=found.timed_out,
+        on_timeout=found.on_timeout,
+        caller_kind=found.caller_kind,
+        max_grant=found.max_grant,
+        http=found.http,
+        packages=found.packages,
+    )
+
+
+async def _worker_pending(worker: WorkerClient, project: str) -> list[PendingApproval]:
+    listing = await worker.permission_requests(project)
+    return [_from_worker(item) for item in listing.requests[:MAX_REQUESTS]]
 
 
 async def session_requests(request: web.Request) -> web.Response:
@@ -209,18 +338,26 @@ async def session_requests(request: web.Request) -> web.Response:
     context = request.app[CONTEXT]
     await asyncio.to_thread(session_record, context.projects, project, session)
     config = request.app.get(APPROVALS)
-    if config is None or config.project != project:
-        return json_answer(dumps({"requests": []}))
-    found = [item for item in await config.client.pending() if item.session == session]
-    children = await asyncio.to_thread(
-        ChildRequests(context.documents).in_session, project, session
-    )
-    listed = [
-        item.model_copy(update={"child": _asked(children.get(item.seq))})
-        for item in found
-        if (child := children.get(item.seq)) is None or child.withdrawn_by is None
-    ]
-    return json_answer(dumps({"requests": [item.model_dump(mode="json") for item in listed]}))
+    listed: list[PendingApproval] = []
+    if config is not None and config.client is not None and config.project == project:
+        found = [item for item in await config.client.pending() if item.session == session]
+        children = await asyncio.to_thread(
+            ChildRequests(context.documents).in_session, project, session
+        )
+        listed += [
+            item.model_copy(update={"child": _asked(children.get(item.seq))})
+            for item in found
+            if (child := children.get(item.seq)) is None or child.withdrawn_by is None
+        ]
+    if config is not None and config.worker is not None:
+        try:
+            found = await _worker_pending(config.worker, project)
+        except WorkerAPIError:  # the chat still shows the tool calls; the CLI path remains
+            _log.warning("the worker's permission requests are unavailable", exc_info=True)
+            found = []
+        listed += [item for item in found if item.session in (None, session)]
+    shown = [_offered(item).model_dump(mode="json") for item in listed]
+    return json_answer(dumps({"requests": shown}))
 
 
 def _asked(child: ChildRequest | None) -> ChildAsked | None:
@@ -235,6 +372,37 @@ def _asked(child: ChildRequest | None) -> ChildAsked | None:
     )
 
 
+def ledger_answer(item: PendingApproval, decision: str) -> tuple[str, float | None]:
+    """The scope and hours of the answer the proxy or the middleware records: the request
+    itself, or for a host grant the host's reads in that sandbox."""
+    approve = decision != "deny"
+    if item.kind == "mcp":
+        return "call", (None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS)
+    if item.kind == "packages" and item.http is None:
+        return "files", None  # the operation's own deadline bounds it
+    if item.kind == "network" and decision in ("session", "project"):
+        return "host", HOST_HOURS
+    return "request", (None if not approve else ONCE_HOURS if decision == "once" else GRANT_HOURS)
+
+
+async def _send(
+    config: Configuration, item: PendingApproval, *, approve: bool, scope: str, hours: float | None
+) -> None:
+    if item.kind == "mcp":
+        if config.client is None:
+            raise ProjectError(ErrorKind.NOT_FOUND, "tool calls are not answered here")
+        await config.client.answer(item.seq, approve=approve, scope=scope, hours=hours)
+        return
+    if config.worker is None:
+        raise ProjectError(
+            ErrorKind.NOT_FOUND, "network and package requests are not answered here"
+        )
+    await config.worker.answer_permission_request(
+        item.seq,
+        WorkerPermissionAnswer.model_validate({"approve": approve, "scope": scope, "hours": hours}),
+    )
+
+
 async def answer(request: web.Request) -> web.Response:
     project = identifier(request, "project")
     try:
@@ -245,104 +413,138 @@ async def answer(request: web.Request) -> web.Response:
         decision = Decision.model_validate(await json_body(request, "answer"), strict=True)
     except ValidationError:
         raise ProjectError(
-            ErrorKind.INVALID_REQUEST, "an answer is once, project, server or deny"
+            ErrorKind.INVALID_REQUEST, "an answer is once, session, project or deny"
         ) from None
-    config = _configured(request, project)
-    withdrawn = await asyncio.to_thread(
-        ChildRequests(request.app[CONTEXT].documents).withdrawn, project, [seq]
-    )
-    if seq in withdrawn:  # a withdrawal only refuses: the user cannot approve it after
-        raise ProjectError(
-            ErrorKind.CONFLICT,
-            f"permission request {seq} was withdrawn by the agent that delegated its caller",
+    context = request.app[CONTEXT]
+    config = request.app.get(APPROVALS)
+    if config is None:
+        raise ProjectError(ErrorKind.NOT_FOUND, "this project's requests are not answered here")
+    if decision.kind == "mcp":
+        proxy = _proxy(request, project)
+        withdrawn = await asyncio.to_thread(
+            ChildRequests(context.documents).withdrawn, project, [seq]
         )
-    asked = next((item for item in await config.client.pending() if item.seq == seq), None)
-    if asked is None:
-        raise ProjectError(ErrorKind.CONFLICT, f"permission request {seq} no longer waits")
-    remembered: Grant | None = None
-    if decision.decision in ("project", "server"):
-        remembered = Grant(
-            server=asked.server, tool=asked.tool if decision.decision == "project" else None
-        )
-        grant = remembered
-
-        def remember(store: DocumentStore) -> None:
-            approvals = ProjectApprovals(store)
-            current = approvals.get(project)
-            approvals.change(
-                project,
-                {
-                    "expected": current.revision,
-                    "grants": [g.model_dump(mode="json") for g in (*current.grants, grant)],
-                    "operation_id": "approval-" + secrets.token_hex(12),
-                },
-                USER,
+        if seq in withdrawn:  # a withdrawal only refuses: the user cannot approve it after
+            raise ProjectError(
+                ErrorKind.CONFLICT,
+                f"permission request {seq} was withdrawn by the agent that delegated its caller",
             )
-
-        await asyncio.to_thread(remember, request.app[CONTEXT].writer)
-    scope, hours = {
-        "once": ("call", ONCE_HOURS),
-        "project": ("tool", GRANT_HOURS),
-        "server": ("server", GRANT_HOURS),
-        "deny": ("call", None),
-    }[decision.decision]
-    await config.client.answer(seq, approve=decision.decision != "deny", scope=scope, hours=hours)
-    result = AnswerResult(seq=seq, decision=decision.decision, remembered=remembered)
+        pending = await proxy.pending()
+    else:
+        pending = await _worker_pending(_worker(request), project)
+    held = next((item for item in pending if item.seq == seq and item.kind == decision.kind), None)
+    if held is None:
+        raise ProjectError(ErrorKind.CONFLICT, f"permission request {seq} no longer waits")
+    asked = asked_of(held)
+    if decision.decision != "deny" and decision.decision not in _offered(held).scopes:
+        # The ceiling is the server's to enforce, whatever a client sends (D97).
+        raise ProjectError(
+            ErrorKind.POLICY_DENIED,
+            asked.grantable(decision.decision) or "this request takes no such answer",
+        )
+    granted: list[ProjectGrant] = []
+    if decision.decision in ("session", "project"):
+        now = config.clock.now()
+        granted = await asyncio.to_thread(
+            ProjectGrants(context.writer).give,
+            project, asked, decision.decision, USER, now, decision.hours,
+        )  # fmt: skip
+    scope, hours = ledger_answer(held, decision.decision)
+    await _send(config, held, approve=decision.decision != "deny", scope=scope, hours=hours)
+    if granted:
+        await asyncio.to_thread(
+            ProjectGrants(context.writer).used,
+            project, [grant.grant_id for grant in granted], config.clock.now(),
+        )  # fmt: skip
+    source = "mcp" if held.kind == "mcp" else "worker"
+    config.relayed.add((source, seq))
+    result = AnswerResult(seq=seq, decision=decision.decision, kind=held.kind, granted=granted)
     return json_answer(dumps(result.model_dump(mode="json")))
 
 
-async def settings(request: web.Request) -> web.Response:
+async def grants(request: web.Request) -> web.Response:
     project = identifier(request, "project")
     return await document_answer(
-        request, lambda store: ProjectApprovals(store).get(project).model_dump(mode="json")
+        request, lambda store: ProjectGrants(store).listing(project).model_dump(mode="json")
     )
 
 
-async def change_settings(request: web.Request) -> web.Response:
-    project = identifier(request, "project")
-    value = await json_body(request, "approval settings")
+async def revoke(request: web.Request) -> web.Response:
+    project, grant = identifier(request, "project"), request.match_info["grant"]
+    clock = request.app[APPROVALS].clock if APPROVALS in request.app else SYSTEM_CLOCK
 
-    def write(store: DocumentStore) -> dict[str, object]:
-        found, replayed = ProjectApprovals(store).change(project, value, USER)
-        return {**found.model_dump(mode="json"), "replayed": replayed}
+    def write(store: DocumentStore) -> GrantListing:
+        return ProjectGrants(store).revoke(project, grant, USER, clock.now())
 
     return await document_answer(request, write, access="write")
 
 
+async def _relay_one(
+    config: Configuration, store: DocumentStore, writer: DocumentStore,
+    project: str, held: PendingApproval, source: str,
+) -> None:  # fmt: skip
+    grants = ProjectGrants(store)
+    found = await asyncio.to_thread(grants.covering, project, asked_of(held), config.clock.now())
+    if not found:
+        return
+    scope = found[0].scope
+    ledger_scope, hours = ledger_answer(held, scope)
+    await _send(config, held, approve=True, scope=ledger_scope, hours=hours)
+    config.relayed.add((source, held.seq))
+    await asyncio.to_thread(
+        ProjectGrants(writer).used, project, [grant.grant_id for grant in found],
+        config.clock.now(),
+    )  # fmt: skip
+
+
+async def _relay_mcp(config: Configuration, store: DocumentStore, writer: DocumentStore) -> None:
+    if config.client is None or config.project is None:
+        return
+    project = config.project
+    pending = await config.client.pending()
+    withdrawn = await asyncio.to_thread(
+        ChildRequests(store).withdrawn,
+        project,
+        [held.seq for held in pending if ("mcp", held.seq) not in config.relayed],
+    )
+    for held in pending:
+        if ("mcp", held.seq) in config.relayed or held.timed_out:
+            continue
+        if held.seq in withdrawn:
+            await config.client.answer(held.seq, approve=False, scope="call", hours=None)
+            config.relayed.add(("mcp", held.seq))
+            continue
+        await _relay_one(config, store, writer, project, held, "mcp")
+
+
+async def _relay_worker(
+    config: Configuration, store: DocumentStore, writer: DocumentStore, projects: Sequence[str]
+) -> None:
+    if config.worker is None:
+        return
+    for project in projects:
+        for held in await _worker_pending(config.worker, project):
+            if ("worker", held.seq) not in config.relayed and not held.timed_out:
+                await _relay_one(config, store, writer, project, held, "worker")
+
+
 async def _relay(app: web.Application) -> None:
-    """Give the proxy each remembered approval again when a call it covers is held, and
-    deny each held call a parent withdrew (D99): a withdrawal only ever refuses."""
+    """Answer each held request a grant covers, and deny each held call a parent withdrew
+    (D99): a withdrawal only ever refuses."""
     config = app[APPROVALS]
-    store = app[CONTEXT].documents
+    store, writer = app[CONTEXT].documents, app[CONTEXT].writer
     while True:
-        try:
-            pending = await config.client.pending()
-            withdrawn = await asyncio.to_thread(
-                ChildRequests(store).withdrawn,
-                config.project,
-                [held.seq for held in pending if held.seq not in config.relayed],
-            )
-            for held in pending:
-                if held.seq in config.relayed or held.timed_out:
-                    continue
-                if held.seq in withdrawn:
-                    await config.client.answer(held.seq, approve=False, scope="call", hours=None)
-                    config.relayed.add(held.seq)
-                    continue
-                grant = await asyncio.to_thread(
-                    ProjectApprovals(store).covering, config.project, held.server, held.tool
-                )
-                if grant is None:
-                    continue
-                await config.client.answer(
-                    held.seq,
-                    approve=True,
-                    scope="tool" if grant.tool is not None else "server",
-                    hours=GRANT_HOURS,
-                )
-                config.relayed.add(held.seq)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # the proxy may be down for a while: try again later
-            _log.debug("remembered approvals were not relayed this time", exc_info=True)
+        for step in ("mcp", "worker"):
+            try:
+                if step == "mcp":
+                    await _relay_mcp(config, store, writer)
+                else:
+                    projects = await asyncio.to_thread(
+                        ProjectGrants(store).projects_with_code_grants
+                    )
+                    await _relay_worker(config, store, writer, projects)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # the proxy or the worker may be down for a while
+                _log.debug("grants were not relayed this time (%s)", step, exc_info=True)
         await asyncio.sleep(RELAY_SECONDS)

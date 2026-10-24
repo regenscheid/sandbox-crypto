@@ -36,7 +36,6 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
-from sandbox_science.orchestrator.approval_settings import ApprovalSettings
 from sandbox_science.orchestrator.connector_settings import ConnectorSettings
 from sandbox_science.orchestrator.context.history.captured import (
     CapturedCalls,
@@ -49,6 +48,7 @@ from sandbox_science.orchestrator.continuity.status import StatusPage
 from sandbox_science.orchestrator.documents.annotations import CHANGE as COMMENT_CHANGE
 from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.orchestrator.model_settings import ModelSettings
+from sandbox_science.orchestrator.project_grants import GrantListing
 from sandbox_science.orchestrator.runtree import RunTree
 from sandbox_science.orchestrator.uploads import UploadPage
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
@@ -155,7 +155,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     QuestionListing,
     QuestionAnswer,
     Requested,
-    ApprovalSettings,
+    GrantListing,
     AnswerResult,
     PendingListing,
     ConnectorSettings,
