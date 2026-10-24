@@ -542,6 +542,7 @@ class ExecutionManager:
             languages=tuple(name for name in environment.languages if name in LANGUAGES),
             location=self._packages.located(environment_id, environment) or environment.location,
             features=tuple(name for name in environment.features if name in FEATURES),
+            kernel_reason=environment.kernel_reason,
         )
 
     # Files. Replies are checked like events: a malformed one is an internal error.

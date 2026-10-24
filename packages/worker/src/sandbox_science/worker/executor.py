@@ -120,6 +120,8 @@ PACKAGE_GRACE = 10.0
 """Seconds a package command still in its turn gets after SIGTERM, to roll back (conda does)."""
 INTERRUPT_GRACE = 5.0
 KERNEL_START_TIMEOUT = 120.0
+MAX_KERNEL_REASON = 300
+"""Characters of the reason ``hello`` gives for offering no Python kernel."""
 KERNEL_NAMES = {"python": "python3", "sage": "sagemath"}
 """Each language's Jupyter kernelspec; SageMath installs ``sagemath`` beside its Python."""
 PDF_HELPER = Path(__file__).with_name("pdfhelper.py")
@@ -1091,13 +1093,14 @@ class Executor:
     # Operations.
 
     async def op_hello(self, request: Message) -> None:
-        languages = available_languages()
+        languages, kernel_reason = available_languages()
         await self.reply(
             request,
             protocol=PROTOCOL,
             max_request_bytes=MAX_REQUEST,
             package_gate=self.admission.incarnation,
             languages=languages,
+            kernel_reason=kernel_reason,
             location={
                 "hostname": socket.gethostname(),
                 "system": platform.platform(),
@@ -2027,17 +2030,29 @@ def pdf_argv(request: Message) -> list[str]:
     return argv
 
 
-def available_languages() -> list[str]:
-    """The languages whose kernelspecs this interpreter's Jupyter installation finds."""
-    if not all(importlib.util.find_spec(name) for name in ("jupyter_client", "ipykernel")):
-        return []
+def available_languages() -> tuple[list[str], str | None]:
+    """The languages whose kernelspecs this interpreter's Jupyter installation finds, and, when
+    Python is not among them, a short reason why (bounded, for the worker to surface)."""
+    for name in ("jupyter_client", "ipykernel"):
+        if importlib.util.find_spec(name) is None:
+            return [], f"{name} is not importable by {sys.executable}"
     try:
         from jupyter_client.kernelspec import KernelSpecManager
 
         specs: dict[str, str] = KernelSpecManager().find_kernel_specs()
-    except Exception:  # a broken Jupyter installation offers no kernels
-        return []
-    return [language for language, name in KERNEL_NAMES.items() if name in specs]
+    except Exception as exc:  # a broken Jupyter installation offers no kernels
+        return [], _bounded_reason(f"jupyter_client cannot list kernelspecs: {exc!r}")
+    languages = [language for language, name in KERNEL_NAMES.items() if name in specs]
+    if "python" in languages:
+        return languages, None
+    found = ", ".join(sorted(specs)) or "none"
+    return languages, _bounded_reason(f"no kernelspec for python3 (found: {found})")
+
+
+def _bounded_reason(text: str) -> str:
+    """One printable line of at most ``MAX_KERNEL_REASON`` characters."""
+    line = " ".join("".join(c if c.isprintable() else " " for c in text).split())
+    return line[:MAX_KERNEL_REASON]
 
 
 def _count(value: object) -> int | None:

@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 11
+PROTOCOL_VERSION: Final = 12
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -776,6 +776,8 @@ class Capabilities(Contract):
     languages: tuple[Language, ...]
     location: Location
     features: tuple[Feature, ...] = ()
+    kernel_reason: Annotated[str, StringConstraints(max_length=300)] | None = None
+    """Why the environment offers no Python kernel, when it does not and its executor said why."""
 
 
 class WorkerErrorResponse(Contract):

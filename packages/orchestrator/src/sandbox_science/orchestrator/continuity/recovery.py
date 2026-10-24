@@ -522,4 +522,5 @@ class Recovery:
             tuple(capabilities.features),
             True,
             plan.started,
+            capabilities.kernel_reason,
         )

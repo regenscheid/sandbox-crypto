@@ -437,6 +437,8 @@ def test_a_run_notes_its_kernels_and_says_why_python_can_be_missing() -> None:
         assert note.startswith("kernels: no python kernel, so the run has no python tool")
         assert "ipykernel" in note
     assert "offered: sage" in kernel_note(("sage",))
+    said = kernel_note((), "jupyter_client is not importable by /usr/bin/python3")
+    assert "no python kernel (jupyter_client is not importable by /usr/bin/python3)" in said
 
 
 class AdmittingClient(WorkerClient):

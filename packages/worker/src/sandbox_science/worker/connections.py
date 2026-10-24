@@ -21,7 +21,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from sandbox_science.contracts import Clock, ErrorKind, Location
 from sandbox_science.contracts.worker import FEATURES, LANGUAGES
@@ -39,6 +39,8 @@ from .usability import Usability
 _log = logging.getLogger(__name__)
 
 MAX_HOSTNAME = 255
+MAX_KERNEL_REASON = 300
+"""Characters of an executor's reason for offering no Python kernel that the worker keeps."""
 
 
 class DaemonIncarnationError(WorkerError):
@@ -57,6 +59,9 @@ class Connection:
     location: Location | None = None
     languages: tuple[str, ...] = ()
     features: tuple[str, ...] = ()
+    kernel_reason: str | None = None
+    """Why the executor offers no Python kernel, as it said, bounded; None when it offers one
+    or did not say."""
     running: set[str] = field(default_factory=set[str])
     last_used: float = field(kw_only=True)
     """Last ordinary use, by the manager's clock; passive observers never refresh it."""
@@ -243,7 +248,7 @@ class EnvironmentConnections:
             # Continuity must be checked before a fresh executor can ACK ready.
             self.hooks.hello(environment_id, channel)
             await self.hooks.sync_package_gate(environment_id, channel)
-            hostname, languages, features = describe(environment_id, channel.hello)
+            offered = describe(environment_id, channel.hello)
             declared = self.backend.isolation_tier
             isolation = await probe(
                 channel, declared, self.state_dir, self.backend.node_kernel_releases
@@ -265,13 +270,14 @@ class EnvironmentConnections:
             pool_id=self.pool_id,
             backend=self.backend.name,
             sandbox_id=self.backend.sandbox_id(environment_id),
-            hostname=hostname,
+            hostname=offered.hostname,
             isolation_tier=isolation.tier,
             declared_isolation_tier=declared,
             isolation_evidence=isolation.evidence,
         )
-        environment.languages = languages
-        environment.features = features
+        environment.languages = offered.languages
+        environment.features = offered.features
+        environment.kernel_reason = offered.kernel_reason
         environment.channel = channel
         if channel.daemon_token is not None:
             self.store.remember_endpoint(environment_id, channel.incarnation, identity)
@@ -367,8 +373,18 @@ class EnvironmentConnections:
         return Activity(environment.last_used, busy, cpu, kernels, channel.incarnation)
 
 
-def describe(environment_id: str, hello: Message) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-    """The host name, kernel languages and features from an executor's ``hello``, checked."""
+class Offered(NamedTuple):
+    """What an executor's ``hello`` says it offers."""
+
+    hostname: str
+    languages: tuple[str, ...]
+    features: tuple[str, ...]
+    kernel_reason: str | None
+
+
+def describe(environment_id: str, hello: Message) -> Offered:
+    """The host name, kernel languages, features and the reason for no Python kernel from an
+    executor's ``hello``, checked."""
     where, languages = hello.get("location"), hello.get("languages", [])
     if not isinstance(where, dict) or not isinstance(languages, list):
         raise WorkerError(ErrorKind.UNAVAILABLE, "the executor sent a malformed hello")
@@ -393,8 +409,16 @@ def describe(environment_id: str, hello: Message) -> tuple[str, tuple[str, ...],
     raw: object = hello.get("features", [])
     offered = cast(list[object], raw) if isinstance(raw, list) else []
     features = tuple(dict.fromkeys(f for f in offered if isinstance(f, str) and f in FEATURES))
-    return (
-        hostname or "unknown",
-        tuple(dict.fromkeys(n for n in names if n in LANGUAGES)),
-        features,
-    )
+    reason: object = hello.get("kernel_reason")
+    kernel_reason = None
+    if isinstance(reason, str):
+        # The executor may be research code's to impersonate: keep one bounded printable line.
+        kernel_reason = "".join(c for c in reason[:MAX_KERNEL_REASON] if c.isprintable()) or None
+    languages_offered = tuple(dict.fromkeys(n for n in names if n in LANGUAGES))
+    if "python" not in languages_offered:
+        _log.warning(
+            "the executor for %s offers no Python kernel, so runs there have no python tool: %s",
+            environment_id,
+            kernel_reason or "no reason given",
+        )
+    return Offered(hostname or "unknown", languages_offered, features, kernel_reason)

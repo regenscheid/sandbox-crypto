@@ -379,15 +379,17 @@ class RunSink(Protocol):
     async def tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None: ...
 
 
-def kernel_note(languages: Sequence[str]) -> str:
+def kernel_note(languages: Sequence[str], reason: str | None = None) -> str:
     """What a run's progress says of the kernels its environment offers, which are the kernel
     tools its agent gets. Without a Python kernel the agent has no ``python`` tool, and
-    computes through ``shell`` alone: the note says why that can be."""
+    computes through ``shell`` alone: the note says why that can be, and the executor's own
+    ``reason`` when it gave one."""
     if "python" in languages:
         return f"kernels: {', '.join(languages)}"
     others = f"; offered: {', '.join(languages)}" if languages else ""
+    said = f" ({reason})" if reason else ""
     return (
-        "kernels: no python kernel, so the run has no python tool"
+        f"kernels: no python kernel{said}, so the run has no python tool"
         f"{others}. An executor offers Python only where its interpreter has ipykernel, "
         "jupyter_client and the python3 kernelspec"
     )
@@ -408,6 +410,8 @@ class Admitted:
     features: tuple[str, ...]
     stateful: bool
     started_at: datetime
+    kernel_reason: str | None = None
+    """Why the environment offers no Python kernel, when its executor said."""
 
 
 async def admit(
@@ -466,7 +470,7 @@ async def admit(
         f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
         f"{location.sandbox_id}, host {location.hostname}, {describe_isolation(location)}"
     )
-    sink.note(kernel_note(capabilities.languages))
+    sink.note(kernel_note(capabilities.languages, capabilities.kernel_reason))
     return Admitted(
         request,
         request.run_id or new_id("run"),
@@ -475,6 +479,7 @@ async def admit(
         tuple(capabilities.features),
         projects is not None,
         started,
+        capabilities.kernel_reason,
     )
 
 
@@ -1570,7 +1575,9 @@ class Harness:
         languages, features = admitted.languages, admitted.features
         if "python" not in languages:
             # Rare but silent otherwise: the agent then computes only through shell.
-            _log.warning("run %s: %s", admitted.run_id, kernel_note(languages))
+            _log.warning(
+                "run %s: %s", admitted.run_id, kernel_note(languages, admitted.kernel_reason)
+            )
         role = admitted.request.role
         delegated = role == "delegated"
         bundles: list[caps.Capability] = []
