@@ -92,25 +92,28 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
-class Images(Model):
-    app: str
-    worker: str
+def _pinned(value: str) -> str:
+    match = _IMAGE.fullmatch(value)
+    host = value.partition("/")[0]
+    if (
+        match is None
+        or match[1] == "0" * 64
+        or "/" not in value
+        or not ("." in host or ":" in host)
+        or host.endswith((".example", ".invalid"))
+        or any(word in value for word in ("placeholder", "replace", "example.", ".invalid/"))
+    ):
+        raise ValueError("use an operator-selected registry image with a nonzero SHA256 digest")
+    return value
 
-    @field_validator("app", "worker")
-    @classmethod
-    def pinned(cls, value: str) -> str:
-        match = _IMAGE.fullmatch(value)
-        host = value.partition("/")[0]
-        if (
-            match is None
-            or match[1] == "0" * 64
-            or "/" not in value
-            or not ("." in host or ":" in host)
-            or host.endswith((".example", ".invalid"))
-            or any(word in value for word in ("placeholder", "replace", "example.", ".invalid/"))
-        ):
-            raise ValueError("use an operator-selected registry image with a nonzero SHA256 digest")
-        return value
+
+PinnedImage = Annotated[str, AfterValidator(_pinned)]
+"""A registry image pinned by a real digest, never a tag or a template's placeholder."""
+
+
+class Images(Model):
+    app: PinnedImage
+    worker: PinnedImage
 
 
 class Capacity(Model):

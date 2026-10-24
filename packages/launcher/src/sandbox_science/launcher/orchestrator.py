@@ -17,7 +17,14 @@ from sandbox_science.policy.openshell import (
 )
 
 from . import mcp, parts, runtime_owner
-from .config import LauncherConfig, LauncherError, OrchestratorConfig
+from .config import (
+    LauncherConfig,
+    LauncherError,
+    ModelConfig,
+    OrchestratorConfig,
+    RunServiceConfig,
+    SkillsConfig,
+)
 from .state import Layout, private_dir, write_private
 from .supervise import Part, Supervisor, passed
 
@@ -58,7 +65,8 @@ def reachable(url: str) -> str:
     return url
 
 
-def _endpoint(url: str) -> ServiceEndpoint:
+def endpoint(url: str) -> ServiceEndpoint:
+    """A service URL as an OpenShell policy endpoint, as the sandbox reaches it."""
     parsed = urlsplit(reachable(url))
     if parsed.hostname is None or parsed.scheme not in ("http", "https"):
         raise LauncherError("runtime service needs an explicit HTTP(S) endpoint")
@@ -67,31 +75,47 @@ def _endpoint(url: str) -> ServiceEndpoint:
     )
 
 
-def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
-    """Write scoped configuration and generated capability tokens, never read model keys."""
-    runtime, directory = configured(config), _directory(layout)
-    upload = private_dir(directory / "upload")
-    generation = "runtime-" + secrets.token_hex(12)
-    token = layout.token("runtime-control")
-    write_private(token, secrets.token_urlsafe(32) + "\n")
-    control_url = f"http://{runtime.control_listen}"
-    target = OrchestratorTarget(
-        worker_api=_endpoint(parts.worker_url(config)),
-        model_gateway=_endpoint(config.model.url),
-        state_service=_endpoint(control_url),
-        mcp_proxy=_endpoint(f"http://{config.mcp_proxy.listen}") if config.mcp_proxy else None,
-        binaries=(runtime.python + "*",),
+def runtime_target(
+    *, worker: str, model: str, control: str, proxy: str | None, python: str
+) -> OrchestratorTarget:
+    """The services the agent runtime's sandbox may reach, and nothing else."""
+    return OrchestratorTarget(
+        worker_api=endpoint(worker),
+        model_gateway=endpoint(model),
+        state_service=endpoint(control),
+        mcp_proxy=endpoint(proxy) if proxy is not None else None,
+        binaries=(python + "*",),
         filesystem=SandboxFilesystem(
             read_only=("/opt/sandbox-science", "/usr/share/sandbox-science")
         ),
     )
-    write_private(directory / "policy.yaml", compile_orchestrator(target).to_yaml())
-    write_private(directory / "generation", generation + "\n")
-    model, service = config.model, config.run_service
+
+
+def control_models(model: ModelConfig, skills: SkillsConfig, revision: str) -> dict[str, Any]:
+    """The model part of ``control.json``, which the Kubernetes runtime manager reads back
+    (``ControlModels``) to derive the runtime's settings from what control runs with."""
+    return {
+        "main": model.name,
+        "apis": model.api,
+        "reasoning_effort": model.effective_efforts(),
+        "reviewer": model.reviewer,
+        "watcher": model.watcher,
+        "delegated": model.delegated,
+        "agent_models": list(
+            dict.fromkeys(alias for alias in (model.name, model.delegated, model.reviewer) if alias)
+        ),
+        "embedding": skills.embedding_model,
+        "metadata": skills.metadata_model,
+        "image_revision": revision,
+    }
+
+
+def run_settings(model: ModelConfig, service: RunServiceConfig, recover: bool) -> dict[str, Any]:
+    """The run service's settings in ``control.json``."""
     settings: dict[str, Any] = {
         "cost_limits": True,
         "image_aliases": list(model.images),
-        "recover_interrupted": configured(config).recover_infrastructure,
+        "recover_interrupted": recover,
     }
     if service.context_ceiling is not None:
         settings["ceiling"] = service.context_ceiling
@@ -108,6 +132,38 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
     ):
         if (value := getattr(model, name)) is not None:
             settings[name] = value
+    return settings
+
+
+def checks(node: str, build: Path) -> dict[str, str]:
+    """The math and figure checkers' files in ``control.json``, from their build."""
+    return {
+        "node": node,
+        "math_launcher": str(build / parts.MATH_FILES[0]),
+        "math_bundle": str(build / parts.MATH_FILES[1]),
+        "figure_launcher": str(build / parts.FIGURE_FILES[0]),
+        "figure_bundle": str(build / parts.FIGURE_FILES[1]),
+    }
+
+
+def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
+    """Write scoped configuration and generated capability tokens, never read model keys."""
+    runtime, directory = configured(config), _directory(layout)
+    upload = private_dir(directory / "upload")
+    generation = "runtime-" + secrets.token_hex(12)
+    token = layout.token("runtime-control")
+    write_private(token, secrets.token_urlsafe(32) + "\n")
+    control_url = f"http://{runtime.control_listen}"
+    target = runtime_target(
+        worker=parts.worker_url(config),
+        model=config.model.url,
+        control=control_url,
+        proxy=f"http://{config.mcp_proxy.listen}" if config.mcp_proxy else None,
+        python=runtime.python,
+    )
+    write_private(directory / "policy.yaml", compile_orchestrator(target).to_yaml())
+    write_private(directory / "generation", generation + "\n")
+    model, service = config.model, config.run_service
     host: dict[str, Any] = {
         "state_dir": str(layout.control),
         "listen": runtime.control_listen,
@@ -117,28 +173,11 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         "generation": generation,
         "generation_file": str(directory / "generation"),
         "projects": [project.id for project in config.projects],
-        "main": model.name,
-        "apis": model.api,
-        "reasoning_effort": model.effective_efforts(),
-        "reviewer": model.reviewer,
-        "watcher": model.watcher,
-        "delegated": model.delegated,
-        "agent_models": list(
-            dict.fromkeys(alias for alias in (model.name, model.delegated, model.reviewer) if alias)
-        ),
-        "settings": settings,
-        "embedding": config.skills.embedding_model,
-        "metadata": config.skills.metadata_model,
-        "image_revision": runtime.revision,
+        **control_models(model, config.skills, runtime.revision),
+        "settings": run_settings(model, service, runtime.recover_infrastructure),
     }
     if service.math_checks is not None:
-        host["checks"] = {
-            "node": parts.node(config) or service.node,
-            "math_launcher": str(service.math_checks / parts.MATH_FILES[0]),
-            "math_bundle": str(service.math_checks / parts.MATH_FILES[1]),
-            "figure_launcher": str(service.math_checks / parts.FIGURE_FILES[0]),
-            "figure_bundle": str(service.math_checks / parts.FIGURE_FILES[1]),
-        }
+        host["checks"] = checks(parts.node(config) or service.node, service.math_checks)
     if config.mcp_proxy is not None:
         spec = config.mcp_proxy
         host["proxy"] = {

@@ -183,17 +183,20 @@ def worker_settings(
         "state_dir": str(layout.worker_state),
         "pool_id": config.worker.pool_id,
         "openshell": config.openshell.model_dump(mode="json", exclude_none=True),
-        "clients": [
-            {
-                "name": name,
-                "token_sha256": digests[name],
-                "projects": projects,
-                "recovery_control": name == "harness",
-                "artifact_retention": name == "harness",
-                "operator": name in {"workspace", "launcher"},
-            }
-            for name in CLIENTS
-        ],
+        "clients": [worker_client(name, digests[name], projects) for name in CLIENTS],
+    }
+
+
+def worker_client(name: str, digest: str, projects: list[str]) -> dict[str, Any]:
+    """One of ``CLIENTS`` in the worker's settings: the run service (``harness``) alone
+    installs recovery epochs and acknowledges retention; the others are operators."""
+    return {
+        "name": name,
+        "token_sha256": digest,
+        "projects": projects,
+        "recovery_control": name == "harness",
+        "artifact_retention": name == "harness",
+        "operator": name in {"workspace", "launcher"},
     }
 
 

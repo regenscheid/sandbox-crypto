@@ -91,6 +91,11 @@ def _said(text: str) -> str:
 Variable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 
 
+CLUSTER_SERVICES = "cluster_services"
+"""Validation context key: a Kubernetes site's model gateway may be an http Service name."""
+CLUSTER = (".svc", ".svc.cluster.local")
+
+
 class LauncherError(Exception):
     """What the launcher refuses, with a message for the user."""
 
@@ -227,14 +232,18 @@ class ModelConfig(_Strict):
 
     @field_validator("url")
     @classmethod
-    def _gateway(cls, value: str) -> str:
+    def _gateway(cls, value: str, info: ValidationInfo) -> str:
         parts = urlsplit(value)
         host = parts.hostname or ""
         try:
             local = ipaddress.ip_address(host).is_loopback
         except ValueError:
             local = False  # a name, which could resolve anywhere: https only
-        if (parts.scheme == "https" and host) or (parts.scheme == "http" and local):
+        # A Kubernetes site (kubernetes_site.py) may reach an in-cluster gateway by its
+        # Service name over the Pod network, which only that cluster's DNS resolves.
+        context = cast(dict[str, object], info.context or {})
+        cluster = bool(context.get(CLUSTER_SERVICES)) and host.endswith(CLUSTER)
+        if (parts.scheme == "https" and host) or (parts.scheme == "http" and (local or cluster)):
             return value
         raise ValueError(
             "the model gateway's URL is https, or http on a loopback IP address such as "

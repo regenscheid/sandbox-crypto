@@ -252,11 +252,11 @@ Assemble one CLI profile per identity, with the keys the bundle expects ([Secret
 | Key | Content |
 | --- | --- |
 | `active-gateway` | exactly `<gateway>` |
-| `gateway-metadata.json` | `{"name":"<gateway>","gateway_endpoint":"https://openshell.openshell.svc.cluster.local:8080","is_remote":false,"gateway_port":8080,"auth_mode":"mtls"}` |
+| `gateway-metadata.json` | `{"name":"<gateway>","gateway_endpoint":"https://openshell.openshell.svc.cluster.local:8080","is_remote":false,"gateway_port":0,"auth_mode":"mtls"}` (the 0.1.5 CLI writes `gateway_port` 0 when the URL carries the port; `site` writes this file) |
 | `gateway-ca.crt` | the `ca.crt` of the client Secret (`kubectl -n openshell get secret openshell-client-tls -o jsonpath='{.data.ca\.crt}' \| base64 -d`) |
 | `gateway-tls.crt`, `gateway-tls.key` | the identity's own `tls.crt` and `tls.key` |
 
-The endpoint name must be one the gateway certificate covers (the chart's internal SANs cover `*.svc.cluster.local`; confirm the Service name with `kubectl -n openshell get svc`, and add `certManager.serverDnsNames` if you use another). Keep the files on the operator's machine only until the Secrets are created (step 7). The manager's files go into its Secret (step 7); the worker's profile is not expanded from Secret keys, so its tree is placed on the pool PVC (step 7).
+Step 7's `site` command writes these from each identity's `ca.crt`, `tls.crt` and `tls.key` (it checks that the certificate is signed by that `ca.crt` and the key is its own), so they need not be assembled by hand. The endpoint name must be one the gateway certificate covers (the chart's internal SANs cover `*.svc.cluster.local`; confirm the Service name with `kubectl -n openshell get svc`, and add `certManager.serverDnsNames` if you use another). Keep the files on the operator's machine only until the Secrets are created (step 7). The manager's files go into its Secret (step 7); the worker's profile is not expanded from Secret keys, so its tree is placed on the pool PVC (step 7).
 
 Verify, from the operator's machine with the chart's own admin client bundle over `kubectl -n openshell port-forward svc/openshell 8080:8080`: `openshell status` shows `Connected` and `Authentication` not `Failed`. Test each new identity the same way against a copy of its profile. Both must authenticate.
 
@@ -311,30 +311,21 @@ Create each Secret through the site's secure workflow, with exactly the keys the
 | --- | --- | --- |
 | `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` | `runtime-manager-token.sha256` is the lowercase SHA-256 hex of the manager's bearer token (the file `manager-control.token` in the manager's Secret). Add `extra_files` `s3-credentials`, `s3-config` for the writer key |
 | `secrets.workspace` | `worker-token`, `worker-ca.crt` | `extra_files` `s3-credentials`, `s3-config` for the read-only key; `[workspace.environment]` names them |
-| `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` | `extra_files` as needed: `pool-token`, `ceiling.yaml`, `targets.yaml`, the checkpoint S3 pair; the OpenShell CLI tree goes on the PVC |
-| `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` | `extra_files` `ceiling.yaml`, `targets.yaml`, the gateway verifier's public key |
+| `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` | `extra_files` `pool-token`, `ceiling.yaml`, `targets.yaml` (required by `site`), the checkpoint S3 pair; the OpenShell CLI tree goes on the PVC |
+| `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` | `extra_files` `ceiling.yaml` and `gateway-public.pem`, the gateway verifier's public key (both required by `site`), optionally `targets.yaml` |
 | `secrets.cache` (optional) | `cache.toml` | Needs `network.sandboxes` peers |
 | `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key` | The model key is the manager's, issued by the in-cluster model gateway for this instance; the profile files are from 5.1 |
 
-Generate the tokens and certificates:
+Generate every file with one command, from a private site file beside the bundle TOML ([the template](../examples/kubernetes/site.toml); its keys are in [generate the Secrets](KUBERNETES-BUNDLE.md#generate-the-secrets)): the projects, the model gateway and its `model.key` for the manager, the `orchestrator` image's digest and full source revision, the `minimal` and `crypto-base` digests with their Kata placements (the site's Kata node labels as `node_selector`), the project policy, targets and pool ceiling, the gateway's extension-token public key, and the two client identities of 5.1 as `ca.crt`, `tls.crt` and `tls.key` paths:
 
 ```sh
-# tokens: one per link, 32 random bytes each; keep the manager token's digest separately for the control Secret
-head -c 32 /dev/urandom | base64 -w0 > manager-control.token      # no trailing newline, so the digest below is of the token itself
-sha256sum manager-control.token | cut -d' ' -f1 > runtime-manager-token.sha256
+uv run sandbox-science-kubernetes site --config /path/private-site.toml --output /path/new-secrets
+sh /path/new-secrets/secrets.sh        # one kubectl create secret generic per Secret, --from-file only
 ```
 
-Certificates must cover `<name>-control.research.svc`, `<name>-worker.research.svc` and `<name>-middleware.research.svc`; issue them with cert-manager from a private issuer and put the CA in `worker-ca.crt` and `control-ca.crt`. Certificate and hostname verification stay on. Model aliases in `control.json` and `control-models.json` match `[models.*]` in the bundle TOML.
+The table above is what it writes, under `secrets/<service>/`: a private CA and the control, worker and middleware certificates for `<name>-<service>.research.svc` (and `.svc.cluster.local`), a 32-byte token per link (`runtime-manager-token.sha256` is the digest of `manager-control.token`, which has no newline), and `control.json`, `control-models.json`, `runtime-manager.json`, `worker.toml` (`isolation_tier = 3`, `node_kernel_releases = ["*-talos"]`, a Kata, amd64 profile for each base profile) and `middleware.toml` with the bundle's cluster bindings. Model aliases come from `[models.*]` in the bundle TOML. It refuses a non-empty output directory. Read its `README.md`: it lists each `TODO(operator)`, among them the gateway's trust of the middleware (`gateway/middleware-ca.crt` and `gateway/middleware-registration.toml` go into the OpenShell chart's gateway configuration) and the project initialization commands. Delete the directory once the Secrets exist; its CA key was never written, so renewal means generating anew.
 
-The pool's OpenShell CLI tree (the worker's profile from 5.1) is not projected from Secret keys. Place it on the pool PVC once the pool Pod runs, and set in the bundle `[worker.environment] HOME = "/var/lib/sandbox-science/worker-home"` and `XDG_CONFIG_HOME = "/var/lib/sandbox-science/worker-config"`:
-
-```
-worker-config/openshell/active_gateway
-worker-config/openshell/gateways/<gateway>/metadata.json
-worker-config/openshell/gateways/<gateway>/mtls/{ca.crt,tls.crt,tls.key}   # mode 600, owned by UID 1000
-```
-
-The worker's own settings (`worker.toml`) declare `isolation_tier = 3`, `node_kernel_releases = ["*-talos"]`, the kubernetes profiles of [worker-placement.toml](../examples/kubernetes/worker-placement.toml) (amd64 selector and `runtime_class_name = "kata"` on each), and the `minimal` and `crypto-base` digests. The middleware must be reachable and trusted by the gateway ([policy middleware](POLICY-MIDDLEWARE.md)). Put the worker, middleware and package-cache settings in the same combined unit as D101 lands.
+The pool's OpenShell CLI tree (the worker's profile from 5.1) is not projected from Secret keys. The command writes it under `pool/worker-config/` (`openshell/active_gateway`, `openshell/gateways/<gateway>/metadata.json` and `mtls/{ca.crt,tls.crt,tls.key}`, mode 600); `worker.toml` names it as the CLI's `XDG_CONFIG_HOME`, `/var/lib/sandbox-science/worker-config`. Place it on the pool PVC once the pool Pod runs (step 8), as the README shows.
 
 Verify: `kubectl -n research get secret <each> -o json | jq '.data | keys'` matches the table; the renderer's `check` (step 8) finds every key.
 

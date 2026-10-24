@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: MIT
+# The private site file for `sandbox-science-kubernetes site` (docs/KUBERNETES-BUNDLE.md#generate-the-secrets).
+# Copy it outside the checkout, beside the private bundle TOML. It holds no secret value:
+# only paths, relative to this file. Replace every YOUR_* placeholder; the names below are
+# illustrative. The bundle's name, namespace, Secrets and main/delegated/reviewer models
+# come from the bundle TOML it names.
+bundle = "private-kubernetes.toml"
+worker_policy = "policy.yaml"          # the project policy granted to every project
+targets = "targets.yaml"               # OpenShell targets; sandbox.middleware = openshell.registration
+ceiling = "pool-ceiling.yaml"          # the pool ceiling for the worker and the middleware
+# pool_id = "research-workbench"       # default: the bundle's name
+
+[[projects]]
+id = "crypto"
+profile = "crypto-base"
+sessions = ["main"]
+
+# [skills]
+# embedding_model = "YOUR_EMBEDDING_ALIAS"
+# metadata_model = "YOUR_MODEL_ALIAS"
+
+# The model gateway. https, or http to an in-cluster Service (*.svc, *.svc.cluster.local),
+# whose key then crosses the Pod network unencrypted. The main, delegated and reviewer
+# aliases, APIs and efforts are the bundle's [models]; add only the other roles here.
+[model]
+url = "http://litellm.litellm.svc.cluster.local:4000/v1"
+api_key_file = "secure/model.key"      # the runtime manager's key, mode 600
+watcher = "research-watcher"
+api = { "research-watcher" = "responses" }
+reasoning_effort = { watcher = "low" }
+
+# The agent runtime: the orchestrator image by digest, its full 40-hex source revision,
+# and its Kata placement. kubernetes.io/arch = amd64 is always added.
+[runtime]
+image = "YOUR_REGISTRY/orchestrator@sha256:YOUR_VERIFIED_DIGEST"
+revision = "YOUR_FULL_40_HEX_SOURCE_REVISION"
+runtime_class_name = "kata"
+node_selector = { "example.org/kata-capable" = "true" }
+requests = { cpu_millicores = 1000, memory_mib = 2048, ephemeral_storage_mib = 1024 }
+limits = { cpu_millicores = 2000, memory_mib = 4096, ephemeral_storage_mib = 2048 }
+
+# Research base profiles: image by digest and Kata placement (examples/kubernetes/worker-placement.toml).
+[profiles.minimal]
+image = "YOUR_REGISTRY/minimal@sha256:YOUR_VERIFIED_DIGEST"
+node_selector = { "example.org/kata-capable" = "true" }
+requests = { cpu_millicores = 1000, memory_mib = 512, ephemeral_storage_mib = 256 }
+limits = { cpu_millicores = 2000, memory_mib = 2048, ephemeral_storage_mib = 1024 }
+
+[profiles.crypto-base]
+image = "YOUR_REGISTRY/crypto-base@sha256:YOUR_VERIFIED_DIGEST"
+node_selector = { "example.org/kata-capable" = "true", "example.org/compute-tier" = "high" }
+requests = { cpu_millicores = 2000, memory_mib = 4096, ephemeral_storage_mib = 1024 }
+limits = { cpu_millicores = 8000, memory_mib = 16384, ephemeral_storage_mib = 4096 }
+
+# The OpenShell gateway. Both identities are issued by the gateway's cert-manager CA
+# (docs/KUBERNETES-PREP.md step 5.1); the tool checks each certificate against its ca.crt.
+[openshell]
+endpoint = "https://openshell.openshell.svc.cluster.local:8080"
+gateway_id = "openshell"                  # the chart's default
+# registration = "sandbox-science-policy" # the middleware's registration name
+jwt_public_key = "secure/gateway-jwt-public.pem"   # from OpenShell's own Secrets
+# admin_hosts = []                        # besides the gateway's host
+
+[openshell.manager]
+ca = "secure/manager/ca.crt"
+certificate = "secure/manager/tls.crt"
+key = "secure/manager/tls.key"
+
+[openshell.worker]
+ca = "secure/worker/ca.crt"
+certificate = "secure/worker/tls.crt"
+key = "secure/worker/tls.key"
+
+# Exactly when the bundle has [secrets.cache]: the package cache's settings besides its
+# listener, URL and directory (docs/PACKAGE-CACHE.md).
+# [cache]
+# max_size = "50Gi"
+# pypi = {}
+# conda = {}
+
+# Files for the bundle's other extra_files, by service, such as S3 credentials:
+# [extra_files.control]
+# s3-credentials = "secure/control-s3-credentials"
+# s3-config = "secure/control-s3-config"

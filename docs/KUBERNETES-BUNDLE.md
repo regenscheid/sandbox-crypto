@@ -5,6 +5,8 @@ Kubernetes List. It reads only its explicit, bounded site-private TOML file. It 
 not read kubeconfig or referenced Secrets, call `kubectl`, apply resources, build or
 publish images, or create an OpenShell runtime. No actual cluster or native ARM64
 deployment is qualified by rendering or schema validation.
+Its `site` subcommand generates the Secrets' contents the bundle names, from a second
+private file ([generate the Secrets](#generate-the-secrets)).
 
 The trusted application image runs control and workspace in one Pod over one block
 PVC; each container mounts only its own directories of it (`control/`, which the
@@ -106,7 +108,10 @@ not itself start the runtime or enable math-repair model calls in the workspace.
 ## Prepare existing Secrets and recovery state
 
 The operator creates the named Secrets through the site's existing secure workflow.
-The renderer generates no Secret contents, tokens, settings or model credentials.
+The renderer generates no Secret contents, tokens, settings or model credentials;
+`sandbox-science-kubernetes site` generates them as files, with these bindings
+([generate the Secrets](#generate-the-secrets)), and the operator creates the Secrets
+from those files.
 Each service receives a different private memory volume mounted at `/private`.
 Only its init container mounts that service's projected Secret at `/source`; the
 narrow image helper copies selected files to regular mode-600 files owned by UID
@@ -261,6 +266,80 @@ a separate archive prefix and principal, independently of scientific artifacts.
 No S3 key belongs in research sandboxes. Coordinate metadata, backing settings,
 retained blobs, worker ownership/bindings and complete workspace checkpoints as a
 recovery set. This bundle does not initialize project policy/bindings or restore it.
+
+## Generate the Secrets
+
+```sh
+sandbox-science-kubernetes site --config /path/to/private-site.toml --output /path/to/new-directory
+```
+
+`site` reads a second private file, [the site template](../examples/kubernetes/site.toml),
+which names the bundle TOML (the renderer's own loader and checks read it, so the bundle's
+name, namespace, Secrets and `[models]` catalog are given once) and adds what only the
+Secrets hold. Like the bundle TOML it holds no secret value, only paths, relative to the
+file:
+
+| Key | What |
+| --- | --- |
+| `bundle`, `worker_policy`, `targets`, `ceiling` | The bundle TOML; the project policy granted to every project; the OpenShell targets file (`sandbox.middleware` must be `openshell.registration`, and with the cache its `package_cache` must be `<name>-cache.<namespace>.svc:8090`); the pool ceiling. The policy library parses all three |
+| `pool_id` | The worker's pool, the bundle's name by default |
+| `[[projects]]`, `[skills]` | As in the launcher's config (`id`, `profile`, `sessions`, `skills`; `embedding_model`, `metadata_model`, `packs`); each profile must be one of `[profiles]` |
+| `[model]` | The launcher's `[model]` without `name`, `delegated` and `reviewer`, which come from the bundle's catalog with its APIs and its efforts defaulted as the workspace's options default them (`max`, reviewer `medium`): `url`, `api_key_file` (the runtime manager's key), `watcher`, and `api`/`reasoning_effort` for aliases and roles outside the catalog. `url` is https, or http to an in-cluster Service (`*.svc`, `*.svc.cluster.local`), whose key then crosses the Pod network unencrypted |
+| `[runtime]` | The `orchestrator` image by digest, its full source `revision`, `recover_infrastructure`, and its Kata placement |
+| `[profiles.<name>]` | Each research base profile's image by digest and Kata placement |
+| `[openshell]` | The gateway `endpoint` (`https://host:port`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts`, `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
+| `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directory |
+| `[extra_files.<service>]` | A file for each other key the bundle's `extra_files` names, such as `s3-credentials` |
+
+A placement is `runtime_class_name` (`kata` or `kata-*`, default `kata`), the
+`node_selector` labels the site's Kata nodes carry, and `requests` and `limits`
+(`cpu_millicores`, `memory_mib`, `ephemeral_storage_mib`); `kubernetes.io/arch = amd64` is
+always added, since arm64 nodes cannot run Kata.
+
+It writes into a new directory, or an empty one of the user's (it refuses a non-empty
+one, as the renderer never overwrites its output), every file mode 600 and directory 700:
+
+- `secrets/<service>/`: for each Secret, exactly the required keys and the bundle's
+  `extra_files`. The worker's `extra_files` must name `pool-token`, `ceiling.yaml` and
+  `targets.yaml`, the middleware's `ceiling.yaml` and `gateway-public.pem`; only the
+  worker may name `pool-token`. `ceiling.yaml`, `targets.yaml` and `gateway-public.pem`
+  are the site's files wherever a Secret names them; any other key comes from
+  `[extra_files]`.
+- `pool/worker-config/`: the worker's OpenShell CLI tree for the pool PVC
+  (`openshell/active_gateway`, `openshell/gateways/<gateway>/metadata.json` and its
+  `mtls/`), as `openshell gateway add` writes it, with `runtime_manager.openshell_gateway`
+  as the gateway's name. The manager's profile keys are the same tree from its identity.
+- `gateway/`: the CA the gateway and the supervisors must trust for the middleware, and
+  the middleware's `[[openshell.supervisor.middleware]]` registration.
+- `bootstrap/policy.yaml`, `secrets.sh` (one `kubectl create secret generic` per Secret,
+  `--from-file` only, no value inline) and a `README.md` with the remaining steps and
+  every `TODO(operator)`.
+
+What it generates: a private CA (ECDSA P-256) and server certificates for
+`<name>-control`, `<name>-worker` and `<name>-middleware` at `.<namespace>.svc` and
+`.<namespace>.svc.cluster.local`; a 32-byte random token for each link, without a
+newline (control's `worker-token`, the workspace's, the worker's `pool-token` and the
+manager's `manager-control.token`, whose lowercase SHA-256 hex is control's
+`runtime-manager-token.sha256`); and the settings with the bindings above, through the
+launcher's own builders (`control.json`'s model part and run settings, the worker's
+client entries, the runtime's OpenShell target) and models (`RuntimeManagerSettings`).
+`control-models.json` is `control.json`'s model part. The worker declares
+`isolation_tier = 3`, `node_kernel_releases = ["*-talos"]` and a Kubernetes profile for
+each base profile; `control.json` names the `trusted-app` image's Node and math checker
+(`/usr/local/bin/node`, `/usr/share/sandbox-science/math`) and no MCP proxy. The
+middleware verifies the gateway's tokens with the given public key. The CA's key is
+never written: renewing a certificate or rotating a token means generating a new
+directory, replacing every Secret and recreating the Pods. The tests load each settings
+file through the model its service starts with.
+
+What it cannot generate, each a `TODO(operator)` in the README: the gateway's trust of
+the middleware (OpenShell's chart must mount `middleware-ca.crt` for the gateway and the
+supervisors and set `tls_ca_cert_path`, and sign extension tokens with the key whose
+public half is `jwt_public_key`); the client identities, which the gateway's CA issues;
+and the project initialization (`policy add`, `project create`, `session open`), whose
+commands the README lists. `runtime-manager.json`'s `policy.worker_api` names the worker
+Service only because `OrchestratorTarget` requires one; the runtime never calls it and
+the pool's NetworkPolicy refuses it. Skill packs are not imported.
 
 ## Explicit network authority
 

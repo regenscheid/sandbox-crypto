@@ -100,7 +100,7 @@ for embedded subcomponents.
 | grpcio | Apache-2.0 | Policy middleware gRPC server |
 | protobuf | BSD-3-Clause | Policy middleware messages |
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |
-| cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT; the throwaway test CA of the test-support package (development only) |
+| cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT; the launcher's Kubernetes Secret generation (`sandbox-science-kubernetes site`: the site's private CA and server certificates); the throwaway test CA of the test-support package (development only) |
 | cffi, pycparser | MIT-0; BSD-3-Clause | Required by cryptography. MIT-0 is MIT without the attribution condition |
 | aiohttp | Apache-2.0 AND MIT | HTTP servers and clients: the worker API, the harness's worker client, the workspace server, the package cache, the MCP proxy and the harness's MCP client |
 | aiohappyeyeballs, aiosignal, attrs, frozenlist, multidict, propcache, yarl, idna | PSF-2.0; Apache-2.0; MIT; Apache-2.0; Apache-2.0; Apache-2.0; Apache-2.0; BSD-3-Clause | Required by aiohttp |

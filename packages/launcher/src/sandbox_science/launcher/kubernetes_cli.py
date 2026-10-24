@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Offline check/render only; no cluster, Secret, image or subprocess access."""
+"""Offline check/render of the bundle, and generation of its Secrets' contents (site); no
+cluster, image or subprocess access."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
+from . import kubernetes_site, kubernetes_site_config
 from .kubernetes_bundle import render
 from .kubernetes_config import BundleError, load
 
@@ -35,16 +37,25 @@ def write_bundle(path: Path, content: bytes) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Validate site-private TOML or write one deterministic Kubernetes List."""
+    """Validate site-private TOML, write one deterministic Kubernetes List, or generate
+    the Secrets' contents into a new private directory."""
     parser = argparse.ArgumentParser(prog="sandbox-science-kubernetes", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("check", "render"):
+    for name in ("check", "render", "site"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
-        if name == "render":
+        if name != "check":
             command.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "site":
+            site, bundle = kubernetes_site_config.load(args.config)
+            kubernetes_site.write(args.output, kubernetes_site.plan(site, bundle))
+            print(
+                f"generated the Secrets' contents in {args.output}; read its README.md, "
+                "which lists what is left to the operator; no cluster changes made"
+            )
+            return 0
         bundle = render(load(args.config))
         if args.command == "render":
             write_bundle(

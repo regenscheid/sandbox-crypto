@@ -55,7 +55,7 @@ name = "workbench-workspace"
 
 [secrets.worker]
 name = "workbench-worker"
-extra_files = ["pool-token", "ceiling.yaml", "targets.yaml", "gateway.toml"]
+extra_files = ["pool-token", "ceiling.yaml", "targets.yaml"]
 
 [secrets.middleware]
 name = "workbench-middleware"
