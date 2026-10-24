@@ -14,9 +14,10 @@ This is the interim classification of built-in tools; a new built-in tool is out
 it is named here, so it is gated until someone classes it. Connector tools take D96's
 effect classes instead (``connector_reach``): the MCP proxy, which classifies each call
 under the project's policy, tells its callers each listed tool's class, and only a tool
-whose every call is a ``read`` stays in the session. Delegated runs are offered no
-connector tools today, so the fence meets none; the harness records each connector call's
-class and reach.
+whose every call is a ``read`` stays in the session. Delegated runs are offered connector
+tools (DA-3): the fence passes their reads, and lets a call the proxy holds for the user
+reach it whatever the plan (``fence.ChildFence``); the harness records each connector
+call's class and reach.
 """
 
 from __future__ import annotations

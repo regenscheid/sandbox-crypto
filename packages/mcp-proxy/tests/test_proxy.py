@@ -357,6 +357,36 @@ async def test_calls_are_attributed_as_far_as_the_caller_can_be_trusted(
     assert last_call(harness)["attribution"]["container"] == containers.get(caller)
 
 
+async def test_the_run_service_names_the_run_and_a_worker_only_claims_one(
+    harness: Harness,
+) -> None:
+    """DA-4: a call's records name the run the run service says made it, a delegated
+    run's as a main run's; a worker caller's run is a claim. Neither is in a key."""
+    child = "20261024T101500000000Z-run-child"
+    headers = {"Sandbox-Science-Session": "s-1", "Sandbox-Science-Run": child}
+    params = {"name": "crawl", "arguments": {}}
+    orchestrator = await harness.initialize()
+    held = await harness.call(orchestrator, "tools/call", params, headers=headers)
+    for record in (last_call(harness), harness.sink.kinds("escalation")[-1]):
+        assert (record["attribution"]["run"], record["attribution"]["run_claim"]) == (child, None)
+    [item] = (await harness.operator("GET", "/permission-requests")).body["requests"]
+    assert (item["seq"], item["run"], item["session"]) == (request_of(held), child, "s-1")
+    # The same call from another run is the same request: the run is attribution only.
+    again = await harness.call(
+        orchestrator, "tools/call", params,
+        headers={**headers, "Sandbox-Science-Run": "20261024T101500000000Z-run-root"},
+    )  # fmt: skip
+    assert request_of(again) == request_of(held)
+    shared = await harness.initialize("shared")
+    await harness.call(shared, "tools/call", params, caller="shared", headers=headers)
+    attribution = last_call(harness)["attribution"]
+    assert (attribution["run"], attribution["run_claim"]) == (None, child)
+    refused = await harness.call(
+        orchestrator, "tools/list", headers={"Sandbox-Science-Run": "not a run"}
+    )
+    assert (refused.status, reason(refused)) == (400, "request_unclassifiable")
+
+
 async def test_a_malformed_session_label_is_refused(harness: Harness) -> None:
     session = await harness.initialize()
     answer = await harness.call(
@@ -1324,6 +1354,7 @@ async def test_an_operator_lists_its_projects_waiting_requests_without_arguments
         "tool",
         "policy",
         "session",
+        "run",
         "rule",
         "reason",
         "recorded_at",

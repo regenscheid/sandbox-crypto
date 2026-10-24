@@ -1038,7 +1038,9 @@ class Harness:
                     if chat is not None:
                         hooks = (
                             *hooks,
-                            *await self._chat_hooks(admitted, chat, discovery),
+                            *await self._chat_hooks(
+                                admitted, chat, discovery, connectors=toolbox.connectors
+                            ),
                         )
                     if view is not None:
                         hooks = (*hooks, ViewMeter(view))
@@ -1258,6 +1260,7 @@ class Harness:
         discovery: SkillDiscovery | None = None,
         *,
         recovering: bool = False,
+        connectors: Connectors | None = None,
     ) -> tuple[TurnHook, ...]:
         """The user's messages, which reach the model last, and the run's events, which
         come last. No hook keeps a budget (D102): a configured project cost limit is the
@@ -1273,6 +1276,8 @@ class Harness:
                 admitted.context,
                 run_id=admitted.run_id,
                 granted=request.track[0] if request.track is not None else None,
+                # It reads each connector tool's class as the proxy listed it (D99).
+                connectors=connectors.tools.get if connectors is not None else None,
             )
             # Its result is read from its closing answer once every other hook has had its say.
             outcome = Outcome(request.target, task=request.target is None)
@@ -1569,9 +1574,10 @@ class Harness:
         ``stop`` is set when the user cancels the run.
 
         A delegated run gets its parent's tools without the review tools, the plan tools,
-        the delegate tools, ``ask_user`` and connectors, and a check only the reads of the
-        ledger, the documents and the memory; it is not reviewed, and the user's messages do
-        not end its job waits (PD-34)."""
+        the delegate tools and ``ask_user``, and a check only the reads of the ledger, the
+        documents and the memory, and of the connectors only the tools the proxy classes
+        ``read``; it is not reviewed, and the user's messages do not end its job waits
+        (PD-34, DA-1, DA-3)."""
         stores, settings = self.stores, self.settings
         alias = self.role(admitted.request).alias
         watcher, reviewer = self.watcher, self.reviewer_role(admitted.request)
@@ -1610,9 +1616,11 @@ class Harness:
         if "jobs" in features:
             bundles.append(caps.jobs(jobs))
         connectors = None
-        if self.mcp is not None and self.mcp.project == context.project_id and not delegated:
+        if self.mcp is not None and self.mcp.project == context.project_id:
             # Listed at the run's start: a server added later is offered to the next run.
             # The servers the project's user turned off are not offered (narrowing only).
+            # A delegated run's calls go through the same client under the same policy,
+            # each naming its own run (DA-3, DA-4).
             settings_of = (
                 functools.partial(ProjectConnectors(stores.documents).disabled, context.project_id)
                 if stores is not None
@@ -1625,6 +1633,8 @@ class Harness:
                 self.mcp.client,
                 [server for server in self.mcp.servers if server not in off],
                 session=context.session_id,
+                run=run_name(admitted.started_at, admitted.run_id),
+                reads_only=delegated and admitted.request.target is not None,
                 about=self.mcp.about,
                 shown=self.mcp.shown,
                 disabled=settings_of,

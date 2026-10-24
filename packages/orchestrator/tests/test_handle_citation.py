@@ -58,7 +58,7 @@ def advisory(reviews: Any, review: str, **overrides: Any) -> dict[str, Any]:
 
 
 def test_the_main_and_task_prompts_ask_for_the_handle_in_fixed_text() -> None:
-    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-15", "sandbox-delegated-task-12")
+    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-15", "sandbox-delegated-task-13")
 
     assert SYSTEM_PROMPT.count(CITE) == 1
     assert "relies on a ledger entry, or declines or reopens something because of one" in (

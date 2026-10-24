@@ -55,6 +55,7 @@ from .connectors import (
     CALL_SECONDS,
     MAX_ANSWER_BYTES,
     PROTOCOL,
+    RUN_HEADER,
     SESSION_HEADER,
     ConnectorError,
     clean,
@@ -62,8 +63,6 @@ from .connectors import (
 )
 from .worker_client import WorkerClient
 
-RUN_HEADER: Final = "Sandbox-Science-Run"
-"""Names the run whose agent made a call, which the middleware records."""
 _HELD: Final = re.compile(
     r"(approval_required|approval_denied|escalation_timed_out)_r([0-9]{1,18})"
 )
@@ -178,9 +177,17 @@ class DirectClient:
             self._http = None
 
     async def request(
-        self, server: str, method: str, params: Mapping[str, object], *, session: str
+        self,
+        server: str,
+        method: str,
+        params: Mapping[str, object],
+        *,
+        session: str,
+        run: str | None = None,
     ) -> dict[str, Any]:
-        """``method``'s result from ``server``; ``session`` names the asking session."""
+        """``method``'s result from ``server``; ``session`` names the asking session and
+        ``run`` the run that asks, over the run this client was made for (DA-4)."""
+        run = run if run is not None else self._run
         if server not in self._servers:
             raise ConnectorError("unavailable", f"{server} is not a declared server")
         self._ids += 1
@@ -189,14 +196,16 @@ class DirectClient:
         for attempt in (1, 2):
             task = self._sessions.get(server)
             if task is None or (task.done() and (task.cancelled() or task.exception())):
-                task = self._sessions[server] = asyncio.ensure_future(self._start(server, session))
+                task = self._sessions[server] = asyncio.ensure_future(
+                    self._start(server, session, run)
+                )
             try:
                 mcp_session = await asyncio.shield(task)
             except ConnectorError:
                 if self._sessions.get(server) is task:
                     del self._sessions[server]
                 raise
-            status, kind, body = await self._post(server, message, session, mcp_session)
+            status, kind, body = await self._post(server, message, session, mcp_session, run)
             if status == 404 and mcp_session is not None and attempt == 1:
                 if self._sessions.get(server) is task:
                     del self._sessions[server]  # the server forgot it: start again, once
@@ -238,7 +247,7 @@ class DirectClient:
         if confirmed is not True:
             raise _unconfirmed(error.kind, request)
 
-    async def _start(self, server: str, session: str) -> str | None:
+    async def _start(self, server: str, session: str, run: str | None) -> str | None:
         """Start an MCP session with ``server``; the server's session ID, if it issued one.
         The client declares no capabilities, which the middleware requires."""
         params = {
@@ -252,7 +261,7 @@ class DirectClient:
             async with self._client().post(
                 self._servers[server].url,
                 data=encode_message(message),
-                headers=self._headers(server, session, None),
+                headers=self._headers(server, session, None, run),
                 allow_redirects=False,
             ) as response:
                 found = response.headers.get("Mcp-Session-Id")
@@ -266,7 +275,7 @@ class DirectClient:
             async with self._client().post(
                 self._servers[server].url,
                 data=encode_message({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-                headers=self._headers(server, session, found or ""),
+                headers=self._headers(server, session, found or "", run),
                 allow_redirects=False,
             ) as response:
                 await _read(response)
@@ -281,13 +290,18 @@ class DirectClient:
         return found
 
     async def _post(
-        self, server: str, message: Mapping[str, object], session: str, mcp_session: str | None
+        self,
+        server: str,
+        message: Mapping[str, object],
+        session: str,
+        mcp_session: str | None,
+        run: str | None,
     ) -> tuple[int, str, bytes]:
         try:
             response = await self._client().post(
                 self._servers[server].url,
                 data=encode_message(message),
-                headers=self._headers(server, session, mcp_session or ""),
+                headers=self._headers(server, session, mcp_session or "", run),
                 allow_redirects=False,
             )
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
@@ -310,7 +324,9 @@ class DirectClient:
             self._http = aiohttp.ClientSession(timeout=self._timeout, trust_env=True)
         return self._http
 
-    def _headers(self, server: str, session: str, mcp_session: str | None) -> dict[str, str]:
+    def _headers(
+        self, server: str, session: str, mcp_session: str | None, run: str | None
+    ) -> dict[str, str]:
         """The request's headers. ``mcp_session`` is None for ``initialize`` and empty
         when the server issued no session."""
         headers = {
@@ -318,8 +334,8 @@ class DirectClient:
             "Content-Type": "application/json",
             SESSION_HEADER: session,
         }
-        if self._run is not None:
-            headers[RUN_HEADER] = self._run
+        if run is not None:
+            headers[RUN_HEADER] = run
         if mcp_session is not None:
             headers["MCP-Protocol-Version"] = PROTOCOL
             if mcp_session:

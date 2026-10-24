@@ -1667,6 +1667,7 @@ export interface PendingApproval {
   method: string;
   policy: string;
   session: string | null;
+  run: string | null;
   rule: string | null;
   reason: string | null;
   recorded_at: string;

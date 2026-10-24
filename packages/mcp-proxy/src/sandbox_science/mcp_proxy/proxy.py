@@ -70,7 +70,7 @@ from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import McpVersion
 
 from . import jsonrpc
-from .callers import SESSION_HEADER, Attribution, Caller, Callers, attribute
+from .callers import RUN_HEADER, SESSION_HEADER, Attribution, Caller, Callers, attribute
 from .credentials import contains_placeholder, credential_headers
 from .errors import MessageError, RefusalError, SessionGoneError, StoreError, UpstreamError
 from .jsonrpc import JsonObject, Notification, Request, RequestId, Response
@@ -366,8 +366,8 @@ class McpProxy:
 
     async def _permission_requests(self, request: web.Request) -> web.Response:
         """The operator's project's MCP permission requests nobody answered, oldest first,
-        each with the call's server, method and tool, the session the call came from, the
-        rule's reason, and when it times out, and for its card and grants (D97) the
+        each with the call's server, method and tool, the session and the run the call came
+        from (DA-4), the rule's reason, and when it times out, and for its card and grants (D97) the
         caller's kind, the call's effect class and ceiling and its significant arguments.
         Never the call's arguments: the request holds only their digest."""
         caller = self._authenticate(request)
@@ -395,6 +395,7 @@ class McpProxy:
                     "tool": fields["tool"],
                     "policy": fields["policy_digest"],
                     "session": detail.get("session"),
+                    "run": detail.get("run"),
                     "rule": detail.get("rule"),
                     "reason": detail.get("reason"),
                     "recorded_at": found.recorded.isoformat(timespec="seconds"),
@@ -410,7 +411,7 @@ class McpProxy:
         return web.json_response({"requests": items}, headers={hdrs.CACHE_CONTROL: "no-store"})
 
     def _escalations(self, seqs: set[int]) -> dict[int, dict[str, object]]:
-        """The session, rule and reason of the escalation records ``seqs``. Blocking."""
+        """The session, run, rule and reason of the escalation records ``seqs``. Blocking."""
         if not seqs or self._requests is None:
             return {}
         found: dict[int, dict[str, object]] = {}
@@ -432,9 +433,15 @@ class McpProxy:
                 if isinstance(attribution, dict)
                 else None
             )
+            run = (
+                cast(dict[str, object], attribution).get("run")
+                if isinstance(attribution, dict)
+                else None
+            )
             summary = data.get("summary")
             found[record.seq] = {
                 "session": session if isinstance(session, str) else None,
+                "run": run if isinstance(run, str) else None,
                 "rule": data.get("rule") if isinstance(data.get("rule"), str) else None,
                 "reason": data.get("reason") if isinstance(data.get("reason"), str) else None,
                 # From the attribution, which every record has: a record from before
@@ -646,7 +653,11 @@ class McpProxy:
             raise _TransportError(413, REQUEST_TOO_LARGE, "the body is too large") from exc
         call.sizes["request"] = len(body)
         try:
-            call.attribution = attribute(call.caller, request.headers.getall(SESSION_HEADER, []))
+            call.attribution = attribute(
+                call.caller,
+                request.headers.getall(SESSION_HEADER, []),
+                request.headers.getall(RUN_HEADER, []),
+            )
         except ValueError as exc:
             raise _TransportError(400, REQUEST_UNCLASSIFIABLE, str(exc)) from exc
         loaded = self._policy(call.caller.project)

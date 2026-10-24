@@ -31,7 +31,7 @@ from sandbox_science.orchestrator.plan_tools import NAMES as PLAN_NAMES
 from sandbox_science.orchestrator.question_tool import SPECS as QUESTION_SPECS
 from sandbox_science.orchestrator.skills import from_archive, snapshot
 from sandbox_science.orchestrator.skills.builtin import ROLES as BUILTIN_ROLES
-from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, MCP_TOOLS, SHARED_IN_CODE
+from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, SHARED_IN_CODE
 
 PACK: Final = Path(__file__).resolve().parents[3] / "skills" / "builtin"
 
@@ -44,11 +44,10 @@ DELEGATED: Final = (
     - {spec.name for spec in AUTHOR_SPECS}
     - PLAN_NAMES
     - {spec.name for spec in QUESTION_SPECS}
-    - {MCP_TOOLS}
 )
 """A delegated task's tools: its parent's without the review, plan and question tools
-and connectors (PD-16, PD-34, PD-41), with its track's tools (PD-9), and the delegate
-tools where a main run allows it two levels (PD-15)."""
+(PD-16, PD-34, PD-41), with its connectors' ``mcp_tools`` (DA-3), its track's tools
+(PD-9), and the delegate tools where a main run allows it two levels (PD-15)."""
 TABLES: Final = {"main": MAIN, "delegated": DELEGATED}
 
 ROLES: Final = BUILTIN_ROLES

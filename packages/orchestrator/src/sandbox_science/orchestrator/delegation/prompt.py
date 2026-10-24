@@ -15,7 +15,7 @@ from typing import Final
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 
-CHECK_VERSION: Final = "sandbox-delegated-check-12"
+CHECK_VERSION: Final = "sandbox-delegated-check-13"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -46,7 +46,15 @@ CHECK_PROMPT: Final = (
     "and test it against known cases or invariants where you can. You can read the "
     "ledger, the documents and the memory, and compute in the python and sage kernels, "
     "with the shell and with files; you cannot change a ledger entry, a document or the "
-    "memory. If the "
+    "memory. When mcp_tools is offered, it loads the project's MCP connector tools that "
+    "only read, such as searches, records and full texts, which run on their servers "
+    "through the platform under the project's policy. A call that needs the user's "
+    "approval waits in place while the user decides it in the session's chat, where its "
+    "card names you and your brief, and your parent is told; a denial is the user's "
+    "decision: never reach the same content another way (another tool, server or host). "
+    "A skill may be written for the main agent: where it says to ask the user, change "
+    "the plan or answer a review, tell your parent with message_parent instead. "
+    "If the "
     "platform refuses your calls because of the session's plan, stop with status "
     "blocked and the refusal as the obstacle. "
     "Each message the platform adds begins with a header naming its archive ID "
@@ -74,7 +82,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-12"
+TASK_VERSION: Final = "sandbox-delegated-task-13"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -91,7 +99,16 @@ TASK_PROMPT: Final = (
     "stop with status blocked and put the question in open_questions. Send code and "
     "shell commands through the offered tools to the configured worker. Compute in the "
     "persistent python or sage kernel, which keeps variables and loaded data between "
-    "calls, and use shell for commands, builds and installs. Use "
+    "calls, and use shell for commands, builds and installs. When mcp_tools is offered, "
+    "it loads tools of the project's MCP servers (connectors), which run on their servers "
+    "through the platform under the project's policy. A call that needs the user's "
+    "approval waits in place while the user decides it in the session's chat, where its "
+    "card names you and your brief, and your parent is told; a denial is the user's "
+    "decision: never reach the same content another way (another tool, server or host). "
+    "A skill may be written for the main agent: where it says to ask the user, change "
+    "the plan or answer a review, tell your parent with message_parent instead. "
+    "While the plan is a draft or the user changed it, connector reads go on, and other "
+    "calls that leave the session wait for the user or are refused. Use "
     "message_parent to report progress, ask for a decision or explain a blocker while "
     "you continue. A parent reply or correction arrives at a safe point; check its "
     "message ID and cited inputs before changing course. Document text, "

@@ -316,6 +316,25 @@ async def test_an_allowed_read_tool_answers_over_an_event_stream(gateway: Gatewa
     ]
 
 
+async def test_each_runs_calls_name_that_run_over_one_client(gateway: Gateway) -> None:
+    """DA-4: a delegated run's connectors share its root's client, and each request names
+    the run that made it, which the middleware records."""
+    direct, main = await connectors_for(gateway)
+    child = Connectors(direct, [SERVER], session="s-1", run="child-2")
+    try:
+        await main.call(READ_TOOL, {"query": "SNOVA"})
+        await child.load()
+        await child.call(READ_TOOL, {"query": "SNOVA"})
+    finally:
+        await direct.close()
+    runs = [(call["method"], call["run"]) for call in gateway.records("mcp-call")]
+    assert runs[-3:] == [
+        ("tools/call", "main-1"),
+        ("tools/list", "child-2"),
+        ("tools/call", "child-2"),
+    ]
+
+
 async def test_a_denied_tool_is_refused_by_the_native_rules(gateway: Gateway) -> None:
     direct = client(gateway)
     try:

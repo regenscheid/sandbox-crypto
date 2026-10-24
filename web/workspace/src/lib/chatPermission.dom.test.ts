@@ -22,6 +22,7 @@ const request: PendingApproval = {
   method: 'tools/call',
   policy: 'sha256:' + 'a'.repeat(64),
   session: 'main',
+  run: null,
   rule: 'mcp.servers.crypto-research-mcp.tools.escalate[web_fetch]',
   reason: 'escalated',
   recorded_at: '2026-10-21T18:00:00Z',

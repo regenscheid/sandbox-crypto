@@ -448,7 +448,7 @@ def test_the_listing_is_read_with_every_field_the_proxy_sends() -> None:
     assert set(approvals.PendingApproval.model_fields) - {
         "child", "kind", "http", "packages", "scopes", "source", "hold",
     } == {
-        "seq", "server", "method", "tool", "policy", "session", "rule", "reason",
+        "seq", "server", "method", "tool", "policy", "session", "run", "rule", "reason",
         "recorded_at", "expires_at", "timed_out", "on_timeout", "caller_kind", "effect",
         "max_grant", "summary",
     }  # fmt: skip

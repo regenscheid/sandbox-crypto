@@ -7,7 +7,7 @@ description: Finding papers, standards and known results through the project's M
 
 ## Connector tools
 
-The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. A main run has it when the project configures connectors. A delegated run has no connector tools, so the main run does the searching and gives a task what it found as files.
+The project's MCP servers are reached through `mcp_tools`. Its description carries an index of the servers' tools, grouped by server, each with a short purpose in the server's own words. Main and delegated runs have it when the project configures connectors; a delegated check is offered only the tools that read, which are most of a research server's.
 
 - A query lists the tools that match it, and loads none.
 - Names, at most 16 a call, load tools. A loaded tool joins your tools for the rest of the run, and you call it by its name.
@@ -48,7 +48,7 @@ A search with no hits shows only that this query found nothing in that source as
 
 ## Refusals
 
-The project's policy decides each connector call. A call refused with `approval_required` waits for an operator to approve it: say so, go on with other work, and call again with the same arguments once it is approved. Any other refusal is the policy's decision: do not repeat it unchanged, or reach the same content through another tool or server. A call whose answer could not be read may still have run on the server, so check before calling again.
+The project's policy decides each connector call. A call that needs approval waits for the user's answer, which the user gives in the session's chat; where the call cannot wait, it is refused with `approval_required`: say so, go on with other work, and call again with the same arguments once it is approved. A denial, and any other refusal, is the policy's or the user's decision: do not repeat it unchanged, or reach the same content through another tool or server. A call whose answer could not be read may still have run on the server, so check before calling again.
 
 ## Recording a reference
 

@@ -13,6 +13,7 @@ const base: PendingApproval = {
   method: 'tools/call',
   policy: 'sha256:x',
   session: 's',
+  run: null,
   rule: null,
   reason: null,
   recorded_at: '2026-10-24T12:00:00Z',

@@ -13,7 +13,8 @@ import hashlib
 import json
 import logging
 import unicodedata
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -43,7 +44,7 @@ from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents.agent_text import hidden_characters
 from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolSpec
+from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.prompts import pin_tools, schema_json
 from sandbox_science.orchestrator.runstate import RunState
@@ -119,8 +120,15 @@ def tls(tmp_path_factory: pytest.TempPathFactory) -> Tls:
     return make_tls(tmp_path_factory.mktemp("tls"))
 
 
-@pytest_asyncio.fixture
-async def proxied(tls: Tls, tmp_path: Path) -> AsyncIterator[Proxied]:
+@asynccontextmanager
+async def serve_proxy(
+    tls: Tls,
+    tmp_path: Path,
+    policy: str = POLICY,
+    callers: Sequence[tuple[str, Caller]] = (),
+) -> AsyncIterator[Proxied]:
+    """The proxy in front of a fake server, with ``policy`` bound to the project; the run
+    service's caller, and ``callers`` besides."""
     fake = FakeServer()
     upstream_app = web.Application()
     upstream_app.router.add_route("*", "/mcp", fake.handle)
@@ -128,14 +136,20 @@ async def proxied(tls: Tls, tmp_path: Path) -> AsyncIterator[Proxied]:
     await upstream_server.start_server(ssl=tls.server)
     fake.port = upstream_server.port or 0
     store = PolicyStore(tmp_path / "state")
-    loaded = store.add_policy(POLICY.format(host=SERVER_HOST, port=fake.port).encode())
+    loaded = store.add_policy(policy.format(host=SERVER_HOST, port=fake.port).encode())
     store.bind(PROJECT, loaded.digest)
     sink = RecordingSink()
+
+    async def answers(kind: str, payload: dict[str, object]) -> int:
+        return sink.append(kind, payload)  # an operator's answer, as the workspace sends it
+
     resolver = GuardedResolver(StaticResolver(), lambda host, addresses: None)
     upstream = Upstream(client_session(resolver, timeout=10, tls=tls.client))
     proxy = McpProxy(
         store=store,
-        callers=Callers([(token_digest(TOKEN), Caller("orchestrator", "orchestrator", PROJECT))]),
+        callers=Callers(
+            [(token_digest(TOKEN), Caller("orchestrator", "orchestrator", PROJECT)), *callers]
+        ),
         ceiling=PoolCeiling.unrestricted(),
         floor=HardFloor(),
         events=sink,
@@ -144,6 +158,7 @@ async def proxied(tls: Tls, tmp_path: Path) -> AsyncIterator[Proxied]:
         credentials={"papers-token": "PAPERS_TOKEN"},
         environ={"PAPERS_TOKEN": "openshell:resolve:env:v1_PAPERS_TOKEN"},
         requests=sink.records,
+        answers=answers,
         now=sink.now,
     )
     proxy_server = TestServer(proxy.application(max_body_bytes=64 * 1024), host="127.0.0.1")
@@ -154,6 +169,12 @@ async def proxied(tls: Tls, tmp_path: Path) -> AsyncIterator[Proxied]:
         await proxy_server.close()
         await upstream.close()
         await upstream_server.close()
+
+
+@pytest_asyncio.fixture
+async def proxied(tls: Tls, tmp_path: Path) -> AsyncIterator[Proxied]:
+    async with serve_proxy(tls, tmp_path) as found:
+        yield found
 
 
 @pytest_asyncio.fixture
@@ -1160,11 +1181,13 @@ async def test_a_listing_page_that_is_all_denied_is_read_through(proxied: Proxie
     assert connectors.summary()["servers"] == {"papers": 3}
 
 
-async def test_a_delegated_run_gets_no_connector_tools_nor_their_index(
+async def test_a_check_is_offered_no_connector_tool_the_proxy_does_not_class_read(
     delegating: Harness, proxied: Proxied
 ) -> None:
-    """PD-16: a check behind a root that has the connectors is offered neither them nor
-    mcp_tools, and a call to either is refused for its role; nothing reaches the server."""
+    """DA-1, PD-33: a check is offered only the connector tools the proxy classes ``read``.
+    The test policy classifies none, so a check behind a root that has the connectors is
+    offered neither them nor mcp_tools, and a call to either is refused for its role;
+    nothing reaches the server."""
     token = delegating.tmp / "mcp.token"
     token.write_text(TOKEN)
     token.chmod(0o600)
@@ -1193,11 +1216,25 @@ async def test_a_delegated_run_gets_no_connector_tools_nor_their_index(
     assert proxied.fake.tool_calls() == []
 
 
-async def test_a_delegated_toolbox_refuses_connectors(proxied: Proxied) -> None:
-    connectors = await listed(proxied, [{"name": "search"}])
-    async with WorkerClient("http://127.0.0.1:9", "test-secret-worker") as client:
-        with pytest.raises(ValueError, match="a delegated run gets no connector tools"):
-            Toolbox(client, CONTEXT, connectors=connectors, delegated=True)
+async def test_a_delegated_toolbox_takes_connectors_and_loads_on_first_call(
+    proxied: Proxied,
+) -> None:
+    """DA-3: a delegated run's connector tools are indexed and loaded as a main run's; one
+    called before it was loaded is loaded and called, not refused for the role."""
+    proxy = ProxyClient(proxied.url, TOKEN)
+    connectors = Connectors(proxy, ["papers"], session="s-1", run="child-run")
+    try:
+        await connectors.load()
+        async with WorkerClient("http://127.0.0.1:9", "test-secret-worker") as client:
+            toolbox = Toolbox(client, CONTEXT, connectors=connectors, delegated=True)
+            assert "mcp_tools" in {spec.name for spec in toolbox.specs}
+            assert "search" not in {spec.name for spec in toolbox.specs}
+            outcome = await toolbox.call(ToolCall("c1", "search", '{"query": "x"}'), "op-1")
+    finally:
+        await proxy.close()
+    assert "not_permitted_for_role" not in outcome.text
+    assert "search" in {spec.name for spec in toolbox.specs}
+    assert proxied.fake.tool_calls() == ["search"]
 
 
 def flaky(proxied: Proxied, failures: int) -> list[int]:
@@ -1404,7 +1441,13 @@ class ListingClient:
         self.classifies = classifies
 
     async def request(
-        self, server: str, method: str, params: Mapping[str, object], *, session: str
+        self,
+        server: str,
+        method: str,
+        params: Mapping[str, object],
+        *,
+        session: str,
+        run: str | None = None,
     ) -> dict[str, Any]:
         if method == "tools/call":
             return {"content": [{"type": "text", "text": "ok"}]}

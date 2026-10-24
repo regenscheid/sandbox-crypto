@@ -66,6 +66,8 @@ def test_a_shared_containers_label_is_only_a_claim() -> None:
         "container": "ss-crypto-default",
         "session": None,
         "session_claim": "s-2",
+        "run": None,
+        "run_claim": None,
     }
 
 
@@ -80,3 +82,18 @@ def test_a_dedicated_container_is_attributed_to_its_own_session() -> None:
 def test_malformed_labels_are_refused(labels: list[str]) -> None:
     with pytest.raises(ValueError, match="Sandbox-Science-Session"):
         attribute(SHARED, labels)
+    with pytest.raises(ValueError, match="Sandbox-Science-Run"):
+        attribute(ORCHESTRATOR, ["s-1"], labels)
+
+
+def test_only_the_run_service_names_the_run() -> None:
+    """DA-4: the run service's run is its statement; a worker's is a claim, which nothing
+    vouches for, as a shared container's session is."""
+    child = "20261024T101500000000Z-run-child"
+    attribution = attribute(ORCHESTRATOR, ["s-1"], [child])
+    assert (attribution.run, attribution.run_claim) == (child, None)
+    assert attribute(ORCHESTRATOR, ["s-1"]).run is None
+    for worker in (SHARED, DEDICATED):
+        claimed = attribute(worker, [], [child])
+        assert (claimed.run, claimed.run_claim) == (None, child)
+        assert claimed.record()["run"] is None

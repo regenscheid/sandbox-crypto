@@ -469,13 +469,11 @@ class Toolbox:
         capabilities: caps.CapabilitySet | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
-        plan, delegate, question or connector tool, is refused with
-        ``not_permitted_for_role`` (PD-16, PD-41). A ``check`` run is offered only the reads
-        of the documents, the ledger and the memory, beside its compute and file tools: it
-        changes no entry, document or memory (PD-34, LG-13, as the coordinator tightened
-        them on 2026-10-15)."""
-        if delegated and connectors is not None:
-            raise ValueError("a delegated run gets no connector tools")
+        plan, delegate or question tool, is refused with ``not_permitted_for_role`` (PD-16,
+        PD-41). Its connector tools are its own run's, as a main run's are (DA-3). A
+        ``check`` run is offered only the reads of the documents, the ledger and the
+        memory, beside its compute and file tools: it changes no entry, document or memory
+        (PD-34, LG-13, as the coordinator tightened them on 2026-10-15)."""
         if delegated and questions is not None:
             raise ValueError("a delegated run cannot ask the user")
         if capabilities is None:
@@ -762,7 +760,7 @@ class Toolbox:
         documents the run has seen (LD-15).
         """
         entry = self.entries.get(call.name)
-        if entry is None and self.delegated:
+        if entry is None and self.delegated and call.name not in self.deferred:
             return _failure(
                 ErrorKind.POLICY_DENIED,
                 f"not_permitted_for_role: a delegated run is not offered {call.name!r}",

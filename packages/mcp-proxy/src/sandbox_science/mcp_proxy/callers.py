@@ -13,6 +13,11 @@ that sent the request, so attribution has levels:
 - ``container``: worker code in a shared project container. Any process there
   can use the token, so a session label it sends is recorded as a claim only.
 
+The run service also names the run that made a call, a main run or a delegated one, in
+``Sandbox-Science-Run`` (delegated agents spec DA-4). Only the run service's caller is
+believed; a run a worker caller names is recorded as a claim. A run is attribution only:
+no approval's key or scope holds it.
+
 An ``operator`` caller (the workspace, for its user) makes no MCP calls: it reads its
 project's permission requests and answers them, as the command line does (D76).
 """
@@ -29,6 +34,8 @@ from .settings import CallerSettings
 
 SESSION_HEADER: Final = "Sandbox-Science-Session"
 """The header in which a caller names the session a call belongs to."""
+RUN_HEADER: Final = "Sandbox-Science-Run"
+"""The header in which the run service names the run that made a call (DA-4)."""
 
 _LABEL_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _MAX_TOKEN: Final = 4096
@@ -69,6 +76,10 @@ class Attribution:
     caller: Caller
     session: str | None
     session_claim: str | None
+    run: str | None = None
+    """The run that made the call, as the run service names it; attribution only."""
+    run_claim: str | None = None
+    """A run a worker caller named, which nothing vouches for."""
 
     def record(self) -> dict[str, object]:
         """The attribution as recorded with every event."""
@@ -80,6 +91,8 @@ class Attribution:
             "container": self.caller.container,
             "session": self.session,
             "session_claim": self.session_claim,
+            "run": self.run,
+            "run_claim": self.run_claim,
         }
 
 
@@ -117,21 +130,27 @@ def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def attribute(caller: Caller, labels: Sequence[str]) -> Attribution:
-    """Attribute a call, given the values of its session headers.
+def _label(header: str, values: Sequence[str], what: str) -> str | None:
+    if len(values) > 1:
+        raise ValueError(f"{header} given more than once")
+    label = values[0] if values else None
+    if label is not None and not _LABEL_RE.fullmatch(label):
+        raise ValueError(f"{header} must be {what}")
+    return label
+
+
+def attribute(caller: Caller, labels: Sequence[str], runs: Sequence[str] = ()) -> Attribution:
+    """Attribute a call, given the values of its session headers and its run headers.
 
     Raises ValueError for a repeated or malformed label.
     """
-    if len(labels) > 1:
-        raise ValueError(f"{SESSION_HEADER} given more than once")
-    label = labels[0] if labels else None
-    if label is not None and not _LABEL_RE.fullmatch(label):
-        raise ValueError(f"{SESSION_HEADER} must be a session id")
+    label = _label(SESSION_HEADER, labels, "a session id")
+    run = _label(RUN_HEADER, runs, "a run's name")
     match caller.level:
         case "orchestrator":
-            return Attribution(caller, session=label, session_claim=None)
+            return Attribution(caller, session=label, session_claim=None, run=run)
         case "sandbox":
             claim = label if label is not None and label != caller.session else None
-            return Attribution(caller, session=caller.session, session_claim=claim)
+            return Attribution(caller, session=caller.session, session_claim=claim, run_claim=run)
         case "container":
-            return Attribution(caller, session=None, session_claim=label)
+            return Attribution(caller, session=None, session_claim=label, run_claim=run)

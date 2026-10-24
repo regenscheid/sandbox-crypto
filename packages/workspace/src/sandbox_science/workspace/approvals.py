@@ -135,6 +135,8 @@ class PendingApproval(Contract):
     policy: str
     """The policy revision the request was held under."""
     session: str | None = None
+    run: str | None = None
+    """The run whose call it is, as the run service named it (DA-4): attribution only."""
     rule: str | None = None
     reason: str | None = None
     recorded_at: datetime

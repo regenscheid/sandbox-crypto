@@ -128,11 +128,11 @@ async def test_delegated_unoffered_harness_tools_remain_role_denials(name: str) 
     assert "not_permitted_for_role" in outcome.text
 
 
-def test_delegated_setup_rejects_user_and_connector_capabilities() -> None:
+def test_delegated_setup_rejects_user_capabilities() -> None:
+    """A delegated run cannot ask the user (PD-41); its connectors are its own (DA-3,
+    test_connectors.py)."""
     with pytest.raises(ValueError, match="cannot ask the user"):
         Toolbox(cast(WorkerClient, object()), CONTEXT, delegated=True, questions=domain())
-    with pytest.raises(ValueError, match="no connector tools"):
-        Toolbox(cast(WorkerClient, object()), CONTEXT, delegated=True, connectors=domain())
 
 
 def test_background_offer_and_hook_are_enabled_together() -> None:

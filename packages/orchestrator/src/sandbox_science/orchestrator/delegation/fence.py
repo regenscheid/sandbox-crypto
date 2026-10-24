@@ -11,11 +11,19 @@ shows instead; they are refused only once the session was closed or opened again
 task's progress on its track is refused once the plan is no longer the version it
 started under (PD-9). The first refusal is kept, and the delegation's outcome reports it,
 so the parent learns why the run stopped.
+
+Connector tools are judged by the class the MCP proxy gives each listed tool (D96, D99;
+delegated agents spec DA-7). A ``read`` stays in the session and passes as computation
+does. Another class is outward. Under a draft or user-edited plan, such a call still
+reaches the proxy when the proxy says a call of the tool asks a person first: the proxy
+holds it, and the user decides it from a card attributed to the child (DA-9). One the
+policy would let through unasked is refused, since nobody would see it.
 """
 
 from __future__ import annotations
 
-from typing import Final
+from collections.abc import Callable
+from typing import Final, Protocol
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.aio import threaded
@@ -34,6 +42,20 @@ PAGES: Final = 8
 """Pages of plan events a check reads, 16 each; past them the fence holds."""
 
 
+class ListedTool(Protocol):
+    """What the fence reads of a connector tool, as the run's connectors list it."""
+
+    @property
+    def effect_class(self) -> str | None: ...
+
+    @property
+    def escalates(self) -> bool: ...
+
+
+ConnectorLookup = Callable[[str], ListedTool | None]
+"""A run's connector tool by name, or None for a tool that is not a connector's."""
+
+
 class ChildFence(TurnHook):
     """Refuses a delegated run's effects that the session's plan does not allow."""
 
@@ -47,9 +69,11 @@ class ChildFence(TurnHook):
         *,
         run_id: str,
         granted: PlanRef | None = None,
+        connectors: ConnectorLookup | None = None,
     ) -> None:
         """Reads the session and its plan as the run starts; call it in a thread.
-        ``granted`` is a task's plan version on its track, which its progress needs."""
+        ``granted`` is a task's plan version on its track, which its progress needs, and
+        ``connectors`` finds the run's connector tools by name."""
         self.plans, self.projects, self.context = plans, projects, context
         scope = PlanScope(project_id=context.project_id, session_id=context.session_id)
         # It only reads: agent attribution without a grant is the main role's.
@@ -63,6 +87,7 @@ class ChildFence(TurnHook):
         self.refused: str | None = None
         """Why the fence first refused a call, if it did."""
         self.granted = granted
+        self.connectors = connectors
 
     async def gate(self, effect: Effect) -> Refusal | None:
         """A call of an unnamed tool: an ``effect`` is taken to act outward."""
@@ -75,6 +100,11 @@ class ChildFence(TurnHook):
             if self.granted is None:
                 return None
             refusal = await threaded(self._progress)
+        elif (listed := self._connector(tool)) is not None:
+            # A read stays in the session; a call the proxy holds for the user is the
+            # user's to decide, whatever the plan (D99).
+            unfenced = listed.effect_class == "read" or listed.escalates
+            refusal = await threaded(self._held if unfenced else self._check)
         elif reach(tool) == "session":
             refusal = await threaded(self._held)
         else:
@@ -82,6 +112,9 @@ class ChildFence(TurnHook):
         if refusal is not None and self.refused is None:
             self.refused = refusal.message
         return refusal
+
+    def _connector(self, tool: str) -> ListedTool | None:
+        return self.connectors(tool) if self.connectors is not None and tool else None
 
     def summary(self) -> object | None:
         return None if self.refused is None else {"refused": self.refused}
