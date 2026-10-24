@@ -34,7 +34,7 @@ PLATFORM: Final = Author(kind="platform", service="skills")
 PACKAGED: Final = "builtin_pack"
 """Their directory in the installed package (pyproject.toml's ``force-include``)."""
 ROLES: Final[dict[str, tuple[str, ...]]] = {
-    "computation": ("main",),
+    "computation": ("main", "delegated"),
     "delegating-work": ("main", "delegated"),
     "environment-setup": ("main",),
     "figures": ("main",),

@@ -68,7 +68,7 @@ Before a long or large run, check the method on a small representative case agai
 
 - `start_job` takes a script (or argv), its purpose and the progress to expect, and returns a job ID. Jobs keep running after the turn ends.
 - `job_status` shows a job's state, its CPU and memory use, and the head and tail of its output. Read its full logs with `read_file`, at the stdout and stderr paths it names.
-- `wait_jobs` keeps the turn open, without calling the model, until the jobs end, the watcher needs attention, or the user writes.
+- `wait_jobs` keeps the turn open, without calling the model, until the jobs end or the watcher needs attention, and, in a main run, until the user writes.
 - `list_jobs` lists the session's jobs, and `cancel_job` stops one, keeping its logs.
 
 A kernel cell is for interactive work. A computation of many minutes belongs in a job, where it survives the turn. A job's files are recorded when its completion notice arrives.

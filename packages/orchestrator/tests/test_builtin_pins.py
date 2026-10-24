@@ -189,6 +189,25 @@ def test_a_run_gets_the_built_in_skills_of_its_role(shipped: Path, tmp_path: Pat
     assert checking == []  # a check, or a task at the last level, has no delegate tools
 
 
+def test_a_delegated_run_gets_the_computation_skill(shipped: Path, tmp_path: Path) -> None:
+    """Children compute freely (D99), so computation is offered to a task and to a check."""
+    (shipped / "computation").mkdir()
+    (shipped / "computation" / "SKILL.md").write_text(
+        "---\nname: computation\ndescription: Compute.\n---\nC\n"
+    )
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", "sha256:" + "a" * 64)
+    try:
+        store = SkillStore(projects.control)
+        store.ensure(PROJECT, builtin.builtin_pack())
+        task = [e.name for e in store.effective(PROJECT, "delegated").entries]
+        check = [e.name for e in store.effective(PROJECT, "delegated", delegates=False).entries]
+    finally:
+        projects.close()
+    assert "computation" in task
+    assert check == ["computation"]
+
+
 def test_a_harness_without_its_pack_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

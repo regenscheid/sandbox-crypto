@@ -72,7 +72,7 @@ What a child cannot do today, and where:
   - **Built-in skills** are the only ones the platform limits by role, by the list in `skills/builtin.py`. A built-in skill about a main run's duties (the plan, reviews, the user's questions) stays main-only. Delegating-work goes only to runs with the delegate tools, as today, and recording-results only to task children.
 
   This reverses today's default, under which a skill not listed is main-only. Of the built-in skills, children gain:
-  - computation, environment-setup and figures;
+  - computation (built, D99), environment-setup and figures;
   - literature-search, with DA-3;
   - pdf-reading, with DA-24;
   - recording-results, task children only, within LG-13's authority.
