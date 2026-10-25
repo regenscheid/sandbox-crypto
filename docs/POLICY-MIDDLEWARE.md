@@ -92,7 +92,7 @@ A held call reads the store for the answer at most once a second. On the command
 uv run sandbox-science-policy-middleware accept-tools --settings middleware.toml --server crypto-research-mcp
 ```
 
-which records `mcp-tools-accepted`, or until a new pin is in force (a reviewed classification or `mcp_tool_pins`): a drift from an older pin no longer counts. Reads stay free.
+which records `mcp-tools-accepted` for every project, or until a new pin is in force (a reviewed classification or `mcp_tool_pins`): a drift from an older pin no longer counts. A drift holds every project whose classification in force has the pin it drifted from; the user's re-acceptance through the worker (`mcp-tools-accepted` naming the project) or acceptance of a new classification revision (`mcp-classification-accepted`) ends it for that project only ([project revisions](MCP-CONNECTORS.md#project-revisions)). Reads stay free.
 
 **Findings.** Each rule's near miss (the call that first passes half its threshold, once per crossing) and each hold are logged as structured records for the log pipeline (`event: detect_finding`, with `outcome` `near_miss`, `hold` or `hold_call`, the rule, count, threshold, window, host, sandbox, project, session and request), so dashboards can show how close sessions come. A hold is also returned to OpenShell as a `detect_hold` finding.
 

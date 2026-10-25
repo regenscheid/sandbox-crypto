@@ -12,7 +12,14 @@ from dataclasses import dataclass, replace
 from typing import Final, NamedTuple, assert_never
 
 from .ceiling import PoolCeiling
-from .classification import CallClass, class_action, named, resolve
+from .classification import (
+    CallClass,
+    ServerClassification,
+    class_action,
+    named,
+    resolve,
+    restrictiveness,
+)
 from .decision import Action, Alert, Decision, EscalationTerms, Layer, most_restrictive
 from .effects import ClassAction, EffectClass, MaxGrant
 from .errors import ClassificationError
@@ -90,6 +97,7 @@ def evaluate(
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
     resolved: Sequence[str] = (),
+    classification: ServerClassification | None = None,
 ) -> Decision:
     """Decide what happens to one operation.
 
@@ -98,6 +106,8 @@ def evaluate(
     the egress or MCP proxy is about to connect to for the operation's host
     (or the MCP server's host). The floor, the ceiling's deny list and the
     public/non-public rule apply to each of them as well as to the name.
+    ``classification`` is the project's accepted revision of an MCP operation's
+    server's classification, which replaces the catalog's (``server_classification``).
     """
     for address in resolved:
         if parse_ip(address) is None:
@@ -108,7 +118,7 @@ def evaluate(
         case HttpOperation() | GitOperation():
             return _evaluate_network(operation, policy, ceiling, floor, resolved)
         case McpOperation():
-            return _evaluate_mcp(operation, policy, ceiling, floor, resolved)
+            return _evaluate_mcp(operation, policy, ceiling, floor, resolved, classification)
         case PackageOperation():
             return _evaluate_package(operation, policy, ceiling, floor)
         case _:
@@ -220,17 +230,26 @@ def evaluate_mcp_message(
     floor: HardFloor = DEFAULT_FLOOR,
     resolved: Sequence[str] = (),
     hints: Mapping[str, EffectClass] | None = None,
+    classification: ServerClassification | None = None,
 ) -> Decision:
     """Classify and evaluate one MCP JSON-RPC message; unclassifiable messages are denied.
 
     ``hints`` are the classes the server's latest listing declares, by tool name
     (``mcp_wire.tool_hints``); a tool the policy does not classify takes its hint (D96).
+    ``classification`` is the project's accepted revision of the server's classification.
     """
     try:
         operation = classify_mcp_message(server, message, origin=origin, hints=hints)
     except ClassificationError as exc:
         return _deny("classification", str(exc), policy)
-    return evaluate(operation, policy, ceiling=ceiling, floor=floor, resolved=resolved)
+    return evaluate(
+        operation,
+        policy,
+        ceiling=ceiling,
+        floor=floor,
+        resolved=resolved,
+        classification=classification,
+    )
 
 
 def evaluate_monitors(policy: LoadedPolicy, usage: EgressUsage) -> tuple[Alert, ...]:
@@ -651,6 +670,7 @@ def _evaluate_mcp(
     ceiling: PoolCeiling,
     floor: HardFloor,
     resolved: Sequence[str],
+    classification: ServerClassification | None = None,
 ) -> Decision:
     mcp = policy.policy.mcp
     server = mcp.servers.get(operation.server)
@@ -694,7 +714,7 @@ def _evaluate_mcp(
     ):
         return _deny("policy", f"tool {tool!r} is not in mcp.proxy.worker_tools", policy)
 
-    if policy.policy.lockdown.mcp == "locked" and not named(server, name):
+    if policy.policy.lockdown.mcp == "locked" and not named(server, name, classification):
         return _deny(
             "policy",
             f"tool {tool!r} is not named in the policy, and MCP is locked (lockdown.mcp)",
@@ -702,12 +722,11 @@ def _evaluate_mcp(
             rule="lockdown.mcp",
         )
 
-    def rank(effect: EffectClass) -> tuple[int, int]:
-        terms = class_action(policy.policy, operation.server, effect)
-        # A narrower grant ceiling is the more restrictive treatment of two escalations.
-        return terms.action.restrictiveness, -list(MaxGrant).index(terms.max_grant)
-
-    call = resolve(server, name, operation.arguments, rank, hint=operation.hint)
+    # A narrower grant ceiling is the more restrictive treatment of two escalations.
+    rank = restrictiveness(policy.policy, operation.server)
+    call = resolve(
+        server, name, operation.arguments, rank, hint=operation.hint, project=classification
+    )
     terms = class_action(policy.policy, operation.server, call.effect)
     lists = (
         ("allow", Action.ALLOW, server.tools.allow),

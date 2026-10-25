@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from sandbox_science.policy import LoadedPolicy, mcp_wire
-from sandbox_science.policy.classification import server_classification
+from sandbox_science.policy.classification import ServerClassification, server_classification
 from sandbox_science.policy.detection import DRIFT_RECORD, DriftLedger, pin_digest
 from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.mcp_answers import Rewrite, rewrite_answer
@@ -272,6 +272,10 @@ class Drift:
     removed: tuple[str, ...]
     changed: tuple[str, ...] = ()
     """Pinned tools whose name, description or input schema changed."""
+    digests: Mapping[str, str] = field(default_factory=dict[str, str])
+    """The listing's digest of each added and changed tool (``mcp_wire.tool_digest``)."""
+    hints: Mapping[str, str] = field(default_factory=dict[str, str])
+    """The class each added tool's hints give it (D96)."""
 
 
 class ToolListings:
@@ -292,11 +296,15 @@ class ToolListings:
         self._pages: dict[tuple[str, str], _Pages] = {}
         self._hints: OrderedDict[tuple[str, str], dict[str, EffectClass]] = OrderedDict()
 
-    def pin(self, name: str, server: McpServer) -> Mapping[str, str | None] | None:
-        """The pinned tool list of server ``name``: the operator's, else its classification's."""
+    def pin(
+        self, name: str, server: McpServer, project: ServerClassification | None = None
+    ) -> Mapping[str, str | None] | None:
+        """The pinned tool list of server ``name``: the operator's, else that of its
+        classification in force, the project's accepted revision (``project``) or the
+        catalog's."""
         if name in self._pins:
             return dict.fromkeys(self._pins[name])
-        found = server_classification(server)
+        found = server_classification(server, project)
         return found.pins if found is not None else None
 
     def pinned(self, server: str) -> bool:
@@ -353,7 +361,9 @@ class ToolListings:
         removed = tuple(sorted(set(pinned) - set(seen)))
         if not (added or removed or changed):
             return None
-        return Drift(listing.server, added, removed, changed)
+        digests = {name: seen[name].digest for name in (*added, *changed)}
+        hints = {name: seen[name].hint.value for name in added}
+        return Drift(listing.server, added, removed, changed, digests, hints)
 
 
 def load_tool_pins(path: Path) -> ToolListings:
@@ -444,6 +454,7 @@ class ListingCheck:
     def _record(self, drift: Drift) -> None:
         pinned = self._listing.pin
         pin = pin_digest(pinned) if pinned is not None else None
+        added, changed = drift.added[:MAX_DRIFT_NAMES], drift.changed[:MAX_DRIFT_NAMES]
         try:
             seq = self._events.record(
                 DRIFT_RECORD,
@@ -452,9 +463,11 @@ class ListingCheck:
                     "request_id": self._request_id,
                     "finding": DRIFT_FINDING,
                     "pin": pin,
-                    "added": list(drift.added[:MAX_DRIFT_NAMES]),
+                    "added": list(added),
                     "removed": list(drift.removed[:MAX_DRIFT_NAMES]),
-                    "changed": list(drift.changed[:MAX_DRIFT_NAMES]),
+                    "changed": list(changed),
+                    "digests": {name: drift.digests[name] for name in (*added, *changed)},
+                    "hints": {name: drift.hints[name] for name in added},
                     "counts": {
                         "added": len(drift.added),
                         "removed": len(drift.removed),

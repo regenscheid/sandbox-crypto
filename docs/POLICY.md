@@ -126,7 +126,7 @@ Every `tools/call` resolves to one class, from a closed set:
 **Where the class comes from**, most authoritative first:
 
 1. The policy's own `mcp.servers.<server>.classify`, a map of exact tool names (after `tool_prefix`) to classes.
-2. The server's checked-in classification file, which `mcp.servers.<server>.classification` names (`packages/policy/src/sandbox_science/policy/classifications/<name>/`; [MCP connectors](MCP-CONNECTORS.md#classification-files)).
+2. The server's classification in force for the project: the project's accepted revision in the policy store when it has one, else the checked-in classification file that `mcp.servers.<server>.classification` names (`packages/policy/src/sandbox_science/policy/classifications/<name>/`). A project revision applies only where the policy names a classification for the server, and replaces the checked-in files for that project whatever their name ([MCP connectors](MCP-CONNECTORS.md#project-revisions)).
 3. The server's declared hints, from the latest complete `tools/list` the enforcing layer has read: `readOnlyHint: true` (without `destructiveHint: true`) is `read`; `destructiveHint` or no hint is `unclassified`. The policy and the file win over hints.
 4. Otherwise `unclassified`.
 

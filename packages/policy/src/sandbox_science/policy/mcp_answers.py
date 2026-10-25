@@ -27,7 +27,7 @@ from typing import Final, Literal, cast
 
 from .approvals.summary import call_summary
 from .ceiling import PoolCeiling
-from .classification import EFFECT_META, listed_effect, tool_entry
+from .classification import EFFECT_META, ServerClassification, listed_effect, tool_entry
 from .decision import Action
 from .effects import EffectClass
 from .evaluate import DEFAULT_FLOOR, evaluate_mcp_message
@@ -47,11 +47,17 @@ BINARY_METHODS: Final = frozenset({"tools/call", "prompts/get", "resources/read"
 _MIME_RE: Final = re.compile(r"[A-Za-z0-9.+-]{1,64}/[A-Za-z0-9.+-]{1,64}")
 
 
-def tool_summary(server: McpServer, tool: str | None, params: object) -> dict[str, str]:
-    """A tool call's significant arguments, from its server's classification (D97)."""
+def tool_summary(
+    server: McpServer,
+    tool: str | None,
+    params: object,
+    classification: ServerClassification | None = None,
+) -> dict[str, str]:
+    """A tool call's significant arguments, from its server's classification in force (D97):
+    the project's accepted revision (``classification``), else the catalog's."""
     if tool is None or not isinstance(params, dict):
         return {}
-    entry = tool_entry(server, tool.removeprefix(server.tool_prefix or ""))
+    entry = tool_entry(server, tool.removeprefix(server.tool_prefix or ""), classification)
     arguments = cast("JsonObject", params).get("arguments")
     if entry is None or not entry.significant or not isinstance(arguments, dict):
         return {}
@@ -67,11 +73,13 @@ def callable_tools(
     floor: HardFloor = DEFAULT_FLOOR,
     origin: Origin = "orchestrator",
     hints: Mapping[str, EffectClass] | None = None,
+    classification: ServerClassification | None = None,
 ) -> tuple[JsonObject, int]:
     """A ``tools/list`` page without the tools the policy denies a caller of ``origin``, and
     how many it dropped. Each tool is judged as a call by name alone, with ``hints`` for
-    tools the policy does not classify. Escalated tools stay, marked: they ask a person.
-    A page without a tools list is returned as it is."""
+    tools the policy does not classify and the project's accepted ``classification`` of the
+    server, if any. Escalated tools stay, marked: they ask a person. A page without a tools
+    list is returned as it is."""
     tools = result.get("tools")
     if not isinstance(tools, list):
         return result, 0
@@ -88,14 +96,21 @@ def callable_tools(
                 "params": {"name": name, "arguments": {}},
             }
             decision = evaluate_mcp_message(
-                server, message, loaded, origin=origin, ceiling=ceiling, floor=floor, hints=hints
+                server,
+                message,
+                loaded,
+                origin=origin,
+                ceiling=ceiling,
+                floor=floor,
+                hints=hints,
+                classification=classification,
             )
             if decision.action is Action.DENY:
                 denied += 1
                 continue
             tool = _marked(
                 tool,
-                listed_effect(entry, name, decision),
+                listed_effect(entry, name, decision, classification),
                 escalates=decision.action is Action.ESCALATE,
             )
         kept.append(tool)

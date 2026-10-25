@@ -21,6 +21,7 @@ from sandbox_science.event_store import EventStore, StoreReader
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling, reasons
 from sandbox_science.policy.approvals import Approvals
 from sandbox_science.policy.approvals.commands import prepare_answer
+from sandbox_science.policy.store import Acceptance
 from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import StoreSink
@@ -483,3 +484,89 @@ def test_the_service_reads_response_statuses_only_when_asked(
             server.stop(grace=None)
     [(_, hold)] = holds(events)  # only the run that reads statuses counted them
     assert hold["rule"] == "detect.host-failures"
+
+
+def _drift(middleware: PolicyMiddleware, call: Any, request_id: str) -> None:
+    """A listing that adds a tool and changes a pinned one."""
+    assert call("tools/list", request_id=request_id).allowed
+    check = middleware.check_listing(request_id, "sbx-agent", stream=False)
+    assert check is not None
+    added = {"name": "brand_new", "description": "x", "inputSchema": {"type": "object"}}
+    changed = {"name": READ_TOOL, "description": "now different", "inputSchema": {}}
+    result = {"tools": [added, changed]}
+    check.feed(json.dumps({"jsonrpc": "2.0", "id": 7, "result": result}).encode())
+    assert check.finish().drift is not None
+
+
+def test_a_drift_record_gives_the_digests_of_added_and_changed_tools(
+    mcp: Any, events: EventStore
+) -> None:
+    middleware, call, _ = mcp
+    _drift(middleware, call, "list-d")
+    [(_, drift)] = records(events, "mcp-tools-drift")
+    assert drift["added"] == ["brand_new"]
+    assert READ_TOOL in drift["changed"]
+    assert set(drift["digests"]) == {"brand_new", READ_TOOL}
+    assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in drift["digests"].values())
+    assert drift["hints"] == {"brand_new": "unclassified"}
+
+
+def test_an_acceptance_naming_the_project_ends_its_hold(
+    mcp: Any, events: EventStore, clock: Clock
+) -> None:
+    middleware, call, _ = mcp
+    _drift(middleware, call, "list-a")
+
+    def write(request_id: str) -> Any:
+        # Each call its own arguments: the policy holds the same call made thrice.
+        return call(WRITE_TOOL, request_id=request_id, url="https://example.org", n=request_id)
+
+    assert write("w1").reason_code.startswith("approval_required_r")
+    events.append(
+        "mcp-tools-accepted",
+        "workspace",
+        {"project": "another", "server": SERVER, "reason": "x", "actor": "user"},
+    )
+    clock.advance(2)
+    assert write("w2").reason_code.startswith("approval_required_r")  # another project's
+    events.append(
+        "mcp-tools-accepted",
+        "workspace",
+        {"project": "crypto", "server": SERVER, "reason": "reviewed", "actor": "user"},
+    )
+    clock.advance(2)
+    assert write("w3").allowed
+    # A new drift holds again, until a classification accepted for the project ends it.
+    _drift(middleware, call, "list-b")
+    assert write("w4").reason_code.startswith("approval_required_r")
+    events.append(
+        "mcp-classification-accepted",
+        "workspace",
+        {"project": "crypto", "server": SERVER, "revision": "a" * 64, "actor": "user"},
+    )
+    clock.advance(2)
+    assert write("w5").allowed
+
+
+def test_a_projects_accepted_revision_decides_its_calls(mcp: Any, events: EventStore) -> None:
+    _, call, store = mcp
+    assert call(READ_TOOL, request_id="r0").allowed
+    data = (
+        "apiVersion: sandbox-science/v0alpha1\nkind: ToolClassification\n"
+        f"server: {SERVER}\ntools:\n  {READ_TOOL}:\n    class: browse\n"
+        '    reason: "Reviewed: it drives a browser."\n'
+    ).encode()
+    store.accept_classification(
+        "crypto", SERVER, data, Acceptance("user", datetime.now(UTC), "reviewed")
+    )
+    refused = call(READ_TOOL, request_id="r1")
+    assert not refused.allowed
+    assert refused.decision is not None
+    assert refused.decision.effect == "browse"
+    # A binding that cannot be read refuses the call rather than falling back.
+    current = store.classification_binding("crypto", SERVER)
+    assert current is not None
+    path = Path(events.path).parent / "classifications" / "crypto" / SERVER / "current.json"
+    path.write_text("not json")
+    broken = call(READ_TOOL, request_id="r2")
+    assert broken.reason_code == reasons.POLICY_UNAVAILABLE

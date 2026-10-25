@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,6 +79,18 @@ from sandbox_science.contracts.artifact_retention import (
     MAX_RETENTION_ACK_BYTES,
     ArtifactRetentionAcknowledgement,
 )
+from sandbox_science.contracts.classifications import (
+    MAX_DRAFTS,
+    MAX_YAML_CHARS,
+    ClassificationAcceptance,
+    ClassificationAccepted,
+    ClassificationDraft,
+    ClassificationDrafts,
+    ClassificationInForce,
+    ClassificationsInForce,
+    DriftAcceptance,
+    DriftAccepted,
+)
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.permission_requests import (
     PermissionConfirmation,
@@ -126,6 +139,9 @@ RESULT_GRACE: Final = 300.0
 """Seconds past an execution's own limit that ``run`` waits for its result. The worker's
 watchdog ends an overdue execution within 90 seconds of its limit."""
 PROTOCOL: Final = {PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
+MAX_CLASSIFICATION_DRAFTS_BYTES: Final = MAX_DRAFTS * (MAX_YAML_CHARS + 512 * 1024)
+_SERVER_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_HEX_RE: Final = re.compile(r"[0-9a-f]{64}")
 """Sent with every request, so that a worker of another protocol version refuses it."""
 _Model = TypeVar("_Model", bound=BaseModel)
 
@@ -538,6 +554,54 @@ class WorkerClient:
         (D98): any client, for its own projects."""
         return await self._call(
             "POST", f"/v1/permission-requests/{seq}/confirm", PermissionConfirmed, asked
+        )
+
+    # MCP servers' classifications, for the workspace's review view (D96, CL-6).
+
+    async def classifications(self, project_id: str) -> list[ClassificationInForce]:
+        """Each configured server's classification in force for the project."""
+        found = await self._call(
+            "GET",
+            "/v1/classifications",
+            ClassificationsInForce,
+            params={"project": project_id},
+            max_bytes=8 * 1024 * 1024,
+        )
+        return list(found.root)
+
+    async def classification_drafts(
+        self, project_id: str, server: str
+    ) -> list[ClassificationDraft]:
+        """The drafts a model wrote for the project's server, newest first."""
+        found = await self._call(
+            "GET",
+            f"/v1/classifications/{_server(server)}/drafts",
+            ClassificationDrafts,
+            params={"project": project_id},
+            max_bytes=MAX_CLASSIFICATION_DRAFTS_BYTES,
+        )
+        return list(found.root)
+
+    async def accept_classification_draft(
+        self, server: str, draft: str, acceptance: ClassificationAcceptance
+    ) -> ClassificationAccepted:
+        """Relay the user's acceptance of a draft, edited or not."""
+        return await self._call(
+            "POST",
+            f"/v1/classifications/{_server(server)}/drafts/{_draft(draft)}/accept",
+            ClassificationAccepted,
+            acceptance,
+        )
+
+    async def accept_classification_drift(
+        self, server: str, acceptance: DriftAcceptance
+    ) -> DriftAccepted:
+        """Relay the user's re-acceptance of a server's drifted tool list."""
+        return await self._call(
+            "POST",
+            f"/v1/classifications/{_server(server)}/drift/accept",
+            DriftAccepted,
+            acceptance,
         )
 
     # Executions.
@@ -1067,3 +1131,17 @@ async def _selected_owned[T](work: asyncio.Task[T], *, cancel_on_interrupt: bool
             work.result()
         raise first
     return work.result()
+
+
+def _server(name: str) -> str:
+    """An MCP server's name for a route's path; ValueError for anything else."""
+    if not _SERVER_RE.fullmatch(name):
+        raise ValueError(f"{name!r} is not an MCP server name")
+    return name
+
+
+def _draft(name: str) -> str:
+    """A classification draft's name (hex SHA-256) for a route's path."""
+    if not _HEX_RE.fullmatch(name):
+        raise ValueError(f"{name!r} is not a classification draft")
+    return name

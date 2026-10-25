@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from os import PathLike
@@ -48,7 +48,12 @@ import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 
 from .ceiling import PoolCeiling
-from .classification import class_action, classified_names, possible_classes
+from .classification import (
+    ServerClassification,
+    class_action,
+    classified_names,
+    possible_classes,
+)
 from .decision import Action
 from .effects import EffectClass
 from .evaluate import (
@@ -1525,6 +1530,7 @@ def compile_agent_mcp(
     *,
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
+    classifications: Mapping[str, ServerClassification] | None = None,
 ) -> Compiled:
     """Compile the MCP endpoints of a sandbox whose agent calls MCP servers directly (D98).
 
@@ -1534,12 +1540,21 @@ def compile_agent_mcp(
     there, as it does a research sandbox's HTTP: tool rules, argument bounds, records with
     the project, session and run, and escalations held as permission requests. The fence
     therefore admits the tools the policy escalates by name, which the middleware refuses
-    until they are approved. Raises CompileError when two servers would share an endpoint.
+    until they are approved. ``classifications`` are the project's accepted revisions of
+    its servers' classifications, by server (``PolicyStore.classification``), which the fence
+    admits tools by in place of the catalog's. Raises CompileError when two servers would
+    share an endpoint.
     """
     project = policy.policy
     findings: list[Finding] = []
     network_policies = _mcp_server_policies(
-        policy, target, ceiling, floor, findings, admit_escalated=True
+        policy,
+        target,
+        ceiling,
+        floor,
+        findings,
+        admit_escalated=True,
+        classifications=classifications or {},
     )
     hosts = sorted(
         {
@@ -1603,6 +1618,7 @@ def _mcp_server_policies(
     findings: list[Finding],
     *,
     admit_escalated: bool,
+    classifications: Mapping[str, ServerClassification] | None = None,
 ) -> dict[str, NetworkPolicy]:
     """One inspected ``protocol: mcp`` endpoint per declared server the floor and the
     ceiling allow, with the tool rules as native rules."""
@@ -1640,7 +1656,9 @@ def _mcp_server_policies(
                 )
             )
         rules, deny_rules = _tool_rules(
-            _effective_tools(project, name, server, subject, findings),
+            _effective_tools(
+                project, name, server, subject, findings, (classifications or {}).get(name)
+            ),
             class_action(project, name, EffectClass.UNCLASSIFIED).action,
             subject,
             findings,
@@ -1753,7 +1771,12 @@ def _openshell_matches(pattern: str, name: str) -> bool:
 
 
 def _effective_tools(
-    project: ProjectPolicy, name: str, server: McpServer, subject: str, findings: list[Finding]
+    project: ProjectPolicy,
+    name: str,
+    server: McpServer,
+    subject: str,
+    findings: list[Finding],
+    revision: ServerClassification | None = None,
 ) -> McpServer:
     """The server with its tool rules widened by name to what its classes admit.
 
@@ -1766,13 +1789,13 @@ def _effective_tools(
     tools = server.tools
     patterns = (*tools.allow, *tools.escalate, *tools.deny)
     admitted: dict[Action, list[str]] = {Action.ALLOW: [], Action.ESCALATE: [], Action.DENY: []}
-    for tool in sorted(classified_names(server)):
+    for tool in sorted(classified_names(server, revision)):
         if any(tool_pattern_matches(pattern, tool) for pattern in patterns):
             continue
         action = min(
             (
                 class_action(project, name, effect).action
-                for effect in possible_classes(server, tool)
+                for effect in possible_classes(server, tool, revision)
             ),
             key=lambda action: action.restrictiveness,
         )
@@ -1795,7 +1818,7 @@ def _effective_tools(
             )
         allow = tuple(pattern for pattern in allow if "*" not in pattern)
         escalate = tuple(pattern for pattern in escalate if "*" not in pattern)
-    if classified_names(server):
+    if classified_names(server, revision):
         findings.append(
             Finding(
                 Severity.INFO,

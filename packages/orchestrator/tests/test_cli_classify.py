@@ -14,6 +14,7 @@ from sandbox_science.orchestrator import cli_classify
 from sandbox_science.orchestrator.cli import main
 from sandbox_science.orchestrator.model import Message, ModelError, ModelTurn, ToolSpec
 from sandbox_science.policy.classification import load_classification
+from sandbox_science.policy.store import PolicyStore
 
 ROOT = Path(__file__).resolve().parents[3]
 LISTING = ROOT / "packages" / "policy" / "tests" / "fixtures" / "mcp-tools" / "crypto-research-mcp"
@@ -111,3 +112,30 @@ def test_an_unreadable_tool_list_is_refused_before_any_call(
     assert main(command) == 1
     assert "tool" in capsys.readouterr().err
     assert fake.asked == []
+
+
+def test_a_draft_is_stored_as_a_projects_for_the_review_view(
+    tmp_path: Path, fake: FakeModel, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = tmp_path / "middleware"
+    command = arguments(tmp_path, "--project", "p1", "--policy-store", str(store))
+    assert main(command) == 0
+    assert capsys.readouterr().out == ""  # stored, not printed
+    [draft] = PolicyStore(store).classification_drafts("p1", "crypto-research-mcp")
+    assert draft.model == "main"
+    assert draft.data.startswith(b"# SPDX-License-Identifier: MIT\n# DRAFT")
+    assert draft.classification.tools["web-fetch-mcp_web_fetch"].effect.value == "read"
+    # A draft puts nothing in force.
+    assert PolicyStore(store).classification("p1", "crypto-research-mcp") is None
+    del fake
+
+
+def test_a_project_needs_the_policy_store(
+    tmp_path: Path, fake: FakeModel, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(arguments(tmp_path, "--project", "p1")) == 1
+    assert "go together" in capsys.readouterr().err
+    assert fake.asked == []
+    bad = arguments(tmp_path, "--project", "../p", "--policy-store", str(tmp_path / "s"))
+    assert main(bad) == 1
+    assert "not stored" in capsys.readouterr().err

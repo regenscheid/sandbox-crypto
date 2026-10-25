@@ -683,6 +683,16 @@ class EnvironmentRecords:
                 (project_id, revision),
             )
 
+    def latest_grant(self, project_id: str) -> str | None:
+        """The policy revision granted to the project last, if any."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT revision FROM policy_grants WHERE project_id = ? ORDER BY rowid DESC"
+                " LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        return cast(str, row[0]) if row is not None else None
+
     def granted(self, project_id: str, revision: str) -> bool:
         with self._lock:
             row = self._db.execute(

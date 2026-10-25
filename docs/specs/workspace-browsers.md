@@ -136,6 +136,13 @@ numbered CL-n.
   draft as an instruction nor edits a classification. Accepting shows a confirmation
   that lists every widening, and the acceptance is an event with its diff. An accepted
   revision can be exported as the YAML to check in.
+  - *As built 2026-10-25 (backend):* the policy store is the file store the worker and the
+    policy middleware share (`classifications/<project>/<server>/<hex>.yaml`, its
+    acceptance record and a `current.json` binding), not the control store. The workspace
+    has one user per installation and no roles, so "admin-only" is that user holding the
+    worker's operator token; a multi-user workspace would need a role. The middleware reads
+    the binding at every call, so a revision applies at the next call, not only at the next
+    policy revision; the widening rule is in [connectors](../MCP-CONNECTORS.md#project-revisions).
 - CL-4. **Drift.** When the middleware records `tool_list_drift` for a server, the tab
   shows the added, removed and changed tools with their digests, dated, and the
   middleware's hold (its non-read calls ask until re-accepted, D103). **Re-accept** from
@@ -153,6 +160,13 @@ numbered CL-n.
   …/mcp-services/{server}/drift/accept` (admin, a reason). The policy store gains the
   classification revision kind; the drift read is the middleware's existing record
   through the worker, as the request cards read it.
+  - *As built 2026-10-25 (backend):* the drift read and both acceptances are worker routes,
+    operator-only like the permission requests: `GET /v1/classifications?project=P`,
+    `GET /v1/classifications/{server}/drafts?project=P`, `POST /v1/classifications/{server}/
+    drafts/{draft}/accept` and `POST /v1/classifications/{server}/drift/accept`
+    (`contracts/classifications.py`; [worker](../WORKER.md)), which the workspace's routes
+    relay. Drift records carry each added and changed tool's digest; acceptances are
+    `mcp-classification-accepted` and `mcp-tools-accepted` records naming the project.
 
 Decided by the owner, 2026-10-25: (1) accepted classifications are project revisions in
 the policy store, exportable for check-in, not repository files only (acceptance needs no

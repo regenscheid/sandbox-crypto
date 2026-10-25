@@ -3,27 +3,34 @@
 
 A server's classification is a set of checked-in files under ``classifications/<name>/``,
 one per server behind a portal, that the policy names with ``mcp.servers.<server>.
-classification``. A call's base class is the policy's own ``classify`` entry for the tool,
-else the file's, else the server's declared hint from its latest listing, else
-``unclassified``; then the file's argument rules for the tool may set another class for
-this call. When several rules apply, the one whose class the policy treats most
-restrictively wins. docs/POLICY.md, "Effect classes", has the semantics.
+classification``. A project may have an accepted revision of its own for a server (a
+classification file in the policy store, ``PolicyStore.classification``), which replaces
+the checked-in files for that project wherever the policy names a classification for the
+server; the functions below take it as ``project``. A call's base class is the policy's
+own ``classify`` entry for the tool, else the classification's, else the server's declared
+hint from its latest listing, else ``unclassified``; then the classification's argument
+rules for the tool may set another class for this call. When several rules apply, the one
+whose class the policy treats most restrictively wins. docs/POLICY.md, "Effect classes",
+has the semantics.
 """
 
 from __future__ import annotations
 
-import functools
 import hashlib
-from collections.abc import Callable, Mapping
+import itertools
+import threading
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from .decision import Action, Decision, most_restrictive
 from .effects import (
     BROWSE_ENABLED,
     CATALOG,
     SHIPPED,
+    ArgumentRule,
     ClassAction,
     Classification,
     EffectClass,
@@ -49,12 +56,43 @@ class ServerClassification:
     files: tuple[Classification, ...]
     tools: Mapping[str, ToolEntry]
     digest: str
-    """``sha256:`` over the files' names and bytes, in name order."""
+    """``sha256:`` over the files' names and bytes, in name order; for a project revision,
+    ``sha256:`` and its ``revision``."""
+    revision: str | None = None
+    """A project revision's name, the hex SHA-256 of its file; None for the catalog's."""
 
     @property
     def pins(self) -> dict[str, str]:
         """The pinned tool list: each pinned tool's digest, by name."""
         return {name: entry.sha256 for name, entry in self.tools.items() if entry.sha256}
+
+    @property
+    def pinned(self) -> str | None:
+        """The day the newest pinned listing was captured, if a file says."""
+        days = [found.pinned for found in self.files if found.pinned is not None]
+        return max(days) if days else None
+
+
+_MAX_CACHED: Final = 256
+_cache: OrderedDict[tuple[str, str], ServerClassification] = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def _cached(key: tuple[str, str], load: Callable[[], ServerClassification]) -> ServerClassification:
+    """A classification by a key that names its exact content: a catalog's name (its files
+    do not change while a process runs) or a project revision's digest and server, so that
+    a new revision is a new key and is seen at once."""
+    with _cache_lock:
+        found = _cache.get(key)
+        if found is not None:
+            _cache.move_to_end(key)
+            return found
+    loaded = load()
+    with _cache_lock:
+        _cache[key] = loaded
+        while len(_cache) > _MAX_CACHED:
+            _cache.popitem(last=False)
+    return loaded
 
 
 def load_classification(directory: Path, name: str) -> ServerClassification:
@@ -84,10 +122,33 @@ def load_classification(directory: Path, name: str) -> ServerClassification:
     return ServerClassification(name, tuple(files), tools, "sha256:" + digest.hexdigest())
 
 
-@functools.cache
 def catalog(name: str) -> ServerClassification:
     """The checked-in classification of server ``name``. Raises PolicyLoadError."""
-    return load_classification(CATALOG / name, name)
+    return _cached(("catalog", name), lambda: load_classification(CATALOG / name, name))
+
+
+def revision_classification(
+    data: bytes, server: str, *, source: str | None = None
+) -> ServerClassification:
+    """A project revision of server ``server``'s classification: one file's bytes, read in
+    the same strict dialect as the checked-in files. Its tools may have any prefix the
+    file declares; it stands for the whole server, whatever the catalog splits it into.
+
+    Raises PolicyLoadError for an invalid file or one that classifies another server.
+    """
+    revision = hashlib.sha256(data).hexdigest()
+
+    def load() -> ServerClassification:
+        found = parse_model(Classification, data, kind="classification", source=source)
+        if found.server != server:
+            raise PolicyLoadError(
+                f"{source or 'the classification'} classifies {found.server!r}, not {server!r}"
+            )
+        return ServerClassification(
+            server, (found,), dict(found.tools), "sha256:" + revision, revision
+        )
+
+    return _cached((revision, server), load)
 
 
 def catalog_names() -> frozenset[str]:
@@ -95,9 +156,15 @@ def catalog_names() -> frozenset[str]:
     return frozenset(path.name for path in CATALOG.iterdir() if path.is_dir())
 
 
-def server_classification(server: McpServer) -> ServerClassification | None:
-    """The catalog entry a server's ``classification`` names, if it names one."""
-    return catalog(server.classification) if server.classification is not None else None
+def server_classification(
+    server: McpServer, project: ServerClassification | None = None
+) -> ServerClassification | None:
+    """The classification in force for a server whose policy entry names one: the project's
+    accepted revision (``project``) when it has one, else the catalog entry it names. A
+    server whose entry names none has none, a project revision included."""
+    if server.classification is None:
+        return None
+    return project if project is not None else catalog(server.classification)
 
 
 def class_action(policy: ProjectPolicy, server: str, effect: EffectClass) -> ClassAction:
@@ -138,18 +205,20 @@ class CallClass:
         return f"{self.effect} ({where})"
 
 
-def tool_entry(server: McpServer, name: str) -> ToolEntry | None:
-    """The classification file's entry for a tool, by its name after the server's prefix."""
-    found = server_classification(server)
+def tool_entry(
+    server: McpServer, name: str, project: ServerClassification | None = None
+) -> ToolEntry | None:
+    """The classification's entry for a tool, by its name after the server's prefix."""
+    found = server_classification(server, project)
     return found.tools.get(name) if found is not None else None
 
 
-def named(server: McpServer, name: str) -> bool:
+def named(server: McpServer, name: str, project: ServerClassification | None = None) -> bool:
     """Whether the policy names the tool: in its classification, ``classify`` or, exactly, in
     an allow or escalate list. Under ``mcp: locked`` only named tools are available (D95)."""
     return (
         name in server.classify
-        or tool_entry(server, name) is not None
+        or tool_entry(server, name, project) is not None
         or name in server.tools.allow
         or name in server.tools.escalate
     )
@@ -162,14 +231,16 @@ def resolve(
     restrictiveness: Callable[[EffectClass], tuple[int, int]],
     *,
     hint: EffectClass | None = None,
+    project: ServerClassification | None = None,
 ) -> CallClass:
     """The class of a call of tool ``name`` (after the server's prefix) with ``arguments``.
 
     ``restrictiveness`` ranks classes under the policy, so that of several argument rules
     that apply, the one that leads to the most restrictive treatment decides; the first
     listed wins a tie. ``hint`` is the class the server's latest listing declares for it.
+    ``project`` is the project's accepted revision of the server's classification.
     """
-    entry = tool_entry(server, name)
+    entry = tool_entry(server, name, project)
     source: Source
     if name in server.classify:
         base, source = server.classify[name], "policy"
@@ -186,28 +257,148 @@ def resolve(
     return CallClass(rule.effect, base, source, rule.label)
 
 
-def possible_classes(server: McpServer, name: str) -> frozenset[EffectClass]:
+def possible_classes(
+    server: McpServer, name: str, project: ServerClassification | None = None
+) -> frozenset[EffectClass]:
     """Every class a call of the tool can resolve to, whatever its arguments."""
-    entry = tool_entry(server, name)
+    entry = tool_entry(server, name, project)
     base = server.classify.get(name) or (entry.effect if entry else EffectClass.UNCLASSIFIED)
     return frozenset({base, *(rule.effect for rule in (entry.rules if entry else ()))})
 
 
-def classified_names(server: McpServer) -> frozenset[str]:
+def classified_names(
+    server: McpServer, project: ServerClassification | None = None
+) -> frozenset[str]:
     """Every tool the server's classification and ``classify`` entries name."""
-    found = server_classification(server)
+    found = server_classification(server, project)
     return frozenset(server.classify) | (frozenset(found.tools) if found else frozenset[str]())
 
 
-def listed_effect(server: McpServer, tool: str, decision: Decision) -> str:
+def listed_effect(
+    server: McpServer, tool: str, decision: Decision, project: ServerClassification | None = None
+) -> str:
     """What a caller is told of a listed tool's class (``EFFECT_META``), from its decision as a
     call without arguments: ``read`` only when no argument can make a call of it more."""
     name = tool.removeprefix(server.tool_prefix or "")
     effect = decision.effect or EffectClass.UNCLASSIFIED.value
-    if name not in classified_names(server):
+    if name not in classified_names(server, project):
         return effect
-    possible = possible_classes(server, name)
+    possible = possible_classes(server, name, project)
     if possible == frozenset({EffectClass.READ}):
         return EffectClass.READ.value
     others = sorted(possible - {EffectClass.READ})
     return effect if effect != EffectClass.READ.value else others[0].value
+
+
+_PASSES: Final = frozenset({Action.ALLOW, Action.ALERT})
+_MAX_PREDICATES: Final = 10
+"""Argument conditions per tool whose combinations ``widenings`` tries; past it, any
+change of the tool's entry counts as a widening."""
+
+
+def restrictiveness(policy: ProjectPolicy, server: str) -> Callable[[EffectClass], tuple[int, int]]:
+    """How restrictively ``policy`` treats each class on ``server``, for ``resolve``: by action,
+    then by the narrower grant ceiling of two escalations."""
+
+    def rank(effect: EffectClass) -> tuple[int, int]:
+        terms = class_action(policy, server, effect)
+        return terms.action.restrictiveness, -list(MaxGrant).index(terms.max_grant)
+
+    return rank
+
+
+def widenings(
+    policy: ProjectPolicy,
+    server: str,
+    current: ServerClassification | None,
+    proposed: ServerClassification,
+) -> list[str]:
+    """The tools whose classification ``proposed`` widens over ``current`` under ``policy``.
+
+    The rule: a tool is widened when some call of it, under any combination of the argument
+    conditions either classification's rules for it name, would pass (``allow`` or
+    ``alert``) under ``proposed`` where ``current`` escalates or denies it, a tool either
+    leaves out taking its hints' most permissive class, ``read``. The policy's ``classify``
+    entries win over both, as at decision time; its tool lists are not consulted, so a tool
+    they decide may be reported though its calls would not change (never the reverse).
+    """
+    entry = policy.mcp.servers[server]
+    rank = restrictiveness(policy, server)
+    names = set(proposed.tools) | set(current.tools if current is not None else {})
+    widened: list[str] = []
+    for name in sorted(names):
+        before = current.tools.get(name) if current is not None else None
+        after = proposed.tools.get(name)
+        if before == after:
+            continue
+        predicates = _predicates(
+            (*(before.rules if before else ()), *(after.rules if after else ()))
+        )
+        if len(predicates) > _MAX_PREDICATES:
+            widened.append(name)
+            continue
+        for count in range(len(predicates) + 1):
+            if any(
+                _widens(entry, name, _arguments(chosen), rank, policy, server, current, proposed)
+                for chosen in itertools.combinations(predicates, count)
+            ):
+                widened.append(name)
+                break
+    return widened
+
+
+def _widens(
+    entry: McpServer,
+    name: str,
+    arguments: Mapping[str, object],
+    rank: Callable[[EffectClass], tuple[int, int]],
+    policy: ProjectPolicy,
+    server: str,
+    current: ServerClassification | None,
+    proposed: ServerClassification,
+) -> bool:
+    hint = EffectClass.READ
+    was = resolve(entry, name, arguments, rank, hint=hint, project=current).effect
+    now = resolve(entry, name, arguments, rank, hint=hint, project=proposed).effect
+    return (
+        class_action(policy, server, now).action in _PASSES
+        and class_action(policy, server, was).action not in _PASSES
+    )
+
+
+def _predicates(rules: Iterable[ArgumentRule]) -> list[tuple[str, object]]:
+    """The distinct argument conditions of some rules: a path and the value that meets it."""
+    found: dict[tuple[str, str], tuple[str, object]] = {}
+    for rule in rules:
+        value: object = "set" if rule.present else rule.equals
+        found.setdefault((rule.argument, repr(value)), (rule.argument, value))
+    return list(found.values())
+
+
+def _arguments(chosen: Iterable[tuple[str, object]]) -> dict[str, object]:
+    """Arguments that meet the chosen conditions, the deeper paths last."""
+    arguments: dict[str, object] = {}
+    for path, value in sorted(chosen, key=lambda item: item[0].count(".")):
+        *parents, last = path.split(".")
+        place = arguments
+        for part in parents:
+            child = place.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                place[part] = child
+            place = cast("dict[str, object]", child)
+        place[last] = value
+    return arguments
+
+
+def changed_tools(
+    current: ServerClassification | None, proposed: ServerClassification
+) -> dict[str, list[str]]:
+    """The tools ``proposed`` adds, removes and changes against ``current``, by name."""
+    before = dict(current.tools) if current is not None else {}
+    after = proposed.tools
+    return {
+        "added": sorted(set(after) - set(before)),
+        "removed": sorted(set(before) - set(after)),
+        "changed": sorted(name for name in set(after) & set(before) if after[name] != before[name]),
+    }

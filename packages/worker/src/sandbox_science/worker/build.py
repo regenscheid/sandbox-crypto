@@ -21,6 +21,7 @@ from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
 from .catalog import CatalogError, load_catalog
+from .classifications import ClassificationDesk, project_policy
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments, OpenShellCli, confirmed_daemon_loss
 from .job_sandboxes import JobSandboxes, ManagerPort
@@ -224,8 +225,19 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         if provisioner.permissions is not None and environments is not None
         else None
     )
+    review = (
+        ClassificationDesk(
+            environments.store,
+            provisioner.permissions,
+            partial(project_policy, environments),
+            store.classification_receipts,
+            manager.clock,
+        )
+        if provisioner.permissions is not None and environments is not None
+        else None
+    )
     app = create_app(
         manager, token, environments, settings.clients, provisioner, documents,
-        permission_desk=desk,
+        permission_desk=desk, classification_desk=review,
     )  # fmt: skip
     return WorkerParts(lock, store, documents, shared, environments, manager, provisioner, app)

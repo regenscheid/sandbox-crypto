@@ -15,6 +15,10 @@ denial is built from the request's key, which the worker holds, so a store it ca
 does not stop it; a withdrawal that fails is tried again, and the request's own deadline
 (``valid_until``) ends the grant in any case.
 
+The same store holds the middleware's tool-list drifts and their acceptances, which the
+classification review reads (``drifts``) and the user's acceptances, relayed by the
+workspace, add to (``record_acceptance``; docs/MCP-CONNECTORS.md, CL-3, CL-4).
+
 The store is the middleware's (``events.db`` in its state directory, which the worker's
 ``policy_store`` names). Writes and reads are blocking: callers run them in a thread.
 """
@@ -29,7 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Final
 
-from sandbox_science.event_store import EventStore, EventStoreError, StoreReader
+from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy.approvals import (
     DENIAL,
     ESCALATION,
@@ -40,6 +44,12 @@ from sandbox_science.policy.approvals import (
     RequestKey,
     prepare_answer,
     withdrawal_payload,
+)
+from sandbox_science.policy.detection import (
+    ACCEPTED_RECORD,
+    CLASSIFICATION_ACCEPTED,
+    DRIFT_KINDS,
+    DriftLedger,
 )
 
 from .provision_events import checked_payload
@@ -67,6 +77,9 @@ class Permissions:
         self._lock = threading.Lock()
         self._keys: dict[int, RequestKey] = {}
         """The requests this worker recorded since it started, by sequence number."""
+        self._drifts = DriftLedger()
+        self._drift_lock = threading.Lock()
+        self._drift_seq = 0
 
     def _store(self) -> EventStore:
         with self._lock:
@@ -225,6 +238,31 @@ class Permissions:
             failed = failed or exc
         if failed is not None:
             raise failed
+
+    def drifts(self) -> DriftLedger:
+        """The middleware's tool-list drifts and their acceptances, read up to now. Blocking."""
+        with self._drift_lock:
+            if self.path.is_file():
+                try:
+                    with StoreReader(self.path, timeout=STORE_TIMEOUT) as reader:
+                        records = list(reader.records(after=self._drift_seq, kinds=DRIFT_KINDS))
+                except EventStoreError as exc:
+                    raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
+                self._drifts.load(records)
+                if records:
+                    self._drift_seq = records[-1].seq
+            return self._drifts
+
+    def record_acceptance(self, kind: str, payload: Mapping[str, object]) -> Record:
+        """Record the user's acceptance, relayed by the workspace (source ``workspace``): of
+        a drifted tool list (``mcp-tools-accepted``) or of a classification revision
+        (``mcp-classification-accepted``). Blocking."""
+        if kind not in (ACCEPTED_RECORD, CLASSIFICATION_ACCEPTED):
+            raise ValueError(f"{kind!r} is not an acceptance")
+        try:
+            return self._store().append(kind, ANSWERS, payload)
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the acceptance could not be recorded: {exc}") from exc
 
     def close(self) -> None:
         with self._lock:

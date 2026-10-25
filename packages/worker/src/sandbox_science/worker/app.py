@@ -66,6 +66,12 @@ from sandbox_science.contracts.artifact_retention import (
     MAX_RETENTION_ACK_BYTES,
     ArtifactRetentionAcknowledgement,
 )
+from sandbox_science.contracts.classifications import (
+    ClassificationAcceptance,
+    ClassificationDrafts,
+    ClassificationsInForce,
+    DriftAcceptance,
+)
 from sandbox_science.contracts.documents import (
     MAX_CATALOG_PAGE_BYTES,
     MAX_CONTENT_BODY,
@@ -98,6 +104,7 @@ from sandbox_science.contracts.worker import (
 )
 from sandbox_science.policy import effective_resources
 
+from .classifications import ClassificationDesk, ClassificationReviewError
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments
 from .errors import WorkerError
@@ -121,6 +128,7 @@ MANAGER: Final = web.AppKey("manager", ExecutionManager)
 ENVIRONMENTS: Final = web.AppKey("environments", Environments)
 PROVISIONER: Final = web.AppKey("provisioner", Provisioner)
 PERMISSION_DESK: Final = web.AppKey("permission_desk", PermissionDesk)
+CLASSIFICATION_DESK: Final = web.AppKey("classification_desk", ClassificationDesk)
 DOCUMENT_CATALOG: Final = web.AppKey("document_catalog", DocumentsCatalog)
 CATALOG_WORK: Final = web.AppKey("catalog_work", set[asyncio.Task[CatalogStatus]])
 CATALOG_EXECUTOR: Final = web.AppKey("catalog_executor", ThreadPoolExecutor)
@@ -202,6 +210,7 @@ def create_app(
     document_catalog: DocumentsCatalog | None = None,
     *,
     permission_desk: PermissionDesk | None = None,
+    classification_desk: ClassificationDesk | None = None,
     heartbeat: float = EVENT_HEARTBEAT_SECONDS,
     file_write_timeout: float = 300.0,
 ) -> web.Application:
@@ -343,6 +352,10 @@ def create_app(
                 web.post("/v1/permission-requests/{seq}/confirm", confirm_permission_request),
             ]
         )
+    if classification_desk is not None:
+        # The classification review: in force, drafts and the user's acceptances (CL-6).
+        app[CLASSIFICATION_DESK] = classification_desk
+        app.add_routes(CLASSIFICATION_ROUTES)
     app.add_routes(
         [
             web.get("/v1/ready", readiness),
@@ -1034,6 +1047,99 @@ async def confirm_permission_request(request: web.Request) -> web.Response:
     except PermissionStoreError as exc:
         raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
     return _json(PermissionConfirmed(confirmed=confirmed))
+
+
+# MCP servers' classifications (D96, CL-1 to CL-6).
+
+
+def _classifications(request: web.Request, project: str | None = None) -> ClassificationDesk:
+    """Only an operator client (the workspace, whose one user holds its token) reads and
+    accepts classifications, and only for its own projects."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "classifications need an operator client")
+    if project is not None:
+        _allowed(request, project)
+    return request.app[CLASSIFICATION_DESK]
+
+
+def _project_query(request: web.Request) -> str:
+    if set(request.query) != {"project"}:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name exactly one project")
+    return _identifier(request.query["project"], "project")
+
+
+def _server_name(request: web.Request) -> str:
+    server = request.match_info["server"]
+    if not _SERVER_RE.fullmatch(server):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid MCP server name")
+    return server
+
+
+async def _reviewed[T](call: Callable[[], T]) -> T:
+    """Run a review call in a thread, its refusals as the API's errors."""
+    try:
+        return await asyncio.to_thread(call)
+    except ClassificationReviewError as exc:
+        kind = {"missing": ErrorKind.NOT_FOUND, "invalid": ErrorKind.INVALID_REQUEST}
+        raise WorkerError(kind.get(exc.kind, ErrorKind.CONFLICT), str(exc)) from None
+    except PermissionStoreError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
+
+
+async def classifications_in_force(request: web.Request) -> web.Response:
+    """Each configured server's classification in force for a project (CL-1)."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    found = await _reviewed(lambda: desk.in_force(project))
+    return _json(ClassificationsInForce(found))
+
+
+async def classification_drafts(request: web.Request) -> web.Response:
+    """The drafts a model wrote for a project's server, newest first (CL-2)."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    server = _server_name(request)
+    found = await _reviewed(lambda: desk.drafts(project, server))
+    return _json(ClassificationDrafts(found))
+
+
+async def accept_classification_draft(request: web.Request) -> web.Response:
+    """The user's acceptance of a draft, edited or not, relayed by the workspace (CL-3)."""
+    _classifications(request)
+    body = ClassificationAcceptance.model_validate_json(await _body(request))
+    desk = _classifications(request, body.project)
+    server = _server_name(request)
+    draft = request.match_info["draft"]
+    if not _HEX_RE.fullmatch(draft):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid draft")
+    accepted = await _reviewed(
+        lambda: desk.accept_draft(
+            body.project, server, draft, body.yaml, body.reason, body.operation_id
+        )
+    )
+    return _json(accepted, status=201)
+
+
+async def accept_classification_drift(request: web.Request) -> web.Response:
+    """The user's re-acceptance of a server's drifted tool list (CL-4)."""
+    _classifications(request)
+    body = DriftAcceptance.model_validate_json(await _body(request))
+    desk = _classifications(request, body.project)
+    server = _server_name(request)
+    accepted = await _reviewed(
+        lambda: desk.accept_drift(body.project, server, body.reason, body.operation_id)
+    )
+    return _json(accepted, status=201)
+
+
+CLASSIFICATION_ROUTES: Final = (
+    web.get("/v1/classifications", classifications_in_force),
+    web.get("/v1/classifications/{server}/drafts", classification_drafts),
+    web.post("/v1/classifications/{server}/drafts/{draft}/accept", accept_classification_draft),
+    web.post("/v1/classifications/{server}/drift/accept", accept_classification_drift),
+)
+_SERVER_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_HEX_RE: Final = re.compile(r"[0-9a-f]{64}")
 
 
 def _provisioner(request: web.Request) -> Provisioner:

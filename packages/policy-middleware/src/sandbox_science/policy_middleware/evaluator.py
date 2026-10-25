@@ -57,6 +57,7 @@ from sandbox_science.policy.approvals import (
     http_summary,
     network_max_grant,
 )
+from sandbox_science.policy.classification import ServerClassification
 from sandbox_science.policy.detection import (
     ACTION_URL,
     DAILY_CEILING,
@@ -813,6 +814,14 @@ class PolicyMiddleware:
     def _mcp_verdict(
         self, facts: HttpRequestFacts, ref: McpRef, loaded: LoadedPolicy, call: McpCall
     ) -> Verdict:
+        try:
+            # The project's accepted classification of the server, read at every call so
+            # that an acceptance applies to the next one (CL-3); unreadable, nothing passes.
+            revision = self._store.classification(ref.project, call.server)
+        except StoreError as exc:
+            return _deny(
+                POLICY_UNAVAILABLE, f"the project's classification of {call.server}: {exc}"
+            )
         decision = evaluate_mcp_message(
             call.server,
             call.message,
@@ -824,8 +833,9 @@ class PolicyMiddleware:
                 if self.listings is not None
                 else None
             ),
+            classification=revision,
         )
-        decision = self._drifted(call.server, loaded, decision)
+        decision = self._drifted(call.server, loaded, decision, ref.project, revision)
         subject = call.subject(ref, facts.sandbox_id)
         target = RequestKey.mcp(
             ref.project,
@@ -859,7 +869,7 @@ class PolicyMiddleware:
         card = {
             "caller_kind": "agent",
             # The call's significant arguments for its card, as the MCP proxy records them.
-            "summary": tool_summary(server, call.tool, call.message.get("params")),
+            "summary": tool_summary(server, call.tool, call.message.get("params"), revision),
         }
         verdict = self._verdict(facts, loaded, decision, target=target, payload=payload, card=card)
         if verdict.request is not None and verdict.reason_code in REQUEST_CODES:
@@ -871,10 +881,10 @@ class PolicyMiddleware:
                 call.server,
                 subject,
                 call.cursor is None,
-                self.listings.pin(call.server, server),
+                self.listings.pin(call.server, server, revision),
                 rpc_id=cast("str | int", call.message.get("id", "")),
                 rewrite=functools.partial(
-                    _callable_page, call.server, loaded, self._ceiling, self._floor
+                    _callable_page, call.server, loaded, self._ceiling, self._floor, revision
                 ),
             )
             self.listings.expect(facts.request_id, listing)
@@ -928,20 +938,27 @@ class PolicyMiddleware:
         except Exception:
             _log.exception("could not record an MCP call of request %s", facts.request_id)
 
-    def _drifted(self, server: str, loaded: LoadedPolicy, decision: Decision) -> Decision:
+    def _drifted(
+        self,
+        server: str,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        project: str,
+        revision: ServerClassification | None,
+    ) -> Decision:
         """Escalate a non-read call to a server whose tool list drifted from its pin, until
-        its classification is accepted again (D96, D103)."""
+        the project accepts its classification again (D96, D103)."""
         if (
             self.listings is None
             or decision.action not in (Action.ALLOW, Action.ALERT)
             or decision.effect in (None, "read")
         ):
             return decision
-        pin = self.listings.pin(server, loaded.policy.mcp.servers[server])
+        pin = self.listings.pin(server, loaded.policy.mcp.servers[server], revision)
         digest = pin_digest(pin) if pin is not None else None
-        if self._drifts.drifted(server, digest) is not None:
-            self._reread()  # the operator's acceptance ends it at once
-        seq = self._drifts.drifted(server, digest)
+        if self._drifts.drifted(server, digest, project) is not None:
+            self._reread()  # an acceptance ends it at once
+        seq = self._drifts.drifted(server, digest, project)
         if seq is None:
             return decision
         reason = (
@@ -1273,12 +1290,22 @@ def _callable_page(
     loaded: LoadedPolicy,
     ceiling: PoolCeiling,
     floor: HardFloor,
+    revision: ServerClassification | None,
     result: dict[str, object],
 ) -> dict[str, object]:
     """A listing page as the agent gets it: without the tools the policy denies it, the rest
-    marked, each judged with the hint this page gives it (D96), as its later calls are."""
+    marked, each judged with the hint this page gives it (D96) and the project's accepted
+    classification, as its later calls are."""
     hints = {tool.name: tool.hint for tool in listed_tools(result)}
-    kept, _ = callable_tools(server, result, loaded, ceiling=ceiling, floor=floor, hints=hints)
+    kept, _ = callable_tools(
+        server,
+        result,
+        loaded,
+        ceiling=ceiling,
+        floor=floor,
+        hints=hints,
+        classification=revision,
+    )
     return kept
 
 
