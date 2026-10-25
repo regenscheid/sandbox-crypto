@@ -388,8 +388,11 @@ export type ChatEntry =
       text: string;
       /** The text's references to recorded files, as the event pins them (FG-7, F2). */
       pins: Record<string, unknown>[];
-      /** The tools this model call called; ``id`` is the call's, which a question names. */
-      calls: { id: string; name: string; arguments: string }[];
+      /**
+       * The tools this model call called; ``id`` is the call's, which a question names, and
+       * ``purpose`` the call's purpose when it named one: the agent's words (CM-49).
+       */
+      calls: { id: string; name: string; arguments: string; purpose?: string }[];
       /** This model call's tokens, as the gateway reported them; null when not recorded. */
       usage: string | null;
     }
@@ -401,8 +404,49 @@ export type ChatEntry =
       name: string;
       outcome: string;
       result: string;
+      /** The call's purpose, the agent's words, when the event carries it. */
+      purpose?: string;
+      /** The result at a glance, as the server computed it from the tool record. */
+      gloss?: Gloss;
     }
-  | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string };
+  | {
+      kind: 'note';
+      seq: number;
+      text: string;
+      problem: boolean;
+      message?: string;
+      /** A wait on background work, or a notice of it, for the transcript's summary row. */
+      background?: BackgroundSignal;
+    };
+
+/**
+ * A tool result at a glance, as the `tool` event's `gloss` holds it: computed by the
+ * server's code from the tool record, never from the model's text (B10, item 1).
+ */
+export interface Gloss {
+  /** `ok`, `failed`, `refused`, `timed out`, `cancelled`, or `started` for a job. */
+  outcome: string;
+  exit_code: number | null;
+  lines: number | null;
+  bytes: number | null;
+  /** The files the call recorded or published, at most 10, and how many more. */
+  files: string[];
+  more_files: number;
+  /** A failure's first line, at most 200 characters. */
+  error: string | null;
+}
+
+/** Background work a run waits on or hears of: what it is, and its IDs. */
+export type BackgroundSignal =
+  | { event: 'wait'; what: 'jobs' | 'delegations'; ids: string[] | null; mode: string | null }
+  | { event: 'notice'; what: 'jobs' | 'delegations' | 'kernels'; ids: string[] };
+
+/** The sources of notices about background work, by the run's notice source. */
+const BACKGROUND_SOURCES: Record<string, 'jobs' | 'delegations' | 'kernels'> = {
+  jobs: 'jobs',
+  delegations: 'delegations',
+  kernels: 'kernels',
+};
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -504,6 +548,23 @@ export function foldText(data: Record<string, unknown>): string {
  * no state to record (a plan or ledger call, a connector's tool) says nothing, not that
  * it recorded none, which read as a fault in every transcript.
  */
+/** A `tool` event's gloss, or null for an event from before glosses or a malformed one. */
+function glossOf(value: unknown): Gloss | null {
+  const found = record(value);
+  if (typeof found['outcome'] !== 'string') return null;
+  const count = (field: unknown) =>
+    typeof field === 'number' && Number.isInteger(field) && field >= 0 ? field : null;
+  return {
+    outcome: found['outcome'],
+    exit_code: typeof found['exit_code'] === 'number' ? found['exit_code'] : null,
+    lines: count(found['lines']),
+    bytes: count(found['bytes']),
+    files: list(found['files']).filter((path): path is string => typeof path === 'string'),
+    more_files: count(found['more_files']) ?? 0,
+    error: typeof found['error'] === 'string' ? found['error'] : null,
+  };
+}
+
 function outcomeText(value: unknown): string {
   const outcome = record(value);
   const parts: string[] = [];
@@ -583,11 +644,15 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         message: typeof data['message_id'] === 'string' ? data['message_id'] : null,
       });
     else if (kind === 'assistant') {
-      const calls = list(data['tool_calls']).map((call) => ({
-        id: text(record(call)['id']),
-        name: text(record(call)['name']),
-        arguments: text(record(call)['arguments']),
-      }));
+      const calls = list(data['tool_calls']).map((call) => {
+        const purpose = record(call)['purpose'];
+        return {
+          id: text(record(call)['id']),
+          name: text(record(call)['name']),
+          arguments: text(record(call)['arguments']),
+          ...(typeof purpose === 'string' && purpose ? { purpose } : {}),
+        };
+      });
       entries.push({
         kind: 'assistant',
         seq,
@@ -596,7 +661,9 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         calls,
         usage: tokensText(data['usage']),
       });
-    } else if (kind === 'tool')
+    } else if (kind === 'tool') {
+      const purpose = data['purpose'];
+      const gloss = glossOf(data['gloss']);
       entries.push({
         kind: 'tool',
         seq,
@@ -604,16 +671,20 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         name: text(data['name']) || 'tool',
         outcome: outcomeText(data['outcome']),
         result: text(data['result']),
+        ...(typeof purpose === 'string' && purpose ? { purpose } : {}),
+        ...(gloss ? { gloss } : {}),
       });
-    else if (kind === 'notice') {
-      const ids = list(data['ids']).map(String).join(', ');
+    } else if (kind === 'notice') {
+      const ids = list(data['ids']).map(String);
       // A notice for the user, such as a root's soft-cap check-in (D102), says itself.
       const said = text(data['text']);
+      const what = BACKGROUND_SOURCES[text(data['source'])];
       entries.push({
         kind: 'note',
         seq,
-        text: said || `Notices from ${text(data['source'])}: ${ids}.`,
+        text: said || `Notices from ${text(data['source'])}: ${ids.join(', ')}.`,
         problem: false,
+        ...(what && ids.length ? { background: { event: 'notice' as const, what, ids } } : {}),
       });
     } else if (kind === 'waiting' && 'permission_request' in data) {
       // A connector call held for the user's answer (D76), or the end of that wait.
@@ -630,9 +701,17 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
     } else if (kind === 'waiting') {
       const jobs = list(data['job_ids']).map(String);
       const children = list(data['delegation_ids']).map(String);
+      const what = 'delegation_ids' in data ? 'delegations' : 'jobs';
+      const ids = what === 'delegations' ? children : jobs;
       entries.push({
         kind: 'note',
         seq,
+        background: {
+          event: 'wait',
+          what,
+          ids: ids.length ? ids : null,
+          mode: typeof data['mode'] === 'string' ? data['mode'] : null,
+        },
         text:
           'delegation_ids' in data
             ? children.length

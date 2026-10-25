@@ -12,10 +12,11 @@
     thinking,
     type WatchedRun,
   } from '../lib/chat';
-  import { clock, foldTranscript } from '../lib/conversation';
+  import { clock, foldTranscript, liveWork } from '../lib/conversation';
   import Markdown from '../lib/Markdown.svelte';
   import { messageHref } from '../lib/router';
   import { splitAttachments } from '../lib/uploads';
+  import BackgroundRow from './BackgroundRow.svelte';
   import FileChips from './FileChips.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   import Icon from './Icon.svelte';
@@ -64,7 +65,8 @@
     }
     return shown;
   });
-  const last = $derived(items.at(-1));
+  /** The work group the run is on now, if any: the last, with only background rows after. */
+  const liveIndex = $derived(live ? liveWork(items) : -1);
 </script>
 
 <ol class="transcript">
@@ -103,7 +105,7 @@
           from={item.from}
           to={item.to}
           steps={item.steps}
-          live={live && index === items.length - 1}
+          live={index === liveIndex}
           thinking={thinking(run)}
           approval={awaitingApproval(run)}
           {now}
@@ -111,6 +113,8 @@
           {showAgents}
         />
       </li>
+    {:else if item.kind === 'background'}
+      <li><BackgroundRow {item} {live} {now} /></li>
     {:else}
       <li>
         <p class="transcript-note" class:problem={item.problem}>
@@ -125,7 +129,7 @@
       {/each}
     {/if}
   {/each}
-  {#if live && last?.kind !== 'work'}
+  {#if live && liveIndex === -1}
     <li>
       <WorkGroup
         from=""

@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MIT
 /**
  * A run's transcript as the conversation shows it: the user's messages and the agent's
- * replies, with the steps between them folded into one "worked for" group each. A step is
- * one model call that called tools, with each call's result as it arrives. The platform's
- * own bookkeeping (a run started, notices, waits, folds, a run that answered) stays out of
- * the conversation; the activity log has it. A run that stopped with a problem says so.
+ * replies, with the steps between them folded into one "worked for" group each. A step, or
+ * batch, is the consecutive tool calls of one model call, between two model turns, with
+ * each call's result as it arrives; each call is a row (B10, item 1): the call's purpose,
+ * the agent's words, or else its tool and main argument, and its result's gloss. Background
+ * work the run waits on or hears of is one summary row each (B10, item 5). The platform's
+ * other bookkeeping (a run started, folds, a run that answered) stays out of the
+ * conversation; the activity log has it. A run that stopped with a problem says so.
  */
 import type { RunEvent } from './api-types';
-import type { ChatEntry } from './chat';
+import type { BackgroundSignal, ChatEntry, Gloss } from './chat';
+import { formatFileSize } from './format';
 import { visible } from './text';
 
 /** One tool call of a step, and its result once the run has it. */
@@ -15,10 +19,14 @@ export interface StepCall {
   id: string;
   name: string;
   arguments: string;
+  /** The call's purpose, the agent's words (CM-49), when it named one. */
+  purpose?: string;
   /** Whether the result is in. */
   done: boolean;
   outcome: string;
   result: string;
+  /** The result at a glance, from the server; absent in events from before glosses. */
+  gloss?: Gloss;
 }
 
 /** One model call that called tools: when, what it said, and its calls. */
@@ -29,12 +37,43 @@ export interface WorkStep {
   calls: StepCall[];
 }
 
+/** A batch: the consecutive tool calls between two model turns, which is one step. */
+export type Batch = WorkStep;
+
 export type Pins = Extract<ChatEntry, { kind: 'user' }>['pins'];
 
+/** What background work a summary row is about. */
+export type BackgroundKind = BackgroundSignal['what'];
+
+/**
+ * Background work in one line (B10, item 5): a wait on jobs or delegated runs, from its
+ * start (`from`) to its end (`to`, once `ended`), or notices of work that ended without a
+ * wait (`waited` false). `finished` are the IDs known to have ended; `states` what the
+ * wait's result said of each.
+ */
+export interface BackgroundItem {
+  kind: 'background';
+  seq: number;
+  what: BackgroundKind;
+  waited: boolean;
+  mode: string | null;
+  from: string;
+  to: string;
+  ended: boolean;
+  ids: string[];
+  finished: string[];
+  states: Record<string, string>;
+}
+
+/**
+ * One item of the transcript, told apart by its `kind`; a new kind of row (an agent's
+ * message, a child's outcome, a finding) is a new member of the union.
+ */
 export type TranscriptItem =
   | { kind: 'user'; seq: number; at: string; text: string; pins: Pins; message: string | null }
   | { kind: 'reply'; seq: number; at: string; text: string; pins: Pins }
   | { kind: 'work'; seq: number; from: string; to: string; steps: WorkStep[] }
+  | BackgroundItem
   | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string };
 
 /**
@@ -51,13 +90,36 @@ export function foldTranscript(
   const at = (seq: number) => times.get(seq) ?? '';
   const items: TranscriptItem[] = [];
   let work: Extract<TranscriptItem, { kind: 'work' }> | null = null;
+  /** The background rows of the open group, shown right after it. */
+  let later: BackgroundItem[] = [];
+  /** Every background row so far, the latest last, for its wait's end and notices. */
+  const background: BackgroundItem[] = [];
   const flush = () => {
-    if (work !== null) items.push(work);
+    if (work !== null) items.push(work, ...later);
     work = null;
+    later = [];
   };
   const group = (seq: number) =>
     (work ??= { kind: 'work', seq, from: at(seq), to: at(seq), steps: [] });
+  const show = (item: BackgroundItem) => {
+    background.push(item);
+    if (work !== null) later.push(item);
+    else items.push(item);
+  };
+  /** A wait whose end the run never wrote has ended once the model is called again. */
+  const endWaits = (seq: number) => {
+    for (const item of background)
+      if (item.waited && !item.ended) Object.assign(item, { ended: true, to: at(seq) });
+  };
+  let signalled = false;
   for (const entry of entries) {
+    if (entry.kind === 'note' && entry.background) {
+      signal(entry.seq, at(entry.seq), entry.background, background, show, signalled);
+      signalled = true;
+      continue;
+    }
+    signalled = false;
+    if (entry.kind === 'assistant') endWaits(entry.seq);
     if (entry.kind === 'user') {
       flush();
       items.push({
@@ -103,8 +165,16 @@ export function foldTranscript(
       }
     } else if (entry.kind === 'tool') {
       const call = pending(work, entry);
-      if (call) Object.assign(call, { done: true, outcome: entry.outcome, result: entry.result });
-      else
+      const result = {
+        done: true,
+        outcome: entry.outcome,
+        result: entry.result,
+        ...(entry.gloss ? { gloss: entry.gloss } : {}),
+      };
+      if (call) {
+        Object.assign(call, result);
+        if (call.purpose === undefined && entry.purpose) call.purpose = entry.purpose;
+      } else
         group(entry.seq).steps.push({
           seq: entry.seq,
           at: at(entry.seq),
@@ -114,13 +184,13 @@ export function foldTranscript(
               id: entry.call,
               name: entry.name,
               arguments: '',
-              done: true,
-              outcome: entry.outcome,
-              result: entry.result,
+              ...(entry.purpose ? { purpose: entry.purpose } : {}),
+              ...result,
             },
           ],
         });
       group(entry.seq).to = at(entry.seq);
+      waited(entry, background);
     } else if (entry.kind === 'note' && entry.problem) {
       flush();
       items.push(entry);
@@ -129,6 +199,122 @@ export function foldTranscript(
   flush();
   return items;
 }
+
+/**
+ * The index of the work group a live run is on: the last item, or the last work group with
+ * only background rows after it, which show beside what runs now; -1 when there is none.
+ */
+export function liveWork(items: readonly TranscriptItem[]): number {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const kind = items[index]!.kind;
+    if (kind === 'work') return index;
+    if (kind !== 'background') return -1;
+  }
+  return -1;
+}
+
+/** A wait's start or end, or a notice, as its background row has it. */
+function signal(
+  seq: number,
+  at: string,
+  found: BackgroundSignal,
+  background: BackgroundItem[],
+  show: (item: BackgroundItem) => void,
+  /** Whether the entry before was a signal too, so that notices may share a row. */
+  adjacent: boolean,
+): void {
+  if (found.event === 'wait') {
+    const open = background.findLast(
+      (item) => item.waited && !item.ended && item.what === found.what,
+    );
+    if (found.ids === null) {
+      if (open) Object.assign(open, { ended: true, to: at });
+      return;
+    }
+    show({
+      kind: 'background',
+      seq,
+      what: found.what,
+      waited: true,
+      mode: found.mode,
+      from: at,
+      to: at,
+      ended: false,
+      ids: [...new Set(found.ids)],
+      finished: [],
+      states: {},
+    });
+    return;
+  }
+  // A notice of work a wait is on marks it finished there; other notices are a row of
+  // their own, the latest one of their kind taking in the next while nothing comes between.
+  const unclaimed: string[] = [];
+  for (const id of found.ids) {
+    const item = background.findLast(
+      (candidate) =>
+        candidate.waited && candidate.what === found.what && candidate.ids.includes(id),
+    );
+    if (item && found.what !== 'kernels') {
+      if (!item.finished.includes(id)) item.finished.push(id);
+    } else unclaimed.push(id);
+  }
+  if (!unclaimed.length) return;
+  const last = background.at(-1);
+  if (adjacent && last && !last.waited && last.what === found.what) {
+    for (const id of unclaimed) if (!last.ids.includes(id)) last.ids.push(id);
+    last.finished = found.what === 'kernels' ? [] : [...last.ids];
+    last.to = at;
+    return;
+  }
+  show({
+    kind: 'background',
+    seq,
+    what: found.what,
+    waited: false,
+    mode: null,
+    from: at,
+    to: at,
+    ended: true,
+    ids: [...new Set(unclaimed)],
+    finished: found.what === 'kernels' ? [] : [...unclaimed],
+    states: {},
+  });
+}
+
+const WAITS: Record<string, BackgroundKind> = {
+  wait_jobs: 'jobs',
+  wait_delegations: 'delegations',
+};
+
+/** What a wait's result says of each job or delegated run it waited on. */
+function waited(entry: Extract<ChatEntry, { kind: 'tool' }>, background: BackgroundItem[]): void {
+  const what = WAITS[entry.name];
+  if (!what) return;
+  const item = background.findLast((candidate) => candidate.waited && candidate.what === what);
+  if (!item) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(entry.result);
+  } catch {
+    return; // a result cut to its head and tail: the notices alone say what finished
+  }
+  const listed = (parsed as Record<string, unknown> | null)?.[what];
+  if (!Array.isArray(listed)) return;
+  const key = what === 'jobs' ? 'job_id' : 'delegation_id';
+  for (const one of listed) {
+    const found = (one ?? {}) as Record<string, unknown>;
+    const id = found[key];
+    // A job says its state; a delegated run that ended says when, and how it stopped.
+    const state =
+      found['state'] ??
+      (typeof found['ended'] === 'string' ? (found['stopped'] ?? 'ended') : undefined);
+    if (typeof id !== 'string' || !item.ids.includes(id) || typeof state !== 'string') continue;
+    item.states[id] = state;
+    if (!RUNNING.has(state) && !item.finished.includes(id)) item.finished.push(id);
+  }
+}
+
+const RUNNING = new Set(['queued', 'running', 'cancelling']);
 
 /** The call a result answers: by its ID, or else the first waiting call of its name. */
 function pending(
@@ -186,23 +372,6 @@ export function firstLine(value: string, limit = 140): string {
   return visible(trimmed.length > limit ? `${trimmed.slice(0, limit - 1)}…` : trimmed);
 }
 
-/** A step's line: its own words, or what its first call does. */
-export function stepText(step: WorkStep): string {
-  if (step.text.trim()) return firstLine(step.text, 200);
-  const first = step.calls[0];
-  if (!first) return '';
-  const summary = callSummary(first);
-  const more = step.calls.length > 1 ? ` and ${step.calls.length - 1} more` : '';
-  return summary && !more
-    ? `${visible(first.name)}: ${summary}`
-    : `Called ${visible(first.name)}${more}`;
-}
-
-/** A step's tools: the one it called, or how many. */
-export function stepTools(step: WorkStep): string {
-  return step.calls.length === 1 ? visible(step.calls[0]!.name) : `${step.calls.length} calls`;
-}
-
 /** How long a group worked, in words: "Worked for 13 min". */
 export function workedFor(from: string, to: string): string {
   const seconds = Math.round((Date.parse(to) - Date.parse(from)) / 1000);
@@ -213,17 +382,266 @@ export function workedFor(from: string, to: string): string {
   return `Worked for ${hours} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
 }
 
-/** A group's steps and its most used tools: "9 steps · shell ×6, write_file ×3". */
+/** What a batch's calls did, by kind, for its generated header. */
+type Doing = 'command' | 'read' | 'edit' | 'search' | 'ledger' | 'document' | 'delegation';
+
+/** Each harness tool's kind, for the batch header; a tool not named here counts as a step. */
+const DOING: Record<string, Doing> = {
+  shell: 'command',
+  python: 'command',
+  sage: 'command',
+  start_job: 'command',
+  read_file: 'read',
+  view_image: 'read',
+  pdf_info: 'read',
+  pdf_pages: 'read',
+  pdf_render: 'read',
+  write_file: 'edit',
+  edit_file: 'edit',
+  glob: 'search',
+  grep: 'search',
+  list_files: 'search',
+  find_artifacts: 'search',
+  history_search: 'search',
+  pdf_search: 'search',
+  ledger_change: 'ledger',
+  ledger_category: 'ledger',
+  ledger_import: 'ledger',
+  ledger_proposals: 'ledger',
+  memory_propose: 'ledger',
+  document_create: 'document',
+  document_patch: 'document',
+  document_delete: 'document',
+  document_comment: 'document',
+  document_comment_edit: 'document',
+  document_reply: 'document',
+  document_resolve: 'document',
+  delegate: 'delegation',
+};
+
+const plural = (count: number, one: string, many = `${one}s`) =>
+  `${count} ${count === 1 ? one : many}`;
+
+const DOING_WORDS: [Doing, (count: number) => string][] = [
+  ['command', (n) => `ran ${plural(n, 'command')}`],
+  ['read', (n) => `read ${plural(n, 'file')}`],
+  ['edit', (n) => `edited ${plural(n, 'file')}`],
+  ['search', (n) => `ran ${plural(n, 'search', 'searches')}`],
+  ['ledger', (n) => `made ${plural(n, 'ledger change')}`],
+  ['document', (n) => `made ${plural(n, 'document change')}`],
+  ['delegation', (n) => `delegated ${plural(n, 'task')}`],
+];
+
+/** Whether a call failed, by its gloss, or else by its outcome's words. */
+export function callFailed(call: Pick<StepCall, 'done' | 'outcome' | 'gloss'>): boolean {
+  if (!call.done) return false;
+  if (call.gloss) return !['ok', 'started'].includes(call.gloss.outcome);
+  return /fail|error|timed?\s?out|refused|cancel/i.test(call.outcome);
+}
+
+/**
+ * The generated header of calls, from their tools' names: "Ran 4 commands, read 3 files ·
+ * 7 steps · 1 failed". A step here is one call.
+ */
+export function batchHeader(calls: readonly StepCall[]): string {
+  const counts = new Map<Doing, number>();
+  for (const call of calls) {
+    const doing = DOING[call.name];
+    if (doing) counts.set(doing, (counts.get(doing) ?? 0) + 1);
+  }
+  const said = DOING_WORDS.filter(([doing]) => counts.has(doing)).map(([doing, words]) =>
+    words(counts.get(doing)!),
+  );
+  const failed = calls.filter(callFailed).length;
+  const parts = [
+    ...(said.length ? [said.join(', ').replace(/^./, (first) => first.toUpperCase())] : []),
+    plural(calls.length, 'step'),
+    ...(failed ? [`${failed} failed`] : []),
+  ];
+  return parts.join(' · ');
+}
+
+/** A group's summary over all its batches: "Ran 6 commands, edited 3 files · 9 steps". */
 export function workSummary(steps: readonly WorkStep[]): string {
-  const counts = new Map<string, number>();
-  for (const call of steps.flatMap((step) => step.calls))
-    counts.set(call.name, (counts.get(call.name) ?? 0) + 1);
-  const top = [...counts]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 3)
-    .map(([name, count]) => (count > 1 ? `${visible(name)} ×${count}` : visible(name)));
-  const count = `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`;
-  return top.length ? `${count} · ${top.join(', ')}` : count;
+  return batchHeader(steps.flatMap((step) => step.calls));
+}
+
+/**
+ * Each tool's main argument, which a row without a purpose shows beside the tool's name:
+ * the command, the path, the pattern, the entry, the question. A tool not named here, a
+ * connector's among them, shows its arguments' most telling field (`callSummary`).
+ */
+export const MAIN_ARGUMENT: Record<string, readonly string[]> = {
+  shell: ['script'],
+  python: ['code'],
+  sage: ['code'],
+  start_job: ['script', 'argv'],
+  read_file: ['path'],
+  write_file: ['path'],
+  edit_file: ['path'],
+  list_files: ['path'],
+  view_image: ['path', 'artifact_id'],
+  publish: ['path'],
+  pdf_info: ['path'],
+  pdf_pages: ['path'],
+  pdf_render: ['path'],
+  pdf_search: ['query'],
+  glob: ['pattern'],
+  grep: ['pattern'],
+  find_artifacts: ['path', 'contains'],
+  history_search: ['query'],
+  history_read: ['message', 'file'],
+  ledger_read: ['entry'],
+  ledger_history: ['entry'],
+  ledger_work: ['entry'],
+  ledger_change: ['reason'],
+  ledger_category: ['category'],
+  ledger_import: ['path'],
+  ledger_list: ['type', 'status'],
+  memory_propose: ['entry', 'reason'],
+  document_create: ['name'],
+  document_read: ['document'],
+  document_patch: ['document'],
+  document_delete: ['document'],
+  document_comment: ['document'],
+  document_comments: ['document'],
+  document_reply: ['document'],
+  document_resolve: ['document'],
+  show_outline: ['document'],
+  ask_user: ['question'],
+  delegate: ['task', 'check'],
+  message_child: ['delegation_id'],
+  message_parent: ['text'],
+  wait_jobs: ['job_ids'],
+  job_status: ['job_id'],
+  cancel_job: ['job_id'],
+  wait_delegations: ['delegation_ids'],
+  delegation_status: ['delegation_id'],
+  cancel_delegation: ['delegation_id'],
+  plan_progress: ['step_id'],
+  plan_create: ['reason'],
+  plan_revise: ['reason'],
+  plan_finish: ['reason'],
+  skills: ['query', 'skill', 'names', 'action'],
+  admit_hosts: ['hosts'],
+  review_finding: ['statement'],
+  review_respond: ['finding'],
+};
+
+/** A call's main argument, by `MAIN_ARGUMENT`, in a short line with what is unseen shown. */
+export function mainArgument(call: Pick<StepCall, 'name' | 'arguments'>): string {
+  const keys = MAIN_ARGUMENT[call.name];
+  if (!keys) return callSummary(call);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(call.arguments);
+  } catch {
+    return firstLine(call.arguments);
+  }
+  const fields = (parsed ?? {}) as Record<string, unknown>;
+  for (const key of keys) {
+    const value = fields[key];
+    if (typeof value === 'string' && value.trim()) return firstLine(value);
+    if (Array.isArray(value) && value.length && value.every((item) => typeof item === 'string'))
+      return firstLine(value.join(', '));
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      // A check's brief names its entry.
+      const entry =
+        (value as Record<string, unknown>)['entry'] ?? (value as Record<string, unknown>)['handle'];
+      if (typeof entry === 'string' && entry.trim()) return firstLine(entry);
+    }
+  }
+  return '';
+}
+
+/**
+ * A row's left side: the call's purpose, the agent's own words, shown as text and framed
+ * as the agent's (CM-49); or, without one, the tool's name and its main argument.
+ */
+export function rowLabel(
+  call: Pick<StepCall, 'name' | 'arguments' | 'purpose'>,
+): { says: true; text: string } | { says: false; tool: string; text: string } {
+  if (call.purpose?.trim()) return { says: true, text: firstLine(call.purpose, 200) };
+  return { says: false, tool: visible(call.name), text: mainArgument(call) };
+}
+
+/**
+ * A row's right side, the result's gloss: "ok · 212 lines · 2 files", "failed · exit 1 ·
+ * "No such file"", or "running 0:42" while the call runs in a live view.
+ */
+export function glossText(
+  call: Pick<StepCall, 'done' | 'outcome' | 'gloss'>,
+  running: string | null = null,
+): string {
+  if (!call.done) return running === null ? 'no result recorded' : `running ${running}`;
+  const gloss = call.gloss;
+  if (!gloss) return call.outcome ? visible(call.outcome) : 'done';
+  const parts = [visible(gloss.outcome)];
+  if (gloss.exit_code !== null && gloss.exit_code !== 0) parts.push(`exit ${gloss.exit_code}`);
+  if (gloss.lines !== null) parts.push(plural(gloss.lines, 'line'));
+  else if (gloss.bytes !== null)
+    parts.push(gloss.bytes < 1024 ? `${gloss.bytes} B` : formatFileSize(gloss.bytes));
+  const files = gloss.files.length + gloss.more_files;
+  if (files) parts.push(plural(files, 'file'));
+  if (gloss.error) parts.push(`"${firstLine(gloss.error, 80)}"`);
+  return parts.join(' · ');
+}
+
+/** A span of seconds in words: "16 s", "4 min 2 s", "1 h 5 min". */
+function span(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  if (whole < 60) return `${whole} s`;
+  const minutes = Math.floor(whole / 60);
+  if (minutes < 60) return `${minutes} min${whole % 60 ? ` ${whole % 60} s` : ''}`;
+  return `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
+}
+
+/** What a background row is about, in a few words. */
+export function backgroundWhat(item: Pick<BackgroundItem, 'what' | 'ids'>): string {
+  if (item.what === 'jobs') return item.ids.length === 1 ? 'Background job' : 'Background jobs';
+  if (item.what === 'delegations') return item.ids.length === 1 ? 'Subagent' : 'Subagents';
+  return item.ids.length === 1 ? 'Kernel' : 'Kernels';
+}
+
+/**
+ * A background row's line: "2 finished · 16 s" for a wait that ended, "1 running · 42 s so
+ * far" for one in progress (`live`), or how many notices said what without a wait.
+ */
+export function backgroundText(item: BackgroundItem, now: number, live: boolean): string {
+  if (item.what === 'kernels')
+    return `${plural(item.ids.length, 'kernel')} started before the current packages`;
+  const finished = item.ids.filter((id) => item.finished.includes(id)).length;
+  const rest = item.ids.length - finished;
+  const going = !item.ended && live;
+  const parts = [
+    ...(finished ? [`${finished} finished`] : []),
+    ...(rest ? [going ? `${rest} running` : `${rest} not finished`] : []),
+  ];
+  const counted = parts.join(', ') || '0 finished';
+  if (!item.waited) return counted;
+  const seconds = ((going ? now : Date.parse(item.to)) - Date.parse(item.from)) / 1000;
+  if (!Number.isFinite(seconds)) return counted;
+  return `${counted} · ${span(seconds)}${going ? ' so far' : ''}`;
+}
+
+/** Each ID of a background row with its state, for the row opened. */
+export function backgroundList(
+  item: BackgroundItem,
+  live: boolean,
+): { id: string; state: string }[] {
+  return item.ids.map((id) => ({
+    id: visible(id),
+    state: visible(
+      item.states[id] ??
+        (item.what === 'kernels'
+          ? 'on older packages'
+          : item.finished.includes(id)
+            ? 'finished'
+            : !item.ended && live
+              ? 'running'
+              : 'not finished'),
+    ),
+  }));
 }
 
 /** A clock time, such as 17:22, for the transcript's lines. */

@@ -381,8 +381,20 @@ describe('the transcript of a run', () => {
         event(2, 'waiting', { delegation_ids: null, mode: null }),
       ]),
     ).toEqual([
-      { kind: 'note', seq: 1, text: 'Waiting for delegated work: d1, d2.', problem: false },
-      { kind: 'note', seq: 2, text: 'The wait for delegated work ended.', problem: false },
+      {
+        kind: 'note',
+        seq: 1,
+        text: 'Waiting for delegated work: d1, d2.',
+        problem: false,
+        background: { event: 'wait', what: 'delegations', ids: ['d1', 'd2'], mode: 'all' },
+      },
+      {
+        kind: 'note',
+        seq: 2,
+        text: 'The wait for delegated work ended.',
+        problem: false,
+        background: { event: 'wait', what: 'delegations', ids: null, mode: null },
+      },
     ]);
   });
 
@@ -432,9 +444,27 @@ describe('the transcript of a run', () => {
         outcome: 'succeeded, exit code 0',
         result: '1',
       },
-      { kind: 'note', seq: 6, text: 'Notices from jobs: j1.', problem: false },
-      { kind: 'note', seq: 7, text: 'Waiting for all of jobs j1.', problem: false },
-      { kind: 'note', seq: 8, text: 'The wait for jobs ended.', problem: false },
+      {
+        kind: 'note',
+        seq: 6,
+        text: 'Notices from jobs: j1.',
+        problem: false,
+        background: { event: 'notice', what: 'jobs', ids: ['j1'] },
+      },
+      {
+        kind: 'note',
+        seq: 7,
+        text: 'Waiting for all of jobs j1.',
+        problem: false,
+        background: { event: 'wait', what: 'jobs', ids: ['j1'], mode: 'all' },
+      },
+      {
+        kind: 'note',
+        seq: 8,
+        text: 'The wait for jobs ended.',
+        problem: false,
+        background: { event: 'wait', what: 'jobs', ids: null, mode: null },
+      },
       { kind: 'note', seq: 9, text: 'The run answered.', problem: false },
     ]);
   });

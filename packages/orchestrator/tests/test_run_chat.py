@@ -44,6 +44,7 @@ from .loop_harness import (
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .scripted import PURPOSE
 
 
 def store(tmp_path: Path, clock: FakeClock | None = None) -> tuple[ProjectStore, RunState]:
@@ -353,3 +354,45 @@ async def test_a_long_answer_has_bounded_previews_and_exact_journal_evidence(
     assert text.startswith("BEGIN ")
     assert text.endswith(" END")
     assert len(text) < 17_000
+
+
+# --- The result's gloss (B10, item 1) --------------------------------------------------
+
+
+async def test_a_tool_event_glosses_its_result_and_carries_its_purpose(harness: Harness) -> None:
+    calls = [
+        call("shell", script="printf 'one\\ntwo\\n'", purpose_note="Counting the two lines"),
+        call("shell", script="echo 'No such file' >&2; exit 1"),
+        call("write_file", path="table.txt", content="1 1\n"),
+        call("plan_read", purpose_note=None),
+    ]
+    await harness.run("run-1", [Reply(calls=calls), Reply("Done.")])
+    state = runs(harness)
+    (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
+    tools = [e.data for e in state.events(PROJECT, SESSION, entry.name) if e.kind == "tool"]
+    counted, failed, written, read = tools
+    assert counted["purpose"] == "Counting the two lines"
+    assert counted["gloss"] == {
+        "outcome": "ok",
+        "exit_code": 0,
+        "lines": 2,
+        "bytes": 8,
+        "files": [],
+        "more_files": 0,
+        "error": None,
+    }
+    assert failed["purpose"] == PURPOSE
+    assert failed["gloss"] == {
+        "outcome": "failed",
+        "exit_code": 1,
+        "lines": 1,
+        "bytes": 13,
+        "files": [],
+        "more_files": 0,
+        "error": "No such file",
+    }
+    gloss = cast(dict[str, object], written["gloss"])
+    assert (gloss["outcome"], gloss["files"], gloss["more_files"]) == ("ok", ["table.txt"], 0)
+    # A call without a valid purpose has none to show; its row shows the tool instead.
+    assert "purpose" not in read
+    assert cast(dict[str, object], read["gloss"])["outcome"] == "refused"

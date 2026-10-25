@@ -55,6 +55,7 @@ from .runstate import (
     RunState,
 )
 from .tool_status import scalar as _scalar
+from .tool_status import tool_gloss
 from .tool_status import tool_outcome as tool_outcome
 from .tools import bound
 
@@ -328,6 +329,8 @@ class EventLog(TurnHook):
         self.written: dict[str, set[str]] = {}
         """Each source's notice IDs written as events."""
         self.replies = self.calls = 0
+        self.purposes: dict[str, str] = {}
+        """Each call's purpose, by its ID, for the result's event to carry."""
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         await self._catch_up(
@@ -418,14 +421,22 @@ class EventLog(TurnHook):
             elif message.get("role") == "tool":
                 record: Mapping[str, Any] = tools[self.calls] if self.calls < len(tools) else {}
                 self.calls += 1
+                result = str(message.get("content") or "")
+                call_id = message.get("tool_call_id")
+                purpose = self.purposes.get(call_id) if isinstance(call_id, str) else None
                 await chat.write(
                     "tool",
                     {
                         "turn": self.replies,
-                        "call_id": message.get("tool_call_id"),
+                        "call_id": call_id,
                         "name": record.get("tool"),
-                        "result": str(message.get("content") or ""),
+                        "result": result,
                         "outcome": tool_outcome(record),
+                        # The result at a glance, from the record by code (B10, item 1),
+                        # and the call's purpose, the agent's words, so that a row shows
+                        # both without pairing the result with its call.
+                        "gloss": tool_gloss(record, result),
+                        **({"purpose": purpose} if purpose is not None else {}),
                     },
                 )
         self.seen = len(messages)
@@ -434,6 +445,10 @@ class EventLog(TurnHook):
         used = usage[self.replies] if self.replies < len(usage) else None
         self.replies += 1
         calls = cast(list[dict[str, Any]], message.get("tool_calls") or [])
+        shown = [shown_call(call) for call in calls]
+        for call in shown:
+            if isinstance(call.get("id"), str) and isinstance(call.get("purpose"), str):
+                self.purposes[call["id"]] = call["purpose"]
         await self.chat.write(
             "assistant",
             {
@@ -441,7 +456,7 @@ class EventLog(TurnHook):
                 "text": message.get("content"),
                 # Each call's arguments as the harness ran them, and its purpose apart
                 # from them, the agent's words (Purpose 3): what a card shows of a call.
-                "tool_calls": [shown_call(call) for call in calls],
+                "tool_calls": shown,
                 "usage": used.model_dump(mode="json") if used is not None else None,
             },
         )

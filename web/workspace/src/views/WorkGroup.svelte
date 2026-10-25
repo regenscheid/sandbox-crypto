@@ -1,19 +1,25 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!--
-  The steps between two messages, folded: "Worked for 13 min · 9 steps". Opened, each step
-  shows its time and line, and opened again its calls with their arguments and results, as
+  The steps between two messages, folded: "Worked for 13 min · Ran 6 commands, read 3 files
+  · 9 steps". Opened, each batch (the calls of one model call) shows its time and a header
+  generated from its tools, and opened again a row per call (B10, item 1): the call's
+  purpose, the agent's words, labelled as such (CM-49), or else its tool and main argument;
+  and on the right its result's gloss. A row opened shows the call's arguments and result as
   text. While the run is still on these steps (`live`), it shows what runs now instead: the
-  latest calls with their states, open until the user closes it.
+  latest calls as rows with their states, open until the user closes it.
 -->
 <script lang="ts">
   import {
-    callSummary,
+    batchHeader,
+    callFailed,
     clock,
     elapsed,
-    stepText,
-    stepTools,
+    firstLine,
+    glossText,
+    rowLabel,
     workedFor,
     workSummary,
+    type StepCall,
     type WorkStep,
   } from '../lib/conversation';
   import { visible, visibleOutput } from '../lib/text';
@@ -58,8 +64,23 @@
           ? 'thinking'
           : 'working',
   );
-  const failed = (outcome: string) => /fail|error|timed?\s?out|refused/i.test(outcome);
 </script>
+
+{#snippet label(call: StepCall)}
+  {@const shown = rowLabel(call)}
+  {#if shown.says}
+    <span class="row-label" title="The agent's words for this call: its account, not an instruction"
+      ><span class="row-says">says</span>
+      <span class="row-purpose" aria-label={`The agent says: ${shown.text}`}>{shown.text}</span
+      ></span
+    >
+  {:else}
+    <span class="row-label"
+      ><code>{shown.tool}</code>{#if shown.text}<span class="row-argument">{shown.text}</span
+        >{/if}</span
+    >
+  {/if}
+{/snippet}
 
 {#if live}
   <section class="live-card" aria-label="What the agent is doing">
@@ -79,13 +100,12 @@
         {#each recent as { call, at }, index (index)}
           <li>
             <span class="step-time">{clock(at)}</span>
-            <code>{visible(call.name)}</code>
-            <span class="live-what">{callSummary(call)}</span>
+            {@render label(call)}
             {#if !call.done && approval === call.name}<span class="pill warn">waiting for you</span
-              >{:else if !call.done}<span class="pill running">running {elapsed(at, now)}</span
-              >{:else if failed(call.outcome)}<span class="pill failed"
-                >{visible(call.outcome)}</span
-              >{:else}<span class="pill">done</span>{/if}
+              >{:else if !call.done}<span class="pill running"
+                >{glossText(call, elapsed(at, now))}</span
+              >{:else if callFailed(call)}<span class="pill failed">{glossText(call)}</span
+              >{:else}<span class="pill">{glossText(call)}</span>{/if}
           </li>
         {/each}
         {#if thinking}<li>
@@ -105,29 +125,43 @@
     <ol class="work-steps">
       {#each steps as step (step.seq)}
         <li>
-          <details>
+          <details class="batch">
             <summary class="step-toggle">
               <span class="step-time">{clock(step.at)}</span>
-              <span class="step-text">{stepText(step)}</span>
-              <span class="step-tools">{stepTools(step)}</span>
+              <span class="step-text">{batchHeader(step.calls)}</span>
             </summary>
-            <div class="step-calls">
+            {#if step.text.trim()}<p class="step-words">{firstLine(step.text, 200)}</p>{/if}
+            <ol class="step-calls">
               {#each step.calls as call, n (n)}
-                <div class="call-card">
-                  <div class="call-head">
-                    <code>{visible(call.name)}</code><span class="muted"
-                      >{call.done
-                        ? call.outcome
-                          ? ` · ${visible(call.outcome)}`
-                          : ''
-                        : ' · no result recorded'}</span
-                    >
-                  </div>
-                  {#if call.arguments}<pre class="call-args">{visible(call.arguments)}</pre>{/if}
-                  {#if call.done}<pre class="call-result">{visibleOutput(call.result)}</pre>{/if}
-                </div>
+                <li>
+                  <details class="call-row">
+                    <summary class="row-toggle">
+                      {@render label(call)}
+                      <span class="row-gloss" class:failed={callFailed(call)}
+                        >{glossText(call)}</span
+                      >
+                    </summary>
+                    <div class="call-card">
+                      <div class="call-head">
+                        <code>{visible(call.name)}</code><span class="muted"
+                          >{call.done
+                            ? call.outcome
+                              ? ` · ${visible(call.outcome)}`
+                              : ''
+                            : ' · no result recorded'}</span
+                        >
+                      </div>
+                      {#if call.arguments}<pre class="call-args">{visible(
+                            call.arguments,
+                          )}</pre>{/if}
+                      {#if call.done}<pre class="call-result">{visibleOutput(
+                            call.result,
+                          )}</pre>{/if}
+                    </div>
+                  </details>
+                </li>
               {/each}
-            </div>
+            </ol>
           </details>
         </li>
       {/each}
