@@ -126,7 +126,8 @@ numbered CL-n.
   routes are `GET …/classifications`, `GET …/mcp-services/{server}/classification`, `GET
   …/classification/drafts`, `POST …/classification/drafts/{draft}/accept` and `POST
   …/mcp-services/{server}/drift/accept` (`packages/workspace/…/classifications.py`),
-  passing the worker's operator routes through with receipts per operation ID.
+  passing the worker's operator routes through, with each write's operation ID for the
+  worker's receipts.
 - CL-2. **Drafts.** A draft `classify-draft` wrote for the project (the YAML marked DRAFT,
   pinned by digest) is a record the view lists beside the classification in force, tool
   by tool: the proposed class, reason and rules against the current ones, with widenings

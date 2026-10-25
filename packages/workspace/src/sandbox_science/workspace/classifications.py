@@ -18,21 +18,16 @@ Routes (``…`` is ``/api/v0/projects/{project}``):
 - ``POST …/mcp-services/{server}/drift/accept`` with ``{"reason", "operation_id"}``:
   re-accept the server's tool list, as ``accept-tools`` does.
 
-A write keeps a receipt under its operation ID, as the settings routes do: the same
-request again answers the first result with ``replayed: true`` and does not reach the
-worker twice; another request under that ID is a conflict. The receipts last as long as
-the workspace process, and its logins (``Receipts``).
+A write's ``operation_id`` goes to the worker, which keeps the receipt: the same request
+again answers the first result; another request under that ID is a conflict, which the
+workspace answers as its own (409).
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import re
-from collections import OrderedDict
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import Awaitable
 from typing import Final, Protocol, cast
 
 from aiohttp import web
@@ -51,7 +46,6 @@ SERVICE: Final = PROJECT + "/mcp-services/{server}"
 MAX_YAML_BYTES: Final = 1024 * 1024
 """A classification file's limit, as the policy loader's."""
 MAX_REASON: Final = 500
-MAX_RECEIPTS: Final = 4096
 _OPERATION: Final = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 _DRAFT: Final = r"^[0-9a-f]{1,128}$"
 _METHODS: Final = (
@@ -72,52 +66,15 @@ class ClassificationSource(Protocol):
     async def classification_drafts(self, project: str, server: str, /) -> object: ...
 
     async def accept_classification_draft(
-        self, project: str, server: str, draft: str, yaml: str, reason: str, /
+        self, project: str, server: str, draft: str, yaml: str, reason: str, operation_id: str, /
     ) -> object: ...
 
-    async def accept_drift(self, project: str, server: str, reason: str, /) -> object: ...
+    async def accept_drift(
+        self, project: str, server: str, reason: str, operation_id: str, /
+    ) -> object: ...
 
 
 SOURCE: Final = web.AppKey("classification_source", ClassificationSource)
-
-
-@dataclass
-class Receipts:
-    """The first result of each write, by operation ID, in this workspace process.
-
-    The workspace keeps no store of its own (it reaches the control store only through
-    the orchestrator's repositories, which name no classification receipts yet), and a
-    restart ends every login, so a page's retry meets the process that answered it. At most
-    ``MAX_RECEIPTS`` are kept; the oldest go first. Writes are serialized, since the
-    worker's call cannot be in a receipt's transaction: two tabs sending one operation
-    never both reach the worker."""
-
-    found: OrderedDict[tuple[str, str], tuple[str, dict[str, object]]] = field(
-        default_factory=OrderedDict[tuple[str, str], tuple[str, dict[str, object]]]
-    )
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-
-    def find(self, project: str, operation: str, fingerprint: str) -> dict[str, object] | None:
-        """The first result under ``operation``; another request under it is a conflict."""
-        kept = self.found.get((project, operation))
-        if kept is None:
-            return None
-        if kept[0] != fingerprint:
-            raise ProjectError(
-                ErrorKind.CONFLICT,
-                f"operation ID {operation!r} already names another classification change",
-            )
-        return kept[1]
-
-    def record(
-        self, project: str, operation: str, fingerprint: str, result: dict[str, object]
-    ) -> None:
-        self.found[(project, operation)] = (fingerprint, result)
-        while len(self.found) > MAX_RECEIPTS:
-            self.found.popitem(last=False)
-
-
-RECEIPTS: Final = web.AppKey("classification_receipts", Receipts)
 
 
 def from_worker(worker: WorkerClient | None) -> ClassificationSource | None:
@@ -130,7 +87,6 @@ def from_worker(worker: WorkerClient | None) -> ClassificationSource | None:
 def configure(app: web.Application, source: ClassificationSource | None) -> None:
     if source is not None:
         app[SOURCE] = source
-    app[RECEIPTS] = Receipts()
 
 
 def add_routes(app: web.Application) -> None:
@@ -250,29 +206,6 @@ async def drafts(request: web.Request) -> web.Response:
     return json_answer(dumps({"project": project, "server": server, "drafts": found}))
 
 
-def _fingerprint(kind: str, fields: dict[str, str]) -> str:
-    text = json.dumps({"kind": kind, **fields}, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
-async def _once(
-    request: web.Request,
-    project: str,
-    operation: str,
-    fingerprint: str,
-    send: Callable[[], Awaitable[dict[str, object]]],
-) -> web.Response:
-    """Send a write once per operation ID; a retry answers the first result again."""
-    receipts = request.app[RECEIPTS]
-    async with receipts.lock:
-        replay = receipts.find(project, operation, fingerprint)
-        if replay is not None:
-            return json_answer(dumps({**replay, "replayed": True}))
-        result = await send()
-        receipts.record(project, operation, fingerprint, result)
-    return json_answer(dumps({**result, "replayed": False}))
-
-
 async def accept_draft(request: web.Request) -> web.Response:
     """Accept a draft, edited or not, as the project's classification of the service."""
     project, server = await _service(request)
@@ -291,19 +224,10 @@ async def accept_draft(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "an acceptance needs a reason")
     if len(body.yaml.encode()) > MAX_YAML_BYTES:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "the classification YAML is too large")
-    source = _source(request)
-    fields = {
-        "project": project, "server": server, "draft": draft,
-        "yaml": body.yaml, "reason": body.reason,
-    }  # fmt: skip
-
-    async def send() -> dict[str, object]:
-        answer = await source.accept_classification_draft(
-            project, server, draft, body.yaml, body.reason
-        )
-        return _record(answer, "acceptance")
-
-    return await _once(request, project, body.operation_id, _fingerprint("draft", fields), send)
+    answer = await _source(request).accept_classification_draft(
+        project, server, draft, body.yaml, body.reason, body.operation_id
+    )
+    return json_answer(dumps(_record(answer, "acceptance")))
 
 
 async def accept_drift(request: web.Request) -> web.Response:
@@ -321,10 +245,5 @@ async def accept_drift(request: web.Request) -> web.Response:
         ) from None
     if not body.reason.strip():
         raise ProjectError(ErrorKind.INVALID_REQUEST, "a re-acceptance needs a reason")
-    source = _source(request)
-    fields = {"project": project, "server": server, "reason": body.reason}
-
-    async def send() -> dict[str, object]:
-        return _record(await source.accept_drift(project, server, body.reason), "re-acceptance")
-
-    return await _once(request, project, body.operation_id, _fingerprint("drift", fields), send)
+    answer = await _source(request).accept_drift(project, server, body.reason, body.operation_id)
+    return json_answer(dumps(_record(answer, "re-acceptance")))

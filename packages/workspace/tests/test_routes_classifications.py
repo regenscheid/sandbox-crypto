@@ -75,6 +75,7 @@ class FakeClassifications:
         self.calls: list[tuple[object, ...]] = []
         self.refusal: WorkerAPIError | None = None
         self.records: list[Any] = [_in_force("papers"), _in_force("web"), _in_force("elsewhere")]
+        self.receipts: dict[str, tuple[tuple[object, ...], object]] = {}
 
     def _check(self) -> None:
         if self.refusal is not None:
@@ -105,17 +106,33 @@ class FakeClassifications:
             }
         ]
 
-    async def accept_classification_draft(
-        self, project: str, server: str, draft: str, yaml: str, reason: str, /
-    ) -> object:
-        self.calls.append(("accept", project, server, draft, yaml, reason))
-        self._check()
-        return {"revision": 3, "accepted_at": "2026-10-25T10:00:00Z", "widenings": ["scrape"]}
+    def _once(self, operation: str, request: tuple[object, ...], answer: object) -> object:
+        """As the worker keeps receipts: a replay answers the first result, another
+        request under the same operation ID is a conflict."""
+        kept = self.receipts.get(operation)
+        if kept is None:
+            self.receipts[operation] = (request, answer)
+            return answer
+        if kept[0] != request:
+            raise WorkerAPIError(ErrorKind.CONFLICT, "operation ID names another change", 409)
+        return kept[1]
 
-    async def accept_drift(self, project: str, server: str, reason: str, /) -> object:
-        self.calls.append(("drift", project, server, reason))
+    async def accept_classification_draft(
+        self, project: str, server: str, draft: str, yaml: str, reason: str, operation_id: str, /
+    ) -> object:
+        request = ("accept", project, server, draft, yaml, reason, operation_id)
+        self.calls.append(request)
         self._check()
-        return {"accepted_at": "2026-10-25T10:05:00Z"}
+        answer = {"revision": 3, "accepted_at": "2026-10-25T10:00:00Z", "widenings": ["scrape"]}
+        return self._once(operation_id, request[:-1], answer)
+
+    async def accept_drift(
+        self, project: str, server: str, reason: str, operation_id: str, /
+    ) -> object:
+        request = ("drift", project, server, reason, operation_id)
+        self.calls.append(request)
+        self._check()
+        return self._once(operation_id, request[:-1], {"accepted_at": "2026-10-25T10:05:00Z"})
 
 
 async def _client(
@@ -178,7 +195,7 @@ async def test_in_force_views_pass_the_worker_records_through(
     assert other == {"project": "p2", "classifications": []}
 
 
-async def test_accepting_a_draft_keeps_a_receipt_and_sends_once(
+async def test_accepting_a_draft_passes_its_operation_id_to_the_worker(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
     fake = FakeClassifications()
@@ -192,24 +209,21 @@ async def test_accepting_a_draft_keeps_a_receipt_and_sends_once(
         return await response.json()
 
     first = await post(body)
-    assert first == {
-        "revision": 3,
-        "accepted_at": "2026-10-25T10:00:00Z",
-        "widenings": ["scrape"],
-        "replayed": False,
-    }
-    assert fake.calls[-1] == ("accept", "p1", "papers", DRAFT, body["yaml"], "Reviewed")
-    again = await post(body)
-    assert again == {**first, "replayed": True}
-    assert [call for call in fake.calls if call[0] == "accept"] == [fake.calls[-1]]
-    # The same operation ID for another request is a conflict.
-    await post({**body, "reason": "Another"}, 409)
-    # Shapes: a reason is required and bounded; no unknown field; a hex draft ID.
+    assert first == {"revision": 3, "accepted_at": "2026-10-25T10:00:00Z", "widenings": ["scrape"]}
+    assert fake.calls[-1] == ("accept", "p1", "papers", DRAFT, body["yaml"], "Reviewed", "op-1")
+    # The worker keeps the receipt: a retry reaches it again and gets the first answer.
+    assert await post(body) == first
+    # Another request under the same ID: the worker's conflict is the workspace's 409.
+    refused = await post({**body, "reason": "Another"}, 409)
+    assert refused["error"]["kind"] == "conflict"
+    # Shapes: a reason is required and bounded; no unknown field; a hex draft ID; an ID.
+    calls = len(fake.calls)
     for bad in (
         {**body, "operation_id": "op-2", "reason": ""},
         {**body, "operation_id": "op-2", "reason": "   "},
         {**body, "operation_id": "op-2", "reason": "x" * 501},
         {**body, "operation_id": "op-2", "author": "agent"},
+        {**body, "operation_id": "-not an id"},
         {"yaml": body["yaml"], "reason": "Reviewed"},
     ):
         await post(bad, 400)
@@ -218,9 +232,10 @@ async def test_accepting_a_draft_keeps_a_receipt_and_sends_once(
     # Same origin only.
     for headers in ({}, {"Origin": "https://untrusted.invalid"}):
         assert (await client.post(path, json=body, headers=headers)).status == 403
+    assert len(fake.calls) == calls
 
 
-async def test_drift_reacceptance_needs_a_reason_and_keeps_a_receipt(
+async def test_drift_reacceptance_needs_a_reason_and_passes_its_operation_id(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
     fake = FakeClassifications()
@@ -230,20 +245,14 @@ async def test_drift_reacceptance_needs_a_reason_and_keeps_a_receipt(
         path, json={"reason": "", "operation_id": "d-1"}, headers=origin(client)
     )
     await error_of(response, 400, "invalid_request")
+    assert fake.calls == []
     body = {"reason": "Checked the added tool", "operation_id": "d-1"}
     first = await (await client.post(path, json=body, headers=origin(client))).json()
-    assert first == {"accepted_at": "2026-10-25T10:05:00Z", "replayed": False}
-    again = await (await client.post(path, json=body, headers=origin(client))).json()
-    assert again["replayed"] is True
-    assert [call for call in fake.calls if call[0] == "drift"] == [
-        ("drift", "p1", "web", "Checked the added tool")
-    ]
-    # A draft acceptance's receipt never answers a re-acceptance under another kind.
-    draft = BASE + f"/mcp-services/web/classification/drafts/{DRAFT}/accept"
+    assert first == {"accepted_at": "2026-10-25T10:05:00Z"}
+    assert fake.calls[-1] == ("drift", "p1", "web", "Checked the added tool", "d-1")
+    assert await (await client.post(path, json=body, headers=origin(client))).json() == first
     response = await client.post(
-        draft,
-        json={"yaml": "x: 1\n", "reason": body["reason"], "operation_id": "d-1"},
-        headers=origin(client),
+        path, json={**body, "reason": "Something else"}, headers=origin(client)
     )
     await error_of(response, 409, "conflict")
 
@@ -266,10 +275,6 @@ async def test_worker_refusals_answer_as_workspace_errors(
         403,
         "policy_denied",
     )
-    # A failed write keeps no receipt: once the worker takes it, the same ID goes through.
-    fake.refusal = None
-    accepted = await client.post(path, json={**body, "operation_id": "r-2"}, headers=origin(client))
-    assert (await accepted.json())["replayed"] is False
     fake.refusal = WorkerAPIError(ErrorKind.INTERNAL, WORKER_SECRET, 500)
     response = await client.get(BASE + "/mcp-services/papers/classification")
     await error_of(response, 503, "unavailable")

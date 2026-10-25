@@ -97,10 +97,8 @@ export interface ClassificationAccepted {
   revision: number;
   accepted_at: string;
   widenings: string[];
-  replayed: boolean;
 }
 
 export interface DriftAccepted {
   accepted_at: string;
-  replayed: boolean;
 }
