@@ -43,6 +43,7 @@ const run = (name: string, fields: Partial<TreeRun> = {}): TreeRun => ({
   kept: true,
   alias: 'main-model',
   limits: null,
+  tool_mix: null,
   ...fields,
 });
 

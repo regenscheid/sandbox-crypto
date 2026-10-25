@@ -17,6 +17,7 @@ const run = (name: string, fields: Partial<TreeRun> = {}): TreeRun => ({
   kept: true,
   alias: null,
   limits: null,
+  tool_mix: null,
   ...fields,
 });
 const main = run('main', { role: 'main', parent: null });

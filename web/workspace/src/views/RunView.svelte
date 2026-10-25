@@ -6,7 +6,7 @@
   import Markdown from '../lib/Markdown.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   import { stoppedText } from '../lib/chat';
-  import { entries, usageLine } from '../lib/transcript';
+  import { entries, toolMixLine, usageLine } from '../lib/transcript';
   import RunFolds from './RunFolds.svelte';
   import RunSkills from './RunSkills.svelte';
   import ContextInspector from './ContextInspector.svelte';
@@ -26,6 +26,7 @@
       : '',
   );
   const usage = $derived(usageLine(run.usage));
+  const toolMix = $derived(toolMixLine(run.summaries));
 </script>
 
 <dl class="facts">
@@ -37,6 +38,10 @@
   {#if usage}
     <dt>Model</dt>
     <dd>{usage}</dd>
+  {/if}
+  {#if toolMix}
+    <dt>Computation</dt>
+    <dd>{toolMix}</dd>
   {/if}
   <dt>Environment</dt>
   <dd><code>{run.context.environment_id}</code></dd>

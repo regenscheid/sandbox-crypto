@@ -244,6 +244,49 @@ export function usageLine(usage: readonly ModelUsage[] | undefined): string | nu
   );
 }
 
+/**
+ * How a run computed, from its record's `summaries.tool_mix`, which code counted from its
+ * tool calls (tools spec, Kernels 13): "12 cells (python 10, sage 2) · 7 shell calls,
+ * 3 ran Python · 1 job · kernel state lost once". Null for a record without one, or one
+ * that made none of these calls.
+ */
+export function toolMixLine(summaries: Record<string, Json> | undefined): string | null {
+  const mix = summaries?.['tool_mix'];
+  if (!isObject(mix)) return null;
+  const count = (key: string): number => {
+    const value = mix[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  };
+  const plural = (n: number, noun: string) =>
+    `${n.toLocaleString('en-US')} ${noun}${n === 1 ? '' : 's'}`;
+  const python = count('python');
+  const sage = count('sage');
+  const cells = python + sage;
+  const shell = count('shell');
+  const computed = count('shell_computation');
+  const jobs = count('start_job');
+  const restarts = count('restart_kernel');
+  const lost = count('state_lost');
+  if (cells + shell + jobs + restarts + lost === 0) return null;
+  const languages = [
+    ...(python ? [`python ${python.toLocaleString('en-US')}`] : []),
+    ...(sage ? [`sage ${sage.toLocaleString('en-US')}`] : []),
+  ];
+  const parts = [
+    plural(cells, 'cell') + (languages.length ? ` (${languages.join(', ')})` : ''),
+    plural(shell, 'shell call') +
+      (computed ? `, ${computed.toLocaleString('en-US')} ran Python` : ''),
+  ];
+  if (jobs) parts.push(plural(jobs, 'job'));
+  if (restarts) parts.push(plural(restarts, 'kernel restart'));
+  if (lost) {
+    parts.push(
+      `kernel state lost ${lost === 1 ? 'once' : lost === 2 ? 'twice' : `${lost.toLocaleString('en-US')} times`}`,
+    );
+  }
+  return parts.join(' · ');
+}
+
 function isObject(value: Json | undefined): value is { [key: string]: Json } {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

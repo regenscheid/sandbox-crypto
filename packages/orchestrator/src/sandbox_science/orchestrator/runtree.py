@@ -60,6 +60,9 @@ class TreeRun(Contract):
     """The model alias its calls named, from its record (PD-29)."""
     limits: dict[str, JsonValue] | None = None
     """The limits it ran under, from its record (PD-29)."""
+    tool_mix: dict[str, JsonValue] | None = None
+    """How it computed: its cells, shell calls, jobs and kernel restarts, from its
+    record's summaries; older records have none (tools spec, Kernels 13)."""
 
 
 class RunTree(Contract):
@@ -132,6 +135,17 @@ class RunTrees:
         return lease.run if lease is not None else None
 
 
+def _object(text: str | None) -> dict[str, JsonValue] | None:
+    """A JSON object the record holds, or ``None`` for anything else."""
+    if text is None:
+        return None
+    try:
+        found: object = json.loads(text)
+    except ValueError:
+        return None
+    return cast(dict[str, JsonValue], found) if isinstance(found, dict) else None
+
+
 def _root(parents: dict[str, str | None], name: str) -> str:
     """The run at the top of ``name``'s parents, as far as they are known."""
     for _ in range(DEPTH):
@@ -154,7 +168,8 @@ def _runs(control: ControlStore, project: str, session: str) -> dict[str, TreeRu
         kept = db.execute(
             "SELECT name, run_id, started_at, role, parent, delegation, "
             "json_extract(record, '$.stopped'), json_extract(record, '$.alias'), "
-            "json_extract(record, '$.limits') FROM runs WHERE project_id = ? "
+            "json_extract(record, '$.limits'), json_extract(record, '$.summaries.tool_mix') "
+            "FROM runs WHERE project_id = ? "
             "AND session_id = ?",
             (project, session),
         ).fetchall()
@@ -170,7 +185,7 @@ def _runs(control: ControlStore, project: str, session: str) -> dict[str, TreeRu
             started.setdefault(run, value)
         else:
             stopped[run] = _text(value.get("stopped"))
-    for name, run_id, began, role, parent, delegation, ended, alias, limits in kept:
+    for name, run_id, began, role, parent, delegation, ended, alias, limits, mix in kept:
         found[name] = TreeRun(
             name=name,
             run_id=run_id,
@@ -183,6 +198,7 @@ def _runs(control: ControlStore, project: str, session: str) -> dict[str, TreeRu
             kept=True,
             alias=alias,
             limits=json.loads(limits) if limits is not None else None,
+            tool_mix=_object(mix),
         )
     names: set[str] = {*started, *stopped, *([str(held[0])] if held is not None else [])}
     for name in sorted(names - set(found)):

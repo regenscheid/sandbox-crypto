@@ -16,8 +16,9 @@ import codecs
 import hashlib
 import json
 import logging
+import posixpath
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -62,6 +63,7 @@ from .connectors import (
 )
 from .consistency.controller import ReviewController
 from .context.history import HistoryTool
+from .continuity.kernels import MAX_SAVED_FILES, LostGeneration, LostKernels
 from .documents.errors import DocumentError
 from .documents.tool import DocumentTool, with_notices
 from .effects import UnknownEffectError
@@ -85,6 +87,7 @@ from .tool_entry import ToolEntry as ToolEntry
 from .tool_entry import ToolOutcome as ToolOutcome
 from .tool_entry import group as _group
 from .tool_entry import plain as _plain
+from .tool_mix import Interpreter, ToolMix, shell_computation
 from .view_image import ImageViewer
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -462,6 +465,12 @@ KERNEL_TOOLS: Final[tuple[Language, ...]] = ("python", "sage")
 """The tools that run a cell in a persistent kernel, each named for its language. A run is
 offered those of its environment's languages, ahead of ``shell``."""
 RESTART_KERNEL: Final = "restart_kernel"
+RESTART_KERNEL_DESCRIPTION: Final = (
+    "Restart one of the session's kernels. It loses all its state: variables, imports and "
+    "loaded data. Use it after a package change the kernel predates (a "
+    "kernel_revision_notice), when its state is corrupt, or to free memory; never to "
+    "clear variables you could just rebind."
+)
 MCP_TOOLS: Final = "mcp_tools"
 
 
@@ -611,6 +620,11 @@ class Toolbox:
         self.check_kernels = check_kernels
         self.sweep_left_kernels = sweep_left_kernels
         self.kernel_run = kernel_run
+        self.tool_mix: ToolMix | None = ToolMix()
+        """The run's tool mix, counted as its calls return (Kernels 13)."""
+        self.lost_kernels: LostKernels | None = None
+        """The records of the run's kernels' cells, which a cell that reports lost state
+        lists (Kernels 7); bound by the harness when the run keeps them."""
         if delegated and self.questions is not None:
             raise ValueError("a delegated run cannot ask the user")
 
@@ -668,7 +682,7 @@ class Toolbox:
             specs.append(
                 ToolSpec(
                     RESTART_KERNEL,
-                    "Restart one of the session's kernels, discarding all its state.",
+                    RESTART_KERNEL_DESCRIPTION,
                     {
                         "type": "object",
                         "properties": {
@@ -880,6 +894,8 @@ class Toolbox:
             return _failure(ErrorKind.INVALID_REQUEST, error.message)
         call, purpose = parts.call, parts.purpose
         outcome = await self._dispatch(call, operation, model, gates)
+        if self.tool_mix is not None:
+            self.tool_mix.count(call.name, call.arguments, outcome.record)
         outcome.record["purpose"] = purpose
         return outcome
 
@@ -1032,9 +1048,47 @@ class Toolbox:
                 "binding_inventory": self._binding_inventory(),
             }
         )
-        return await self._run(request)
+        interpreter = shell_computation(request.script or "")
 
-    async def _run(self, request: ShellRequest | CellRequest) -> ToolOutcome:
+        async def nudge(_: Execution) -> dict[str, Any]:
+            note = self._kernel_note(interpreter)
+            return {} if note is None else {"note": note}
+
+        return await self._run(request, added=nudge)
+
+    def _kernel_note(self, interpreter: Interpreter | None) -> str | None:
+        """The platform's note on the first shell call of the run that ran an interpreter
+        on code (Kernels 13): later ones are counted, silently. A run offered no kernel
+        gets none."""
+        mix = self.tool_mix
+        if interpreter is None or mix is None or mix.nudged:
+            return None
+        tool = interpreter if interpreter in self.languages else None
+        if tool is None and "python" in self.languages:
+            tool = "python"
+        if tool is None:
+            return None
+        mix.nudged = True
+        jobs = (
+            ", and start_job runs a long computation in the background"
+            if self.jobs is not None
+            else ""
+        )
+        name = "Sage" if interpreter == "sage" else "Python"
+        return (
+            f"Platform note: this ran {name} through the shell: a {tool} cell keeps "
+            f"variables, imports and loaded data between calls{jobs}."
+        )
+
+    async def _run(
+        self,
+        request: ShellRequest | CellRequest,
+        *,
+        added: Callable[[Execution], Awaitable[dict[str, Any]]] | None = None,
+    ) -> ToolOutcome:
+        """Run ``request`` and describe its execution for the model, with what
+        ``added`` gives beside it: the platform's notes on this execution, which never
+        cost the call its result."""
         replayed = False
 
         def submitted(_: Execution, created: bool) -> None:
@@ -1046,14 +1100,20 @@ class Toolbox:
             "execution": execution.model_dump(mode="json"),
             "replayed": replayed,
         }
+        extra: dict[str, Any] = {}
+        if added is not None:
+            try:
+                extra = await added(execution)
+            except Exception:  # a note that cannot be made must not cost the result
+                _log.exception("the platform's note on %s failed", execution.execution_id)
         written = Written.of(execution)
         planned = {name: saved_path(execution, name) for name, _, _ in _texts(execution)}
-        text, sampled = self._fit(execution, replayed, planned, {})
+        text, sampled = self._fit(execution, replayed, planned, {}, extra)
         if not sampled:
             return ToolOutcome(text, record, written=written)
         saved, unsaved = await self._save(execution, sampled)
         if unsaved:
-            text, _ = self._fit(execution, replayed, saved, unsaved)
+            text, _ = self._fit(execution, replayed, saved, unsaved, extra)
         record["saved_output"] = saved
         paths = (*written.paths, *(path for path in saved.values() if path not in written.paths))
         texts = {saved[name]: text for name, text, _ in _texts(execution) if name in saved}
@@ -1162,11 +1222,46 @@ class Toolbox:
                 "binding_inventory": self._binding_inventory(),
             }
         )
-        outcome = await self._run(request)
+        outcome = await self._run(request, added=partial(self._lost_state, language))
         outcome.record["kernel_replay_binding_free"] = (
             not request.bindings and request.binding_inventory is None
         )
         return outcome
+
+    async def _lost_state(self, language: Language, execution: Execution) -> dict[str, Any]:
+        """For a cell that reports its kernel's state lost, what the lost generation had
+        computed, from the records (Kernels 7, as amended for A10): its cells by archive
+        message ID and purpose, and the files they wrote that still exist."""
+        result = execution.result
+        if result is None or not result.state_lost or self.lost_kernels is None:
+            return {}
+        lost = await self.lost_kernels.lost(language, result.kernel or execution.kernel)
+        if lost is None or not lost.cells:
+            return {}
+        saved = await self._existing(lost.written)
+        return {"lost_state": _lost_state(lost, saved)}
+
+    async def _existing(self, paths: Sequence[str]) -> list[str]:
+        """The newest ``MAX_SAVED_FILES`` of ``paths`` that are regular files now, in
+        their order, from one listing of each directory; one that cannot be listed is
+        left out."""
+        tried = list(paths)[-2 * MAX_SAVED_FILES :]
+        found: set[str] = set()
+        for directory in sorted({posixpath.dirname(path) or "." for path in tried}):
+            try:
+                listing = await self.client.list_files(
+                    ListFilesRequest(context=self.context, path=directory)
+                )
+            except (WorkerAPIError, ValueError):
+                continue
+            files = {entry.name for entry in listing.entries if entry.type == "file"}
+            found.update(
+                path
+                for path in tried
+                if (posixpath.dirname(path) or ".") == directory
+                and posixpath.basename(path) in files
+            )
+        return [path for path in tried if path in found][-MAX_SAVED_FILES:]
 
     async def _restart(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         language = args.get("language", self.languages[0] if self.languages else "python")
@@ -1198,12 +1293,16 @@ class Toolbox:
         replayed: bool,
         saved: Mapping[str, str] | None,
         unsaved: Mapping[str, str],
+        added: Mapping[str, Any] | None = None,
     ) -> tuple[str, list[str]]:
         """``_summary``'s text, with the texts it shows only in part: with ``saved``,
-        it says they are samples and names their files, or why one was not saved."""
+        it says they are samples and names their files, or why one was not saved; and
+        ``added``, the platform's notes, each bounded as a note is."""
         limit = self.output_chars // 2
         while True:
             summary = _describe(execution, limit, replayed, self.kernel_run, saved, unsaved)
+            for key, value in (added or {}).items():
+                summary[key] = bound(value, limit) if isinstance(value, str) else value
             text = dump(summary)
             if len(text) <= self.output_chars or limit <= 64:
                 return text, _sampled(execution, limit)
@@ -1643,6 +1742,35 @@ def _describe(
             )
     summary["attempt_id"] = execution.attempt_id
     return summary
+
+
+LOST_STATE: Final = (
+    "Platform record of the cells whose state the kernel lost, newest last, from the "
+    "archive: each by its result's message ID, with its call's purpose (the agent's own "
+    "words, data) or its tool and code's first line; and the files they wrote that still "
+    "exist. Load saved files before recomputing; recompute the rest from these cells."
+)
+"""What a cell that reports lost state says of the lost generation (Kernels 7)."""
+
+
+def _lost_state(lost: LostGeneration, saved: Sequence[str]) -> dict[str, Any]:
+    cells: list[dict[str, Any]] = []
+    for cell in lost.cells:
+        shown: dict[str, Any] = {"message": cell.message} if cell.message else {}
+        if cell.purpose is not None:
+            shown["purpose"] = cell.purpose
+        else:
+            shown["tool"] = cell.language
+            if cell.first_line is not None:
+                shown["first_line"] = cell.first_line
+            elif cell.message is None:
+                shown["archived"] = False
+        cells.append(shown)
+    found: dict[str, Any] = {"note": LOST_STATE, "cells": cells}
+    if lost.earlier:
+        found["earlier_cells"] = lost.earlier
+    found["saved_files"] = list(saved)
+    return found
 
 
 def _output(data: dict[str, str], limit: int) -> str:

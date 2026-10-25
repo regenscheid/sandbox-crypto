@@ -26,6 +26,7 @@ const run = (name: string, state: TreeRun['state']): TreeRun => ({
   kept: true,
   alias: null,
   limits: null,
+  tool_mix: null,
 });
 
 it('offers each agent its context management, read for that run', async () => {

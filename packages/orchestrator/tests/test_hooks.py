@@ -249,7 +249,8 @@ async def test_hooks_share_response_rounds_and_the_last_answer_stands() -> None:
     assert transcript.answer == "a"
     assert (transcript.response_rounds, first.accepted, second.accepted) == (2, 1, 1)
     assert transcript.delivered_ids("first") == {"first-1", "first-2"}
-    assert transcript.summaries == {"first": {"closings": 3}, "second": {"closings": 3}}
+    hooks = {name: found for name, found in transcript.summaries.items() if name != "tool_mix"}
+    assert hooks == {"first": {"closings": 3}, "second": {"closings": 3}}
 
 
 class Vetoes(TurnHook):

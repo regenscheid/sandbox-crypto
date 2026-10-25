@@ -67,7 +67,7 @@ from .context.preparation import FoldLimits, HistoryScope, PreparedContext, prep
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
 from .continuity.hook import WorkHook
-from .continuity.kernels import KernelJournal
+from .continuity.kernels import KernelJournal, LostKernels
 from .continuity.models import IntentModel, ModelIntents
 from .continuity.records import Ownership, WorkRecords, authority
 from .continuity.resources import ResourceRequests
@@ -1011,6 +1011,12 @@ class Harness:
                                 )
                                 hook.record = journal.record
                                 hook.record_tool = journal.record_tool
+                                toolbox.lost_kernels = LostKernels(
+                                    work.records.control,
+                                    owner.project,
+                                    owner.session,
+                                    toolbox.kernel_run,
+                                )
                                 hook.retain = lambda kernel: threaded(
                                     work.records.retains_kernel,
                                     owner.project,

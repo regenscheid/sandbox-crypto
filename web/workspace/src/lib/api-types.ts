@@ -2464,6 +2464,7 @@ export interface TreeRun {
   kept: boolean;
   alias: string | null;
   limits: Record<string, JsonValue> | null;
+  tool_mix: Record<string, JsonValue> | null;
 }
 
 export interface UploadPage {

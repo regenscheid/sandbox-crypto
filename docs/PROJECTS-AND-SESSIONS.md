@@ -95,12 +95,14 @@ sandbox-science-harness run --state-dir state --project p1 --session c --dedicat
 sandbox-science-harness session open --state-dir state --project p1 --session d [--dedicated]
 sandbox-science-harness session close --state-dir state --project p1 --session a --worker ... --token-file ...
 sandbox-science-harness session reads --state-dir state --project p1 --session a
+sandbox-science-harness tool-mix --state-dir state [--project p1] [--session a] [--json]
 sandbox-science-harness project revise --state-dir state --project p1 --policy sha256:... --worker ... --token-file ...
 ```
 
 - **Running a session.** A session runs in the default environment, with its own kernels and workspace. With `--dedicated`, a new session gets an environment of its own, `<project>-<session>-<tag>`, from the same base profile. A session keeps the mode it started with.
 - **Environments.** Before a session runs, the harness has the worker create its environment, or revise it to the project's current policy revision (D73). A worker that does not manage environments, such as the local one, takes the ID as it is.
 - **A session's read register** (`session reads`) prints, as JSON, how much of each source the session's tool calls read, observed from their results: `whole`, `partial` with the pages or ranges covered, `abstract_only`, `preview_only` or `unknown`, and the share of reads no descriptor could place ([context management](specs/context-management.md), CM-12).
+- **A tool mix** (`tool-mix`) prints, per session and in total, how the kept runs computed: kernel cells by language, shell calls and those that ran Python or Sage on code, background jobs, kernel restarts and the cells that found their kernel's state lost, with `--json` as JSON. It reads the control store's runs and tool records through a read-only connection, with no service running, and classifies their shell scripts as the live summary does, so runs recorded before the summary existed are counted too, such as a copy of an archived state directory ([tools](specs/tools.md), Kernels 13).
 - **Opening a session** without a run (`session open`) records it, so the [workspace](WORKSPACE.md#chat) can chat in it; its first run has the worker create its environment. A session already open is left as it is, and a closed one opens again.
 - **Closing a session** stops its kernels; running it again opens it again. Files stay.
 - **One run at a time.** A run with `--state-dir` holds its session's run lease from when its session is resolved until its record is saved; another run of the session, from the command line or the run service (`serve`), is refused while it does (`busy`), and the run service waits for it. A lease its holder stops renewing expires after a minute. The run delivers the user's chat messages to the session and writes its events as it goes ([workspace](WORKSPACE.md#chat)).

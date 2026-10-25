@@ -52,6 +52,7 @@ from .prompts import Section, assemble, schema_json
 from .purpose import GUIDANCE as PURPOSE_GUIDANCE
 from .purpose import without
 from .stock_prompts import select_template
+from .tool_mix import ToolMix
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
 from .wraps import POLLS as POLLS
@@ -971,6 +972,10 @@ async def run_task(
                 transcript.summaries[hook.name] = summary
         if toolbox.connectors is not None:
             transcript.summaries["connectors"] = toolbox.connectors.summary()
+        # Counted where the calls run: a confined run's host counts them (Kernels 13).
+        mix: ToolMix | None = getattr(toolbox, "tool_mix", None)
+        if mix is not None:
+            transcript.summaries["tool_mix"] = mix.summary()
         if toolbox.image_offer is not None:
             transcript.summaries["view_image"] = toolbox.image_offer
         if toolbox.skills is not None:

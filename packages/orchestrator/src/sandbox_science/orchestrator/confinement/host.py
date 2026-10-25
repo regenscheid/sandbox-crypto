@@ -747,6 +747,9 @@ class HostLoops:
                 raise TransportError("conflict", "runtime returned no terminal receipt")
             run = prepared.sync(result.state)
             run.summaries.update(result.summaries)
+            if toolbox.tool_mix is not None:
+                # The calls ran here, through this toolbox: its counts are the run's.
+                run.summaries["tool_mix"] = toolbox.tool_mix.summary()
             for hook in hooks:
                 if (summary := hook.summary()) is not None:
                     run.summaries[hook.name] = summary

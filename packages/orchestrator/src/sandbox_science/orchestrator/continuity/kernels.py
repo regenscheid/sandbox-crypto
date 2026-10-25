@@ -7,13 +7,15 @@ import ast
 import hashlib
 import json
 import sqlite3
-from typing import Any, Literal, cast
+from dataclasses import dataclass
+from typing import Any, Final, Literal, cast
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
     Execution,
     ExecutionContext,
     ExecutionState,
+    KernelInfo,
     KernelObservation,
     new_id,
 )
@@ -642,3 +644,152 @@ class KernelJournal:
             if row is None
             else {(k["language"], k["kernel_id"], k["generation"]) for k in json.loads(row[0])}
         )
+
+
+MAX_LOST_CELLS: Final = 20
+"""The cells of a lost kernel generation a cell's result lists, the newest (Kernels 7)."""
+MAX_SAVED_FILES: Final = 20
+"""The files those cells wrote that the result lists, the newest."""
+_LINE_CHARS: Final = 120
+_PATH_CHARS: Final = 256
+
+
+@dataclass(frozen=True)
+class LostCell:
+    """One cell of a lost generation, as the records keep it: its archived result's
+    message ID and its call's purpose, or, for a call without a purpose, its tool and its
+    code's first line. A cell the archive does not hold (a replayed one) has neither."""
+
+    language: str
+    count: int | None
+    message: str | None = None
+    purpose: str | None = None
+    first_line: str | None = None
+
+
+@dataclass(frozen=True)
+class LostGeneration:
+    """The newest ``MAX_LOST_CELLS`` cells of a lost generation, oldest first, how many
+    earlier ones are left out, and the paths they wrote and did not delete since, the
+    most recently written last."""
+
+    cells: tuple[LostCell, ...]
+    earlier: int
+    written: tuple[str, ...]
+
+
+class LostKernels:
+    """What a kernel that lost its state had computed, read from the records: the kernel
+    cell observations ``KernelJournal`` keeps after each cell, and the archive's tool
+    records and purposes. Nothing here reads the model's context or writes."""
+
+    def __init__(self, control: ControlStore, project: str, session: str, scope: str | None):
+        self.control, self.project, self.session, self.scope = control, project, session, scope
+
+    async def lost(self, language: str, current: KernelInfo | None) -> LostGeneration | None:
+        """The generation of ``language``'s kernel (the session's, or the scope's run's)
+        whose cells the records keep last, other than ``current``: the one whose state a
+        cell's ``state_lost`` reports gone. ``None`` when the records hold none."""
+        return await threaded(self._lost, language, current)
+
+    def _lost(self, language: str, current: KernelInfo | None) -> LostGeneration | None:
+        with self.control.read() as tx:
+            db = tx.sql
+            found = db.execute(
+                "SELECT json_extract(detail,'$.kernel_id'),json_extract(detail,'$.generation') "
+                "FROM research_observations WHERE project=? AND session=? AND kind='kernel_cell' "
+                "AND json_extract(detail,'$.run') IS ? AND json_extract(detail,'$.language')=? "
+                "AND NOT (json_extract(detail,'$.kernel_id') IS ? "
+                "AND json_extract(detail,'$.generation') IS ?) ORDER BY observed DESC,rowid DESC "
+                "LIMIT 1",
+                (
+                    self.project,
+                    self.session,
+                    self.scope,
+                    language,
+                    current.kernel_id if current is not None else None,
+                    current.generation if current is not None else None,
+                ),
+            ).fetchone()
+            if found is None:
+                return None
+            rows = db.execute(
+                "SELECT identity,json_extract(detail,'$.count') FROM research_observations "
+                "WHERE project=? AND session=? AND kind='kernel_cell' "
+                "AND json_extract(detail,'$.run') IS ? AND json_extract(detail,'$.language')=? "
+                "AND json_extract(detail,'$.kernel_id')=? "
+                "AND json_extract(detail,'$.generation')=? "
+                "ORDER BY json_extract(detail,'$.count'),rowid",
+                (self.project, self.session, self.scope, language, *found),
+            ).fetchall()
+            cells: list[LostCell] = []
+            written: dict[str, None] = {}
+            for operation, count in rows:
+                record = db.execute(
+                    "SELECT t.message_id,m.purpose,json_extract(t.record,'$.tool'),"
+                    "substr(CASE WHEN json_valid(json_extract(t.record,'$.arguments')) THEN "
+                    "json_extract(json_extract(t.record,'$.arguments'),'$.code') END,1,4096),"
+                    "json_extract(t.record,'$.recorded_files.files'),"
+                    "json_extract(t.record,'$.execution.result.written_files'),"
+                    "json_extract(t.record,'$.execution.result.deleted_files') "
+                    "FROM archive_tool_records t JOIN archive_messages m "
+                    "ON m.project=t.project AND m.message_id=t.message_id "
+                    "WHERE t.project=? AND t.session=? AND t.operation_id=? LIMIT 1",
+                    (self.project, self.session, operation),
+                ).fetchone()
+                if record is None:
+                    cells.append(LostCell(language, count))
+                    continue
+                message, purpose, tool, code, recorded, wrote, deleted = record
+                cells.append(
+                    LostCell(
+                        str(tool or language),
+                        count,
+                        message,
+                        purpose,
+                        None if purpose is not None else _first_line(code),
+                    )
+                )
+                _changed(written, recorded, wrote, deleted)
+        shown = tuple(cells[-MAX_LOST_CELLS:])
+        return LostGeneration(shown, len(cells) - len(shown), tuple(written))
+
+
+def _first_line(code: object) -> str:
+    lines = [line.strip() for line in str(code or "").splitlines() if line.strip()]
+    first = lines[0] if lines else ""
+    return first if len(first) <= _LINE_CHARS else first[: _LINE_CHARS - 1] + "…"
+
+
+def _changed(written: dict[str, None], recorded: object, wrote: object, deleted: object) -> None:
+    """Apply one call's files to ``written``, in order: the recorder's revisions and
+    tombstones when it kept them, otherwise what the worker reported."""
+    files = _json_list(recorded)
+    if files:
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            entry = cast(dict[str, object], item)
+            path = entry.get("path")
+            if isinstance(path, str) and len(path) <= _PATH_CHARS:
+                written.pop(path, None)
+                if entry.get("deleted") is not True:
+                    written[path] = None
+        return
+    for path in _json_list(wrote):
+        if isinstance(path, str) and len(path) <= _PATH_CHARS:
+            written.pop(path, None)
+            written[path] = None
+    for path in _json_list(deleted):
+        if isinstance(path, str):
+            written.pop(path, None)
+
+
+def _json_list(value: object) -> list[object]:
+    if not isinstance(value, str):
+        return []
+    try:
+        found: object = json.loads(value)
+    except (ValueError, RecursionError):
+        return []
+    return cast(list[object], found) if isinstance(found, list) else []

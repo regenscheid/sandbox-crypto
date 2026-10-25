@@ -173,6 +173,7 @@ class RemoteToolbox(Toolbox):
         self.skills = cast(SkillTool, RemoteSkills(given.toolbox)) if given.toolbox.skills else None
         self.connectors = None
         self.image_offer = given.toolbox.image_offer
+        self.tool_mix = None  # the host's toolbox runs the calls and counts them
 
     @property
     def specs(self) -> tuple[ToolSpec, ...]:

@@ -24,6 +24,7 @@ sandbox-science-harness document suggestions DOC (on | off) --state-dir state --
 sandbox-science-harness document decide DOC PATCH (accept [--base N] | reject) \\
     --state-dir state --project p1
 sandbox-science-harness document delete DOC --reason "…" --state-dir state --project p1
+sandbox-science-harness tool-mix --state-dir state [--project p1] [--session s1] [--json]
 ```
 
 ``run`` builds a ``Harness`` (harness.py) from its arguments: the worker client, the
@@ -65,6 +66,8 @@ from .cli_classify import classify_draft
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
 from .cli_skills import add_parser as add_skills_parser
 from .cli_skills import embedding_alias, skills
+from .cli_tool_mix import add_parser as add_tool_mix_parser
+from .cli_tool_mix import tool_mix
 from .connectors import ProxyClient, check_proxy
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .context.history import CEILING
@@ -832,9 +835,12 @@ def main(argv: list[str] | None = None) -> int:
     add_parsers(commands)
     add_skills_parser(commands)
     add_classify_parser(commands)
+    add_tool_mix_parser(commands)
     args = parser.parse_args(argv)
     if args.command == "classify-draft":
         return classify_draft(args)
+    if args.command == "tool-mix":
+        return tool_mix(args)
     if args.command == "skills":
         if args.action == "import" and args.archive is not None and args.ref is not None:
             parser.error("--ref goes with --git")

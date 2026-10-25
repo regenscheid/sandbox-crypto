@@ -34,6 +34,7 @@ const run = (name: string, state: TreeRun['state']): TreeRun => ({
   kept: true,
   alias: null,
   limits: null,
+  tool_mix: null,
 });
 const tree = (): RunTree => ({
   runs: [run('run-old', 'ended'), run('run-live', 'running')],

@@ -35,6 +35,7 @@ const run = (name: string, fields: Partial<TreeRun> = {}): TreeRun => ({
   kept: true,
   alias: null,
   limits: null,
+  tool_mix: null,
   ...fields,
 });
 const tree: RunTree = {
