@@ -127,7 +127,7 @@ describe('a finding on an entry', () => {
   const finding: EntryFinding = {
     finding_id: 'finding-1',
     session: 's/1',
-    status: 'claimed_fixed',
+    status: 'fixed',
     severity: 'fail',
     category: 'unsupported_claim',
     origin: 'review',
@@ -136,17 +136,15 @@ describe('a finding on an entry', () => {
   };
 
   it('reads its severity, category, status, field and revision', () => {
-    expect(findingText(finding)).toBe(
-      'fail · unsupported claim · claimed fixed, on its statement at r4',
-    );
+    expect(findingText(finding)).toBe('fail · unsupported claim · fixed, on its statement at r4');
     expect(findingText({ ...finding, field: null, revision: null })).toBe(
-      'fail · unsupported claim · claimed fixed',
+      'fail · unsupported claim · fixed',
     );
   });
 
   it("names a math finding's revision as the statement's text revision", () => {
     expect(findingText({ ...finding, category: 'math' })).toBe(
-      "fail · math · claimed fixed, on its statement at the statement's text revision 4",
+      "fail · math · fixed, on its statement at the statement's text revision 4",
     );
   });
 

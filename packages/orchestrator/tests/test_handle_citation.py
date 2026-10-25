@@ -7,7 +7,8 @@ context-management.md, decided question 12).
 
 A. The main agent's and a delegated task's prompts ask for the handle, in fixed text.
 B. The reviewer's rubric asks for a ``handle_citation`` finding, which is a ``note``: it
-   is not counted, offered, confirmed, rebutted or challenged, and does not stop a pass.
+   is not counted, offered, re-checked, fixed or dismissed by the author, never reaches
+   its re-flag bound, and does not stop a pass.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ def advisory(reviews: Any, review: str, **overrides: Any) -> dict[str, Any]:
 
 
 def test_the_main_and_task_prompts_ask_for_the_handle_in_fixed_text() -> None:
-    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-16", "sandbox-delegated-task-14")
+    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-17", "sandbox-delegated-task-14")
 
     assert SYSTEM_PROMPT.count(CITE) == 1
     assert "relies on a ledger entry, or declines or reopens something because of one" in (
@@ -134,13 +135,13 @@ def test_it_is_not_counted_offered_or_a_reason_to_hold(store) -> None:
     assert [n["statement"] for n in offered] == ["A plain note."]
 
 
-def test_it_takes_no_fix_or_rebuttal_so_it_is_never_challenged(store) -> None:
+def test_it_takes_no_fix_or_dismissal_from_the_author_and_is_never_rechecked(store) -> None:
     reviews, _, _ = store
     claim(reviews)
     review = dispatch(reviews)
     found = advisory(reviews, review)
-    for action in ("fix", "rebut"):
-        with pytest.raises(DocumentError, match="needs no fix or rebuttal"):
+    for action in ("fix", "dismiss"):
+        with pytest.raises(DocumentError, match="needs no fix or dismissal"):
             Findings(reviews).respond(
                 "p",
                 "s",
@@ -168,10 +169,11 @@ def test_it_takes_no_fix_or_rebuttal_so_it_is_never_challenged(store) -> None:
         },
         USER,
     )
-    assert Findings(reviews).get("p", "s", found["finding_id"])["status"] == "withdrawn"
+    dismissed = Findings(reviews).get("p", "s", found["finding_id"])
+    assert (dismissed["status"], dismissed["dismissal"]["by"]) == ("dismissed", "user")
 
 
-def test_repeated_flags_never_make_it_unaddressed(store) -> None:
+def test_repeated_flags_never_put_it_at_its_bound(store) -> None:
     reviews, _, _ = store
     reviews.configure("p", "s", ReviewConfig(max_reflags=1))
     claim(reviews)
@@ -179,11 +181,13 @@ def test_repeated_flags_never_make_it_unaddressed(store) -> None:
     first = advisory(reviews, review)
     again = advisory(reviews, review, operation_id="cite-2", statement="Still no handle named.")
     assert again["finding_id"] == first["finding_id"]
-    assert Findings(reviews).get("p", "s", first["finding_id"])["status"] == "open"
-    # An ordinary finding at the same limit does become unaddressed.
+    current = Findings(reviews).get("p", "s", first["finding_id"])
+    assert (current["status"], current["at_bound"]) == ("open", False)
+    # An ordinary finding at the same limit stays open at its re-flag bound.
     other = raise_finding(reviews, review, operation_id="other-1")
     raise_finding(reviews, review, operation_id="other-2", statement="Still wrong.")
-    assert Findings(reviews).get("p", "s", other["finding_id"])["status"] == "unaddressed"
+    bounded = Findings(reviews).get("p", "s", other["finding_id"])
+    assert (bounded["status"], bounded["at_bound"]) == ("open", True)
 
 
 def suggestion_call(evidence: str, operation: str = "cite-1") -> dict[str, Any]:

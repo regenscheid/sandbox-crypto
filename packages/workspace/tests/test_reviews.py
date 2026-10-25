@@ -97,14 +97,14 @@ async def test_pinned_scope_reads_and_origin_guard(client, review_data) -> None:
     origin = str(client.make_url("/")).rstrip("/")
     result = await client.post(base + f"/findings/{finding}", json=body, headers={"Origin": origin})
     assert result.status == 200
-    assert (await result.json())["status"] == "withdrawn"
+    assert (await result.json())["status"] == "dismissed"
     replay = await client.post(base + f"/findings/{finding}", json=body, headers={"Origin": origin})
     assert (await replay.json())["replayed"]
     history = await (await client.get(base + f"/findings/{finding}")).json()
     assert history["history"][-1]["actor"] == "user:user"
     stale = await client.post(
         base + f"/findings/{finding}",
-        json={**body, "action": "reopen", "operation_id": "stale"},
+        json={**body, "action": "set", "status": "open", "operation_id": "stale"},
         headers={"Origin": origin},
     )
     assert stale.status == 409
@@ -270,7 +270,7 @@ async def test_main_response_body_read_is_scoped_readonly_and_preserves_original
         {
             "finding": finding,
             "expected": 1,
-            "action": "rebut",
+            "action": "dismiss",
             "explanation": r"Original $\unknown{x}$",
             "operation_id": "original",
         },
@@ -332,7 +332,7 @@ async def test_explanation_check_evidence_and_queue_never_cross_session(
         {
             "finding": finding,
             "expected": 1,
-            "action": "rebut",
+            "action": "dismiss",
             "explanation": r"Private $\unknown{x}$",
             "operation_id": "private",
         },
@@ -350,3 +350,66 @@ async def test_explanation_check_evidence_and_queue_never_cross_session(
     listed = await (await client.get(other + "/math-checks")).json()
     assert listed["checks"] == []
     assert listed["queue"] == []
+
+
+async def test_the_api_serves_each_status_with_its_history_dismissal_and_successor(
+    client, review_data
+) -> None:
+    """The workspace serves a finding's five statuses (CR-41), its attributed history
+    (CR-45), the dismissal and the successor link (CR-46, CR-47), and refuses the
+    earlier actions."""
+    _, _, finding = review_data
+    base = "/api/v0/projects/p1/sessions/a"
+    origin = {"Origin": str(client.make_url("/")).rstrip("/")}
+    first = await (await client.get(base + f"/findings/{finding}")).json()
+    assert first["status"] == "open"
+    assert (first["latest_recheck"], first["dismissal"], first["superseded_by"]) == (
+        None,
+        None,
+        None,
+    )
+    assert first["recheck"] is None
+    assert first["at_bound"] is False
+    assert first["history"][0]["actor_kind"] == "controller"
+    revision = first["revision"]
+    for action in ("rebut", "confirm", "reopen"):
+        refused = await client.post(
+            base + f"/findings/{finding}",
+            json={"finding": finding, "expected": revision, "action": action,
+                  "explanation": "Old.", "operation_id": f"old-{action}"},
+            headers=origin,
+        )  # fmt: skip
+        assert refused.status == 400
+    for status in ("fixed", "stale", "superseded", "open", "dismissed"):
+        body: dict[str, Any] = {
+            "finding": finding,
+            "expected": revision,
+            "action": "set",
+            "status": status,
+            "explanation": f"The user sets it {status}.",
+            "operation_id": f"set-{status}",
+        }
+        if status == "superseded":
+            body["successor"] = finding.replace(finding[-1], "0" if finding[-1] != "0" else "1")
+            missing = await client.post(base + f"/findings/{finding}", json=body, headers=origin)
+            assert missing.status == 404
+            del body["successor"]
+        result = await client.post(base + f"/findings/{finding}", json=body, headers=origin)
+        assert result.status == 200, await result.text()
+        assert (await result.json())["status"] == status
+        revision = (await result.json())["revision"]
+    found = await (await client.get(base + f"/findings/{finding}")).json()
+    assert found["status"] == "dismissed"
+    assert found["dismissal"]["by"] == "user"
+    assert found["dismissal"]["reason"] == "The user sets it dismissed."
+    assert [h["status"] for h in found["history"]] == [
+        "open",
+        "fixed",
+        "stale",
+        "superseded",
+        "open",
+        "dismissed",
+    ]
+    assert {h["actor_kind"] for h in found["history"][1:]} == {"user"}
+    listed = await (await client.get(base + "/findings")).json()
+    assert listed["findings"][0]["status"] == "dismissed"

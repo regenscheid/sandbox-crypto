@@ -30,16 +30,25 @@ tool schemas and request envelope. The runner checks this before paid dispatch.
 ReviewOutcome = Literal[
     "running", "passed", "findings", "inconclusive", "capped", "failed", "dropped"
 ]
-FindingStatus = Literal[
+FindingStatus = Literal["open", "fixed", "dismissed", "superseded", "stale"]
+"""A finding's status (CR-41): ``open`` until settled; ``fixed`` on a re-check's
+``resolved``, a math check's pass or the user's word; ``dismissed`` by the main agent or
+the user, with a reason; ``superseded`` by a later review's finding, which it links to;
+``stale`` when what it reviewed was replaced and no re-check ran in its session."""
+FINDING_STATUSES: Final[tuple[FindingStatus, ...]] = (
     "open",
-    "claimed fixed",
-    "confirmed fixed",
-    "unaddressed",
+    "fixed",
+    "dismissed",
     "superseded",
-    "inconclusive",
-    "withdrawn",
-    "challenged",
-]
+    "stale",
+)
+RecheckAnswer = Literal["resolved", "unresolved", "inconclusive"]
+"""A re-check's answer (CR-42): the reviewer's ``resolved`` or ``unresolved``, or the
+platform's ``inconclusive`` when the re-check could not decide."""
+RECHECK_ATTEMPTS: Final = 3
+"""The dispatches a queued re-check is tried at before it waits for the user (CR-42)."""
+DISMISSAL_CHARACTERS: Final = 2000
+"""The longest reason the main agent may give for a dismissal (CR-43)."""
 Category = Literal[
     "missing_action",
     "contradicting_value",
@@ -62,8 +71,8 @@ Severity = Literal["fail", "warn", "note"]
 ADVISORY_CATEGORIES: Final = ("handle_citation",)
 """Categories whose findings only suggest (the owner, 2026-10-16; CR-18 as amended). They
 are always severity ``note``; they are not counted among the session's unresolved
-findings, never reach the author as a notice or an interruption, are never confirmed,
-rebutted or challenged, and hold nothing."""
+findings, never reach the author as a notice or an interruption, are never re-checked,
+fixed by the author or dismissed by the author, and hold nothing."""
 ReviewID = Annotated[str, Field(pattern=r"^rev-[0-9a-f]{24}$")]
 EvidenceID = Annotated[str, Field(pattern=r"^ev-[0-9a-f]{24}$")]
 FindingID = Annotated[str, Field(pattern=r"^finding-[0-9a-f]{24}$")]
@@ -131,10 +140,24 @@ class FindingInput(Contract):
 
 
 class FindingResponse(Contract):
+    """A response to a finding (CR-22, CR-41, CR-43). ``fix`` names what addresses it and
+    queues its re-check; ``dismiss`` sets it aside with a reason; ``set``, the user's
+    alone, gives it any status with a reason, and for ``superseded`` optionally the
+    finding that replaces it."""
+
     finding: FindingID
     expected: int = Field(ge=1, le=999999999, strict=True)
-    action: Literal["fix", "rebut", "confirm", "dismiss", "reopen"]
+    action: Literal["fix", "dismiss", "set"]
     explanation: str = Field(min_length=1, max_length=8192)
+    status: FindingStatus | None = None
+    """The status a ``set`` gives the finding."""
+    successor: FindingID | None = None
+    """For a ``set`` to ``superseded``: the finding that replaces it, if any."""
+    messages: tuple[Annotated[str, Field(pattern=r"^msg-[0-9a-f]{16}$")], ...] = Field(
+        default=(), max_length=8
+    )
+    """For a ``fix`` of a finding anchored only to messages: the later archive messages
+    that correct it (CR-42)."""
     evidence: tuple[EvidenceAnchor, ...] = Field(default=(), max_length=8)
     # New document revisions are validated and pinned before claiming a fix.
     revisions: tuple[tuple[DocumentID, RevisionNumber], ...] = Field(default=(), max_length=16)
@@ -147,9 +170,13 @@ class FindingResponse(Contract):
 
 
 class ConfirmationInput(Contract):
+    """A reviewer's decision on a finding its snapshot holds: a re-check's answer,
+    ``resolved`` or ``unresolved`` with evidence anchors in the new revision or message
+    (CR-42), or the acceptance or rejection of the author's dismissal (CR-43)."""
+
     finding: FindingID
     expected: int = Field(ge=1, le=999999999, strict=True)
-    decision: Literal["confirm", "reject", "inconclusive", "accept_rebuttal", "reject_rebuttal"]
+    decision: Literal["resolved", "unresolved", "accept_dismissal", "reject_dismissal"]
     explanation: str = Field(min_length=1, max_length=8192)
     anchors: tuple[EvidenceAnchor, ...] = Field(min_length=1, max_length=8)
     operation_id: OperationID

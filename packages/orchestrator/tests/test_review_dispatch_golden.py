@@ -13,7 +13,10 @@ context (lab 42's B5), ``sandbox-consistency-6`` to take earlier runs' actions a
 context, ``sandbox-consistency-7`` to know that a rejected rebuttal with evidence is a
 challenge, ``sandbox-consistency-8`` to suggest the handle of a ledger entry an answer
 relies on without naming it, and ``sandbox-consistency-9`` to check cryptographic claims
-from their form; a change to any of them changes what a reviewer sees."""
+from their form; a change to any of them changes what a reviewer sees. The finding
+lifecycle (CR-40 to CR-47) changed them once more without a rubric: a copied finding
+carries its queued re-check and the author's dismissal, a fix leaves it ``open``, and the
+run record counts the dismissals the review rejected."""
 
 from __future__ import annotations
 
@@ -36,9 +39,9 @@ from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "4cef6cc46c1308ee44b658f14a491c445d6c0ea8a22d64231147866b1cd4098b",
-    "confirmation": "6ae15307f7227483d1e32f4ec987b6c1b07d0fa2b06041efa6f047dc65872478",
-    "fallback": "529721381219fc0076c10fd74d967885b339dfe42d60515afe6e05a88ea71bbe",
+    "author": "544ceec45a0e01c3a735f3926f75f47749a40877c8ab25c87ecd9866507461d7",
+    "confirmation": "10eb02d3300efad5c1fa3740336eaca6d3916ced75669222b2c8e9ae5c2b85d1",
+    "fallback": "e05fa88e5686fe41dfbfa4d6cac48023e860aa46013015d7e02ea657a4fedb4e",
 }
 
 
@@ -86,7 +89,7 @@ def fingerprint(value: Any) -> str:
 
 
 def fixed_finding(reviews: ReviewStore, documents: Any, **overrides: Any) -> tuple[str, int]:
-    """A finding claimed fixed with a changed document revision and response evidence."""
+    """A finding whose fix names a changed document revision, which queues its re-check."""
     claim(reviews)
     original = dispatch(reviews)
     raised = raise_finding(reviews, original, **overrides)

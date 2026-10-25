@@ -2,7 +2,7 @@
 """Disposable pinned-artifact GUI/API acceptance; no worker or real model requests.
 
 create STATE requires a new directory. The marker contains an exact corrected artifact
-ref for the authenticated finding API. confirm STATE checks that exact claim using only
+ref for the authenticated finding API. confirm STATE re-checks that exact fix using only
 ScriptedModel and immutable control evidence. This proves plumbing, not model judgment.
 """
 
@@ -249,9 +249,12 @@ async def confirm(path: Path) -> None:
         inventory = ArtifactInventory(documents)
         reviews = ReviewStore(documents, artifacts=inventory)
         found = Findings(reviews).get(PROJECT, SESSION, marker["finding"])
-        if found["status"] != "claimed fixed" or found["history"][-1]["payload"].get(
-            "artifact_revisions"
-        ) != [marker["corrected"]]:
+        queued = found.get("recheck") or {}
+        if (
+            found["status"] != "open"
+            or queued.get("cause") != "fix"
+            or found["history"][-1]["payload"].get("artifact_revisions") != [marker["corrected"]]
+        ):
             raise ValueError(
                 "claim only the exact seeded corrected artifact through the finding API"
             )
@@ -288,7 +291,7 @@ async def confirm(path: Path) -> None:
                         "arguments": {
                             "finding": marker["finding"],
                             "expected": found["revision"],
-                            "decision": "confirm",
+                            "decision": "resolved",
                             "explanation": "Scripted fixture: exact16 to15; synthetic only.",
                             "anchors": [{"evidence": changed["evidence"]}],
                             "operation_id": "fixture-confirm",
@@ -315,7 +318,7 @@ async def confirm(path: Path) -> None:
         ended = reviews.run(PROJECT, SESSION, review)
         final = Findings(reviews).get(PROJECT, SESSION, marker["finding"])
         assert ended["state"] == "passed"
-        assert final["status"] == "confirmed fixed"
+        assert final["status"] == "fixed"
         with documents.control.read() as tx:
             db = tx.sql
             audited = {

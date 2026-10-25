@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.runner import READ_CHARACTERS, Read, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
@@ -473,7 +474,10 @@ async def test_feed_end_is_chronologically_complete_even_with_partial_evidence(s
             )
         )
     )
-    assert result["status"] == "inconclusive"
+    # A finding on missing evidence is open, and its first history record says so.
+    assert result["status"] == "open"
+    raised = Findings(reviews).get("p", "s", result["finding_id"])["history"][0]
+    assert raised["payload"]["missing_evidence"] is True
 
 
 @pytest.mark.asyncio

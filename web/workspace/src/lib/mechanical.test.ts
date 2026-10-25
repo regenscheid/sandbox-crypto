@@ -32,7 +32,7 @@ it('renders mechanical authority, exact evidence and retained stale USER respons
   findingDrafts.save('p:s:finding-mechanical', {
     expected: 3,
     explanation: 'Unsaved user explanation <script>',
-    action: 'rebut',
+    action: 'dismiss',
     references: 'doc-old:1',
   });
   const html = render(FindingCard, {

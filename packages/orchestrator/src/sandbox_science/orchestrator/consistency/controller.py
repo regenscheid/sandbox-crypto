@@ -32,11 +32,7 @@ from sandbox_science.orchestrator.hooks import (
 )
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
-from sandbox_science.orchestrator.notices import (
-    REVIEW_CHALLENGED,
-    REVIEW_COUNTS,
-    REVIEW_FINDINGS,
-)
+from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
 from sandbox_science.orchestrator.projects import recorded
 from sandbox_science.orchestrator.view_image import ImageViewer
 
@@ -47,7 +43,7 @@ from .delegated import observe_delegated
 from .executions import execution_projection
 from .findings import Findings
 from .ledger import ingest_ledger
-from .models import EvidenceAnchor, ReviewType
+from .models import DISMISSAL_CHARACTERS, FINDING_STATUSES, EvidenceAnchor, ReviewType
 from .notices import FindingNotices
 from .quotes import EPRINT_TOOL, PDF_TOOLS, eprint_record, mark_of, pdf_record
 from .rubric import CLASSIFIER_VERSION
@@ -60,8 +56,9 @@ if TYPE_CHECKING:
 AUTHOR_SPECS = (
     schema(
         "review_findings",
-        "List the session's unresolved consistency findings.",
-        {"after": {"type": "string"}},
+        "List the session's consistency findings by status: open by default, or fixed, "
+        "dismissed, superseded or stale.",
+        {"after": {"type": "string"}, "status": {"enum": list(FINDING_STATUSES)}},
         [],
     ),
     schema(
@@ -90,14 +87,16 @@ AUTHOR_SPECS = (
     schema(
         "review_respond",
         (
-            "Main agent only: claim a fix with explanation and changed "
-            "revision references, or rebut with evidence. Authors cannot "
-            "confirm their own fixes."
+            "Main agent only, on an open finding: fix names the revisions, or for a "
+            "finding on messages the later message, that address it and queues its "
+            "re-check, which alone makes it fixed; dismiss sets it aside with a reason of "
+            f"at most {DISMISSAL_CHARACTERS:,} characters, which the user and the next "
+            "review see."
         ),
         {
             "finding": {"type": "string"},
             "expected": {"type": "integer"},
-            "action": {"enum": ["fix", "rebut"]},
+            "action": {"enum": ["fix", "dismiss"]},
             "explanation": {"type": "string"},
             "evidence": {
                 "type": "array",
@@ -127,6 +126,13 @@ AUTHOR_SPECS = (
                 "maxItems": 16,
                 "description": "Changed ledger entry revisions: [entry handle or ID, revision]",
                 "items": {"type": "array"},
+            },
+            "messages": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "For a finding on messages: the later archive messages that "
+                "correct it, by their IDs (msg-...)",
+                "items": {"type": "string"},
             },
             "operation_id": {"type": "string"},
         },
@@ -494,7 +500,7 @@ class ReviewController:
             # No reviewer is configured: reviews are off, said once, not failed (lab 43's B6).
             await asyncio.to_thread(self.store.off, *self.scope, REVIEWS_OFF)
             return None
-        await asyncio.to_thread(self.findings.supersede, *self.scope)
+        await asyncio.to_thread(self.findings.queue_rechecks, *self.scope)
         review = await asyncio.to_thread(
             self.store.dispatch,
             *self.scope,
@@ -586,7 +592,7 @@ class ReviewController:
         label = classify(
             final_text,
             effects=effects or self.effects,
-            unresolved=bool(states.get("open") or states.get("claimed fixed")),
+            unresolved=bool(states.get("open")),
         )
         label["document_ingestion"] = ingestion
         label["artifact_ingestion"] = artifact_ingestion
@@ -698,10 +704,14 @@ class ReviewController:
         self, name: str, args: Json, operation: str, *, model: str | None = None
     ) -> tuple[str, Json]:
         if name == "review_findings":
-            if set(args) - {"after"}:
+            if set(args) - {"after", "status"}:
                 raise DocumentError("invalid_request", "unknown finding-list field")
+            status = args.get("status", "open")
+            if status not in FINDING_STATUSES:
+                raise DocumentError("invalid_request", "unknown finding status")
             result = await asyncio.to_thread(
-                self.findings.listing, *self.scope, after=args.get("after"), unresolved=True
+                partial(self.findings.listing, after=args.get("after"), statuses=(status,)),
+                *self.scope,
             )
         elif name == "review_finding_read":
             if set(args) - {"finding", "before", "start", "count"} or "finding" not in args:
@@ -916,7 +926,7 @@ class Reviews(TurnHook):
             await asyncio.to_thread(
                 controller.findings.bound,
                 *controller.scope,
-                "The bounded author response rounds ended; no fix was confirmed.",
+                "The bounded author response rounds ended; no re-check found it fixed.",
                 notices=controller.delivered,
             )
             if self.result is not None:
@@ -938,15 +948,11 @@ class Reviews(TurnHook):
         changed = bool(counts) and counts != controller.last_counts
         controller.last_counts = counts
         notices: list[Notice] = []
-        # Open findings ask for a response; challenged ones only inform (CR-26 as amended).
-        for framing, shown in (
-            (REVIEW_FINDINGS, [n for n in found if n.get("status") != "challenged"]),
-            (REVIEW_CHALLENGED, [n for n in found if n.get("status") == "challenged"]),
-        ):
-            if shown:
-                ids = tuple(str(notice["notice_id"]) for notice in shown)
-                controller.seen.update(ids)
-                notices.append(Notice(self.name, ids, framing.text, shown))
+        # Open findings ask for a response; dismissed and stale ones are not injected.
+        if found:
+            ids = tuple(str(notice["notice_id"]) for notice in found)
+            controller.seen.update(ids)
+            notices.append(Notice(self.name, ids, REVIEW_FINDINGS.text, found))
         if changed:
             notices.append(Notice(self.name, (), REVIEW_COUNTS.text, counts))
         return tuple(notices)

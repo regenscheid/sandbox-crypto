@@ -6,7 +6,18 @@
   import { findingDrafts } from '../lib/drafts';
   import { Earlier } from '../lib/earlier';
   import { afterResponse, findingHistory, findingResponse, startResponse } from '../lib/findings';
-  import { anchorView, decisions, raisedText, severityText, statusText } from '../lib/findingView';
+  import {
+    anchorView,
+    decisions,
+    dismissalText,
+    raisedText,
+    recheckText,
+    severityText,
+    statusClass,
+    statusLabel,
+    statusText,
+    successorText,
+  } from '../lib/findingView';
   import { guardedWrite } from '../lib/mutation';
   import { emptyList } from '../lib/pagedList';
   import { idle, submit } from '../lib/submit';
@@ -120,10 +131,16 @@
   <details open={!folded}>
     <summary
       ><h3>
-        {finding.severity} · {finding.category.replaceAll('_', ' ')} · {finding.status}
+        {finding.severity} · {finding.category.replaceAll('_', ' ')} ·
+        <span class={`chip ${statusClass(finding.status)}`}>{statusLabel(finding)}</span>
       </h3></summary
     >
-    <p>{statusText(finding.status)}</p>
+    <p>{statusText(finding.status, finding.latest_recheck)}</p>
+    {#if finding.dismissal}{#each dismissalText(finding.dismissal) as line}<p>
+          {visible(line)}
+        </p>{/each}{/if}
+    {#each successorText(finding) as line}<p>{line}</p>{/each}
+    {#each recheckText(finding) as line}<p class="muted">{visible(line)}</p>{/each}
     <p class="muted">Severity {finding.severity}: {severityText(finding.severity)}.</p>
     {#if finding.origin !== 'math'}<p class="muted">{raisedText(finding, review)}</p>{/if}
     <p class="muted">
@@ -190,8 +207,8 @@
       <p>
         {finding.origin === 'math'
           ? 'The math checker confirms accepted or removed formulas; unavailable evidence does not resolve a finding.'
-          : 'A claimed fix stays unconfirmed until a confirmation review.'} Confirm and dismiss below
-        are explicit user decisions.
+          : 'A claimed fix queues a re-check; only a re-check or the user makes a finding fixed.'} Setting
+        a status, or dismissing, is your explicit decision: give the reason in the explanation.
       </p>
       <!-- What the user decides on, exactly as agents read it (threat model, A3): the
            statement, the remedy and the latest explanation an agent gave. -->
@@ -228,13 +245,13 @@
             bind:value={draft.explanation}></textarea></label
         >
         <HiddenBanner text={draft.explanation} />
-        <label
-          >Changed document revisions<input
-            aria-label="Changed document revisions"
-            bind:value={draft.references}
-            placeholder="doc-…:2 doc-…:3"
-          /></label
-        >
+        {#if draft.action === 'fix'}<label
+            >Changed document revisions<input
+              aria-label="Changed document revisions"
+              bind:value={draft.references}
+              placeholder="doc-…:2 doc-…:3"
+            /></label
+          >{/if}
         <button disabled={!draft.explanation.trim() || !allowedNow} onclick={respond}
           >Save user response</button
         ><button
@@ -270,6 +287,26 @@
   }
   .resolved {
     opacity: 0.85;
+  }
+  .chip {
+    border: 1px solid currentColor;
+    border-radius: 0.8rem;
+    padding: 0 0.5rem;
+    font-size: 0.85em;
+    font-weight: normal;
+  }
+  .status-open {
+    font-weight: bold;
+  }
+  .status-fixed,
+  .status-superseded {
+    opacity: 0.8;
+  }
+  .status-dismissed {
+    font-style: italic;
+  }
+  .status-stale {
+    border-style: dashed;
   }
   .anchors {
     padding-left: 1rem;

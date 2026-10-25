@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!--
   The session's findings, from the reviews and the math checks: the unresolved ones first,
-  then those confirmed fixed or withdrawn, folded (CR-27), among the findings loaded so far.
+  then those fixed, dismissed or superseded, folded (CR-41), among the findings loaded so far.
   One keyed list, so a card that changes group keeps its state, a save in progress included.
 -->
 <script lang="ts">
@@ -42,7 +42,7 @@
     No unresolved findings.
   </p>{/if}
 {#if closed}<p class="muted">
-    {closed} confirmed fixed or withdrawn, folded below the unresolved ones.
+    {closed} fixed, dismissed or superseded, folded below the unresolved ones.
   </p>{/if}
 {#each ordered as finding (finding.finding_id)}<FindingCard
     {projectId}

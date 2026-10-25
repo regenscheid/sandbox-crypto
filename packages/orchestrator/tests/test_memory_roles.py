@@ -17,11 +17,17 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.orchestrator.consistency.prompt_bundle import (
-    MEMORY_ASSEMBLY,
+    RECHECK_ASSEMBLY,
     assemble_reviewer,
     encode_provenance,
+    recheck_pin,
 )
-from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
+from sandbox_science.orchestrator.consistency.rubric import (
+    RECHECK,
+    RECHECK_VERSION,
+    RUBRIC,
+    RUBRIC_VERSION,
+)
 from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
@@ -83,7 +89,8 @@ async def test_the_reviewer_is_given_the_runs_memory_as_guidance(
 
     await ReviewerRunner(reviews, "p", "s", review, "o", Model(), memory=given).run()
     system = cast(str, seen[0][0]["content"])
-    assert system.startswith(RUBRIC + "\n\n" + REVIEWER_FRAMING)
+    # The rubric, the re-check instructions, then the memory (format 3).
+    assert system.startswith(RUBRIC + "\n\n" + RECHECK + "\n\n" + REVIEWER_FRAMING)
     assert "not evidence" in system
     assert "Write finite fields as GF(p)." in system
     assert "Accepted after the run started." not in system
@@ -93,10 +100,11 @@ async def test_the_reviewer_is_given_the_runs_memory_as_guidance(
     assert pinned.status == "complete"
     assert pinned.provenance is not None
     assert (pinned.provenance.format_version, pinned.provenance.assembly_version) == (
-        2,
-        MEMORY_ASSEMBLY,
+        3,
+        RECHECK_ASSEMBLY,
     )
     assert pinned.provenance.memory == given.pin
+    assert pinned.provenance.recheck == recheck_pin(RECHECK_VERSION, RECHECK)
     assert (given.pin.version, given.pin.entries) == (1, ("mem-1@1",))
 
 
@@ -121,6 +129,29 @@ def test_a_reviewer_pin_names_its_memory_or_none() -> None:
     moved = given.pin.model_copy(update={"version": 7})
     with pytest.raises(ValueError, match="reviewer"):
         encode_provenance(empty.provenance.model_copy(update={"memory": moved}))
+
+
+def test_a_reviewer_pin_names_its_recheck_instructions_with_or_without_memory() -> None:
+    """Format 3 (sandbox-reviewer-bundle-3) gives and pins the re-check instructions after
+    the rubric and before the memory (CR-42, CR-43)."""
+    recheck = recheck_pin(RECHECK_VERSION, RECHECK)
+    plain = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS, None, recheck)
+    assert (plain.provenance.format_version, plain.provenance.assembly_version) == (
+        3,
+        RECHECK_ASSEMBLY,
+    )
+    assert plain.system == RUBRIC + "\n\n" + RECHECK
+    given = for_reviewer(0, ())
+    empty = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS, given, recheck)
+    assert (empty.provenance.format_version, empty.provenance.memory) == (3, given.pin)
+    for change in (
+        {"recheck": None},
+        {"format_version": 2},
+        {"assembly_version": "sandbox-reviewer-bundle-2"},
+        {"recheck": recheck.model_copy(update={"text": RECHECK + " "})},
+    ):
+        with pytest.raises(ValueError, match=r"re-check|reviewer"):
+            encode_provenance(plain.provenance.model_copy(update=change))
 
 
 async def test_the_watcher_is_given_the_memory_as_it_is_at_each_check(

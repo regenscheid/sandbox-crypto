@@ -77,7 +77,7 @@ async def test_comment_rejection_remediation_and_removal(stores):
     assert get(reviews)[0]["reflags"] == 1
     edit(docs, doc, source["entry_id"], "", op="remove")
     await drain(reviews, checker)
-    assert get(reviews)[0]["status"] == "confirmed fixed"
+    assert get(reviews)[0]["status"] == "fixed"
     history = Annotations(docs).read_thread("p", doc, source["thread_id"])
     assert history["entries"][0]["body"] == BAD
     assert [e["kind"] for e in history["entries"]] == ["create", "edit_body", "edit_body"]
@@ -109,7 +109,7 @@ async def test_reply_ownership_and_unrelated_edits_do_not_reflag(stores):
     assert get(reviews)[0]["reflags"] == 0
     edit(docs, doc, reply["entry_id"], "$x$", MAIN, op="main-corrects")
     await drain(reviews, ScriptedChecker("accepted"))
-    assert get(reviews)[0]["status"] == "confirmed fixed"
+    assert get(reviews)[0]["status"] == "fixed"
     current = Annotations(docs).body("p", doc, reply["entry_id"])
     assert current["original_author"]["run_id"] == "delegate"
     assert current["author"]["run_id"] == "r1"
@@ -199,7 +199,7 @@ async def test_ordinary_markdown_matches_display_and_cannot_false_remove(stores,
     checker = ScriptedChecker()
     await drain(reviews, checker)
     assert any(r"\unknown" in f.tex for f in checker.calls)
-    assert any(f["status"] in ("open", "unaddressed") for f in get(reviews))
+    assert any(f["status"] == "open" for f in get(reviews))
 
 
 @pytest.mark.asyncio
@@ -355,11 +355,12 @@ async def test_dependency_refresh_preserves_failed_block_budget(stores, kind):
         edit_formula(docs, doc, entry, rf"\unknown{{edit{index}}}", f"body-{index}")
         await drain(reviews, ChangedChecker(2))
         assert get(reviews)[0]["reflags"] == index
-    assert get(reviews)[0]["status"] == "unaddressed"
+    assert (get(reviews)[0]["status"], get(reviews)[0]["at_bound"]) == ("open", True)
     checker = ChangedChecker(3)
     MathJobs(reviews).retry_unavailable("p", checker.identity())
     await drain(reviews, checker)
-    assert (get(reviews)[0]["status"], get(reviews)[0]["reflags"]) == ("unaddressed", 2)
+    current = get(reviews)[0]
+    assert (current["status"], current["at_bound"], current["reflags"]) == ("open", True, 2)
     from sandbox_science.orchestrator.consistency.findings import Findings
 
     history = Findings(reviews).get("p", "s", get(reviews)[0]["finding_id"])["history"]
@@ -379,7 +380,7 @@ async def test_accepted_owner_and_legacy_cache_do_not_make_dependency_a_failed_e
     edit_formula(docs, doc, entry, "x", "accepted-edit")
     await drain(reviews, ScriptedChecker("accepted"))
     found = get(reviews)[0]
-    assert found["status"] == "confirmed fixed"
+    assert found["status"] == "fixed"
     assert found["source"]["owner_revision"] == 2
     if legacy_cache:
         # Faithful old-code state: accepted observation/check pointer was saved,
@@ -402,9 +403,7 @@ async def test_accepted_owner_and_legacy_cache_do_not_make_dependency_a_failed_e
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["document", "comment"])
-@pytest.mark.parametrize(
-    ("action", "status"), [("confirm", "confirmed fixed"), ("dismiss", "withdrawn")]
-)
+@pytest.mark.parametrize(("action", "status"), [("set", "fixed"), ("dismiss", "dismissed")])
 async def test_dependency_refresh_preserves_explicit_user_decision(stores, kind, action, status):
     from sandbox_science.orchestrator.consistency.findings import Findings
 
@@ -419,6 +418,7 @@ async def test_dependency_refresh_preserves_explicit_user_decision(stores, kind,
             "finding": found["finding_id"],
             "expected": found["revision"],
             "action": action,
+            **({"status": status} if action == "set" else {}),
             "explanation": "Explicit USER decision",
             "operation_id": "decision",
         },
@@ -470,7 +470,7 @@ async def test_previous_assessment_and_user_decision_of_another_shape_are_not_us
         db.execute("DROP TRIGGER review_transitions_update")
         db.execute("UPDATE review_transitions SET payload=?", (payload,))
         assert mechanism._previous_owner(db, job, item) is None
-        assert mechanism._user_resolved(db, {**found, "status": "confirmed fixed"})
+        assert mechanism._user_resolved(db, {**found, "status": "fixed"})
 
 
 @pytest.mark.asyncio
@@ -505,9 +505,7 @@ async def test_unknown_retained_resolution_actor_is_bounded_and_preserved(stores
         db.execute("UPDATE review_transitions SET actor=?", (actor,))
         tracemalloc.start()
         try:
-            assert MechanicalFindings(reviews)._user_resolved(
-                db, {**found, "status": "confirmed fixed"}
-            )
+            assert MechanicalFindings(reviews)._user_resolved(db, {**found, "status": "fixed"})
             assert tracemalloc.get_traced_memory()[1] < 100_000
         finally:
             tracemalloc.stop()
@@ -620,7 +618,7 @@ async def test_comment_closing_stage_rechecks_body_and_new_claim(stores):
     notices.acknowledge("p", "s", "next-saved", list(ids))
     assert get(reviews)[0]["status"] == "open"
     await drain(reviews, ScriptedChecker("accepted"))
-    assert get(reviews)[0]["status"] == "confirmed fixed"
+    assert get(reviews)[0]["status"] == "fixed"
 
 
 @pytest.mark.asyncio

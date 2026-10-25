@@ -266,8 +266,17 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
     async with WorkerClient(args.worker, read_secret(args.token_file)) as client:
         closed = await client.close_session(context)
     store.close_session(args.project, args.session)
+    # At the close, a finding whose reviewed work has a newer revision and of which no
+    # re-check ran becomes stale (consistency review, CR-44).
+    from .consistency.findings import Findings
+    from .consistency.store import ReviewStore
+
+    with contextlib.closing(DocumentStore(store_path(args.state_dir))) as documents:
+        stale = Findings(ReviewStore(documents)).stale(args.project, args.session)
     kernels = ", ".join(f"{k.language} {k.kernel_id}" for k in closed.kernels) or "none"
     print(f"closed session {args.session}; kernels stopped: {kernels}")
+    if stale:
+        print(f"{stale} review {'finding is' if stale == 1 else 'findings are'} now stale")
     return 0
 
 

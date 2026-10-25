@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseRevisionReferences } from './reviews';
 describe('changed review evidence references', () => {
-  it('retains exact document revisions and accepts an empty rebuttal list', () => {
+  it('retains exact document revisions and accepts an empty list', () => {
     const id = `doc-${'a'.repeat(24)}`;
     expect(parseRevisionReferences(`${id}:1 ${id}:42`)).toEqual([
       [id, 1],

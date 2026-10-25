@@ -21,8 +21,14 @@ from sandbox_science.orchestrator.consistency.prompt_bundle import (
     MAX_PROVENANCE_BYTES,
     assemble_reviewer,
     encode_provenance,
+    recheck_pin,
 )
-from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
+from sandbox_science.orchestrator.consistency.rubric import (
+    RECHECK,
+    RECHECK_VERSION,
+    RUBRIC,
+    RUBRIC_VERSION,
+)
 from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, store_path
@@ -54,7 +60,11 @@ def store(tmp_path):
 
 
 def bundle():
-    return assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS)
+    """The reviewer's input as the runner assembles it: format 3, with the re-check
+    instructions (CR-42, CR-43)."""
+    return assemble_reviewer(
+        RUBRIC, RUBRIC_VERSION, SPECS, None, recheck_pin(RECHECK_VERSION, RECHECK)
+    )
 
 
 def reserve(reviews, review, **kwargs):
@@ -76,6 +86,9 @@ def projection(specs):
 def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     original = bundle()
     pin = original.provenance
+    assert (pin.format_version, pin.assembly_version) == (3, "sandbox-reviewer-bundle-3")
+    assert pin.recheck == recheck_pin(RECHECK_VERSION, RECHECK)
+    assert original.system == RUBRIC + "\n\n" + RECHECK
     assert pin.rubric_text == RUBRIC
     assert pin.rubric_version == RUBRIC_VERSION
     assert pin.rubric_bytes == len(RUBRIC.encode())
@@ -88,7 +101,9 @@ def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     copied = tuple(
         ToolSpec(s.name, s.description, dict(reversed(s.parameters.items()))) for s in SPECS
     )
-    reordered = assemble_reviewer(RUBRIC, RUBRIC_VERSION, copied)
+    reordered = assemble_reviewer(
+        RUBRIC, RUBRIC_VERSION, copied, None, recheck_pin(RECHECK_VERSION, RECHECK)
+    )
     assert reordered.provenance == pin
     array = ToolSpec("read", "Read", {"required": ["a", "b"]})
     reverse = ToolSpec("read", "Read", {"required": ["b", "a"]})
@@ -147,7 +162,7 @@ async def test_actual_multi_turn_input_is_reserved_before_each_call(store):
 
         async def complete(self, messages, tools):
             self.calls += 1
-            assert messages[0] == {"role": "system", "content": RUBRIC}
+            assert messages[0] == {"role": "system", "content": RUBRIC + "\n\n" + RECHECK}
             assert json.dumps(projection(tools)) == unchanged
             assert json.loads(messages[1]["content"]) == {
                 "review": review,

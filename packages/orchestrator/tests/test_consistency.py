@@ -156,33 +156,38 @@ def test_reflag_escalates_current_assessment_and_notice_without_downgrading(
     assert retained["history"][-1]["payload"]["assessment"]["severity"] == "note"
 
 
-def test_an_agents_own_rebuttal_is_not_offered_back_to_it(store) -> None:
-    """Lab 40: a rebuttal leaves a finding open at a new revision, and that revision was
+def test_an_agents_own_fix_is_not_offered_back_to_it(store) -> None:
+    """Lab 40: a response left a finding open at a new revision, and that revision was
     offered to the session's runs as a new notice, so the agent that wrote it read the
-    finding and rebutted it again, seven times, until its run ran out of turns. A user's
-    response is still offered."""
+    finding and answered it again, seven times, until its run ran out of turns. A fix
+    leaves the finding open with its re-check queued, and is not offered back; the user's
+    reopening is still offered."""
     from sandbox_science.orchestrator.consistency.notices import FindingNotices
 
-    reviews, _, _ = store
+    reviews, documents, _ = store
     claim(reviews)
     review = dispatch(reviews)
     finding = raise_finding(reviews, review)
     reviews.finish("p", "s", review, "owner", "findings", "One contradiction.")
     notices = FindingNotices(reviews)
     assert [n["revision"] for n in notices.pending("p", "s", "author-1", set())] == [1]
-    rebutted = Findings(reviews).respond(
+    doc = documents.create(
+        "p", name="fixed", title="N", text="The count is 15.\n", author=MAIN, session_id="s"
+    ).document_id
+    fixed = Findings(reviews).respond(
         "p",
         "s",
         {
             "finding": finding["finding_id"],
             "expected": 1,
-            "action": "rebut",
-            "explanation": "The output does record 16.",
-            "operation_id": "rebut",
+            "action": "fix",
+            "explanation": "The note now records 15.",
+            "revisions": [[doc, 1]],
+            "operation_id": "fix",
         },
         MAIN,
     )
-    assert (rebutted["status"], rebutted["revision"]) == ("open", 2)
+    assert (fixed["status"], fixed["revision"]) == ("open", 2)
     assert notices.pending("p", "s", "author-1", set()) == []
     assert notices.pending("p", "s", "author-2", set()) == []
     Findings(reviews).respond(
@@ -191,9 +196,10 @@ def test_an_agents_own_rebuttal_is_not_offered_back_to_it(store) -> None:
         {
             "finding": finding["finding_id"],
             "expected": 2,
-            "action": "rebut",
-            "explanation": "The user reads 16 too.",
-            "operation_id": "user-rebut",
+            "action": "set",
+            "status": "open",
+            "explanation": "The user wants the author to look again.",
+            "operation_id": "user-reopen",
         },
         USER,
     )
@@ -301,7 +307,7 @@ def test_oversized_finding_group_stays_explicitly_omitted(store, monkeypatch) ->
     assert Findings(reviews).get("p", "s", raised["finding_id"])["status"] == "open"
 
 
-@pytest.mark.parametrize("action", ["fix", "rebut"])
+@pytest.mark.parametrize("action", ["fix", "dismiss"])
 def test_stale_generic_reflag_preserves_pending_response_head(store, action: str) -> None:
     reviews, documents, _ = store
     claim(reviews)
@@ -326,7 +332,8 @@ def test_stale_generic_reflag_preserves_pending_response_head(store, action: str
             "revisions": [[doc, 1]] if action == "fix" else [],
             "operation_id": "concurrent-response",
         },
-        USER,
+        # The author's dismissal awaits the next review's decision, so its snapshot holds it.
+        USER if action == "fix" else MAIN,
     )
     targets = reviews.confirmation_targets("p", "s")
     result = raise_finding(
@@ -546,7 +553,7 @@ def test_a_malformed_response_says_where_and_the_tool_gives_the_shapes(store) ->
     response = {
         "finding": finding["finding_id"],
         "expected": 1,
-        "action": "rebut",
+        "action": "dismiss",
         "explanation": "The document now quotes the page.",
         "evidence": [{"document": "doc-1", "revision": 2, "block": "b2"}],
         "operation_id": "respond",
@@ -588,10 +595,11 @@ def test_fix_requires_main_or_user_and_confirmation_grant(store) -> None:
     delegated = MAIN.model_copy(update={"role": "delegated"})
     with pytest.raises(DocumentError, match="only the user"):
         Findings(reviews).respond("p", "s", response, delegated)
-    with pytest.raises(DocumentError, match="cannot confirm"):
-        Findings(reviews).respond("p", "s", {**response, "action": "confirm"}, MAIN)
+    with pytest.raises(DocumentError, match="cannot set a finding's status"):
+        Findings(reviews).respond("p", "s", {**response, "action": "set", "status": "fixed"}, MAIN)
     result = Findings(reviews).respond("p", "s", response, MAIN)
-    assert result["status"] == "claimed fixed"
+    assert result["status"] == "open"
+    assert Findings(reviews).get("p", "s", finding["finding_id"])["recheck"]["cause"] == "fix"
     assert Findings(reviews).respond("p", "s", response, MAIN)["replayed"]
     confirm = dispatch(reviews, "confirmation")
     finding_evidence = next(
@@ -600,7 +608,7 @@ def test_fix_requires_main_or_user_and_confirmation_grant(store) -> None:
     pinned = reviews.evidence("p", "s", confirm, finding_evidence["evidence"])
     assert pinned["payload"]["response"]["payload"]["explanation"] == "Corrected the count."
     read_confirmation(reviews, confirm)
-    result = Findings(reviews).confirm(
+    result = Findings(reviews).decide(
         "p",
         "s",
         confirm,
@@ -608,24 +616,28 @@ def test_fix_requires_main_or_user_and_confirmation_grant(store) -> None:
         {
             "finding": finding["finding_id"],
             "expected": 2,
-            "decision": "confirm",
+            "decision": "resolved",
             "explanation": "The pinned revision now agrees.",
             "anchors": [anchor(reviews, confirm, "document")],
             "operation_id": "confirm",
         },
     )
-    assert result["status"] == "confirmed fixed"
+    assert result["status"] == "fixed"
     assert [
         h["status"] for h in Findings(reviews).get("p", "s", finding["finding_id"])["history"]
-    ] == ["open", "claimed fixed", "confirmed fixed"]
+    ] == ["open", "open", "fixed"]
 
 
-def test_missing_evidence_is_inconclusive_and_never_a_fail_notice(store) -> None:
+def test_missing_evidence_is_open_and_never_a_fail_notice(store) -> None:
+    """A finding on missing evidence is open, says so in its first history record, and
+    never interrupts the author (CR-6 as CR-47 maps ``inconclusive``)."""
     reviews, documents, _ = store
     claim(reviews)
     review = dispatch(reviews)
     finding = raise_finding(reviews, review, assessment="missing_evidence")
-    assert finding["status"] == "inconclusive"
+    assert finding["status"] == "open"
+    first = Findings(reviews).get("p", "s", finding["finding_id"])["history"][0]
+    assert first["payload"]["missing_evidence"] is True
     with documents.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT count(*) FROM review_notices").fetchone()[0] == 0
@@ -749,7 +761,10 @@ def test_concurrent_budget_reservations_and_usage_are_idempotent(store) -> None:
     assert reviews.run("p", "s", review)["output_tokens"] == 3
 
 
-def test_supersession_preserves_unrelated_block_and_never_confirms(store) -> None:
+def test_a_recheck_queues_only_when_the_anchored_block_changes_and_never_fixes(store) -> None:
+    """A replaced revision no longer supersedes a finding: a change to another block
+    queues nothing, and a change to the anchored block queues the finding's re-check,
+    leaving it open and never fixed (CR-28 as decided, CR-42)."""
     reviews, documents, _ = store
     doc = documents.create(
         "p",
@@ -774,8 +789,9 @@ def test_supersession_preserves_unrelated_block_and_never_confirms(store) -> Non
         reason="Other block",
         operation_id="unrelated",
     )
-    Findings(reviews).supersede("p", "s")
-    assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "open"
+    assert Findings(reviews).queue_rechecks("p", "s") == 0
+    unchanged = Findings(reviews).get("p", "s", finding["finding_id"])
+    assert (unchanged["status"], unchanged["recheck"]) == ("open", None)
     documents.edit_source(
         "p",
         doc,
@@ -785,10 +801,12 @@ def test_supersession_preserves_unrelated_block_and_never_confirms(store) -> Non
         reason="Changed anchored block",
         operation_id="change",
     )
-    Findings(reviews).supersede("p", "s")
+    assert Findings(reviews).queue_rechecks("p", "s") == 1
     final = Findings(reviews).get("p", "s", finding["finding_id"])
-    assert final["status"] == "superseded"
-    assert all(h["status"] != "confirmed fixed" for h in final["history"])
+    assert final["status"] == "open"
+    assert final["recheck"]["cause"] == "revision"
+    assert [place["document"]["revision"] for place in final["recheck"]["places"]] == [3]
+    assert all(h["status"] != "fixed" for h in final["history"])
 
 
 def test_confirmation_retains_original_and_response_evidence_with_exact_ids(store) -> None:
@@ -858,7 +876,9 @@ def test_confirmation_retains_original_and_response_evidence_with_exact_ids(stor
         reviews.evidence("p", "other", foreign, log["evidence"])
 
 
-def test_superseded_snapshot_retains_old_and_user_replacement_revision(store) -> None:
+def test_a_recheck_snapshot_retains_old_and_user_replacement_revision(store) -> None:
+    """A user's later revision queues the finding's re-check, and the next snapshot holds
+    both the reviewed revision and its replacement (CR-42)."""
     reviews, documents, _ = store
     doc = documents.create(
         "p", name="replace", title="N", text="There are 16.\n", author=MAIN, session_id="s"
@@ -877,7 +897,7 @@ def test_superseded_snapshot_retains_old_and_user_replacement_revision(store) ->
         reason="New count",
         operation_id="user-replacement",
     )
-    Findings(reviews).supersede("p", "s")
+    assert Findings(reviews).queue_rechecks("p", "s") == 1
     current = dispatch(reviews)
     evidence = reviews.manifest("p", "s", current, limit=20)["evidence"]
     replacement = next(
@@ -885,7 +905,11 @@ def test_superseded_snapshot_retains_old_and_user_replacement_revision(store) ->
     )
     assert "15" in reviews.read_evidence("p", "s", current, replacement["evidence"])["text"]
     assert "16" in reviews.read_evidence("p", "s", current, old["evidence"])["text"]
-    assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "superseded"
+    queued = Findings(reviews).get("p", "s", finding["finding_id"])
+    assert (queued["status"], queued["recheck"]["places"][0]["document"]["revision"]) == (
+        "open",
+        2,
+    )
 
 
 def context_for(store: ReviewStore):
@@ -1028,7 +1052,7 @@ async def test_confirmation_coverage_is_independent_of_failed_author_window(
             "arguments": {
                 "finding": finding["finding_id"],
                 "expected": response["revision"],
-                "decision": "confirm",
+                "decision": "resolved",
                 "explanation": "The pinned original and response output agree with the correction.",
                 "anchors": [evidence["response"]],
                 "operation_id": "confirm-count-fix",
@@ -1070,7 +1094,7 @@ async def test_confirmation_coverage_is_independent_of_failed_author_window(
     assert reviews.run("p", "s", confirmation)["state"] == (
         "passed" if original_complete and response_complete and checked else "inconclusive"
     )
-    assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "confirmed fixed"
+    assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "fixed"
     with documents.control.read() as tx:
         db = tx.sql
         assert tuple(
@@ -1465,53 +1489,94 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
     assert FindingNotices(reviews).pending("p", "s", "next", set()) == []
 
 
-def test_confirmation_requires_nonempty_reads_and_stops_after_two_rejections(store) -> None:
+def test_a_recheck_requires_nonempty_reads_and_unresolved_hands_on_to_a_successor(
+    store,
+) -> None:
+    """A re-check decides only after reading the pinned evidence in full. Each
+    ``unresolved`` answer supersedes the finding with a successor on the new revision,
+    open, with the same category and severity, which the author may fix in turn (CR-42,
+    CR-44); the bound no longer comes from rejected fixes."""
     reviews, documents, _ = store
     claim(reviews)
     original = dispatch(reviews)
-    finding = raise_finding(reviews, original)
+    target = raise_finding(reviews, original)["finding_id"]
     reviews.finish("p", "s", original, "owner", "findings", "One contradiction.")
     doc = documents.create(
         "p", name="claimed-fix", title="N", text="Still says 16.\n", author=MAIN, session_id="s"
     ).document_id
-    for expected in (1, 3):
+    chain = [target]
+    for number in (1, 2):
+        if number > 1:
+            documents.edit_source(
+                "p",
+                doc,
+                base=number - 1,
+                text=f"Still says 16, attempt {number}.\n",
+                author=USER,
+                reason="Another attempt",
+                operation_id=f"edit-{number}",
+            )
+        expected = Findings(reviews).get("p", "s", target)["revision"]
         response = Findings(reviews).respond(
             "p",
             "s",
             {
-                "finding": finding["finding_id"],
+                "finding": target,
                 "expected": expected,
                 "action": "fix",
                 "explanation": "Claiming this exact revision fixed it.",
-                "revisions": [[doc, 1]],
-                "operation_id": f"fix-{expected}",
+                "revisions": [[doc, number]],
+                "operation_id": f"fix-{number}",
             },
             MAIN,
         )
+        assert response["status"] == "open"
         confirmation = dispatch(reviews, "confirmation")
+        new = next(
+            {"evidence": item["evidence"]}
+            for item in reviews.manifest("p", "s", confirmation, limit=20)["evidence"]
+            if item["kind"] == "document" and item["locator"].get("revision") == number
+        )
         decision = {
-            "finding": finding["finding_id"],
+            "finding": target,
             "expected": response["revision"],
-            "decision": "reject",
+            "decision": "unresolved",
             "explanation": "The revision still contradicts the original output.",
-            "anchors": [anchor(reviews, confirmation, "document")],
-            "operation_id": f"reject-{expected}",
+            "anchors": [new],
+            "operation_id": f"unresolved-{number}",
         }
         for item in reviews.manifest("p", "s", confirmation, limit=20)["evidence"]:
             reviews.read_evidence(
                 "p", "s", confirmation, item["evidence"], start=1000000, owner="owner"
             )
         with pytest.raises(DocumentError, match="read the pinned"):
-            Findings(reviews).confirm("p", "s", confirmation, "owner", decision)
+            Findings(reviews).decide("p", "s", confirmation, "owner", decision)
         for item in reviews.manifest("p", "s", confirmation, limit=20)["evidence"]:
             reviews.read_evidence("p", "s", confirmation, item["evidence"], count=1, owner="owner")
         with pytest.raises(DocumentError, match="read the pinned"):
-            Findings(reviews).confirm("p", "s", confirmation, "owner", decision)
+            Findings(reviews).decide("p", "s", confirmation, "owner", decision)
         read_confirmation(reviews, confirmation)
-        ended = Findings(reviews).confirm("p", "s", confirmation, "owner", decision)
-        reviews.finish("p", "s", confirmation, "owner", "findings", "The claimed fix was rejected.")
-    assert ended["status"] == "unaddressed"
-    assert Findings(reviews).get("p", "s", finding["finding_id"])["reflags"] == 2
+        ended = Findings(reviews).decide("p", "s", confirmation, "owner", decision)
+        reviews.finish("p", "s", confirmation, "owner", "findings", "The fix did not resolve it.")
+        assert ended["status"] == "superseded"
+        replaced = Findings(reviews).get("p", "s", target)
+        successor = Findings(reviews).get("p", "s", ended["successor"])
+        assert replaced["superseded_by"] == successor["finding_id"]
+        assert replaced["latest_recheck"]["answer"] == "unresolved"
+        assert (successor["status"], successor["supersedes"], successor["at_bound"]) == (
+            "open",
+            target,
+            False,
+        )
+        assert (successor["severity"], successor["category"]) == ("fail", "contradicting_value")
+        assert successor["anchors"][0]["locator"]["revision"] == number
+        target = successor["finding_id"]
+        chain.append(target)
+    assert [Findings(reviews).get("p", "s", f)["status"] for f in chain] == [
+        "superseded",
+        "superseded",
+        "open",
+    ]
 
 
 _SEP = r"[\s\"'+]+"
@@ -1524,7 +1589,8 @@ FINDING_WRITES = re.compile(
 
 
 def test_only_the_findings_module_writes_findings() -> None:
-    """One module writes ``review_findings``: the math checks go through ``Findings``.
+    """One module writes ``review_findings``: the math checks go through ``Findings``,
+    and the control store step that maps the earlier statuses is the one other writer.
     Every Python module and SQL file of the orchestrator counts."""
     root = Path(storage.__file__).resolve().parents[1]
     writers = sorted(
@@ -1533,7 +1599,7 @@ def test_only_the_findings_module_writes_findings() -> None:
         for path in root.rglob(pattern)
         if FINDING_WRITES.search(path.read_text())
     )
-    assert writers == ["consistency/findings.py"]
+    assert writers == ["consistency/findings.py", "control/migrations.py"]
 
 
 @pytest.mark.parametrize(

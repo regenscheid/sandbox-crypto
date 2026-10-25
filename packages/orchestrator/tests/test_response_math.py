@@ -19,7 +19,7 @@ from .test_document_math import BAD, MAIN, ScriptedChecker, create, drain
 from .test_document_math import stores as stores
 
 
-def response(reviews, *, body=BAD, action="rebut", actor=MAIN):
+def response(reviews, *, body=BAD, action="dismiss", actor=MAIN):
     claim(reviews)
     review = dispatch(reviews)
     found = raise_finding(reviews, review, statement=r"Reviewer $\unknown{excluded}$")
@@ -80,7 +80,7 @@ async def test_main_explanation_exact_source_remediation_and_original_audit(stor
     assert changed["original_author"]["run_id"] == "r1"
     assert changed["author"]["run_id"] == "corrector"
     await drain(reviews, ScriptedChecker("accepted"))
-    assert maths(reviews)[0]["status"] == "confirmed fixed"
+    assert maths(reviews)[0]["status"] == "fixed"
     after = Findings(reviews).get("p", "s", finding)
     assert (after["status"], after["revision"], after["reflags"]) == (
         before["status"],
@@ -90,7 +90,7 @@ async def test_main_explanation_exact_source_remediation_and_original_audit(stor
     original = after["history"][-1]
     assert original["reason"] == BAD
     assert original["payload"]["explanation"] == BAD
-    assert original["payload"]["action"] == "rebut"
+    assert original["payload"]["action"] == "dismiss"
     assert original["response_body"]["body"] == "$x$"
     assert ResponseBodies(reviews).get("p", "s", finding, decision, body_revision=1)["body"] == BAD
     with docs.control.read() as tx:
@@ -143,12 +143,15 @@ def test_positive_authority_cas_replay_and_parent_decision_independence(stores):
         },
         USER,
     )
-    assert user["status"] == "withdrawn"
+    assert user["status"] == "dismissed"
     assert ResponseBodies(reviews).get("p", "s", finding, decision)["revision"] == 2
 
 
 @pytest.mark.asyncio
-async def test_confirmation_pins_body_not_just_scientific_revision(stores):
+async def test_a_recheck_pins_the_fixs_body_not_just_its_scientific_revision(stores):
+    """A fix's explanation edited after a re-check's snapshot pinned it cannot be
+    answered from that snapshot; the review ends inconclusive and a later re-check of the
+    current body answers it."""
     _, reviews, _ = stores
     finding, decision = response(reviews, action="fix")
     confirm = dispatch(reviews, "confirmation")
@@ -156,7 +159,7 @@ async def test_confirmation_pins_body_not_just_scientific_revision(stores):
     immutable = reviews.manifest("p", "s", confirm)["evidence"]
     edit(reviews, finding, decision, "$x$")
     with pytest.raises(DocumentError, match="explanation changed"):
-        Findings(reviews).confirm(
+        Findings(reviews).decide(
             "p",
             "s",
             confirm,
@@ -164,32 +167,34 @@ async def test_confirmation_pins_body_not_just_scientific_revision(stores):
             {
                 "finding": finding,
                 "expected": decision,
-                "decision": "confirm",
+                "decision": "resolved",
                 "explanation": "Old snapshot",
-                "anchors": [anchor(reviews, confirm, "finding")],
+                "anchors": [anchor(reviews, confirm, "document")],
                 "operation_id": "old",
             },
         )
     assert reviews.manifest("p", "s", confirm)["evidence"] == immutable
     reviews.finish("p", "s", confirm, "owner", "inconclusive", "Old body was changed")
-    assert reviews.confirmation_targets("p", "s") == [(finding, decision)]
+    rechecked = Findings(reviews).get("p", "s", finding)
+    assert (rechecked["status"], rechecked["latest_recheck"]["answer"]) == ("open", "inconclusive")
+    assert reviews.confirmation_targets("p", "s") == [(finding, rechecked["revision"])]
     fresh = dispatch(reviews, "confirmation")
     read_confirmation(reviews, fresh)
-    result = Findings(reviews).confirm(
+    result = Findings(reviews).decide(
         "p",
         "s",
         fresh,
         "owner",
         {
             "finding": finding,
-            "expected": decision,
-            "decision": "confirm",
+            "expected": rechecked["revision"],
+            "decision": "resolved",
             "explanation": "Current pinned correction",
-            "anchors": [anchor(reviews, fresh, "finding")],
+            "anchors": [anchor(reviews, fresh, "document")],
             "operation_id": "fresh",
         },
     )
-    assert result["status"] == "confirmed fixed"
+    assert result["status"] == "fixed"
 
 
 @pytest.mark.asyncio
@@ -206,14 +211,14 @@ async def test_reflags_unavailable_removal_empty_macros_and_no_recursive_sources
         edit(reviews, finding, decision, rf"$\unknown{{x{i}}}$", op=f"failed-{i}")
         await drain(reviews, checker)
     assert maths(reviews)[0]["reflags"] == 2
-    assert maths(reviews)[0]["status"] == "unaddressed"
+    assert (maths(reviews)[0]["status"], maths(reviews)[0]["at_bound"]) == ("open", True)
     edit(reviews, finding, decision, "$x$", op="unavailable")
     await drain(reviews, None)
-    assert maths(reviews)[0]["status"] == "unaddressed"
+    assert (maths(reviews)[0]["status"], maths(reviews)[0]["at_bound"]) == ("open", True)
     edit(reviews, finding, decision, "", op="remove")
     await drain(reviews, checker)
     child = maths(reviews)[0]
-    assert child["status"] == "confirmed fixed"
+    assert child["status"] == "fixed"
     assert (
         Findings(reviews).get("p", "s", child["finding_id"])["history"][-1]["payload"]["action"]
         == "mechanical_removal"
@@ -359,7 +364,7 @@ def test_initial_body_queue_failure_rolls_back_scientific_response(stores):
             {
                 "finding": found["finding_id"],
                 "expected": 1,
-                "action": "rebut",
+                "action": "dismiss",
                 "explanation": BAD,
                 "operation_id": "atomic-response",
             },
@@ -396,7 +401,7 @@ async def test_latest_unavailable_and_stale_body_save_ack_cannot_resolve_or_boun
     assert maths(reviews)[0]["status"] == "open"
     MathJobs(reviews).retry_unavailable("p", ScriptedChecker("accepted").identity())
     await drain(reviews, ScriptedChecker("accepted"))
-    assert maths(reviews)[0]["status"] == "confirmed fixed"
+    assert maths(reviews)[0]["status"] == "fixed"
 
 
 @pytest.mark.asyncio
@@ -408,7 +413,8 @@ async def test_ordinary_tool_uses_trusted_main_context_and_bounded_reads(stores)
     from sandbox_science.orchestrator.projects import ProjectStore
 
     docs, reviews, _ = stores
-    finding, decision = response(reviews, body="x" * 8192)
+    # A fix's explanation, unlike a dismissal's reason, may be 8,192 characters.
+    finding, decision = response(reviews, body="x" * 8192, action="fix")
     context = ExecutionContext(
         project_id="p",
         session_id="s",
@@ -522,7 +528,8 @@ def test_the_response_checks_keep_a_response_and_its_body(tmp_path):
 
 def test_a_response_explanation_at_its_byte_limit_is_kept(stores) -> None:
     _, reviews, _ = stores
-    finding, decision = response(reviews)
+    # A fix's explanation; a dismissal's reason keeps its 2,000-character bound.
+    finding, decision = response(reviews, action="fix")
     body = "\U0001d465" * 8192  # 8192 characters, 32768 bytes: the model's and the table's
     edit(reviews, finding, decision, body)
     assert ResponseBodies(reviews).get("p", "s", finding, decision)["body"] == body
