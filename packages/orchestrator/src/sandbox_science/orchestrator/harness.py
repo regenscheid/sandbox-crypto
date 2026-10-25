@@ -1528,7 +1528,7 @@ class Harness:
         if self.stores is None:
             return None
         return await threaded(
-            ProjectMemory(self.stores.documents).snapshot,
+            ProjectMemory(self.stores.documents, clock=self.clock.now).snapshot,
             admitted.context.project_id,
             admitted.request.memory_version,
         )
@@ -1696,7 +1696,7 @@ class Harness:
         bundles.append(caps.ledger(ledger))
         # Main and delegated runs propose; only the user changes the memory (PM-3).
         memory_tool = MemoryTool(
-            ProjectMemory(stores.documents),
+            ProjectMemory(stores.documents, clock=self.clock.now),
             context,
             run_id=run_id,
             role=role,

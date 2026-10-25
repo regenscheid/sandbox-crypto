@@ -15,6 +15,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts.clock import SystemClock
 from sandbox_science.orchestrator.context.history.archive import Archive, Entry
 from sandbox_science.orchestrator.control import ControlStore, migrations
 from sandbox_science.orchestrator.documents import (
@@ -416,6 +417,13 @@ def test_earlier_rows_read_user_for_the_users_versions_and_not_recorded_for_the_
 # PM-F7, end to end.
 
 
+class _Fixed(SystemClock):
+    """The real clock but for the date: the runs read the time as `NOW`, as the store does."""
+
+    def now(self) -> datetime:
+        return NOW
+
+
 class Runs:
     """Scripted runs of one project, started as the run service does."""
 
@@ -431,6 +439,7 @@ class Runs:
             Role(model, "scripted"),
             stores=Stores(self.projects, self.documents, JobState(self.tmp_path), self.state),
             settings=Settings(min_isolation_tier=None),
+            clock=_Fixed(),
         )
         admitted = await admit(
             self.worker, self.projects, RunRequest("p", "s", "Go", run_id=run_id), Sink(),
