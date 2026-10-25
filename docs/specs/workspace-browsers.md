@@ -119,6 +119,15 @@ numbered CL-n.
   snapshot); for a tool the classification does not mention, the class its hints give
   and that it escalates. Read-only; viewing calls no tool and grants nothing, as the
   Tools tab's rules say.
+  *As built 2026-10-25:* the MCP services screen has a Classifications list (each
+  configured service's source, pinned or accepted date, tool count and drift state) and a
+  fifth tab, Classification (`ClassificationTab.svelte`), with the in-force table, the
+  drafts with their editor and acceptance, and the drift section with Re-accept. The
+  routes are `GET …/classifications`, `GET …/mcp-services/{server}/classification`, `GET
+  …/classification/drafts`, `POST …/classification/drafts/{draft}/accept` and `POST
+  …/mcp-services/{server}/drift/accept` (`packages/workspace/…/classifications.py`),
+  passing the worker's operator routes through, with each write's operation ID for the
+  worker's receipts.
 - CL-2. **Drafts.** A draft `classify-draft` wrote for the project (the YAML marked DRAFT,
   pinned by digest) is a record the view lists beside the classification in force, tool
   by tool: the proposed class, reason and rules against the current ones, with widenings

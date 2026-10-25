@@ -58,6 +58,13 @@ import type {
   ViewerLink,
 } from './api-types';
 import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
+import type {
+  ClassificationAccepted,
+  ClassificationListing,
+  ClassificationView,
+  DraftListing,
+  DriftAccepted,
+} from './classificationTypes';
 import { artifactQuery, NO_FILTER } from './artifactFiles';
 import type { CategoryBody } from './frontierForm';
 import { ApiError, get, post } from './http';
@@ -676,6 +683,40 @@ export const api = {
     project: string,
     change: { expected: number; disabled: string[]; operation_id: string },
   ) => post<ConnectorSettings>(`/projects/${part(project)}/mcp-services/settings`, change),
+  /** Every configured service's classification in force (D96, CL-1). */
+  classifications: (project: string) =>
+    get<ClassificationListing>(`/projects/${part(project)}/classifications`),
+  /** One service's classification in force, per tool with its pin state; calls no tool. */
+  classification: (project: string, server: string) =>
+    get<ClassificationView>(
+      `/projects/${part(project)}/mcp-services/${part(server)}/classification`,
+    ),
+  /** The drafts `classify-draft` wrote for the service: the model's text (CL-2). */
+  classificationDrafts: (project: string, server: string) =>
+    get<DraftListing>(
+      `/projects/${part(project)}/mcp-services/${part(server)}/classification/drafts`,
+    ),
+  /** Accept a draft, edited or not, with the user's reason (CL-3). */
+  acceptClassificationDraft: (
+    project: string,
+    server: string,
+    draft: string,
+    change: { yaml: string; reason: string; operation_id: string },
+  ) =>
+    post<ClassificationAccepted>(
+      `/projects/${part(project)}/mcp-services/${part(server)}/classification/drafts/${part(draft)}/accept`,
+      change,
+    ),
+  /** Re-accept the service's tool list after drift, with the user's reason (CL-4). */
+  acceptDrift: (
+    project: string,
+    server: string,
+    change: { reason: string; operation_id: string },
+  ) =>
+    post<DriftAccepted>(
+      `/projects/${part(project)}/mcp-services/${part(server)}/drift/accept`,
+      change,
+    ),
   /** The user's change of the always-loaded and excluded skills, at `expected`. */
   changeSkillSettings: (project: string, change: SkillSettingsChange) =>
     post<SkillSettingsView>(`/projects/${part(project)}/skills/settings`, change),

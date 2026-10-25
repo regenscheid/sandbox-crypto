@@ -58,6 +58,7 @@ from . import (
     approvals,
     artifacts,
     chat,
+    classifications,
     context_inspector,
     documents,
     errors,
@@ -231,6 +232,7 @@ def create_app(
     mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
     mcp_metadata: MetadataClient | None = None,
     mcp_approvals: approvals.ApprovalClient | None = None,
+    mcp_classifications: classifications.ClassificationSource | None = None,
     model_configuration: project_settings.ModelConfiguration | None = None,
     exposure: Exposure | None = None,
 ) -> web.Application:
@@ -246,7 +248,8 @@ def create_app(
     With ``skills_metadata``, the alias of the import's pass, the skills page shows what
     that pass derived, as runs are given it. ``exposure`` names a public origin and the
     proxies trusted to forward the scheme and host (proxy.py); without it a request is seen
-    as it arrives."""
+    as it arrives. ``mcp_classifications`` reads and accepts the configured services'
+    classifications; without it, ``job_worker`` does when its client has those routes."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
     if mcp_inventory and mcp_project is None:
@@ -407,6 +410,7 @@ def create_app(
         context_inspector,
         skills,
         mcp_services,
+        classifications,
         messages,
         uploads,
         session_opening,
@@ -418,6 +422,12 @@ def create_app(
     if mcp_approvals is not None or job_worker is not None:
         # Cards for tool calls the proxy holds, and network and package requests (D97).
         approvals.configure(app, mcp_project, mcp_approvals, job_worker)
+    classifications.configure(
+        app,
+        mcp_classifications
+        if mcp_classifications is not None
+        else classifications.from_worker(job_worker),
+    )
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)
