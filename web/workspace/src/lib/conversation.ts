@@ -169,10 +169,22 @@ export function foldTranscript(
       continue;
     }
     if (entry.kind === 'note' && entry.background) {
-      signal(entry.seq, at(entry.seq), entry.background, background, show, signalled);
+      const found = entry.background;
+      if (found.event === 'notice' && found.what === 'delegations') {
+        // A delegation that ended is its outcome block alone: the block is shown (now, or
+        // earlier), so no background row counts it too. A wait on it still marks it
+        // finished on the wait's row (B10).
+        outcome(entry.seq, found.ids);
+        const rows = background.length;
+        signal(entry.seq, at(entry.seq), found, background, show, signalled, (id) =>
+          outcomes.has(id),
+        );
+        // The outcome block comes between this notice and the next, unless a row was made.
+        signalled = background.length > rows;
+        continue;
+      }
+      signal(entry.seq, at(entry.seq), found, background, show, signalled);
       signalled = true;
-      if (entry.background.event === 'notice' && entry.background.what === 'delegations')
-        outcome(entry.seq, entry.background.ids);
       continue;
     }
     if (entry.kind === 'tool' && MESSAGE_TOOLS.has(entry.name)) {
@@ -352,6 +364,8 @@ function signal(
   show: (item: BackgroundItem) => void,
   /** Whether the entry before was a signal too, so that notices may share a row. */
   adjacent: boolean,
+  /** IDs a notice's own row leaves out, since another row shows them (an outcome block). */
+  shownElsewhere: (id: string) => boolean = () => false,
 ): void {
   if (found.event === 'wait') {
     const open = background.findLast(
@@ -386,7 +400,7 @@ function signal(
     );
     if (item && found.what !== 'kernels') {
       if (!item.finished.includes(id)) item.finished.push(id);
-    } else unclaimed.push(id);
+    } else if (!shownElsewhere(id)) unclaimed.push(id);
   }
   if (!unclaimed.length) return;
   const last = background.at(-1);

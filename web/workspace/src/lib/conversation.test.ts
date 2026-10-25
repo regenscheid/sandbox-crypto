@@ -577,6 +577,51 @@ describe('agent messages and children’s outcomes (B10, item 2)', () => {
     expect((items[3] as ChildOutcomesItem).delegations).toEqual(['dlg-b']);
   });
 
+  it('shows a delegation that ended without a wait as its outcome block alone', () => {
+    const events = [
+      event(1, 0, 'assistant', { text: 'Delegating.', tool_calls: [] }),
+      event(2, 3, 'notice', { source: 'delegations', ids: ['dlg-a'] }),
+      event(3, 4, 'notice', { source: 'jobs', ids: ['j1'] }),
+      event(4, 5, 'notice', { source: 'delegations', ids: ['dlg-a', 'dlg-b'] }),
+      event(5, 6, 'assistant', { text: 'Both are back.', tool_calls: [] }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    // No "Subagent · 1 finished" row beside the blocks; a job's notice keeps its row, and
+    // a delegation named again is not shown twice.
+    expect(items.map((item) => item.kind)).toEqual([
+      'reply',
+      'child-outcomes',
+      'background',
+      'child-outcomes',
+      'reply',
+    ]);
+    expect((items[1] as ChildOutcomesItem).delegations).toEqual(['dlg-a']);
+    expect((items[2] as BackgroundItem).what).toBe('jobs');
+    expect((items[3] as ChildOutcomesItem).delegations).toEqual(['dlg-b']);
+  });
+
+  it('keeps the background row of a wait on delegations beside their outcome blocks', () => {
+    const events = [
+      event(1, 0, 'assistant', {
+        text: '',
+        tool_calls: [call('c1', 'wait_delegations', { delegation_ids: ['dlg-a'] })],
+      }),
+      event(2, 0, 'waiting', { delegation_ids: ['dlg-a'], mode: 'all' }),
+      event(3, 2, 'notice', { source: 'delegations', ids: ['dlg-a'] }),
+      event(4, 3, 'notice', { source: 'jobs', ids: ['j1'] }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    expect(items.map((item) => item.kind)).toEqual([
+      'work',
+      'background',
+      'child-outcomes',
+      'background',
+    ]);
+    const wait = items[1] as BackgroundItem;
+    expect([wait.what, wait.waited, wait.finished]).toEqual(['delegations', true, ['dlg-a']]);
+    expect((items[3] as BackgroundItem).what).toBe('jobs');
+  });
+
   it('keeps the live group on the wait while a child that ended shows after it', () => {
     const events = [
       event(1, 0, 'assistant', {
