@@ -292,7 +292,22 @@ With an `[openshell.environments]` table, the worker creates the sandboxes behin
 
   If creation fails, the worker retains the original `creating` record until cleanup is confirmed. Readiness polling saves the first observed sandbox ID before accepting or rejecting its phase. A retry deletes only that original identity, verifies absence, and then allocates a replacement name. Delete failure, pending deletion or an identity change leaves the record and cleanup obligation intact across restart.
 
-  If the creation response was lost and no sandbox identity has appeared yet, absence is inconclusive: upstream work could still create it later. The environment stays `creating`, counts against the environment limit, and replacement and explicit deletion report an unknown creation outcome. Retry can reconcile it when it appears. If it never appears, an operator must reconcile the upstream request; elapsed time alone does not authorize forgetting it.
+  If the creation response was lost and no sandbox identity has appeared yet, one read of absence is inconclusive: upstream work could still create it later. The environment stays `creating` and counts against the environment limit until absence is **confirmed**, which takes all of these, checked against the gateway:
+
+  - the record is older than `creation_grace` (default 420 s: OpenShell 0.1.5's fixed 300 s bootstrap grace, after which its driver rolls a sandbox back, plus 120 s; never less than 300 s);
+  - the gateway has no sandbox by the environment's original name, and `openshell sandbox list` shows none by that name and none whose labels, annotations or metadata name the environment or that name. A listing with more pages, or one the worker cannot read, confirms nothing;
+  - that absence was seen on two reads at least `creation_recheck` apart (default 30 s), both past the grace. Each such read is recorded on the environment (when, and what was listed) in the worker's environment records.
+
+  On confirmed absence the environment is marked `deleted` with the reason `creation_rolled_back` and its deletion confirmed, so its record is forgotten by the ordinary path and its ID may be created again. Anything less is refused with the unknown-outcome message, naming what is missing ("seen absent once, at …; a second read after … confirms it", or "the record is younger than the creation grace"). If any read shows the sandbox, the environment takes its identity and continues as any creation with an identity does: deleting the environment, or creating it again, deletes that sandbox by identity. Reconciliation itself never deletes a sandbox.
+
+  Three paths apply the rule. The running worker checks every `creating` environment without an identity past the grace once per `creation_recheck`, so most unknown outcomes clear themselves within a minute of the grace; it skips an environment whose creation or deletion is under way. Deleting the environment, or creating it again, through the API succeeds by the same rule instead of being refused. With the worker stopped, an operator lists and reconciles them:
+
+  ```bash
+  sandbox-science-worker environments list --settings worker.toml --state creating
+  sandbox-science-worker environments reconcile --settings worker.toml [--no-wait] env-1
+  ```
+
+  `reconcile` makes the reads itself, waiting for the second one when one absence is recorded (`--no-wait` refuses instead), and prints what it did (`rolled_back`, `adopted`) or why it refused (`inconclusive`, `skipped`), exiting 1 on a refusal. Like `captures`, it takes the state directory's lock, so it refuses while a worker runs and points at the worker's own pass. Each read holds only that environment's lock, the one creation and deletion hold, and never sleeps under it. One case is outside the rule: a `sandbox create` command still running from a worker that crashed, whose sandbox the gateway receives after the grace.
 - **Revising:**
   1. The worker compiles the new revision, deciding again every host it decided on demand under the old one ([admission on demand](#admission-on-demand)). It refuses a revision whose providers differ, since OpenShell attaches providers only when it creates a sandbox.
   2. It reads the sandbox's live filesystem section (`openshell policy get --base`), because OpenShell refuses a revision that removes any path from it.
@@ -803,6 +818,8 @@ targets = "targets.yaml"             # OpenShell targets for the compiler
 ceiling = "pool-ceiling.yaml"        # the same pool ceiling the middleware applies
 profiles = {minimal = "sandbox-science/minimal:<sha>", crypto-base = "sandbox-science/crypto-base:<sha>"}   # base profile -> image (IMAGES.md)
 create_timeout = 600                 # seconds for a sandbox to become ready
+creation_grace = 420                 # seconds before a creation with an unknown outcome may be found absent (at least 300)
+creation_recheck = 30                # seconds between the two reads that confirm it absent, and between the worker's passes
 event_store = "/var/lib/sandbox-science/middleware/events.db"   # optional: where provisioning writes its permission requests, withdrawals and provision.* records; this is the default
 admission = true                     # admit hosts on demand (D69)
 admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's admin_hosts

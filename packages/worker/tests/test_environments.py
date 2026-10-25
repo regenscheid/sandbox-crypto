@@ -167,6 +167,14 @@ elif command == ["sandbox", "get"]:
     box = sandboxes[name]
     out = json.dumps({"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
                       "configuration_admission": {"state": "accepted", "error": ""}})
+elif command == ["sandbox", "list"]:
+    if state.get("fail_list"):
+        fail("synthetic gateway unavailable")
+    listed = [{"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
+               **({"labels": box["labels"]} if "labels" in box else {})}
+              for name, box in sandboxes.items()]
+    out = json.dumps({"sandboxes": listed + state.get("extra_listed", []),
+                      "next_page_token": state.get("page_token", "")})
 elif command == ["sandbox", "stop"]:
     if state.get("fail_stop"):
         fail("synthetic stop failure")

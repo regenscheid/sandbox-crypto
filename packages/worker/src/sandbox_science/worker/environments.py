@@ -43,7 +43,7 @@ import sqlite3
 import threading
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NoReturn, cast
 
@@ -86,6 +86,19 @@ from .provisioner import Governing
 from .recovery_fence import check_dispatch
 from .settings import EnvironmentSettings, OpenShellBackendSettings
 from .timeouts import seconds
+from .unknown_creations import (
+    CREATION_ROLLED_BACK,
+    MAX_OBSERVATIONS,
+    UNKNOWN_OUTCOME,
+    Observation,
+    Outcome,
+    Reconciliation,
+    confirms,
+    examine,
+    observation,
+    refusal,
+    when,
+)
 
 if TYPE_CHECKING:
     from .store import Store
@@ -255,6 +268,11 @@ class OpenShellCli:
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox get returned no object")
         return cast(dict[str, object], document)
 
+    async def sandboxes(self) -> object:
+        """``openshell sandbox list``'s answer, as JSON; ``unknown_creations.examine``
+        reads it."""
+        return await self.json("sandbox", "list")
+
 
 class EnvironmentRecords:
     """The worker's record of the environments it manages, in its own SQLite file."""
@@ -299,7 +317,114 @@ class EnvironmentRecords:
                 "ALTER TABLE sandbox_launch_settings ADD COLUMN require_workspace_prefix"
                 " INTEGER NOT NULL DEFAULT 0 CHECK (require_workspace_prefix IN (0,1))"
             )
+        # Reads that found no trace of a creation with an unknown outcome, and the
+        # environments marked deleted on that evidence (B3). Created when missing, so
+        # opening an older file adds them and opening it again changes nothing.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_observations ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, observed_at TEXT NOT NULL,"
+            " listed INTEGER NOT NULL, names TEXT NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_reconciliations ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
+            " reconciled_at TEXT NOT NULL, observations TEXT NOT NULL,"
+            " PRIMARY KEY (environment_id, sandbox))"
+        )
         self._lock = threading.Lock()
+
+    def observe(self, info: EnvironmentInfo, seen: Observation) -> tuple[Observation, ...]:
+        """Record a read that found no trace of the environment's original sandbox; return
+        the recorded ones for that name, oldest first, the newest ``MAX_OBSERVATIONS``."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "INSERT INTO creation_observations VALUES (?,?,?,?,?)",
+                    (
+                        info.environment_id,
+                        info.sandbox,
+                        seen.observed_at.isoformat(),
+                        seen.listed,
+                        json.dumps(list(seen.names)),
+                    ),
+                )
+                self._db.execute(
+                    "DELETE FROM creation_observations WHERE environment_id=? AND sandbox=?"
+                    " AND rowid NOT IN (SELECT rowid FROM creation_observations"
+                    " WHERE environment_id=? AND sandbox=? ORDER BY rowid DESC LIMIT ?)",
+                    (info.environment_id, info.sandbox) * 2 + (MAX_OBSERVATIONS,),
+                )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+        return self.observations(info)
+
+    def observations(self, info: EnvironmentInfo) -> tuple[Observation, ...]:
+        """The recorded absences of the environment's original sandbox, oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT observed_at, listed, names FROM creation_observations"
+                " WHERE environment_id=? AND sandbox=? ORDER BY rowid",
+                (info.environment_id, info.sandbox),
+            ).fetchall()
+        return tuple(
+            Observation(datetime.fromisoformat(str(at)), int(listed), tuple(json.loads(names)))
+            for at, listed, names in rows
+        )
+
+    def roll_back(self, info: EnvironmentInfo, reason: str, at: datetime) -> None:
+        """Record why a creation is deleted without a sandbox, with its evidence, and
+        confirm its deletion, in one transaction."""
+        evidence = json.dumps(
+            [
+                {"observed_at": o.observed_at.isoformat(), "listed": o.listed, "names": o.names}
+                for o in self.observations(info)
+            ]
+        )
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._db.execute(
+                    "INSERT INTO creation_reconciliations VALUES (?,?,?,?,?)"
+                    " ON CONFLICT (environment_id, sandbox) DO UPDATE SET reason=excluded.reason,"
+                    " reconciled_at=excluded.reconciled_at, observations=excluded.observations",
+                    (info.environment_id, info.sandbox, reason, at.isoformat(), evidence),
+                )
+                self._db.execute(
+                    "INSERT INTO confirmed_deletions VALUES (?,?,?) ON CONFLICT(environment_id)"
+                    " DO UPDATE SET sandbox=excluded.sandbox,sandbox_id=excluded.sandbox_id",
+                    (info.environment_id, info.sandbox, info.sandbox_id),
+                )
+                self._db.execute("COMMIT")
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def reconciliation(self, environment_id: str) -> tuple[str, str, datetime, int] | None:
+        """The latest creation of the environment deleted without a sandbox: its sandbox
+        name, the reason, when, and how many recorded reads found it absent."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT sandbox, reason, reconciled_at, observations FROM creation_reconciliations"
+                " WHERE environment_id=? ORDER BY reconciled_at DESC LIMIT 1",
+                (environment_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        sandbox, reason, at, evidence = row
+        count = len(cast(list[object], json.loads(evidence)))
+        return str(sandbox), str(reason), datetime.fromisoformat(str(at)), count
+
+    def creating(self) -> list[EnvironmentInfo]:
+        """The environments still being created, of every kind."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT document FROM environments ORDER BY environment_id"
+            ).fetchall()
+        infos = [EnvironmentInfo.model_validate_json(row[0]) for row in rows]
+        return [info for info in infos if info.state is EnvironmentState.CREATING]
 
     def confirm_deletion(self, info: EnvironmentInfo) -> None:
         """Remember gateway-confirmed deletion before fallible local cleanup."""
@@ -479,9 +604,12 @@ class EnvironmentRecords:
         return row is not None
 
     def forget(self, environment_id: str) -> None:
-        """Drop an environment's decisions, when its sandbox is deleted."""
+        """Drop an environment's decisions and creation reads, when its sandbox is deleted."""
         with self._lock:
             self._db.execute("DELETE FROM admissions WHERE environment_id = ?", (environment_id,))
+            self._db.execute(
+                "DELETE FROM creation_observations WHERE environment_id = ?", (environment_id,)
+            )
 
     def decided_since(self, environment_id: str, since: datetime) -> list[Admission]:
         """An environment's decisions made after ``since``, oldest first."""
@@ -1027,20 +1155,138 @@ class Environments:
             return await _owned(self._delete(environment_id))
 
     async def _cleanup_creation(self, info: EnvironmentInfo) -> EnvironmentInfo:
-        """Reconcile one creation, retaining its record until deletion is confirmed."""
+        """Reconcile one creation, retaining its record until deletion is confirmed.
+
+        A creation without an identity is deleted without a sandbox only on confirmed
+        absence (``unknown_creations``); otherwise its deletion is refused."""
         if info.sandbox_id is None:
-            document = await self.cli.sandbox(info.sandbox)
-            sandbox_id = document.get("id") if document is not None else None
-            if not isinstance(sandbox_id, str) or not sandbox_id:
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE,
-                    "sandbox creation outcome is unknown; its original name is retained "
-                    "until the gateway exposes an identity or an operator reconciles it",
-                )
+            outcome = await self._creation_outcome(info)
+            if outcome.sandbox_id is None:
+                if not outcome.confirmed:
+                    raise refusal(outcome)
+                return await self._roll_back(info)
             # The worker allocated this random name before dispatch. Once an object
             # appears, keep its identity before a delete or another fallible await.
-            info = self._creation_identity(info, sandbox_id)
+            info = self._creation_identity(info, outcome.sandbox_id)
         return await self._delete(info.environment_id)
+
+    async def _creation_outcome(self, info: EnvironmentInfo) -> Outcome:
+        """One reconciliation read of a creation without an identity (B3).
+
+        The sandbox's own name first: any sandbox there gives its identity. Past the
+        grace, the listing too, and a read with no trace is recorded; two such reads
+        ``creation_recheck`` apart confirm absence. Gateway failures raise, and count
+        as nothing."""
+        document = await self.cli.sandbox(info.sandbox)
+        if document is not None:
+            identity = document.get("id")
+            if isinstance(identity, str) and identity:
+                return Outcome(sandbox_id=identity)
+            return Outcome(
+                message=f"{UNKNOWN_OUTCOME}: the gateway shows {info.sandbox} without an identity"
+            )
+        now = self.clock.now()
+        grace = self.settings.creation_grace
+        absent_from = info.created_at + timedelta(seconds=grace)
+        if now < absent_from:
+            return Outcome(
+                message=f"{UNKNOWN_OUTCOME}: the record is younger than the creation grace"
+                f" ({grace:g} s); absence can be observed from {when(absent_from)}"
+            )
+        listing = examine(await self.cli.sandboxes(), info)
+        if listing.sandbox_id is not None:
+            return Outcome(sandbox_id=listing.sandbox_id)
+        if listing.blocker is not None:
+            return Outcome(message=f"{UNKNOWN_OUTCOME}: {listing.blocker}")
+        seen = self.records.observe(info, observation(now, listing.names))
+        recheck = self.settings.creation_recheck
+        if confirms(seen, now, recheck):
+            return Outcome(
+                confirmed=True,
+                message=f"{info.sandbox} was absent on {len(seen)} reads from"
+                f" {when(seen[0].observed_at)} to {when(now)}",
+            )
+        first = when(seen[0].observed_at)
+        times = f"once, at {first}" if len(seen) == 1 else f"{len(seen)} times since {first}"
+        retry_at = seen[0].observed_at + timedelta(seconds=recheck)
+        return Outcome(
+            message=f"{UNKNOWN_OUTCOME}: seen absent {times};"
+            f" a second read after {when(retry_at)} confirms it",
+            retry_at=retry_at,
+        )
+
+    async def _roll_back(self, info: EnvironmentInfo) -> EnvironmentInfo:
+        """Mark a creation confirmed absent as deleted (``creation_rolled_back``), its
+        deletion confirmed, so the ordinary path forgets its record and frees its ID."""
+        self.records.roll_back(info, CREATION_ROLLED_BACK, self.clock.now())
+        _log.warning(
+            "environment %s: sandbox %s never appeared; marked deleted (%s)",
+            info.environment_id,
+            info.sandbox,
+            CREATION_ROLLED_BACK,
+        )
+        return await self._delete(info.environment_id)
+
+    async def reconcile_creation(self, environment_id: str) -> Reconciliation:
+        """Make one reconciliation read of a creation with an unknown outcome (B3), under
+        the environment's lock, and act on it: a sandbox that appeared gives the
+        environment its identity, and confirmed absence marks it deleted. Nothing here
+        deletes a sandbox. When only a later read is missing, ``retry_at`` says when."""
+        async with self._lock(environment_id):
+            info = self.get(environment_id)
+            if info.state is not EnvironmentState.CREATING:
+                return Reconciliation(
+                    environment_id, "skipped", f"{environment_id} is {info.state}, not creating"
+                )
+            if info.sandbox_id is not None:
+                return Reconciliation(
+                    environment_id,
+                    "skipped",
+                    f"{environment_id}'s sandbox {info.sandbox} has identity"
+                    f" {info.sandbox_id}; deleting the environment deletes it by identity",
+                )
+            outcome = await self._creation_outcome(info)
+            if outcome.sandbox_id is not None:
+                self._creation_identity(info, outcome.sandbox_id)
+                return Reconciliation(
+                    environment_id,
+                    "adopted",
+                    f"sandbox {info.sandbox} exists with identity {outcome.sandbox_id};"
+                    " the environment keeps it, and deleting the environment deletes it",
+                )
+            if outcome.confirmed:
+                await _owned(self._roll_back(info))
+                return Reconciliation(
+                    environment_id,
+                    "rolled_back",
+                    f"{outcome.message}; {environment_id} is deleted"
+                    f" ({CREATION_ROLLED_BACK}) and its ID may be created again",
+                )
+            return Reconciliation(
+                environment_id, "inconclusive", outcome.message, retry_at=outcome.retry_at
+            )
+
+    async def reconcile_creations(self) -> list[Reconciliation]:
+        """The running worker's pass: one read for each creation without an identity
+        past the grace, skipping environments whose lock is held or awaited."""
+        done: list[Reconciliation] = []
+        grace = timedelta(seconds=self.settings.creation_grace)
+        for info in self.records.creating():
+            if info.sandbox_id is not None or self.clock.now() < info.created_at + grace:
+                continue
+            if self.busy(info.environment_id):
+                continue  # a creation or deletion under way decides it
+            try:
+                result = await self.reconcile_creation(info.environment_id)
+            except WorkerError as error:
+                _log.warning(
+                    "could not reconcile environment %s: %s", info.environment_id, error.message
+                )
+                continue
+            if result.action in ("rolled_back", "adopted"):
+                _log.info("environment %s: %s", info.environment_id, result.message)
+            done.append(result)
+        return done
 
     def _creation_identity(self, info: EnvironmentInfo, sandbox_id: str) -> EnvironmentInfo:
         if info.sandbox_id is not None and info.sandbox_id != sandbox_id:

@@ -6,6 +6,8 @@ sandbox-science-worker serve --settings worker.toml [--log-level info]
 sandbox-science-worker token --out worker.token     # prints the new token's SHA-256
 sandbox-science-worker token --sha256 client.token  # the SHA-256 of an existing token
 sandbox-science-worker policy add --settings worker.toml [--project p1] policy.yaml
+sandbox-science-worker environments list --settings worker.toml [--state creating]
+sandbox-science-worker environments reconcile --settings worker.toml [--no-wait] ENVIRONMENT_ID
 ```
 
 ``policy add`` is the operator's way to put a project policy revision into the pool's
@@ -39,13 +41,14 @@ from . import checkpoint_cli
 from .admission import DraftWatcher
 from .artifact_retention import MAX_RELEASE_PAGE
 from .artifacts import Blobs
-from .build import build_worker
+from .build import build_environments, build_worker
 from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
 from .settings import MIN_TOKEN, Settings, SettingsError, load_settings, token_digest
 from .state_lock import StateLock
 from .store import Store
 from .suspend import Suspender
+from .unknown_creations import CreationReconciler, Reconciliation, when
 
 _log = logging.getLogger("sandbox_science.worker")
 
@@ -81,6 +84,12 @@ async def serve(settings: Settings) -> None:
         if environments is not None and environments.settings.admission:
             interval = environments.settings.admission_interval
             background.append(asyncio.create_task(DraftWatcher(environments, interval).run()))
+        if environments is not None:
+            # Creations with an unknown outcome clear themselves on confirmed absence (B3).
+            reconciler = CreationReconciler(
+                environments, environments.settings.creation_recheck, clock=clock
+            )
+            background.append(asyncio.create_task(reconciler.run()))
         if environments is not None and environments.settings.suspend_after is not None:
             suspender = Suspender(
                 environments, manager, environments.settings.suspend_after, clock=clock
@@ -163,6 +172,90 @@ def show_admissions(settings: Settings, environment_id: str) -> int:
     finally:
         records.close()
     return 0
+
+
+def list_environments(settings: Settings, state: str | None) -> int:
+    """Print the environments that are not deleted, of one state or of every state; a
+    creation without an identity says how often it was seen absent (B3)."""
+    if settings.openshell is None or settings.openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    path = settings.state_dir / "environments.sqlite3"
+    if not path.is_file():
+        print(f"error: no environment records at {path}; check state_dir", file=sys.stderr)
+        return 1
+    records = EnvironmentRecords(path)
+    try:
+        shown = [info for info in records.listed(None) if state in (None, info.state)]
+        if not shown:
+            print(f"no {state} environments" if state else "no environments")
+        for info in shown:
+            line = (
+                f"{info.environment_id} {info.state} project {info.project_id} {info.kind}"
+                f" sandbox {info.sandbox} ({info.sandbox_id or 'no identity'})"
+                f" created {when(info.created_at)}"
+            )
+            if info.state == "creating" and info.sandbox_id is None:
+                seen = records.observations(info)
+                line += f"; seen absent {len(seen)} times" + (
+                    f", last at {when(seen[-1].observed_at)}" if seen else ""
+                )
+            print(line)
+    finally:
+        records.close()
+    return 0
+
+
+def reconcile_environment(settings: Settings, environment_id: str, *, wait: bool) -> int:
+    """Reconcile a creation with an unknown outcome on confirmed absence (B3), with the
+    worker stopped: it takes the state directory's lock, as ``captures`` does."""
+    openshell = settings.openshell
+    if openshell is None or openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    try:
+        lock = StateLock(settings.state_dir)
+    except SettingsError as exc:
+        print(
+            f"error: {exc}. The running worker reconciles creating environments itself every"
+            f" {openshell.environments.creation_recheck:g} s, and deleting one through its API"
+            " follows the same rule; stop it to reconcile one here",
+            file=sys.stderr,
+        )
+        return 1
+    with lock:
+        if not (settings.state_dir / "environments.sqlite3").is_file():
+            print(f"error: no environment records in {settings.state_dir}", file=sys.stderr)
+            return 1
+        try:
+            environments = build_environments(settings)
+        except (SettingsError, WorkerError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        if environments is None:  # checked above; the builder says so again
+            return 1
+        try:
+            result = asyncio.run(_reconcile(environments, environment_id, wait=wait))
+        except WorkerError as error:
+            print(f"error: {environment_id}: {error.message}", file=sys.stderr)
+            return 1
+        finally:
+            environments.close()
+    print(f"{result.action}: {result.message}")
+    return 0 if result.action in ("rolled_back", "adopted") else 1
+
+
+async def _reconcile(
+    environments: Environments, environment_id: str, *, wait: bool
+) -> Reconciliation:
+    result = await environments.reconcile_creation(environment_id)
+    if wait and result.action == "inconclusive" and result.retry_at is not None:
+        print(f"waiting: {result.message}", flush=True)
+        delay = (result.retry_at - environments.clock.now()).total_seconds()
+        # A little past the due time, so the second read is never early.
+        await environments.clock.sleep(max(delay, 0.0) + 0.05)
+        result = await environments.reconcile_creation(environment_id)
+    return result
 
 
 def show_captures(settings: Settings, clear: Sequence[str]) -> int:
@@ -285,6 +378,29 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="forget this lease, once its sandbox cleaned up or is gone (repeatable)",
     )
+    environments_parser = commands.add_parser(
+        "environments", help="list environments, and reconcile creations with an unknown outcome"
+    )
+    environments_commands = environments_parser.add_subparsers(
+        dest="environments_command", required=True
+    )
+    list_parser = environments_commands.add_parser(
+        "list", help="list the environments that are not deleted"
+    )
+    list_parser.add_argument("--settings", type=Path, required=True)
+    list_parser.add_argument("--state", choices=["creating", "ready", "stopped"])
+    reconcile_parser = environments_commands.add_parser(
+        "reconcile",
+        help="mark a creation whose sandbox is confirmed absent deleted; the worker is stopped",
+    )
+    reconcile_parser.add_argument("--settings", type=Path, required=True)
+    reconcile_parser.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        help="refuse instead of waiting for the second read that confirms absence",
+    )
+    reconcile_parser.add_argument("environment_id")
     retention_parser = commands.add_parser(
         "artifact-retention", help="offline capture replica release; dry-run by default"
     )
@@ -318,7 +434,7 @@ def main(argv: list[str] | None = None) -> int:
         # The line a [[clients]] entry takes; the digest names the token without revealing it.
         print(f'token_sha256 = "{token_digest(token)}"')
         return 0
-    if args.command in ("policy", "admissions", "captures", "artifact-retention"):
+    if args.command in ("policy", "admissions", "captures", "artifact-retention", "environments"):
         try:
             settings = load_settings(args.settings)
         except SettingsError as exc:
@@ -328,6 +444,10 @@ def main(argv: list[str] | None = None) -> int:
             return add_policies(settings, args.policies, args.projects)
         if args.command == "captures":
             return show_captures(settings, args.clear)
+        if args.command == "environments" and args.environments_command == "list":
+            return list_environments(settings, args.state)
+        if args.command == "environments":
+            return reconcile_environment(settings, args.environment_id, wait=args.wait)
         if args.command == "artifact-retention":
             return release_artifacts(settings, apply=args.apply, limit=args.limit, after=args.after)
         return show_admissions(settings, args.environment)
