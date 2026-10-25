@@ -111,6 +111,9 @@ class WorkerPermissionRequest(Contract):
     """The environment whose sandbox asked; an MCP call names none."""
     session_id: Identifier | None = None
     """The session that asked, when the request names one (a provisioning operation)."""
+    run: Text | None = None
+    """The run whose MCP call it is, as the run service named it in its headers and the
+    middleware recorded it (DA-4): attribution only. A delegated run's card names it."""
     caller_kind: CallerKind
     policy: Text
     """The policy revision it was escalated under."""

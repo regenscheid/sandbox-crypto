@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,9 @@ from typing import Any, cast
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from sandbox_science.contracts import new_id
 from sandbox_science.event_store import EventStore
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
@@ -57,7 +60,7 @@ class Middleware:
     config: dict[str, object]
     calls: int = 0
 
-    def call(self, arguments: dict[str, object], session: str = "a") -> str:
+    def call(self, arguments: dict[str, object], session: str = "a", run: str = "main-1") -> str:
         """One tools/call of the write tool: '' if admitted, else the reason code."""
         self.calls += 1
         body = {
@@ -78,7 +81,7 @@ class Middleware:
             headers=(
                 ("content-type", "application/json"),
                 ("sandbox-science-session", session),
-                ("sandbox-science-run", "main-1"),
+                ("sandbox-science-run", run),
             ),
             body=json.dumps(body, sort_keys=True).encode(),
             config=self.config,
@@ -197,7 +200,7 @@ async def test_a_held_direct_call_is_a_card_answered_like_a_proxy_call(
     )  # fmt: skip
     assert (card["caller_kind"], card["effect"], card["max_grant"]) == ("agent", "write", "project")
     assert card["summary"] == {"title": "monitor-1"}
-    assert card["session"] == "a"
+    assert (card["session"], card["run"], card["child"]) == ("a", "main-1", None)
     assert card["scopes"] == ["once", "session", "project"]  # within write's ceiling
     assert seq not in await shown(client, "c")  # another session's card list
     # Answered through the same route; the middleware lets the call through on its retry.
@@ -232,6 +235,63 @@ async def test_a_direct_call_is_never_answered_through_the_proxy_or_beyond_its_c
     other = request_of(middleware.call({"id": "monitor-4"}))
     body = {"decision": "once", "kind": "network", "source": "worker"}
     await post(client, ANSWER.format(other), body, 409)
+
+
+async def test_a_delegated_runs_direct_call_names_the_child_and_its_brief(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    middleware: Middleware,
+    worker_url: str,
+) -> None:
+    """DA-9 on the direct path: the card names the run, and for a delegated run the child
+    and its parent's brief; a main run's names none, and nor does a run the session's
+    tree does not list."""
+    delegation = new_id("dlg")
+    store = ProjectStore(state_dir)
+    try:
+        DelegationRecords(store.control).start(
+            "p1",
+            "a",
+            Delegation(
+                delegation_id=delegation, parent="main-1", run="child-1", kind="task",
+                brief={"task": "Find the SNOVA parameter sets."},
+                started_at=datetime.now(UTC),
+            ),
+        )  # fmt: skip
+        # Another session's delegation of the same run name is not this session's child.
+        DelegationRecords(store.control).start(
+            "p1",
+            "c",
+            Delegation(
+                delegation_id=new_id("dlg"), parent="main-2", run="stranger-1", kind="check",
+                brief={"check": {"entry": "e1"}, "note": "Recheck."},
+                started_at=datetime.now(UTC),
+            ),
+        )  # fmt: skip
+    finally:
+        store.close()
+    client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=worker_url)
+    main = request_of(middleware.call({"id": "m-1"}))
+    child = request_of(middleware.call({"id": "m-2"}, run="child-1"))
+    unlisted = request_of(middleware.call({"id": "m-3"}, run="lost-9"))
+    elsewhere = request_of(middleware.call({"id": "m-4"}, run="stranger-1"))
+    cards = await shown(client)
+    assert cards[main]["child"] is None
+    assert cards[child]["run"] == "child-1"
+    assert cards[child]["child"] == {
+        "delegation_id": delegation,
+        "run": "child-1",
+        "kind": "task",
+        "brief": "Find the SNOVA parameter sets.",
+        "words": "",
+    }
+    assert (cards[unlisted]["run"], cards[unlisted]["child"]) == ("lost-9", None)
+    assert cards[elsewhere]["child"] is None  # the delegation is another session's
+    # The child's card is answered as any direct call's is.
+    body = {"decision": "once", "kind": "mcp", "source": "worker"}
+    await post(client, ANSWER.format(child), body)
+    assert middleware.call({"id": "m-2"}, run="child-1") == ""
 
 
 READ_TOOL = "attack-catalog-mcp_search_attacks"
