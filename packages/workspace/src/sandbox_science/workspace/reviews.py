@@ -7,14 +7,11 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from aiohttp import web
-from pydantic import ValidationError
 
-from sandbox_science.contracts.artifact_inventory import ArtifactLink
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentError
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.mathchecks.contexts import finding_macro_contexts
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 
@@ -150,53 +147,10 @@ async def finding(request: web.Request) -> web.Response:
     )
 
 
-def reviewed_revisions(store: ReviewStore, project: str, finding: Json) -> list[Json]:
-    """What ``finding`` reviewed and where each now stands, for its card (CR-46): each
-    document, artifact and ledger entry its anchors name, at the latest revision they
-    name, beside its current revision, or null when it can no longer be read. Read only;
-    whether a newer revision replaced what was reviewed is the re-check's to decide."""
-    with store.documents.control.read() as tx:
-        marks = Findings.marks(tx.sql, finding)
-    found: list[Json] = []
-    for document, reviewed in sorted(marks.documents.items()):
-        try:
-            current: int | None = store.documents.document(project, document).head
-        except DocumentError:
-            current = None
-        found.append({"kind": "document", "id": document, "reviewed": reviewed, "current": current})
-    for artifact, reviewed in sorted(marks.artifacts.items()):
-        current = None
-        if store.artifacts is not None:
-            try:
-                current = store.artifacts.resolve(
-                    project, ArtifactLink(project_id=project, artifact_id=artifact, mode="latest")
-                ).reference.revision
-            except (DocumentError, ValidationError):
-                current = None
-        found.append({"kind": "artifact", "id": artifact, "reviewed": reviewed, "current": current})
-    for entry, reviewed in sorted(marks.entries.items()):
-        handle: str | None = None
-        try:
-            view = Ledger(store.documents).entry(project, entry)
-            current, handle = view.revision, view.handle
-        except DocumentError:
-            current = None
-        found.append(
-            {
-                "kind": "entry",
-                "id": entry,
-                "handle": handle,
-                "reviewed": reviewed,
-                "current": current,
-            }
-        )
-    return found
-
-
 def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
     """The finding with the macro contexts it is shown with, and the revisions it
     reviewed beside the current ones."""
-    finding["reviewed_revisions"] = reviewed_revisions(store, project, finding)
+    finding["reviewed_revisions"] = Findings(store).reviewed_revisions(project, finding)
     found = finding_macro_contexts(store, project, finding)
     finding["macro_context"] = found.finding.model_dump(mode="json", exclude_none=True)
     for entry in finding.get("history", []):

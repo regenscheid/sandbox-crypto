@@ -453,6 +453,56 @@ class Findings:
             "next_after": values[-1]["finding_id"] if len(ids) > len(values) else None,
         }
 
+    def reviewed_revisions(self, project: str, finding: Json) -> list[Json]:
+        """What ``finding`` reviewed and where each now stands, for the workspace's card
+        (CR-46): each document, artifact and ledger entry its anchors name, at the latest
+        revision they name, beside its current revision, or null when it can no longer be
+        read. Read only; whether a newer revision replaced what was reviewed is the
+        re-check's to decide (CR-42)."""
+        from sandbox_science.orchestrator.ledger import Ledger
+
+        with self.store.documents.control.read() as tx:
+            marks = self.marks(tx.sql, finding)
+        found: list[Json] = []
+        for document, reviewed in sorted(marks.documents.items()):
+            try:
+                current: int | None = self.store.documents.document(project, document).head
+            except DocumentError:
+                current = None
+            found.append(
+                {"kind": "document", "id": document, "reviewed": reviewed, "current": current}
+            )
+        for artifact, reviewed in sorted(marks.artifacts.items()):
+            current = None
+            if self.store.artifacts is not None:
+                try:
+                    current = self.store.artifacts.resolve(
+                        project,
+                        ArtifactLink(project_id=project, artifact_id=artifact, mode="latest"),
+                    ).reference.revision
+                except (DocumentError, ValidationError):
+                    current = None
+            found.append(
+                {"kind": "artifact", "id": artifact, "reviewed": reviewed, "current": current}
+            )
+        for entry, reviewed in sorted(marks.entries.items()):
+            handle: str | None = None
+            try:
+                view = Ledger(self.store.documents).entry(project, entry)
+                current, handle = view.revision, view.handle
+            except DocumentError:
+                current = None
+            found.append(
+                {
+                    "kind": "entry",
+                    "id": entry,
+                    "handle": handle,
+                    "reviewed": reviewed,
+                    "current": current,
+                }
+            )
+        return found
+
     def validate_anchor(
         self, project: str, session: str, review: str, anchor: EvidenceAnchor
     ) -> Json:
