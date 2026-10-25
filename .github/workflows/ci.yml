@@ -40,6 +40,10 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run python scripts/check_licenses.py
+      # The trusted images' licenses.txt against their locked wheels, so a new dependency's
+      # license is caught here and not by the publish workflow.
+      - run: uv run python scripts/check_licenses.py --image trusted-app
+      - run: uv run python scripts/check_licenses.py --image trusted-worker
       # Every collected test is in exactly one tier, so none is left out of pull requests.
       - run: uv run python scripts/tiers.py check
 
