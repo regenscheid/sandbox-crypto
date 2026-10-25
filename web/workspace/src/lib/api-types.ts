@@ -10,6 +10,25 @@ export interface AdmissionSummary {
   recorded: boolean;
 }
 
+/** A page of the session's agent messages, oldest first. */
+export interface AgentMessagePage {
+  messages: AgentMessageView[];
+  next_after: string | null;
+  has_more: boolean;
+}
+
+/** One message between two direct relatives of the session's run tree. */
+export interface AgentMessageView {
+  message_id: string;
+  sender_run: string;
+  sender_delegation: string | null;
+  recipient_delegation: string | null;
+  body: string;
+  created_at: string;
+  delivered_run: string | null;
+  references: Record<string, JsonValue>[];
+}
+
 export interface AgentModelSelection {
   alias: string;
   reasoning_effort: string | null;

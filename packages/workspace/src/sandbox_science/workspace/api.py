@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.projects import (
 from sandbox_science.orchestrator.runstate import WINDOW, CostRole, RunState
 from sandbox_science.orchestrator.runtree import RunTree, RunTrees
 
+from . import agent_messages
 from .context import CONTEXT
 from .requests import json_response
 
@@ -157,6 +158,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}", session)
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}/runs/{run}", run)
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}/tree", tree)
+    agent_messages.add_routes(app)
 
 
 async def projects(request: web.Request) -> web.Response:
