@@ -102,8 +102,8 @@ No browser gets proxy credentials or direct MCP access.
 
 ## Classification review
 
-*Proposed 2026-10-25 for the owner's review (A3, D96's "accept-or-edit view"); not
-built.* D96 says each server's classification is checked in and admin-reviewed: a
+*Decided 2026-10-25 by the owner (A3, D96's "accept-or-edit view"): the three questions
+below as recommended; not built.* D96 says each server's classification is checked in and admin-reviewed: a
 trusted-side model drafts a proposal that the admin accepts or edits in the workspace,
 and a drift test fails when the server's tool list changes. The library, the
 checked-in files, `classify-draft` and the middleware's drift records exist
@@ -154,11 +154,10 @@ numbered CL-n.
   classification revision kind; the drift read is the middleware's existing record
   through the worker, as the request cards read it.
 
-Questions for the owner: (1) accepted classifications as project revisions in the policy
-store, with export for check-in, rather than repository files only (*recommended:* the
-store, so acceptance needs no deploy and is attributed); (2) acceptance and re-acceptance
-admin-only (*recommended:* yes); (3) proxy-side drift only after the A2 decision
-(*recommended:* yes).
+Decided by the owner, 2026-10-25: (1) accepted classifications are project revisions in
+the policy store, exportable for check-in, not repository files only (acceptance needs no
+deploy and is attributed); (2) acceptance and re-acceptance are admin-only; (3) proxy-side
+drift waits for the A2 decision.
 
 ## Other screens
 
