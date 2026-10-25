@@ -234,10 +234,23 @@ async def selftest() -> dict:
                 assert review is not None
                 items = reviews.manifest(recovery.PROJECT, session, review)["evidence"]
                 turns = [
-                    {"tool_calls": [{"name": "review_manifest", "arguments": {}}]},
                     {
                         "tool_calls": [
-                            {"name": "review_read", "arguments": {"evidence": item["evidence"]}}
+                            {
+                                "name": "review_manifest",
+                                "arguments": {"purpose_note": "Listing the pinned evidence"},
+                            }
+                        ]
+                    },
+                    {
+                        "tool_calls": [
+                            {
+                                "name": "review_read",
+                                "arguments": {
+                                    "purpose_note": "Reading one pinned item",
+                                    "evidence": item["evidence"],
+                                },
+                            }
                             for item in items
                         ]
                     },
@@ -251,6 +264,7 @@ async def selftest() -> dict:
                                 {
                                     "name": "review_finding",
                                     "arguments": {
+                                        "purpose_note": "Recording the contradiction found",
                                         "severity": "fail",
                                         "category": "contradicting_value",
                                         "statement": "The draft's differential uniformity 2 contradicts the calculation's 4.",
@@ -272,6 +286,7 @@ async def selftest() -> dict:
                                 {
                                     "name": "review_checked",
                                     "arguments": {
+                                        "purpose_note": "Recording what was checked",
                                         "statement": "The draft uniformity and probability match the pinned calculation.",
                                         "evidence": [item["evidence"] for item in items],
                                     },

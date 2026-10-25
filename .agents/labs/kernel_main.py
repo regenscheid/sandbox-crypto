@@ -672,7 +672,18 @@ class Lab:
 
         turns = [ModelTurn("Synthetic MAIN retained historical observations; no research result.")]
         if mode == "late-failure":
-            turns = [ModelTurn(None, (ToolCall("control-read", "document_list", "{}"),))]
+            turns = [
+                ModelTurn(
+                    None,
+                    (
+                        ToolCall(
+                            "control-read",
+                            "document_list",
+                            '{"purpose_note": "Listing the project documents"}',
+                        ),
+                    ),
+                )
+            ]
         model = Model(turns)
         transcript = None
         try:

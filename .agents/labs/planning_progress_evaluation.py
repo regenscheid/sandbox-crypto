@@ -408,7 +408,13 @@ class Calibration:
         name, arguments = actions[index]
         return ModelTurn(
             None,
-            (ToolCall(f"calibration-{index}", name, json.dumps(arguments)),),
+            (
+                ToolCall(
+                    f"calibration-{index}",
+                    name,
+                    json.dumps({"purpose_note": "Scripted planning calibration step", **arguments}),
+                ),
+            ),
             model="scripted-evaluation",
         )
 

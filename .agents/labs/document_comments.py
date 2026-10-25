@@ -135,7 +135,19 @@ async def respond(root: Path) -> None:
     span = found["anchor"]["math"] or mapped.span_ids[paragraph.spans[-1]]
     head = store.document(PROJECT, doc).head
     run = new_id("browser")
-    turns = [{"tool_calls": [{"name": "document_read", "arguments": {"document": doc}}]}]
+    turns = [
+        {
+            "tool_calls": [
+                {
+                    "name": "document_read",
+                    "arguments": {
+                        "purpose_note": "Reading the commented document",
+                        "document": doc,
+                    },
+                }
+            ]
+        }
+    ]
     target = r"\mathbb{F}_{17}^{\times}"
     old_span = mapped.span_index(span)
     changed = old_span is not None and mapped.parsed.spans[old_span].tex != target
@@ -146,6 +158,7 @@ async def respond(root: Path) -> None:
                     {
                         "name": "document_patch",
                         "arguments": {
+                            "purpose_note": "Replacing the formula the comment asks about",
                             "document": doc,
                             "base_revision": head,
                             "reason": "Synthetic addressed browser request",
@@ -156,6 +169,7 @@ async def respond(root: Path) -> None:
             }
         )
     reply = {
+        "purpose_note": "Answering the user's comment",
         "document": doc,
         "thread": thread,
         "expected": found["revision"],

@@ -50,6 +50,7 @@ class MainModel:
                         "start_job",
                         json.dumps(
                             {
+                                "purpose_note": "Starting the watched lab job",
                                 "script": "printf 'progress: started\\n'; sleep 180; printf 'done\\n'",
                                 "purpose": "Lab 19 GUI and watcher acceptance",
                                 "expected_progress": "Print the start marker, then remain running.",
@@ -62,7 +63,15 @@ class MainModel:
             self.job_id = json.loads(messages[-1]["content"])["job_id"]
             return ModelTurn(
                 None,
-                (ToolCall("wait", "wait_jobs", json.dumps({"job_ids": [self.job_id]})),),
+                (
+                    ToolCall(
+                        "wait",
+                        "wait_jobs",
+                        json.dumps(
+                            {"purpose_note": "Waiting for the lab job", "job_ids": [self.job_id]}
+                        ),
+                    ),
+                ),
             )
         assert json.loads(messages[-1]["content"])["reason"] == "needs_attention"
         return ModelTurn("Watcher requested attention; the job remains available in the GUI.")

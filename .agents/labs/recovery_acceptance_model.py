@@ -104,7 +104,9 @@ def main() -> None:
                     "status": "completed",
                     "call_id": call_id,
                     "name": name,
-                    "arguments": json.dumps(arguments),
+                    "arguments": json.dumps(
+                        {"purpose_note": "Scripted recovery lab call", **arguments}
+                    ),
                 }
             )
 

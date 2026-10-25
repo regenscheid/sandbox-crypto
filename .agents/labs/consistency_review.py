@@ -89,10 +89,23 @@ async def create() -> None:
     execution = next(item for item in items if item["kind"] == "execution")
     block = documents.mapped(PROJECT, doc, 1).block_ids[1]
     turns = [
-        {"tool_calls": [{"name": "review_manifest", "arguments": {}}]},
         {
             "tool_calls": [
-                {"name": "review_read", "arguments": {"evidence": item["evidence"]}}
+                {
+                    "name": "review_manifest",
+                    "arguments": {"purpose_note": "Listing the pinned evidence"},
+                }
+            ]
+        },
+        {
+            "tool_calls": [
+                {
+                    "name": "review_read",
+                    "arguments": {
+                        "purpose_note": "Reading one pinned item",
+                        "evidence": item["evidence"],
+                    },
+                }
                 for item in items
             ]
         },
@@ -101,6 +114,7 @@ async def create() -> None:
                 {
                     "name": "review_finding",
                     "arguments": {
+                        "purpose_note": "Recording the contradiction found",
                         "severity": "fail",
                         "category": "contradicting_value",
                         "statement": (
@@ -231,10 +245,23 @@ async def confirm(root: Path) -> None:
         and item["locator"].get("revision") == 2
     )
     turns = [
-        {"tool_calls": [{"name": "review_manifest", "arguments": {}}]},
         {
             "tool_calls": [
-                {"name": "review_read", "arguments": {"evidence": item["evidence"]}}
+                {
+                    "name": "review_manifest",
+                    "arguments": {"purpose_note": "Listing the pinned evidence"},
+                }
+            ]
+        },
+        {
+            "tool_calls": [
+                {
+                    "name": "review_read",
+                    "arguments": {
+                        "purpose_note": "Reading one pinned item",
+                        "evidence": item["evidence"],
+                    },
+                }
                 for item in items
             ]
         },
@@ -243,6 +270,7 @@ async def confirm(root: Path) -> None:
                 {
                     "name": "review_checked",
                     "arguments": {
+                        "purpose_note": "Recording what was checked",
                         "statement": "The corrected revision's count 15 matches the original pinned execution.",
                         "evidence": [item["evidence"] for item in items],
                     },
@@ -250,6 +278,7 @@ async def confirm(root: Path) -> None:
                 {
                     "name": "review_decide",
                     "arguments": {
+                        "purpose_note": "Deciding the finding's re-check",
                         "finding": finding["finding_id"],
                         "expected": finding["revision"],
                         "decision": "confirm",
