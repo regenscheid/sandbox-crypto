@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /** The workspace job client, through the shared session transport. */
-import type { JobListing, JobCancellation } from './api-types';
+import type { JobListing, JobCancellation, JobRelease } from './api-types';
 import { get, post } from './http';
 
 const part = encodeURIComponent;
@@ -12,5 +12,16 @@ export const jobApi = {
     post<JobCancellation>(
       `/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/cancel`,
       {},
+    ),
+  /** The user's "release now" for a retained job sandbox; `operation_id` is its receipt. */
+  releaseJobSandbox: (
+    project: string,
+    session: string,
+    job: string,
+    body: { operation_id: string },
+  ) =>
+    post<JobRelease>(
+      `/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/release`,
+      body,
     ),
 };

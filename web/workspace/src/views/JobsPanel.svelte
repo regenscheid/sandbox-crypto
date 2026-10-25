@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
-  import { api, type JobListing } from '../lib/api';
-  import { JobCancels, jobElapsed, jobsPoller } from '../lib/jobs';
+  import { api, type BackgroundJob, type JobListing } from '../lib/api';
+  import { JobCancels, jobElapsed, jobsPoller, releaseNow } from '../lib/jobs';
   import { initialPoll, type PollState } from '../lib/poller';
+  import { idle, submit } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
   import JobCard from './JobCard.svelte';
   import PollStatus from './PollStatus.svelte';
@@ -17,12 +18,42 @@
     view = { ...view, data: found };
   });
   const data = $derived(view.data);
+  const release = $state({ ...idle(), job: null as string | null });
+
+  async function reread(): Promise<void> {
+    // Spread the state as it is now: the poller may have published during the await.
+    view = { ...view, data: await api.jobs(projectId, sessionId) };
+  }
+
+  /** "Release now" for a retained job sandbox, after the user confirms. The list is read
+   * again after the answer or a refusal, since the sandbox may have been released already. */
+  async function releaseSandbox(job: BackgroundJob): Promise<void> {
+    release.job = job.job_id;
+    try {
+      await submit(
+        release,
+        async () => {
+          const sent = await releaseNow(
+            `${projectId}:${sessionId}`,
+            job,
+            (question) => confirm(question),
+            (body) => api.releaseJobSandbox(projectId, sessionId, job.job_id, body),
+          );
+          if (sent) await reread();
+        },
+        reread,
+      );
+    } finally {
+      release.job = null;
+    }
+  }
 
   $effect(() => {
     const project = projectId,
       session = sessionId;
     view = initialPoll();
     cancel.error = null;
+    release.error = null;
     return jobsPoller(project, session, (value) => {
       view = value;
     }).watch();
@@ -32,6 +63,7 @@
 <section aria-label="Background jobs">
   <h2>Background jobs</h2>
   {#if cancel.error}<ErrorMessage error={cancel.error} />{/if}
+  {#if release.error}<ErrorMessage error={release.error} />{/if}
   <PollStatus phase={view.phase} hasData={data !== null} what="Job views" />
   {#if data}
     {#each data.waits as wait (wait.run_id)}
@@ -61,6 +93,8 @@
         {job}
         cancelling={cancel.queued.includes(job.job_id)}
         oncancel={() => void cancels.ask(job.job_id)}
+        releasing={release.busy && release.job === job.job_id}
+        onrelease={() => void releaseSandbox(job)}
       />
     {/each}
     {#if data.truncated}<p class="muted">Showing the most recent jobs.</p>{/if}

@@ -48,6 +48,8 @@ from sandbox_science.contracts import (
     GrepResult,
     HostPort,
     JobListing,
+    JobSandboxRelease,
+    JobSandboxReleased,
     JobStatus,
     KernelInfo,
     KernelListing,
@@ -800,6 +802,18 @@ class WorkerClient:
             JobStatus,
             params=_project(project_id),
             max_bytes=1024 * 1024,
+        )
+
+    async def release_job_sandbox(
+        self, execution_id: str, context: ExecutionContext, operation_id: str
+    ) -> JobSandboxReleased:
+        """Release a retained job sandbox now (JS-24): the user's action, for an operator
+        client; the worker refuses a sandbox that is not retained."""
+        return await self._call(
+            "POST",
+            f"/v1/job-sandboxes/{execution_id}/release",
+            JobSandboxReleased,
+            JobSandboxRelease(context=context, operation_id=operation_id),
         )
 
     # Kernels, files and artifacts.

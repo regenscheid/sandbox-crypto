@@ -133,6 +133,8 @@ export interface BackgroundJob {
   logs: JobLogs;
   worker_restart: string;
   checkin: JobCheckin | null;
+  sandbox?: JobSandboxView;
+  manifest?: JobManifestView;
 }
 
 export interface BlockHistory {
@@ -1404,6 +1406,39 @@ export interface JobListing {
 export interface JobLogs {
   stdout?: string;
   stderr?: string;
+}
+
+/** What the job's immutable result manifest says, once the job has ended (JS-16). */
+export interface JobManifestView {
+  reason: string | null;
+  collected: number;
+  not_collected_total: number;
+  not_collected: JobNotCollected[];
+  replayed_packages: number;
+  isolation_tier: number | null;
+}
+
+export interface JobNotCollected {
+  path: string;
+  reason: string;
+}
+
+export interface JobRelease {
+  job_id: string;
+  phase: "released";
+}
+
+/** A job sandbox's platform record: the job's own sandbox, never agent text (JS-18). */
+export interface JobSandboxView {
+  profile: string;
+  phase: "creating" | "preparing" | "running" | "collecting" | "released" | "retained";
+  environment_id: string;
+  cpu_millicores: number;
+  memory_mib: number;
+  collection: "pending" | "complete" | "incomplete";
+  retained_until: string | null;
+  files: string;
+  manifest_sha256: string | null;
 }
 
 /** Persisted waits can predate mode and started_at. */

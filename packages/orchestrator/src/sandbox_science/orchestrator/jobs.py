@@ -255,6 +255,9 @@ def _sandbox(status: JobStatus) -> dict[str, object]:
         "sandbox": {
             "profile": sandbox.profile,
             "phase": sandbox.phase,
+            "environment_id": sandbox.environment_id,
+            "cpu_millicores": sandbox.cpu_millicores,
+            "memory_mib": sandbox.memory_mib,
             "collection": sandbox.collection,
             "retained_until": sandbox.retained_until.isoformat()
             if sandbox.retained_until
@@ -268,6 +271,7 @@ def _sandbox(status: JobStatus) -> dict[str, object]:
         value["manifest"] = {
             "reason": manifest.reason,
             "collected": len(manifest.collected),
+            "not_collected_total": len(manifest.not_collected),
             "not_collected": [
                 {"path": clipped(item.path, 512), "reason": item.reason}
                 for item in manifest.not_collected[:20]

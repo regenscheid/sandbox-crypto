@@ -81,10 +81,12 @@ from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.provisioner import Provisioner
 from sandbox_science.worker.settings import (
     JOB_SANDBOX_LABEL,
+    ClientSettings,
     EnvironmentSettings,
     JobProfile,
     LocalBackendSettings,
     OpenShellBackendSettings,
+    token_digest,
 )
 from sandbox_science.worker.store import Store
 
@@ -1142,6 +1144,145 @@ async def test_a_job_without_a_profile_runs_in_the_session_as_before(pool: Pool)
     assert pool.store.job_sandboxes.get(job.execution_id) is None
     assert pool.port.submitted == []
     assert len(pool.fake.calls("sandbox", "create")) == 1
+
+
+# Releasing a retained sandbox now (JS-24).
+
+
+async def retained(pool: Pool, operation: str = "fail") -> str:
+    """A failed job, whose sandbox the worker stopped and kept."""
+    pool.port.exit_code = 1
+    ended = await pool.run(pool.request(operation))
+    assert ended.state is ExecutionState.FAILED
+    record = pool.store.job_sandboxes.get(ended.execution_id)
+    assert record is not None
+    assert record.phase == "retained"
+    return ended.execution_id
+
+
+async def test_release_now_deletes_a_retained_sandbox_and_answers_a_repeat(pool: Pool) -> None:
+    job = await retained(pool)
+    box = pool.sandbox_of(job)
+    assert pool.fake.read()["sandboxes"][box]["phase"] == "Stopped"
+    released = await pool.sandboxes.release_now(job, "click-1")
+    assert (released.execution_id, released.phase) == (job, "released")
+    record = pool.store.job_sandboxes.get(job)
+    assert record is not None
+    assert record.phase == "released"
+    assert box not in pool.fake.read()["sandboxes"]
+    # The manifest stays what it was; the job's status says released.
+    status = await pool.manager.job_status(job)
+    assert status.execution.job is not None
+    assert status.execution.job.sandbox is not None
+    assert status.execution.job.sandbox.phase == "released"
+    assert status.manifest is not None
+    # The same request again is the first answer; another one finds nothing to release.
+    assert await pool.sandboxes.release_now(job, "click-1") == released
+    with pytest.raises(WorkerError, match="only a retained one") as refused:
+        await pool.sandboxes.release_now(job, "click-2")
+    assert refused.value.kind is ErrorKind.CONFLICT
+
+
+async def test_release_now_refuses_what_is_not_retained(pool: Pool) -> None:
+    pool.port.hold.clear()
+    job, _ = await pool.manager.submit(pool.request())
+    await eventually(lambda: bool(pool.port.submitted), timeout=15)
+    with pytest.raises(WorkerError) as running:
+        await pool.sandboxes.release_now(job.execution_id, "click-1")
+    assert running.value.kind is ErrorKind.CONFLICT
+    assert pool.sandbox_of(job.execution_id) in pool.fake.read()["sandboxes"]
+    with pytest.raises(WorkerError) as unknown:
+        await pool.sandboxes.release_now("exe-none", "click-1")
+    assert unknown.value.kind is ErrorKind.NOT_FOUND
+    pool.port.hold.set()
+    ended = await asyncio.wait_for(pool.manager.wait(job.execution_id), 30)
+    assert ended.state is ExecutionState.SUCCEEDED  # released by itself, after collection
+    with pytest.raises(WorkerError) as gone:
+        await pool.sandboxes.release_now(job.execution_id, "click-1")
+    assert gone.value.kind is ErrorKind.CONFLICT
+
+
+async def test_an_unconfirmed_deletion_leaves_the_sandbox_retained_for_the_sweep(
+    pool: Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job = await retained(pool)
+
+    async def refuse(_environment_id: str) -> None:
+        raise WorkerError(ErrorKind.UNAVAILABLE, "gateway unreachable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pool.environments, "delete", refuse)
+        with pytest.raises(WorkerError) as failed:
+            await pool.sandboxes.release_now(job, "click-1")
+    assert failed.value.kind is ErrorKind.UNAVAILABLE
+    record = pool.store.job_sandboxes.get(job)
+    assert record is not None
+    assert record.phase == "retained"
+    assert "release-now" not in pool.store.job_sandboxes.steps(job)  # no receipt yet
+    assert await pool.sandboxes.sweep() == [job]  # due at once, so the sweep finishes it
+    record = pool.store.job_sandboxes.get(job)
+    assert record is not None
+    assert record.phase == "released"
+
+
+def operator_app(pool: Pool) -> Any:
+    clients = [
+        ClientSettings(
+            name=name, token_sha256=token_digest(f"test-secret-release-{name}-0000"),
+            projects=("p1",), operator=name == "workspace",
+        )
+        for name in ("workspace", "harness")
+    ]  # fmt: skip
+    return create_app(pool.manager, TOKEN, pool.environments, clients)
+
+
+def release_headers(name: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer test-secret-release-{name}-0000"}
+
+
+async def test_the_release_route_is_the_operators_and_the_sessions_own(
+    pool: Pool, aiohttp_client: ClientFactory
+) -> None:
+    job = await retained(pool)
+    client: TestClient[Any, Any] = await aiohttp_client(operator_app(pool))
+    path = f"/v1/job-sandboxes/{job}/release"
+    context = {"project_id": "p1", "session_id": "s1", "environment_id": SESSION}
+    body = {"context": context, "operation_id": "click-1"}
+    # The run service's own client may not release a sandbox, though it owns the job.
+    denied = await client.post(path, json=body, headers=release_headers("harness"))
+    assert denied.status == 403
+    assert pool.store.job_sandboxes.get(job) is not None
+    assert pool.sandbox_of(job) in pool.fake.read()["sandboxes"]
+    # Another session's context, another project's, and a job that does not exist.
+    for other, status in (
+        ({**context, "session_id": "s2"}, 404),
+        ({**context, "project_id": "p2"}, 403),
+        ({**context, "environment_id": "env-2"}, 404),
+    ):
+        response = await client.post(
+            path, json={**body, "context": other}, headers=release_headers("workspace")
+        )
+        assert response.status == status, other
+    missing = await client.post(
+        "/v1/job-sandboxes/exe-none/release", json=body, headers=release_headers("workspace")
+    )
+    assert missing.status == 404
+    assert pool.sandbox_of(job) in pool.fake.read()["sandboxes"]
+    # The session's own, by the operator.
+    response = await client.post(path, json=body, headers=release_headers("workspace"))
+    assert response.status == 200
+    assert await response.json() == {"execution_id": job, "phase": "released"}
+    assert pool.sandbox_of(job) not in pool.fake.read()["sandboxes"]
+    repeat = await client.post(path, json=body, headers=release_headers("workspace"))
+    assert repeat.status == 200
+    again = await client.post(
+        path, json={**body, "operation_id": "click-2"}, headers=release_headers("workspace")
+    )
+    assert again.status == 409
+    invalid = await client.post(
+        path, json={"context": context}, headers=release_headers("workspace")
+    )
+    assert invalid.status == 400
 
 
 # Clients never see job sandboxes (JS-1).

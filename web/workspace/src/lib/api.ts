@@ -230,6 +230,9 @@ export type {
   DocumentChangeRequest,
   CommentChangeRequest,
   JobCancellation,
+  JobRelease,
+  JobSandboxView,
+  JobManifestView,
 } from './api-types';
 
 /**
