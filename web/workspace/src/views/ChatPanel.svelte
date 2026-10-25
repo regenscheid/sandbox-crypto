@@ -61,6 +61,14 @@
   import { readRunArtifacts, RunArtifacts, type RunListing } from '../lib/artifactStrip';
   import { emptyFindings, onFindingChange, SessionFindings } from '../lib/findingRows';
   import { reviews } from '../lib/reviews';
+  import {
+    closedCompletion,
+    Completer,
+    projectSessions,
+    projectSkills,
+    sessionArtifacts,
+  } from '../lib/completion';
+  import CompletionList from './CompletionList.svelte';
 
   let {
     projectId,
@@ -88,6 +96,48 @@
     showAgent?: ((delegation: string) => void) | null;
   } = $props();
   let attach = $state<ReturnType<typeof ChatAttachments> | null>(null);
+  let box = $state<HTMLTextAreaElement | null>(null);
+  // `@` artifacts, `#` sessions and `/` skills (B10, item 6): client-side text only.
+  const completion = $state(closedCompletion());
+  const completer = untrack(
+    () =>
+      new Completer(completion, {
+        artifacts: () => sessionArtifacts(projectId, sessionId),
+        sessions: () => projectSessions(projectId),
+        skills: () => projectSkills(projectId),
+      }),
+  );
+  const matches = $derived(completion.trigger ? completer.matches() : []);
+  const listbox = untrack(() => `completion-${projectId}-${sessionId}`);
+  /** Follows the box's text and caret, opening, filtering or closing the list. */
+  function follow() {
+    if (box) completer.update(box.value, box.selectionStart ?? box.value.length);
+  }
+  function complete(index?: number) {
+    if (!box) return;
+    const done = completer.choose(draft.text, box.selectionStart ?? draft.text.length, index);
+    if (!done) return;
+    draft.text = done.text;
+    const field = box;
+    // The caret goes after the inserted text once the box shows it.
+    queueMicrotask(() => {
+      field.focus();
+      field.setSelectionRange(done.caret, done.caret);
+    });
+  }
+  /** The list's keys: arrows move, Enter chooses, Escape closes. */
+  function completionKey(event: KeyboardEvent): boolean {
+    if (!completion.trigger || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (event.key === 'Escape') completer.dismiss();
+    else if (!matches.length) return false;
+    else if (event.key === 'ArrowDown') completer.move(1);
+    else if (event.key === 'ArrowUp') completer.move(-1);
+    else if (event.key === 'Enter' && !event.shiftKey) complete();
+    else return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
   let attachMenu = $state(false);
   const scope = untrack(() => `${projectId}:${sessionId}`);
   let draft = $state(chatDrafts.load(scope).draft ?? { text: '' });
@@ -381,14 +431,33 @@
           disabled={sending.busy}
           actions={false}
         />
+        <CompletionList
+          id={listbox}
+          state={completion}
+          {matches}
+          choose={(index) => complete(index)}
+        />
         <label
           ><span class="sr-only">Message to the main agent</span><textarea
             aria-label="Message to the main agent"
+            aria-autocomplete="list"
+            aria-controls={completion.trigger ? listbox : undefined}
+            aria-activedescendant={completion.trigger && matches.length
+              ? `${listbox}-${completion.active}`
+              : undefined}
+            bind:this={box}
             bind:value={draft.text}
             placeholder={next
               ? 'Answer in your own words…'
-              : 'Ask a question or guide the research…'}
+              : 'Ask a question or guide the research… (@ artifact, # session, / skill)'}
+            oninput={follow}
+            onclick={follow}
+            onblur={() => completer.close()}
+            onkeyup={(event) => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') follow();
+            }}
             onkeydown={(event) => {
+              if (completionKey(event)) return;
               if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !cannotSend) {
                 event.preventDefault();
                 void send();
@@ -454,7 +523,8 @@
           {MAX_ANSWER_CHARS.toLocaleString('en-US')}.
         </p>{/if}
       <div class="composer-note">
-        The agent reads your message at its next step · LaTeX supported · Ctrl / ⌘ + Enter to send
+        The agent reads your message at its next step · LaTeX supported · @ artifact, # session, /
+        skill · Ctrl / ⌘ + Enter to send
       </div>
       {#if sending.error}<ErrorMessage error={sending.error} />{/if}
       {#if !persisted || !attachmentsPersisted}<p role="alert">
