@@ -3733,6 +3733,7 @@ def _mcp_canaries(schema: Schema) -> None:
 ) STRICT"""
     )
     schema.execute("CREATE INDEX mcp_canaries_server ON mcp_canaries (server, canary_id)")
+    schema.execute("CREATE INDEX mcp_canaries_at ON mcp_canaries (at)")
 
 
 MIGRATIONS: Final[tuple[Migration, ...]] = (

@@ -695,6 +695,7 @@ ALERTS: tuple[str, ...] = (
     "SandboxScienceServiceErrors",
     "SandboxScienceManagerUnreachable",
     "SandboxScienceCreationUnknown",
+    "SandboxScienceMcpCanaryChanged",
     "SandboxScienceMcpCanaryFailing",
     "SandboxSciencePolicyHold",
 )
@@ -736,6 +737,7 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
     over the structured JSON logs. ``project`` comes from the lines' structured metadata,
     as the sample Alloy configuration keeps it; the other fields are parsed from the line."""
     static = {"namespace": config.namespace, "instance": config.name}
+    canary = alerts.canary_window_minutes
 
     def rule(
         name: str,
@@ -778,11 +780,15 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         ),
         rule(
             ALERTS[2],
+            # 15 minutes: longer than the worker's creation_recheck (30 s by default), the
+            # time between the reconciliation passes that log the event, so a creation
+            # still unknown at every pass stays in the window from one pass to the next.
             f"sum by (service, project, environment) (count_over_time({worker} "
-            f"{_event('environment_creation_unknown')} [5m])) > 0",
+            f"{_event('environment_creation_unknown')} [15m])) > 0",
             "environment {{ $labels.environment }} is still creating past the creation grace",
             "The worker's reconciliation found a creation with an unknown outcome past "
-            "creation_grace and could not yet confirm the sandbox present or absent.",
+            "creation_grace and could not yet confirm the sandbox present or absent. The "
+            "15-minute window must exceed the worker's creation_recheck.",
         ),
         rule(
             ALERTS[3],
@@ -796,10 +802,24 @@ def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
         ),
         rule(
             ALERTS[4],
-            f"sum by (service, project, rule) (count_over_time({middleware} "
+            # Every canary result in the window failed: no listed one among them.
+            f"(sum by (service, server) (count_over_time({_streams(config)} "
+            f'{_event("mcp_canary")} | json server="server", status="status" '
+            f'| status!="listed" [{canary}m])) > 0) unless (sum by (service, server) '
+            f"(count_over_time({_streams(config)} {_event('mcp_canary')} "
+            f'| json server="server", status="status" | status="listed" [{canary}m])) > 0)',
+            "MCP canary of {{ $labels.server }} keeps failing",
+            f"Every scheduled MCP canary of the server within {canary} minutes failed "
+            "(unavailable, denied or timeout). It holds while the server keeps failing and "
+            "resolves at its first listed result; the window must exceed the canaries' "
+            "interval (alerts.canary_window_minutes).",
+        ),
+        rule(
+            ALERTS[5],
+            f"sum by (service, rule, outcome) (count_over_time({middleware} "
             f"{_event('detect_finding')}"
             ' | json outcome="outcome", rule="rule" | outcome=~"hold|hold_call" [5m])) > 0',
-            "a detect-and-hold rule held calls in project {{ $labels.project }}",
+            "a detect-and-hold rule ({{ $labels.rule }}) held calls",
             "The policy middleware's detection rule {{ $labels.rule }} opened a hold: a "
             "session's outward calls wait for the workspace's hold card, or one call waits "
             "for its approval.",

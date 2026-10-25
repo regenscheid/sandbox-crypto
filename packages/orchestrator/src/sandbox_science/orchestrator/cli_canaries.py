@@ -2,9 +2,10 @@
 """``sandbox-science-harness mcp-canaries``: the scheduled MCP canaries (mcp_canaries.py),
 which the launcher starts as a part when its config's ``[canaries]`` is enabled.
 
-It lists each ``--server`` through the proxy at ``--mcp-proxy`` with the caller token in
-``--mcp-token-file``, records the results in the state directory's control store and
-logs each one, every ``--interval`` seconds until stopped (or once, with ``--once``).
+It lists each ``--server`` through the proxy at ``--mcp-proxy`` with the canaries' own
+caller token in ``--mcp-token-file`` (the launcher's ``mcp-canary``), records the results
+in the state directory's control store and logs each one, every ``--interval`` seconds
+until stopped (or once, with ``--once``).
 """
 
 from __future__ import annotations
@@ -69,7 +70,7 @@ def mcp_canaries(args: argparse.Namespace) -> int:
     try:
         control.initialize()
         runner = CanaryRunner(CanaryStore(control), source, args.server, interval=args.interval)
-        return asyncio.run(_run(runner, once=args.once))
+        return asyncio.run(_run(runner, source, once=args.once))
     except (ControlError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -77,15 +78,18 @@ def mcp_canaries(args: argparse.Namespace) -> int:
         control.close()
 
 
-async def _run(runner: CanaryRunner, *, once: bool) -> int:
-    if once:
-        await runner.run_once()
+async def _run(runner: CanaryRunner, source: ProxySource, *, once: bool) -> int:
+    try:
+        if once:
+            await runner.run_once()
+            return 0
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for number in (signal.SIGTERM, signal.SIGINT):
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(number, stop.set)
+        print(f"{READY}: {len(runner.servers)} servers every {runner.interval:g} s", flush=True)
+        await runner.run(stop)
         return 0
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for number in (signal.SIGTERM, signal.SIGINT):
-        with contextlib.suppress(NotImplementedError):
-            loop.add_signal_handler(number, stop.set)
-    print(f"{READY}: {len(runner.servers)} servers every {runner.interval:g} s", flush=True)
-    await runner.run(stop)
-    return 0
+    finally:
+        await source.close()

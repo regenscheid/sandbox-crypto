@@ -69,6 +69,8 @@ class MetadataClient:
             try:
                 found = await list_tools(client, server, session="workspace-metadata")
             finally:
+                # End the MCP session, so a check never holds one of the caller's places.
+                await client.end(server, session="workspace-metadata")
                 await client.close()
             checked = AvailabilityCheck(checked_at=datetime.now(UTC), status=found.status)
             self.checks[server] = checked

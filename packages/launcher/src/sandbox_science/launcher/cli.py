@@ -391,7 +391,19 @@ async def _start(
     await supervisor.start(workspace, timeout)
     if (argv := parts.canaries_argv(config, layout)) is not None:
         print(f"starting the MCP canaries, every {config.canaries.interval:g} s", flush=True)
-        await supervisor.start(_canaries(argv, layout), timeout)
+        await start_canaries(supervisor, _canaries(argv, layout), timeout)
+
+
+async def start_canaries(supervisor: Supervisor, part: Part, timeout: float) -> bool:
+    """Start the canaries as a monitor, not a service the others need: one that fails to
+    start is said, stopped and left out, and the launch goes on. Whether they run."""
+    try:
+        await supervisor.start(part, timeout)
+    except LauncherError as exc:
+        print(f"the MCP canaries did not start, and run no more this launch: {exc}", flush=True)
+        await supervisor.stop_part(part.name)
+        return False
+    return True
 
 
 def _canaries(argv: list[str], layout: Layout) -> Part:

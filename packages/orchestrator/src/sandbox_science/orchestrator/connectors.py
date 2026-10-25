@@ -227,6 +227,29 @@ class ProxyClient:
             return _result(status, body)
         raise AssertionError("unreachable")  # pragma: no cover
 
+    async def end(self, server: str, *, session: str) -> None:
+        """End this client's MCP session with ``server``, if it started one: the proxy's
+        ``DELETE``, so the session does not hold one of the caller's places until the
+        proxy's idle limit. A failure is logged and left to that limit; the next request
+        starts a new session either way."""
+        task = self._sessions.pop(server, None)
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+            return
+        if task.cancelled() or task.exception() is not None:
+            return
+        try:
+            async with self._client().delete(
+                f"{self.url}/mcp/{server}",
+                headers=self._headers(session, task.result(), None),
+                allow_redirects=False,
+            ) as response:
+                await response.read()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+            _log.info("could not end the MCP session with %s: %s", server, type(exc).__name__)
+
     def _forget(self, server: str, task: asyncio.Task[str]) -> None:
         """Forget the session ``task`` started, unless another caller already started a
         new one, which is never cancelled: others may be waiting on it."""

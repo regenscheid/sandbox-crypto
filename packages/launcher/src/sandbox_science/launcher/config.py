@@ -565,7 +565,11 @@ class OrchestratorConfig(_Strict):
 class CanariesConfig(_Strict):
     """Scheduled MCP canaries (D103, docs/MCP-CONNECTORS.md, "Canaries"): every ``interval``
     seconds, one bounded ``tools/list`` per ``[mcp_proxy]`` server through the proxy, from
-    the trusted side, never a tool call. Off by default; on, it needs ``[mcp_proxy]``."""
+    the trusted side, never a tool call. Off by default; on, it needs ``[mcp_proxy]``. The
+    canaries call the proxy with a token of their own, ``tokens/mcp-canary``, which ``up``
+    gives the proxy as the caller ``canary``, so their sessions never take the run
+    service's places. A canary part that fails to start, or keeps stopping, is reported
+    and left out: research does not depend on it."""
 
     enabled: bool = False
     interval: float = Field(default=900.0, ge=60, le=86400)

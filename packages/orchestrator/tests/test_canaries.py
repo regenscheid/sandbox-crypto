@@ -11,11 +11,12 @@ import sqlite3
 from collections.abc import Iterator, Mapping
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from sandbox_science.orchestrator.connectors import ConnectorError
+from sandbox_science.mcp_proxy.callers import Caller, token_digest
+from sandbox_science.orchestrator.connectors import ConnectorError, ProxyClient
 from sandbox_science.orchestrator.control import ControlStore, migrations, store_path
 from sandbox_science.orchestrator.mcp_canaries import (
     CHANGED,
@@ -24,12 +25,17 @@ from sandbox_science.orchestrator.mcp_canaries import (
     CanaryRunner,
     CanaryStore,
     Listing,
+    ProxySource,
     list_tools,
     stamp,
 )
 from sandbox_science.testing import FakeClock, eventually
+from sandbox_science.testing.mcp import FakeServer, Tls
 
 from .control_versions import at_version
+from .loop_harness import PROJECT
+from .test_connectors import TOKEN, serve_proxy
+from .test_connectors import tls as tls
 
 
 class Pages:
@@ -221,26 +227,44 @@ async def test_a_failing_source_is_an_unavailable_result(
     assert store.latest(["papers"])["papers"].status == "unavailable"
 
 
-def test_pruning_keeps_thirty_days_and_a_row_bound_per_server(control: ControlStore) -> None:
+def test_pruning_keeps_thirty_days_and_a_row_bound_for_every_server(
+    control: ControlStore,
+) -> None:
     clock = FakeClock()
     store = CanaryStore(control, rows=5)
 
     def result(server: str) -> CanaryResult:
         return CanaryResult(server, clock.now(), "listed", 1, "b" * 64, 10, None)
 
-    store.record(result("other"))
+    store.record(result("gone"))  # a server no longer configured: never recorded again
     for _ in range(8):
         store.record(result("papers"))
+        store.record(result("other"))
         clock.advance(60)
+    assert store.prune(clock.now()) == 6
     assert len(store.history("papers")) == 5
-    assert len(store.history("other")) == 1
+    assert len(store.history("other")) == 5
+    assert len(store.history("gone")) == 1
     clock.advance(timedelta(days=30).total_seconds())
     store.record(result("papers"))
-    # Older than 30 days are gone; another server's rows are its own to prune.
+    # Older than 30 days are gone, whichever server they were of.
+    store.prune(clock.now())
     assert len(store.history("papers")) == 1
-    assert len(store.history("other")) == 1
-    store.record(result("other"))
-    assert len(store.history("other")) == 1
+    assert store.history("other") == []
+    assert store.history("gone") == []
+
+
+async def test_a_run_prunes_every_server(control: ControlStore) -> None:
+    clock = FakeClock()
+    store = CanaryStore(control, rows=2)
+    store.record(CanaryResult("gone", clock.now(), "listed", 1, "b" * 64, 1, None))
+    for _ in range(3):
+        store.record(CanaryResult("gone", clock.now(), "listed", 1, "b" * 64, 1, None))
+    runner = CanaryRunner(store, Source(clock, {"papers": [LISTED]}), ["papers"], clock=clock)
+    for _ in range(4):
+        await runner.run_once()
+    assert len(store.history("papers")) == 2
+    assert len(store.history("gone")) == 2
 
 
 def test_the_table_refuses_inconsistent_rows(control: ControlStore) -> None:
@@ -329,3 +353,50 @@ def test_the_ready_line_is_the_one_the_launcher_waits_for() -> None:
 
     assert READY == CANARIES_READY
     assert json.dumps(READY)  # one line of plain text
+
+
+def _initializes(fake: FakeServer) -> int:
+    """The upstream sessions the proxy started at the fake server."""
+    return sum(
+        1
+        for seen in fake.seen
+        if isinstance(seen.message, dict)
+        and cast("dict[str, object]", seen.message).get("method") == "initialize"
+    )
+
+
+async def test_the_canaries_hold_no_proxy_session_and_take_no_run_service_place(
+    tls: Tls, tmp_path: Path
+) -> None:
+    """Against the real proxy: the canaries' own caller, one client per server across runs,
+    and each listing's session ended, so after many runs the canary caller holds at most
+    one session per server (none, once each listing has ended), and the run service's
+    session is never evicted (the proxy allows 4 per caller here)."""
+    canary_token = "test-secret-canary-caller-token"
+    canary = Caller("canary", "orchestrator", PROJECT)
+    async with serve_proxy(
+        tls, tmp_path / "proxy", callers=[(token_digest(canary_token), canary)]
+    ) as proxied:
+        assert proxied.sessions is not None
+        run_service = ProxyClient(proxied.url, TOKEN)
+        await run_service.request("papers", "tools/list", {}, session="s-1")
+        started = _initializes(proxied.fake)
+        source = ProxySource(proxied.url, canary_token)
+        clock = FakeClock()
+        control = ControlStore(store_path(tmp_path))
+        try:
+            runner = CanaryRunner(CanaryStore(control), source, ["papers"], clock=clock)
+            for _ in range(6):
+                (result,) = await runner.run_once()
+                assert result.status == "listed"
+                assert result.tool_count is not None
+                assert result.tool_count > 0
+                # The run service's one session, and none of the canary's: each ended.
+                assert len(proxied.sessions) == 1
+            # The run service's session is the one it started: no new initialize.
+            await run_service.request("papers", "tools/list", {}, session="s-1")
+            assert _initializes(proxied.fake) == started + 6
+        finally:
+            await source.close()
+            await run_service.close()
+            control.close()

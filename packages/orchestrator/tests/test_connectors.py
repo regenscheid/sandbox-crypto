@@ -105,6 +105,8 @@ class Proxied:
     url: str
     fake: FakeServer
     sink: RecordingSink
+    sessions: Sessions | None = None
+    """The proxy's sessions, for a test that counts them."""
 
     def approve(self, request: int) -> None:
         """Answer a permission request as ``sandbox-science-mcp-proxy approve`` does."""
@@ -155,7 +157,7 @@ async def serve_proxy(
         floor=HardFloor(),
         events=sink,
         upstream=upstream,
-        sessions=Sessions(limit=8, per_caller=4, idle=3600),
+        sessions=(sessions := Sessions(limit=8, per_caller=4, idle=3600)),
         credentials={"papers-token": "PAPERS_TOKEN"},
         environ={"PAPERS_TOKEN": "openshell:resolve:env:v1_PAPERS_TOKEN"},
         requests=sink.records,
@@ -165,7 +167,7 @@ async def serve_proxy(
     proxy_server = TestServer(proxy.application(max_body_bytes=64 * 1024), host="127.0.0.1")
     await proxy_server.start_server()
     try:
-        yield Proxied(str(proxy_server.make_url("")).rstrip("/"), fake, sink)
+        yield Proxied(str(proxy_server.make_url("")).rstrip("/"), fake, sink, sessions)
     finally:
         await proxy_server.close()
         await upstream.close()

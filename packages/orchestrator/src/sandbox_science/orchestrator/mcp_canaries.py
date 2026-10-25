@@ -14,7 +14,7 @@ record, ``event: mcp_canary``. When a server's status moves from ``listed`` to a
 else, or back, a second record, ``event: mcp_canary_changed``, says so; a server's first
 result that is not ``listed`` counts as a change too, from no earlier result, so a server
 down from the start is noticed. The runner prunes each server's rows to
-``RETENTION_DAYS`` and ``RETENTION_ROWS``.
+``RETENTION_DAYS`` and ``RETENTION_ROWS`` after each run, every server's.
 
 The direct path (D98 prototype) has no trusted-side listing: the policy middleware
 reads listings only as they pass from a server to a sandbox. A deployment without the
@@ -55,6 +55,8 @@ INTERVAL: Final = 900.0
 RETENTION_DAYS: Final = 30
 RETENTION_ROWS: Final = 10_000
 """Rows kept per server, besides the age bound."""
+MAX_PRUNED_SERVERS: Final = 256
+"""Servers whose rows one pruning bounds by count."""
 SESSION: Final = "mcp-canary"
 """The session name the canary's requests carry to the proxy."""
 EVENT: Final = "mcp_canary"
@@ -148,19 +150,31 @@ class ListingSource(Protocol):
 
 
 class ProxySource:
-    """Listings through the MCP proxy, a fresh MCP session per listing, as the workspace's
-    explicit check makes them."""
+    """Listings through the MCP proxy with the canaries' own caller token, so the proxy's
+    records name them and their sessions never take the run service's places. One client
+    per server lasts across runs, and each listing's MCP session is ended (the proxy's
+    ``DELETE``) as soon as it is done, so the canaries hold no session between listings."""
 
     def __init__(self, url: str, token: str) -> None:
         check_proxy(url, token)
         self.url, self._token = url.rstrip("/"), token
+        self._clients: dict[str, ProxyClient] = {}
 
     async def list(self, server: str) -> Listing:
-        client = ProxyClient(self.url, self._token, timeout=REQUEST_SECONDS)
+        client = self._clients.get(server)
+        if client is None:
+            client = self._clients[server] = ProxyClient(
+                self.url, self._token, timeout=REQUEST_SECONDS
+            )
         try:
             return await list_tools(client, server, session=SESSION)
         finally:
+            await client.end(server, session=SESSION)
+
+    async def close(self) -> None:
+        for client in self._clients.values():
             await client.close()
+        self._clients.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,8 +242,7 @@ class CanaryStore:
         return cls(holder.control)
 
     def record(self, result: CanaryResult) -> CanaryResult | None:
-        """Add ``result`` and prune its server's rows, in one change; the server's result
-        before it, if there was one."""
+        """Add ``result``; the server's result before it, if there was one."""
         with self.control.write() as tx:
             previous = _latest(tx, result.server)
             tx.sql.execute(
@@ -244,16 +257,32 @@ class CanaryStore:
                     result.error_kind,
                 ),
             )
-            tx.sql.execute(
-                "DELETE FROM mcp_canaries WHERE server = ? AND at < ?",
-                (result.server, stamp(result.at - self.retention)),
-            )
-            tx.sql.execute(
-                "DELETE FROM mcp_canaries WHERE server = ? AND canary_id <= (SELECT canary_id "
-                "FROM mcp_canaries WHERE server = ? ORDER BY canary_id DESC LIMIT 1 OFFSET ?)",
-                (result.server, result.server, self.rows),
-            )
         return previous
+
+    def prune(self, now: datetime) -> int:
+        """Drop every server's rows older than the retention, and each server's rows past
+        the newest ``rows``, in one change: servers no longer configured too. At most
+        ``MAX_PRUNED_SERVERS`` servers are bounded by count in one call (the age bound
+        covers all); the runner calls it once a run. The number of rows dropped."""
+        with self.control.write() as tx:
+            dropped = tx.sql.execute(
+                "DELETE FROM mcp_canaries WHERE at < ?", (stamp(now - self.retention),)
+            ).rowcount
+            servers = [
+                server
+                for (server,) in tx.sql.execute(
+                    "SELECT server FROM mcp_canaries GROUP BY server HAVING count(*) > ? LIMIT ?",
+                    (self.rows, MAX_PRUNED_SERVERS),
+                )
+            ]
+            for server in servers:
+                dropped += tx.sql.execute(
+                    "DELETE FROM mcp_canaries WHERE server = ? AND canary_id <= (SELECT "
+                    "canary_id FROM mcp_canaries WHERE server = ? ORDER BY canary_id DESC "
+                    "LIMIT 1 OFFSET ?)",
+                    (server, server, self.rows),
+                ).rowcount
+        return dropped
 
     def latest(self, servers: Iterable[str]) -> dict[str, CanaryResult]:
         """Each server's newest result, for those that have one."""
@@ -330,6 +359,10 @@ class CanaryRunner:
             else:
                 _logged(result, previous, compare=True)
             done.append(result)
+        try:
+            await asyncio.to_thread(self.store.prune, self.clock.now())
+        except ControlError as error:
+            _log.error("could not prune the canaries' results: %s", error)
         return done
 
     async def run(self, stop: asyncio.Event) -> None:

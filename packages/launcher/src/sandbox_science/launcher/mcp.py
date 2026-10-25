@@ -59,6 +59,9 @@ PROXY_CALLER = "mcp-orchestrator"
 OPERATOR_CALLER = "mcp-workspace"
 """The workspace's token: an operator caller, which reads and answers the project's
 permission requests for its user (D76, owner decision 2026-10-21) and calls no tool."""
+CANARY_CALLER = "mcp-canary"
+"""The scheduled canaries' token (``[canaries]``): a caller of its own, named ``canary`` in
+the proxy's records, whose listings never take the run service's session places."""
 """The run service's token for the proxy, by its file's name in tokens/."""
 PROXY_PORT = 8080
 REMOTE = "/sandbox/mcp-proxy"
@@ -204,6 +207,17 @@ def prepare(config: LauncherConfig, layout: Layout) -> None:
                 "name": "workspace",
                 "token_sha256": ensure_token(layout.token(OPERATOR_CALLER)),
                 "kind": "operator",
+                "project": config.mcp_project(),
+            }
+        )
+    if config.canaries.enabled:
+        # The canaries list tools as an orchestrator-kind caller of the same project, under
+        # a name and token of their own.
+        cast(list[dict[str, str]], proxy["callers"]).append(
+            {
+                "name": "canary",
+                "token_sha256": ensure_token(layout.token(CANARY_CALLER)),
+                "kind": "orchestrator",
                 "project": config.mcp_project(),
             }
         )

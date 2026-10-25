@@ -54,6 +54,7 @@ namespace = "research-runtimes"
 # tenant = "fake"                           # single-tenant Loki
 # configmap_labels = { loki_rule = "true" } # what Loki's rules sidecar selects
 # error_threshold = 10
+# canary_window_minutes = 20               # longer than the canaries' interval
 
 [secrets.control]
 name = "workbench-control"

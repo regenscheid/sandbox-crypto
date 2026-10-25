@@ -378,6 +378,10 @@ class Alerts(Model):
     ``sidecar.rules.label``)."""
     error_threshold: Annotated[int, Field(strict=True, ge=1, le=100000)] = 10
     """More ``error`` records than this from one service within 5 minutes alerts."""
+    canary_window_minutes: Annotated[int, Field(strict=True, ge=2, le=1440)] = 20
+    """The window in which every MCP canary of a server must have failed for
+    ``SandboxScienceMcpCanaryFailing``: longer than the canaries' interval (15 minutes by
+    default), so that it holds at least one result."""
 
     @field_validator("configmap_labels")
     @classmethod

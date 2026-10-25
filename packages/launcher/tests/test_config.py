@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -404,8 +405,23 @@ def test_canaries_are_off_by_default_and_list_the_proxys_servers_when_on(
     assert argv[argv.index("--interval") + 1] == "600"
     assert argv[argv.index("--server") + 1] == "s"
     assert argv[argv.index("--mcp-proxy") + 1] == "http://127.0.0.1:18080"
-    # The run service's caller token: a trusted-side listing, never the operator's token.
-    assert argv[argv.index("--mcp-token-file") + 1] == str(layout.token("mcp-orchestrator"))
+    # A caller token of the canaries' own, which the proxy's settings name "canary": never
+    # the run service's, whose session places the listings would take, nor the operator's.
+    assert argv[argv.index("--mcp-token-file") + 1] == str(layout.token("mcp-canary"))
+    from sandbox_science.launcher import mcp
+
+    layout.make()
+    mcp.prepare(config, layout)
+    proxy = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())
+    callers = {caller["name"]: caller for caller in proxy["callers"]}
+    assert callers["canary"]["kind"] == "orchestrator"
+    assert callers["canary"]["project"] == "crypto"
+    assert callers["canary"]["token_sha256"] != callers["orchestrator"]["token_sha256"]
+    # Off, the proxy gets no canary caller.
+    config = load_config(make_config({"mcp_proxy": MCP}))
+    mcp.prepare(config, layout)
+    proxy = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())
+    assert "canary" not in {caller["name"] for caller in proxy["callers"]}
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,34 @@ from sandbox_science.launcher.kubernetes_bundle import ALERT_RULES_FILE, ALERTS,
 from sandbox_science.launcher.kubernetes_config import load
 
 from .test_kubernetes_bundle import configured, values
+
+# A shape check of the rendered LogQL, not a parser: each rule is one ``sum by (...)`` of a
+# ``count_over_time`` over a stream selector, line filters, ``| json`` with named fields and
+# label filters, compared with a number, or two of those joined by ``unless``. It catches a
+# broken selector, a stray quote or bracket, or a stage out of place.
+_MATCHER = r'[a-z_]+(?:=|!=|=~|!~)"[^"\\]*"'
+_SELECTOR = rf"\{{{_MATCHER}(?:, {_MATCHER})*\}}"
+_STAGE = rf'(?:\|= `[^`]+`|\| json [a-z_]+="[a-z_]+"(?:, [a-z_]+="[a-z_]+")*|\| {_MATCHER})'
+_RANGE = rf"count_over_time\({_SELECTOR}(?: {_STAGE})* ?\[\d+[mh]\]\)"
+_SUM = rf"sum by \([a-z_]+(?:, [a-z_]+)*\) \({_RANGE}\) > \d+"
+_RULE = re.compile(rf"{_SUM}|\({_SUM}\) unless \({_SUM}\)")
+
+
+def logql_shape(expr: str) -> bool:
+    return _RULE.fullmatch(expr) is not None
+
+
+def test_the_shape_check_refuses_broken_rules() -> None:
+    good = 'sum by (service) (count_over_time({namespace="n", level="error"}[5m])) > 1'
+    assert logql_shape(good)
+    for broken in (
+        good.replace("}[5m]", "[5m]"),
+        good.replace('level="error"', "level=error"),
+        good.replace("[5m]", "[5]"),
+        good.replace("> 1", ""),
+        good.replace("[5m]", " | json kind=kind [5m]"),
+    ):
+        assert not logql_shape(broken), broken
 
 
 def _alerts(changes: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -50,10 +79,9 @@ def test_the_section_renders_one_config_map_of_every_rule() -> None:
     assert tuple(rules) == ALERTS
     for rule in rules.values():
         expr = rule["expr"]
-        # Only this instance's lines, and one aggregate per rule.
+        # Only this instance's lines, in the shape every rule has.
         assert '{namespace="research-test", instance="research"' in expr
-        assert expr.startswith("sum by (service")
-        assert expr.count("(") == expr.count(")")
+        assert logql_shape(expr), expr
         assert rule["labels"]["severity"] in ("warning", "critical")
         assert rule["labels"]["instance"] == "research"
         assert rule["annotations"]["summary"]
@@ -73,25 +101,36 @@ def test_each_rule_reads_the_event_its_service_logs() -> None:
     creation = rules["SandboxScienceCreationUnknown"]["expr"]
     assert '`"event":"environment_creation_unknown"`' in creation
     assert "sum by (service, project, environment)" in creation
-    canary = rules["SandboxScienceMcpCanaryFailing"]["expr"]
-    assert '`"event":"mcp_canary_changed"`' in canary
-    assert 'status!="listed"' in canary
+    # Longer than the worker's creation_recheck between passes (30 s by default).
+    assert "[15m]" in creation
+    changed = rules["SandboxScienceMcpCanaryChanged"]["expr"]
+    assert '`"event":"mcp_canary_changed"`' in changed
+    assert 'status!="listed"' in changed
+    # Holds while every canary in the window failed: no listed result among them.
+    failing = rules["SandboxScienceMcpCanaryFailing"]["expr"]
+    assert '`"event":"mcp_canary"`' in failing
+    assert ") unless (" in failing
+    assert 'status!="listed" [20m]' in failing
+    assert 'status="listed" [20m]' in failing
     hold = rules["SandboxSciencePolicyHold"]["expr"]
     assert 'service="middleware"' in hold
     assert '`"event":"detect_finding"`' in hold
     assert 'outcome=~"hold|hold_call"' in hold
-    assert "sum by (service, project, rule)" in hold
+    # A held call's record names no project, so the rule does not group by one.
+    assert "sum by (service, rule, outcome)" in hold
+    assert "project" not in hold
 
 
 def test_the_event_names_are_the_ones_the_services_log() -> None:
     from sandbox_science.launcher.runtime_manager.manager import NOTE_EVENT
-    from sandbox_science.orchestrator.mcp_canaries import CHANGED
+    from sandbox_science.orchestrator.mcp_canaries import CHANGED, EVENT
     from sandbox_science.worker.environments import CREATION_UNKNOWN
 
     rules = _rules(_alerts()[0])
     assert f'"event":"{NOTE_EVENT}"' in rules["SandboxScienceManagerUnreachable"]["expr"]
     assert f'"event":"{CREATION_UNKNOWN}"' in rules["SandboxScienceCreationUnknown"]["expr"]
-    assert f'"event":"{CHANGED}"' in rules["SandboxScienceMcpCanaryFailing"]["expr"]
+    assert f'"event":"{CHANGED}"' in rules["SandboxScienceMcpCanaryChanged"]["expr"]
+    assert f'"event":"{EVENT}"' in rules["SandboxScienceMcpCanaryFailing"]["expr"]
 
 
 def test_network_drops_stay_a_commented_rule() -> None:
@@ -107,8 +146,11 @@ def test_the_section_settings() -> None:
             "tenant": "research",
             "configmap_labels": {"loki-rules": "sandbox"},
             "error_threshold": 3,
+            "canary_window_minutes": 45,
         }
     )
+    failing = _rules(config_map)["SandboxScienceMcpCanaryFailing"]["expr"]
+    assert failing.count("[45m]") == 2
     assert config_map["metadata"]["namespace"] == "monitoring"
     assert config_map["metadata"]["labels"]["loki-rules"] == "sandbox"
     assert "loki_rule" not in config_map["metadata"]["labels"]
@@ -125,6 +167,7 @@ def test_the_section_settings() -> None:
     "changes",
     [
         {"error_threshold": 0},
+        {"canary_window_minutes": 1},
         {"configmap_labels": {}},
         {"configmap_labels": {"bad label!": "x"}},
         {"namespace": "Not_A_Name"},
