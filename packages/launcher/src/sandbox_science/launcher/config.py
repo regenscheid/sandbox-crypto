@@ -100,6 +100,15 @@ class LauncherError(Exception):
     """What the launcher refuses, with a message for the user."""
 
 
+def error_text(exc: BaseException, limit: int = 512) -> str:
+    """``exc``'s message, at most ``limit`` characters and never blank: an exception that
+    says nothing (a timeout from ``asyncio.wait_for``, for one) is named by its type."""
+    said = " ".join(str(exc).split())
+    if not said:
+        said = f"{type(exc).__name__} (no error text)"
+    return said[:limit]
+
+
 def _path(value: Path, info: ValidationInfo) -> Path:
     """``value`` with ``~`` expanded, against the config file's directory if relative."""
     context = cast(dict[str, Path], info.context or {})

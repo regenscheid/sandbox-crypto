@@ -42,7 +42,7 @@ from typing import Literal
 
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.launcher import openshell_version
-from sandbox_science.launcher.config import LauncherError
+from sandbox_science.launcher.config import LauncherError, error_text
 from sandbox_science.launcher.state import check_private, write_private
 
 from .manager import request_deadline, serve
@@ -161,5 +161,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         return request(settings, args.action)
     except LauncherError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {error_text(exc)}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        # An unusable state directory or settings file: fatal, unlike a silent gateway
+        # or control, which ``serve`` waits for.
+        print(f"error: {error_text(exc)}", file=sys.stderr)
         return 1

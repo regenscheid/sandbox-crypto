@@ -68,8 +68,9 @@ DEAD_PHASES = {"Error", "Deleting", "Completed"}
 UPLOADS = ("pool-ceiling.yaml", "policy.yaml", "proxy.toml")
 """In this order: the proxy starts once ``proxy.toml`` is there."""
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_FRAME = re.compile(r"[\s\u2500-\u257f\u00d7]+")
-"""Whitespace and the box drawing miette frames and wraps a report with."""
+_FRAME = re.compile(r"[\s\u2500-\u257f\u25b6\u00d7]+")
+"""Whitespace and the box drawing, arrows and crosses miette frames and wraps a report
+with."""
 _MISSING = re.compile(r'(?:message|self): "sandbox not found"')
 """The gateway's NotFound for a sandbox name, as tonic shows a status: ``message:`` in
 the OpenShell 0.1.3 labs, ``self:`` from tonic 0.14 (OpenShell 0.1.5). Other NotFound
@@ -83,6 +84,17 @@ class OpenShellError(LauncherError):
 class SandboxMissingError(OpenShellError):
     """The gateway answered that no sandbox has the name: proof of absence, unlike any
     other failure, which says nothing about whether the sandbox exists."""
+
+
+NO_ERROR_TEXT = "no error text from openshell"
+
+
+def last_line(said: str, limit: int = 400) -> str:
+    """The last line of what a failed command wrote, without miette's frame, at most
+    ``limit`` characters; ``NO_ERROR_TEXT`` when it wrote nothing."""
+    lines = [" ".join(_FRAME.sub(" ", line).split()) for line in said.splitlines()]
+    found = next((line for line in reversed(lines) if line), "")
+    return found[-limit:] or NO_ERROR_TEXT
 
 
 class OpenShell:
@@ -105,19 +117,26 @@ class OpenShell:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=self.env,
             start_new_session=True,
         )  # fmt: skip
+        command = " ".join(args[:2])
         try:
             output, errors = await asyncio.wait_for(process.communicate(), timeout)
-        except BaseException:
+        except BaseException as exc:
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+            if isinstance(exc, TimeoutError):
+                raise OpenShellError(
+                    f"openshell {command} gave no answer within {timeout:g} s"
+                ) from None
             raise
         if process.returncode != 0:
             said = _ANSI.sub("", errors.decode("utf-8", errors="replace")).strip()
-            # Classify the whole report: the status leads it, and the end is what is kept.
+            # Classify the whole report: the status leads it; its last line is what is kept.
             missing = _MISSING.search(_FRAME.sub(" ", said)) is not None
             error = SandboxMissingError if missing else OpenShellError
-            raise error(f"openshell {' '.join(args[:2])} failed: {said[-500:]}")
+            raise error(
+                f"openshell {command} failed (exit {process.returncode}): {last_line(said)}"
+            )
         return output.decode("utf-8", errors="replace")
 
     async def json(self, *args: str) -> object:

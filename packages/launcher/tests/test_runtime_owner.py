@@ -118,6 +118,39 @@ async def test_create_records_the_name_before_create_and_the_id_before_ready(
     assert created[-4:] == ("--detach", "--", "sleep", "infinity")
 
 
+class RollingCli(FakeCli):
+    """A gateway that answers one ``get`` with its message, then has rolled it back."""
+
+    async def run(self, *args: str, timeout: float = 120.0) -> str:
+        said = await super().run(*args, timeout=timeout)
+        if args[:2] == ("sandbox", "get") and args[2] in self.sandboxes:
+            del self.sandboxes[args[2]]
+            return json.dumps(json.loads(said) | {"message": "bootstrap grace exceeded"})
+        return said
+
+
+@pytest.mark.parametrize("seen", [True, False])
+async def test_a_sandbox_gone_after_create_returned_is_a_rollback(
+    store: FileOwnership, cli: FakeCli, seen: bool
+) -> None:
+    if seen:
+        cli = RollingCli(store)
+    else:
+        cli.makes = False  # the create returned, but the gateway has nothing
+    with pytest.raises(runtime_owner.CreateRolledBackError) as raised:
+        await create(store, cli)
+    record = store.read()
+    assert record is not None
+    assert raised.value.name == record.name
+    if seen:
+        assert raised.value.reason == "bootstrap grace exceeded"
+        assert record.id == "id-first"
+    else:
+        assert raised.value.reason is None
+        assert "the gateway gave no reason" in str(raised.value)
+        assert record.id is None
+
+
 async def test_the_id_is_recorded_even_when_the_sandbox_then_dies(
     store: FileOwnership, cli: FakeCli
 ) -> None:

@@ -4,7 +4,8 @@ directory, replaced in one step and synced:
 
 ```
 <state_dir>/
-    sandbox.json                  the owned sandbox: name, ID, image, revision, placement
+    sandbox.json                  the owned sandbox: name, ID, image, revision, placement,
+                                  and ``outcome`` when the gateway rolled its create back
     infrastructure-recovery.json  the journal of automatic actions (``RecoveryState``)
     credentials.json              the in-flight credentials request, and whether an exec used it
     request.json, result.json     an operator request and its receipt
@@ -23,10 +24,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
-from typing import Literal, Self, cast
+from typing import Literal, NamedTuple, Self, cast
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import AwareDatetime, Field, ValidationError, model_validator
 
 from sandbox_science.contracts.model import Contract
 from sandbox_science.launcher import replacement
@@ -35,6 +37,17 @@ from sandbox_science.launcher.runtime_owner import Owned
 from sandbox_science.launcher.state import write_private
 
 _RECORD_BYTES = 16 * 1024
+ROLLED_BACK = "create_rolled_back"
+"""``sandbox.json``'s ``outcome`` for a create the gateway rolled back."""
+NoteKind = Literal["gateway_unreachable", "control_unreachable", "action_failed", "blocked"]
+"""What a status note is about, so that it is cleared when that condition ends."""
+
+
+class RolledBack(NamedTuple):
+    """A create the gateway rolled back: what it said, and when the manager saw it."""
+
+    reason: str | None
+    at: datetime
 
 
 def read_bounded(path: Path, limit: int = 4096) -> bytes | None:
@@ -115,6 +128,28 @@ class ManagerOwnership:
         record = {"name": owned.name, "id": owned.id, **kept}
         write_private(self.path, json.dumps(record) + "\n")
 
+    def mark_rolled_back(self, reason: str | None, at: datetime) -> None:
+        """Record on the recorded sandbox that the gateway rolled its create back."""
+        document = self._document()
+        if document is None:
+            raise LauncherError("no runtime sandbox is recorded to mark")
+        marked = document | {"outcome": ROLLED_BACK, "reason": reason, "at": at.isoformat()}
+        write_private(self.path, json.dumps(marked) + "\n")
+
+    def rolled_back(self) -> RolledBack | None:
+        """The rollback marked on the record, if any."""
+        document = self._document()
+        if document is None or document.get("outcome") != ROLLED_BACK:
+            return None
+        reason, at = document.get("reason"), document.get("at")
+        try:
+            when = datetime.fromisoformat(at) if isinstance(at, str) else None
+        except ValueError:
+            when = None
+        if when is None or when.tzinfo is None or not (reason is None or isinstance(reason, str)):
+            raise LauncherError("sandbox.json's rollback is malformed")
+        return RolledBack(reason, when)
+
     def remove(self) -> None:
         self.path.unlink()
 
@@ -142,6 +177,19 @@ class Status(Contract):
     sandbox: str | None = Field(default=None, max_length=128)
     control_instance: str | None = Field(default=None, max_length=128)
     note: str | None = Field(default=None, max_length=512)
+    """The current condition that needs attention, for the operator; None when there is
+    none. It is cleared when the condition ends."""
+    note_kind: NoteKind | None = None
+    note_since: AwareDatetime | None = None
+    """When the condition began; it stays while the condition lasts."""
+
+    @model_validator(mode="after")
+    def _note(self) -> Self:
+        if (self.note is None) != (self.note_kind is None) or (self.note is None) != (
+            self.note_since is None
+        ):
+            raise ValueError("a status note has a kind and a since time, and only a note has")
+        return self
 
 
 class ManagerRequest(replacement.Request):

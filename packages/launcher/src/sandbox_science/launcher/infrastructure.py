@@ -14,7 +14,7 @@ from sandbox_science.contracts.clock import wait_or_sleep
 from sandbox_science.contracts.model import Contract
 
 from . import orchestrator
-from .config import LauncherConfig, LauncherError
+from .config import LauncherConfig, LauncherError, error_text
 from .state import Layout, write_private
 from .supervise import Supervisor
 
@@ -146,7 +146,7 @@ class InfrastructureRecovery:
         try:
             await self.replacement()
         except (LauncherError, OSError, ValueError) as exc:
-            error = str(exc)[:512]
+            error = error_text(exc)
             print("automatic agent replacement failed: " + error, flush=True)
         self.save(
             RecoveryState(

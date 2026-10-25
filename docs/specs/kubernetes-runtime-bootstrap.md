@@ -173,6 +173,14 @@ The host steps keep their order; placement, storage, credentials and trigger cha
   `{name, id: null}`; `sandbox create --from <digest> --policy … --driver-config-json …
   --no-auto-providers --detach -- sleep infinity`; record the first observed ID before
   checking the phase; wait for Ready, refusing dead phases; then Attach.
+  *Amended 2026-10-25 (B3 defects):* a create the gateway rolled back (the create
+  returned, then the gateway answered NotFound for the name, as OpenShell does with a
+  sandbox that is not ready within its bootstrap grace) is marked on the record
+  (`outcome: create_rolled_back`, the gateway's `reason` when its last `sandbox get`
+  gave one, and `at`), said in the request's answer and in `status`, and never acted on
+  automatically. `request bootstrap` is admitted on such a record: it clears it as
+  `forget` would, only once the gateway answers NotFound for the name (any other answer
+  or error refuses), logs why, and then bootstraps. `forget` keeps its own case.
 - KRB-13. **Attach (start into the recorded sandbox).** Precondition: the recorded
   name reports the recorded ID and is Ready. Journal a request ID; get generation and
   token (KRB-7), retrying 409 within the stop timeout, else refuse and retry later;
@@ -183,7 +191,12 @@ The host steps keep their order; placement, storage, credentials and trigger cha
 - KRB-14. **Replace**, in `orchestrator.replace` order: stop the exec, identity-checked
   and confirmed `delete_recorded`, the drain wait, Bootstrap's create step, Attach.
   Only on `request replace` or bounded recovery (KRB-17). Uncertain deletion keeps the
-  record and refuses.
+  record and refuses. *Amended 2026-10-25 (B3 defects):* every failed action, replace
+  or any other, operator's or automatic, names what failed and is never blank: for a CLI
+  call, the command's name, its exit code and the last line of its stderr
+  (`openshell sandbox create failed (exit 1): …`), `no error text from openshell` when
+  it wrote none, and `openshell <command> gave no answer within <n> s` for one that
+  timed out; for any other error its message, or its type when it has none.
 - KRB-15. **Stop.** SIGTERM ends the exec session and exits without deleting: Pod
   termination is not teardown. Teardown is `request stop --delete`: identity-checked
   deletion, removing the record once confirmed; a later start needs a bootstrap.
@@ -194,6 +207,13 @@ The host steps keep their order; placement, storage, credentials and trigger cha
   at most 10 attempts, delays of 2 to 60 s, reset after 60 s of steady health, pending
   turns into blocked at startup. Every automatic Attach or Replace is saved as pending
   before any effect. Explicit operator requests reset it, as `_manage` does today.
+  *Amended 2026-10-25 (B3 defects):* `status.json`'s `note` describes the current
+  condition only, with `note_kind` (`blocked`, `gateway_unreachable`,
+  `control_unreachable` or `action_failed`, shown in that order of precedence when
+  several hold) and `note_since`, when the condition began, kept while it lasts. A note
+  is cleared when its condition ends: control's or the gateway's next answer, an action
+  that succeeds after a failed one (an attach, or an operator request), a journal no
+  longer blocked, a rolled-back record cleared. `note` keeps its 512-character bound.
 - KRB-17. **Without the operator.** Reconnect (Attach to the same identity-checked
   sandbox) is automatic at manager start and after a control restart, seen as a new
   `control_instance` (a random per-process value added to `/health`). A runtime exit
@@ -201,7 +221,16 @@ The host steps keep their order; placement, storage, credentials and trigger cha
   `recover_infrastructure`, as on the host. Replace needs `recover_infrastructure` and
   a confirmed `delete_recorded`, never just a probe failure or restart. An unknown or
   changed ID, a pending journal or undeterminable presence blocks all automatic action
-  and shows in status.
+  and shows in status. *Amended 2026-10-25 (B3 defects):* an unreachable gateway is
+  waited for, at start and later, never a reason to exit (under Kubernetes an exit
+  crash-loops the Pod). The manager comes up, asks the gateway (`openshell sandbox get`
+  of the recorded name, or of a probe name the manager never makes; any answer,
+  NotFound included, means it answers) and, while it gets none, starts no automatic
+  action and uses none of the ten attempts; it asks again after 5 s, doubling to at most
+  60 s, without limit, and every 60 s while the gateway answers, and again after any
+  failed action. Once the gateway answers, the ownership algorithm proceeds unchanged.
+  Fatal at start are only bad settings, an unusable state directory or `serve.lock`, and
+  another OpenShell release: each exits 1 with `error: …`.
 
 | Event | Behavior |
 | --- | --- |
@@ -209,7 +238,7 @@ The host steps keep their order; placement, storage, credentials and trigger cha
 | Manager Pod restart | The CLI dies with it, which normally kills the runtime (KRB-11). The manager reconnects, revoking any survivor first. Nothing is deleted. |
 | Runtime node lost | Not Ready, not confirmed gone: deletion cannot be confirmed (the Pod stays Terminating), so the record stays and the attempt counts. Force-deleting is an operator action. |
 | Manager node lost | Rescheduled once its RWO volume detaches; then as a manager restart. |
-| Gateway unavailable | No ownership change; a transport error is never absence. The runtime may survive (KRB-11). Attempts consume the budget, then block. |
+| Gateway unavailable | No ownership change; a transport error is never absence. The runtime may survive (KRB-11). The manager keeps running and waits for the gateway, noting since when, without using the budget; an error from the gateway during an attempt still counts (KRB-17, amended 2026-10-25). |
 | Manager PVC lost | No record, so nothing is created; the operator reconciles any old sandbox. |
 
 ## Control and Secret projection
@@ -326,9 +355,10 @@ the `sandbox-science-runtime-manager` script. Where the design left a choice:
   request; on 409 it waits for `/health` to show no runtime, within `stop_timeout`, and
   retries the same request. The token reaches the sandbox from a private temporary file
   removed after upload.
-- **Bounds.** An automatic attempt starts only while control's health answers, so a
-  control restart does not consume the budget. A gateway error (never absence) counts
-  as an attempt, and ten of them block, as the table above says.
+- **Bounds.** An automatic attempt starts only while control's health and the
+  gateway answer, so neither a control restart nor a gateway outage consumes the
+  budget. A gateway error (never absence) during an attempt counts as one, and ten of
+  them block, as the table above says.
 - **One serving process.** `serve` holds an exclusive `flock` on `serve.lock` in the
   state directory for its lifetime and refuses to start (exit 1) while another holds
   it; the renderer's `ReadWriteOncePod` PVC keeps a second Pod off the volume too.
@@ -353,7 +383,13 @@ the `sandbox-science-runtime-manager` script. Where the design left a choice:
   that the name is absent (`SandboxMissingError`); it refuses a record with an ID, a
   name the gateway has, and any gateway error. Absence observed without an identity
   is no proof that nothing was made, so this is the operator's decision, never an
-  automatic one.
+  automatic one. A record marked `create_rolled_back` needs no `forget`: `request
+  bootstrap` clears it on the same proof (KRB-12, amended).
+- **Notes and errors** (KRB-14 and KRB-16, amended). Each source of a note (control,
+  the gateway, the last action, an exited runtime, the journal's block, a rolled-back
+  record) is held separately with its kind and since time, and the status shows the
+  highest by precedence. A CLI failure's text comes from the shared `OpenShell.run`, so
+  the host launcher's messages gain the exit code and last line too.
 - **Request channel.** The serving process claims `request.json` by renaming it to
   `request.claimed.json` before reading it, so a newer request is never deleted;
   writes `status.json` with `runtime: starting` before its first reconcile, so a

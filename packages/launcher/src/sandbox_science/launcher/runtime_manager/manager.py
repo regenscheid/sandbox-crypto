@@ -20,6 +20,14 @@ on its own: the first one comes from the operator's ``request bootstrap`` (KRB-1
   creates nothing, and control revokes the previous token at each issue.
 - An operator request that created a sandbox but could not attach the runtime leaves
   the attach to the serve loop, under the same journal.
+- The gateway is waited for, never a reason to exit: while ``openshell sandbox get``
+  gets no answer from it, no automatic action starts and none of the ten attempts is
+  used; it is asked again after 5 s, doubling to at most 60 s, without limit.
+- ``status.json``'s note says what needs attention now, with its kind and since when,
+  and is cleared when that ends (control or the gateway answers again, an action
+  succeeds after a failed one). A create the gateway rolled back is marked on the
+  record; ``request bootstrap`` clears such a record once the gateway confirms the
+  name absent, as ``forget`` would.
 - SIGTERM ends the exec session and exits; nothing is deleted (KRB-15).
 - One ``serve`` per state directory: it holds ``serve.lock`` while it runs.
 """
@@ -34,6 +42,8 @@ import re
 import secrets
 import signal
 import tempfile
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, NoReturn
 
@@ -41,10 +51,10 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
 from sandbox_science.contracts.logs import json_line, log_format, relayed_line
 from sandbox_science.launcher import runtime_owner
-from sandbox_science.launcher.config import LauncherError
+from sandbox_science.launcher.config import LauncherError, error_text
 from sandbox_science.launcher.infrastructure import InfrastructureRecovery, RecoveryState
-from sandbox_science.launcher.mcp import DEAD_PHASES, OpenShell
-from sandbox_science.launcher.runtime_owner import Owned
+from sandbox_science.launcher.mcp import DEAD_PHASES, OpenShell, SandboxMissingError
+from sandbox_science.launcher.runtime_owner import CreateRolledBackError, Owned
 from sandbox_science.launcher.state import private_dir, write_private
 from sandbox_science.policy.openshell import compile_orchestrator
 
@@ -53,6 +63,7 @@ from .records import (
     CredentialsRecord,
     ManagerOwnership,
     ManagerRequest,
+    NoteKind,
     Placement,
     Result,
     Status,
@@ -71,6 +82,18 @@ _CLI_CALL = 120.0
 """``OpenShell.run``'s own bound on one CLI call, which no setting changes."""
 _CONTROL_CALL = 10.0
 """``ControlClient``'s bound on one call to control."""
+_GATEWAY_CALL = 30.0
+"""The bound on one look at the gateway (``RuntimeManager._gateway``)."""
+_PROBE = "ss-orch-gateway-probe"
+"""The name the gateway is asked about when none is recorded: one ``NAME`` never
+matches, so its answer is only ever a sign of life."""
+_PRIORITY: tuple[NoteKind, ...] = (
+    "blocked",
+    "gateway_unreachable",
+    "control_unreachable",
+    "action_failed",
+)
+"""Which note ``status.json`` shows when several conditions hold at once."""
 
 
 def request_deadline(settings: RuntimeManagerSettings) -> float:
@@ -84,7 +107,7 @@ def request_deadline(settings: RuntimeManagerSettings) -> float:
     attach = 3 * _CONTROL_CALL + stop + 6 * _CLI_CALL + start  # credentials, upload, exec
     replace = stop_exec + delete + drain + create + attach
     reconcile = stop_exec + 2 * _CLI_CALL + attach  # an automatic attempt under way
-    return replace + reconcile + 30
+    return replace + reconcile + _GATEWAY_CALL + 30
 
 
 def say(text: str) -> None:
@@ -95,6 +118,13 @@ def say(text: str) -> None:
 
 class BlockedError(LauncherError):
     """An automatic action found what only an operator may settle."""
+
+
+@dataclass(frozen=True)
+class _Note:
+    kind: NoteKind
+    text: str
+    since: datetime
 
 
 def _ours(owned: Owned) -> None:
@@ -116,6 +146,8 @@ class RuntimeManager:
         health_interval: float = 5.0,
         steady: float = 60.0,
         delays: tuple[float, ...] = (2, 4, 8, 16, 32, 60),
+        gateway_backoff: tuple[float, float] = (5.0, 60.0),
+        gateway_interval: float = 60.0,
     ) -> None:
         self.settings = settings
         self.root = private_dir(settings.state_dir)
@@ -128,6 +160,7 @@ class RuntimeManager:
         )
         self.clock, self.poll = clock, poll
         self.health_interval, self.steady = health_interval, steady
+        self.gateway_backoff, self.gateway_interval = gateway_backoff, gateway_interval
         self.ownership = ManagerOwnership(self.root / "sandbox.json")
         self.instance = "instance-" + secrets.token_hex(16)
         self.stopping = asyncio.Event()
@@ -136,7 +169,7 @@ class RuntimeManager:
             self.root / "infrastructure-recovery.json",
             enabled=True,
             alive=self.alive,
-            replace=self._recover,
+            replace=self._automatic,
             stopping=self.stopping,
             clock=clock,
             steady=steady,
@@ -146,10 +179,14 @@ class RuntimeManager:
         self.process: asyncio.subprocess.Process | None = None
         self.attached: str | None = None
         """The control instance the running runtime was attached under."""
-        self.note: str | None = None
+        self._notes: dict[str, _Note] = {}
+        """What needs attention now, by its source; ``status.json`` shows one."""
         self._output: asyncio.Task[None] | None = None
         self._exited = False
         self._control_up = False
+        self._gateway_up = False
+        self._gateway_due = 0.0
+        self._gateway_delay: float | None = None
         self._wanted = False
         self._blocking: str | None = None
         self._next_health = 0.0
@@ -162,9 +199,24 @@ class RuntimeManager:
         """Whether the exec session runs (True), has ended (False) or is not held (None)."""
         return None if self.process is None else self.process.returncode is None
 
+    def _noted(self, source: str, kind: NoteKind, text: str) -> None:
+        """Note a condition from ``source``; one that goes on keeps its since time."""
+        found = self._notes.get(source)
+        since = found.since if found is not None and found.kind == kind else self.clock.now()
+        self._notes[source] = _Note(kind, text[:512], since)
+
+    def _cleared(self, *sources: str) -> None:
+        for source in sources:
+            self._notes.pop(source, None)
+
+    def _attachable(self) -> bool:
+        """A sandbox is recorded that an automatic action may attach: not one whose
+        create the gateway rolled back, which waits for the operator's bootstrap."""
+        return self.ownership.read() is not None and self.ownership.rolled_back() is None
+
     async def run(self) -> None:
         """Serve until ``stopping`` is set, then end the exec session; never delete."""
-        self._wanted = self.ownership.read() is not None
+        self._wanted = self._attachable()
         (self.root / _CLAIMED).unlink(missing_ok=True)  # a dead process's request
         self._status("starting")  # names this process before the first reconcile
         serving = asyncio.create_task(self._serve())
@@ -187,10 +239,12 @@ class RuntimeManager:
                 self.requested.clear()
                 await self._answer()
             await self._observe()
+            gateway = await self._gateway()
             state = self.recovery.state
             if (
                 self._wanted
                 and self._control_up
+                and gateway
                 and not state.blocked
                 and self.clock.now().timestamp() >= state.retry_after
             ):
@@ -202,7 +256,7 @@ class RuntimeManager:
                             update={"blocked": True, "error": self._blocking}
                         )
                     )
-                self._wanted = self.alive() is not True and self.ownership.read() is not None
+                self._wanted = self.alive() is not True and self._attachable()
             self._steady()
             self._status()
             await wait_or_sleep(self.clock, self.requested, self.poll)
@@ -221,22 +275,64 @@ class RuntimeManager:
             health = await asyncio.to_thread(self.control.health)
         except LauncherError as exc:
             self._control_up = False
-            self.note = str(exc)[:512]
+            self._noted("control", "control_unreachable", error_text(exc))
             return
         self._control_up = True
+        self._cleared("control")
         if self.attached is not None and health.control_instance != self.attached:
             say("control restarted; reconnecting the runtime to its sandbox")
             await self._stop_exec()
             self.attached, self._exited = None, False
-            self._wanted = self.ownership.read() is not None
+            self._wanted = self._attachable()
         elif self._exited:
             self._exited = False
             if self.settings.recover_infrastructure:
                 self._wanted = True
             else:
-                self.note = (
-                    "the runtime exited under the same control; recover_infrastructure is off"
+                self._noted(
+                    "exited",
+                    "blocked",
+                    "the runtime exited under the same control; recover_infrastructure is "
+                    "off (request replace, or a control restart, starts it again)",
                 )
+
+    async def _gateway(self) -> bool:
+        """Whether the OpenShell gateway answers, asked when due: every
+        ``gateway_interval`` while it does, else after a backoff from
+        ``gateway_backoff``'s first value doubling to its second, without limit. Any
+        answer counts, the gateway's NotFound too; a failure is noted, never fatal."""
+        now = self.clock.monotonic()
+        if now < self._gateway_due:
+            return self._gateway_up
+        owned = self.ownership.read()
+        name = owned.name if owned is not None and NAME.fullmatch(owned.name) else _PROBE
+        try:
+            await self.cli.run("sandbox", "get", name, "-o", "json", timeout=_GATEWAY_CALL)
+        except SandboxMissingError:
+            pass
+        except (LauncherError, OSError, ValueError) as exc:
+            first, cap = self.gateway_backoff
+            delay = first if self._gateway_delay is None else min(2 * self._gateway_delay, cap)
+            if self._gateway_up or self._gateway_delay is None:
+                say(f"the OpenShell gateway does not answer; waiting for it ({error_text(exc)})")
+            self._gateway_up, self._gateway_delay = False, delay
+            self._gateway_due = self.clock.monotonic() + delay
+            self._noted(
+                "gateway", "gateway_unreachable", "the OpenShell gateway is unreachable: "
+                + error_text(exc),
+            )  # fmt: skip
+            return False
+        if not self._gateway_up and self._gateway_delay is not None:
+            say("the OpenShell gateway answers again")
+        self._gateway_up, self._gateway_delay = True, None
+        self._gateway_due = self.clock.monotonic() + self.gateway_interval
+        self._cleared("gateway")
+        return True
+
+    def _recheck_gateway(self) -> None:
+        """Ask the gateway again before the next automatic action: a failure may have
+        been the gateway's."""
+        self._gateway_due = 0.0
 
     def _steady(self) -> None:
         if self.alive() is not True:
@@ -253,6 +349,18 @@ class RuntimeManager:
         self._blocking = reason
         raise BlockedError(reason)
 
+    async def _automatic(self) -> None:
+        """``_recover`` under the journal, its outcome noted: a failure until an action
+        succeeds."""
+        try:
+            await self._recover()
+        except (LauncherError, OSError, ValueError) as exc:
+            self._noted("action", "action_failed", "automatic action failed: " + error_text(exc))
+            self._recheck_gateway()
+            raise
+        if self.alive():
+            self._cleared("action")
+
     async def _recover(self) -> None:
         """One automatic action, under the recovery journal: attach, or with the opt-in
         replace a sandbox confirmed gone or dead."""
@@ -261,6 +369,8 @@ class RuntimeManager:
             return
         if not NAME.fullmatch(owned.name):
             self._block("the recorded sandbox name is not one the runtime manager makes")
+        if self.ownership.rolled_back() is not None:
+            self._block("the gateway rolled back the runtime sandbox's creation; request bootstrap")
         if owned.id is None:
             self._block("the runtime sandbox's creation outcome is unknown; request replace")
         found = await self.cli.sandbox(owned.name)
@@ -309,7 +419,8 @@ class RuntimeManager:
         if record is not None:
             self._journal(record.model_copy(update={"started": True}))
         await self._exec(owned.name)
-        self.attached, self._exited, self.note = instance, False, None
+        self.attached, self._exited = instance, False
+        self._cleared("exited", "action")
         say(f"runtime attached in {owned.name} ({issued.generation})")
 
     def _credentials_record(self) -> CredentialsRecord | None:
@@ -426,6 +537,10 @@ class RuntimeManager:
                 driver_config=driver_config,
                 clock=self.clock,
             )
+        except CreateRolledBackError as exc:
+            self.ownership.mark_rolled_back(exc.reason, self.clock.now())
+            say(f"{exc}; recorded as create_rolled_back")
+            raise LauncherError(f"{exc}; request bootstrap to create another") from None
         finally:
             self.ownership.creating = None
         self._created = True
@@ -465,13 +580,36 @@ class RuntimeManager:
 
     async def _bootstrap(self) -> None:
         if self.ownership.read() is not None:
-            raise LauncherError(
-                "a runtime sandbox is already recorded; bootstrap needs none (request replace)"
-            )
+            if self.ownership.rolled_back() is None:
+                raise LauncherError(
+                    "a runtime sandbox is already recorded; bootstrap needs none (request replace)"
+                )
+            await self._clear_rolled_back()
         self.recovery.save(RecoveryState())
         (self.root / "credentials.json").unlink(missing_ok=True)
         await self._stop_exec()
         await self._create_and_attach(self.settings.driver_config())
+
+    async def _clear_rolled_back(self) -> None:
+        """Clear a record whose create the gateway rolled back, as ``forget`` clears one
+        whose create never happened: only once the gateway answers that the name is
+        absent, the proof ``delete_recorded`` accepts for a deletion too."""
+        owned, rolled = self.ownership.read(), self.ownership.rolled_back()
+        if owned is None or rolled is None:
+            return
+        _ours(owned)
+        if await self.cli.sandbox(owned.name) is not None:
+            raise LauncherError(
+                "the gateway has a sandbox of the recorded name again; bootstrap refused "
+                "(request stop --delete deletes it)"
+            )
+        self.ownership.remove()
+        (self.root / "credentials.json").unlink(missing_ok=True)
+        why = rolled.reason or "the gateway gave no reason"
+        say(
+            f"cleared {owned.name}: the gateway rolled back its creation at "
+            f"{rolled.at.isoformat()} ({why}) and answers that it has no sandbox of that name"
+        )
 
     async def _forget(self) -> None:
         """Clear a record whose create never happened: no ID was ever observed, and the
@@ -532,8 +670,9 @@ class RuntimeManager:
                 await self._teardown()
             self.recovery.save(RecoveryState())
             self._wanted = False
+            self._cleared("action", "exited")
         except (LauncherError, OSError, ValueError) as exc:
-            error = str(exc)[:512]
+            error = error_text(exc)
             if self._created and self.ownership.read() is not None:
                 # The operator asked for a runtime and a sandbox of theirs is recorded:
                 # attaching it is the serve loop's, journaled and bounded.
@@ -544,25 +683,51 @@ class RuntimeManager:
                     "to attach the runtime"
                 )
             say(f"operator {request.action} failed: {error}")
+            self._noted("action", "action_failed", f"operator {request.action} failed: {error}")
         finally:
             self._created = False
+            self._recheck_gateway()  # the request used the gateway, or found it silent
         receipt = Result(nonce=request.nonce, error=error)
         write_private(self.root / "result.json", receipt.model_dump_json() + "\n")
         path.unlink(missing_ok=True)
 
+    def _note(self) -> _Note | None:
+        """The note ``status.json`` shows: the journal's block and a rolled-back create
+        as they stand now, else what was noted, by ``_PRIORITY``."""
+        state = self.recovery.state
+        if state.blocked:
+            self._noted(
+                "journal", "blocked", "automatic action blocked: "
+                + (state.error or "attempts exhausted"),
+            )  # fmt: skip
+        else:
+            self._cleared("journal")
+        owned, rolled = self.ownership.read(), self.ownership.rolled_back()
+        if owned is not None and rolled is not None:
+            why = rolled.reason or "the gateway gave no reason"
+            self._notes["rolled_back"] = _Note(
+                "action_failed",
+                f"the gateway rolled back the creation of {owned.name} ({why}); "
+                "request bootstrap creates another",
+                rolled.at,
+            )
+        else:
+            self._cleared("rolled_back")
+        found = sorted(self._notes.values(), key=lambda note: _PRIORITY.index(note.kind))
+        return found[0] if found else None
+
     def _status(self, runtime: Literal["starting"] | None = None) -> None:
         owned = self.ownership.read()
-        state = self.recovery.state
-        note = self.note
-        if state.blocked:
-            note = "automatic action blocked: " + (state.error or "attempts exhausted")
+        note = self._note()
         status = Status(
             instance=self.instance,
             pid=os.getpid(),
             runtime=runtime or ("running" if self.alive() else "stopped"),
             sandbox=owned.name if owned is not None else None,
             control_instance=self.attached,
-            note=note[:512] if note is not None else None,
+            note=note.text[:512] if note is not None else None,
+            note_kind=note.kind if note is not None else None,
+            note_since=note.since if note is not None else None,
         )
         shown = status.model_dump_json()
         if shown != self._shown:
