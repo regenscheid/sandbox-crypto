@@ -72,6 +72,12 @@ async def serve(settings: Settings) -> None:
                 _log.info("deleted %d blobs no shared file uses", removed)
         await manager.start()
         await parts.provisioner.start()
+        if environments is not None:
+            # Before serving: creations an operator rolled back with the worker stopped
+            # still owe the deletion hooks this worker registered (B3).
+            environments.serving_since = clock.now()
+            for environment_id in await environments.run_pending_hooks():
+                _log.info("ran the deletion hooks of environment %s", environment_id)
         await runner.setup()
         site = web.TCPSite(
             runner,
@@ -234,6 +240,8 @@ def reconcile_environment(settings: Settings, environment_id: str, *, wait: bool
             return 1
         if environments is None:  # checked above; the builder says so again
             return 1
+        # The running worker's deletion hooks are not registered here; it runs them.
+        environments.hooks_deferred = True
         try:
             result = asyncio.run(_reconcile(environments, environment_id, wait=wait))
         except WorkerError as error:

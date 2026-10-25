@@ -88,6 +88,9 @@ from .settings import EnvironmentSettings, OpenShellBackendSettings
 from .timeouts import seconds
 from .unknown_creations import (
     CREATION_ROLLED_BACK,
+    ENVIRONMENT_LABEL,
+    LIST_PAGE_SIZE,
+    MAX_LIST_PAGES,
     MAX_OBSERVATIONS,
     UNKNOWN_OUTCOME,
     Observation,
@@ -95,7 +98,9 @@ from .unknown_creations import (
     Reconciliation,
     confirms,
     examine,
+    label_value,
     observation,
+    page,
     refusal,
     when,
 )
@@ -268,10 +273,25 @@ class OpenShellCli:
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox get returned no object")
         return cast(dict[str, object], document)
 
-    async def sandboxes(self) -> object:
-        """``openshell sandbox list``'s answer, as JSON; ``unknown_creations.examine``
-        reads it."""
-        return await self.json("sandbox", "list")
+    async def sandboxes(self) -> tuple[list[dict[str, object]], bool]:
+        """Every sandbox the gateway lists, page after page up to ``MAX_LIST_PAGES``, and
+        whether the listing ended there. An answer the worker cannot read raises."""
+        entries: list[dict[str, object]] = []
+        token = ""
+        for _ in range(MAX_LIST_PAGES):
+            args = ["sandbox", "list", "--page-size", str(LIST_PAGE_SIZE)]
+            if token:
+                args += ["--page-token", token]
+            read = page(await self.json(*args))
+            if read is None:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "openshell sandbox list returned no sandbox listing"
+                )
+            entries += read[0]
+            token = read[1]
+            if not token:
+                return entries, True
+        return entries, False
 
 
 class EnvironmentRecords:
@@ -329,6 +349,14 @@ class EnvironmentRecords:
             "CREATE TABLE IF NOT EXISTS creation_reconciliations ("
             " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, reason TEXT NOT NULL,"
             " reconciled_at TEXT NOT NULL, observations TEXT NOT NULL,"
+            " hooks_pending INTEGER NOT NULL DEFAULT 0 CHECK (hooks_pending IN (0,1)),"
+            " PRIMARY KEY (environment_id, sandbox))"
+        )
+        # When each sandbox's create command ended, whatever its result: the grace of a
+        # creation with an unknown outcome counts from then (B3).
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS creation_commands ("
+            " environment_id TEXT NOT NULL, sandbox TEXT NOT NULL, ended_at TEXT NOT NULL,"
             " PRIMARY KEY (environment_id, sandbox))"
         )
         self._lock = threading.Lock()
@@ -374,9 +402,61 @@ class EnvironmentRecords:
             for at, listed, names in rows
         )
 
-    def roll_back(self, info: EnvironmentInfo, reason: str, at: datetime) -> None:
+    def create_ended(self, info: EnvironmentInfo, at: datetime) -> None:
+        """Record that the create command of the environment's sandbox has ended."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO creation_commands VALUES (?,?,?) ON CONFLICT"
+                " (environment_id, sandbox) DO UPDATE SET ended_at=excluded.ended_at",
+                (info.environment_id, info.sandbox, at.isoformat()),
+            )
+
+    def creation_ended(self, info: EnvironmentInfo) -> datetime | None:
+        """When the create command of the environment's sandbox ended; None when no end
+        is recorded, as when the worker stopped while it ran."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT ended_at FROM creation_commands WHERE environment_id=? AND sandbox=?",
+                (info.environment_id, info.sandbox),
+            ).fetchone()
+        return None if row is None else datetime.fromisoformat(str(row[0]))
+
+    def identified(self) -> list[EnvironmentInfo]:
+        """The environments, of every kind, that are not deleted and have a sandbox
+        identity: those a complete sandbox listing must show."""
+        with self._lock:
+            rows = self._db.execute("SELECT document FROM environments").fetchall()
+        infos = [EnvironmentInfo.model_validate_json(row[0]) for row in rows]
+        return [
+            info
+            for info in infos
+            if info.state is not EnvironmentState.DELETED and info.sandbox_id is not None
+        ]
+
+    def hooks_pending(self) -> list[tuple[str, str]]:
+        """Creations rolled back with the worker stopped, whose deletion hooks the next
+        running worker owes: (environment ID, sandbox name)."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT environment_id, sandbox FROM creation_reconciliations"
+                " WHERE hooks_pending = 1 ORDER BY reconciled_at"
+            ).fetchall()
+        return [(str(environment_id), str(sandbox)) for environment_id, sandbox in rows]
+
+    def hooks_done(self, environment_id: str, sandbox: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE creation_reconciliations SET hooks_pending = 0"
+                " WHERE environment_id=? AND sandbox=?",
+                (environment_id, sandbox),
+            )
+
+    def roll_back(
+        self, info: EnvironmentInfo, reason: str, at: datetime, *, hooks_pending: bool = False
+    ) -> None:
         """Record why a creation is deleted without a sandbox, with its evidence, and
-        confirm its deletion, in one transaction."""
+        confirm its deletion, in one transaction. ``hooks_pending`` says that the
+        deletion hooks did not run here, and the running worker owes them."""
         evidence = json.dumps(
             [
                 {"observed_at": o.observed_at.isoformat(), "listed": o.listed, "names": o.names}
@@ -387,10 +467,18 @@ class EnvironmentRecords:
             self._db.execute("BEGIN IMMEDIATE")
             try:
                 self._db.execute(
-                    "INSERT INTO creation_reconciliations VALUES (?,?,?,?,?)"
+                    "INSERT INTO creation_reconciliations VALUES (?,?,?,?,?,?)"
                     " ON CONFLICT (environment_id, sandbox) DO UPDATE SET reason=excluded.reason,"
-                    " reconciled_at=excluded.reconciled_at, observations=excluded.observations",
-                    (info.environment_id, info.sandbox, reason, at.isoformat(), evidence),
+                    " reconciled_at=excluded.reconciled_at, observations=excluded.observations,"
+                    " hooks_pending=excluded.hooks_pending",
+                    (
+                        info.environment_id,
+                        info.sandbox,
+                        reason,
+                        at.isoformat(),
+                        evidence,
+                        int(hooks_pending),
+                    ),
                 )
                 self._db.execute(
                     "INSERT INTO confirmed_deletions VALUES (?,?,?) ON CONFLICT(environment_id)"
@@ -697,6 +785,16 @@ class Environments:
         self._users: dict[str, int] = {}
         """Callers holding or waiting for each environment's lock."""
         self._start_failures: dict[str, tuple[float, str]] = {}
+        self.serving_since: datetime | None = None
+        """When the running worker started serving; set by ``serve``. A creation whose
+        command's end is not recorded (the worker stopped during it) counts as ended
+        then, since the stopped worker's commands ended with it. None elsewhere, where
+        such a creation is refused."""
+        self.hooks_deferred = False
+        """Set by the offline command, whose deletion hooks are the running worker's:
+        a creation rolled back here records them as pending (``run_pending_hooks``)."""
+        self._absent_here: dict[tuple[str, str], tuple[datetime, float]] = {}
+        """This process's first read finding each creation absent: wall and monotonic time."""
 
     def close(self) -> None:
         self.records.close()
@@ -1187,20 +1285,35 @@ class Environments:
             )
         now = self.clock.now()
         grace = self.settings.creation_grace
-        absent_from = info.created_at + timedelta(seconds=grace)
+        ended = self.records.creation_ended(info)
+        if ended is None:
+            if self.serving_since is None:
+                return Outcome(
+                    message=f"{UNKNOWN_OUTCOME}: the end of its create command is not"
+                    " recorded, as when a worker stopped while it ran; start the worker,"
+                    " which reconciles it"
+                )
+            ended = max(
+                self.serving_since,
+                info.created_at + timedelta(seconds=self.settings.create_timeout),
+            )
+        absent_from = max(info.created_at, ended) + timedelta(seconds=grace)
         if now < absent_from:
             return Outcome(
-                message=f"{UNKNOWN_OUTCOME}: the record is younger than the creation grace"
-                f" ({grace:g} s); absence can be observed from {when(absent_from)}"
+                message=f"{UNKNOWN_OUTCOME}: its create command ended less than the creation"
+                f" grace ({grace:g} s) ago; absence can be observed from {when(absent_from)}"
             )
-        listing = examine(await self.cli.sandboxes(), info)
+        entries, complete = await self.cli.sandboxes()
+        listing = examine(entries, complete, info, self.records.identified())
         if listing.sandbox_id is not None:
             return Outcome(sandbox_id=listing.sandbox_id)
         if listing.blocker is not None:
             return Outcome(message=f"{UNKNOWN_OUTCOME}: {listing.blocker}")
+        monotonic = self.clock.monotonic()
+        local = self._absent_here.setdefault((info.environment_id, info.sandbox), (now, monotonic))
         seen = self.records.observe(info, observation(now, listing.names))
         recheck = self.settings.creation_recheck
-        if confirms(seen, now, recheck):
+        if confirms(seen, now, recheck, local, monotonic):
             return Outcome(
                 confirmed=True,
                 message=f"{info.sandbox} was absent on {len(seen)} reads from"
@@ -1209,6 +1322,9 @@ class Environments:
         first = when(seen[0].observed_at)
         times = f"once, at {first}" if len(seen) == 1 else f"{len(seen)} times since {first}"
         retry_at = seen[0].observed_at + timedelta(seconds=recheck)
+        if local[0] == seen[0].observed_at:
+            # Due by the monotonic clock too, whatever the wall clock did meanwhile.
+            retry_at = max(retry_at, now + timedelta(seconds=local[1] + recheck - monotonic))
         return Outcome(
             message=f"{UNKNOWN_OUTCOME}: seen absent {times};"
             f" a second read after {when(retry_at)} confirms it",
@@ -1218,7 +1334,10 @@ class Environments:
     async def _roll_back(self, info: EnvironmentInfo) -> EnvironmentInfo:
         """Mark a creation confirmed absent as deleted (``creation_rolled_back``), its
         deletion confirmed, so the ordinary path forgets its record and frees its ID."""
-        self.records.roll_back(info, CREATION_ROLLED_BACK, self.clock.now())
+        self.records.roll_back(
+            info, CREATION_ROLLED_BACK, self.clock.now(), hooks_pending=self.hooks_deferred
+        )
+        self._absent_here.pop((info.environment_id, info.sandbox), None)
         _log.warning(
             "environment %s: sandbox %s never appeared; marked deleted (%s)",
             info.environment_id,
@@ -1266,6 +1385,26 @@ class Environments:
                 environment_id, "inconclusive", outcome.message, retry_at=outcome.retry_at
             )
 
+    async def run_pending_hooks(self) -> list[str]:
+        """Run the deletion hooks the offline command left pending, once the running
+        worker has registered them, before it serves; return the environments' IDs.
+
+        Only for a record still deleted under the same sandbox name: an ID created
+        again since then already ran them when it was reused."""
+        done: list[str] = []
+        for environment_id, sandbox in self.records.hooks_pending():
+            async with self._lock(environment_id):
+                info = self.records.get(environment_id)
+                if (
+                    info is not None
+                    and info.state is EnvironmentState.DELETED
+                    and info.sandbox == sandbox
+                ):
+                    await self._forget(environment_id)
+                    done.append(environment_id)
+                self.records.hooks_done(environment_id, sandbox)
+        return done
+
     async def reconcile_creations(self) -> list[Reconciliation]:
         """The running worker's pass: one read for each creation without an identity
         past the grace, skipping environments whose lock is held or awaited."""
@@ -1273,7 +1412,7 @@ class Environments:
         grace = timedelta(seconds=self.settings.creation_grace)
         for info in self.records.creating():
             if info.sandbox_id is not None or self.clock.now() < info.created_at + grace:
-                continue
+                continue  # no read is due yet; _creation_outcome counts from the command's end
             if self.busy(info.environment_id):
                 continue  # a creation or deletion under way decides it
             try:
@@ -1770,15 +1909,23 @@ class Environments:
         self, info: EnvironmentInfo, compiled: Compiled, *, timeout: float | None = None
     ) -> str:
         name, image = info.sandbox, info.image
-        path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
-        args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
-        launch = self.records.driver_config(name)
-        if launch not in (None, "{}"):
-            args += ["--driver-config-json", launch]
-        for provider in info.providers:
-            args += ["--provider", provider]
-        args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
-        await self.cli.run(*args, timeout=self.settings.create_timeout)
+        try:
+            path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
+            args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
+            launch = self.records.driver_config(name)
+            if launch not in (None, "{}"):
+                args += ["--driver-config-json", launch]
+            for provider in info.providers:
+                args += ["--provider", provider]
+            label = label_value(info.environment_id)
+            if label is not None:
+                args += ["--label", f"{ENVIRONMENT_LABEL}={label}"]
+            args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
+            await self.cli.run(*args, timeout=self.settings.create_timeout)
+        finally:
+            # Ended, whatever the result: a timeout or cancellation kills and reaps the
+            # command first. The grace of an unknown outcome counts from here (B3).
+            self.records.create_ended(info, self.clock.now())
         if timeout is None:
             return await self._wait_ready(name, creating=info.environment_id)
         try:

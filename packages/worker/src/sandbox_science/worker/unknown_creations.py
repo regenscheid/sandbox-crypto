@@ -8,23 +8,30 @@ bootstrap misses the 5-minute grace, so the sandbox never appears. Absence is
 *confirmed*, and the environment may be marked deleted (``creation_rolled_back``), only
 when all of these hold:
 
-- the record is older than the pool's ``creation_grace``;
-- the gateway has no sandbox by the environment's original name, and lists none by that
-  name or whose labels or metadata name the environment or that name;
+- ``creation_grace`` has passed since the create command ended (success, failure or
+  timeout); while the command runs, the environment's lock keeps every read away;
+- the gateway has no sandbox by the environment's original name, and its complete
+  listing, read page by page, shows none by that name and none under another name that
+  carries the worker's ``ENVIRONMENT_LABEL`` with this environment's ID. A listing that
+  misses any sandbox of the worker's other environments comes from another gateway or
+  workspace, or one still starting, and confirms nothing;
 - that absence was observed on at least two reads at least ``creation_recheck`` apart,
-  each past the grace and each recorded on the environment.
+  by the wall clock and, within one process, by the monotonic clock too, each recorded
+  on the environment.
 
 Any read that shows the sandbox gives the environment its identity instead, and the
 ordinary deletion by identity follows; nothing here deletes a sandbox. The running
 worker checks every such environment each ``creation_recheck`` (``CreationReconciler``);
-``sandbox-science-worker environments reconcile`` does the same with the worker stopped.
+``sandbox-science-worker environments reconcile`` does the same with the worker stopped,
+leaving the deletion hooks to the next running worker.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, Literal, cast
@@ -49,7 +56,13 @@ MAX_LISTED_NAMES: Final = 32
 """Sandbox names an observation keeps of what the gateway listed; the count is kept too."""
 MAX_OBSERVATIONS: Final = 16
 """Observations kept per environment and sandbox name; the newest are kept."""
-_LABEL_KEYS: Final = ("labels", "metadata", "annotations")
+ENVIRONMENT_LABEL: Final = "sandbox-science.io/environment"
+"""The label ``Environments.create`` gives a sandbox: the environment's ID."""
+_LABEL_VALUE: Final = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$")
+MAX_LIST_PAGES: Final = 32
+"""Pages of a sandbox listing read at most; a longer listing confirms nothing."""
+LIST_PAGE_SIZE: Final = 100
+"""Sandboxes per page, OpenShell's default."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,62 +115,96 @@ class Reconciliation:
     """For an inconclusive read that only a later one can settle: when it can."""
 
 
-def examine(document: object, info: EnvironmentInfo) -> Listing:
-    """Read ``openshell sandbox list -o json`` for traces of ``info``'s sandbox.
+def page(document: object) -> tuple[list[dict[str, object]], str] | None:
+    """One page of ``openshell sandbox list -o json``: its entries and the token of the
+    next page (empty at the end); None for an answer the worker cannot read.
 
-    OpenShell 0.1.5 answers ``{"sandboxes": [...], "next_page_token": ...}``. A paged
-    or unrecognised answer cannot show absence, so it is a blocker, never an absence.
-    """
-    entries: object
-    token: object
-    if isinstance(document, list):
-        entries, token = cast(list[object], document), None
-    elif isinstance(document, dict):
-        mapping = cast(dict[str, object], document)
-        entries, token = mapping.get("sandboxes"), mapping.get("next_page_token")
-    else:
-        entries, token = None, None
-    if not isinstance(entries, list):
-        return Listing(blocker="the gateway's sandbox listing was not understood")
-    if token:
-        return Listing(blocker="the gateway's sandbox listing has more pages than one read shows")
-    names: list[str] = []
-    wanted = {info.sandbox, info.environment_id}
-    for item in cast(list[object], entries):
-        if not isinstance(item, dict):
-            return Listing(blocker="the gateway's sandbox listing was not understood")
-        entry = cast(dict[str, object], item)
+    OpenShell answers ``{"sandboxes": [...], "next_page_token": "..."}``."""
+    if not isinstance(document, dict):
+        return None
+    mapping = cast(dict[str, object], document)
+    entries, token = mapping.get("sandboxes"), mapping.get("next_page_token") or ""
+    if not isinstance(entries, list) or not isinstance(token, str):
+        return None
+    items = cast(list[object], entries)
+    if not all(isinstance(item, dict) for item in items):
+        return None
+    return [cast(dict[str, object], item) for item in items], token
+
+
+def label_value(environment_id: str) -> str | None:
+    """The value of ``ENVIRONMENT_LABEL`` for an environment, or None when its ID is no
+    valid Kubernetes label value (over 63 characters, or not ending alphanumerically)."""
+    return environment_id if _LABEL_VALUE.fullmatch(environment_id) else None
+
+
+def _labels(entry: dict[str, object]) -> dict[str, object]:
+    """A listed sandbox's labels, at the top level or under ``metadata``."""
+    labels = entry.get("labels")
+    metadata = entry.get("metadata")
+    if not isinstance(labels, dict) and isinstance(metadata, dict):
+        labels = cast(dict[str, object], metadata).get("labels")
+    return cast(dict[str, object], labels) if isinstance(labels, dict) else {}
+
+
+def examine(
+    entries: Sequence[dict[str, object]],
+    complete: bool,
+    info: EnvironmentInfo,
+    known: Sequence[EnvironmentInfo],
+) -> Listing:
+    """Read a sandbox listing for traces of ``info``'s sandbox (B3).
+
+    A listing counts as evidence of absence only when it ended (``complete``) and shows
+    every sandbox of ``known``, the worker's other environments with an identity, by
+    name or ID: a listing from another gateway or workspace, or from a gateway that is
+    still rebuilding its index, misses them. A sandbox by the original name gives its
+    identity. A sandbox under another name that carries ``ENVIRONMENT_LABEL`` with this
+    environment's ID, and that no other record of the worker names, is a blocker: the
+    label is the worker's own, so only that key counts, never a value alone."""
+    names = tuple(str(entry.get("name")) for entry in entries)
+    if not complete:
+        return Listing(
+            blocker=f"the gateway's sandbox listing has more than {MAX_LIST_PAGES} pages",
+            names=names,
+        )
+    listed_names = set(names)
+    listed_ids = {entry.get("id") for entry in entries}
+    missing = [
+        other.sandbox
+        for other in known
+        if other.sandbox not in listed_names and other.sandbox_id not in listed_ids
+    ]
+    if missing:
+        shown = ", ".join(sorted(missing)[:5]) + (", …" if len(missing) > 5 else "")
+        return Listing(
+            blocker=f"listing incomplete: the worker's sandboxes {shown} are not listed, so the"
+            " listing may come from another gateway or workspace, or one still starting",
+            names=names,
+        )
+    owned = {other.sandbox for other in known}
+    wanted = label_value(info.environment_id)
+    for entry in entries:
         name = entry.get("name")
-        names.append(str(name))
         if name == info.sandbox:
             identity = entry.get("id")
             if isinstance(identity, str) and identity:
-                return Listing(sandbox_id=identity, names=tuple(names))
+                return Listing(sandbox_id=identity, names=names)
             return Listing(
                 blocker=f"the gateway lists sandbox {info.sandbox} without an identity",
-                names=tuple(names),
+                names=names,
             )
-        if any(wanted & set(_strings(entry.get(key))) for key in _LABEL_KEYS):
+        if (
+            wanted is not None
+            and name not in owned
+            and _labels(entry).get(ENVIRONMENT_LABEL) == wanted
+        ):
             return Listing(
-                blocker=f"sandbox {str(name)[:64]!r} carries labels or metadata naming this"
-                " environment; inspect it with `openshell sandbox get`",
-                names=tuple(names),
+                blocker=f"sandbox {str(name)[:64]!r} carries {ENVIRONMENT_LABEL}={wanted};"
+                " inspect it with `openshell sandbox get`",
+                names=names,
             )
-    return Listing(names=tuple(names))
-
-
-def _strings(value: object, depth: int = 0) -> Iterable[str]:
-    """The strings in a label or metadata value, nested maps and lists included."""
-    if depth > 4:
-        return
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in cast(dict[object, object], value).values():
-            yield from _strings(item, depth + 1)
-    elif isinstance(value, list):
-        for item in cast(list[object], value):
-            yield from _strings(item, depth + 1)
+    return Listing(names=names)
 
 
 def observation(at: datetime, names: Iterable[str]) -> Observation:
@@ -165,10 +212,24 @@ def observation(at: datetime, names: Iterable[str]) -> Observation:
     return Observation(at, len(listed), tuple(listed[:MAX_LISTED_NAMES]))
 
 
-def confirms(observations: tuple[Observation, ...], now: datetime, recheck: float) -> bool:
+def confirms(
+    observations: tuple[Observation, ...],
+    now: datetime,
+    recheck: float,
+    local: tuple[datetime, float] | None,
+    monotonic: float,
+) -> bool:
     """Whether recorded absences, the newest just made, confirm absence: two reads at
-    least ``recheck`` apart."""
-    return len(observations) >= 2 and (now - observations[0].observed_at).total_seconds() >= recheck
+    least ``recheck`` apart by the wall clock. ``local`` is this process's first absence
+    of the sandbox (wall time, monotonic time); when the first recorded read is that one,
+    the gap must hold by the monotonic clock too, so a step of the wall clock cannot
+    shorten it."""
+    if len(observations) < 2:
+        return False
+    first = observations[0].observed_at
+    if (now - first).total_seconds() < recheck:
+        return False
+    return local is None or local[0] != first or monotonic - local[1] >= recheck
 
 
 def when(moment: datetime) -> str:

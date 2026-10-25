@@ -100,7 +100,7 @@ TOKEN = "t" * 40
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
 FAKE_OPENSHELL = r"""
-import json, os, sys, uuid
+import json, os, sys, time, uuid
 import yaml
 
 BASELINE = {"read_only": ["/usr", "/lib", "/etc", "/var/log", "/proc", "/dev/urandom"],
@@ -140,10 +140,16 @@ def enrich(fs):
 command = argv[:2]
 out = None
 if command == ["sandbox", "create"]:
+    if state.get("create_gate"):
+        # Hold the command until the test opens the gate, as a slow gateway does.
+        open(state["create_gate"] + ".started", "w").close()
+        while not os.path.exists(state["create_gate"]):
+            time.sleep(0.01)
     if state.get("fail_create"):
         fail("the VM driver could not start the sandbox")
     name = option("--name")
     providers = [argv[i + 1] for i, a in enumerate(argv) if a == "--provider"]
+    labels = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "--label")
     for provider in providers:
         if provider not in state["providers"]:
             fail(f"provider '{provider}' not found")
@@ -154,7 +160,8 @@ if command == ["sandbox", "create"]:
     policy["filesystem_policy"] = enrich(policy.get("filesystem_policy"))
     sandboxes[name] = {"id": str(uuid.uuid4()), "name": name, "image": option("--from"),
                        "providers": providers, "policy": policy, "version": 1,
-                       "phase": state.get("phase_on_create", "Ready")}
+                       "phase": state.get("phase_on_create", "Ready"),
+                       **({"labels": labels} if labels else {})}
     if state.get("fail_create_after"):
         fail("synthetic creation response lost")
     out = "created"
@@ -170,11 +177,16 @@ elif command == ["sandbox", "get"]:
 elif command == ["sandbox", "list"]:
     if state.get("fail_list"):
         fail("synthetic gateway unavailable")
-    listed = [{"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
-               **({"labels": box["labels"]} if "labels" in box else {})}
-              for name, box in sandboxes.items()]
-    out = json.dumps({"sandboxes": listed + state.get("extra_listed", []),
-                      "next_page_token": state.get("page_token", "")})
+    listed = [] if state.get("list_empty") else [
+        {"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
+         **({"labels": box["labels"]} if "labels" in box else {})}
+        for name, box in sorted(sandboxes.items())]
+    listed += state.get("extra_listed", [])
+    size = int(option("--page-size")) if "--page-size" in argv else 100
+    start = int(option("--page-token")) if "--page-token" in argv else 0
+    end = start + size
+    token = str(end) if end < len(listed) or state.get("endless_pages") else ""
+    out = json.dumps({"sandboxes": listed[start:end], "next_page_token": token})
 elif command == ["sandbox", "stop"]:
     if state.get("fail_stop"):
         fail("synthetic stop failure")
