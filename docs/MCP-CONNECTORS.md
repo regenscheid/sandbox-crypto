@@ -238,6 +238,18 @@ sandbox-science-harness run ... --mcp-proxy http://127.0.0.1:8080 --mcp-token-fi
 
 Tested against the proxy and its fake server in one process (`packages/orchestrator/tests/test_connectors.py`), with synthetic tokens.
 
+### Canaries
+
+A canary is a scheduled, bounded `tools/list` of each configured server, from the trusted side, so that a server that stopped answering is noticed before a run needs it (D103). The launcher runs them when its config has `[canaries] enabled = true` (off by default) with `[mcp_proxy]`; `interval` is the seconds between runs, 900 (15 minutes) by default, at least 60. They run as a part of their own, `sandbox-science-harness mcp-canaries`, started after the workspace, started again when it stops and never stopping the rest.
+
+- **The same path as the user's check.** Each run lists every `[mcp_proxy]` server, one after another, through the proxy's ordinary, policy-enforcing endpoint with the run service's caller token and the session `mcp-canary`: an `initialize`, then `tools/list` page by page, at most 32 pages within 15 s, each request within 10 s (`mcp_canaries.list_tools`, which the workspace's **Check availability** calls too). It never calls a tool and never tries a listing again within a run; a fresh MCP session per listing means the proxy's one restart of a forgotten session is the only repeated request.
+- **Results.** The status is `listed`, `unavailable`, `denied` (the policy refused) or `timeout`. Each result is a row of the control store's `mcp_canaries` (schema version 86): server, time, status, the tool count and the listing's digest (SHA-256 over each tool's canonical JSON, one a line, in order) when listed, the elapsed milliseconds, and an error kind otherwise (`malformed_listing`, `cursor_loop`, `too_many_pages`, `timeout`, `client_error`, `internal_error` or the proxy's refusal, such as `policy_denied`). The runner keeps 30 days and at most 10,000 rows per server.
+- **Log events.** Every result is one record, `event: mcp_canary`, with `server`, `status`, `tool_count`, `elapsed_ms` and `error_kind` (service `mcp-canary`; a warning when not listed). A move from `listed` to any other status, or back, is a second record, `event: mcp_canary_changed`, with `status` and `previous`; a server's first result that is not `listed` counts as one, with no `previous`. The bundle's alert rules read it ([alert rules](KUBERNETES-BUNDLE.md#alert-rules)).
+- **In the workspace** the MCP services view shows each service's latest canary beside the user's own check, "Canary: listed 12 minutes ago" ([workspace](WORKSPACE.md)); the user's check is unchanged and still in that process's memory only.
+- **The direct path** (D98 prototype) has no trusted-side listing: the policy middleware reads listings only as they pass from a server to a sandbox. A deployment without the proxy runs no canaries, and the launcher refuses `enabled` without `[mcp_proxy]`. The Kubernetes bundle runs no MCP proxy, so it runs no canaries yet.
+
+Tested with a fake listing client and a fake source (`packages/orchestrator/tests/test_canaries.py`); not yet run against a live proxy.
+
 ### Not built yet
 
 - Issuing proxy tokens to callers: `sandbox-science up` makes the run service's token and gives the proxy its digest, but any other caller's token an operator writes into the proxy's settings, and the harness takes its own from a file ([the harness's client](#the-harnesss-client)).
