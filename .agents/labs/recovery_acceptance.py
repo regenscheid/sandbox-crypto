@@ -5,6 +5,13 @@
 Run with the checked-out virtualenv: prepare --duration 3600, then up LAB,
 start LAB, inspect LAB, and cleanup LAB. Only a marked /var/tmp/ss-recovery-*
 directory is accepted. Never use the historical shared lab lifecycle scripts.
+
+Probes, in README order: tree, literal (a replayable cell is reconstructed after a
+kernel and agent loss), lost (a kernel killed under a cell that cannot be replayed:
+the next cell's result names the lost cells and the surviving files, Kernels 7),
+automatic (one cut model stream is tried again within the call; cuts beyond the
+client's tries are saved and continued automatically), history, narrative, upload,
+worker_cycle, then finish and cleanup.
 """
 
 from __future__ import annotations
@@ -36,6 +43,8 @@ REPO = Path(__file__).resolve().parents[2]
 OS_BIN = Path.home() / ".local/opt/openshell-0.1.5/bin"
 PURPOSE = "disposable synthetic recovery acceptance"
 PROJECT = "recovery"
+LOST_FILE = "results/lost-seed.json"
+LOST_PURPOSE = "Computing 20! as the lost-state seed"
 
 
 def run(args, *, env=None, timeout=120, check=True):
@@ -172,7 +181,9 @@ def prepare(duration: int, static: Path) -> Path:
                     "sage",
                     "tree",
                     "literal",
+                    "lost",
                     "automatic",
+                    "automatic_beyond",
                     "history",
                     "narrative",
                     "upload",
@@ -596,29 +607,24 @@ class Lab:
             "PASS recursive agent interruption and original child effect reconciliation", flush=True
         )
 
-    def literal(self):
-        self.login()
-        self.post(
-            "literal",
-            "messages",
-            {
-                "message_id": "lab-literal-loss",
-                "text": "LITERAL-LOSS: qualify opt-in literal reconstruction.",
-            },
-        )
-        original = wait(lambda: self.shell_running("literal"), seconds=240)
+    def kill_kernel(self, original, marker=None):
+        """Kill the one kernel process of a running session's cell by its exact PID, and
+        wait until the worker no longer observes it. With ``marker``, a path the session's
+        cells wrote below their working directory, the kernel is the one whose working
+        directory holds it (the sessions of this lab share one environment, so another
+        session's kernel may be alive); without it, the environment's only kernel."""
         context = original["context"]
         before = self.worker("POST", "/v1/kernels/observe", {"context": context})
         assert len(before["kernels"]) == 1, before
         environment = self.worker("GET", "/v1/environments/" + context["environment_id"])
-        # The owned VM contains one idle IPython kernel for this session. Verify
-        # its PID/start pair immediately before killing that process alone.
-        code = """import json,os,pathlib,signal
+        # Verify the PID/start pair immediately before killing that process alone.
+        code = """import json,os,pathlib,signal,sys
+marker=sys.argv[1] if len(sys.argv)>1 else None
 found=[]
 for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
  try:
   words=path.read_bytes().split(b'\\0')
-  if b'ipykernel_launcher' in words:
+  if b'ipykernel_launcher' in words and (not marker or (path.parent/'cwd'/marker).is_file()):
    found.append((int(path.parent.name),(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19]))
  except (OSError,ValueError): pass
 assert len(found)==1,found
@@ -639,6 +645,7 @@ print(json.dumps({'pid':pid,'start':stamp}))
                 "-I",
                 "-c",
                 code,
+                *([marker] if marker else []),
             ).stdout
         )
         absent = wait(
@@ -648,6 +655,21 @@ print(json.dumps({'pid':pid,'start':stamp}))
                 else None
             )
         )
+        return before, absent, killed
+
+    def literal(self):
+        self.login()
+        self.post(
+            "literal",
+            "messages",
+            {
+                "message_id": "lab-literal-loss",
+                "text": "LITERAL-LOSS: qualify opt-in literal reconstruction.",
+            },
+        )
+        original = wait(lambda: self.shell_running("literal"), seconds=240)
+        context = original["context"]
+        before, absent, killed = self.kill_kernel(original)
         self.evidence("literal-kernel-loss", {"before": before, "absent": absent, "killed": killed})
         self.replacement("literal", original)
         wait(lambda: self.settled("literal"), seconds=180)
@@ -674,24 +696,118 @@ print(json.dumps({'pid':pid,'start':stamp}))
             flush=True,
         )
 
+    def lost(self):
+        """Kernels 7: a cell that finds its kernel's state lost is told what the lost
+        generation computed. The seed cell here cannot be replayed (so nothing restores
+        it) and saved a file; the kernel is killed under a holding shell call, and the
+        run's next plain cell reports the loss."""
+        self.login()
+        self.post(
+            "lost",
+            "messages",
+            {
+                "message_id": "lab-lost-state",
+                "text": "LOST-STATE: qualify the text a cell gets for a kernel's lost state.",
+            },
+        )
+        original = wait(lambda: self.shell_running("lost"), seconds=240)
+        before, absent, killed = self.kill_kernel(original, marker=LOST_FILE)
+        self.evidence("lost-kernel-loss", {"before": before, "absent": absent, "killed": killed})
+        wait(lambda: self.settled("lost"), seconds=180)
+        result = self.results("lost")
+        after = self.worker("POST", "/v1/kernels/observe", {"context": original["context"]})
+        assert len(after["kernels"]) == 1
+        assert after["kernels"][0]["generation"] > before["kernels"][0]["generation"]
+        python_results = [item for item in result["tools"] if item.get("tool") == "python"]
+        assert len(python_results) == 2, python_results
+        assert python_results[-1]["execution"]["result"]["state_lost"] is True, python_results
+        cells = [
+            message
+            for message, tool in self.read(
+                "SELECT message_id,json_extract(record,'$.tool') FROM archive_tool_records "
+                "WHERE project=? AND session='lost' ORDER BY rowid",
+                (PROJECT,),
+            )
+            if tool == "python"
+        ]
+        assert len(cells) == 2, cells
+        seed, check = cells
+        from sandbox_science.orchestrator.context.history import Archive
+
+        projects = ProjectStore(self.path / "instance/control")
+        try:
+            archive = Archive(projects.control)
+            assert archive.message_info(PROJECT, seed)["purpose"] == LOST_PURPOSE
+            text = archive.message(PROJECT, check).entry.content or ""
+        finally:
+            projects.close()
+        shown = json.loads(text)
+        assert "NameError" in text, text
+        assert "state_lost" in shown, shown
+        lost = shown["lost_state"]
+        # The seed cell by its archived result's message ID, with its call's purpose; the
+        # saved file that survived; and the platform's sentence about what to do.
+        assert lost["cells"] == [{"message": seed, "purpose": LOST_PURPOSE}], lost
+        assert LOST_FILE in lost["saved_files"], lost
+        assert "earlier_cells" not in lost, lost
+        assert lost["note"].endswith(
+            "Load saved files before recomputing; recompute the rest from these cells."
+        ), lost
+        # The text holds no secret by construction: the cells' IDs and purposes, and paths.
+        self.evidence(
+            "lost-result",
+            {
+                "works": result["works"],
+                "attempts": result["attempts"],
+                "generations": [
+                    before["kernels"][0]["generation"],
+                    after["kernels"][0]["generation"],
+                ],
+                "seed_message": seed,
+                "check_message": check,
+                "lost_state": lost,
+            },
+        )
+        print(
+            "PASS lost-kernel text names the lost cell, its purpose and the surviving file",
+            flush=True,
+        )
+
     def sage(self):
         records = self.results("sage")["tools"]
         jobs = [item["execution"] for item in records if item.get("tool") == "start_job"]
         assert jobs, "Sage job has not been admitted"
         return self.worker("GET", "/v1/jobs/" + jobs[-1]["execution_id"])
 
-    def automatic(self, session="automatic", marker="AUTO-RECOVERY"):
-        self.login()
+    def model_attempts(self):
+        """How many times the model client tries one call: its retries and the first try."""
+        import inspect
+
+        from sandbox_science.orchestrator.model import GatewayModel
+
+        retries = inspect.signature(GatewayModel.__init__).parameters["retries"].default
+        assert isinstance(retries, int), retries
+        assert retries >= 0, retries
+        return retries + 1
+
+    def injected_cuts(self, marker):
+        found = [
+            json.loads(line)
+            for line in (self.path / "model-observations.jsonl").read_text().splitlines()
+        ]
+        return [item for item in found if item.get("marker") == marker]
+
+    def run_automatic(self, session, marker, *, seconds):
         self.post(
             session,
             "messages",
             {
                 "message_id": "lab-" + session,
-                "text": marker + ": recover after the one injected premature stream EOF.",
+                "text": marker + ": recover after the injected premature stream EOF.",
             },
         )
         try:
-            wait(lambda: self.settled(session), seconds=180)
+            wait(lambda: self.settled(session), seconds=seconds)
         finally:
             result = self.results(session)
             result["records"] = self.read(
@@ -707,14 +823,53 @@ print(json.dumps({'pid':pid,'start':stamp}))
             result["resumes"] = self.read(
                 "SELECT request,status,reason FROM research_resumes WHERE session=?", (session,)
             )
+            result["retried"] = [
+                json.loads(row[0])
+                for row in self.read(
+                    "SELECT json_extract(usage,'$.retried') FROM archive_model_usage "
+                    "WHERE session=? ORDER BY observed",
+                    (session,),
+                )
+                if row[0] is not None
+            ]
+            result["cuts"] = self.injected_cuts(marker)
             self.evidence(session + "-result", result)
         assert len(result["works"]) == 1
-        assert len(result["attempts"]) == 2
-        assert result["records"][0][1:] == ("error", "model")
-        assert len(result["decisions"]) == 1
-        assert len(result["resumes"]) == 1
-        assert result["resumes"][0][1] == "finished"
-        print("PASS durable automatic continuation after saved model-phase failure", flush=True)
+        return result
+
+    def automatic(self):
+        """Two scenarios of D100's recovery of a model stream that ends early. One cut is
+        the model client's to retry within the call: the run answers in one attempt, the
+        answer's usage names the retry, and nothing is saved as a failure or continued.
+        Cuts beyond the client's tries (every one of them) end the call: the failure is
+        saved and durable automatic continuation answers in a second attempt."""
+        self.login()
+        single = self.run_automatic("automatic", "AUTO-RECOVERY", seconds=180)
+        assert len(single["cuts"]) == 1, single["cuts"]
+        assert len(single["attempts"]) == 1, single["attempts"]
+        assert [row[2] for row in single["records"]] == [None], single["records"]
+        assert single["decisions"] == [], single["decisions"]
+        assert single["resumes"] == [], single["resumes"]
+        assert ["incomplete response"] in single["retried"], single["retried"]
+        print("PASS one cut model stream was tried again within the call", flush=True)
+        tries = self.model_attempts()
+        # The client's waits before its tries, 2 s doubling to a minute, then the first
+        # automatic Resume's wait and a margin.
+        backoff = sum(min(2.0 * 2**n, 60.0) for n in range(tries - 1))
+        beyond = self.run_automatic(
+            "automatic_beyond", f"AUTO-RECOVERY-CUTS{tries}", seconds=int(backoff) + 450
+        )
+        assert len(beyond["cuts"]) == tries, beyond["cuts"]
+        assert len(beyond["attempts"]) == 2, beyond["attempts"]
+        assert beyond["records"][0][1:] == ("error", "model")
+        assert len(beyond["decisions"]) == 1
+        assert len(beyond["resumes"]) == 1
+        assert beyond["resumes"][0][1] == "finished"
+        print(
+            f"PASS {tries} cut model streams, beyond the call's tries, were saved and continued "
+            "automatically",
+            flush=True,
+        )
 
     def history_result(self, session):
         from sandbox_science.orchestrator.context.history import Archive
@@ -1295,6 +1450,7 @@ def main():
             "inspect",
             "tree",
             "literal",
+            "lost",
             "automatic",
             "history",
             "narrative",

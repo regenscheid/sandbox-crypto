@@ -13,6 +13,12 @@ from pathlib import Path
 
 from aiohttp import web
 
+LOST_SEED = """import json, math, pathlib
+y = math.factorial(20)
+pathlib.Path('results').mkdir(exist_ok=True)
+pathlib.Path('results/lost-seed.json').write_text(json.dumps({'y': y}))
+"""
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -55,15 +61,22 @@ def main() -> None:
         output = []
 
         fault = re.search(r"AUTO-RECOVERY(?:-[A-Z0-9]+)?", user_text)
-        fault_file = lab / (
-            "stream-failure-injected"
-            + ("-" + fault.group() if fault and fault.group() != "AUTO-RECOVERY" else "")
-        )
-        if fault and not fault_file.exists():
-            # End one actual streamed HTTP response before its terminal event.
-            # This becomes a saved model-phase failure, rather than an HTTP
-            # retry. The next call must be admitted by durable auto recovery.
-            fault_file.write_text(stamp + "\n")
+        cut = cuts = 0
+        cut_file = lab / "stream-cuts"
+        if fault:
+            # A marker ending -CUTS<n> cuts n streams before it answers; any other
+            # cuts one. The count is kept in a file, so that it spans the model
+            # client's in-call retries and a later automatic Resume alike.
+            counted = re.search(r"-CUTS(\d+)$", fault.group())
+            cuts = int(counted.group(1)) if counted else 1
+            cut_file = lab / ("stream-cuts-" + fault.group())
+            cut = int(cut_file.read_text()) if cut_file.exists() else 0
+        if fault and cut < cuts:
+            # End one actual streamed HTTP response before its terminal event. The
+            # client tries a stream that ended early again within the call; one cut
+            # beyond those tries becomes a saved model-phase failure, which durable
+            # auto recovery must admit again.
+            cut_file.write_text(str(cut + 1))
             with (lab / "model-observations.jsonl").open("a") as out:
                 out.write(
                     json.dumps(
@@ -73,6 +86,9 @@ def main() -> None:
                             "stream": body.get("stream"),
                             "output": [],
                             "injected_failure": "stream ended before terminal response",
+                            "marker": fault.group(),
+                            "cut": cut + 1,
+                            "cuts": cuts,
                         }
                     )
                     + "\n"
@@ -239,6 +255,31 @@ def main() -> None:
                 )
             else:
                 said("The sustained Sage computation was submitted; inspect its retained job ID.")
+        elif "LOST-STATE" in text:
+            # A seed cell that is not replayable, with a purpose, that saves a file;
+            # the fixture kills the kernel while the shell call holds.
+            if "lost-seed" not in calls:
+                tool(
+                    "python",
+                    {
+                        "code": LOST_SEED,
+                        "purpose_note": "Computing 20! as the lost-state seed",
+                    },
+                    "lost-seed",
+                )
+            elif "lost-hold" not in calls:
+                tool(
+                    "shell",
+                    {
+                        "script": "printf lost-holding; sleep 40; printf lost-done",
+                        "timeout_seconds": 120,
+                    },
+                    "lost-hold",
+                )
+            elif "lost-check" not in calls:
+                tool("python", {"code": "print(y)"}, "lost-check")
+            else:
+                said("The lost-state text is in the Python result.")
         elif "LITERAL-LOSS" in text:
             if "literal-seed" not in calls:
                 tool("python", {"code": "x = 41", "replayable": True}, "literal-seed")

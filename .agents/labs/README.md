@@ -25,6 +25,7 @@ From the checkout that will remain fixed throughout the lab:
 .venv/bin/python -I .agents/labs/recovery_acceptance.py start "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py tree "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py literal "$LAB"
+.venv/bin/python -I .agents/labs/recovery_acceptance.py lost "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py automatic "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py history "$LAB"
 .venv/bin/python -I .agents/labs/recovery_acceptance.py narrative "$LAB"
@@ -41,9 +42,20 @@ then verifies one literal cell reconstruction and exact stdout. Replacement may
 refuse after the configured bounded control-connection drain while the old tool
 still runs. The fixture retries that known pre-creation refusal only after the
 control health endpoint reports disconnected; it never repeats an unknown effect.
-`automatic` separately tests durable automatic continuation after a saved model
-stream EOF. `history` proves a delegated parent reads the original leaf archive in
-a three-level tree. `narrative` uses paced synthetic text to force model-written
+`lost` (run after `literal`) tests the text a cell gets when its kernel's state is
+gone (tools spec, Kernels 7). Its seed cell cannot be replayed, has a purpose and
+saves `results/lost-seed.json`; the fixture kills that session's exact kernel PID
+under a holding shell call, and the run's next plain cell must report `state_lost`
+with a `lost_state` that names the seed cell by archive message ID and purpose,
+lists the saved file, and says to load saved files before recomputing. The text is
+quoted in `lost-result.json`; a replayed cell, as in `literal`, would hide it.
+`automatic` tests D100's recovery of a model stream that ends early in two sessions.
+One cut stream is tried again within the model call: the run answers in one attempt,
+the answer's usage records the retry (`retried`), and nothing is saved as a failure
+or continued. Cuts of every try the client makes (ten, its default) are the saved
+model-phase failure: durable automatic continuation answers in a second attempt,
+after about five minutes of the client's waits. `history` proves a delegated parent
+reads the original leaf archive in a three-level tree. `narrative` uses paced synthetic text to force model-written
 child folds, then checks alias/effort, canonical usage and the original grant.
 `upload` sends an exact 100 MiB deterministic binary through the authenticated
 workspace API, streams its retained original back, attaches it to one synthetic
