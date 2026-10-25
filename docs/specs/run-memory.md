@@ -62,3 +62,5 @@ persistent application connection. Search uses metadata-only sizing on modern
 SQLite; its older-SQLite fallback closes the whole search snapshot after the bounded
 result page. Project/session/run selectors and immutable-row checks remain in the
 same snapshot as the read. Original bytes and evidence format remain unchanged.
+
+*Proposed 2026-10-25 (B9, awaiting the owner's review):* the provenance that memory recall gives each item ([project memory](project-memory.md#b9-5), PM-13) includes a `scope` that may be `run`. Bounded run memory is the storage of a run's history, which the history tools read, not notes a memory tool recalls. So no memory item has the scope `run` today, and nothing on this page changes.
