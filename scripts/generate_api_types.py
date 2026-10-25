@@ -96,6 +96,7 @@ from sandbox_science.workspace.domain_contracts import (
     DocumentRevision,
     JobCancellation,
     JobListing,
+    JobRelease,
     PatchPreview,
 )
 from sandbox_science.workspace.frontier import (
@@ -212,6 +213,7 @@ WIRE_TYPES: dict[str, TypeAdapter[Any]] = {
         CommentChange,
         JobListing,
         JobCancellation,
+        JobRelease,
         BackgroundJob,
     )
 }

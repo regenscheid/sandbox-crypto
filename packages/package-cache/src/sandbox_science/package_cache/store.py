@@ -21,7 +21,10 @@ a fixed ``entry_overhead`` per entry, about what an index row costs, so that
 entries sharing one small blob (negative answers) cannot grow the index
 without limit. Eviction first purges negative entries older than
 ``negative_expiry``, which the cache no longer serves, then removes the least
-recently accessed entries.
+recently accessed entries, skipping those whose blob an environment's
+lockfile pins (``pins``). Pinned blobs are protected in rank order up to
+``protect_share`` of the cap; when they hold more, the store warns and evicts
+the excess, oldest pinned first, before anything else.
 
 The store is synchronous and thread-safe; the web application calls it from
 worker threads.
@@ -40,7 +43,7 @@ import stat
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -59,11 +62,16 @@ ORPHAN_GRACE: Final = 3600.0
 """How old a blob without an entry must be before ``prune`` deletes it, since a
 running cache may be about to commit an entry for a blob it has just stored."""
 
+PROTECT_SHARE: Final = 0.5
+"""The share of the cap that pinned blobs may hold protected."""
+
 ENTRY_OVERHEAD: Final = 1024
 """Bytes each entry counts toward the size cap besides its blob: about what its index row,
 with its key and the indexes over it, takes in ``index.sqlite3``."""
 
 _SCHEMA_VERSION: Final = 1
+PinRank = tuple[int, float]
+"""A pinned blob's rank, ``(tier, recency)``: higher is protected first (``pins``)."""
 _HEX64: Final = re.compile(r"[0-9a-f]{64}")
 _HEX2: Final = re.compile(r"[0-9a-f]{2}")
 _EVICT_BATCH: Final = 256
@@ -104,6 +112,22 @@ _COUNT: Final = "SELECT COUNT(*) FROM entries"
 # The term "status != 200" lets SQLite use the partial index entries_negative.
 _EXPIRED_NEGATIVE: Final = """
 SELECT key, sha256, size FROM entries WHERE status != 200 AND fetched < ? LIMIT ?
+"""
+# temp.pinned holds the digests the pins named, with their ranks, at the start of an
+# eviction or count.
+_PINNED_TABLE: Final = (
+    "CREATE TEMP TABLE IF NOT EXISTS pinned "
+    "(sha256 TEXT PRIMARY KEY, tier INTEGER NOT NULL, recency REAL NOT NULL)"
+)
+# The stored pinned blobs, best ranked first: by rank, then the most recently accessed.
+_PINNED_BLOBS: Final = """
+SELECT p.sha256, MAX(e.size), MAX(e.accessed) AS accessed
+FROM temp.pinned AS p JOIN entries AS e ON e.sha256 = p.sha256
+GROUP BY p.sha256 ORDER BY p.tier DESC, p.recency DESC, accessed DESC, p.sha256
+"""
+_LEAST_RECENT_UNPINNED: Final = """
+SELECT key, sha256, size FROM entries WHERE sha256 NOT IN (SELECT sha256 FROM temp.pinned)
+ORDER BY accessed, key LIMIT ?
 """
 
 _log = logging.getLogger(__name__)
@@ -149,6 +173,10 @@ class StoreStats:
     entries: int
     bytes: int
     """Bytes in the blobs that entries refer to; a shared blob counts once."""
+    pinned_bytes: int = 0
+    """Of those, bytes in blobs that environments' lockfiles pin."""
+    protected_bytes: int = 0
+    """Of the pinned bytes, those within ``protect_limit``, which eviction keeps."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,13 +205,18 @@ class Store:
         access_interval: float = ACCESS_INTERVAL,
         entry_overhead: int = ENTRY_OVERHEAD,
         negative_expiry: float | None = None,
+        pins: Callable[[], Mapping[str, PinRank]] | None = None,
+        protect_share: float = PROTECT_SHARE,
     ) -> None:
         """Open (creating if need be) the store in ``root``.
 
         ``entry_overhead`` is what each entry counts toward ``max_size``
         besides its blob. ``negative_expiry`` is the age in seconds after which
         eviction purges a negative (404/410) entry; None leaves them to the
-        least-recently-used order.
+        least-recently-used order. ``pins`` returns the SHA-256 digests of the
+        blobs that eviction protects, with their ranks (``pins.LockfilePins``);
+        None pins nothing. Pinned blobs are protected, best ranked first, up to
+        ``protect_share`` of ``max_size``.
         """
         if max_size <= 0:
             raise ValueError("max_size must be positive")
@@ -191,6 +224,8 @@ class Store:
             raise ValueError("entry_overhead must not be negative")
         if negative_expiry is not None and negative_expiry <= 0:
             raise ValueError("negative_expiry must be positive")
+        if not 0 < protect_share <= 1:
+            raise ValueError("protect_share must be above 0 and at most 1")
         self._root = root
         self._blobs = root / "blobs"
         self._temp = root / "tmp"
@@ -199,6 +234,8 @@ class Store:
         self._access_interval = access_interval
         self._entry_overhead = entry_overhead
         self._negative_expiry = negative_expiry
+        self._pins = pins
+        self._protect_limit = int(max_size * protect_share)
         self._bytes = 0
         self._entries = 0
         self._lock = threading.RLock()
@@ -514,14 +551,21 @@ class Store:
         """Whether the store counts more than ``max_size`` bytes, as tracked by this process."""
         return self.charged_size > self._max_size
 
-    def evict(self) -> Removal:
+    @property
+    def protect_limit(self) -> int:
+        """The bytes of pinned blobs eviction protects at most: ``protect_share`` of the cap."""
+        return self._protect_limit
+
+    def evict(self, *, include_pinned: bool = False) -> Removal:
         """Purge expired negative entries, then bring the store under its cap.
 
         Negative entries older than ``negative_expiry`` go first: the cache no
         longer serves them, not even as a stale fallback. Then, if the store
-        counts more than ``max_size`` bytes (``charged_size``), the least
-        recently accessed entries are removed until it counts at most
-        ``EVICT_TO`` of the cap. A blob is deleted once no entry refers to it.
+        counts more than ``max_size`` bytes (``charged_size``), pinned blobs
+        beyond ``protect_limit`` go, oldest pinned first, with a warning; then the
+        least recently accessed unpinned entries until the store counts at most
+        ``EVICT_TO`` of the cap. ``include_pinned`` evicts by access alone. The
+        pins are read once per call. A blob is deleted once no entry refers to it.
         """
         target = int(self._max_size * EVICT_TO)
         with self._lock, self._errors("evict entries"):
@@ -530,17 +574,67 @@ class Store:
         with self._lock:
             if self.charged_size <= self._max_size:
                 return removed
+        pinned: Mapping[str, PinRank] = {} if include_pinned else self._pinned()
+        with self._lock, self._errors("evict entries"):
+            self._load_pins(pinned)
+            protected, overflow = self._split_pins()
+            if overflow:
+                excess = sum(size for _, size in overflow)
+                _log.warning(
+                    "pinned files hold %d bytes, more than the protection ceiling of %d "
+                    "(protect_share of max_size): evicting the %d bytes pinned longest ago",
+                    protected + excess,
+                    self._protect_limit,
+                    excess,
+                )
+            for sha256, _ in overflow:
+                rows = self._db.execute(
+                    "SELECT key, sha256, size FROM entries WHERE sha256 = ?", (sha256,)
+                ).fetchall()
+                removed += self._delete_entries(rows)
         while True:
             with self._lock, self._errors("evict entries"):
                 if self.charged_size <= target:
                     return removed
-                rows = self._db.execute(
-                    "SELECT key, sha256, size FROM entries ORDER BY accessed, key LIMIT ?",
-                    (_EVICT_BATCH,),
-                ).fetchall()
+                rows = self._db.execute(_LEAST_RECENT_UNPINNED, (_EVICT_BATCH,)).fetchall()
                 if not rows:
                     return removed
                 removed += self._delete_entries(rows, stop_at=target)
+
+    def _pinned(self) -> Mapping[str, PinRank]:
+        """The digests the pins name now; outside the store's lock, since reading them
+        reads files."""
+        return {} if self._pins is None else self._pins()
+
+    def _load_pins(self, pinned: Mapping[str, PinRank]) -> None:
+        """Put ``pinned`` in ``temp.pinned``. Call with the lock held."""
+        self._db.execute(_PINNED_TABLE)
+        # A deferred transaction: it writes the connection's temp table only, so it takes
+        # no lock on the index that a serving cache or another command would wait for.
+        self._db.execute("BEGIN")
+        try:
+            self._db.execute("DELETE FROM temp.pinned")
+            self._db.executemany(
+                "INSERT OR IGNORE INTO temp.pinned (sha256, tier, recency) VALUES (?, ?, ?)",
+                ((digest, tier, recency) for digest, (tier, recency) in pinned.items()),
+            )
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        self._db.execute("COMMIT")
+
+    def _split_pins(self) -> tuple[int, list[tuple[str, int]]]:
+        """The bytes of the stored pinned blobs within ``protect_limit``, best ranked
+        first, and the blobs past it, oldest pinned first. Call with the lock held."""
+        protected = 0
+        overflow: list[tuple[str, int]] = []
+        for sha256, size, _ in self._db.execute(_PINNED_BLOBS).fetchall():
+            if not overflow and protected + int(size) <= self._protect_limit:
+                protected += int(size)
+            else:
+                overflow.append((str(sha256), int(size)))
+        overflow.reverse()
+        return protected, overflow
 
     def _purge_negative(self) -> Removal:
         """Delete the negative entries older than ``negative_expiry``, a batch at a time."""
@@ -590,10 +684,22 @@ class Store:
         return Removal(blobs=blobs, bytes=freed)
 
     def stats(self) -> StoreStats:
-        """Count the entries and the bytes their blobs hold."""
+        """Count the entries, the bytes their blobs hold and the bytes pins name and protect
+        (at most ``protect_limit``)."""
+        pinned = self._pinned()
         with self._lock, self._errors("count entries"):
             self._recount()
-            return StoreStats(entries=self._entries, bytes=self._bytes)
+            protected = overflow = 0
+            if pinned:
+                self._load_pins(pinned)
+                protected, excess = self._split_pins()
+                overflow = sum(size for _, size in excess)
+            return StoreStats(
+                entries=self._entries,
+                bytes=self._bytes,
+                pinned_bytes=protected + overflow,
+                protected_bytes=protected,
+            )
 
     def _recount(self) -> None:
         """Count the entries and blob bytes afresh. Call with the lock held."""

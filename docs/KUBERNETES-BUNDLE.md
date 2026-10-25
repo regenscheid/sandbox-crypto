@@ -290,7 +290,7 @@ file:
 | `[runtime]` | The `orchestrator` image by digest, its full source `revision`, `recover_infrastructure`, and its Kata placement |
 | `[profiles.<name>]` | Each research base profile's image by digest and Kata placement |
 | `[openshell]` | The gateway `endpoint` (`https://host:port`; only the trusted manager and worker use it, so `https://openshell.openshell.svc:8080` works on any cluster domain, and the chart's server certificate covers `openshell.openshell.svc`), `gateway_id` (`openshell`), the middleware's `registration` (`sandbox-science-policy`), optional `audience` and `admin_hosts`, `jwt_public_key` (the gateway's extension-token public key, from OpenShell's own Secrets), and the `manager` and `worker` client identities, each `ca`, `certificate` and `key` PEM paths issued by the gateway's client CA (prep step 5.1) |
-| `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directory. It must enable at least one ecosystem (`pypi`, `conda`, `cargo`, `go`, `npm`, `opam`, `hackage`; `{}` takes that ecosystem's defaults): a cache with none answers 404 to every request, so `site` refuses it |
+| `[cache]` | Exactly when the bundle has `secrets.cache`: the package cache's settings besides its listener, URL and directories (`cache_dir`, and `worker_state_dir`, the worker's state on the same PVC, whose environments' lockfiles pin files against eviction). It must enable at least one ecosystem (`pypi`, `conda`, `cargo`, `go`, `npm`, `opam`, `hackage`; `{}` takes that ecosystem's defaults): a cache with none answers 404 to every request, so `site` refuses it |
 | `[extra_files.<service>]` | A file for each other key the bundle's `extra_files` names, such as `s3-credentials` |
 
 A placement is `runtime_class_name` (`kata` or `kata-*`, default `kata`), the
@@ -540,6 +540,112 @@ one Authentik proxy provider in domain-level mode; names on unrelated domains ma
 frame a third-party context and the browser may drop the cookie. Same-site names are still
 separate origins, which is all D54 needs; the viewer's frames may share the workspace
 page's thread (FG-17, [preview](WORKSPACE.md#the-pdf-viewers-origin)).
+
+## Maintenance
+
+Two maintenance workloads from D92's list before a research stress test: scheduled
+control-cache trimming, rendered into the bundle by an opt-in `[maintenance]` section, and
+the offline worker replica release, a Job the operator creates by hand. Neither Pod mounts
+a service-account token or has any cluster authority, and both run the app's or pool's
+image with the same security context and JSON logs (`SS_LOG_FORMAT=json`) as the
+Deployments. Neither is qualified on a cluster yet.
+
+### Cache trimming (opt-in)
+
+```toml
+[maintenance]
+# schedule = "@daily"          # five cron fields or a macro (@hourly, @daily, ...), controller time zone
+# at_use_percent = 70          # pass only once the app volume is at least this full (1-100)
+# max_references = 25          # the retention policy's bounds per pass (1-100 hashes)
+# max_bytes = 1073741824       # (1 B to 64 GiB)
+# min_age_seconds = 86400      # keep local copies younger than this
+# deadline_seconds = 3600      # the Job's activeDeadlineSeconds (60 to 86400)
+```
+
+With the section, the bundle adds three objects in its namespace:
+
+* the ConfigMap `<name>-maintenance-policy`, `artifact-retention.toml`: the
+  [example policy](../examples/kubernetes/artifact-retention.toml) with the section's
+  bounds, `archive_before_evict = false`;
+* the CronJob `<name>-maintenance` (`batch/v1`), `concurrencyPolicy: Forbid`,
+  `backoffLimit: 0`, the section's `activeDeadlineSeconds`, three finished Jobs of each
+  outcome kept. Its Pod runs
+  `sandbox-science-artifacts maintain --database /var/lib/sandbox-science/control/control.sqlite3 --policy /etc/sandbox-science/maintenance/artifact-retention.toml --apply --cursor-file /var/lib/sandbox-science/control/maintenance-apply-<policy digest>.json --at-use-percent <N>`
+  on the app image, with the app PVC's `control` directory mounted. The PVC is
+  ReadWriteOnce, so the Pod has a required Pod affinity to the app Pod's node, and waits
+  (until the deadline) while the app Pod is down. The cursor's name carries the policy's
+  digest: the cursor is bound to one policy, so changing the section starts a new progress
+  file instead of failing every pass;
+* the NetworkPolicy `<name>-maintenance`: nothing may connect to the Pod; it reaches DNS
+  and the `network.app_egress` flows, where the object store is. Without the store the
+  pass reports `unavailable` and keeps every local copy.
+
+The Pod gets no control credential. When control's `environment` names object-store SDK
+files (`AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `AWS_CA_BUNDLE`), a `copy-storage`
+init container copies exactly those keys of control's Secret into the Pod's memory volume,
+and the container gets those variables and `AWS_PROFILE`/`AWS_REGION`; `control.key`,
+the tokens and `control.json` stay in the app Pod.
+
+`--at-use-percent` makes the schedule implement "trim at about 70% use" without a
+controller: each pass measures the control volume (`statvfs` of the database's directory,
+as `df` counts it) and exits 0, reading and writing nothing, below the threshold
+([bounded cache maintenance](ARTIFACT-S3.md#bounded-cache-maintenance)). A pass above it
+trims at most `max_bytes` of verified, remotely retained content, so a volume filling
+faster than that needs a tighter schedule or a larger bound. Check it with
+`kubectl -n <namespace> get cronjob,jobs -l app.kubernetes.io/component=maintenance` and
+the Job's log, one JSON report per pass; `kubectl create job --from=cronjob/<name>-maintenance <name>-maintenance-now`
+runs one pass at once.
+
+### Offline worker replica release
+
+The worker's offline replica release
+([offline capture replica retention](WORKER.md#offline-capture-replica-retention)) unlinks
+CAS replicas that control durably retained and acknowledged through its outbox. It needs
+the worker stopped, so it is never part of `render` or any schedule:
+
+```sh
+sandbox-science-kubernetes release-job --config private.toml --output release-preview.json --preview
+sandbox-science-kubernetes release-job --config private.toml --output release.json
+sandbox-science-kubernetes release-job --config private.toml --output release-2.json --after NEXT_AFTER
+```
+
+Each file is one Job (`batch/v1`) with `generateName: <name>-worker-release-`, so
+`kubectl create -f` makes a new one each time and `kubectl apply` refuses it. It runs
+`sandbox-science-worker artifact-retention --settings /private/worker.toml --limit 100`
+(`--apply` unless `--preview`; `--after` for the next page) on the worker image, with the
+pool PVC, the worker's Secret copied as in the pool Pod, `backoffLimit: 0`, a one-hour
+deadline and a week before the finished Job is deleted. Its Pod is labelled
+`app.kubernetes.io/component: worker-release`: only the default-deny NetworkPolicy selects
+it, so it has no network, and no Service selects it.
+
+The sequence:
+
+1. Optionally drain pending acknowledgements first, a page per project, with
+   `sandbox-science-artifacts acknowledge` in the app Pod's control container
+   ([acknowledging durable worker copies](ARTIFACTS.md#acknowledging-durable-worker-copies)).
+   A hash without an exact acknowledgement for every reference is kept, so skipping this
+   releases less, never more.
+2. Scale the pool to zero and wait for its Pod to go:
+   `kubectl -n <namespace> scale deploy/<name>-pool --replicas=0`, then
+   `kubectl -n <namespace> wait --for=delete pod -l app.kubernetes.io/component=pool --timeout=300s`.
+3. Create the preview Job, `kubectl -n <namespace> create -f release-preview.json`, wait
+   for it (`kubectl -n <namespace> wait --for=condition=complete job/<generated name> --timeout=3600s`)
+   and read its report: `kubectl -n <namespace> logs job/<generated name>`, one line per
+   hash with its status and reason, then `next_after=<hash>` or `next_after=none`.
+4. Create the apply Job the same way, and read its report. While `next_after` names a
+   hash, render and create the next page with `--after`.
+5. Scale the pool back: `kubectl -n <namespace> scale deploy/<name>-pool --replicas=1`.
+
+**The guard** is the worker's own: the command takes the exclusive `StateLock`
+(`worker.lock` in the pool's state directory) and refuses, exiting 1 with "another worker
+uses the state directory", while a worker holds it. That lock holds between Pods on one
+node, which share the volume's file system. On another node the pool PVC, ReadWriteOnce,
+cannot be attached while the pool Pod has it, so the Job's Pod waits (and fails at its
+deadline) instead of running beside a worker; a pool Pod started while the Job runs is
+refused the same way. The Job has no preflight that lists Pods, which would need a
+service account with authority to read them. Online release, beside a serving worker,
+is not built: it still needs the reader and writer fences
+([Kubernetes work](KUBERNETES.md)).
 
 ## Two instances on one cluster
 

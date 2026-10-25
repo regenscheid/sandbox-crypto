@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sandbox_science.launcher import unit
+from sandbox_science.launcher import toml, unit
 from sandbox_science.launcher.kubernetes_bundle import render
 from sandbox_science.launcher.kubernetes_cli import main, write_bundle
 from sandbox_science.launcher.kubernetes_config import BundleConfig, BundleError, load
@@ -1398,3 +1398,292 @@ def test_unknown_sandboxes_keys_are_refused():
     data["sandboxes"] = {"namespace": "research-runtimes", "selector": {"a": "b"}}
     with pytest.raises(ValidationError):
         configured(data)
+
+
+def with_maintenance(data: dict | None = None, **maintenance: object) -> dict:
+    data = values() if data is None else data
+    data["maintenance"] = maintenance
+    return data
+
+
+def maintenance_pod(items: list[dict]) -> dict:
+    cron = named(items, "CronJob", "research-maintenance")
+    return cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+
+
+def test_without_maintenance_nothing_is_scheduled():
+    items = objects()
+    assert "CronJob" not in {item["kind"] for item in items}
+    assert "Job" not in {item["kind"] for item in items}
+    assert not any("maintenance" in item["metadata"]["name"] for item in items)
+
+
+def test_maintenance_schedules_one_bounded_pass_at_a_time_in_the_app_namespace():
+    items = objects(configured(with_maintenance()))
+    cron = named(items, "CronJob", "research-maintenance")
+    assert cron["apiVersion"] == "batch/v1"
+    assert cron["metadata"]["namespace"] == "research-test"
+    spec = cron["spec"]
+    assert spec["schedule"] == "@daily"
+    assert spec["concurrencyPolicy"] == "Forbid"
+    job = spec["jobTemplate"]["spec"]
+    assert job["activeDeadlineSeconds"] == 3600
+    assert job["backoffLimit"] == 0
+    assert job["template"]["metadata"]["labels"]["app.kubernetes.io/component"] == "maintenance"
+    pod_spec = maintenance_pod(items)
+    assert pod_spec["restartPolicy"] == "Never"
+    assert pod_spec["automountServiceAccountToken"] is False
+    assert "serviceAccountName" not in pod_spec
+    assert pod_spec["nodeSelector"] == {"kubernetes.io/arch": "arm64"}
+    # The app PVC is ReadWriteOnce: the pass runs on the app Pod's node.
+    (term,) = pod_spec["affinity"]["podAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]
+    assert term["topologyKey"] == "kubernetes.io/hostname"
+    assert term["labelSelector"]["matchLabels"]["app.kubernetes.io/component"] == "app"
+    (container,) = pod_spec["containers"]
+    assert (
+        container["image"]
+        == named(items, "Deployment", "research-app")["spec"]["template"]["spec"]["containers"][0][
+            "image"
+        ]
+    )
+    command = container["command"]
+    assert command[:2] == ["sandbox-science-artifacts", "maintain"]
+    assert command[command.index("--database") + 1] == (
+        "/var/lib/sandbox-science/control/control.sqlite3"
+    )
+    assert "--apply" in command
+    cursor = command[command.index("--cursor-file") + 1]
+    assert cursor.startswith("/var/lib/sandbox-science/control/maintenance-apply-")
+    assert command[command.index("--at-use-percent") + 1] == "70"
+    assert {"name": "SS_LOG_FORMAT", "value": "json"} in container["env"]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    data = next(m for m in container["volumeMounts"] if m["name"] == "data")
+    assert data == {
+        "name": "data",
+        "mountPath": "/var/lib/sandbox-science/control",
+        "subPath": "control",
+    }
+    volumes = {volume["name"]: volume for volume in pod_spec["volumes"]}
+    assert volumes["data"]["persistentVolumeClaim"]["claimName"] == "research-app-data"
+    assert volumes["policy"]["configMap"]["name"] == "research-maintenance-policy"
+    # No SDK files configured for control: nothing is copied from its Secret.
+    assert pod_spec["initContainers"] == []
+    assert "storage-source" not in volumes
+
+
+def test_maintenance_values_reach_the_policy_the_command_and_the_schedule(tmp_path):
+    from sandbox_science.orchestrator.artifact_maintenance import load_policy
+
+    settings = {
+        "schedule": "15 */6 * * *",
+        "at_use_percent": 80,
+        "max_references": 50,
+        "max_bytes": 2 * 1024**3,
+        "min_age_seconds": 3600,
+        "deadline_seconds": 7200,
+    }
+    items = objects(configured(with_maintenance(**settings)))
+    cron = named(items, "CronJob", "research-maintenance")
+    assert cron["spec"]["schedule"] == "15 */6 * * *"
+    assert cron["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 7200
+    command = maintenance_pod(items)["containers"][0]["command"]
+    assert command[command.index("--at-use-percent") + 1] == "80"
+    content = named(items, "ConfigMap", "research-maintenance-policy")["data"][
+        "artifact-retention.toml"
+    ]
+    path = tmp_path / "artifact-retention.toml"
+    path.write_text(content)
+    policy = load_policy(path)
+    assert (policy.max_references, policy.max_bytes, policy.min_age_seconds) == (50, 2**31, 3600)
+    assert policy.archive_before_evict is False
+    # The cursor is bound to its policy, so a changed policy gets a new progress file.
+    default = maintenance_pod(objects(configured(with_maintenance())))["containers"][0]["command"]
+    assert (
+        command[command.index("--cursor-file") + 1] != (default[default.index("--cursor-file") + 1])
+    )
+
+
+def test_the_default_maintenance_policy_is_the_example_policy(tmp_path):
+    from sandbox_science.orchestrator.artifact_maintenance import load_policy
+
+    items = objects(configured(with_maintenance()))
+    content = named(items, "ConfigMap", "research-maintenance-policy")["data"][
+        "artifact-retention.toml"
+    ]
+    rendered = tmp_path / "rendered.toml"
+    rendered.write_text(content)
+    example = Path(__file__).parents[3] / "examples/kubernetes/artifact-retention.toml"
+    assert load_policy(rendered) == load_policy(example)
+
+
+def test_the_rendered_maintain_command_parses():
+    from sandbox_science.orchestrator.cli_artifacts import main as artifacts
+
+    command = maintenance_pod(objects(configured(with_maintenance())))["containers"][0]["command"]
+    # The paths do not exist here, so the pass fails after parsing, never with a usage error.
+    assert artifacts(command[1:]) == 1
+
+
+def test_maintenance_receives_only_controls_object_store_sdk_files():
+    data = values()
+    data["secrets"]["control"]["extra_files"] = ["s3-credentials", "s3-config", "s3-ca.crt"]
+    data["control"] = {
+        "environment": {
+            "AWS_SHARED_CREDENTIALS_FILE": "/private/s3-credentials",
+            "AWS_CONFIG_FILE": "/private/s3-config",
+            "AWS_CA_BUNDLE": "/private/s3-ca.crt",
+            "AWS_PROFILE": "artifact-writer",
+            "HOME": "/var/lib/sandbox-science/control-home",
+        }
+    }
+    pod_spec = maintenance_pod(objects(configured(with_maintenance(data))))
+    (init,) = pod_spec["initContainers"]
+    assert init["name"] == "copy-storage"
+    volumes = {volume["name"]: volume for volume in pod_spec["volumes"]}
+    secret = volumes["storage-source"]["secret"]
+    assert secret["secretName"] == "test-control"
+    assert [item["key"] for item in secret["items"]] == ["s3-ca.crt", "s3-config", "s3-credentials"]
+    assert volumes["storage-credentials"]["emptyDir"]["medium"] == "Memory"
+    (container,) = pod_spec["containers"]
+    environment = {item["name"]: item["value"] for item in container["env"]}
+    assert environment["AWS_PROFILE"] == "artifact-writer"
+    assert environment["AWS_SHARED_CREDENTIALS_FILE"] == "/private/s3-credentials"
+    assert environment["AWS_EC2_METADATA_DISABLED"] == "true"
+    assert environment["HOME"] == "/tmp"
+    private = next(m for m in container["volumeMounts"] if m["mountPath"] == "/private")
+    assert private["readOnly"] is True
+    assert "control.key" not in json.dumps(pod_spec)
+
+
+def test_maintenance_pods_reach_only_dns_and_the_apps_external_flows():
+    items = objects(configured(with_maintenance()))
+    policy = named(items, "NetworkPolicy", "research-maintenance")
+    assert policy["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] == (
+        "maintenance"
+    )
+    assert policy["spec"]["ingress"] == []
+    app = named(items, "NetworkPolicy", "research-app")
+    # The app's rules less its in-namespace flow to the pool: DNS and the external flows.
+    outside = [rule for rule in app["spec"]["egress"] if set(rule["to"][0]) != {"podSelector"}]
+    assert len(outside) == 2
+    assert policy["spec"]["egress"] == outside
+    cron = named(items, "CronJob", "research-maintenance")
+    labels = cron["spec"]["jobTemplate"]["spec"]["template"]["metadata"]["labels"]
+    for item in items:
+        if item["kind"] == "Service":
+            assert not set(item["spec"]["selector"].items()) <= set(labels.items())
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("schedule", "TZ=UTC 0 3 * * *"),
+        ("schedule", "every day"),
+        ("schedule", "0 3 * *"),
+        ("schedule", "0 3 * * MON"),
+        ("at_use_percent", 0),
+        ("at_use_percent", 101),
+        ("at_use_percent", "70"),
+        ("max_references", 101),
+        ("max_bytes", 0),
+        ("max_bytes", 64 * 1024**3 + 1),
+        ("min_age_seconds", -1),
+        ("deadline_seconds", 30),
+        ("archive_before_evict", True),
+    ],
+)
+def test_maintenance_rejects_out_of_bounds_or_unknown_values(key, value):
+    with pytest.raises(ValidationError):
+        configured(with_maintenance(**{key: value}))
+
+
+def release(config: BundleConfig | None = None, **options) -> dict:
+    from sandbox_science.launcher.kubernetes_bundle import release_job
+
+    return json.loads(json.dumps(release_job(config or configured(), **options)))
+
+
+def test_release_job_is_never_part_of_the_applied_bundle():
+    items = objects(configured(with_maintenance()))
+    assert not any(item["kind"] == "Job" for item in items)
+    assert not any("worker-release" in json.dumps(item) for item in items)
+
+
+def test_release_job_runs_one_offline_page_against_the_pool_volume():
+    job = release()
+    assert (job["apiVersion"], job["kind"]) == ("batch/v1", "Job")
+    # generateName: `kubectl create -f` makes a new Job each time; `kubectl apply` refuses.
+    assert "name" not in job["metadata"]
+    assert job["metadata"]["generateName"] == "research-worker-release-"
+    assert job["metadata"]["namespace"] == "research-test"
+    spec = job["spec"]
+    assert spec["backoffLimit"] == 0
+    assert spec["activeDeadlineSeconds"] == 3600
+    pod_spec = spec["template"]["spec"]
+    assert pod_spec["restartPolicy"] == "Never"
+    assert pod_spec["automountServiceAccountToken"] is False
+    assert pod_spec["nodeSelector"] == {"kubernetes.io/arch": "amd64"}
+    (container,) = pod_spec["containers"]
+    assert container["command"] == [
+        "sandbox-science-worker",
+        "artifact-retention",
+        "--settings",
+        "/private/worker.toml",
+        "--limit",
+        "100",
+        "--apply",
+    ]
+    volumes = {volume["name"]: volume for volume in pod_spec["volumes"]}
+    assert volumes["data"]["persistentVolumeClaim"]["claimName"] == "research-pool-data"
+    assert volumes["worker-source"]["secret"]["secretName"] == "test-worker"
+    assert [init["name"] for init in pod_spec["initContainers"]] == ["copy-worker"]
+    assert {"name": "SS_LOG_FORMAT", "value": "json"} in container["env"]
+
+
+def test_release_job_preview_and_next_page():
+    command = release(apply=False, after="a" * 64)["spec"]["template"]["spec"]["containers"][0][
+        "command"
+    ]
+    assert "--apply" not in command
+    assert command[-2:] == ["--after", "a" * 64]
+    with pytest.raises(ValueError, match="SHA-256"):
+        release(after="../../etc")
+
+
+def test_the_rendered_release_command_parses():
+    from sandbox_science.worker.cli import main as worker
+
+    command = release(after="b" * 64)["spec"]["template"]["spec"]["containers"][0]["command"]
+    # The settings file does not exist here: the command fails reading it, not parsing.
+    assert worker(command[1:]) == 1
+
+
+def test_release_job_has_no_network_and_no_service_selects_it():
+    items = objects()
+    labels = release()["spec"]["template"]["metadata"]["labels"]
+    assert labels["app.kubernetes.io/component"] == "worker-release"
+    for item in items:
+        if item["kind"] == "NetworkPolicy":
+            selector = item["spec"]["podSelector"]["matchLabels"]
+            if set(selector.items()) <= set(labels.items()):
+                assert item["metadata"]["name"] == "research-deny"
+        if item["kind"] == "Service":
+            assert not set(item["spec"]["selector"].items()) <= set(labels.items())
+
+
+def test_cli_writes_the_release_job_without_overwriting(tmp_path, capsys):
+    config = tmp_path / "deployment.toml"
+    config.write_text(toml.dumps(values()))
+    output = tmp_path / "release.json"
+    assert main(["release-job", "--config", str(config), "--output", str(output)]) == 0
+    assert json.loads(output.read_text())["kind"] == "Job"
+    assert "kubectl create -f" in capsys.readouterr().out
+    assert main(["release-job", "--config", str(config), "--output", str(output)]) == 1
+    preview = tmp_path / "preview.json"
+    arguments = ["release-job", "--config", str(config), "--output", str(preview), "--preview"]
+    assert main(arguments) == 0
+    assert "--apply" not in preview.read_text()
+    bad = tmp_path / "bad.json"
+    arguments = ["release-job", "--config", str(config), "--output", str(bad), "--after", "x"]
+    assert main(arguments) == 1
+    assert not bad.exists()

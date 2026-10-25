@@ -94,11 +94,16 @@ the sandbox without retention. The close waits for the job for the cancel grace 
 a job still collecting goes on, and still releases its sandbox when it ends, after a
 restart too.
 
+**Releasing early.** A retained sandbox holds only disk, and the user may delete it before
+its deadline with "Release now" on the job's card in the [workspace](WORKSPACE.md#background-jobs)
+(JS-24). The worker's operator-only route deletes it by its identity as the sweep would and
+refuses one that is not retained; it never releases a running job's sandbox, which is
+cancelled first.
+
 Not yet: deleting the session environment cancels the job but does not release its
 sandbox early; live head and tail output of a running job sandbox's job, checkpoints and
-`resume_from` (increment 3), files over 100 MiB (increment 4), the GUI's profile and
-phase columns and "release now", the process test over a real worker restart with local
-daemons, and live Kata acceptance on the cluster.
+`resume_from` (increment 3), files over 100 MiB (increment 4), the process test over a real
+worker restart with local daemons, and live Kata acceptance on the cluster.
 
 ## Waiting and the watcher
 

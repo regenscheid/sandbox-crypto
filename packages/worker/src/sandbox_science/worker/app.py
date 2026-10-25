@@ -46,6 +46,7 @@ from sandbox_science.contracts import (
     GlobRequest,
     GrepRequest,
     Identifier,
+    JobSandboxRelease,
     KernelRestartRequest,
     KernelStatusRequest,
     ListFilesRequest,
@@ -409,6 +410,7 @@ def create_app(
             web.post("/v1/recovery/fence", install_recovery_fence),
             web.get("/v1/jobs", list_jobs),
             web.get("/v1/jobs/{execution_id}", job_status),
+            web.post("/v1/job-sandboxes/{execution_id}/release", release_job_sandbox),
             web.get("/v1/executions/{execution_id}", get_execution),
             web.get("/v1/executions/{execution_id}/events", events),
             web.post("/v1/executions/{execution_id}/cancel", cancel),
@@ -981,6 +983,27 @@ async def list_jobs(request: web.Request) -> web.Response:
 async def job_status(request: web.Request) -> web.Response:
     execution = _execution(request)
     return _json(await request.app[MANAGER].job_status(execution.execution_id, _project(request)))
+
+
+async def release_job_sandbox(request: web.Request) -> web.Response:
+    """Release a retained job sandbox now (JS-24): the user's action, relayed by the
+    workspace, so only an operator client may ask. The job must be the session's own."""
+    if not _client(request).operator:
+        raise WorkerError(
+            ErrorKind.POLICY_DENIED, "releasing a job sandbox needs an operator client"
+        )
+    manager = request.app[MANAGER]
+    sandboxes = manager.job_sandboxes
+    if sandboxes is None:
+        raise WorkerError(ErrorKind.UNSUPPORTED, "this worker has no job sandboxes")
+    execution_id = _identifier(request.match_info["execution_id"], "execution_id")
+    body = JobSandboxRelease.model_validate_json(await _body(request))
+    _allowed(request, body.context.project_id)
+    execution = manager.get(execution_id, body.context.project_id)
+    _visible(request, execution.context.project_id, f"job sandbox for {execution_id}")
+    if execution.context != body.context or sandboxes.sandbox(execution_id) is None:
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no job sandbox for {execution_id}")
+    return _json(await sandboxes.release_now(execution_id, body.operation_id))
 
 
 # Provisioning operations (Conda provisioning, CP-1 to CP-25).

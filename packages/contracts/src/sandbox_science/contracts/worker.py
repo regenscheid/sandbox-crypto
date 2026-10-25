@@ -562,6 +562,22 @@ class JobSandbox(Contract):
     """The digest of its immutable result manifest, once the job has ended."""
 
 
+class JobSandboxRelease(Contract):
+    """The user's request to release a retained job sandbox now (JS-24): the job whose
+    sandbox it is is the route's; ``context`` is the session that owns the job."""
+
+    context: ExecutionContext
+    operation_id: Identifier
+    """The receipt: the same request again answers the first result."""
+
+
+class JobSandboxReleased(Contract):
+    """A job sandbox the worker deleted by its identity (JS-25), at the user's request."""
+
+    execution_id: Identifier
+    phase: Literal["released"] = "released"
+
+
 class JobDetails(Contract):
     """Durable job metadata, including its whole-output files in the session workspace."""
 

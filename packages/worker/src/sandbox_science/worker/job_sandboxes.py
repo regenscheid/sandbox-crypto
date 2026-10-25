@@ -44,6 +44,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
+import json
 import logging
 import posixpath
 import re
@@ -70,6 +71,7 @@ from sandbox_science.contracts import (
     JobRequest,
     JobResultManifest,
     JobSandbox,
+    JobSandboxReleased,
     ListFilesRequest,
     Location,
     Lockfile,
@@ -293,6 +295,8 @@ class JobSandboxes:
         self._inner: dict[str, str] = {}
         """Each running job's own execution in its sandbox, by the job's ID."""
         self._sweeper: asyncio.Task[None] | None = None
+        self._releasing = asyncio.Lock()
+        """One early release at a time, so that two clicks do not both delete."""
 
     # Admission, before anything is created (JS-10).
 
@@ -1120,6 +1124,43 @@ class JobSandboxes:
         for row in retained[: max(0, len(retained) - self.settings.job_retention_per_project)]:
             await self._release(row.execution_id)
 
+    async def release_now(self, execution_id: str, operation_id: str) -> JobSandboxReleased:
+        """Delete a retained job sandbox now, at the user's request (JS-24, JS-25).
+
+        Only a retained sandbox qualifies: one still holding a job's CPU and memory is
+        the job's to end (cancel it first), and a released one is gone. The first
+        request that succeeds is the receipt: the same operation again answers the same
+        result, any other request for a sandbox no longer retained is a conflict. A
+        deletion the gateway did not confirm leaves the sandbox retained, due at once,
+        so the sweep tries again."""
+        async with self._releasing:
+            record = self.records.get(execution_id)
+            if record is None:
+                raise WorkerError(ErrorKind.NOT_FOUND, f"no job sandbox for {execution_id}")
+            receipt = self.records.steps(execution_id).get(_RELEASE_NOW)
+            if (
+                receipt is not None
+                and receipt == _quoted(operation_id)
+                and record.phase == "released"
+            ):
+                return JobSandboxReleased(execution_id=execution_id)
+            if record.phase != "retained":
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"the job sandbox is {record.phase}; only a retained one can be released now",
+                )
+            await self._release(execution_id)
+            if self._record(execution_id).phase != "released":
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    "the job sandbox's deletion was not confirmed; it stays retained and is "
+                    "released again shortly",
+                )
+            self.records.record_step(
+                execution_id, _RELEASE_NOW, _quoted(operation_id), self.clock.now()
+            )
+            return JobSandboxReleased(execution_id=execution_id)
+
     async def sweep(self) -> list[str]:
         """Release the retained sandboxes past their deadline; return their jobs' IDs."""
         now = self.clock.now()
@@ -1274,6 +1315,15 @@ class JobSandboxes:
 
 class _TooLargeError(Exception):
     """A file over the bytes a copy may take."""
+
+
+_RELEASE_NOW: Final = "release-now"
+"""The step that holds the operation of the user's early release (JS-24)."""
+
+
+def _quoted(value: str) -> str:
+    """A step's record is JSON; an operation ID is a plain token."""
+    return json.dumps(value)
 
 
 def _operation(execution_id: str) -> str:

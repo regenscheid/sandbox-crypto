@@ -294,6 +294,8 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
         settings = load_cache(secrets / "cache/cache.toml")
         assert settings.public_url == openshell.package_cache
         assert str(settings.cache_dir) == "/var/lib/sandbox-science/package-cache"
+        # The worker's state, on the same PVC: its lockfiles pin what environments use.
+        assert str(settings.worker_state_dir) == "/var/lib/sandbox-science/worker"
     else:
         assert not (secrets / "cache").exists()
 

@@ -2,19 +2,22 @@
 """Characterization of the background job routes through HTTP only.
 
 ``GET …/sessions/{session}/jobs``, ``GET …/jobs/{job}`` and
-``POST …/jobs/{job}/cancel``. These pin what the browser sees, so that the E-02
-rewrite of the error mapping keeps it: shapes, status codes, no-store, the session
-ownership check and the guards.
+``POST …/jobs/{job}/cancel`` and ``POST …/jobs/{job}/release``. These pin what the
+browser sees, so that the E-02 rewrite of the error mapping keeps it: shapes, status
+codes, no-store, the session ownership check and the guards.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from sandbox_science.contracts import ExecutionState, JobResultManifest, JobSandbox
+from sandbox_science.contracts.worker import JobSandboxPhase, UncollectedFile
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -425,3 +428,196 @@ async def test_job_views_do_not_touch_the_project_record(
     for route in ROUTES:
         assert (await call(client, route)).status == 200
     assert ProjectStore(state_dir).get("p1") == record
+
+
+SANDBOX_KEYS = {
+    "profile",
+    "phase",
+    "environment_id",
+    "cpu_millicores",
+    "memory_mib",
+    "collection",
+    "retained_until",
+    "files",
+    "manifest_sha256",
+}
+
+
+def with_sandbox(worker: FakeWorker, phase: JobSandboxPhase = "retained") -> None:
+    """Make the worker's one job a failed one in a sandbox of its own, with its manifest."""
+    found = worker.jobs["exe-1"]
+    assert found.job is not None
+    now = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+    sandbox = JobSandbox(
+        environment_id="p1-job-0123456789ab",
+        profile="large",
+        phase=phase,
+        cpu_millicores=12000,
+        memory_mib=32768,
+        retained_until=now + timedelta(days=3) if phase == "retained" else None,
+        collection="incomplete",
+        manifest_sha256="a" * 64,
+    )
+    details = found.job.model_copy(update={"profile": "large", "sandbox": sandbox})
+    worker.jobs["exe-1"] = found.model_copy(update={"job": details})
+    worker.manifests["exe-1"] = JobResultManifest(
+        job_id="exe-1",
+        attempt_id="att-1",
+        profile="large",
+        driver_config_sha256="b" * 64,
+        image="registry.example/image:1",
+        environment_id="p1-job-0123456789ab",
+        isolation_tier=3,
+        submitted_at=now,
+        ended_at=now,
+        outcome=ExecutionState.FAILED,
+        reason="sandbox_lost",
+        collection="incomplete",
+        not_collected=(UncollectedFile(path="out/big.bin", reason="over the file limit"),),
+    )
+
+
+async def release(client: Any, job_id: str = "exe-1", **body: Any) -> Any:
+    sent = {"operation_id": "release-1", **body}
+    return await client.post(f"{jobs_path()}/{job_id}/release", json=sent, headers=origin(client))
+
+
+async def test_a_sandbox_jobs_listing_carries_its_sandbox_and_manifest(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    with_sandbox(worker)
+    value = (await (await call(client, "list")).json())["jobs"][0]
+    assert_job_keys_present(value)
+    assert set(value["sandbox"]) == SANDBOX_KEYS
+    assert value["sandbox"]["phase"] == "retained"
+    assert value["sandbox"]["environment_id"] == "p1-job-0123456789ab"
+    assert (value["sandbox"]["cpu_millicores"], value["sandbox"]["memory_mib"]) == (12000, 32768)
+    assert value["sandbox"]["retained_until"] is not None
+    assert value["manifest"]["reason"] == "sandbox_lost"
+    assert value["manifest"]["not_collected_total"] == 1
+    assert value["manifest"]["isolation_tier"] == 3
+
+
+def assert_job_keys_present(value: dict[str, Any]) -> None:
+    assert set(value) >= JOB_KEYS
+
+
+async def test_a_job_in_the_session_has_no_sandbox_block(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client, _ = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    value = (await (await call(client, "list")).json())["jobs"][0]
+    assert "sandbox" not in value
+    assert "manifest" not in value
+
+
+async def test_release_reaches_the_worker_with_the_sessions_context_and_the_receipt(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    with_sandbox(worker)
+    response = await release(client)
+    assert response.status == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert_security_headers(response.headers)
+    assert await response.json() == {"job_id": "exe-1", "phase": "released"}
+    assert worker.released == [("exe-1", "release-1")]
+
+
+async def test_release_of_a_sandbox_that_is_not_retained_is_a_conflict(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    with_sandbox(worker, "running")
+    await error_of(await release(client), 409, "conflict")
+    plain, other = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    await error_of(await release(plain), 409, "conflict")  # no sandbox at all
+    assert worker.released == other.released == []
+
+
+async def test_release_of_another_sessions_or_an_unknown_job_is_not_found(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    with_sandbox(worker)
+    await error_of(await release(client, "exe-9"), 404, "not_found")
+    worker.jobs["exe-1"] = worker.jobs["exe-1"].model_copy(
+        update={"context": context_of(state_dir, session="c")}
+    )
+    await error_of(await release(client), 404, "not_found")
+    assert worker.released == []
+    assert not [call_ for call_ in worker.calls if "/release" in call_[1]]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{}, {"operation_id": ""}, {"operation_id": "-bad"}, {"operation_id": 7}, {"extra": 1}, []],
+    ids=["empty", "blank", "bad-token", "number", "unknown-field", "list"],
+)
+async def test_release_needs_a_valid_receipt_before_the_worker_is_asked(
+    aiohttp_client: ClientFactory,
+    aiohttp_server: ServerFactory,
+    state_dir: Path,
+    static_dir: Path,
+    body: Any,
+) -> None:
+    client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    with_sandbox(worker)
+    response = await client.post(f"{jobs_path()}/exe-1/release", json=body, headers=origin(client))
+    await error_of(response, 400, "invalid_request")
+    assert worker.calls == []
+
+
+async def test_release_is_a_logged_in_same_origin_write(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    with_sandbox(worker)
+    for sent in (None, "http://evil.example", "null"):
+        headers = {} if sent is None else {"Origin": sent}
+        response = await client.post(
+            f"{jobs_path()}/exe-1/release", json={"operation_id": "r-1"}, headers=headers
+        )
+        assert response.status == 403
+    assert worker.calls == []
+    anonymous, bare = await connected(
+        aiohttp_client, aiohttp_server, state_dir, static_dir, login=False
+    )
+    await error_of(await release(anonymous), 401, "policy_denied")
+    assert bare.calls == []
+
+
+async def test_release_without_a_worker_connection_is_unsupported(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    await error_of(await release(client), 422, "unsupported")
+
+
+@pytest.mark.parametrize(
+    ("worker_status", "worker_kind", "status", "kind"),
+    [
+        (403, "policy_denied", 403, "policy_denied"),
+        (409, "conflict", 409, "conflict"),
+        (503, "unavailable", 503, "unavailable"),
+        (500, "internal", 503, "unavailable"),
+    ],
+)
+async def test_release_keeps_the_workers_refusals_and_hides_an_unavailable_ones_text(
+    aiohttp_client: ClientFactory,
+    aiohttp_server: ServerFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker_status: int,
+    worker_kind: str,
+    status: int,
+    kind: str,
+) -> None:
+    client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
+    with_sandbox(worker)
+    worker.refusal = (worker_status, worker_kind)
+    response = await release(client)
+    await error_of(response, status, kind)
+    if status == 503:
+        assert "10.9.8.7" not in await response.text()

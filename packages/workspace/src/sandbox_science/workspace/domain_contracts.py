@@ -442,6 +442,40 @@ class JobLogs(TypedDict, total=False):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class JobSandboxView(TypedDict):
+    """A job sandbox's platform record: the job's own sandbox, never agent text (JS-18)."""
+
+    profile: str
+    phase: Literal["creating", "preparing", "running", "collecting", "released", "retained"]
+    environment_id: str
+    cpu_millicores: int
+    memory_mib: int
+    collection: Literal["pending", "complete", "incomplete"]
+    retained_until: str | None
+    files: str
+    manifest_sha256: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class JobNotCollected(TypedDict):
+    path: str
+    reason: str
+
+
+@with_config(ConfigDict(extra="forbid"))
+class JobManifestView(TypedDict):
+    """What the job's immutable result manifest says, once the job has ended (JS-16)."""
+
+    reason: str | None
+    collected: int
+    not_collected_total: int
+    """How many it left out; ``not_collected`` names the first twenty."""
+    not_collected: list[JobNotCollected]
+    replayed_packages: int
+    isolation_tier: int | None
+
+
+@with_config(ConfigDict(extra="forbid"))
 class BackgroundJob(TypedDict):
     job_id: str
     state: str
@@ -460,6 +494,8 @@ class BackgroundJob(TypedDict):
     logs: JobLogs
     worker_restart: str
     checkin: JobCheckin | None
+    sandbox: NotRequired[JobSandboxView]
+    manifest: NotRequired[JobManifestView]
 
 
 @with_config(ConfigDict(extra="forbid"))
@@ -468,6 +504,12 @@ class JobListing(TypedDict):
     jobs: list[BackgroundJob]
     truncated: bool
     waits: list[JobWait]
+
+
+@with_config(ConfigDict(extra="forbid"))
+class JobRelease(TypedDict):
+    job_id: str
+    phase: Literal["released"]
 
 
 @with_config(ConfigDict(extra="forbid"))

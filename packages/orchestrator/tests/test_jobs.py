@@ -23,10 +23,13 @@ from sandbox_science.contracts import (
     JobListing,
     JobProfileOffer,
     JobRequest,
+    JobResultManifest,
+    JobSandbox,
     JobStatus,
     Result,
     StreamOutput,
 )
+from sandbox_science.contracts.worker import UncollectedFile
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.jobs import (
@@ -36,6 +39,7 @@ from sandbox_science.orchestrator.jobs import (
     WatcherAnswer,
     clipped,
     start_job_spec,
+    summary,
 )
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
@@ -715,3 +719,64 @@ async def test_a_sized_job_carries_the_harness_minimum_tier(tmp_path: Path) -> N
     unsized = tools(FakeWorker(), tmp_path / "unsized")
     with pytest.raises(WorkerAPIError, match="unknown start_job arguments"):
         await unsized.start({**base, "profile": "medium"}, "op-5")
+
+
+def sandboxed(state: ExecutionState = ExecutionState.FAILED) -> JobStatus:
+    """A failed job whose sandbox is retained, with its manifest."""
+    now = datetime.now(UTC)
+    base = execution(state=state)
+    assert base.job is not None
+    sandbox = JobSandbox(
+        environment_id="p-job-0123456789ab",
+        profile="large",
+        phase="retained",
+        cpu_millicores=12000,
+        memory_mib=32768,
+        retained_until=now + timedelta(days=3),
+        collection="incomplete",
+        manifest_sha256="a" * 64,
+    )
+    manifest = JobResultManifest(
+        job_id="exe-1",
+        attempt_id="att-1",
+        profile="large",
+        driver_config_sha256="b" * 64,
+        image="registry.example/image:1",
+        environment_id="p-job-0123456789ab",
+        isolation_tier=3,
+        submitted_at=now,
+        ended_at=now,
+        outcome=state,
+        reason="sandbox_lost",
+        collection="incomplete",
+        not_collected=tuple(
+            UncollectedFile(path=f"out/{n}.bin", reason="over the file limit") for n in range(25)
+        ),
+    )
+    job = base.job.model_copy(update={"profile": "large", "sandbox": sandbox})
+    return JobStatus(execution=base.model_copy(update={"job": job}), manifest=manifest)
+
+
+def test_a_sandbox_jobs_summary_carries_what_the_gui_shows() -> None:
+    value = summary(sandboxed(), datetime.now(UTC))
+    sandbox = cast(dict[str, Any], value["sandbox"])
+    assert sandbox["profile"] == "large"
+    assert sandbox["phase"] == "retained"
+    assert sandbox["environment_id"] == "p-job-0123456789ab"
+    assert (sandbox["cpu_millicores"], sandbox["memory_mib"]) == (12000, 32768)
+    assert sandbox["collection"] == "incomplete"
+    assert sandbox["retained_until"] is not None
+    assert sandbox["manifest_sha256"] == "a" * 64
+    manifest = cast(dict[str, Any], value["manifest"])
+    assert manifest["reason"] == "sandbox_lost"
+    assert manifest["collected"] == 0
+    assert manifest["not_collected_total"] == 25  # the list below is bounded
+    assert len(manifest["not_collected"]) == 20
+    assert manifest["replayed_packages"] == 0
+    assert manifest["isolation_tier"] == 3
+
+
+def test_a_job_in_the_session_has_no_sandbox_in_its_summary() -> None:
+    value = summary(JobStatus(execution=execution()), datetime.now(UTC))
+    assert "sandbox" not in value
+    assert "manifest" not in value

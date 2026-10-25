@@ -4,7 +4,9 @@ Status: First increment implemented, not qualified (2026-10-24): profiles and gr
 `start_job` with `profile` and `inputs`, package replay, tier checks, collection, the
 manifest, retention and release, the schedule timeout and loss, reattachment after a
 worker restart (JS-19, JS-20, JS-26) with collection resumed without duplicates, and
-early release when the session closes (JS-25), tested against the fake OpenShell CLI only
+early release when the session closes (JS-25), and the GUI's profile, phase, resource and
+manifest columns with "release now" (JS-24, worker route `POST /v1/job-sandboxes/{id}/release`),
+tested against the fake OpenShell CLI only
 ([background jobs](../BACKGROUND-JOBS.md#job-sandboxes)); no process test over a real
 restart and no Kata acceptance yet. Draft design of 2026-10-22. It designs D93, a confirmed owner
 requirement: a big [background job](../BACKGROUND-JOBS.md) (D83) may run in a new
