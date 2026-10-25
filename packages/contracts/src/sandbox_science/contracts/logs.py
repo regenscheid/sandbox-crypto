@@ -227,16 +227,21 @@ def reset_logging() -> None:
         _installed = None
 
 
-def json_line(service: str, message: str, *, level: str = "info", **fields: Any) -> str:
+def json_line(
+    service: str, message: str, *, level: str = "info", event: str | None = None, **fields: Any
+) -> str:
     """A JSON record line for ``service`` that no logger wrote: the unit's own notes, and
-    output a child wrote as plain text (a traceback, a library's print)."""
+    output a child wrote as plain text (a traceback, a library's print). ``event`` names
+    the record's event, as a logger call's ``extra`` does."""
     entry: dict[str, object] = {
         "ts": _timestamp(datetime.now(UTC).timestamp()),
         "level": level,
         "service": service,
         "logger": "output",
-        "msg": redact_text(_bounded(message, MAX_MESSAGE)),
     }
+    if event is not None:
+        entry["event"] = _value("event", event)
+    entry["msg"] = redact_text(_bounded(message, MAX_MESSAGE))
     for name, value in fields.items():
         entry[f"x_{name}" if name in _RESERVED else name] = _value(name, value)
     return json.dumps(entry, ensure_ascii=False, separators=(",", ":"), default=str)

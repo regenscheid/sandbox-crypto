@@ -127,6 +127,8 @@ async def _owned[T](work: Awaitable[T]) -> T:
 
 
 SANDBOX_PREFIX: Final = "ss-"
+CREATION_UNKNOWN: Final = "environment_creation_unknown"
+"""The log event of a creation still unknown past the grace (B3, D103)."""
 MAX_SANDBOX_NAME: Final = 19
 """OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -1431,15 +1433,35 @@ class Environments:
                 continue  # no read is due yet; _creation_outcome counts from the command's end
             if self.busy(info.environment_id):
                 continue  # a creation or deletion under way decides it
+            # Each read of a creation past the grace is a record of its own (D103): one
+            # still unknown is ``environment_creation_unknown``, which the rendered Loki
+            # alerts read (docs/KUBERNETES-BUNDLE.md, "Alert rules").
+            fields = {"environment": info.environment_id, "project": info.project_id}
             try:
                 result = await self.reconcile_creation(info.environment_id)
             except WorkerError as error:
                 _log.warning(
-                    "could not reconcile environment %s: %s", info.environment_id, error.message
+                    "could not reconcile environment %s: %s",
+                    info.environment_id,
+                    error.message,
+                    extra={"event": CREATION_UNKNOWN, "action": "error", **fields},
                 )
                 continue
             if result.action in ("rolled_back", "adopted"):
-                _log.info("environment %s: %s", info.environment_id, result.message)
+                _log.info(
+                    "environment %s: %s",
+                    info.environment_id,
+                    result.message,
+                    extra={"event": "environment_creation_reconciled", "action": result.action,
+                           **fields},
+                )  # fmt: skip
+            elif result.action == "inconclusive":
+                _log.warning(
+                    "environment %s is still creating past the grace: %s",
+                    info.environment_id,
+                    result.message,
+                    extra={"event": CREATION_UNKNOWN, "action": result.action, **fields},
+                )
             done.append(result)
         return done
 

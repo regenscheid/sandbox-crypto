@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import json
+from typing import cast
+
+import yaml
 
 from . import toml
 from .kubernetes_config import (
     GATEWAY_PROFILE,
     REQUIRED_FILES,
+    Alerts,
     BundleConfig,
     Capacity,
     Ingress,
@@ -680,6 +684,142 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
     )
 
 
+# Alert rules (D103): an opt-in ``[alerts]`` section, one ConfigMap for Loki's ruler.
+
+ALERT_RULES_FILE = "sandbox-science-alerts.yaml"
+"""The rule file's key in the ConfigMap, which Loki's rules sidecar writes as a file."""
+ALERTS: tuple[str, ...] = (
+    "SandboxScienceServiceErrors",
+    "SandboxScienceManagerUnreachable",
+    "SandboxScienceCreationUnknown",
+    "SandboxScienceMcpCanaryFailing",
+    "SandboxSciencePolicyHold",
+)
+"""The rendered rules' names, in order (docs/KUBERNETES-BUNDLE.md, "Alert rules")."""
+NETWORK_DROPS_NOTE = """
+# Network-policy drops: not rendered. The services' logs do not carry them: Kubernetes
+# NetworkPolicy drops are the CNI's to report, and OpenShell's sandbox network denials
+# arrive only as OCSF events, through the sample Alloy configuration's optional OCSF
+# pipeline (service "openshell-supervisor", labels class_uid and action), whose values have
+# not been seen on a cluster. Once they have, a rule of this shape could be added:
+#
+#   - alert: SandboxScienceNetworkDenials
+#     expr: sum by (namespace) (count_over_time({service="openshell-supervisor",
+#       class_uid="4001", action="Denied"}[5m])) > 0
+#     labels:
+#       severity: warning
+#     annotations:
+#       summary: OpenShell denied sandbox network connections
+"""
+
+
+def _streams(config: BundleConfig, **matchers: str) -> str:
+    """A LogQL stream selector for this instance's lines: the labels the sample Alloy
+    configuration sets (``namespace``, ``instance``), with ``matchers`` written as given
+    (``'="worker"'``, ``'=~"error|critical"'``)."""
+    fields = [f'namespace="{config.namespace}"', f'instance="{config.name}"']
+    fields.extend(f"{name}{matcher}" for name, matcher in matchers.items())
+    return "{" + ", ".join(fields) + "}"
+
+
+def _event(name: str) -> str:
+    """A line filter for one structured log event, as the services' JSON lines write it
+    (``"event":"<name>"``, compact): it finds the event however a pipeline labels it."""
+    return f'|= `"event":"{name}"`'
+
+
+def alert_rules(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
+    """The Loki ruler's rule groups (Prometheus rule format) for this instance: LogQL
+    over the structured JSON logs. ``project`` comes from the lines' structured metadata,
+    as the sample Alloy configuration keeps it; the other fields are parsed from the line."""
+    static = {"namespace": config.namespace, "instance": config.name}
+
+    def rule(
+        name: str,
+        expr: str,
+        summary: str,
+        description: str,
+        *,
+        severity: str = "warning",
+        hold: str | None = None,
+    ) -> dict[str, object]:
+        found: dict[str, object] = {"alert": name, "expr": expr}
+        if hold is not None:
+            found["for"] = hold
+        found["labels"] = {"severity": severity, **static}
+        found["annotations"] = {"summary": summary, "description": description}
+        return found
+
+    errors = _streams(config, level='=~"error|critical"')
+    manager = _streams(config, service='="runtime-manager"')
+    worker = _streams(config, service='="worker"')
+    middleware = _streams(config, service='="middleware"')
+    rules = [
+        rule(
+            ALERTS[0],
+            f"sum by (service) (count_over_time({errors}[5m])) > {alerts.error_threshold}",
+            f"{{{{ $labels.service }}}} logged over {alerts.error_threshold} errors in 5 minutes",
+            "More error (or critical) records than the threshold from one service within "
+            "5 minutes.",
+        ),
+        rule(
+            ALERTS[1],
+            f"sum by (service, kind) (count_over_time({manager} {_event('runtime_manager_note')}"
+            ' | json kind="kind" | kind=~"gateway_unreachable|control_unreachable" [8m])) > 0',
+            "the runtime manager has noted {{ $labels.kind }} for over 10 minutes",
+            "The runtime manager has noted gateway_unreachable or control_unreachable "
+            "continuously for 10 minutes: it logs the note when it starts and every 5 "
+            "minutes while it holds. It takes no automatic action meanwhile.",
+            severity="critical",
+            hold="10m",
+        ),
+        rule(
+            ALERTS[2],
+            f"sum by (service, project, environment) (count_over_time({worker} "
+            f"{_event('environment_creation_unknown')} [5m])) > 0",
+            "environment {{ $labels.environment }} is still creating past the creation grace",
+            "The worker's reconciliation found a creation with an unknown outcome past "
+            "creation_grace and could not yet confirm the sandbox present or absent.",
+        ),
+        rule(
+            ALERTS[3],
+            f"sum by (service, server, status) (count_over_time({_streams(config)} "
+            f"{_event('mcp_canary_changed')}"
+            ' | json server="server", status="status" | status!="listed" [20m])) > 0',
+            "MCP canary of {{ $labels.server }} changed to {{ $labels.status }}",
+            "A scheduled MCP canary's listing moved from listed (or no earlier result) to "
+            "unavailable, denied or timeout. It resolves 20 minutes after the change; the "
+            "workspace's MCP services view shows the latest canary.",
+        ),
+        rule(
+            ALERTS[4],
+            f"sum by (service, project, rule) (count_over_time({middleware} "
+            f"{_event('detect_finding')}"
+            ' | json outcome="outcome", rule="rule" | outcome=~"hold|hold_call" [5m])) > 0',
+            "a detect-and-hold rule held calls in project {{ $labels.project }}",
+            "The policy middleware's detection rule {{ $labels.rule }} opened a hold: a "
+            "session's outward calls wait for the workspace's hold card, or one call waits "
+            "for its approval.",
+        ),
+    ]
+    return {"groups": [{"name": f"sandbox-science-{config.name}", "rules": rules}]}
+
+
+def _alert_config_map(config: BundleConfig, alerts: Alerts) -> dict[str, object]:
+    text = yaml.safe_dump(alert_rules(config, alerts), sort_keys=False, width=1000)
+    found = _object(
+        config,
+        "ConfigMap",
+        "alert-rules",
+        annotations={"k8s-sidecar-target-directory": f"/rules/{alerts.tenant}"},
+        namespace=alerts.namespace,
+        data={ALERT_RULES_FILE: text + NETWORK_DROPS_NOTE},
+    )
+    labels = cast("dict[str, str]", cast("dict[str, object]", found["metadata"])["labels"])
+    labels.update(alerts.configmap_labels)
+    return found
+
+
 def render(config: BundleConfig) -> dict[str, object]:
     """Return deterministic API objects, without reading credentials or contacting a cluster."""
     items = [
@@ -701,4 +841,6 @@ def render(config: BundleConfig) -> dict[str, object]:
         items.extend(_routes(config, config.ingress))
     if config.sandboxes is not None and config.sandboxes.job_budget:
         items.append(_job_budget(config, config.sandboxes.namespace))
+    if config.alerts is not None:
+        items.append(_alert_config_map(config, config.alerts))
     return {"apiVersion": "v1", "kind": "List", "items": items}

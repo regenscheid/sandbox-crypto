@@ -116,6 +116,31 @@ def say(text: str) -> None:
     print(json_line("runtime-manager", text) if log_format() == "json" else text, flush=True)
 
 
+NOTE_EVENT = "runtime_manager_note"
+"""The log event of a condition that needs attention (``status.json``'s note), which the
+rendered Loki alerts read (docs/KUBERNETES-BUNDLE.md, "Alert rules")."""
+NOTE_REPEAT = 300.0
+"""Seconds between a held condition's log records: logged when it starts, then again every
+five minutes while it holds, so an alert can tell one that lasts from one that passed."""
+
+
+def say_note(kind: NoteKind, text: str, since: datetime) -> None:
+    """A note's record: ``event: runtime_manager_note`` with its ``kind`` and ``since`` in
+    JSON, or a plain line."""
+    if log_format() == "json":
+        line = json_line(
+            "runtime-manager",
+            text,
+            level="warning",
+            event=NOTE_EVENT,
+            kind=kind,
+            since=since.isoformat(),
+        )
+    else:
+        line = f"note {kind} since {since.isoformat()}: {text}"
+    print(line, flush=True)
+
+
 class BlockedError(LauncherError):
     """An automatic action found what only an operator may settle."""
 
@@ -181,6 +206,8 @@ class RuntimeManager:
         """The control instance the running runtime was attached under."""
         self._notes: dict[str, _Note] = {}
         """What needs attention now, by its source; ``status.json`` shows one."""
+        self._note_logged: dict[str, float] = {}
+        """When each source's note was last logged (monotonic), for ``NOTE_REPEAT``."""
         self._output: asyncio.Task[None] | None = None
         self._exited = False
         self._control_up = False
@@ -202,12 +229,19 @@ class RuntimeManager:
     def _noted(self, source: str, kind: NoteKind, text: str) -> None:
         """Note a condition from ``source``; one that goes on keeps its since time."""
         found = self._notes.get(source)
-        since = found.since if found is not None and found.kind == kind else self.clock.now()
+        held = found is not None and found.kind == kind
+        since = found.since if held and found is not None else self.clock.now()
         self._notes[source] = _Note(kind, text[:512], since)
+        now = self.clock.monotonic()
+        logged = self._note_logged.get(source)
+        if not held or logged is None or now - logged >= NOTE_REPEAT:
+            self._note_logged[source] = now
+            say_note(kind, text[:512], since)
 
     def _cleared(self, *sources: str) -> None:
         for source in sources:
             self._notes.pop(source, None)
+            self._note_logged.pop(source, None)
 
     def _attachable(self) -> bool:
         """A sandbox is recorded that an automatic action may attach: not one whose

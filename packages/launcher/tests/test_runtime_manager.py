@@ -677,6 +677,25 @@ def test_the_manager_says_its_lines_as_json_when_asked(
     assert "test-secret-1" not in record["msg"]
 
 
+def test_a_note_is_a_structured_record_in_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from datetime import UTC, datetime
+
+    from sandbox_science.launcher.runtime_manager.manager import NOTE_EVENT, say_note
+
+    since = datetime(2026, 10, 25, 12, tzinfo=UTC)
+    monkeypatch.setenv("SS_LOG_FORMAT", "json")
+    say_note("gateway_unreachable", "the OpenShell gateway is unreachable", since)
+    record = json.loads(capsys.readouterr().out)
+    assert (record["service"], record["level"], record["event"]) == (
+        "runtime-manager",
+        "warning",
+        NOTE_EVENT,
+    )
+    assert (record["kind"], record["since"]) == ("gateway_unreachable", since.isoformat())
+
+
 def test_the_manager_starts_its_logging_when_it_serves(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -721,7 +740,9 @@ def noted(site: Site, kind: str | None) -> Callable[[], bool]:
     return lambda: site.status()["note_kind"] == kind
 
 
-async def test_a_gateway_that_refuses_is_waited_for_and_the_manager_resumes(site: Site) -> None:
+async def test_a_gateway_that_refuses_is_waited_for_and_the_manager_resumes(
+    site: Site, capsys: pytest.CaptureFixture[str]
+) -> None:
     record = await bootstrapped(site)
     asked = len(site.control.asked)
     site.set_fake(behaviour="gateway-refuses")
@@ -733,6 +754,9 @@ async def test_a_gateway_that_refuses_is_waited_for_and_the_manager_resumes(site
         assert first["runtime"] == "stopped"
         await site.ticks(20)  # several more looks at the gateway, each refused
         assert site.status()["note_since"] == first["note_since"]  # since it began
+        # Logged once when it began, not at every look: again only after NOTE_REPEAT
+        # (the alert rules read it, docs/KUBERNETES-BUNDLE.md#alert-rules).
+        assert capsys.readouterr().out.count("note gateway_unreachable since ") == 1
         assert site.recovery()["attempts"] == 0  # waiting uses none of the ten
         assert len(site.control.asked) == asked
         site.set_fake(behaviour="")

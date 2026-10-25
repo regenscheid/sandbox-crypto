@@ -358,6 +358,38 @@ class Sandboxes(Model):
     Pod make every eviction of it fail."""
 
 
+class Alerts(Model):
+    """The opt-in Loki ruler rules over the services' structured logs (D103,
+    docs/KUBERNETES-BUNDLE.md, "Alert rules"): one ConfigMap of LogQL alerting rules in the
+    Prometheus rule format Loki's ruler reads. The rules select this instance's lines by the
+    labels the sample Alloy configuration gives them (``namespace``, ``instance``,
+    ``service``, ``level``)."""
+
+    namespace: Name | None = None
+    """Where the ConfigMap goes: Loki's namespace, when its rules sidecar watches only
+    that one. Absent, the bundle's own."""
+    tenant: Name = "fake"
+    """The Loki tenant the rules belong to: ``fake`` for a single-tenant Loki
+    (``auth_enabled: false``). The ConfigMap's ``k8s-sidecar-target-directory`` names it."""
+    configmap_labels: dict[str, str] = Field(
+        default_factory=lambda: {"loki_rule": "true"}, max_length=8
+    )
+    """The labels Loki's rules sidecar selects ConfigMaps by (the chart's
+    ``sidecar.rules.label``)."""
+    error_threshold: Annotated[int, Field(strict=True, ge=1, le=100000)] = 10
+    """More ``error`` records than this from one service within 5 minutes alerts."""
+
+    @field_validator("configmap_labels")
+    @classmethod
+    def label_names(cls, labels: dict[str, str]) -> dict[str, str]:
+        if not labels or any(
+            _LABEL.fullmatch(key) is None or _VALUE.fullmatch(value) is None
+            for key, value in labels.items()
+        ):
+            raise ValueError("invalid Kubernetes labels for the alert rules")
+        return labels
+
+
 class RuntimeManager(Placement, Capacity):
     """The runtime manager's Pod: its node architecture, PVC and container bounds."""
 
@@ -390,6 +422,8 @@ class BundleConfig(Model):
     ingress: Ingress | None = None
     sandboxes: Sandboxes | None = None
     """Absent, nothing is rendered outside the bundle's own namespace."""
+    alerts: Alerts | None = None
+    """Absent, no alert rules are rendered."""
 
     @model_validator(mode="after")
     def remote_workspace(self) -> Self:

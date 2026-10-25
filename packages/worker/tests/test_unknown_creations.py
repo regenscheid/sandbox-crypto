@@ -21,6 +21,7 @@ from sandbox_science.contracts import EnvironmentState, ErrorKind
 from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker.backends import OpenShellBackend
 from sandbox_science.worker.cli import main
+from sandbox_science.worker.environments import CREATION_UNKNOWN
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.state_lock import StateLock
 from sandbox_science.worker.unknown_creations import (
@@ -242,7 +243,7 @@ async def test_the_automatic_pass_clears_unknown_outcomes(paused: Setup) -> None
 
 
 async def test_the_pass_skips_young_records_identities_and_busy_environments(
-    paused: Setup,
+    paused: Setup, caplog: pytest.LogCaptureFixture
 ) -> None:
     await lost(paused)
     await lost(paused, "env-2")
@@ -271,6 +272,12 @@ async def test_the_pass_skips_young_records_identities_and_busy_environments(
     assert (await deletion).state is EnvironmentState.DELETED
     assert [(r.environment_id, r.action) for r in results] == [("env-1", "inconclusive")]
     assert paused.environments.get("env-young").state is EnvironmentState.CREATING
+    # The creation still unknown past the grace is a record of its own (D103's alert).
+    unknown = [r for r in caplog.records if getattr(r, "event", None) == CREATION_UNKNOWN]
+    assert [(getattr(r, "environment", None), r.levelname) for r in unknown] == [
+        ("env-1", "WARNING")
+    ]
+    assert getattr(unknown[0], "project", None)
 
 
 # The operator command.

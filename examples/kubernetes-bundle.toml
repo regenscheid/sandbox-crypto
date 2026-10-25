@@ -46,6 +46,15 @@ openshell_gateway = "research-gateway"
 [sandboxes]
 namespace = "research-runtimes"
 
+# Optional: the first Loki alert rules over the services' logs (D103), one ConfigMap for
+# Loki's ruler (docs/KUBERNETES-BUNDLE.md#alert-rules; loading it, docs/KUBERNETES-PREP.md
+# step 11). Off without this section.
+# [alerts]
+# namespace = "monitoring"                  # Loki's namespace; by default the bundle's
+# tenant = "fake"                           # single-tenant Loki
+# configmap_labels = { loki_rule = "true" } # what Loki's rules sidecar selects
+# error_threshold = 10
+
 [secrets.control]
 name = "workbench-control"
 extra_files = []
