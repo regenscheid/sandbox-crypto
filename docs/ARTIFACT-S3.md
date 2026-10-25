@@ -88,6 +88,18 @@ database path or mode requires a new progress file. A crash before progress comm
 may repeat verification, but never replays a research operation or deletes remote data.
 No timer or background controller is enabled implicitly.
 
+`--at-use-percent N` (1–100) makes a scheduled pass conditional on the control volume's
+use: it measures the file system holding the database (`statvfs`, counted as `df` does,
+the root reserve excluded) and, below `N`, prints
+`{"apply": …, "skipped": "below_threshold", "use_percent": …, "at_use_percent": N}` and
+exits 0 without reading the policy, opening the database or advancing the cursor. At or
+above `N` the pass runs as usual. On Kubernetes the bundle's opt-in `[maintenance]`
+section renders a CronJob that runs
+`maintain --apply --cursor-file … --at-use-percent 70` (by default daily) with this
+policy from a ConfigMap, one pass at a time
+([cache trimming](KUBERNETES-BUNDLE.md#cache-trimming-opt-in)); the operator enables it,
+nothing starts it otherwise.
+
 New user-upload originals also use this store and its verified S3 backing. Their
 immutable metadata and references live in schema 74; existing inline originals are
 read without rewriting their rows. Archive/evict includes the new upload references,
