@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [PLAN-CHANGES](PLAN-CHANGES.md), [decisions](../docs/DECISIONS.md).
+Updated 2026-10-25. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [PLAN-CHANGES](PLAN-CHANGES.md), [decisions](../docs/DECISIONS.md).
 
 ## Phase and focus
 
@@ -22,6 +22,7 @@ Updated 2026-10-24. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 - One logging setup for every service, Pod labels and log-collection steps (D103).
 - Persistent kernels are the default for computation; one OpenShell version constant.
 - The operator checklist and the backup and restore runbook are written.
+- B9, legibility of agent work in the records (2026-10-25): every tool call names its purpose, kept in the archive and shown in result headers and fold skeletons; task briefs may list deliverables that the result accounts for, and children return tool lessons; review findings have five statuses with reviewer re-checks on later revisions, author dismissals and staleness, migrated in place; memory recall shows each note's basis, date and anchors. The workspace rendering of all this is B10.
 
 ## Verified live on the cluster (test instance, 2026-10-24)
 

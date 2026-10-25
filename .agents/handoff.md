@@ -1,9 +1,11 @@
 # Handoff
 
-Updated 2026-10-24. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [decisions](../docs/DECISIONS.md) D95-D103 and D92.
+Updated 2026-10-25. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [decisions](../docs/DECISIONS.md) D95-D103 and D92.
 
 - **Branch:** `k8s-sync`, in its own worktree, pushed to `origin/k8s-sync`; no PR. Keep the primary checkout and the personal instance as they are.
 - **Checks:** the list in [CONVENTIONS](CONVENTIONS.md#language-and-tooling), including `scripts/check_repo_hygiene.py` (it also checks that links resolve). One suite at a time, at most `-n 4`.
+
+- **B9 is built** (2026-10-25, [backlog](BACKLOG.md)); its control store steps are 83 to 85 and every tool call now needs a `purpose_note`, so a scripted lab call without one is refused. **B10** (the workspace rendering) is the natural next increment after the items below, or before them if the owner wants to see B9's records.
 
 ## Next, in order ([backlog](BACKLOG.md#architecture-2026-10-23-implementation-sequence))
 
