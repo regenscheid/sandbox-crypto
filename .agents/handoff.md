@@ -7,6 +7,8 @@ Updated 2026-10-25. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [de
 
 - **B9 is built** (2026-10-25, [backlog](BACKLOG.md)); its control store steps are 83 to 85 and every tool call now needs a `purpose_note`, so a scripted lab call without one is refused. **B10** (the workspace rendering) is built too (2026-10-25), apart from a per-message model choice (the Compute tab shows each kernel's current cell; memory, CPU and disk were dropped by the owner); B3's live-found defects are fixed offline (runtime manager, worker reconcile, image license check) and B7 (child environments) and A3's classification review view are proposals awaiting the owner; the test instance on the cluster still runs the images from before B9 and B10, so a republish and redeploy is what shows them live.
 
+- **A10's offline part is built** (2026-10-25): run `sandbox-science-harness tool-mix --state-dir <copy>` on a copy of the SNOVA archive to get the shell-versus-cell mix; agents do not read the personal instance.
+
 ## Next, in order ([backlog](BACKLOG.md#architecture-2026-10-23-implementation-sequence))
 
 1. **A2, the direct MCP path (D98):** run the babbage lab of [the prototype](../docs/specs/mcp-middleware-prototype.md); then workspace answers to the middleware's MCP requests, denied-tool listings and binary results. The owner then decides whether the MCP proxy retires.

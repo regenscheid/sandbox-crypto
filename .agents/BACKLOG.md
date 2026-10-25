@@ -80,6 +80,7 @@ Decisions D95–D103 and amended D92 ([decisions](../docs/DECISIONS.md)).
 ### Operations
 
 - [ ] Nightly CI green.
+- [ ] Workspace package tests flake under `-n 4` (2026-10-25, four times in one day across `packages/workspace/tests`, each passing on a rerun; the failing test's name was not captured). Capture the name on the next flake (run with `-rf`), find the shared state or timing, make it deterministic.
 - [x] Launcher timing flakes under `-n 8` (`test_up.py`: process-group and state-directory tests; `test_auto_recovery.py::test_late_user_correction_does_not_trigger_failure_backoff` under CPU starvation): make the waits deterministic instead of rerunning. Root causes found 2026-10-23 (stale workflow on `main`, the 72-minute `repeat` job, a CPU-starved race in `test_auto_recovery`); the sharded `repeat` jobs with a flake summary are on `k8s-sync-ops`, pending merge to `main` and a green night.
 - [ ] Backup and restore runbook, with a snapshot before each migration (D92). Written ([runbook](../docs/BACKUP-RESTORE.md), `scripts/personal_backup.sh`); still to do: call it from `personal_up.sh` before a migrating start, and a restore trial on babbage.
 - [ ] One OpenShell version constant, checked at launch.
