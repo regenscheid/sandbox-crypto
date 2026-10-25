@@ -242,7 +242,9 @@ class PackageCache:
         return {
             "entries": stats.entries,
             "bytes": stats.bytes,
+            "pinned_bytes": stats.pinned_bytes,
             "protected_bytes": stats.protected_bytes,
+            "protect_limit": self._store.protect_limit,
             "hits": counters.hits,
             "misses": counters.misses,
             "revalidated": counters.revalidated,
@@ -737,6 +739,7 @@ def _open_store(settings: Settings, clock: Callable[[], float]) -> Store:
         clock=clock,
         negative_expiry=negative_expiry(settings),
         pins=lockfile_pins(settings),
+        protect_share=settings.protect_share,
     )
     try:
         removed = store.recover()

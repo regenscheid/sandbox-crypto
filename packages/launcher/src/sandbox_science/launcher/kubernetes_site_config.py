@@ -50,7 +50,7 @@ DEFAULT_DOMAIN = "cluster.local"
 CACHE_ECOSYSTEMS = ("pypi", "conda", "cargo", "go", "npm", "opam", "hackage")
 """The package cache's ecosystems (``package_cache.settings.Settings``); the launcher
 never imports the cache, so a test compares the two."""
-_CLUSTER_CACHE_KEYS = frozenset(("listen", "public_url", "cache_dir", "lockfile_dir"))
+_CLUSTER_CACHE_KEYS = frozenset(("listen", "public_url", "cache_dir", "worker_state_dir"))
 """Cache settings the bundle fixes: the Pod's listener and URL, and its PVC's paths."""
 
 

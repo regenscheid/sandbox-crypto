@@ -12,9 +12,10 @@ sandbox-science-package-cache forget --settings cache.toml KEY_OR_PATH
 so they may run while the cache serves. ``prune`` purges expired negative
 entries and evicts down to the size cap now, as the cache does after storing a
 file, and deletes blobs no entry refers to that are over an hour old (younger
-ones may be about to get their entry). Like the cache, it keeps the files that
-recent environment lockfiles pin (``lockfile_dir``) unless ``--include-pinned``;
-``stats`` and ``prune`` report the bytes those pins protect. ``forget`` drops one entry, such as a
+ones may be about to get their entry). Like the cache, it protects the files that
+environments' lockfiles pin (``worker_state_dir``), up to ``protect_share`` of the cap,
+unless ``--include-pinned``; ``stats`` and ``prune`` report the pinned and protected
+bytes and the ceiling. ``forget`` drops one entry, such as a
 bad copy of a file the cache cannot verify, so that the next request fetches
 it again: give its cache key (``hackage:hackage/package/split-0.2.5.tar.gz``)
 or the path a client requested (``/hackage/package/split-0.2.5.tar.gz``, as the
@@ -147,6 +148,7 @@ def _open(settings: Settings) -> Store:
         max_size=settings.max_size,
         negative_expiry=negative_expiry(settings),
         pins=lockfile_pins(settings),
+        protect_share=settings.protect_share,
     )
 
 
@@ -156,7 +158,9 @@ def _stats(settings: Settings) -> int:
     report = {
         "entries": stats.entries,
         "bytes": stats.bytes,
+        "pinned_bytes": stats.pinned_bytes,
         "protected_bytes": stats.protected_bytes,
+        "protect_limit": store.protect_limit,
         "max_size": settings.max_size,
     }
     print(json.dumps(report))
@@ -174,7 +178,9 @@ def _prune(settings: Settings, *, include_pinned: bool) -> int:
         "freed_bytes": evicted.bytes + orphans.bytes,
         "entries": stats.entries,
         "bytes": stats.bytes,
+        "pinned_bytes": stats.pinned_bytes,
         "protected_bytes": stats.protected_bytes,
+        "protect_limit": store.protect_limit,
         "max_size": settings.max_size,
     }
     print(json.dumps(report))
