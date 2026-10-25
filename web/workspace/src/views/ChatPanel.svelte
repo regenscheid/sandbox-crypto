@@ -57,6 +57,10 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   import PollStatus from './PollStatus.svelte';
+  import type { ArtifactEntry } from '../lib/api-types';
+  import { readRunArtifacts, RunArtifacts, type RunListing } from '../lib/artifactStrip';
+  import { emptyFindings, onFindingChange, SessionFindings } from '../lib/findingRows';
+  import { reviews } from '../lib/reviews';
 
   let {
     projectId,
@@ -65,6 +69,7 @@
     signals = $bindable(null),
     subagents = null,
     showAgents = null,
+    showArtifact = null,
   }: {
     projectId: string;
     sessionId: string;
@@ -73,6 +78,8 @@
     /** "2 active subagents", while any run. */
     subagents?: string | null;
     showAgents?: (() => void) | null;
+    /** Open an artifact from a strip in the session's Artifacts panel (B10, item 6). */
+    showArtifact?: ((entry: ArtifactEntry) => void) | null;
   } = $props();
   let attach = $state<ReturnType<typeof ChatAttachments> | null>(null);
   let attachMenu = $state(false);
@@ -170,6 +177,43 @@
         }
       : null;
   });
+  // The reviewer's findings the conversation shows (B10, item 4): each read when first
+  // shown, again at the chat's cadence while a run holds the session, and again whenever
+  // the review panel changes one.
+  const findingState = $state(emptyFindings());
+  let findingPoller: Poller<void> | null = null;
+  const findings = untrack(
+    () =>
+      new SessionFindings(
+        findingState,
+        (finding) => reviews.finding(projectId, sessionId, finding),
+        () => findingPoller?.poke(),
+      ),
+  );
+  $effect(() => {
+    const project = projectId,
+      session = sessionId;
+    const poller = (findingPoller = new Poller(
+      (signal) =>
+        findings.refresh(
+          untrack(() => (chat?.lease ?? null) !== null),
+          signal,
+        ),
+      () => {},
+      { intervalMs: 1500 },
+    ));
+    const off = onFindingChange(project, session, () => findings.invalidate());
+    const stop = poller.watch();
+    return () => {
+      off();
+      stop();
+    };
+  });
+  // The runs' artifact lists, for the strips of files under the work groups (B10, item 6).
+  const artifactState = $state<Record<string, RunListing>>({});
+  const artifacts = untrack(
+    () => new RunArtifacts(artifactState, (run) => readRunArtifacts(projectId, sessionId, run)),
+  );
   /** Whether a run is working now, rather than waiting for an answer. */
   const live = (run: WatchedRun) =>
     run.state === 'active' && chat?.lease?.run === run.run && waitingOn === 0;
@@ -284,6 +328,10 @@
           {subagents}
           {showAgents}
           {continuations}
+          {sessionId}
+          {findings}
+          {artifacts}
+          {showArtifact}
         />
       {/each}
       <ChatWaiting messages={waiting} {starting} sending={echo} />

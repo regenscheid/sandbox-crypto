@@ -3,7 +3,7 @@
      with the steps between them folded (conversation.ts), and the run's questions where it
      asked them. While the run is `live`, its latest steps show what runs now. -->
 <script lang="ts" generics="Q extends { tool_call: string; question_id: string }">
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
   import {
     awaitingApproval,
     chatEntries,
@@ -17,6 +17,11 @@
   import { messageHref } from '../lib/router';
   import { splitAttachments } from '../lib/uploads';
   import BackgroundRow from './BackgroundRow.svelte';
+  import type { ArtifactEntry } from '../lib/api-types';
+  import { stripCounts, type RunArtifacts } from '../lib/artifactStrip';
+  import type { SessionFindings } from '../lib/findingRows';
+  import ArtifactStrip from './ArtifactStrip.svelte';
+  import FindingRow from './FindingRow.svelte';
   import FileChips from './FileChips.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   import Icon from './Icon.svelte';
@@ -31,6 +36,10 @@
     subagents = null,
     showAgents = null,
     continuations = new Set(),
+    sessionId = null,
+    findings = null,
+    artifacts = null,
+    showArtifact = null,
   }: {
     run: WatchedRun;
     projectId?: string | null;
@@ -44,6 +53,13 @@
     showAgents?: (() => void) | null;
     /** The IDs of the session's automatic continuation messages, shown folded. */
     continuations?: ReadonlySet<string>;
+    sessionId?: string | null;
+    /** The findings the conversation's rows show, read and read again (B10, item 4). */
+    findings?: SessionFindings | null;
+    /** The runs' artifact lists, for the strips under the work groups (B10, item 6). */
+    artifacts?: RunArtifacts | null;
+    /** Open an artifact in the session's Artifacts panel. */
+    showArtifact?: ((entry: ArtifactEntry) => void) | null;
   } = $props();
   const entries = $derived(chatEntries(run.events));
   const placed = $derived(placeQuestions(entries, questions));
@@ -67,6 +83,24 @@
   });
   /** The work group the run is on now, if any: the last, with only background rows after. */
   const liveIndex = $derived(live ? liveWork(items) : -1);
+  // The findings the rows show are read, and read again while the session is live.
+  $effect(() => {
+    const shown = items.flatMap((item) =>
+      item.kind === 'findings' ? item.findings.map((one) => one.finding) : [],
+    );
+    if (shown.length) untrack(() => findings?.want(shown));
+  });
+  // The run's artifact list, for its strips: read once, and again while it runs.
+  $effect(() => {
+    if (!artifacts) return;
+    const calls = items.flatMap((item) =>
+      item.kind === 'work' ? item.steps.flatMap((step) => step.calls) : [],
+    );
+    const { paths, unmatched } = stripCounts(calls, artifacts.state[run.run]?.entries ?? null);
+    const name = run.run,
+      running = live;
+    untrack(() => void artifacts.need(name, paths, unmatched, running));
+  });
 </script>
 
 <ol class="transcript">
@@ -112,9 +146,34 @@
           {subagents}
           {showAgents}
         />
+        {#if artifacts && projectId && sessionId}<ArtifactStrip
+            {projectId}
+            {sessionId}
+            run={run.run}
+            calls={item.steps.flatMap((step) => step.calls)}
+            listing={artifacts.state[run.run]}
+            show={showArtifact}
+          />{/if}
       </li>
     {:else if item.kind === 'background'}
       <li><BackgroundRow {item} {live} {now} /></li>
+    {:else if item.kind === 'findings'}
+      <li>
+        {#if projectId && sessionId}<ul class="finding-rows" aria-label="Reviewer findings">
+            {#each item.findings as notice (notice.finding)}<li>
+                <FindingRow
+                  {projectId}
+                  {sessionId}
+                  {notice}
+                  finding={findings?.state.found[notice.finding] ?? null}
+                  failed={findings?.state.failed[notice.finding] ?? null}
+                />
+              </li>{/each}
+          </ul>{:else}<p class="transcript-note">
+            The reviewer offered {item.findings.length}
+            {item.findings.length === 1 ? 'finding' : 'findings'}.
+          </p>{/if}
+      </li>
     {:else}
       <li>
         <p class="transcript-note" class:problem={item.problem}>
@@ -150,3 +209,14 @@
     {/each}
   {/if}
 </ol>
+
+<style>
+  .finding-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+</style>

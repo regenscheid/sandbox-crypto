@@ -5,6 +5,7 @@
   One keyed list, so a card that changes group keeps its state, a save in progress included.
 -->
 <script lang="ts">
+  import { announceFindingChange } from '../lib/findingRows';
   import { resolved } from '../lib/findingView';
   import type { ReviewBrowser, ReviewPanel } from '../lib/reviewBrowser';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -22,7 +23,11 @@
     browser: ReviewBrowser;
     busy: boolean;
   } = $props();
-  const refresh = () => browser.refresh();
+  // The conversation's finding rows read the session's findings again too (B10, item 4).
+  const refresh = () => {
+    announceFindingChange(projectId, sessionId);
+    return browser.refresh();
+  };
   // Unresolved first; the sort is stable, so each group keeps the server's order.
   const ordered = $derived(
     [...panel.findings.items].sort(

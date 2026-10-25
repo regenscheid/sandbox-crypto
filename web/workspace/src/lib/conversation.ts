@@ -11,6 +11,7 @@
  */
 import type { RunEvent } from './api-types';
 import type { BackgroundSignal, ChatEntry, Gloss } from './chat';
+import type { FindingNotice } from './findingRows';
 import { formatFileSize } from './format';
 import { visible } from './text';
 
@@ -74,7 +75,16 @@ export type TranscriptItem =
   | { kind: 'reply'; seq: number; at: string; text: string; pins: Pins }
   | { kind: 'work'; seq: number; from: string; to: string; steps: WorkStep[] }
   | BackgroundItem
-  | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string };
+  | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string }
+  | FindingsItem;
+
+/** The findings a review or math notice offered the agent, one row each (B10, item 4). */
+export interface FindingsItem {
+  kind: 'findings';
+  seq: number;
+  at: string;
+  findings: FindingNotice[];
+}
 
 /**
  * The transcript's items, in order. `asked` holds the IDs of the tool calls that asked the
@@ -119,6 +129,12 @@ export function foldTranscript(
       continue;
     }
     signalled = false;
+    if (entry.kind === 'note' && entry.findings) {
+      // The reviewer's findings, offered between two model calls: rows of their own.
+      flush();
+      items.push({ kind: 'findings', seq: entry.seq, at: at(entry.seq), findings: entry.findings });
+      continue;
+    }
     if (entry.kind === 'assistant') endWaits(entry.seq);
     if (entry.kind === 'user') {
       flush();

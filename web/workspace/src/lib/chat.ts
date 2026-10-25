@@ -18,6 +18,7 @@ import type {
   RunLease,
   RunEntry,
 } from './api-types';
+import { FINDING_SOURCES, noticeFindings, type FindingNotice } from './findingRows';
 import { formatCost } from './format';
 import { ApiError, get, post } from './http';
 import { forgetWrite, guardedWrite } from './mutation';
@@ -417,6 +418,8 @@ export type ChatEntry =
       message?: string;
       /** A wait on background work, or a notice of it, for the transcript's summary row. */
       background?: BackgroundSignal;
+      /** The findings a review or math notice offered, for the transcript's finding rows. */
+      findings?: FindingNotice[];
     };
 
 /**
@@ -685,6 +688,9 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         text: said || `Notices from ${text(data['source'])}: ${ids.join(', ')}.`,
         problem: false,
         ...(what && ids.length ? { background: { event: 'notice' as const, what, ids } } : {}),
+        ...(FINDING_SOURCES.has(text(data['source'])) && noticeFindings(ids).length
+          ? { findings: noticeFindings(ids) }
+          : {}),
       });
     } else if (kind === 'waiting' && 'permission_request' in data) {
       // A connector call held for the user's answer (D76), or the end of that wait.

@@ -28,6 +28,9 @@
   import { kernelPanelScope } from '../lib/kernels';
   import { rememberSession } from '../lib/lastSession';
   import ChatPanel from './ChatPanel.svelte';
+  import ArtifactPanel from './ArtifactPanel.svelte';
+  import type { ArtifactEntry } from '../lib/api-types';
+  import { keptChoice, type ArtifactChoice } from '../lib/artifactStrip';
   import FoldProposals from './FoldProposals.svelte';
   import PlanPanel from './PlanPanel.svelte';
   import PollStatus from './PollStatus.svelte';
@@ -43,7 +46,8 @@
     /** A review to choose in the review panel, as a link names it. */
     reviewId?: string | null;
   } = $props();
-  type Panel = 'plan' | 'agents' | 'context' | 'reviews' | 'compute' | 'documents' | 'activity';
+  type Panel =
+    'plan' | 'agents' | 'context' | 'reviews' | 'compute' | 'documents' | 'artifacts' | 'activity';
   let panel = $state<Panel | null>(
     untrack(() => (reviewId ? 'reviews' : window.innerWidth > 1120 ? 'plan' : null)),
   );
@@ -52,9 +56,22 @@
   const keptBrowser = untrack(() => browserState.load(browserScope).draft ?? {});
   let activityCategory = $state(keptBrowser.category ?? 'all');
   let activityRun = $state(keptBrowser.run ?? '');
+  /** The artifact the Artifacts panel shows, chosen from a strip or its list (B10, item 6). */
+  let artifactChoice = $state<ArtifactChoice | null>(keptChoice(keptBrowser));
   $effect(() => {
-    browserState.save(browserScope, { category: activityCategory, run: activityRun });
+    browserState.save(browserScope, {
+      category: activityCategory,
+      run: activityRun,
+      ...(artifactChoice
+        ? { artifact: artifactChoice.artifact, revision: String(artifactChoice.revision) }
+        : {}),
+    });
   });
+  function chooseArtifact(entry: ArtifactEntry | null) {
+    artifactChoice = entry
+      ? { artifact: entry.artifact_id, revision: entry.revision, entry }
+      : null;
+  }
   let width = $state(460);
   let viewportWidth = $state(window.innerWidth);
   const narrow = $derived(viewportWidth <= 1120);
@@ -130,6 +147,7 @@
     { id: 'reviews', label: 'Reviews', badge: checks },
     { id: 'compute', label: 'Compute', badge: 0 },
     { id: 'documents', label: 'Documents', badge: 0 },
+    { id: 'artifacts', label: 'Artifacts', badge: 0 },
     { id: 'activity', label: 'Activity log', badge: 0 },
   ]);
   function choose(id: Panel) {
@@ -204,6 +222,10 @@
           bind:signals
           subagents={subagentText(subagents)}
           showAgents={() => show('agents')}
+          showArtifact={(entry) => {
+            chooseArtifact(entry);
+            show('artifacts');
+          }}
         />
       {/if}
     </div>
@@ -232,6 +254,14 @@
       <div class="pane-content">
         {#if visited.includes('documents')}<div hidden={panel !== 'documents'}>
             <SessionDocuments {projectId} {sessionId} />
+          </div>{/if}
+        {#if visited.includes('artifacts')}<div hidden={panel !== 'artifacts'}>
+            <ArtifactPanel
+              {projectId}
+              {sessionId}
+              choice={artifactChoice}
+              choose={chooseArtifact}
+            />
           </div>{/if}
         {#if visited.includes('agents')}<div hidden={panel !== 'agents'}>
             <SessionAgents {projectId} {sessionId} {tree} />
