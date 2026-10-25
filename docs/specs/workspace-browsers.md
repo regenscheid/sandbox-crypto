@@ -100,6 +100,66 @@ Previous safe snapshots survive a failed refresh in this workspace process and
 are labeled previous; current policy is unknown while the proxy is unreachable.
 No browser gets proxy credentials or direct MCP access.
 
+## Classification review
+
+*Proposed 2026-10-25 for the owner's review (A3, D96's "accept-or-edit view"); not
+built.* D96 says each server's classification is checked in and admin-reviewed: a
+trusted-side model drafts a proposal that the admin accepts or edits in the workspace,
+and a drift test fails when the server's tool list changes. The library, the
+checked-in files, `classify-draft` and the middleware's drift records exist
+([connectors](../MCP-CONNECTORS.md#classification-files)); the view does not. Items are
+numbered CL-n.
+
+- CL-1. **Where.** The MCP services browser gains a Classification tab per service and a
+  project-level Classifications list. The tab shows the classification in force for the
+  project: its source (the checked-in file's name and `pinned` date, or an accepted
+  project revision, CL-3), and for each tool its class, reason, argument rules,
+  significant argument and pin state against the latest listing (`current`, `changed`,
+  `added`, `removed`, from the middleware's `mcp-tools-drift` records and the listing
+  snapshot); for a tool the classification does not mention, the class its hints give
+  and that it escalates. Read-only; viewing calls no tool and grants nothing, as the
+  Tools tab's rules say.
+- CL-2. **Drafts.** A draft `classify-draft` wrote for the project (the YAML marked DRAFT,
+  pinned by digest) is a record the view lists beside the classification in force, tool
+  by tool: the proposed class, reason and rules against the current ones, with widenings
+  (a class that would let a call pass without approval where it escalates today) marked.
+  The admin edits a draft in the view: class, reason, argument rules and the significant
+  argument per tool, within the library's schema; an edit is checked as the loader
+  checks a file. A draft is the model's text, framed as such.
+- CL-3. **Accepting.** Accepting a draft, edited or not, makes a project classification
+  revision in the control store's policy store, as `policy add` makes a policy revision:
+  the YAML the library would load, its pins, who accepted it, when, the reason and the
+  diff from the classification it replaces. The middleware compiles it into the
+  project's policy at the next revision, and it supersedes the checked-in file for that
+  project; the checked-in files stay the repository's defaults and the drift fixtures.
+  Only a user with the admin role may accept (D97's ceilings); an agent never reads a
+  draft as an instruction nor edits a classification. Accepting shows a confirmation
+  that lists every widening, and the acceptance is an event with its diff. An accepted
+  revision can be exported as the YAML to check in.
+- CL-4. **Drift.** When the middleware records `tool_list_drift` for a server, the tab
+  shows the added, removed and changed tools with their digests, dated, and the
+  middleware's hold (its non-read calls ask until re-accepted, D103). **Re-accept** from
+  the view does what `accept-tools` does today, through the worker, with the user's
+  reason recorded: a changed tool keeps its class only after re-acceptance, an added tool
+  is `unclassified` until a classification names it, a removed one is listed as gone.
+  Re-acceptance is admin-only, as acceptance is.
+- CL-5. **Proxy-side drift.** The MCP proxy holds no pins and records no drift today. If
+  the proxy stays after the A2 decision, it records the same drift kind from its
+  listings against the project's pins, and the tab reads both sources; until then the
+  tab reads the middleware's records and says so where a project uses the proxy path.
+- CL-6. **Records and routes.** `GET …/mcp-services/{server}/classification` (in force,
+  per tool with pin state), `GET …/classification/drafts` and `POST …/classification/
+  drafts/{draft}/accept` (admin, with the edited YAML and a reason), `POST
+  …/mcp-services/{server}/drift/accept` (admin, a reason). The policy store gains the
+  classification revision kind; the drift read is the middleware's existing record
+  through the worker, as the request cards read it.
+
+Questions for the owner: (1) accepted classifications as project revisions in the policy
+store, with export for check-in, rather than repository files only (*recommended:* the
+store, so acceptance needs no deploy and is attributed); (2) acceptance and re-acceptance
+admin-only (*recommended:* yes); (3) proxy-side drift only after the A2 decision
+(*recommended:* yes).
+
 ## Other screens
 
 An [agent context inspector](context-inspector.md) is available from secondary
