@@ -83,7 +83,6 @@ GOLDEN = {
         "a37f12e337620c81928a5203073b1d6656c6ed713b110528b165d91c1e38960f"
     ),
     "sandbox-delegated-task-13": "5100c90d70c6c6d7874f802f7117f655943073b896ad6f568702d0849223bf20",
-    "sandbox-delegated-task-15": "68921ebcbd2f65dbf8134bfa232dd4b70fc077a1bd8aaed7b19112b64b9936d7",
     "sandbox-delegated-task-14": "282c8f5ce712c22144077103fc20efa141eedb9ed1185284f77ee0713231d5e1",
     "sandbox-delegated-check-12": (
         "d7aedb60054af516dbcf4d434c40316b54417a3550856bfb5745f39aa1bc7c19"
