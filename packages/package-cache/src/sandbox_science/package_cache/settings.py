@@ -18,6 +18,8 @@ upstream_rate = 20           # upstream fetches per second
 upstream_burst = 200
 sandbox_rate = 10            # of those, per sandbox (the policy middleware names it)
 sandbox_burst = 100
+lockfile_dir = "/var/lib/sandbox-science/worker/lockfiles"  # optional: the worker's lockfiles
+protect_days = 30            # lockfiles stored this recently pin their files
 
 [pypi]
 index = "https://pypi.org/simple"
@@ -47,8 +49,9 @@ repository = "https://hackage.haskell.org"
 ```
 
 ``public_url`` and ``cache_dir`` are required; every other key has the default
-shown. An ecosystem whose table is absent is disabled; a table with no keys
-enables it with the default upstreams. Relative paths resolve against the
+shown, except ``lockfile_dir``, which is unset (nothing is pinned) unless given.
+An ecosystem whose table is absent is disabled; a table with no keys enables it
+with the default upstreams. Relative paths resolve against the
 settings file's directory. URLs are normalized without a trailing slash, so
 adapters append paths with ``f"{url}/..."``.
 
@@ -263,6 +266,10 @@ class Settings(_Model):
     """Upstream requests per second for each sandbox, which the policy middleware names in
     its requests; 0 turns the per-sandbox budgets off."""
     sandbox_burst: Annotated[int, Field(ge=1)] = 100
+    lockfile_dir: Path | None = None
+    """The worker's lockfile store, read only: package files that its lockfiles of the last
+    ``protect_days`` list are kept from eviction (``pins``). None pins nothing."""
+    protect_days: Annotated[int, Field(ge=1, le=3650)] = 30
     pypi: PypiSettings | None = None
     conda: CondaSettings | None = None
     cargo: CargoSettings | None = None
@@ -341,9 +348,10 @@ def load_settings(path: Path) -> Settings:
             data = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SettingsError(f"cannot read settings {path}: {exc}") from exc
-    cache_dir = data.get("cache_dir")
-    if isinstance(cache_dir, str) and cache_dir:
-        data["cache_dir"] = path.absolute().parent / cache_dir
+    for key in ("cache_dir", "lockfile_dir"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            data[key] = path.absolute().parent / value
     try:
         return Settings.model_validate(data)
     except ValidationError as exc:
