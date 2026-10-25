@@ -45,7 +45,7 @@ Updated 2026-10-25. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 ## Decided but not built
 
 - Run the babbage lab for the direct MCP path, then your decision to retire the MCP proxy or keep it (D98, A2).
-- The workspace's review view for classifications, and proxy-side drift findings (A3).
+- Proxy-side drift findings (A3, after the A2 decision); the classification review view itself is built (2026-10-25).
 - Cards for the direct MCP path's requests (A4).
 - The web usage view and a real-model check of the check-ins (A8).
 - Measure shell against kernel use and steer agents to the kernel (A10).
