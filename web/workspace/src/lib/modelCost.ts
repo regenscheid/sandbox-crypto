@@ -11,6 +11,11 @@ const ROLES: Record<RoleCost['role'], string> = {
   metadata: 'Skill metadata',
 };
 
+/** A role's name as the views write it; an unknown role as it is. */
+export function roleName(role: string): string {
+  return role in ROLES ? ROLES[role as RoleCost['role']] : role;
+}
+
 /**
  * Where the project's cost total came from: as the gateway reported it, and, when its
  * model info priced calls it reported no cost for (lab 43, B2), how much of the last

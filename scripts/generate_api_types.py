@@ -120,6 +120,7 @@ from sandbox_science.workspace.ledger import (
 from sandbox_science.workspace.mcp_services import McpInventory
 from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
 from sandbox_science.workspace.messages import ToolRecordChunk, ToolRecordListing
+from sandbox_science.workspace.monitor import ProjectMonitor
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
 from sandbox_science.workspace.skills import ProjectSkills, SkillSettingsChange, SkillSettingsView
@@ -187,6 +188,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     MemoryAnswer,
     ProjectSkills,
     McpInventory,
+    ProjectMonitor,
     ClassificationListing,
     ClassificationView,
     DraftListing,

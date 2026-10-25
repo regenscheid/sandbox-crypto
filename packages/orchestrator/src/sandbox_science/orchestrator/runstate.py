@@ -114,23 +114,25 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
     )
     values += (project, after)
     review = "(SELECT {} FROM review_runs v WHERE v.review_id=legacy.review_id)"
-    sources: tuple[tuple[str, Table, str, str], ...] = (
+    sources: tuple[tuple[str, Table, str, str, str], ...] = (
         (
             "reviewer",
             "review_calls",
             "created",
             f"{review.format('session')},{review.format('author_run')}",
+            "resolved_model",
         ),
-        ("watcher", "job_watcher_calls", "requested_at", "legacy.session,legacy.run"),
-        ("metadata", "skill_metadata_calls", "created", "NULL,NULL"),
-        ("embeddings", "skill_embedding_calls", "created", "NULL,NULL"),
+        ("watcher", "job_watcher_calls", "requested_at", "legacy.session,legacy.run", "model"),
+        ("metadata", "skill_metadata_calls", "created", "NULL,NULL", "model"),
+        ("embeddings", "skill_embedding_calls", "created", "NULL,NULL", "model"),
     )
-    for role, table, made, scope in sources:
+    for role, table, made, scope, model in sources:
+        # The model, for the Monitor view's spend by model (D103); costs never read it.
         usage = (
             "json_object('cost',cost,'cost_source',cost_source,"
-            "'input_tokens',input_tokens,'output_tokens',output_tokens)"
+            f"'input_tokens',input_tokens,'output_tokens',output_tokens,'model',{model})"
             if table != "skill_embedding_calls"
-            else "json_object('cost',cost,'cost_source','gateway')"
+            else f"json_object('cost',cost,'cost_source','gateway','model',{model})"
         )
         query += (
             f" UNION ALL SELECT '{role}',{usage},{scope} FROM {table} legacy "  # noqa: S608 - fixed
@@ -894,6 +896,38 @@ class RunState:
                 int(unpriced),
             )
             for sess, rn, role, cost, priced, used, calls, unpriced in rows
+        ]
+
+    def usage_by_model(
+        self, project: str, since: datetime | None = None
+    ) -> list[tuple[str, str | None, float | None, int, int, int]]:
+        """Recorded model usage by role and model after ``since`` if given, from the same
+        sources and precedence as ``model_costs`` (D103, the Monitor view): ``(role,
+        model or None when the record names none, known cost or None, tokens, calls,
+        unpriced calls)``."""
+        runs, values = _run_usage(project, since)
+        tokens = (
+            "coalesce(json_extract(u,'$.input_tokens'),0)+"
+            "coalesce(json_extract(u,'$.output_tokens'),0)"
+        )
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT role,json_extract(u,'$.model') m,sum(json_extract(u,'$.cost')),"  # noqa: S608 - fixed SQL
+                f"count(json_extract(u,'$.cost')),sum({tokens}),count(*),"
+                f"count(*) FILTER (WHERE json_extract(u,'$.cost') IS NULL AND {tokens}>0) "
+                f"FROM ({runs}) GROUP BY role,m",
+                values,
+            ).fetchall()
+        return [
+            (
+                str(role),
+                model if isinstance(model, str) and model else None,
+                float(cost) if priced else None,
+                int(used or 0),
+                int(calls),
+                int(unpriced),
+            )
+            for role, model, cost, priced, used, calls, unpriced in rows
         ]
 
     def cost_notices(self, project: str) -> list[tuple[float, str | None, float | None]]:

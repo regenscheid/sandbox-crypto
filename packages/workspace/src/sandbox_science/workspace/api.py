@@ -239,10 +239,17 @@ def _project(store: ProjectStore, project_id: str) -> ProjectView:
         for environment_id in record.environments()
     ]
     facts = ProjectFacts.of(record).model_dump()
+    cost = model_cost(store, project_id)
+    return ProjectView(**facts, sessions=sessions, environments=environments, model_cost=cost)
+
+
+def model_cost(store: ProjectStore, project_id: str) -> ModelCost:
+    """What the project's model calls cost in the last 24 hours and in all, as the project
+    page shows it (and the Monitor view, D103)."""
     runs = RunState(store)
     day = runs.model_costs(project_id, datetime.now(UTC) - WINDOW)
     every = runs.model_costs(project_id)
-    cost = ModelCost(
+    return ModelCost(
         last_day=sum(day.values()) if day else None,
         total=sum(every.values()) if every else None,
         by_role=[
@@ -252,7 +259,6 @@ def _project(store: ProjectStore, project_id: str) -> ProjectView:
         model_info_last_day=runs.model_info_cost(project_id, datetime.now(UTC) - WINDOW),
         model_info_total=runs.model_info_cost(project_id),
     )
-    return ProjectView(**facts, sessions=sessions, environments=environments, model_cost=cost)
 
 
 def _session(store: ProjectStore, project_id: str, session_id: str) -> SessionDetail:
