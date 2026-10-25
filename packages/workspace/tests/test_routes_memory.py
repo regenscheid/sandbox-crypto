@@ -138,7 +138,21 @@ def test_the_client_reads_the_largest_memory_answers() -> None:
         model="∀" * 600, alias="∀" * 600, tool_call="c" * 128,
     )  # fmt: skip
     assert len(author.model_dump_json(exclude_none=True).encode()) <= 4096
-    entry = MemoryEntry(entry_id="mem-999999999", revision=999999999, text=text, changed_at=at)
+    # Ten anchors of the longest kind a memory keeps (a document block, with its names at
+    # their longest); the quote of a user_quoted proposal is checked and not kept.
+    anchors = tuple(
+        {"document": "d" * 128, "revision": 999999999, "block": "b" * 128} for _ in range(10)
+    )
+    entry = MemoryEntry(
+        entry_id="mem-999999999",
+        revision=999999999,
+        text=text,
+        changed_at=at,
+        basis="observed",
+        accepted=True,
+        recorded_at=at,
+        anchors=anchors,
+    )
     memory = Memory(
         project="p" * 128, version=999999999, entries=(entry,) * MAX_ENTRIES,
         characters=MAX_TEXT * MAX_ENTRIES, given=16, waiting=MAX_WAITING,
@@ -146,11 +160,12 @@ def test_the_client_reads_the_largest_memory_answers() -> None:
     proposal = MemoryProposal(
         proposal_id="prop-999999999", action="change", entry_id="mem-999999999",
         base=999999999, text=text, reason=reason, proposer=author, proposed_at=at,
-        state="waiting", decided_at=None, current=entry,
+        state="waiting", decided_at=None, current=entry, basis="observed", anchors=anchors,
     )  # fmt: skip
     version = MemoryVersion(
         revision=999999999, version=999999999, change="edited", text=text, author=author,
         at=at, proposal="prop-999999999", proposer=author, proposed_at=at, reason=reason,
+        basis="observed", anchors=anchors,
     )  # fmt: skip
     history = MemoryEntryHistory(
         entry_id="mem-999999999", removed=False, versions=(version,) * 50, next_before=1

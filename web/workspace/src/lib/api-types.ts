@@ -15,7 +15,7 @@ export interface AgentModelSelection {
   reasoning_effort: string | null;
 }
 
-/** A place a revision or work record comes from (CM-9), besides the change's own tool call: an archive message by its ID (``message``, with ``quote`` for words of the user's), or a tool result by its call (``call``), whole or the characters ``start`` to ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally its ``sha256``); a document block at a revision (``document``, ``revision``, ``block``); or an entry revision (``entry``, ``revision`` defaulting to its current one). A PDF passage is anchored as a quote evidence link (LG-8). */
+/** A place a revision or work record comes from (CM-9), besides the change's own tool call: an archive message by its ID (``message``, with ``quote`` for words of the user's), or a tool result by its call (``call``), whole or the characters ``start`` to ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally its ``sha256``); a document block at a revision (``document``, ``revision``, ``block``); an entry revision (``entry``, ``revision`` defaulting to its current one); or a project memory entry at a revision (``memory``, ``mem-3@2``; PM-13), which exists but is never an observation. A PDF passage is anchored as a quote evidence link (LG-8). */
 export interface AnchorInput {
   message: string | null;
   call: string | null;
@@ -25,6 +25,7 @@ export interface AnchorInput {
   artifact: string | null;
   document: string | null;
   entry: string | null;
+  memory: string | null;
   revision: number | null;
   block: string | null;
   sha256: string | null;
@@ -1508,6 +1509,11 @@ export interface MemoryEntry {
   revision: number;
   text: string;
   changed_at: string;
+  basis: "user" | "user_quoted" | "observed" | "interpreted" | "not recorded";
+  accepted: boolean;
+  recorded_at: string;
+  scope: "project" | "session" | "run";
+  anchors: Record<string, JsonValue>[];
 }
 
 export interface MemoryEntryHistory {
@@ -1535,6 +1541,8 @@ export interface MemoryProposal {
   state: "waiting" | "accepted" | "declined";
   decided_at: string | null;
   current: MemoryEntry | null;
+  basis: "user_quoted" | "observed" | "interpreted" | "not recorded";
+  anchors: Record<string, JsonValue>[];
 }
 
 /** The proposals that wait for the user. */
@@ -1554,6 +1562,8 @@ export interface MemoryVersion {
   proposer: Author | null;
   proposed_at: string | null;
   reason: string | null;
+  basis: "user" | "user_quoted" | "observed" | "interpreted" | "not recorded";
+  anchors: Record<string, JsonValue>[];
 }
 
 /** A message as written, or the question it answered, and the run that holds the session, if one does. */

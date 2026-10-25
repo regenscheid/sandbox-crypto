@@ -91,11 +91,14 @@ async def test_agents_propose_and_a_retry_returns_the_first(documents: DocumentS
     retry = await tools.call(ToolCall("c1", "memory_propose", json.dumps(calls[0][1])), "c1")
     assert json.loads(retry.text) == {**answers[0], "replayed": True}
     listed = await call(tools, "memory_list")
-    assert listed == {
-        "version": 1,
-        "entries": [{"entry_id": "mem-1", "revision": 1, "text": "Write finite fields as GF(p)."}],
-        "next_from": None,
-    }
+    (item,) = listed["entries"]
+    assert (listed["version"], listed["next_from"]) == (1, None)
+    assert item["prefix"] == "[just now] [user] [mem-1@1 \u00b7 project]"
+    assert (item["entry_id"], item["revision"], item["text"]) == (
+        "mem-1",
+        1,
+        "Write finite fields as GF(p).",
+    )
     (proposal, *_) = ProjectMemory(documents).proposals("p")
     assert proposal.proposer.model_dump(exclude_none=True) == {
         "kind": "agent",

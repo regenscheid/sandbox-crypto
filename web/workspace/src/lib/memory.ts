@@ -5,7 +5,15 @@
  * revision the user saw, and keeps its operation ID across retries until it has a result
  * (`guardedWrite`), so a retry after a lost answer is not applied twice.
  */
-import type { Author, Memory, MemoryChange, MemoryProposal, MemoryVersion } from './api-types';
+import type {
+  Author,
+  JsonValue,
+  Memory,
+  MemoryChange,
+  MemoryEntry,
+  MemoryProposal,
+  MemoryVersion,
+} from './api-types';
 import { hiddenReferences } from './approval';
 import { guardedWrite } from './mutation';
 import { submit, type Submitting } from './submit';
@@ -86,6 +94,40 @@ export function overflowText(memory: Memory, bound: number): string | null {
     `entries hold ${memory.characters.toLocaleString('en')} characters, more than the ` +
     `${bound.toLocaleString('en')} given. Remove or merge entries.`
   );
+}
+
+const BASES: Record<MemoryEntry['basis'], string> = {
+  user: 'user',
+  user_quoted: 'user, quoted',
+  observed: 'observed',
+  interpreted: 'interpreted',
+  'not recorded': 'not recorded',
+};
+
+/**
+ * What an entry, a proposal or a version rests on (PM-13), as the agents are shown it:
+ * `user` is the user's own addition or edit; an agent's proposal keeps the basis it was
+ * made with, and the user's acceptance does not make its text the user's, so an accepted
+ * proposal says so beside its basis. `not recorded` is what was accepted before the basis
+ * was kept.
+ */
+export function basisText(basis: MemoryEntry['basis'], accepted = false): string {
+  const shown = BASES[basis];
+  return accepted && basis !== 'user' && basis !== 'not recorded' ? `${shown}, accepted` : shown;
+}
+
+/** An anchor as the agents are shown it: a message by its ID, an entry as `mem-3@2`. */
+export function anchorText(anchor: Record<string, JsonValue>): string {
+  const field = (name: string): string => String(anchor[name] ?? '?');
+  if ('memory' in anchor) return `${field('memory')}@${field('revision')}`;
+  if ('message' in anchor) {
+    const range = 'start' in anchor ? `[${field('start')}:${field('end')}]` : '';
+    return `${field('message')}${range}`;
+  }
+  if ('artifact' in anchor) return `${field('artifact')}@${field('revision')}`;
+  if ('document' in anchor) return `${field('document')}#${field('block')}@${field('revision')}`;
+  if ('entry' in anchor) return `${field('entry')}@${field('revision')}`;
+  return Object.values(anchor).map(String).join(' ');
 }
 
 const CHANGES: Record<MemoryVersion['change'], string> = {

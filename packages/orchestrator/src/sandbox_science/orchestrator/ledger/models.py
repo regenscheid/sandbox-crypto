@@ -242,8 +242,10 @@ class AnchorInput(Contract):
     user's), or a tool result by its call (``call``), whole or the characters ``start`` to
     ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally
     its ``sha256``); a document block at a revision (``document``, ``revision``,
-    ``block``); or an entry revision (``entry``, ``revision`` defaulting to its current
-    one). A PDF passage is anchored as a quote evidence link (LG-8)."""
+    ``block``); an entry revision (``entry``, ``revision`` defaulting to its current
+    one); or a project memory entry at a revision (``memory``, ``mem-3@2``; PM-13), which
+    exists but is never an observation. A PDF passage is anchored as a quote evidence
+    link (LG-8)."""
 
     message: Annotated[str, Field(pattern=r"^msg-[0-9a-f]{16}$")] | None = None
     call: Annotated[str, Field(min_length=1, max_length=512)] | None = None
@@ -253,15 +255,20 @@ class AnchorInput(Contract):
     artifact: Identifier | None = None
     document: Identifier | None = None
     entry: Reference | None = None
+    memory: Annotated[str, Field(pattern=r"^mem-[1-9][0-9]{0,8}@[1-9][0-9]{0,8}$")] | None = None
     revision: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
     block: Identifier | None = None
     sha256: Sha256 | None = None
 
     @model_validator(mode="after")
     def _one(self) -> Self:
-        named = [self.message, self.call, self.artifact, self.document, self.entry]
+        named = [self.message, self.call, self.artifact, self.document, self.entry, self.memory]
         if sum(value is not None for value in named) != 1:
-            raise ValueError("an anchor names one message, call, artifact, document or entry")
+            raise ValueError(
+                "an anchor names one message, call, artifact, document, entry or memory entry"
+            )
+        if self.memory is not None and self.revision is not None:
+            raise ValueError("a memory anchor gives its revision as mem-3@2")
         if (self.artifact is not None or self.document is not None) and self.revision is None:
             raise ValueError("an artifact or document anchor names its revision")
         if (self.document is not None) != (self.block is not None):

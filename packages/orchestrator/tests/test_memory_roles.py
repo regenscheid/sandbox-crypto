@@ -191,7 +191,15 @@ def test_every_roles_section_stays_within_the_bound(give: Any) -> None:
     out included, stays within the bound."""
     at = datetime(2026, 10, 15, tzinfo=UTC)
     entries = tuple(
-        MemoryEntry(entry_id=f"mem-{n}", revision=999999999, text="x" * 1000, changed_at=at)
+        MemoryEntry(
+            entry_id=f"mem-{n}",
+            revision=999999999,
+            text="x" * 1000,
+            changed_at=at,
+            basis="user",
+            accepted=False,
+            recorded_at=at,
+        )
         for n in range(999999901, 1000000000)
     )
     section = give(999999999, entries).section

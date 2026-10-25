@@ -64,10 +64,16 @@ refuses before a model call; there is no custom-input fallback.
 A reviewer of a run with the project's stores is also given the project memory, as
 the reviewed run was given it when it started, even if the user accepted entries
 since ([project memory](MEMORY.md), PM-8). The system message is the rubric, a blank
-line, then the memory section: the framing `sandbox-memory-reviewer-1`, which says the
+line, then the memory section: the framing `sandbox-memory-reviewer-2`, which says the
 entries are guidance on how the work should be done and not evidence (a claim is not
 supported because a note states it, and a note never excuses a claim the evidence does
-not support), then the entries. Such a call's envelope is format 2, assembly
+not support), what the prefix before each entry says (its date, its basis: `user`,
+`user, quoted`, `observed`, `interpreted` or `not recorded`, with `accepted` for an
+agent's proposal the user accepted, and its ID, revision and scope; the basis says what
+kind of record a note is, never that it is true), to prefer `user` and `observed` notes
+to `interpreted` and `not recorded` ones, and to name a note's ID when relying on one,
+then the entries, each with its prefix and its anchors. The prefix shows the date, so
+the section is the same for the same memory version. Such a call's envelope is format 2, assembly
 `sandbox-reviewer-bundle-2`, and adds `memory`: the framing's version, the memory's
 version, the entries given (`mem-N@R`), how many the bound left out, and the
 section's byte count and SHA-256; the bundle digest covers it. The section's text is

@@ -9,6 +9,8 @@ import MemoryProposalCard from '../views/MemoryProposalCard.svelte';
 import type { Author, Memory, MemoryEntry, MemoryProposal, MemoryVersion } from './api-types';
 import { ApiError } from './http';
 import {
+  anchorText,
+  basisText,
   changeMemory,
   decision,
   MAX_TEXT,
@@ -48,6 +50,11 @@ const entry: MemoryEntry = {
   revision: 2,
   text: 'Write finite fields as $\\mathrm{GF}(p)$.',
   changed_at: '2026-10-14T12:00:00Z',
+  basis: 'user',
+  accepted: false,
+  recorded_at: '2026-10-14T12:00:00Z',
+  scope: 'project',
+  anchors: [],
 };
 
 function proposal(fields: Partial<MemoryProposal> = {}): MemoryProposal {
@@ -63,6 +70,8 @@ function proposal(fields: Partial<MemoryProposal> = {}): MemoryProposal {
     state: 'waiting',
     decided_at: null,
     current: entry,
+    basis: 'interpreted',
+    anchors: [],
     ...fields,
   };
 }
@@ -127,6 +136,8 @@ describe('the memory page says', () => {
       proposer: agent,
       proposed_at: '2026-10-14T11:00:00Z',
       reason: 'Learned.',
+      basis: 'observed',
+      anchors: [],
     };
     expect(versionText(version)).toBe(
       'Revision 3: edited by the user, accepting prop-2 from the main run r-12 of session s1, ' +
@@ -135,6 +146,22 @@ describe('the memory page says', () => {
     expect(versionText({ ...version, proposal: null, proposer: null, change: 'moved' })).toBe(
       'Moved, text unchanged (still revision 3), by the user',
     );
+  });
+
+  it('what each item rests on, and that accepting an agent proposal does not make it the user', () => {
+    expect(basisText('user')).toBe('user');
+    expect(basisText('user_quoted', true)).toBe('user, quoted, accepted');
+    expect(basisText('observed', true)).toBe('observed, accepted');
+    expect(basisText('interpreted')).toBe('interpreted');
+    expect(basisText('not recorded', true)).toBe('not recorded');
+    expect(anchorText({ memory: 'mem-3', revision: 2 })).toBe('mem-3@2');
+    expect(anchorText({ kind: 'tool_result', message: 'msg-5f0c2e9a41d7b386' })).toBe(
+      'msg-5f0c2e9a41d7b386',
+    );
+    expect(anchorText({ message: 'msg-5f0c2e9a41d7b386', start: 3, end: 9 })).toBe(
+      'msg-5f0c2e9a41d7b386[3:9]',
+    );
+    expect(anchorText({ document: 'doc-1', block: 'b4', revision: 3 })).toBe('doc-1#b4@3');
   });
 
   it('which texts the server would refuse', () => {
@@ -282,6 +309,52 @@ describe('the memory views', () => {
     expect(html).toContain('&lt;script>');
     expect(html.replace(/<!--[^>]*-->/g, '')).toContain('The entry now, revision 3');
     expect(html).toContain('it is at revision 3');
+  });
+
+  it('show an entry basis, anchors and date, and a proposal its basis and anchors', () => {
+    const anchors = [{ kind: 'tool_result', message: 'msg-5f0c2e9a41d7b386' }];
+    const shown = render(MemoryEntryItem, {
+      props: {
+        projectId: 'p1',
+        entry: { ...entry, basis: 'observed', accepted: true, anchors },
+        first: false,
+        last: false,
+        given: true,
+        busy: false,
+        onchange: async () => true,
+      },
+    }).body.replace(/<!--[^>]*-->/g, '');
+    expect(shown).toContain('<strong>observed, accepted</strong>');
+    expect(shown).toContain("an agent's proposal, accepted");
+    expect(shown).toContain('scope project');
+    expect(shown).toContain('<code>msg-5f0c2e9a41d7b386</code>');
+    const old = render(MemoryEntryItem, {
+      props: {
+        projectId: 'p1',
+        entry: { ...entry, basis: 'not recorded', accepted: true },
+        first: false,
+        last: false,
+        given: true,
+        busy: false,
+        onchange: async () => true,
+      },
+    }).body;
+    expect(old).toContain('<strong>not recorded</strong>');
+    const card = render(MemoryProposalCard, {
+      props: {
+        proposal: proposal({ basis: 'observed', anchors }),
+        busy: false,
+        ondecide: () => undefined,
+      },
+    }).body.replace(/<!--[^>]*-->/g, '');
+    expect(card).toContain('<strong>observed</strong>');
+    expect(card).toContain('<code>msg-5f0c2e9a41d7b386</code>');
+    expect(card).toContain('does not make the text the user');
+    const bare = render(MemoryProposalCard, {
+      props: { proposal: proposal(), busy: false, ondecide: () => undefined },
+    }).body;
+    expect(bare).toContain('<strong>interpreted</strong>');
+    expect(bare).toContain('no anchors');
   });
 
   it('leave only declining a proposal whose entry was removed', () => {

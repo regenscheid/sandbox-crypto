@@ -240,10 +240,10 @@ const part = encodeURIComponent;
 
 /**
  * The most bytes a project memory answer can take: 100 entries, or 50 proposals each with
- * the entry beside it, or 50 versions, of 1,000 characters each, all escaped
+ * the entry beside it, or 50 versions, of 1,000 characters each and ten anchors, all escaped
  * (`test_routes_memory.py` checks the server's largest answers against it).
  */
-export const MEMORY_MAX_BYTES = 2048 * 1024;
+export const MEMORY_MAX_BYTES = 4096 * 1024;
 
 /** The ledger's answer to the user's change (orchestrator `MutationResult`), as the views read it. */
 export interface LedgerChangeAnswer {

@@ -22,6 +22,11 @@ const entry = {
   revision: 2,
   text: 'Original finite-field notation.',
   changed_at: '2026-10-18T12:00:00Z',
+  basis: 'user' as const,
+  accepted: false,
+  recorded_at: '2026-10-18T12:00:00Z',
+  scope: 'project' as const,
+  anchors: [],
 };
 
 it.each(['SecurityError', 'QuotaExceededError'])(

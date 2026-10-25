@@ -82,7 +82,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-14"
+TASK_VERSION: Final = "sandbox-delegated-task-15"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -131,6 +131,9 @@ TASK_PROMPT: Final = (
     "reason to reopen it in open_questions, and your parent decides. When your result "
     "relies on a ledger entry, or declines an approach because of one, cite the entry's "
     "handle, such as D-3, A-1, C-4 or I-3. "
+    "Each project memory note shows its basis: prefer user and observed notes to "
+    "interpreted and not recorded ones, and name the note's ID, such as mem-3, when you "
+    "rely on one, in an answer, a note or a record. "
     "Each message the platform adds begins with a header naming its archive ID "
     "(msg-…), by which you can cite it; history_search and history_read read your own "
     "run's messages and your children's full history, and history_read also the records "

@@ -285,7 +285,7 @@ def test_an_agent_receives_whole_entries_up_to_the_bound(memory: ProjectMemory) 
     blocks = [len(entry_block(entry, "0" * MARKER)) + 1 for entry in shown.entries]
     assert sum(blocks[: shown.given]) <= GIVEN_CHARS - SECTION_RESERVE
     assert sum(blocks[: shown.given + 1]) > GIVEN_CHARS - SECTION_RESERVE
-    assert shown.given == 13
+    assert shown.given == 12
 
 
 @pytest.mark.parametrize(

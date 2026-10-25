@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC
 from typing import Any, Final
 
 from sandbox_science.contracts import ExecutionContext
@@ -21,7 +22,7 @@ from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
 
-from .memory import MAX_REASON, MAX_TEXT, ProjectMemory
+from .memory import MAX_ANCHORS, MAX_REASON, MAX_TEXT, ProjectMemory, anchor_names, prefix
 
 Json = dict[str, Any]
 
@@ -32,12 +33,52 @@ MEMORY_EFFECTS: Final[dict[str, Effect]] = {
 """Listing reads; a proposal changes nothing until the user accepts it, so the plan
 fence lets it pass (the coordinator, 2026-10-15), unlike ``ledger_change``."""
 
+_ANCHORS: Final = {
+    "type": "array",
+    "maxItems": MAX_ANCHORS,
+    "description": (
+        "Where the note comes from, besides this call, as the ledger's anchors are: needed "
+        "when basis is user_quoted (a message the user wrote, with a quote of it, word for "
+        "word) or observed (a tool result, an artifact revision, or a range of a tool's "
+        "output that shows every number of the text)"
+    ),
+    "items": {
+        "type": "object",
+        "description": (
+            "One of: message (an archive ID, msg-…, from a message's header; quote for the "
+            "user's words), call (a tool call's ID, or the message ID of its result, for "
+            "the result; start and end for a range of its output), artifact with revision, "
+            "document with revision and block, entry (a ledger entry, with revision), or "
+            "memory (a memory entry at a revision, such as mem-3@2)"
+        ),
+        "properties": {
+            "message": {"type": "string"},
+            "call": {"type": "string"},
+            "quote": {"type": "string"},
+            "start": {"type": "integer", "minimum": 0},
+            "end": {"type": "integer", "minimum": 0},
+            "artifact": {"type": "string"},
+            "document": {"type": "string"},
+            "entry": {"type": "string"},
+            "memory": {"type": "string"},
+            "revision": {"type": "integer", "minimum": 1},
+            "block": {"type": "string"},
+            "sha256": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+}
+
 SPECS: Final = (
     ToolSpec(
         "memory_list",
         "List the project memory: the notes on how to work in this project that the user "
         "accepted, in order, each with its ID and revision. A proposal to change or remove "
-        "an entry names both. A long memory comes in parts: give from (the next_from you "
+        "an entry names both. Each note begins with a prefix: its age, its basis (user: "
+        "the user's own; user, quoted; observed; interpreted; or not recorded, accepted "
+        "before the basis was kept), its ID, revision and scope; its anchors follow. Prefer "
+        "user and observed notes to interpreted and not recorded ones, and name a note's ID "
+        "when you rely on it. A long memory comes in parts: give from (the next_from you "
         "got) to read on.",
         {
             "type": "object",
@@ -54,7 +95,12 @@ SPECS: Final = (
         "belong in documents, artifacts and the ledger, not here. add gives text; change "
         "gives the entry, the revision you read and the new text; remove gives the entry "
         f"and the revision you read. Text is at most {MAX_TEXT} characters, the reason at "
-        f"most {MAX_REASON}. A run makes at most 10 proposals.",
+        f"most {MAX_REASON}. basis says what the note rests on: user_quoted for what the user "
+        "said (anchor their message, with a quote), observed for what a tool result, an "
+        "artifact or a source showed (anchor it: every number of the text must be in it), "
+        "interpreted, the default, for your reading; code checks the basis against the "
+        "anchors and refuses with provenance_required. The user's acceptance does not make "
+        "a note the user's own. A run makes at most 10 proposals.",
         {
             "type": "object",
             "properties": {
@@ -63,6 +109,12 @@ SPECS: Final = (
                 "revision": {"type": "integer", "minimum": 1},
                 "text": {"type": "string", "description": "Markdown with $…$ math"},
                 "reason": {"type": "string", "description": "Why, in a sentence"},
+                "basis": {
+                    "type": "string",
+                    "enum": ["user_quoted", "observed", "interpreted"],
+                    "description": "What the note rests on; interpreted by default",
+                },
+                "anchors": _ANCHORS,
             },
             "required": ["action", "reason"],
             "additionalProperties": False,
@@ -142,8 +194,22 @@ class MemoryTool:
             raise DocumentError(INVALID_REQUEST, "memory_list takes only from, a count")
         memory = self.memory.memory(self.context.project_id)
         answer: Json = {"version": memory.version, "entries": [], "next_from": None}
+        now = self.memory.clock()
         for entry in memory.entries[start:]:
-            value = {"entry_id": entry.entry_id, "revision": entry.revision, "text": entry.text}
+            # The prefix first, then the text: what the agent reads before the text it
+            # may rely on (PM-13). The anchors follow the text.
+            value: Json = {
+                "entry_id": entry.entry_id,
+                "revision": entry.revision,
+                "prefix": prefix(entry, now),
+                "text": entry.text,
+                "basis": entry.basis,
+                "accepted": entry.accepted,
+                "recorded_at": entry.recorded_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                "scope": entry.scope,
+            }
+            if entry.anchors:
+                value["anchors"] = anchor_names(entry)
             # Measured with the longest next_from the answer can end with.
             if len(_dump({**answer, "entries": [*answer["entries"], value], "next_from": 999})) > (
                 self.budget

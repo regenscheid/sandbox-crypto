@@ -167,6 +167,11 @@ describe('where a revision comes from', () => {
     expect(
       anchorView('p1', { artifact: 'artifact-1', revision: 2, sha256: 'ab'.repeat(32) }).text,
     ).toBe('artifact artifact-1 r2 (sha256 abababababab…)');
+    expect(anchorView('p1', { memory: 'mem-3', revision: 2 })).toEqual({
+      text: 'memory entry mem-3 r2',
+      href: '#/projects/p1/memory',
+      quote: null,
+    });
     expect(provenanceView('p1', { basis: 'observed', anchors: [] }).basis).toBe(
       'observed: what a tool result, an artifact or a source shows',
     );

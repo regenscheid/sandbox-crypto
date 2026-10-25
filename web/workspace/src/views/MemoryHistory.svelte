@@ -6,7 +6,7 @@
   import { api } from '../lib/api';
   import type { MemoryVersion } from '../lib/api-types';
   import { formatTime } from '../lib/format';
-  import { versionText } from '../lib/memory';
+  import { anchorText, basisText, versionText } from '../lib/memory';
   import { emptyList, PagedList } from '../lib/pagedList';
   import { visible } from '../lib/text';
   import ApprovalText from './ApprovalText.svelte';
@@ -29,6 +29,18 @@
             >{visible(version.reason)}</bdi
           >{/if}
       </p>
+      {#if version.change !== 'moved' && version.text !== null}
+        <p class="muted">
+          Basis: {basisText(
+            version.basis,
+            version.proposal !== null,
+          )}{#if version.anchors.length > 0}
+            · anchors:
+            {#each version.anchors as anchor, index (index)}<code
+                >{visible(anchorText(anchor))}</code
+              >{' '}{/each}{/if}
+        </p>
+      {/if}
       {#if version.text !== null && version.change !== 'moved'}<ApprovalText
           text={version.text}
           label="Its text then"

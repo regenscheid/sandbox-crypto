@@ -3311,6 +3311,49 @@ BEGIN SELECT RAISE(ABORT, 'an agent message is kept'); END"""
     )
 
 
+def _memory_provenance(schema: Schema) -> None:
+    """Version 83: the basis and anchors of the project memory's versions and proposals
+    (docs/specs/project-memory.md, PM-13). An agent's proposal names its basis and
+    anchors, and the version that accepting it makes keeps them. A version the user made
+    (no proposal) is the user's, so it gets the basis ``user``; a version made by an
+    accepted proposal, and a proposal made before, have none recorded, so they read
+    ``not recorded``: nothing is guessed. Versions stay unchangeable once written; the
+    step lifts the guard only to give the earlier ones their basis."""
+    basis = "('user', 'user_quoted', 'observed', 'interpreted', 'not recorded')"
+    anchors = (
+        "json_valid(anchors) AND json_type(anchors) = 'array' "
+        "AND length(CAST(anchors AS BLOB)) <= 65536"
+    )
+    schema.execute(
+        f"ALTER TABLE memory_versions ADD COLUMN basis TEXT NOT NULL DEFAULT 'not recorded' "
+        f"CHECK (basis IN {basis})"
+    )
+    schema.execute(
+        f"ALTER TABLE memory_versions ADD COLUMN anchors TEXT NOT NULL DEFAULT '[]' "
+        f"CHECK ({anchors})"
+    )
+    schema.execute("DROP TRIGGER memory_versions_no_update")
+    schema.execute("UPDATE memory_versions SET basis='user' WHERE proposal IS NULL")
+    schema.execute(
+        """CREATE TRIGGER memory_versions_no_update BEFORE UPDATE ON memory_versions
+BEGIN SELECT RAISE(ABORT, 'memory versions are immutable'); END"""
+    )
+    schema.execute(
+        "ALTER TABLE memory_proposals ADD COLUMN basis TEXT NOT NULL DEFAULT 'not recorded' "
+        "CHECK (basis IN ('user_quoted', 'observed', 'interpreted', 'not recorded'))"
+    )
+    schema.execute(
+        f"ALTER TABLE memory_proposals ADD COLUMN anchors TEXT NOT NULL DEFAULT '[]' "
+        f"CHECK ({anchors})"
+    )
+    schema.execute("DROP TRIGGER memory_proposals_kept")
+    schema.execute(
+        """CREATE TRIGGER memory_proposals_kept BEFORE UPDATE OF
+project,proposal_id,action,entry_id,base,text,reason,proposer,run_id,session,created,basis,anchors
+ON memory_proposals BEGIN SELECT RAISE(ABORT, 'a memory proposal is written once'); END"""
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3393,6 +3436,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _project_grants,
     _cost_notices,
     _agent_message_references,
+    _memory_provenance,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

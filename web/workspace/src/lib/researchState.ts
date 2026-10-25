@@ -11,7 +11,14 @@
  */
 import type { EntrySummary, EntryView, SourceRead, Standing, WorkRecord } from './api-types';
 import { type LinkTarget, statusText } from './ledger';
-import { documentHref, ENTRY_NAME, ledgerEntryHref, MESSAGE_ID, messageHref } from './router';
+import {
+  documentHref,
+  ENTRY_NAME,
+  ledgerEntryHref,
+  MESSAGE_ID,
+  memoryHref,
+  messageHref,
+} from './router';
 import { visible } from './text';
 
 export const STANDING_WORDS: Record<Standing['label'], string> = {
@@ -214,6 +221,11 @@ export function anchorView(project: string, anchor: Record<string, unknown>): An
       href: ENTRY_NAME.test(entry) ? ledgerEntryHref(project, entry, revision ?? undefined) : null,
       quote: null,
     };
+  }
+  const memory = text(anchor.memory);
+  if (memory !== null) {
+    // A project memory entry at a revision (PM-13): it exists, and observes nothing.
+    return { text: visible(`memory entry ${memory}${at}`), href: memoryHref(project), quote: null };
   }
   return { text: visible(JSON.stringify(anchor)), href: null, quote: null };
 }

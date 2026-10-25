@@ -8,7 +8,8 @@
   import { memoryEdits } from '../lib/browserState';
   import type { MemoryEntry } from '../lib/api-types';
   import { formatTime } from '../lib/format';
-  import { type MemoryAction, textProblem } from '../lib/memory';
+  import { anchorText, basisText, type MemoryAction, textProblem } from '../lib/memory';
+  import { visible } from '../lib/text';
   import ApprovalText from './ApprovalText.svelte';
   import MemoryHistory from './MemoryHistory.svelte';
 
@@ -75,6 +76,16 @@
   <p class="head muted">
     <code>{entry.entry_id}</code> · revision {entry.revision} · {formatTime(entry.changed_at)}
     {#if !given}<strong>not given to agents: past the bound</strong>{/if}
+  </p>
+  <p class="head muted">
+    Basis: <strong>{basisText(entry.basis, entry.accepted)}</strong>{#if entry.accepted}
+      (an agent's proposal, accepted){/if}
+    · recorded {formatTime(entry.recorded_at)} · scope {entry.scope}
+    {#if entry.anchors.length > 0}
+      · anchors:
+      {#each entry.anchors as anchor, index (index)}<code>{visible(anchorText(anchor))}</code
+        >{' '}{/each}
+    {/if}
   </p>
   {#if draft === null}
     <ApprovalText text={entry.text} preview label="Exactly as every agent reads it" />

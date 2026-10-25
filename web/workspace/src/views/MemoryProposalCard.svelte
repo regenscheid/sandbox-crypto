@@ -7,7 +7,7 @@
 <script lang="ts">
   import type { MemoryProposal } from '../lib/api-types';
   import { formatTime } from '../lib/format';
-  import { proposalState, proposalTitle, proposerText } from '../lib/memory';
+  import { anchorText, basisText, proposalState, proposalTitle, proposerText } from '../lib/memory';
   import { visible } from '../lib/text';
   import ApprovalText from './ApprovalText.svelte';
 
@@ -28,6 +28,17 @@
     Proposed {formatTime(proposal.proposed_at)} by
     <bdi>{visible(proposerText(proposal.proposer))}</bdi>, because:
     <bdi>{visible(proposal.reason)}</bdi>
+  </p>
+  <p class="muted">
+    Basis: <strong>{basisText(proposal.basis)}</strong>
+    {#if proposal.anchors.length > 0}
+      · anchors:
+      {#each proposal.anchors as anchor, index (index)}<code>{visible(anchorText(anchor))}</code
+        >{' '}{/each}
+    {:else}
+      · no anchors
+    {/if}
+    . Accepting it does not make the text the user's.
   </p>
   {#if proposal.text !== null}
     <ApprovalText

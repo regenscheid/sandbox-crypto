@@ -165,7 +165,7 @@ async def test_production_harness_folds_each_delegated_role_using_its_model_limi
 
 async def test_production_child_narrates_on_its_own_alias_and_grant(delegating: Harness) -> None:
     from .test_delegation import configure
-    from .test_history_folds import ENRICHED, folds
+    from .test_history_folds import folds
 
     configure(delegating, depth=1, task_tokens=2_000_000)
     delegating.gateway.per_token = 4.0
@@ -183,7 +183,12 @@ async def test_production_child_narrates_on_its_own_alias_and_grant(delegating: 
         delegated=[*notes, Reply(json.dumps(DONE))],
         task="PARENT PRIVATE REASONING",
         options=[
-            *ENRICHED,
+            # The history folds tests' ceiling and chunk, with room for the tools' growth: the
+            # system message and tools may take a fifth of the ceiling (CM-27).
+            "--context-ceiling",
+            "114000",
+            "--fold-chunk",
+            "10000",
             "--delegated-model",
             "delegated",
             "--reasoning-effort",

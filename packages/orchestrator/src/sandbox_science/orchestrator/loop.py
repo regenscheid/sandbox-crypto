@@ -75,7 +75,7 @@ REPORT_ROOM: Final = 8
 this part of its ``max_input_chars`` (one eighth), which leaves room for the call."""
 REPORT_SOURCE: Final = "report"
 """The report round's notice source."""
-MAIN_VERSION: Final = "sandbox-main-16"
+MAIN_VERSION: Final = "sandbox-main-17"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
     "You are a research assistant. Send research code and shell commands through the "
@@ -109,6 +109,9 @@ SYSTEM_PROMPT: Final = (
     "decision is needed. A message's receipt says queued until the recipient has seen it. "
     "When the user sets a standing direction, keep it in the research state so later "
     "runs and children can apply it. "
+    "Each project memory note shows its basis: prefer user and observed notes to "
+    "interpreted and not recorded ones, and name the note's ID, such as mem-3, when you "
+    "rely on one, in an answer, a note or a record. "
     "A result marked as a sample shows part "
     "of its output: take counts, IDs, rows and any all-or-none claim from the saved file it "
     "names, never from the sample. Before a long or large computation, "

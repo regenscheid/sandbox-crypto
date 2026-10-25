@@ -215,7 +215,10 @@ async def test_past_the_trigger_the_oldest_span_folds_and_old_large_results_beco
     finally:
         store.close()
     results += seed(harness, 7, run="later")
-    record = await harness.run("run-1", [Reply("Done.")], options=SMALL)
+    # The ceiling leaves room for the tools' descriptions, which grow with the tools (the
+    # memory tools' basis and anchors added about 600 tokens).
+    options = ["--context-ceiling", "114000", "--fold-chunk", "10000", "--skeleton-only-folds"]
+    record = await harness.run("run-1", [Reply("Done.")], options=options)
     (made,) = folds(record)["folds"]
     assert made["state"] == "skeleton_only"
     assert made["freed"] > 0.1 * 86_000
