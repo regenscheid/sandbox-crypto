@@ -288,7 +288,11 @@ class OpenShellBackend:
         return sandbox
 
     def _env(self) -> dict[str, str]:
-        return {**_child_env(), **self.settings.env}
+        """The CLI's environment: the worker's, without the ``OPENSHELL_*`` variables it
+        inherited, which could point the CLI at another gateway or workspace, and with
+        those its settings give."""
+        inherited = {k: v for k, v in _child_env().items() if not k.startswith("OPENSHELL_")}
+        return {**inherited, **self.settings.env}
 
     async def _run(self, *args: str) -> None:
         code, output = await _command(self.settings.cli, *args, env=self._env())

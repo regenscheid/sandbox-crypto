@@ -153,6 +153,17 @@ class EnvironmentSettings(_Model):
     """Trusted placement and resource settings by profile; only Kubernetes gateways accept these."""
     create_timeout: Annotated[float, Field(gt=0, le=3600)] = 600.0
     """How long a sandbox may take to become ready."""
+    creation_grace: Annotated[float, Field(ge=300, le=86400)] = 420.0
+    """Seconds after an environment's record before a creation with an unknown outcome may
+    be found absent: OpenShell 0.1.5's fixed bootstrap grace of 300 s, after which its
+    driver rolls a sandbox back, plus a margin. Never shorter than that grace."""
+    creation_recheck: Annotated[float, Field(ge=1, le=3600)] = 30.0
+    """Seconds between the two reads of the gateway that confirm such a sandbox absent, and
+    between the running worker's passes over those environments."""
+    label_environments: bool = False
+    """Give each sandbox the worker creates the label ``sandbox-science.io/environment``
+    with its environment's ID, and let reconciliation of an unknown creation look for it.
+    Off by default: turn it on once a gateway has been seen to accept the key."""
     admission: bool = True
     """Admit hosts on demand (D69): when OpenShell drafts a proposal for a host a sandbox
     could not resolve, and the policy could allow a request to it, name it in a revision."""

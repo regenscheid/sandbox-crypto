@@ -220,7 +220,11 @@ and research data. Upstream's 2 GiB workspace default is too small for `crypto-b
 about 61,000 since, before headroom). Storage size,
 class and retention are private operator choices. The initial copy must finish within
 OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,
-not configurable), or the gateway rolls the sandbox back: on the owner's cluster
+not configurable), or the gateway rolls the sandbox back. A rolled-back creation
+whose response the worker lost never appears, and the worker marks it deleted
+(`creation_rolled_back`) once two reads past `creation_grace` find no trace of it;
+with the worker stopped, `sandbox-science-worker environments reconcile` does the same
+([environments](WORKER.md#environments)). On the owner's cluster
 seeding `crypto-base`'s prefix (about 100k files) into a 2-replica Longhorn volume took
 over 4 minutes, and a single-replica `strict-local` class about 2.5 minutes in all,
 of which the copy (`workspace-init`) was 111 s; with the slimmed image below the copy took 69 s
