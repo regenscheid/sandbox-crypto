@@ -64,6 +64,14 @@ may reference only declared tracks. Reusing a stable step ID preserves its
 history. Removed IDs disappear from the current projection but stay readable in
 pinned progress history. A substantially different intent should get a new ID.
 
+`stated_outputs` reads the desired outputs of the current plan that the user stated:
+each output, as the current version holds it, whose introducing version, the one after
+which it stayed unchanged, is the user's. An output an agent wrote and the user left as it
+was is not one; one the user wrote stays theirs through an agent's later versions until an
+agent rewords it. `delegate` names them in a notice to a task brief that lists no
+deliverables ([plans and delegation](specs/plans-and-delegation.md), PD-45). Plan approval
+(PD-6) is not built, so no approved version adds others.
+
 `progress` names the exact current body version, a step, its last observed progress
 cursor, status, note and optional same-project evidence claims. MAIN and USER can
 update current steps. A delegated run can update only a step in its exact granted

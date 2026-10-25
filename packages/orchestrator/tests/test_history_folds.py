@@ -70,6 +70,10 @@ ENRICHED = ["--context-ceiling", "110000", "--fold-chunk", "10000"]
 """C = 110,000 and K = 10,000: trigger 82,500, wall 99,000."""
 SMALL = [*ENRICHED, "--skeleton-only-folds"]
 """The same, its folds skeleton-only and applied at once."""
+ROOMY_ENRICHED = ["--context-ceiling", "115000", "--fold-chunk", "10000"]
+"""``ENRICHED`` with room for a system message and tools past 22,000 tokens, 20% of
+110,000 (CM-27), as the MAIN prompt and the delegate tools have grown."""
+ROOMY = [*ROOMY_ENRICHED, "--skeleton-only-folds"]
 
 
 @pytest.fixture
@@ -215,7 +219,7 @@ async def test_past_the_trigger_the_oldest_span_folds_and_old_large_results_beco
     finally:
         store.close()
     results += seed(harness, 7, run="later")
-    record = await harness.run("run-1", [Reply("Done.")], options=SMALL)
+    record = await harness.run("run-1", [Reply("Done.")], options=ROOMY)
     (made,) = folds(record)["folds"]
     assert made["state"] == "skeleton_only"
     assert made["freed"] > 0.1 * 86_000

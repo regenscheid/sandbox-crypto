@@ -68,6 +68,38 @@ def _texts(what: str) -> BeforeValidator:
     return BeforeValidator(partial(_text, what=what))
 
 
+MAX_DELIVERABLES: Final = 12
+MAX_TITLE: Final = 120
+MAX_DESCRIPTION: Final = 400
+DeliverableKind = Literal["artifact", "file", "entry", "answer"]
+"""What a deliverable is (PD-45): a file revision the child's calls record or publish, a
+path they write, a ledger entry it creates or revises, or a short answer in its result."""
+
+
+def _line(value: object, *, what: str) -> object:
+    """An agent's text that must be one line, such as a deliverable's title."""
+    found = _text(value, what=what)
+    if isinstance(found, str) and "\n" in found:
+        raise ValueError(f"{what} is one line")
+    return found
+
+
+class Deliverable(Contract):
+    """One thing a task is to hand back (PD-45), which its result accounts for by the
+    number the platform gives it, ``d1`` to ``d12`` in the brief's order."""
+
+    title: Annotated[
+        str,
+        BeforeValidator(partial(_line, what="a deliverable's title")),
+        Field(min_length=1, max_length=MAX_TITLE),
+    ]
+    kind: DeliverableKind
+    description: Annotated[
+        str, _texts("a deliverable's description"), Field(max_length=MAX_DESCRIPTION)
+    ]
+    """What counts as delivering it."""
+
+
 class TaskBrief(Contract):
     """What ``delegate`` takes for a task (PD-11): what to do, what the child needs to
     know, and the inputs it should read; the parent writes all of it."""
@@ -90,6 +122,9 @@ class TaskBrief(Contract):
     references: References = ()
     """Records of the parent's own the child starts with, materialized into its state
     block and readable with its ``history_read`` (PD-11, CM-37b)."""
+    deliverables: tuple[Deliverable, ...] = Field(default=(), max_length=MAX_DELIVERABLES)
+    """What the child is to hand back, which its result accounts for (PD-45); optional,
+    and written once with the brief."""
 
 
 class CheckBrief(Contract):
@@ -139,6 +174,12 @@ SPECS: Final = (
         "A task (task) is yours to write: what to do, the context it needs (context), and "
         "the inputs it should read (inputs), and your records (references); it works "
         "under a delegated agent's authority. "
+        "A task may list deliverables, which are optional: what it is to hand back, at most "
+        f"{MAX_DELIVERABLES}, each a title (one line of at most {MAX_TITLE} characters), a "
+        "kind (artifact, file, entry or answer) and a description of what counts (at most "
+        f"{MAX_DESCRIPTION} characters); the platform numbers them d1, d2, … and its "
+        "result accounts for each: it is complete only when every one was produced. Skip "
+        "them for a small task. "
         "It runs while you go on; this returns its delegation_id at once. Its report "
         "reaches you as a delegation notice, or as the result of wait_delegations. You "
         "cannot give your final answer while it runs. Its result is its claim: a status "
@@ -198,6 +239,33 @@ SPECS: Final = (
                     "description": "For a task, optional: the issue it works on, such as I-2; "
                     "its outcome, what it dismissed and the obstructions it claims are "
                     "recorded there as work",
+                },
+                "deliverables": {
+                    "type": "array",
+                    "maxItems": MAX_DELIVERABLES,
+                    "description": "For a task, optional: what it is to hand back, numbered "
+                    "d1, d2, … in this order; its result accounts for each",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE},
+                            "kind": {
+                                "type": "string",
+                                "enum": ["artifact", "file", "entry", "answer"],
+                                "description": "artifact: a file revision its calls record "
+                                "or publish; file: a path its calls write; entry: a ledger "
+                                "entry it creates or revises; answer: a short answer in its "
+                                "result",
+                            },
+                            "description": {
+                                "type": "string",
+                                "maxLength": MAX_DESCRIPTION,
+                                "description": "What counts as delivering it",
+                            },
+                        },
+                        "required": ["title", "kind", "description"],
+                        "additionalProperties": False,
+                    },
                 },
                 "references": {
                     **SCHEMA,

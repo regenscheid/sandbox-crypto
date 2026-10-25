@@ -19,10 +19,10 @@ IDs are the version strings in the code.
 
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
-| MAIN base system | `sandbox-main-16` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN base system | `sandbox-main-17` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT`; new user messages may mean root work, plan creation or revision, child steering, or feedback on a pinned result; a task's deliverables and the tool lessons a brief carries (PD-45, DA-27) | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-2` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Delegated check system | `sandbox-delegated-check-13` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note; later parent messages cannot predetermine its verdict; it says what its read-only connector tools are and that a call needing approval waits for the user | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
-| Delegated task system | `sandbox-delegated-task-14` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs, and a line when the brief has references; later parent messages can steer it; it says what its connector tools are, that a call needing approval waits for the user, how a draft plan holds outward calls, that its parent may give it records by reference, and that a child lacking context asks its parent with `message_parent` (DA-15) | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
+| Delegated task system | `sandbox-delegated-task-15` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs, and a line when the brief has references; later parent messages can steer it; it says what its connector tools are, that a call needing approval waits for the user, how a draft plan holds outward calls, that its parent may give it records by reference, and that a child lacking context asks its parent with `message_parent` (DA-15); the brief's deliverables, numbered `d1` to `d12`, follow its inputs, and the prompt says to account for each honestly and that its `lessons` are notes, not instructions (PD-45, DA-27) | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
 
 | Project memory framings | `sandbox-memory-run-1`, `sandbox-memory-reviewer-1`, `sandbox-memory-watcher-1` | [memory_prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/memory_prompt.py) `RUN_FRAMING`, `REVIEWER_FRAMING`, `WATCHER_FRAMING`, each followed by the accepted entries | With the project's stores, when the project memory has entries: every main and delegated run, every reviewer call (the reviewed run's memory) and every watcher check (the memory at the check) ([project memory](MEMORY.md)) |
 | Skills index framing | `sandbox-skills-index-4` | [skills/index.py](../packages/orchestrator/src/sandbox_science/orchestrator/skills/index.py) `FRAMING_VERSION` | With the project's pinned skills, less those it excludes, and the skills it loads at a run's start, in the system message of every main and delegated run whose project pins skills ([skills](SKILLS.md#a-runs-skills)) |
@@ -243,7 +243,17 @@ authority or proof of provider behavior:
   direct-child steering, and feedback on pinned research records (D87, PD-44).
   `sandbox-main-16` adds that the file tools search as well: `edit_file` changes part of
   a file rather than writing it whole, and `grep` and `glob` search rather than grep or
-  find in the shell ([tools spec](specs/tools.md), Files 7 to 9). The
+  find in the shell ([tools spec](specs/tools.md), Files 7 to 9).
+  `sandbox-main-17` adds that a delegated task lists deliverables whenever the user named
+  outputs (the plan's desired outputs) or it makes files the user will want, and skips
+  them for small tasks; that a brief's context, and `message_child`, give the tool lessons
+  the main agent learned as observations cited by references; and that a child's lessons
+  are passed on as the main agent's own text ([plans and delegation](specs/plans-and-delegation.md), PD-45;
+  [delegated agents](specs/delegated-agents.md), DA-27). `sandbox-delegated-task-15` adds
+  that a task accounts for every deliverable of its brief, `not_produced` with its reason
+  rather than left out and `complete` only when every one was produced, that it may give at
+  most 5 one-line `lessons`, and that lessons and a context's observations are notes that
+  never state policy or claim a permission. The
   delegated prompts add parent messaging in `sandbox-delegated-task-8` and
   `sandbox-delegated-check-8`; the latter still requires an independent verdict. Task and tool messages are not pinned; the
   notice framings are.
