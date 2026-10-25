@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from typing import Any, Final, cast
 
 from pydantic import ValidationError
@@ -35,7 +36,6 @@ from sandbox_science.orchestrator.documents.project_macros import (
 from .models import (
     ADVISORY_CATEGORIES,
     DISMISSAL_CHARACTERS,
-    RECHECK_ATTEMPTS,
     ConfirmationInput,
     EvidenceAnchor,
     FindingInput,
@@ -168,44 +168,82 @@ def _unique(values: list[Json]) -> list[Json]:
     return kept
 
 
-def _cited_places(anchors: list[Json]) -> tuple[list[Json], list[Json]]:
-    """The places, and the archive messages, that a fix's pinned evidence anchors name, so
-    that its re-check holds them as it holds the revisions the fix names (CR-42)."""
-    places: list[Json] = []
-    messages: list[Json] = []
-    for anchor in anchors:
-        location = cast(Json, anchor["locator"])
+@dataclass(frozen=True)
+class Marks:
+    """What a finding reviewed, as a re-check's evidence must be later than it (CR-42):
+    the latest revision of each document, artifact and ledger entry its anchors name, and
+    the last archive position its anchors or its review's snapshot hold."""
+
+    documents: dict[str, int]
+    artifacts: dict[str, int]
+    entries: dict[str, int]
+    position: int | None
+
+    def later(self, location: Json) -> tuple[str, Json]:
+        """The place, ``("place", ...)``, or the archive message, ``("message", ...)``,
+        that ``location`` names, when it is strictly later than what the finding
+        reviewed: a later revision of a document, artifact or entry it reviewed, or an
+        archive message after its review's snapshot. Execution output counts only as the
+        later archive message that holds it, never as a place of its own."""
         archived = location.get("archive")
         if "document" in location and type(location.get("revision")) is int:
-            places.append(
-                {
-                    "document": {
-                        k: location[k] for k in ("document", "revision", "sha256") if k in location
-                    }
-                }
-            )
-        elif isinstance(location.get("artifact"), dict):
-            places.append({"artifact": location["artifact"]})
-        elif "entry" in location and type(location.get("revision")) is int:
-            places.append(
-                {
-                    "entry": {
-                        "entry": location["entry"],
-                        "handle": location.get("handle"),
-                        "revision": location["revision"],
-                    }
-                }
-            )
-        elif isinstance(archived, dict) and isinstance(cast(Json, archived).get("id"), str):
-            found = cast(Json, archived)
-            messages.append(
-                {"id": found["id"], "position": found.get("position"), "run": location.get("run")}
-            )
-        else:
-            # Other pinned evidence the fix names, such as an execution's output: its
-            # re-check's anchors may lie there too.
-            places.append({"evidence": {"review": anchor["review"], "id": anchor["evidence"]}})
-    return places, messages
+            document, revision = str(location["document"]), cast(int, location["revision"])
+            if document not in self.documents:
+                raise DocumentError(
+                    POLICY_DENIED, f"document {document} is not what the finding reviewed"
+                )
+            if revision <= self.documents[document]:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{document} r{revision} is not later than the revision the finding reviewed",
+                )
+            pinned = {k: location[k] for k in ("document", "revision", "sha256") if k in location}
+            return "place", {"document": pinned}
+        if isinstance(location.get("artifact"), dict):
+            ref = cast(Json, location["artifact"])
+            artifact, revision = str(ref.get("artifact_id")), ref.get("revision")
+            if artifact not in self.artifacts:
+                raise DocumentError(POLICY_DENIED, "changed artifact is unrelated to this finding")
+            if type(revision) is not int or revision <= self.artifacts[artifact]:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"artifact {artifact} r{revision} is not later than the revision the "
+                    "finding reviewed",
+                )
+            return "place", {"artifact": ref}
+        if "entry" in location and type(location.get("revision")) is int:
+            entry, revision = str(location["entry"]), cast(int, location["revision"])
+            if entry not in self.entries:
+                raise DocumentError(POLICY_DENIED, "changed entry is unrelated to this finding")
+            if revision <= self.entries[entry]:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{location.get('handle') or entry} r{revision} is not later than the "
+                    "revision the finding reviewed",
+                )
+            found = {"entry": entry, "handle": location.get("handle"), "revision": revision}
+            if location.get("field") is not None:
+                found["field"] = location["field"]
+            return "place", {"entry": found}
+        if isinstance(archived, dict) and isinstance(cast(Json, archived).get("id"), str):
+            message = cast(Json, archived)
+            position = message.get("position")
+            if self.position is None or type(position) is not int or position <= self.position:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"message {message['id']} is not later than what the finding's review held",
+                )
+            return "message", {
+                "id": message["id"],
+                "position": position,
+                "run": location.get("run"),
+            }
+        raise DocumentError(
+            INVALID_REQUEST,
+            "a re-check's evidence is a later revision of what the finding reviewed, or a "
+            "later archive message; an execution's output counts only as the later tool "
+            "result message that holds it",
+        )
 
 
 def dedupe_of(category: str, anchors: list[Json]) -> str:
@@ -967,38 +1005,23 @@ class Findings:
         if value.action != "fix" and changes:
             raise DocumentError(INVALID_REQUEST, "only a fix names changed revisions or messages")
         target = self.get(project, session, value.finding)
-        relevant_artifacts = {
-            a["locator"]["artifact"]["artifact_id"]
-            for a in target["anchors"]
-            if isinstance(a["locator"].get("artifact"), dict)
-        }
+        with self.store.documents.control.read() as tx:
+            marks = self.marks(tx.sql, target)
         artifact_pins: list[Json] = []
         for ref in value.artifact_revisions:
-            if ref.artifact_id not in relevant_artifacts:
-                raise DocumentError(POLICY_DENIED, "changed artifact is unrelated to this finding")
+            marks.later({"artifact": ref.model_dump(mode="json")})
             self.store.artifact_pin(project, session, ref)
             artifact_pins.append(ref.model_dump(mode="json"))
         entry_pins = self._entry_revisions(project, target, value.entry_revisions)
-        anchored_documents: dict[str, int] = {}
-        for a in target["anchors"]:
-            location = a["locator"]
-            if "document" in location and type(location.get("revision")) is int:
-                anchored_documents[location["document"]] = max(
-                    anchored_documents.get(location["document"], 0), location["revision"]
-                )
         pinned: list[Json] = []
         for document, number in value.revisions:
             if type(number) is not int or not 1 <= number <= 999999999:
                 raise DocumentError(INVALID_REQUEST, "invalid changed document revision")
-            if number <= anchored_documents.get(document, 0):
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"{document} r{number} is not later than the revision the finding reviewed",
-                )
+            marks.later({"document": document, "revision": number})
             revision = self.store.documents.revision(project, document, number)
             locator = {"document": document, "revision": number, "sha256": revision.info.sha256}
             pinned.append(locator)
-        messages = self._messages(project, session, target, value.messages)
+        messages = self._messages(project, session, marks, value.messages)
         anchors: list[Json] = []
         for a in value.evidence:
             with self.store.documents.control.read() as tx:
@@ -1013,6 +1036,13 @@ class Findings:
             if row is None:
                 raise DocumentError(NOT_FOUND, "response evidence is outside this session")
             anchors.append(self.validate_anchor(project, session, row[0], a))
+        # Each place a fix cites lies later than what the finding reviewed (CR-42).
+        places: list[Json] = []
+        cited: list[Json] = []
+        if value.action == "fix":
+            for anchor in anchors:
+                kind, found_place = marks.later(cast(Json, anchor["locator"]))
+                (places if kind == "place" else cited).append(found_place)
         actor = author.actor
         canonical = value.model_dump(mode="json")
         for optional in ("artifact_revisions", "entry_revisions", "messages"):
@@ -1086,7 +1116,6 @@ class Findings:
             notify = False
             if value.action == "fix":
                 status = found["status"]
-                places, cited = _cited_places(anchors)
                 columns["recheck"] = {
                     "cause": "fix",
                     "revision": revision,
@@ -1164,17 +1193,51 @@ class Findings:
             )
         return result
 
+    @staticmethod
+    def marks(db: sqlite3.Connection, found: Json) -> Marks:
+        """What ``found`` reviewed (``Marks``): its anchors' latest revisions, and the last
+        archive position its anchors or its review's snapshot hold."""
+        documents: dict[str, int] = {}
+        artifacts: dict[str, int] = {}
+        entries: dict[str, int] = {}
+        positions: list[int] = []
+
+        def keep(into: dict[str, int], key: object, revision: object) -> None:
+            if type(revision) is int:
+                into[str(key)] = max(into.get(str(key), 0), revision)
+
+        for anchor in found["anchors"]:
+            location = cast(Json, anchor.get("locator") or {})
+            if "document" in location:
+                keep(documents, location["document"], location.get("revision"))
+            elif isinstance(location.get("artifact"), dict):
+                ref = cast(Json, location["artifact"])
+                keep(artifacts, ref.get("artifact_id"), ref.get("revision"))
+            elif "entry" in location:
+                keep(entries, location["entry"], location.get("revision"))
+            archived = location.get("archive")
+            if isinstance(archived, dict) and type(cast(Json, archived).get("position")) is int:
+                positions.append(cast(int, cast(Json, archived)["position"]))
+        if found.get("review_id") is not None:
+            (held,) = db.execute(
+                "SELECT max(json_extract(locator,'$.archive.position')) FROM review_evidence "
+                "WHERE review_id=?",
+                (found["review_id"],),
+            ).fetchone()
+            if type(held) is int:
+                positions.append(held)
+        return Marks(documents, artifacts, entries, max(positions) if positions else None)
+
     def _messages(
-        self, project: str, session: str, target: Json, named: tuple[str, ...]
+        self, project: str, session: str, marks: Marks, named: tuple[str, ...]
     ) -> list[Json]:
         """The later archive messages a fix names, each of the finding's session and after
-        every message the finding is anchored to (CR-42)."""
+        every message the finding's review held (CR-42)."""
         if not named:
             return []
         from sandbox_science.orchestrator.context.history import Archive
         from sandbox_science.orchestrator.control.errors import ControlError
 
-        _, span = _work(target["anchors"])
         archive = Archive(self.store.documents.control)
         found: list[Json] = []
         for message in named:
@@ -1185,12 +1248,11 @@ class Findings:
             position = info["position"]
             if info["session"] != session or type(position) is not int:
                 raise DocumentError(NOT_FOUND, f"message {message} is outside this session")
-            if span is not None and position <= span[1]:
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"message {message} is not later than the messages the finding reviewed",
-                )
-            found.append({"id": message, "position": position, "run": info["run"]})
+            kind, later = marks.later(
+                {"run": info["run"], "archive": {"id": message, "position": position}}
+            )
+            assert kind == "message"  # noqa: S101 - an archive locator names a message
+            found.append(later)
         return found
 
     def _entry_revisions(
@@ -1273,7 +1335,17 @@ class Findings:
             if pinned is None:
                 raise DocumentError(POLICY_DENIED, "the finding is outside this review's snapshot")
             pinned_finding = stored_json(pinned[0])
-            found = self.load(db, project, session, value.finding)
+            # A stale finding of an earlier session is re-checked by a later one's review
+            # (CR-44): its target there names it.
+            target = db.execute(
+                "SELECT 1 FROM review_confirmation_targets WHERE review_id=? AND finding_id=?",
+                (review, value.finding),
+            ).fetchone()
+            found = (
+                self.load_in(db, project, value.finding)
+                if target is not None
+                else self.load(db, project, session, value.finding)
+            )
             if found["origin"] == "math":
                 raise DocumentError(
                     POLICY_DENIED, "only the mechanical check decides math findings"
@@ -1308,7 +1380,7 @@ class Findings:
             if rechecking:
                 assert recheck is not None  # noqa: S101 - checked above
                 self.confirmation_reads(db, review, pinned_finding, pinned[1])
-                self._in_new_places(anchors, recheck)
+                self._in_new_places(anchors, recheck, self.marks(db, found))
                 result = self._answer(db, run, found, value, anchors, recheck)
             else:
                 accepted = value.decision == "accept_dismissal"
@@ -1395,11 +1467,11 @@ class Findings:
             )
 
     @staticmethod
-    def _in_new_places(anchors: list[Json], recheck: Json) -> None:
-        """Each of a re-check's evidence anchors lies in the new revision or message the
-        re-check holds (CR-42): a block or line range of a document revision, a field of
-        an entry revision, an artifact revision, an archive message, or other pinned
-        evidence the author's fix names."""
+    def _in_new_places(anchors: list[Json], recheck: Json, marks: Marks) -> None:
+        """Each of a re-check's evidence anchors is strictly later than what the finding
+        reviewed, and lies in the new revision or message the re-check holds (CR-42): a
+        block or line range of a later document revision, a field of a later entry
+        revision, a later artifact revision, or a later archive message."""
         places = cast(list[Json], recheck.get("places") or [])
         messages = {str(m.get("id")) for m in cast(list[Json], recheck.get("messages") or [])}
         documents = {
@@ -1413,9 +1485,16 @@ class Findings:
             if "artifact" in p
         }
         entries = {(p["entry"]["entry"], p["entry"]["revision"]) for p in places if "entry" in p}
-        cited = {p["evidence"]["id"] for p in places if "evidence" in p}
         for anchor in anchors:
             location = cast(Json, anchor["locator"])
+            try:
+                marks.later(location)
+            except DocumentError:
+                raise DocumentError(
+                    POLICY_DENIED,
+                    "a re-check's evidence lies in the new revision or a later message; "
+                    f"{anchor['evidence']} is not later than what the finding reviewed",
+                ) from None
             artifact = cast(Json, location.get("artifact") or {})
             archived = cast(Json, location.get("archive") or {})
             if (
@@ -1423,7 +1502,6 @@ class Findings:
                 or (artifact.get("artifact_id"), artifact.get("revision")) in artifacts
                 or (location.get("entry"), location.get("revision")) in entries
                 or str(archived.get("id")) in messages
-                or anchor["evidence"] in cited
             ):
                 continue
             raise DocumentError(
@@ -1521,7 +1599,7 @@ class Findings:
         """Record a re-check that could not decide (capped, failed, or no answer with a
         valid anchor) as the finding's latest re-check, ``inconclusive`` and why; the
         finding stays as it is, and its re-check is tried at the next dispatch, at most
-        ``RECHECK_ATTEMPTS`` times in all (CR-42)."""
+        ``RECHECK_ATTEMPTS`` times in each session (CR-42)."""
         recheck = cast(Json | None, found.get("recheck"))
         if recheck is None or found["status"] not in ("open", "stale"):
             return None
@@ -1812,55 +1890,105 @@ class Findings:
                 places.append(place)
         return places
 
-    def _reviewed(self, project: str, session: str, statuses: tuple[str, ...]) -> list[Json]:
-        """The session's review findings in ``statuses`` whose re-check the platform may
-        queue: not math (its check re-checks it, CR-38) and not suggestions."""
+    def _reviewed(
+        self, project: str, session: str, statuses: tuple[str, ...], *, elsewhere: bool = False
+    ) -> list[Json]:
+        """The review findings in ``statuses`` whose re-check the platform may queue: not
+        math (its check re-checks it, CR-38) and not suggestions; of the session, or with
+        ``elsewhere`` of the project's other sessions. All of them, read a page at a time."""
         self.store.scope(project, session)
-        with self.store.documents.control.read() as tx:
-            db = tx.sql
-            return [
-                self.load(db, project, session, r[0])
-                for r in db.execute(
-                    "SELECT finding_id FROM review_findings WHERE project=? AND session=? "
-                    "AND origin='review' AND category NOT IN ('math','handle_citation') "
-                    "AND status IN (SELECT value FROM json_each(?)) ORDER BY rowid LIMIT 100",
-                    (project, session, dump(list(statuses))),
-                )
-            ]
+        found: list[Json] = []
+        after = 0
+        while True:
+            with self.store.documents.control.read() as tx:
+                db = tx.sql
+                rows = db.execute(
+                    "SELECT rowid,finding_id,session FROM review_findings WHERE project=? "
+                    "AND (session=?)=? AND origin='review' "
+                    "AND category NOT IN ('math','handle_citation') "
+                    "AND status IN (SELECT value FROM json_each(?)) AND rowid>? "
+                    "ORDER BY rowid LIMIT 100",
+                    (project, session, int(not elsewhere), dump(list(statuses)), after),
+                ).fetchall()
+                found.extend(self.load(db, project, row[2], row[1]) for row in rows)
+            if len(rows) < 100:
+                return found
+            after = rows[-1][0]
+
+    def load_in(self, db: sqlite3.Connection, project: str, finding: str) -> Json:
+        """A finding of the project, in whichever of its sessions it was raised."""
+        identifier(finding, "finding")
+        row = db.execute(
+            "SELECT session FROM review_findings WHERE project=? AND finding_id=?",
+            (project, finding),
+        ).fetchone()
+        if row is None:
+            raise DocumentError(NOT_FOUND, "no such scoped finding")
+        return self.load(db, project, row[0], finding)
+
+    @staticmethod
+    def rechecked_in(db: sqlite3.Connection, finding: str, session: str) -> int:
+        """How many re-checks of ``finding`` the session's reviews answered or recorded as
+        inconclusive; attempts count per session, not per queue entry (CR-42, CR-44)."""
+        return db.execute(
+            "SELECT count(*) FROM review_finding_history h JOIN review_runs r "
+            "ON r.review_id=h.review_id WHERE h.finding_id=? AND h.answer IS NOT NULL "
+            "AND r.session=?",
+            (finding, session),
+        ).fetchone()[0]
 
     def queue_rechecks(self, project: str, session: str) -> int:
-        """At a review dispatch, queue the re-check of each open or stale finding whose
-        reviewed artifact, block or field has a later revision (CR-42, CR-44): a replaced
-        revision no longer supersedes a finding by itself (CR-28 as decided). One already
-        queued keeps its queue, unless its attempts ran out and a newer revision replaced
-        what it holds. How many it queued."""
-        prepared: list[tuple[Json, list[Json]]] = []
-        for finding in self._reviewed(project, session, ("open", "stale")):
+        """At a review dispatch in ``session``, queue for its reviews the re-check of each
+        of its open or stale findings, and each stale finding of the project's other
+        sessions, whose reviewed artifact, block or field has a later revision (CR-42,
+        CR-44): a replaced revision no longer supersedes a finding by itself (CR-28 as
+        decided), and a stale finding is re-checked by a later session's review. One
+        already queued for this session keeps its queue; one queued elsewhere moves here,
+        keeping what it held, such as the author's fix. How many it queued."""
+        prepared: list[tuple[Json, Json]] = []
+        for finding in [
+            *self._reviewed(project, session, ("open", "stale")),
+            *self._reviewed(project, session, ("stale",), elsewhere=True),
+        ]:
             queued = cast(Json | None, finding.get("recheck"))
-            if queued is not None and int(queued.get("attempts", 0)) < RECHECK_ATTEMPTS:
+            if queued is not None and queued.get("session", finding["session"]) == session:
                 continue
-            places = self._replacements(project, session, finding)
-            if not places or (queued is not None and queued.get("places") == places):
+            places = _unique(
+                [
+                    *cast(list[Json], (queued or {}).get("places", [])),
+                    *self._replacements(project, session, finding),
+                ]
+            )
+            messages = cast(list[Json], (queued or {}).get("messages", []))
+            if not places and not messages:
                 continue
-            prepared.append((finding, places))
+            prepared.append(
+                (
+                    finding,
+                    {
+                        "cause": (queued or {}).get("cause", "revision"),
+                        "response": (queued or {}).get("response"),
+                        "places": places,
+                        "messages": messages,
+                        "session": session,
+                        "attempts": 0,
+                    },
+                )
+            )
         queued_now = 0
         with self.store.documents.control.write() as tx:
             db = tx.sql
-            for finding, places in prepared:
-                current = self.load(db, project, session, finding["finding_id"])
+            for finding, recheck in prepared:
+                current = self.load(db, project, finding["session"], finding["finding_id"])
                 if current["revision"] != finding["revision"] or current["status"] not in (
                     "open",
                     "stale",
                 ):
                     continue
                 recheck = {
-                    "cause": "revision",
+                    **recheck,
                     "revision": current["revision"] + 1,
-                    "response": None,
-                    "places": places,
-                    "messages": [],
                     "queued": self.store.clock(),
-                    "attempts": 0,
                 }
                 self.transition(
                     db,
@@ -1868,8 +1996,8 @@ class Findings:
                     current["status"],
                     "platform:recheck",
                     "A later revision of what it reviewed was recorded; its re-check is "
-                    "queued for the next review.",
-                    {"recheck": "queued", "places": places},
+                    f"queued for the next review of session {session}.",
+                    {"recheck": "queued", "places": recheck["places"], "session": session},
                     notify=False,
                     columns={"recheck": recheck},
                 )
@@ -1878,16 +2006,16 @@ class Findings:
 
     def stale(self, project: str, session: str) -> int:
         """At the session's close, each open finding whose reviewed artifact, block or
-        field has a newer revision and of which no re-check ran in the session becomes
+        field has a newer revision, and of which no re-check ran in the session, becomes
         ``stale`` (CR-44); one anchored only to messages never does. How many."""
         prepared: list[Json] = []
         for finding in self._reviewed(project, session, ("open",)):
             if messages_only(finding["anchors"]):
                 continue
-            queued = cast(Json | None, finding.get("recheck"))
-            if queued is not None and int(queued.get("attempts", 0)) > 0:
-                continue  # a re-check ran, if it could not decide
-            if queued is None and not self._replacements(project, session, finding):
+            with self.store.documents.control.read() as tx:
+                if self.rechecked_in(tx.sql, finding["finding_id"], session):
+                    continue  # a re-check ran here, if it could not decide
+            if not self._replacements(project, session, finding):
                 continue
             prepared.append(finding)
         made = 0

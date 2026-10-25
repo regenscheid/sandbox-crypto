@@ -3329,6 +3329,15 @@ _HISTORY_STATUS: Final = (
     "WHEN 'challenged' THEN 'open' WHEN 'unaddressed' THEN 'open' "
     "WHEN 'inconclusive' THEN 'open' ELSE t.status END"
 )
+_HISTORY_ANSWER: Final = (
+    "CASE WHEN t.actor GLOB 'review:*' AND (t.status='confirmed fixed' OR "
+    "(json_valid(t.payload) AND json_extract(t.payload,'$.decision')='confirm')) "
+    "THEN 'resolved' WHEN t.actor GLOB 'review:*' AND json_valid(t.payload) AND "
+    "json_extract(t.payload,'$.decision')='reject' THEN 'unresolved' "
+    "WHEN t.actor GLOB 'review:*' AND json_valid(t.payload) AND "
+    "json_extract(t.payload,'$.decision')='inconclusive' THEN 'inconclusive' END"
+)
+"""A migrated confirmation's answer, as a re-check's: confirmed, rejected or undecided."""
 _ACTOR_KIND: Final = (
     "CASE WHEN t.actor GLOB 'user:*' THEN 'user' WHEN t.actor GLOB 'review:*' "
     "THEN 'controller' WHEN t.actor GLOB 'session:*' THEN 'agent' ELSE 'platform' END"
@@ -3364,6 +3373,99 @@ def _mapped(finding: str, status: str) -> str:
     if status in ("fixed", "dismissed", "stale"):
         return status
     raise RefusedRowError(f"finding {finding}'s status {status!r}, which no step maps")
+
+
+def _legacy_places(schema: Schema, finding: str, payload: _Json) -> tuple[list[_Json], list[_Json]]:
+    """The places and archive messages a claimed fix named or cited, each strictly later
+    than what the finding reviewed: a later revision of an anchored document, artifact or
+    entry, or a message after its review's snapshot (CR-42)."""
+    row = schema.execute(
+        "SELECT anchors,review_id FROM review_findings WHERE finding_id=?", (finding,)
+    ).fetchone()
+    try:
+        parsed: object = json.loads(row[0]) if isinstance(row[0], str) else []
+    except ValueError:
+        parsed = []
+    anchors = cast(list[_Json], parsed) if isinstance(parsed, list) else []
+    reviewed: dict[tuple[str, str], int] = {}
+    positions: list[int] = []
+    for anchor in anchors:
+        location = cast(_Json, anchor.get("locator") or {})
+        ref = location.get("artifact")
+        key = (
+            ("document", str(location["document"]))
+            if "document" in location
+            else ("artifact", str(cast(_Json, ref).get("artifact_id")))
+            if isinstance(ref, dict)
+            else ("entry", str(location["entry"]))
+            if "entry" in location
+            else None
+        )
+        number = (
+            cast(_Json, ref).get("revision") if isinstance(ref, dict) else location.get("revision")
+        )
+        if key is not None and type(number) is int:
+            reviewed[key] = max(reviewed.get(key, 0), number)
+        archived = location.get("archive")
+        if isinstance(archived, dict) and type(cast(_Json, archived).get("position")) is int:
+            positions.append(cast(int, cast(_Json, archived)["position"]))
+    if row[1] is not None:
+        (held,) = schema.execute(
+            "SELECT max(json_extract(locator,'$.archive.position')) FROM review_evidence "
+            "WHERE review_id=?",
+            (row[1],),
+        ).fetchone()
+        if type(held) is int:
+            positions.append(held)
+    last = max(positions) if positions else None
+
+    def later(kind: str, name: object, number: object) -> bool:
+        key = (kind, str(name))
+        return key in reviewed and type(number) is int and number > reviewed[key]
+
+    places: list[_Json] = []
+    messages: list[_Json] = []
+    for pin in cast(list[_Json], payload.get("revisions", [])):
+        if later("document", pin.get("document"), pin.get("revision")):
+            places.append({"document": pin})
+    for pin in cast(list[_Json], payload.get("artifact_revisions", [])):
+        if later("artifact", pin.get("artifact_id"), pin.get("revision")):
+            places.append({"artifact": pin})
+    for pin in cast(list[_Json], payload.get("entry_revisions", [])):
+        if later("entry", pin.get("entry"), pin.get("revision")):
+            places.append({"entry": pin})
+    for anchor in cast(list[_Json], payload.get("anchors", [])):
+        location = cast(_Json, anchor.get("locator") or {})
+        ref = location.get("artifact")
+        archived = location.get("archive")
+        if "document" in location and later(
+            "document", location["document"], location.get("revision")
+        ):
+            places.append(
+                {
+                    "document": {
+                        k: location[k] for k in ("document", "revision", "sha256") if k in location
+                    }
+                }
+            )
+        elif isinstance(ref, dict) and later(
+            "artifact", cast(_Json, ref).get("artifact_id"), cast(_Json, ref).get("revision")
+        ):
+            places.append({"artifact": ref})
+        elif "entry" in location and later("entry", location["entry"], location.get("revision")):
+            places.append({"entry": {"entry": location["entry"], "handle": location.get("handle"),
+                                     "revision": location["revision"]}})  # fmt: skip
+        elif (
+            isinstance(archived, dict)
+            and isinstance(cast(_Json, archived).get("id"), str)
+            and type(cast(_Json, archived).get("position")) is int
+            and last is not None
+            and cast(int, cast(_Json, archived)["position"]) > last
+        ):
+            found = cast(_Json, archived)
+            messages.append({"id": found["id"], "position": found["position"],
+                             "run": location.get("run")})  # fmt: skip
+    return places, messages
 
 
 def _legacy_finding(schema: Schema, finding: str, status: str, revision: int) -> tuple[str, _Json]:
@@ -3402,17 +3504,15 @@ def _legacy_finding(schema: Schema, finding: str, status: str, revision: int) ->
         return found
 
     if status == "claimed fixed":
-        # The claimed fix's re-check is queued, holding what the fix named (CR-47).
+        # The claimed fix's re-check is queued, holding what the fix named and the
+        # evidence it cited, each later than what the finding reviewed (CR-42, CR-47).
+        places, messages = _legacy_places(schema, finding, payload)
         columns["recheck"] = {
             "cause": "fix",
             "revision": revision,
             "response": revision,
-            "places": [
-                *({"document": pin} for pin in payload.get("revisions", [])),
-                *({"artifact": pin} for pin in payload.get("artifact_revisions", [])),
-                *({"entry": pin} for pin in payload.get("entry_revisions", [])),
-            ],
-            "messages": [],
+            "places": places,
+            "messages": messages,
             "queued": created,
             "attempts": 0,
         }
@@ -3437,7 +3537,9 @@ def _legacy_finding(schema: Schema, finding: str, status: str, revision: int) ->
             columns["dismissal"] = dismissal("rejected")
     elif status == "unaddressed":
         columns["at_bound"] = 1
-    elif status == "inconclusive":
+    elif status == "inconclusive" and payload.get("decision") == "inconclusive":
+        # A confirmation that could not decide is its last re-check. One raised on
+        # missing evidence (CR-6) is open, as such a finding is now, with no re-check.
         columns["latest_recheck"] = {
             "review": review,
             "answer": "inconclusive",
@@ -3498,6 +3600,17 @@ def _finding_lifecycle(schema: Schema) -> None:
         "SELECT 1 FROM review_finding_history h WHERE h.finding_id=f.finding_id "
         "AND h.revision=f.revision) ORDER BY rowid"
     ).fetchall()
+    known = (*_LEGACY_STATUS, "fixed", "dismissed", "stale")
+    unknown = schema.execute(
+        "SELECT finding_id,revision,status FROM review_transitions WHERE status NOT IN "  # noqa: S608 - fixed SQL
+        f"({','.join('?' * len(known))}) ORDER BY seq LIMIT 1",
+        known,
+    ).fetchone()
+    if unknown is not None:
+        raise RefusedRowError(
+            f"revision {unknown[1]} of finding {unknown[0]} has the status {unknown[2]!r}, "
+            "which no step maps"
+        )
     for finding, status, revision in legacy:
         mapped, columns = _legacy_finding(schema, finding, status, revision)
         schema.execute(
@@ -3514,13 +3627,14 @@ def _finding_lifecycle(schema: Schema) -> None:
             ),
         )
     schema.execute(
-        "INSERT OR IGNORE INTO review_finding_history(finding_id,revision,transition,status,"  # noqa: S608 - fixed SQL
+        "INSERT INTO review_finding_history(finding_id,revision,transition,status,"  # noqa: S608 - fixed SQL
         "former,actor,actor_kind,reason,answer,review_id,recheck,created) SELECT "
         f"t.finding_id,t.revision,t.seq,{_HISTORY_STATUS},"
         f"CASE WHEN {_HISTORY_STATUS}=t.status THEN NULL ELSE t.status END,"
-        f"t.actor,{_ACTOR_KIND},t.reason,NULL,"
+        f"t.actor,{_ACTOR_KIND},t.reason,{_HISTORY_ANSWER},"
         "CASE WHEN t.actor GLOB 'review:*' THEN substr(t.actor,8) END,NULL,t.created "
-        "FROM review_transitions t ORDER BY t.seq"
+        "FROM review_transitions t WHERE NOT EXISTS(SELECT 1 FROM review_finding_history h "
+        "WHERE h.transition=t.seq) ORDER BY t.seq"
     )
     for statement in (
         """CREATE TRIGGER IF NOT EXISTS review_finding_history_update

@@ -242,7 +242,7 @@ async def test_response_project_context_and_confirmation_macro_cas(stores):
                 "expected": decision,
                 "decision": "resolved",
                 "explanation": "Stale context",
-                "anchors": [anchor(reviews, confirm, "document")],
+                "anchors": [anchor(reviews, confirm, "document", revision=2)],
                 "operation_id": "stale-confirm",
             },
         )

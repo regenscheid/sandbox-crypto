@@ -14,15 +14,30 @@ from sandbox_science.orchestrator.documents import USER, Author, DocumentError
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs, MathLimits
 from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 
-from .test_consistency import anchor, claim, dispatch, raise_finding, read_confirmation
+from .test_consistency import (
+    anchor,
+    claim,
+    dispatch,
+    raise_finding,
+    read_confirmation,
+    reviewed_document,
+    revise,
+)
 from .test_document_math import BAD, MAIN, ScriptedChecker, create, drain
 from .test_document_math import stores as stores
 
 
 def response(reviews, *, body=BAD, action="dismiss", actor=MAIN):
+    """An author's response to a finding a review raised on the session's claim; for a
+    fix, on a document revision too, as the fix names its later revision (CR-42)."""
     claim(reviews)
-    review = dispatch(reviews)
-    found = raise_finding(reviews, review, statement=r"Reviewer $\unknown{excluded}$")
+    doc, overrides = None, {}
+    if action == "fix":
+        doc, review, anchors = reviewed_document(reviews, "Evidence.\n")
+        overrides["anchors"] = anchors
+    else:
+        review = dispatch(reviews)
+    found = raise_finding(reviews, review, statement=r"Reviewer $\unknown{excluded}$", **overrides)
     reviews.finish("p", "s", review, "owner", "findings", "Synthetic original review")
     api = Findings(reviews)
     payload = {
@@ -32,8 +47,8 @@ def response(reviews, *, body=BAD, action="dismiss", actor=MAIN):
         "explanation": body,
         "operation_id": "response",
     }
-    if action == "fix":
-        payload["revisions"] = [(create(reviews.documents, USER, "Evidence."), 1)]
+    if doc is not None:
+        payload["revisions"] = revise(reviews, doc, "Evidence, corrected.\n")
     changed = api.respond("p", "s", payload, actor)
     return found["finding_id"], changed["revision"]
 
@@ -169,7 +184,7 @@ async def test_a_recheck_pins_the_fixs_body_not_just_its_scientific_revision(sto
                 "expected": decision,
                 "decision": "resolved",
                 "explanation": "Old snapshot",
-                "anchors": [anchor(reviews, confirm, "document")],
+                "anchors": [anchor(reviews, confirm, "document", revision=2)],
                 "operation_id": "old",
             },
         )
@@ -190,7 +205,7 @@ async def test_a_recheck_pins_the_fixs_body_not_just_its_scientific_revision(sto
             "expected": rechecked["revision"],
             "decision": "resolved",
             "explanation": "Current pinned correction",
-            "anchors": [anchor(reviews, fresh, "document")],
+            "anchors": [anchor(reviews, fresh, "document", revision=2)],
             "operation_id": "fresh",
         },
     )

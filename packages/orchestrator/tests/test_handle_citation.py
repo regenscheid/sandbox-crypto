@@ -35,7 +35,15 @@ from sandbox_science.orchestrator.model import ScriptedModel
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
+from .test_consistency import (
+    MAIN,
+    anchor,
+    claim,
+    dispatch,
+    raise_finding,
+    reviewed_document,
+    revise,
+)
 from .test_consistency import store as store
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
@@ -138,8 +146,10 @@ def test_it_is_not_counted_offered_or_a_reason_to_hold(store) -> None:
 def test_it_takes_no_fix_or_dismissal_from_the_author_and_is_never_rechecked(store) -> None:
     reviews, _, _ = store
     claim(reviews)
-    review = dispatch(reviews)
-    found = advisory(reviews, review)
+    doc, review, anchors = reviewed_document(reviews)
+    found = advisory(reviews, review, anchors=anchors)
+    # A fix names a later revision of what the suggestion reviewed, and is still refused.
+    fixed = revise(reviews, doc, "The answer declines the Weil descent because of D-3.\n")
     for action in ("fix", "dismiss"):
         with pytest.raises(DocumentError, match="needs no fix or dismissal"):
             Findings(reviews).respond(
@@ -150,7 +160,11 @@ def test_it_takes_no_fix_or_dismissal_from_the_author_and_is_never_rechecked(sto
                     "expected": 1,
                     "action": action,
                     "explanation": "Named it now.",
-                    "evidence": [anchor(reviews, review)],
+                    **(
+                        {"revisions": fixed}
+                        if action == "fix"
+                        else {"evidence": [anchor(reviews, review)]}
+                    ),
                     "operation_id": f"respond-{action}",
                 },
                 MAIN,

@@ -61,12 +61,16 @@ def dispatch(store: ReviewStore, kind: ReviewType = "terminal") -> str:
     return review
 
 
-def anchor(store: ReviewStore, review: str, kind: str = "transcript") -> dict[str, Any]:
+def anchor(
+    store: ReviewStore, review: str, kind: str = "transcript", revision: int | None = None
+) -> dict[str, Any]:
+    """The last item of ``kind`` the review holds; for a document, of ``revision`` if one
+    is named."""
     return {
         "evidence": next(
             i["evidence"]
             for i in reversed(store.manifest("p", "s", review)["evidence"])
-            if i["kind"] == kind
+            if i["kind"] == kind and revision in (None, i["locator"].get("revision"))
         )
     }
 
@@ -86,6 +90,40 @@ def raise_finding(store: ReviewStore, review: str, **overrides: Any) -> dict[str
             **overrides,
         },
     )
+
+
+def reviewed_document(
+    reviews: ReviewStore, text: str = "The count is 16.\n", name: str = "claimed"
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """r1 of a document the main agent wrote, held by a new terminal review with the
+    session's claim, if one was made: the document, the review, and the anchors of a
+    finding on both. A fix of that finding names a later revision (``revise``), CR-42."""
+    doc = reviews.documents.create(
+        "p", name=name, title="N", text=text, author=MAIN, session_id="s"
+    ).document_id
+    reviews.ingest_documents("p", "s")
+    review = dispatch(reviews)
+    held = {i["kind"] for i in reviews.manifest("p", "s", review, limit=20)["evidence"]}
+    anchors = [anchor(reviews, review, "document")]
+    if "transcript" in held:
+        anchors.append(anchor(reviews, review))
+    return doc, review, anchors
+
+
+def revise(
+    reviews: ReviewStore, doc: str, text: str = "The count is 15.\n", revision: int = 2
+) -> list[list[Any]]:
+    """The user's ``revision`` of ``doc``, as a fix's ``revisions`` names it."""
+    reviews.documents.edit_source(
+        "p",
+        doc,
+        base=revision - 1,
+        text=text,
+        author=USER,
+        reason="Correct the count",
+        operation_id=f"revise-{doc}-{revision}",
+    )
+    return [[doc, revision]]
 
 
 def read_confirmation(reviews: ReviewStore, review: str) -> None:
@@ -164,16 +202,13 @@ def test_an_agents_own_fix_is_not_offered_back_to_it(store) -> None:
     reopening is still offered."""
     from sandbox_science.orchestrator.consistency.notices import FindingNotices
 
-    reviews, documents, _ = store
+    reviews, _, _ = store
     claim(reviews)
-    review = dispatch(reviews)
-    finding = raise_finding(reviews, review)
+    doc, review, anchors = reviewed_document(reviews)
+    finding = raise_finding(reviews, review, anchors=anchors)
     reviews.finish("p", "s", review, "owner", "findings", "One contradiction.")
     notices = FindingNotices(reviews)
     assert [n["revision"] for n in notices.pending("p", "s", "author-1", set())] == [1]
-    doc = documents.create(
-        "p", name="fixed", title="N", text="The count is 15.\n", author=MAIN, session_id="s"
-    ).document_id
     fixed = Findings(reviews).respond(
         "p",
         "s",
@@ -182,7 +217,7 @@ def test_an_agents_own_fix_is_not_offered_back_to_it(store) -> None:
             "expected": 1,
             "action": "fix",
             "explanation": "The note now records 15.",
-            "revisions": [[doc, 1]],
+            "revisions": revise(reviews, doc),
             "operation_id": "fix",
         },
         MAIN,
@@ -309,18 +344,12 @@ def test_oversized_finding_group_stays_explicitly_omitted(store, monkeypatch) ->
 
 @pytest.mark.parametrize("action", ["fix", "dismiss"])
 def test_stale_generic_reflag_preserves_pending_response_head(store, action: str) -> None:
-    reviews, documents, _ = store
+    reviews, _, _ = store
     claim(reviews)
-    original = dispatch(reviews)
-    raised = raise_finding(reviews, original, severity="warn", statement="Check this count.")
-    doc = documents.create(
-        "p",
-        name="response",
-        title="N",
-        text="The corrected count is15.\n",
-        author=USER,
-        session_id="s",
-    ).document_id
+    doc, original, anchors = reviewed_document(reviews)
+    raised = raise_finding(
+        reviews, original, severity="warn", statement="Check this count.", anchors=anchors
+    )
     response = Findings(reviews).respond(
         "p",
         "s",
@@ -329,7 +358,7 @@ def test_stale_generic_reflag_preserves_pending_response_head(store, action: str
             "expected": 1,
             "action": action,
             "explanation": "This exact response must survive the old review.",
-            "revisions": [[doc, 1]] if action == "fix" else [],
+            "revisions": revise(reviews, doc) if action == "fix" else [],
             "operation_id": "concurrent-response",
         },
         # The author's dismissal awaits the next review's decision, so its snapshot holds it.
@@ -341,6 +370,7 @@ def test_stale_generic_reflag_preserves_pending_response_head(store, action: str
         original,
         severity="fail",
         statement="Repeated stale assessment.",
+        anchors=anchors,
         operation_id="stale-reflag",
     )
     assert result["outcome"] == "response_pending"
@@ -350,6 +380,7 @@ def test_stale_generic_reflag_preserves_pending_response_head(store, action: str
         original,
         severity="fail",
         statement="Repeated stale assessment.",
+        anchors=anchors,
         operation_id="stale-reflag",
     )["replayed"]
     current = Findings(reviews).get("p", "s", raised["finding_id"])
@@ -370,14 +401,13 @@ def test_stale_generic_reflag_preserves_pending_response_head(store, action: str
 
 
 def test_unadmitted_confirmation_group_falls_back_to_author_feed(store, monkeypatch) -> None:
-    reviews, documents, _ = store
+    reviews, _, _ = store
     claim(reviews)
-    original = dispatch(reviews)
-    raised = raise_finding(reviews, original, statement="The count is wrong. " * 100)
+    doc, original, anchors = reviewed_document(reviews)
+    raised = raise_finding(
+        reviews, original, statement="The count is wrong. " * 100, anchors=anchors
+    )
     reviews.finish("p", "s", original, "owner", "findings", "One large retained finding.")
-    doc = documents.create(
-        "p", name="fix", title="N", text="15\n", author=USER, session_id="s"
-    ).document_id
     response = Findings(reviews).respond(
         "p",
         "s",
@@ -386,7 +416,7 @@ def test_unadmitted_confirmation_group_falls_back_to_author_feed(store, monkeypa
             "expected": 1,
             "action": "fix",
             "explanation": "Claim the exact changed revision.",
-            "revisions": [[doc, 1]],
+            "revisions": revise(reviews, doc),
             "operation_id": "claim-large-fix",
         },
         USER,
@@ -571,25 +601,17 @@ def test_a_malformed_response_says_where_and_the_tool_gives_the_shapes(store) ->
 
 
 def test_fix_requires_main_or_user_and_confirmation_grant(store) -> None:
-    reviews, documents, _ = store
+    reviews, _, _ = store
     claim(reviews)
-    review = dispatch(reviews)
-    finding = raise_finding(reviews, review)
+    doc, review, anchors = reviewed_document(reviews)
+    finding = raise_finding(reviews, review, anchors=anchors)
     reviews.finish("p", "s", review, "owner", "findings", "One contradiction.")
-    doc = documents.create(
-        "p",
-        name="fixed",
-        title="N",
-        text="The recorded count is 15.\n",
-        author=MAIN,
-        session_id="s",
-    ).document_id
     response = {
         "finding": finding["finding_id"],
         "expected": 1,
         "action": "fix",
         "explanation": "Corrected the count.",
-        "revisions": [[doc, 1]],
+        "revisions": revise(reviews, doc, "The recorded count is 15.\n"),
         "operation_id": "respond",
     }
     delegated = MAIN.model_copy(update={"role": "delegated"})
@@ -618,7 +640,7 @@ def test_fix_requires_main_or_user_and_confirmation_grant(store) -> None:
             "expected": 2,
             "decision": "resolved",
             "explanation": "The pinned revision now agrees.",
-            "anchors": [anchor(reviews, confirm, "document")],
+            "anchors": [anchor(reviews, confirm, "document", revision=2)],
             "operation_id": "confirm",
         },
     )
@@ -810,7 +832,9 @@ def test_a_recheck_queues_only_when_the_anchored_block_changes_and_never_fixes(s
 
 
 def test_confirmation_retains_original_and_response_evidence_with_exact_ids(store) -> None:
-    reviews, _documents, _ = store
+    """A fix that cites a later revision another review pinned keeps that evidence's ID in
+    the confirmation, beside the finding's original evidence (CR-42)."""
+    reviews, documents, _ = store
     claim(reviews)
     reviews.observe(
         "p",
@@ -821,28 +845,22 @@ def test_confirmation_retains_original_and_response_evidence_with_exact_ids(stor
         {"stdout": "nonzero_ok = 15\n", "stderr": ""},
         effects=True,
     )
-    original = dispatch(reviews)
+    doc, original, anchors = reviewed_document(reviews, "The claim says 16 nonzero.\n")
     log = anchor(reviews, original, "execution")
-    finding = raise_finding(reviews, original, anchors=[log])
+    finding = raise_finding(reviews, original, anchors=[log, *anchors])
     reviews.finish("p", "s", original, "owner", "findings", "Original output disagrees.")
-    reviews.observe(
-        "p",
-        "s",
-        "response-output",
-        "execution",
-        {"execution": "exe-fix"},
-        {"stdout": "checked = 15\n", "stderr": ""},
-        effects=True,
-    )
+    # The main agent's revision enters the author feed, and the next review pins it.
+    documents.patch(
+        "p", doc, base=1, reason="Use the checked count.", author=MAIN, operation_id="r2",
+        operations=[
+            {"op": "replace", "block": documents.mapped("p", doc, 1).block_ids[0],
+             "markdown": "checked = 15"}
+        ],
+    )  # fmt: skip
+    reviews.ingest_documents("p", "s")
     response_review = dispatch(reviews)
-    changed = {
-        "evidence": next(
-            item["evidence"]
-            for item in reviews.manifest("p", "s", response_review)["evidence"]
-            if item["kind"] == "execution" and item["locator"].get("execution") == "exe-fix"
-        )
-    }
-    reviews.finish("p", "s", response_review, "owner", "passed", "Pinned response output.")
+    changed = anchor(reviews, response_review, "document", revision=2)
+    reviews.finish("p", "s", response_review, "owner", "passed", "Pinned response revision.")
     Findings(reviews).respond(
         "p",
         "s",
@@ -924,8 +942,8 @@ def context_for(store: ReviewStore):
 def test_confirmation_does_not_clear_or_replace_failed_author_window(store) -> None:
     reviews, _, _ = store
     claim(reviews)
-    initial = dispatch(reviews)
-    finding = raise_finding(reviews, initial)
+    doc, initial, anchors = reviewed_document(reviews)
+    finding = raise_finding(reviews, initial, anchors=anchors)
     reviews.finish("p", "s", initial, "owner", "findings", "Original finding.")
     second = claim(reviews, "Second claim", "m2")
     failed = dispatch(reviews)
@@ -938,7 +956,7 @@ def test_confirmation_does_not_clear_or_replace_failed_author_window(store) -> N
             "expected": 1,
             "action": "fix",
             "explanation": "Changed the evidence.",
-            "evidence": [anchor(reviews, initial)],
+            "revisions": revise(reviews, doc),
             "operation_id": "new-fix",
         },
         MAIN,
@@ -958,13 +976,13 @@ def test_confirmation_does_not_clear_or_replace_failed_author_window(store) -> N
 
 def test_confirmation_with_an_omitted_exact_target_stays_incomplete(store, monkeypatch) -> None:
     reviews, _documents, _ = store
-    claim(reviews)
-    initial = dispatch(reviews)
+    doc, initial, anchors = reviewed_document(reviews)
     findings = [
-        raise_finding(reviews, initial, category=category, operation_id=category)
+        raise_finding(reviews, initial, category=category, operation_id=category, anchors=anchors)
         for category in ("contradicting_value", "method")
     ]
     reviews.finish("p", "s", initial, "owner", "findings", "Two distinct pinned findings.")
+    fixed = revise(reviews, doc)
     for finding in findings:
         Findings(reviews).respond(
             "p",
@@ -974,13 +992,13 @@ def test_confirmation_with_an_omitted_exact_target_stays_incomplete(store, monke
                 "expected": 1,
                 "action": "fix",
                 "explanation": "The pinned claim was corrected.",
-                "evidence": [anchor(reviews, initial)],
+                "revisions": fixed,
                 "operation_id": finding["finding_id"],
             },
             MAIN,
         )
-    # One finding plus its original evidence fits; the second finding cannot fit.
-    monkeypatch.setattr(storage, "MAX_SNAPSHOT_ITEMS", 2)
+    # One finding plus its reviewed and fixed revisions fits; the second finding cannot.
+    monkeypatch.setattr(storage, "MAX_SNAPSHOT_ITEMS", 3)
     confirmation = dispatch(reviews, "confirmation")
     assert reviews.run("p", "s", confirmation)["kind"] == "confirmation"
     assert not reviews.run("p", "s", confirmation)["coverage_complete"]
@@ -999,30 +1017,27 @@ def test_confirmation_with_an_omitted_exact_target_stays_incomplete(store, monke
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("original_complete", "response_complete", "checked"),
-    [(True, True, True), (False, True, True), (True, False, True), (True, True, False)],
+    ("original_complete", "checked"), [(True, True), (False, True), (True, False)]
 )
 async def test_confirmation_coverage_is_independent_of_failed_author_window(
-    store, original_complete: bool, response_complete: bool, checked: bool
+    store, original_complete: bool, checked: bool
 ) -> None:
+    """A confirmation's coverage is that of the finding's evidence and its fix's later
+    revision, not of the failed author window it leaves to retry."""
     reviews, documents, _ = store
-    for name, complete in (("original", original_complete), ("response", response_complete)):
-        reviews.observe(
-            "p",
-            "s",
-            name,
-            "execution",
-            {"execution": name},
-            {"stdout": "count = 15\n", "stderr": ""},
-            complete=complete,
-            effects=True,
-        )
-    initial = dispatch(reviews)
-    evidence = {
-        item["locator"]["execution"]: {"evidence": item["evidence"]}
-        for item in reviews.manifest("p", "s", initial)["evidence"]
-    }
-    finding = raise_finding(reviews, initial, anchors=[evidence["original"]])
+    reviews.observe(
+        "p",
+        "s",
+        "original",
+        "execution",
+        {"execution": "original"},
+        {"stdout": "count = 15\n", "stderr": ""},
+        complete=original_complete,
+        effects=True,
+    )
+    doc, initial, anchors = reviewed_document(reviews)
+    original = anchor(reviews, initial, "execution")
+    finding = raise_finding(reviews, initial, anchors=[original, *anchors])
     reviews.finish("p", "s", initial, "owner", "findings", "Original count finding.")
     assert claim(reviews, "Later author work", "pending-work") == 3
     failed = dispatch(reviews)
@@ -1034,18 +1049,19 @@ async def test_confirmation_coverage_is_independent_of_failed_author_window(
             "finding": finding["finding_id"],
             "expected": 1,
             "action": "fix",
-            "explanation": "The corrected claim agrees with the pinned response output.",
-            "evidence": [evidence["response"]],
+            "explanation": "The corrected claim agrees with the pinned original output.",
+            "revisions": revise(reviews, doc),
             "operation_id": "claim-count-fix",
         },
         MAIN,
     )
     confirmation = dispatch(reviews, "confirmation")
     record = reviews.run("p", "s", confirmation)
-    assert bool(record["coverage_complete"]) == (original_complete and response_complete)
+    assert bool(record["coverage_complete"]) == original_complete
     items = reviews.manifest("p", "s", confirmation, limit=20)["evidence"]
     ids = [item["evidence"] for item in items]
-    assert all(item["evidence"] in ids for item in evidence.values())
+    assert all(a["evidence"] in ids for a in (original, *anchors))
+    fixed = anchor(reviews, confirmation, "document", revision=2)
     decisions = [
         {
             "name": "review_decide",
@@ -1053,8 +1069,8 @@ async def test_confirmation_coverage_is_independent_of_failed_author_window(
                 "finding": finding["finding_id"],
                 "expected": response["revision"],
                 "decision": "resolved",
-                "explanation": "The pinned original and response output agree with the correction.",
-                "anchors": [evidence["response"]],
+                "explanation": "The pinned original output agrees with the corrected revision.",
+                "anchors": [fixed],
                 "operation_id": "confirm-count-fix",
             },
         }
@@ -1092,7 +1108,7 @@ async def test_confirmation_coverage_is_independent_of_failed_author_window(
     )
     await ReviewerRunner(reviews, "p", "s", confirmation, "owner", model).run()
     assert reviews.run("p", "s", confirmation)["state"] == (
-        "passed" if original_complete and response_complete and checked else "inconclusive"
+        "passed" if original_complete and checked else "inconclusive"
     )
     assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "fixed"
     with documents.control.read() as tx:
@@ -1496,26 +1512,14 @@ def test_a_recheck_requires_nonempty_reads_and_unresolved_hands_on_to_a_successo
     ``unresolved`` answer supersedes the finding with a successor on the new revision,
     open, with the same category and severity, which the author may fix in turn (CR-42,
     CR-44); the bound no longer comes from rejected fixes."""
-    reviews, documents, _ = store
+    reviews, _, _ = store
     claim(reviews)
-    original = dispatch(reviews)
-    target = raise_finding(reviews, original)["finding_id"]
+    doc, original, anchors = reviewed_document(reviews, "Says 16.\n")
+    target = raise_finding(reviews, original, anchors=anchors)["finding_id"]
     reviews.finish("p", "s", original, "owner", "findings", "One contradiction.")
-    doc = documents.create(
-        "p", name="claimed-fix", title="N", text="Still says 16.\n", author=MAIN, session_id="s"
-    ).document_id
     chain = [target]
-    for number in (1, 2):
-        if number > 1:
-            documents.edit_source(
-                "p",
-                doc,
-                base=number - 1,
-                text=f"Still says 16, attempt {number}.\n",
-                author=USER,
-                reason="Another attempt",
-                operation_id=f"edit-{number}",
-            )
+    for number in (2, 3):
+        fixed = revise(reviews, doc, f"Still says 16, attempt {number}.\n", number)
         expected = Findings(reviews).get("p", "s", target)["revision"]
         response = Findings(reviews).respond(
             "p",
@@ -1525,7 +1529,7 @@ def test_a_recheck_requires_nonempty_reads_and_unresolved_hands_on_to_a_successo
                 "expected": expected,
                 "action": "fix",
                 "explanation": "Claiming this exact revision fixed it.",
-                "revisions": [[doc, number]],
+                "revisions": fixed,
                 "operation_id": f"fix-{number}",
             },
             MAIN,

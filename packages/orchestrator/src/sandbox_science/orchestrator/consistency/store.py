@@ -123,9 +123,11 @@ _FINDING_FIELDS: Final = (
     "supersedes",
     "recheck",
     "dismissal",
+    "session",
 )
 """An open finding as a snapshot copies it, with its queued re-check and the author's
-dismissal, which the review decides (CR-42, CR-43)."""
+dismissal, which the review decides (CR-42, CR-43); all but ``session``, the session it
+was raised in, an earlier one for a stale finding's re-check (CR-44)."""
 
 
 def _archived(items: Sequence[EvidenceItem]) -> Json:
@@ -563,28 +565,41 @@ class ReviewStore:
         )
 
     def confirmation_targets(self, project: str, session: str) -> list[tuple[str, int]]:
-        """The findings whose queued re-check the next dispatch carries (CR-42): open or
-        stale, not math or suggestions, tried fewer than ``RECHECK_ATTEMPTS`` times, and
-        not held by a running review. Each attempt that cannot decide is recorded on the
-        finding, a new revision, so the next dispatch tries it again."""
+        """The findings whose queued re-check the session's next dispatch carries (CR-42):
+        open or stale, its own or a stale one of another session queued for it (CR-44),
+        not math or suggestions, tried fewer than ``RECHECK_ATTEMPTS`` times by the
+        session's reviews, and not held by a running review. Each attempt that cannot
+        decide is recorded on the finding, a new revision, so the next dispatch tries it
+        again. All of them, read a page at a time; the snapshot admits what fits."""
         self.scope(project, session)
-        with self.documents.control.read() as tx:
-            db = tx.sql
-            return [
-                tuple(row)
-                for row in db.execute(
-                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE "
-                    "project=:project AND session=:session "
+        found: list[tuple[str, int]] = []
+        after = 0
+        while True:
+            with self.documents.control.read() as tx:
+                rows = tx.sql.execute(
+                    "SELECT f.rowid,f.finding_id,f.revision FROM review_findings f WHERE "
+                    "f.project=:project AND recheck IS NOT NULL "
+                    "AND coalesce(json_extract(recheck,'$.session'),f.session)=:session "
                     "AND category NOT IN ('math','handle_citation') "
-                    "AND status IN ('open','stale') AND recheck IS NOT NULL "
-                    "AND coalesce(json_extract(recheck,'$.attempts'),0)<:attempts "
+                    "AND status IN ('open','stale') "
+                    "AND (SELECT count(*) FROM review_finding_history h JOIN review_runs r "
+                    "ON r.review_id=h.review_id WHERE h.finding_id=f.finding_id "
+                    "AND h.answer='inconclusive' AND r.session=:session)<:attempts "
                     "AND NOT EXISTS(SELECT 1 FROM review_confirmation_targets t JOIN "
                     "review_runs r USING(review_id) WHERE t.finding_id=f.finding_id "
                     "AND t.revision=f.revision AND r.state='running') "
-                    "ORDER BY f.rowid LIMIT 100",
-                    {"project": project, "session": session, "attempts": RECHECK_ATTEMPTS},
-                )
-            ]
+                    "AND f.rowid>:after ORDER BY f.rowid LIMIT 100",
+                    {
+                        "project": project,
+                        "session": session,
+                        "attempts": RECHECK_ATTEMPTS,
+                        "after": after,
+                    },
+                ).fetchall()
+            found.extend((row[1], row[2]) for row in rows)
+            if len(rows) < 100:
+                return found
+            after = rows[-1][0]
 
     def dispatch(
         self,
@@ -740,6 +755,7 @@ class ReviewStore:
         finding with its response, and grants for the evidence its anchors name that
         ``granted`` does not hold yet."""
         finding: Json = dict(zip(_FINDING_FIELDS, row, strict=True))
+        raised_in = str(finding.pop("session"))
         finding["anchors"] = json.loads(finding["anchors"])
         for column in ("recheck", "dismissal"):
             if finding[column] is not None:
@@ -888,7 +904,13 @@ class ReviewStore:
             ):
                 ref = ArtifactRevisionRef.model_validate(raw)
                 claimed_pins.add((ref.artifact_id, ref.revision))
-                location, projection, ready = self.artifact_pin(project, session, ref)
+                try:
+                    location, projection, ready = self.artifact_pin(project, session, ref)
+                except DocumentError:
+                    if raised_in == session:
+                        raise
+                    # A fix made in the finding's own, earlier session pinned it there.
+                    location, projection, ready = self.artifact_pin(project, raised_in, ref)
                 encoded = dump(projection)
                 items.append(
                     EvidenceItem("artifact", dump(location), encoded, digest(encoded), int(ready))
@@ -917,7 +939,7 @@ class ReviewStore:
         for anchored in anchors:
             evidence = anchored["evidence"]
             if evidence not in granted and evidence not in grants:
-                grants[evidence] = self.evidence(project, session, anchored["review"], evidence)
+                grants[evidence] = self.evidence(project, raised_in, anchored["review"], evidence)
         payload = dump(finding)
         held = bool(
             finding["response"] and finding["response"].get("macro_context", {}).get("held")
@@ -1409,7 +1431,8 @@ class ReviewStore:
             "ORDER BY rowid",
             (run["review_id"],),
         ).fetchall():
-            current = findings.load(db, project, session, finding)
+            # A target may be a stale finding of an earlier session (CR-44).
+            current = findings.load_in(db, project, finding)
             if current["revision"] == revision:
                 findings.inconclusive(db, run, current, why)
 

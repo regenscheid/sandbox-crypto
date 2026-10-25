@@ -229,19 +229,24 @@ the finding and its history (`/findings`, `/findings/{finding}`).
 artifact or ledger entry field has a later revision gets its re-check queued; a replaced
 revision no longer supersedes a finding by itself. A `fix` queues one too: it names the
 document, artifact or entry revisions, or for a finding on messages the later archive
-messages (`messages`), that address the finding, or pinned evidence; the finding stays as
-it is, and only a re-check or the user makes it `fixed`. A queued re-check is dispatched
+messages (`messages`), that address the finding, or pinned evidence of them; each must be
+strictly later than what the finding reviewed (`Marks.later`): a later revision of a
+document, artifact or entry its anchors name, or an archive message after its review's
+snapshot. An unrelated document or the reviewed revision itself is refused, and an
+execution's output counts only as the later tool-result message that holds it. The
+finding stays as it is, and only a re-check or the user makes it `fixed`. A queued re-check is dispatched
 with the next review, as a `confirmation` review (the review type keeps its name), whose
 snapshot holds the finding, its anchors, the later revisions or messages, and the
 author's explanation as the author's. The reviewer answers with `review_decide`:
 `resolved`, which makes the finding `fixed`, or `unresolved`, which records a successor on
 the new revision, `open`, with the same category and severity, and the finding
 `superseded`. Each answer needs at least one evidence anchor, which code checks exists in
-the snapshot and lies in what the re-check holds (`_in_new_places`). A re-check the review
+the snapshot, is strictly later than what the finding reviewed, and lies in what the
+re-check holds (`_in_new_places`). A re-check the review
 does not answer, because it was capped, failed or gave no answer with a valid anchor, is
 recorded when the review ends as the finding's latest re-check, `inconclusive` with why,
 and the finding stays `open` ("open, last re-check inconclusive"); it is tried at the next
-dispatch, at most 3 times (`RECHECK_ATTEMPTS`). Re-checks count toward the review's
+dispatch, at most 3 times in each session (`RECHECK_ATTEMPTS`, counted from the history). Re-checks count toward the review's
 budget, not toward its 10 findings. A math finding is re-checked by its check.
 
 **Dismissals** (CR-43). The main agent's `dismiss` replaces `rebut`: a reason of at most
@@ -256,9 +261,11 @@ same work it replaces (`supersedes`): the controller checks that the two review 
 revision of a document, artifact or entry, or overlapping spans of archive messages, and
 refuses it otherwise; a re-flag is not a replacement. At a session's close (the
 `session close` command), each open finding whose reviewed work has a newer revision and
-of which no re-check ran becomes `stale`; a finding anchored only to messages never does. A
-stale finding is not offered to the author, and is re-checked when a later dispatch finds
-its reviewed work replaced.
+of which no re-check ran in that session becomes `stale`; a finding anchored only to
+messages never does. A stale finding is not offered to the author. A dispatch in any later
+session of the project queues its re-check for that session's review, holding the
+revisions that replaced what it reviewed (and an earlier fix's), and the answer decides it
+as for any re-check; so a stale finding, a migrated one included, can clear the gate.
 
 **Who may do what.** The main agent may `fix` or `dismiss` an open finding, never set a
 status; a delegated agent changes none (CR-23). The user may `fix` an open or stale
@@ -272,13 +279,17 @@ unresolved, and a `superseded` finding counts as its successor does.
 (`control/migrations.py`, `_finding_lifecycle`) adds the columns and the history table,
 copies every `review_transitions` row into the history with its actor, time and reason,
 and maps the eight earlier statuses: `open` and `claimed fixed` to `open` (a claimed fix's
-re-check queued, holding the revisions it named), `confirmed fixed` to `fixed` (a
+re-check queued, holding the revisions it named and the evidence it cited that are later
+than what the finding reviewed), `confirmed fixed` to `fixed` (a
 review's confirmation kept as its resolved re-check), `withdrawn` to `dismissed` (by the
 user, or the author's rebuttal accepted by the review), `challenged`, `unaddressed` and
 `inconclusive` to `open` (a challenged finding keeps the rebuttal as a dismissal the
-review rejected and, like an unaddressed one, is at its bound; an inconclusive one carries
-its last re-check marked `inconclusive`), and `superseded` to `stale`. A history row keeps
-the earlier status name as `former_status`. The step changes nothing when it runs again.
+review rejected and, like an unaddressed one, is at its bound; an inconclusive
+confirmation is carried as its last re-check marked `inconclusive`, while a finding raised
+on missing evidence is open with no re-check), and `superseded` to `stale`. Every
+transition becomes a history row; a migrated confirmation keeps its answer (`resolved`,
+`unresolved` or `inconclusive`), the earlier status name is kept as `former_status`, and a
+status no step maps refuses the store. The step changes nothing when it runs again.
 
 Interrupt-threshold findings are delivered at main-agent safe points as bounded
 untrusted data, but only those reviews of the run's own work raised or decided (the

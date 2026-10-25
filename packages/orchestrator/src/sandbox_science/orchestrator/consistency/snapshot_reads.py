@@ -333,7 +333,8 @@ def open_findings(
     *,
     limit: int = MAX_SNAPSHOT_FINDINGS,
 ) -> list[tuple[Any, ...]]:
-    """The session's findings a review weighs: re-check targets first, then the author's
+    """The findings a review weighs: re-check targets first, a stale finding of an earlier
+    session among them (CR-44), then the author's
     dismissals awaiting a review's decision (CR-43), then open, then stale ones; one more
     than a snapshot copies. Fixed and superseded findings, and dismissals already decided
     or the user's, are settled."""
@@ -347,8 +348,9 @@ def open_findings(
         tuple(row)
         for row in db.execute(
             "SELECT finding_id,severity,category,statement,anchors,remedy,"  # noqa: S608 - fixed SQL
-            "status,revision,reflags,supersedes,recheck,dismissal FROM review_findings f WHERE "
-            "project=? AND session=? AND category!='math' "
+            "status,revision,reflags,supersedes,recheck,dismissal,session FROM review_findings f "
+            "WHERE project=? AND (session=? OR finding_id IN (SELECT value FROM json_each(?))) "
+            "AND category!='math' "
             f"AND (status IN ('open','stale') OR {pending}) ORDER BY CASE WHEN "
             "finding_id IN (SELECT value FROM json_each(?)) THEN 0 "
             f"WHEN {pending} THEN 1 WHEN status='open' THEN 2 ELSE 3 END,f.rowid "
@@ -356,6 +358,7 @@ def open_findings(
             (
                 project,
                 session,
+                dump([target[0] for target in targets]),
                 dump([target[0] for target in targets]),
                 limit + 1,
             ),

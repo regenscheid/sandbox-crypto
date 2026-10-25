@@ -235,16 +235,12 @@ def test_a_message_anchored_finding_is_rechecked_only_on_a_later_message_and_nev
 
 
 def test_a_fix_queues_a_recheck_and_leaves_the_finding_open(store) -> None:
-    reviews, documents, _ = store
-    from .test_consistency import claim
+    from .test_consistency import reviewed_document, revise
 
-    claim(reviews)
-    review = dispatch(reviews)
-    finding = raise_finding(reviews, review)["finding_id"]
+    reviews, _, _ = store
+    doc, review, anchors = reviewed_document(reviews)
+    finding = raise_finding(reviews, review, anchors=anchors)["finding_id"]
     reviews.finish("p", "s", review, "owner", "findings", "One.")
-    doc = documents.create(
-        "p", name="fixed", title="N", text="The count is 15.\n", author=MAIN, session_id="s"
-    ).document_id
     fixed = Findings(reviews).respond(
         "p",
         "s",
@@ -253,7 +249,7 @@ def test_a_fix_queues_a_recheck_and_leaves_the_finding_open(store) -> None:
             "expected": 1,
             "action": "fix",
             "explanation": "Corrected the count.",
-            "revisions": [[doc, 1]],
+            "revisions": revise(reviews, doc),
             "operation_id": "fix",
         },
         MAIN,
@@ -265,6 +261,201 @@ def test_a_fix_queues_a_recheck_and_leaves_the_finding_open(store) -> None:
     assert reviews.confirmation_targets("p", "s") == [(finding, found["revision"])]
     # A fix is never offered back to the agent that wrote it.
     assert FindingNotices(reviews).pending("p", "s", "author-2", set()) == []
+
+
+def _on_r1(reviews: ReviewStore, documents: Any) -> tuple[str, str, str]:
+    """F1, a fail finding on paragraph 2 of report r1; the document, the review, F1."""
+    doc = documents.create(
+        "p", name="report", title="Report", text=R1, author=MAIN, session_id="s"
+    ).document_id
+    reviews.ingest_documents("p", "s")
+    first = dispatch(reviews)
+    f1 = raise_on(reviews, first, P2, "fail", "contradicting_value", "f1")
+    reviews.finish("p", "s", first, "owner", "findings", "One.")
+    return doc, first, f1
+
+
+def test_a_fix_cannot_cite_the_revision_the_finding_reviewed(store) -> None:
+    """The review's probe: F1 on r1, "fixed" by citing r1 itself, which a re-check then
+    answered resolved on r1. A fix's places, and a re-check's anchors, are strictly later
+    than what the finding reviewed (CR-42)."""
+    reviews, documents, _ = store
+    doc, first, f1 = _on_r1(reviews, documents)
+    old = item(reviews, first, "document", 1)
+    body = {
+        "finding": f1,
+        "expected": 1,
+        "action": "fix",
+        "explanation": "Nothing to change; see r1.",
+        "operation_id": "fx",
+    }
+    with pytest.raises(DocumentError, match="not later than"):
+        Findings(reviews).respond(
+            "p", "s", {**body, "evidence": [{"evidence": old, "block": P2}]}, MAIN
+        )
+    with pytest.raises(DocumentError, match="not later than"):
+        Findings(reviews).respond("p", "s", {**body, "revisions": [[doc, 1]]}, MAIN)
+    other = documents.create(
+        "p", name="other", title="O", text="Other.\n", author=MAIN, session_id="s"
+    ).document_id
+    with pytest.raises(DocumentError, match="not what the finding reviewed"):
+        Findings(reviews).respond("p", "s", {**body, "revisions": [[other, 1]]}, MAIN)
+    assert Findings(reviews).get("p", "s", f1)["recheck"] is None
+    assert reviews.confirmation_targets("p", "s") == []
+
+
+def test_an_executions_output_is_no_place_of_its_own(store) -> None:
+    reviews, _, _ = store
+    reviews.observe(
+        "p", "s", "run", "execution", {"execution": "e1"}, {"stdout": "15\n", "stderr": ""}
+    )
+    review = dispatch(reviews)
+    evidence = item(reviews, review, "execution")
+    finding = raise_finding(reviews, review, anchors=[{"evidence": evidence}])["finding_id"]
+    with pytest.raises(DocumentError, match="tool result message"):
+        Findings(reviews).respond(
+            "p",
+            "s",
+            {"finding": finding, "expected": 1, "action": "fix", "explanation": "See it.",
+             "evidence": [{"evidence": evidence}], "operation_id": "fx"},
+            MAIN,
+        )  # fmt: skip
+
+
+def test_a_fix_on_a_later_revision_that_keeps_the_block_does_not_go_stale(store) -> None:
+    """Stale only when what it reviewed has a newer revision and no re-check of it ran in
+    the session (CR-44): a fix naming a later revision that left the reviewed paragraph as
+    it was replaces nothing."""
+    reviews, documents, _ = store
+    doc, _, f1 = _on_r1(reviews, documents)
+    documents.edit_source(
+        "p", doc, base=1, text=R1.replace("P6 says 9.", "P6 says ten."), author=USER,
+        reason="r2", operation_id="r2",
+    )  # fmt: skip
+    Findings(reviews).respond(
+        "p",
+        "s",
+        {"finding": f1, "expected": 1, "action": "fix", "explanation": "Rephrased.",
+         "revisions": [[doc, 2]], "operation_id": "fx"},
+        MAIN,
+    )  # fmt: skip
+    assert Findings(reviews).stale("p", "s") == 0
+    assert Findings(reviews).get("p", "s", f1)["status"] == "open"
+
+
+def test_a_finding_rechecked_in_its_session_does_not_go_stale_after_a_requeue(store) -> None:
+    """Attempts count per session: three inconclusive re-checks, then a newer revision,
+    and the finding still does not go stale at the close (CR-42, CR-44)."""
+    reviews, documents, now = store
+    doc, _, f1 = _on_r1(reviews, documents)
+    documents.edit_source("p", doc, base=1, text=R2, author=USER, reason="r2", operation_id="r2")
+    findings = Findings(reviews)
+    assert findings.queue_rechecks("p", "s") == 1
+    for attempt in range(3):
+        now[0] += 200
+        review = dispatch(reviews, "confirmation")
+        reviews.finish("p", "s", review, "owner", "findings", f"Undecided {attempt}.")
+    assert reviews.confirmation_targets("p", "s") == []
+    documents.edit_source("p", doc, base=2, text=R3, author=USER, reason="r3", operation_id="r3")
+    findings.queue_rechecks("p", "s")
+    assert reviews.confirmation_targets("p", "s") == []
+    assert findings.stale("p", "s") == 0
+    assert findings.get("p", "s", f1)["status"] == "open"
+
+
+def test_a_stale_finding_is_rechecked_by_a_later_session_and_clears_the_gate(store) -> None:
+    """CR-44: a finding goes stale at its session's close; a review of a later session
+    holds the new revision and re-checks it; resolved, it is fixed."""
+    from sandbox_science.orchestrator.projects import ProjectStore
+
+    reviews, documents, now = store
+    doc, _, f1 = _on_r1(reviews, documents)
+    documents.edit_source("p", doc, base=1, text=R2, author=USER, reason="r2", operation_id="r2")
+    findings = Findings(reviews)
+    assert findings.stale("p", "s") == 1
+    assert findings.get("p", "s", f1)["status"] == "stale"
+    assert not gate.resolved("stale", None)
+    projects = ProjectStore(documents.path.parent)
+    projects.open_session("p", "later", dedicated=False)
+    projects.close()
+    assert findings.queue_rechecks("p", "later") == 1
+    assert reviews.confirmation_targets("p", "s") == []
+    queued = findings.get("p", "s", f1)
+    assert reviews.confirmation_targets("p", "later") == [(f1, queued["revision"])]
+    now[0] += 200
+    recheck = reviews.dispatch(
+        "p", "later", "confirmation", author_run="later-1", owner="owner", alias="reviewer"
+    )
+    assert recheck is not None
+    after = 0
+    while True:
+        page = reviews.manifest("p", "later", recheck, after=after, limit=20)
+        for found in page["evidence"]:
+            reviews.read_evidence("p", "later", recheck, found["evidence"], owner="owner")
+        if page["next_after"] is None:
+            break
+        after = page["next_after"]
+    new = next(
+        i["evidence"]
+        for i in reviews.manifest("p", "later", recheck, limit=50)["evidence"]
+        if i["kind"] == "document" and i["locator"].get("revision") == 2
+    )
+    answered = findings.decide(
+        "p",
+        "later",
+        recheck,
+        "owner",
+        {"finding": f1, "expected": queued["revision"], "decision": "resolved",
+         "explanation": "r2 says 15.", "anchors": [{"evidence": new, "block": P2}],
+         "operation_id": "resolved"},
+    )  # fmt: skip
+    assert answered["status"] == "fixed"
+    fixed = findings.get("p", "s", f1)
+    assert gate.resolved(fixed["status"], fixed["dismissal"])
+    assert fixed["latest_recheck"]["review"] == recheck
+    assert fixed["history"][-1]["actor_kind"] == "controller"
+
+
+def test_every_open_finding_past_the_first_hundred_is_queued(store) -> None:
+    """More than a page of open findings: each has its re-check queued, and each is a
+    target (the queue and the targets read a page at a time)."""
+    from sandbox_science.orchestrator.consistency.findings import dedupe_of
+    from sandbox_science.orchestrator.consistency.models import EvidenceAnchor, FindingInput
+
+    reviews, documents, _ = store
+    text = "# Report\n\n" + "".join(f"P{n} says {n}.\n\n" for n in range(1, 106))
+    doc = documents.create(
+        "p", name="long", title="Long", text=text, author=MAIN, session_id="s"
+    ).document_id
+    reviews.ingest_documents("p", "s")
+    review = dispatch(reviews)
+    pinned = item(reviews, review, "document", 1)
+    findings = Findings(reviews)
+    for n in range(105):
+        anchors = [
+            findings.validate_anchor(
+                "p", "s", review, EvidenceAnchor(evidence=pinned, block=f"b{n + 2}")
+            )
+        ]
+        value = FindingInput(
+            severity="warn",
+            category="method",
+            statement=f"P{n + 1}.",
+            anchors=(EvidenceAnchor(evidence=pinned, block=f"b{n + 2}"),),
+            operation_id=f"f{n}",
+        )
+        # Past the review's cap of 10: the platform's own raise, as many reviews make.
+        with documents.control.write() as tx:
+            findings._raise(tx.sql, "p", "s", review, value, anchors, dedupe_of("method", anchors))
+    reviews.finish("p", "s", review, "owner", "findings", "Many.")
+    half = text.split("P61 says")
+    first = half[0].replace(" says ", " now says ") + "P61 says" + half[1]
+    for base, revised in enumerate((first, text.replace(" says ", " now says ")), 1):
+        documents.edit_source(
+            "p", doc, base=base, text=revised, author=USER, reason="r", operation_id=f"r{base}"
+        )
+    assert findings.queue_rechecks("p", "s") == 105
+    assert len(reviews.confirmation_targets("p", "s")) == 105
 
 
 @pytest.mark.parametrize("decision", ["accept_dismissal", "reject_dismissal"])
@@ -530,7 +721,18 @@ _OLD = (
     "unaddressed",
     "inconclusive",
     "superseded",
+    "missing evidence",
+    "claimed fix on messages",
 )
+"""Each finding the older store holds, by the earlier status or case it shows."""
+_ANCHORS: dict[str, list[dict[str, Any]]] = {
+    "claimed fixed": [{"locator": {"document": "doc-x", "revision": 1}}],
+    "confirmed fixed": [{"locator": {"document": "doc-x", "revision": 1}}],
+    "claimed fix on messages": [
+        {"locator": {"run": "author-1", "archive": {"id": "msg-" + "1" * 16, "position": 3}}}
+    ],
+}
+"""The anchors of the findings that need some; the others have none."""
 
 
 def _older(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -554,6 +756,10 @@ def _older(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rebut = {"action": "rebut", "explanation": "It holds.", "anchors": [{"evidence": "e"}]}
     fix = {"action": "fix", "explanation": "Fixed.", "revisions": [{"document": "doc-x",
            "revision": 2, "sha256": "0" * 64}], "anchors": []}  # fmt: skip
+    later = {"locator": {"run": "author-1", "archive": {"id": "msg-" + "2" * 16, "position": 9}}}
+    earlier = {"locator": {"run": "author-1", "archive": {"id": "msg-" + "0" * 16, "position": 1}}}
+    cited = {"action": "fix", "explanation": "My later answer corrects it.", "revisions": [],
+             "anchors": [later, earlier]}  # fmt: skip
     review = "review:rev-000000000000000000000001"
     raised = ("open", review, "Raised.", {})
     fixed = ("claimed fixed", "session:s", "Fixed.", fix)
@@ -571,19 +777,23 @@ def _older(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "challenged": [raised, rebutted,
                        ("challenged", review, "Rejected.", {"decision": "reject_rebuttal"})],
         "unaddressed": [raised, ("unaddressed", "platform:review-bound", "Bound.", {})],
-        "inconclusive": [("inconclusive", review, "Cannot decide.", {})],
+        "inconclusive": [raised, fixed, ("inconclusive", review, "Cannot decide.",
+                                          {"decision": "inconclusive"})],
         "superseded": [raised, ("superseded", "platform:supersession", "Replaced.", {})],
+        "missing evidence": [("inconclusive", review, "Reviewer raised this finding.", {})],
+        "claimed fix on messages": [raised, ("claimed fixed", "session:s", "Fixed.", cited)],
     }  # fmt: skip
-    for number, status in enumerate(_OLD, 1):
+    for number, case in enumerate(_OLD, 1):
         finding = f"finding-{number:024x}"
-        rows = histories[status]
+        rows = histories[case]
         db.execute(
             "INSERT INTO review_findings(finding_id,project,session,review_id,severity,category,"
             "statement,anchors,remedy,status,revision,reflags,dedupe,supersedes,created) "
             "VALUES(?,'p','s','rev-000000000000000000000001','fail','method','A problem.',"
-            "'[]',NULL,?,?,0,?,NULL,1)",
-            (finding, status, len(rows), f"dedupe-{number}"),
-        )
+            "?,NULL,?,?,0,?,NULL,1)",
+            (finding, json.dumps(_ANCHORS.get(case, [])), rows[-1][0], len(rows),
+             f"dedupe-{number}"),
+        )  # fmt: skip
         for revision, (to, actor, reason, payload) in enumerate(rows, 1):
             db.execute(
                 "INSERT INTO review_transitions(finding_id,revision,status,actor,reason,payload,"
@@ -605,6 +815,10 @@ def _found(path: Path) -> dict[str, dict[str, Any]]:
             "SELECT finding_id,revision,status,former,actor,actor_kind,reason,created "
             "FROM review_finding_history ORDER BY seq"
         ).fetchall()
+        answers = db.execute(
+            "SELECT finding_id,answer FROM review_finding_history ORDER BY seq"
+        ).fetchall()
+        kept = db.execute("SELECT count(*) FROM review_transitions").fetchone()[0]
     finally:
         db.close()
     found: dict[str, dict[str, Any]] = {}
@@ -617,7 +831,10 @@ def _found(path: Path) -> dict[str, dict[str, Any]]:
             "dismissal": None if dismissal is None else json.loads(dismissal),
             "latest_recheck": None if latest is None else json.loads(latest),
             "history": [row[1:] for row in history if row[0] == finding],
+            "answers": [row[1] for row in answers if row[0] == finding],
         }
+    # Every transition is a row of the history.
+    assert kept == len(history)
     return found
 
 
@@ -637,6 +854,8 @@ def test_the_step_maps_each_earlier_status_and_keeps_the_history(tmp_path, monke
         "unaddressed": "open",
         "inconclusive": "open",
         "superseded": "stale",
+        "missing evidence": "open",
+        "claimed fix on messages": "open",
     }
     # A claimed fix's re-check is queued, holding the revisions it named.
     queued = found["claimed fixed"]["recheck"]
@@ -661,9 +880,20 @@ def test_the_step_maps_each_earlier_status_and_keeps_the_history(tmp_path, monke
     )
     assert found["unaddressed"]["at_bound"] == 1
     assert found["open"]["at_bound"] == 0
-    # An inconclusive finding carries its last re-check, marked inconclusive.
+    # An inconclusive confirmation is its last re-check, marked inconclusive; a finding
+    # raised on missing evidence (CR-6) is open with no re-check invented for it.
     assert found["inconclusive"]["latest_recheck"]["answer"] == "inconclusive"
     assert found["inconclusive"]["latest_recheck"]["why"] == "Cannot decide."
+    assert found["missing evidence"]["latest_recheck"] is None
+    assert found["missing evidence"]["recheck"] is None
+    assert found["missing evidence"]["history"][0][1:3] == ("open", "inconclusive")
+    # Confirmations keep their answers in the history.
+    assert found["confirmed fixed"]["answers"] == [None, None, "resolved"]
+    assert found["inconclusive"]["answers"] == [None, None, "inconclusive"]
+    # A claimed fix on messages holds the later message it cited, not the earlier one.
+    on_messages = found["claimed fix on messages"]["recheck"]
+    assert on_messages["places"] == []
+    assert [m["id"] for m in on_messages["messages"]] == ["msg-" + "2" * 16]
     # The transitions are the history's first rows, actors, times and reasons kept.
     assert found["challenged"]["history"] == [
         (1, "open", None, "review:rev-000000000000000000000001", "controller", "Raised.", 10.0),
@@ -777,3 +1007,20 @@ def test_the_step_refuses_a_status_it_does_not_know(tmp_path, monkeypatch) -> No
         documents.initialize()
     documents.close()
     assert refused.value.kind == "unavailable"
+
+
+def test_the_step_refuses_a_transition_status_it_does_not_know(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "control.sqlite3"
+    _older(path, monkeypatch)
+    db = sqlite3.connect(path)
+    db.execute(
+        "INSERT INTO review_transitions(finding_id,revision,status,actor,reason,payload,created) "
+        "VALUES(?,99,'bogus','user:user','Odd.','{}',99)",
+        (f"finding-{2:024x}",),
+    )
+    db.commit()
+    db.close()
+    documents = DocumentStore(path)
+    with pytest.raises(DocumentError, match="'bogus', which no step maps"):
+        documents.initialize()
+    documents.close()

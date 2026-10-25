@@ -217,14 +217,14 @@ def test_a_confirmation_holds_the_fixs_actions_and_the_files_it_names(
     from sandbox_science.orchestrator.artifacts import ArtifactInventory
     from sandbox_science.orchestrator.consistency.findings import Findings
 
-    from .test_consistency import anchor, claim, raise_finding
+    from .test_consistency import claim, raise_finding, reviewed_document, revise
 
     _, documents, now = store
     reviews = ReviewStore(documents, artifacts=ArtifactInventory(documents), clock=lambda: now[0])
     artifact = published(documents, tmp_path, "results/ell.json", b'{"ell": 13}\n')
     claim(reviews)
-    initial = dispatch(reviews)
-    finding = raise_finding(reviews, initial)
+    doc, initial, anchors = reviewed_document(reviews)
+    finding = raise_finding(reviews, initial, anchors=anchors)
     reviews.finish("p", "s", initial, "owner", "findings", "One finding.")
     reviews.observe(
         "p", "s", "turn:action:9", "action", {"run": "author-7", "message": 9},
@@ -235,7 +235,7 @@ def test_a_confirmation_holds_the_fixs_actions_and_the_files_it_names(
         "p", "s",
         {"finding": finding["finding_id"], "expected": 1, "action": "fix",
          "explanation": "Fixed: `results/ell.json` concerns a separate subgroup-order task.",
-         "evidence": [anchor(reviews, initial)], "operation_id": "fix"},
+         "revisions": revise(reviews, doc), "operation_id": "fix"},
         MAIN,
     )  # fmt: skip
     confirmation = dispatch(reviews, "confirmation")
