@@ -71,15 +71,17 @@ from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
 from .continuity.records import Ownership, WorkRecords, authority
 from .continuity.resources import ResourceRequests
+from .control import ControlError
+from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Deadline, Delegations
 from .delegation.models import ModelChoice
-from .delegation.outcome import Outcome, Target, result_of
+from .delegation.outcome import Asked, Outcome, Target, asked_of, result_of
 from .delegation.records import DelegationRecords
 from .delegation.requests import ChildApproval, ChildRequests
-from .delegation.tracks import TrackTools, grant
-from .documents import DocumentStore, DocumentTool
+from .delegation.tracks import TrackTools, grant, stated_outputs
+from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .environment_claim import environment_claim
 from .file_settings import ProjectFiles
@@ -1279,8 +1281,18 @@ class Harness:
                 # It reads each connector tool's class as the proxy listed it (D99).
                 connectors=connectors.tools.get if connectors is not None else None,
             )
-            # Its result is read from its closing answer once every other hook has had its say.
-            outcome = Outcome(request.target, task=request.target is None)
+            # Its result is read from its closing answer once every other hook has had its say,
+            # and accounts for the deliverables its brief lists, as written once (PD-45).
+            outcome = Outcome(
+                request.target,
+                task=request.target is None,
+                deliverables=await threaded(
+                    _deliverables, self.stores.documents, admitted.context, request.delegation
+                ),
+                entry_made=functools.partial(
+                    _entry_made, Ledger(self.stores.documents), admitted.context.project_id
+                ),
+            )
             return (SessionHeld(chat), fence, outcome, EventLog(chat))
         discover = discovery.about if discovery is not None else None
         return (UserMessages(chat, discover), EventLog(chat))
@@ -1340,6 +1352,9 @@ class Harness:
                 functools.partial(_track_grant, SessionPlans(stores.documents), context)
                 if depth == 0
                 else None
+            ),
+            stated_outputs=functools.partial(
+                threaded, stated_outputs, SessionPlans(stores.documents), context
             ),
             depth=depth,
             stop_by=request.stop_by,
@@ -1495,7 +1510,7 @@ class Harness:
             failed,
             transcript.final_text,
             fence.refused if fence is not None else None,
-            result.model_dump(mode="json") if result is not None else None,
+            found.kept() if found is not None and result is not None else None,
             errors,
             finished.alias or self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.context.usage if u.model is not None))[
@@ -1907,6 +1922,38 @@ def _skills(
     store.ensure(project, builtin_pack())
     found = store.effective(project, role, delegates=delegates, derived=derived)
     return SkillTool(store, found, role=role, alias=alias) if found.entries else None
+
+
+def _deliverables(
+    documents: DocumentStore, context: ExecutionContext, delegation: str | None
+) -> tuple[Asked, ...]:
+    """The deliverables a delegated task's brief lists (PD-45): none for a run without a
+    delegation record, as a test's or an older tree's."""
+    if delegation is None:
+        return ()
+    try:
+        found = DelegationRecords(documents).get(context.project_id, context.session_id, delegation)
+    except ControlError as error:
+        if error.kind != NOT_FOUND:
+            raise
+        return ()
+    return asked_of(found.brief) if found.kind == "task" else ()
+
+
+async def _entry_made(ledger: Ledger, project: str, reference: str, work: frozenset[str]) -> bool:
+    """Whether the entry exists in the project and has one of the run's work records,
+    among its latest hundred (PD-45)."""
+    if not work:
+        return False
+
+    def look() -> bool:
+        try:
+            page = ledger.work(project, reference, limit=100)
+        except DocumentError:
+            return False
+        return any(record.record_id in work for record in page.records)
+
+    return await threaded(look)
 
 
 async def _track_grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef:

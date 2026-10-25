@@ -13,6 +13,15 @@ the raw payload. The hook also notes whether the run read the entry at that revi
 with ``ledger_read``, and the target of each of its proofs at the revision its link pins
 (``Read``), which the ledger's gate asks for (LG-17).
 
+A task's result (``sandbox-task-result-3``) accounts for the deliverables its brief
+lists, exactly when it lists any (PD-45): one item for each, by its number, whose
+reference the hook checks against what the run's calls recorded, as it checks a result
+file (RA-38). A result that leaves one out gets the one correction, naming it; if the
+answer that stands still leaves one out, and fails no other check, the result is the
+child's with the platform's status ``blocked`` and its obstacle, marked ``set_by:
+platform``, the child's own status kept beside them. Its ``lessons`` are the child's
+notes on operating the tools (DA-27): agent text, data for the parent, read by no code.
+
 A result stands only for a run that ended with that answer (``result_of``): one stopped
 by a limit, a cancel or a failure has none, whatever it answered before.
 """
@@ -20,7 +29,7 @@ by a limit, a cancel or a failure has none, whatever it answered before.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Annotated, Any, Final, Literal, Self, cast
@@ -36,11 +45,20 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
 
 FORMAT: Final = "sandbox-check-result-2"
-TASK_FORMAT: Final = "sandbox-task-result-2"
+TASK_FORMAT: Final = "sandbox-task-result-3"
 MAX_RESULT_FILES: Final = 50
 MAX_ERRORS: Final = 5
 MAX_BYTES: Final = 16384
-"""The longest result, as UTF-8 JSON: whole, it fits a tool result."""
+"""The longest check result, as UTF-8 JSON: whole, it fits a tool result."""
+TASK_BYTES: Final = 28 * 1024
+"""The longest task result, as UTF-8 JSON (PD-45): with the platform's mark it stays
+within the 32 KiB the delegations table holds for a result."""
+MAX_LESSONS: Final = 5
+LESSON_CHARS: Final = 200
+MAX_ACCOUNTED: Final = 12
+OBSTACLE_BYTES: Final = 2048
+"""The longest obstacle the platform writes for deliverables left out, as UTF-8: with
+it, a task's longest result stays within the table's 32 KiB."""
 ERROR_CHARS: Final = 500
 KEPT_ERRORS: Final = 4
 _FENCED: Final = re.compile(r"^```(?:json)?\s*\n(.*)\n```$", re.DOTALL)
@@ -76,6 +94,14 @@ def _optional(value: object, *, limit: int) -> object:
 
 def _optional_texts(limit: int) -> object:
     return BeforeValidator(partial(_optional, limit=limit))
+
+
+def _line(value: object, *, limit: int) -> object:
+    """An agent's text on one line, such as a lesson."""
+    found = _text(value, limit=limit)
+    if isinstance(found, str) and "\n" in found:
+        raise ValueError("a text on one line")
+    return found
 
 
 Item = Annotated[str, _texts(1000)]
@@ -156,6 +182,23 @@ TASK_SHAPE: Final[dict[str, JsonValue]] = {
         {"claim": "what you claim cannot be done", "evidence": "why, as you found it"}
     ],
     "result_files": ["the path of each file that is a result, which your calls wrote or published"],
+    "deliverables": [
+        {
+            "id": "only and always when the brief lists deliverables: one item for each, "
+            "by its number, such as d1",
+            "status": "produced | partial | not_produced",
+            "path": "for an artifact or a file: the path your calls wrote or published",
+            "revision": "for an artifact: the revision your calls recorded",
+            "entry": "for an entry: the handle of the entry you created or revised",
+            "answer": "for an answer: the answer itself (at most 1000 characters)",
+            "missing": "only and always when partial: what is missing",
+            "reason": "only and always when not_produced: why",
+        }
+    ],
+    "lessons": [
+        "at most 5, one line of at most 200 characters each: what you learned "
+        "operating the tools, as an observation"
+    ],
 }
 """A task's result's fields, as the correction notice describes them."""
 
@@ -174,11 +217,47 @@ class Obstruction(StrictContract):
     evidence: Annotated[str, _texts(4000)]
 
 
+class Accounted(StrictContract):
+    """How a task accounts for one deliverable of its brief (PD-45): ``produced`` with a
+    reference of the deliverable's kind, ``partial`` with what exists, if anything, and
+    what is missing, or ``not_produced`` with why. The reference is checked against the
+    brief's kind and the run's calls by the ``Outcome`` hook."""
+
+    id: str = Field(pattern=r"^d([1-9]|1[0-2])$")
+    status: Literal["produced", "partial", "not_produced"]
+    path: Annotated[str | None, _optional_texts(4096)] = None
+    revision: int | None = Field(default=None, ge=1, le=999_999_999)
+    entry: Annotated[str | None, _optional_texts(128)] = None
+    answer: Annotated[str | None, _optional_texts(1000)] = None
+    missing: Annotated[str | None, _optional_texts(500)] = None
+    reason: Annotated[str | None, _optional_texts(500)] = None
+
+    @property
+    def references(self) -> tuple[str, ...]:
+        """The reference fields it gives."""
+        found = {"path": self.path, "revision": self.revision, "entry": self.entry}
+        found["answer"] = self.answer
+        return tuple(name for name, value in found.items() if value is not None)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        if (self.status == "partial") != (self.missing is not None):
+            raise ValueError(f"{self.id}: a partial deliverable says what is missing, and only it")
+        if (self.status == "not_produced") != (self.reason is not None):
+            raise ValueError(f"{self.id}: one not produced says why, and only it")
+        if self.status == "not_produced" and self.references:
+            raise ValueError(f"{self.id}: one not produced names nothing it produced")
+        return self
+
+
+Lesson = Annotated[str, BeforeValidator(partial(_line, limit=LESSON_CHARS))]
+
+
 class TaskResult(StrictContract):
-    """What a task returns (``sandbox-task-result-2``): the delegated run's claims about
-    what it did, the lines of work it dropped, the obstructions it claims, and the files
-    that are its results (RA-38); the outcome's ``ended`` is the platform's observation
-    (PD-17)."""
+    """What a task returns (``sandbox-task-result-3``): the delegated run's claims about
+    what it did, the lines of work it dropped, the obstructions it claims, the files that
+    are its results (RA-38), its accounting for the brief's deliverables (PD-45) and its
+    lessons (DA-27); the outcome's ``ended`` is the platform's observation (PD-17)."""
 
     status: Literal["complete", "partial", "blocked"]
     summary: Annotated[str, _texts(8000)]
@@ -190,6 +269,8 @@ class TaskResult(StrictContract):
     result_files: tuple[Annotated[str, _texts(4096)], ...] = Field(
         default=(), max_length=MAX_RESULT_FILES
     )
+    deliverables: Annotated[tuple[Accounted, ...], Field(max_length=MAX_ACCOUNTED)] | None = None
+    lessons: tuple[Lesson, ...] = Field(default=(), max_length=MAX_LESSONS)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -197,7 +278,55 @@ class TaskResult(StrictContract):
             raise ValueError("a blocked task names its obstacle, and only a blocked one does")
         if len(set(self.result_files)) != len(self.result_files):
             raise ValueError("a result file is listed once")
+        listed = [item.id for item in self.deliverables or ()]
+        if len(set(listed)) != len(listed):
+            raise ValueError("a deliverable is accounted for once")
         return self
+
+    def kept(self) -> dict[str, JsonValue]:
+        """The result as the outcome keeps it: without ``deliverables`` when the brief
+        listed none, and without ``lessons`` when it gave none, as a result before them."""
+        found = cast(dict[str, JsonValue], self.model_dump(mode="json"))
+        if self.deliverables is None:
+            del found["deliverables"]
+        if not self.lessons:
+            del found["lessons"]
+        return found
+
+
+@dataclass(frozen=True)
+class Asked:
+    """A deliverable of a task's brief, as its result must account for it (PD-45)."""
+
+    id: str
+    title: str
+    kind: str
+
+    @property
+    def named(self) -> str:
+        return f"{self.id} ({self.title})"
+
+
+def asked_of(brief: Mapping[str, JsonValue]) -> tuple[Asked, ...]:
+    """The deliverables a stored brief lists, in order; none for a check's."""
+    found = brief.get("deliverables")
+    items = cast(list[object], found) if isinstance(found, list) else []
+    return tuple(
+        Asked(str(item.get("id")), str(item.get("title")), str(item.get("kind")))
+        for item in (cast(dict[str, object], i) for i in items if isinstance(i, dict))
+    )
+
+
+_KINDS: Final = {
+    "artifact": "an artifact",
+    "file": "a file",
+    "entry": "an entry",
+    "answer": "an answer",
+}
+
+EntryMade = Callable[[str, frozenset[str]], Awaitable[bool]]
+"""Whether an entry, by its handle or ID, exists in the project and has a work record
+among the IDs given: those the run's ledger changes appended."""
 
 
 Read = tuple[str, ...]
@@ -248,7 +377,9 @@ def proof_reads(links: Sequence[EvidenceLink]) -> frozenset[Proof]:
     return frozenset(found)
 
 
-def _parsed[R: CheckResult | TaskResult](answer: str | None, schema: type[R]) -> R:
+def _parsed[R: CheckResult | TaskResult](
+    answer: str | None, schema: type[R], limit: int = MAX_BYTES
+) -> R:
     """The ``schema`` result an answer gives: a JSON object, alone or in one fenced block.
     Raises ``ValueError`` with what is wrong."""
     text = (answer or "").strip()
@@ -262,14 +393,14 @@ def _parsed[R: CheckResult | TaskResult](answer: str | None, schema: type[R]) ->
             for e in error.errors()[:MAX_ERRORS]
         ]
         raise ValueError("; ".join(found)) from None
-    if len(result.model_dump_json().encode()) > MAX_BYTES:
-        raise ValueError(f"the result is longer than {MAX_BYTES} bytes")
+    if len(result.model_dump_json().encode()) > limit:
+        raise ValueError(f"the result is longer than {limit} bytes")
     return result
 
 
 def parse_task(answer: str | None) -> TaskResult:
     """The result a task's answer gives; raises ``ValueError`` with what is wrong."""
-    return _parsed(answer, TaskResult)
+    return _parsed(answer, TaskResult, TASK_BYTES)
 
 
 def parse(answer: str | None, target: Target | None = None) -> CheckResult:
@@ -292,11 +423,26 @@ class Outcome(TurnHook):
 
     name = "outcome"
 
-    def __init__(self, target: Target | None = None, *, task: bool = False) -> None:
-        """``target`` is a check's entry and revision; ``task`` reads a task's result."""
+    def __init__(
+        self,
+        target: Target | None = None,
+        *,
+        task: bool = False,
+        deliverables: Sequence[Asked] = (),
+        entry_made: EntryMade | None = None,
+    ) -> None:
+        """``target`` is a check's entry and revision; ``task`` reads a task's result,
+        which accounts for ``deliverables``, its brief's (PD-45); ``entry_made`` checks
+        an entry a deliverable names that the run's changes did not revise, by its work
+        records; without it, only the entries the run's changes revised count."""
         self.target = target
         self.task = task
+        self.deliverables = tuple(deliverables)
+        self.entry_made = entry_made
         self.result: CheckResult | TaskResult | None = None
+        self.marked: dict[str, JsonValue] | None = None
+        """The platform's status and obstacle for a result that left deliverables
+        unaccounted for (PD-45), which the kept result shows over the child's."""
         self.errors: list[str] = []
         self.corrected = False
         self.read = False
@@ -316,6 +462,12 @@ class Outcome(TurnHook):
         by the path as the run named it (RA-36, RA-38)."""
         self.pinned: list[dict[str, JsonValue]] = []
         """The result files a task declared, pinned to the revisions its calls made."""
+        self.revisions: dict[str, set[int]] = {}
+        """Every revision each path got from the run's calls, recorded or published."""
+        self.revised: set[str] = set()
+        """The entries the run's ledger changes created or revised, by ID and handle."""
+        self.work: set[str] = set()
+        """The work records the run's ledger changes appended, by ID."""
 
     @property
     def read_proofs(self) -> bool | None:
@@ -383,10 +535,20 @@ class Outcome(TurnHook):
             cast(dict[str, object], result).get("entries") if isinstance(result, dict) else None
         )
         for entry in cast(list[object], entries) if isinstance(entries, list) else []:
-            if isinstance(entry, dict) and cast(dict[str, object], entry).get("created") is True:
-                found = cast(dict[str, object], entry).get("entry_id")
+            if not isinstance(entry, dict):
+                continue
+            changed = cast(dict[str, object], entry)
+            self.revised.update(
+                str(changed[key]) for key in ("entry_id", "handle") if key in changed
+            )
+            if changed.get("created") is True:
+                found = changed.get("entry_id")
                 if isinstance(found, str) and found not in self.created:
                     self.created.append(found)
+        work = cast(dict[str, object], result).get("work") if isinstance(result, dict) else None
+        self.work.update(
+            str(w) for w in (cast(list[object], work) if isinstance(work, list) else [])
+        )
 
     def _files(self, record: dict[str, Any]) -> None:
         """The revisions a call made: those it recorded, and the one it published."""
@@ -399,6 +561,7 @@ class Outcome(TurnHook):
                 found = cast(dict[str, JsonValue], entry)
                 if isinstance(path := found.get("path"), str):
                     self.recorded[path] = found
+                    self._revision(path, found)
         snapshot, receipt = record.get("artifact"), record.get("artifact_inventory")
         if isinstance(snapshot, dict) and isinstance(receipt, dict):
             published = cast(dict[str, Any], receipt)
@@ -416,6 +579,12 @@ class Outcome(TurnHook):
                     "content_retained": published.get("worker_snapshot") is not None,
                     "deleted": False,
                 }
+                self._revision(path, self.recorded[path])
+
+    def _revision(self, path: str, found: Mapping[str, object]) -> None:
+        revision = found.get("revision")
+        if isinstance(revision, int) and found.get("deleted") is not True:
+            self.revisions.setdefault(path, set()).add(revision)
 
     def _pin(self, result: TaskResult) -> list[dict[str, JsonValue]]:
         """The task's result files, each pinned to the latest revision its calls made, or
@@ -435,24 +604,155 @@ class Outcome(TurnHook):
             )
         return pinned
 
-    async def closing(self, run: RunView, answer: str | None) -> Closing:
+    def _unaccounted(self, result: TaskResult) -> tuple[list[Asked], list[str]]:
+        """The brief's deliverables the result leaves out, and what else is wrong with
+        its accounting: one the brief does not have, a reference of another kind or one
+        the run's calls did not make, or a status that does not agree (PD-45)."""
+        listed = result.deliverables
+        if not self.deliverables:
+            if listed is not None:
+                return [], ["deliverables: the brief lists none; leave the field out"]
+            return [], []
+        given = {item.id: item for item in listed or ()}
+        missing = [asked for asked in self.deliverables if asked.id not in given]
+        known = {asked.id for asked in self.deliverables}
+        problems = [
+            f"deliverables: the brief has no deliverable {item.id}"
+            for item in listed or ()
+            if item.id not in known
+        ]
+        for asked in self.deliverables:
+            if (item := given.get(asked.id)) is not None:
+                problems.extend(self._reference(asked, item))
+        produced = all(item.status == "produced" for item in listed or ())
+        if not missing and result.status == "complete" and not produced:
+            problems.append("status: complete only when every deliverable was produced")
+        return missing, problems
+
+    def _reference(self, asked: Asked, item: Accounted) -> list[str]:
+        """What is wrong with how ``item`` names what it produced, for ``asked``'s kind;
+        an entry is checked later, against the ledger (``_entries``)."""
+        fields = {"artifact": ("path", "revision"), "file": ("path",)}
+        fields |= {"entry": ("entry",), "answer": ("answer",)}
+        allowed = fields.get(asked.kind, ())
+        gives = " and ".join(allowed)
+        if other := [name for name in item.references if name not in allowed]:
+            return [f"{asked.id} is {_KINDS.get(asked.kind)}: it gives {gives}, not {other[0]}"]
+        if item.status == "produced" and len(item.references) != len(allowed):
+            return [f"{asked.id} is {_KINDS.get(asked.kind)}: produced, it gives {gives}"]
+        path = item.path.removeprefix("./") if item.path is not None else None
+        if path is not None and item.revision is not None:
+            if item.revision not in self.revisions.get(path, set()):
+                return [
+                    f"{asked.id}: your calls recorded or published no revision {item.revision} "
+                    f"of {item.path}"
+                ]
+        elif path is not None:
+            found = self.recorded.get(path)
+            if found is None or found.get("deleted") is True:
+                return [f"{asked.id}: your calls wrote or published no file {item.path}"]
+        return []
+
+    async def _entries(self, result: TaskResult) -> list[str]:
+        """The entries the result names that do not check: each must exist and have a
+        revision or a work record the run's ledger changes made (PD-45)."""
+        problems: list[str] = []
+        for item in result.deliverables or ():
+            entry = item.entry
+            if entry is None or entry in self.revised:
+                continue
+            made = self.entry_made is not None and await self.entry_made(
+                entry, frozenset(self.work)
+            )
+            if not made:
+                problems.append(
+                    f"{item.id}: your ledger changes made no revision or work record of {entry}"
+                )
+        return problems
+
+    def _invalid(self, error: str, missing: Sequence[Asked] = ()) -> Closing:
+        """An answer that is no result: one correction (PD-18), naming the deliverables it
+        left out; with no turn or room left, or the correction spent, the answer stands
+        with no result."""
+        self.result, self.marked, self.pinned = None, None, []
+        self.errors = [*self.errors, error[:ERROR_CHARS]][-KEPT_ERRORS:]
+        return self._correction(missing)
+
+    def _correction(self, missing: Sequence[Asked]) -> Closing:
+        if self.corrected:
+            return Closing()
+        self.corrected = True
+        found: dict[str, JsonValue] = {
+            "errors": list[JsonValue](self.errors[-1:]),
+            "format": self.format,
+            "fields": self.shape,
+        }
+        if missing:
+            found["missing"] = [{"id": a.id, "title": a.title} for a in missing]
+        return Closing("continue", (Notice(self.name, (), OUTCOME_CORRECTION.text, found),))
+
+    def _omitted(
+        self, result: TaskResult, pinned: list[dict[str, JsonValue]], missing: Sequence[Asked]
+    ) -> Closing:
+        """A result that leaves deliverables out and is otherwise valid: corrected once;
+        the answer that stands is the child's, blocked by the platform (PD-45). The block
+        is kept already as the correction is asked for, so that it stands if no turn is
+        left to take it."""
+        named = ", ".join(a.named for a in missing)
+        error = f"deliverables: your result does not account for {named}"
+        self.errors = [*self.errors, error[:ERROR_CHARS]][-KEPT_ERRORS:]
+        self.result, self.pinned = result, pinned
+        obstacle = f"deliverables not accounted for: {named}"
+        if len(obstacle.encode()) > OBSTACLE_BYTES:
+            # Twelve long titles of wide characters: cut, so that the mark keeps the
+            # result within the table's bound.
+            obstacle = obstacle.encode()[: OBSTACLE_BYTES - 3].decode(errors="ignore") + "…"
+        self.marked = {
+            "status": "blocked",
+            "obstacle": obstacle,
+            "set_by": {"status": "platform", "obstacle": "platform"},
+            "child_status": result.status,
+        }
+        if result.obstacle is not None:
+            self.marked["child_obstacle"] = result.obstacle
+        return self._correction(missing)
+
+    async def _task_closing(self, answer: str | None) -> Closing:
         try:
-            if self.task:
-                found = parse_task(answer)
-                self.pinned = self._pin(found)
-                self.result = found
-            else:
-                self.result = parse(answer, self.target)
+            found = parse_task(answer)
         except ValueError as error:
-            self.result = None
-            self.pinned = []
-            self.errors = [*self.errors, str(error)[:ERROR_CHARS]][-KEPT_ERRORS:]
-            if not self.corrected:
-                # One correction (PD-18); with no turn or room left, the answer stands.
-                self.corrected = True
-                found = {"errors": self.errors[-1:], "format": self.format, "fields": self.shape}
-                return Closing("continue", (Notice(self.name, (), OUTCOME_CORRECTION.text, found),))
+            return self._invalid(str(error))
+        missing, problems = self._unaccounted(found)
+        pinned: list[dict[str, JsonValue]] = []
+        try:
+            pinned = self._pin(found)
+        except ValueError as error:
+            problems.insert(0, str(error))
+        problems.extend(await self._entries(found))
+        if problems:
+            return self._invalid("; ".join(problems[:MAX_ERRORS]), missing)
+        if missing:
+            return self._omitted(found, pinned, missing)
+        self.result, self.marked, self.pinned = found, None, pinned
         return Closing()
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        if self.task:
+            return await self._task_closing(answer)
+        try:
+            self.result = parse(answer, self.target)
+        except ValueError as error:
+            return self._invalid(str(error))
+        return Closing()
+
+    def kept(self) -> dict[str, JsonValue] | None:
+        """The result as the delegation keeps it: a task's with the platform's mark over
+        the child's status when deliverables were left out (PD-45)."""
+        if self.result is None:
+            return None
+        if isinstance(self.result, CheckResult):
+            return cast(dict[str, JsonValue], self.result.model_dump(mode="json"))
+        return {**self.result.kept(), **(self.marked or {})}
 
     @property
     def format(self) -> str:
@@ -465,7 +765,7 @@ class Outcome(TurnHook):
     def summary(self) -> object | None:
         return {
             "format": self.format,
-            "result": self.result.model_dump(mode="json") if self.result is not None else None,
+            "result": self.kept(),
             "errors": list(self.errors),
             "read": self.read,
             "read_proofs": self.read_proofs,

@@ -43,6 +43,8 @@ from .documents.store import DocumentStore
 
 MAX_COUNTER = 2**62
 MAX_BODY = 65_536
+STATED_VERSIONS = 200
+"""The most versions ``stated_outputs`` walks back to find who wrote each output."""
 MAX_RECORD = 81_920
 MAX_PAGE = 262_144
 Counter = Annotated[int, Field(strict=True, ge=0, le=MAX_COUNTER)]
@@ -1263,6 +1265,44 @@ class SessionPlans:
             )
             _json(result, 2 * 1024 * 1024)
             return result
+
+    def stated_outputs(self, authority: PlanAuthority) -> tuple[PlanOutput, ...]:
+        """The desired outputs of the session's current plan that the user stated
+        (PD-1, PD-45): each as the current version holds it, written by a version of the
+        user's, the one that introduced it in this form, unchanged since. An output an
+        agent wrote and the user left as it was is not one. Plan approval (PD-6) is not
+        built, so no approved version adds others. An output whose author lies more than
+        ``STATED_VERSIONS`` versions back is not counted."""
+        authority = _checked(PlanAuthority, authority)
+        if self.documents.control.missing:
+            return ()
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            pointer = self._current(db, authority.scope)
+            if pointer is None:
+                return ()
+            head = self._head(db, authority.scope, pointer.ref)
+            version = self._version(db, authority.scope, head.ref)
+            outputs = version.body.outputs
+            pending, stated = set(outputs), set[PlanOutput]()
+            for _ in range(STATED_VERSIONS):
+                base = (
+                    None
+                    if version.base is None
+                    else self._version(
+                        db,
+                        authority.scope,
+                        PlanRef(plan_id=version.ref.plan_id, version=version.base),
+                    )
+                )
+                earlier = set(base.body.outputs) if base is not None else set[PlanOutput]()
+                if version.author.role == "user":
+                    stated |= pending - earlier
+                pending &= earlier
+                if base is None or not pending:
+                    break
+                version = base
+            return tuple(output for output in outputs if output in stated)
 
     def compact_current(self, authority: PlanAuthority) -> CompactPlan | None:
         """Read body plus every current step without returning note/evidence content."""

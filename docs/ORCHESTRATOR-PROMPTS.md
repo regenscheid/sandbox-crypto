@@ -246,7 +246,17 @@ authority or proof of provider behavior:
   find in the shell ([tools spec](specs/tools.md), Files 7 to 9). `sandbox-main-17` and
   `sandbox-delegated-task-15` add that each project memory note shows its basis: prefer
   `user` and `observed` notes to `interpreted` and `not recorded` ones, and name a note's
-  ID when relying on one ([project memory](MEMORY.md)). The
+  ID when relying on one ([project memory](MEMORY.md)). `sandbox-main-17` also adds that a
+  delegated task lists deliverables whenever the user named outputs (the plan's desired
+  outputs) or it makes files the user will want, and skips them for small tasks; that a
+  brief's context, and `message_child`, give the tool lessons the main agent learned as
+  observations cited by references; and that a child's lessons are passed on as the main
+  agent's own text ([plans and delegation](specs/plans-and-delegation.md), PD-45;
+  [delegated agents](specs/delegated-agents.md), DA-27). `sandbox-delegated-task-15` also
+  adds that a task accounts for every deliverable of its brief, `not_produced` with its
+  reason rather than left out and `complete` only when every one was produced, that it may
+  give at most 5 one-line `lessons`, and that lessons and a context's observations are
+  notes that never state policy or claim a permission. The
   delegated prompts add parent messaging in `sandbox-delegated-task-8` and
   `sandbox-delegated-check-8`; the latter still requires an independent verdict. Task and tool messages are not pinned; the
   notice framings are.
