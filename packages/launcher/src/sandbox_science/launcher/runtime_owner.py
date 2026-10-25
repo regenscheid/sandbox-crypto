@@ -42,6 +42,35 @@ class Owned(NamedTuple):
     id: str | None
 
 
+class CreateRolledBackError(LauncherError):
+    """The create returned, then the gateway answered that no sandbox has the name: it
+    rolled the creation back, as OpenShell does with a sandbox that does not become ready
+    within its bootstrap grace. The record stays; what clears it is the owner's choice."""
+
+    def __init__(self, name: str, reason: str | None) -> None:
+        self.name, self.reason = name, reason
+        why = reason or "the gateway gave no reason"
+        super().__init__(f"the gateway rolled back the creation of {name} ({why})")
+
+
+def gateway_reason(document: Mapping[str, Any] | None) -> str | None:
+    """What the gateway last said about a sandbox, from its ``sandbox get`` record: a
+    ``reason`` or ``message``, at the top or under ``status``, else its last phase."""
+    if document is None:
+        return None
+    status = document.get("status")
+    places: list[Mapping[str, Any]] = [document]
+    if isinstance(status, Mapping):
+        places.append(cast(Mapping[str, Any], status))
+    for place in places:
+        for key in ("reason", "message"):
+            said = place.get(key)
+            if isinstance(said, str) and said.strip():
+                return " ".join(said.split())[:200]
+    phase = document.get("phase")
+    return f"last seen {phase}"[:200] if isinstance(phase, str) and phase else None
+
+
 class OwnershipStore(Protocol):
     """Where the owner keeps its record, replaced in one step on each write."""
 
@@ -168,7 +197,8 @@ async def create_owned(
     """Create a fresh ``ss-orch-<10 hex>`` sandbox running ``sleep infinity``, and wait
     until it is Ready; ``driver_config`` is OpenShell's ``--driver-config-json``.
 
-    Every failure leaves the record for ``delete_recorded`` to reconcile.
+    Every failure leaves the record for ``delete_recorded`` to reconcile. A sandbox the
+    gateway reports absent after the create returned raises ``CreateRolledBackError``.
     """
     name = "ss-orch-" + secrets.token_hex(5)
     if await cli.sandbox(name) is not None:
@@ -181,16 +211,21 @@ async def create_owned(
         timeout=timeout,
     )  # fmt: skip
     deadline = clock.monotonic() + timeout
+    seen: dict[str, Any] | None = None
     while True:
         found = await cli.sandbox(name)
-        identity = found.get("id") if found is not None else None
+        if found is None:
+            # The gateway's NotFound after a create that returned: it rolled it back.
+            raise CreateRolledBackError(name, gateway_reason(seen))
+        seen = found
+        identity = found.get("id")
         if isinstance(identity, str) and identity:
             previous = store.read()
             if previous is not None and previous.id not in (None, identity):
                 raise LauncherError("orchestrator identity changed during startup")
             if previous is None or previous.id is None:
                 store.write(Owned(name, identity))
-        phase = found.get("phase") if found is not None else None
+        phase = found.get("phase")
         if phase == "Ready" and isinstance(identity, str) and identity:
             return Owned(name, identity)
         if phase in DEAD_PHASES or clock.monotonic() >= deadline:

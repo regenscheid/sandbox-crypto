@@ -386,4 +386,7 @@ It counts as deployed after three live proofs:
 2. Kata in effect on the workload pod with tier 3 recorded; a runc-scheduled
    sandbox is recorded at tier 1 through `node_kernel_releases`.
 3. Manager cycle: bootstrap; after the app and manager pods are killed, reconnect
-   to the same sandbox ID; explicit replace; control history intact.
+   to the same sandbox ID; explicit replace; control history intact. The manager's
+   requests, its `request status` notes (with their kind and since time, cleared when
+   the condition ends) and its wait for a gateway that does not answer are in
+   [bootstrap the agent runtime](KUBERNETES-BUNDLE.md#bootstrap-the-agent-runtime).

@@ -69,7 +69,12 @@ class Site:
 
     def manager(self, **changes: Any) -> RuntimeManager:
         return RuntimeManager(
-            self.settings(**changes), poll=0.02, health_interval=0.05, delays=(0.02,) * 6
+            self.settings(**changes),
+            poll=0.02,
+            health_interval=0.05,
+            delays=(0.02,) * 6,
+            gateway_backoff=(0.05, 0.2),
+            gateway_interval=0.5,
         )
 
     def fake(self) -> dict[str, Any]:
@@ -380,11 +385,17 @@ async def test_no_replacement_without_confirmed_absence(site: Site, trouble: str
     sandboxes[record["name"]]["phase"] = "Error"
     site.set_fake(sandboxes=sandboxes, behaviour=trouble)
     async with serving(site.manager(recover_infrastructure=True, stop_timeout=0.2)):
-        await eventually(lambda: settled(site.recovery()), timeout=60)
+        if trouble == "get-gateway-not-found":
+            # A gateway that does not answer is waited for: no attempt is made or used.
+            await eventually(lambda: site.status()["note_kind"] == "gateway_unreachable")
+            await site.ticks()
+            assert "Unavailable" in site.status()["note"]
+            assert site.recovery()["attempts"] == 0
+        else:
+            await eventually(lambda: settled(site.recovery()), timeout=60)
+            assert "not confirmed" in site.recovery()["error"]
     assert site.record() == record
     assert site.count("openshell sandbox create") == 1
-    error = site.recovery()["error"]
-    assert ("Unavailable" if trouble == "get-gateway-not-found" else "not confirmed") in error
 
 
 async def test_uncertain_create_and_delete_keep_the_record(site: Site) -> None:
@@ -704,3 +715,194 @@ def test_the_manager_refuses_another_release_of_the_openshell_cli(
     monkeypatch.setattr(operations, "serve", serve)
     assert operations.main(["--settings", str(tmp_path / "x.json"), "serve"]) == 1
     assert "needs OpenShell" in capsys.readouterr().err
+
+
+def noted(site: Site, kind: str | None) -> Callable[[], bool]:
+    return lambda: site.status()["note_kind"] == kind
+
+
+async def test_a_gateway_that_refuses_is_waited_for_and_the_manager_resumes(site: Site) -> None:
+    record = await bootstrapped(site)
+    asked = len(site.control.asked)
+    site.set_fake(behaviour="gateway-refuses")
+    async with serving(site.manager(recover_infrastructure=True)):
+        await eventually(noted(site, "gateway_unreachable"))
+        first = site.status()
+        assert "Connection refused" in first["note"]
+        assert first["note"].startswith("the OpenShell gateway is unreachable: openshell sandbox")
+        assert first["runtime"] == "stopped"
+        await site.ticks(20)  # several more looks at the gateway, each refused
+        assert site.status()["note_since"] == first["note_since"]  # since it began
+        assert site.recovery()["attempts"] == 0  # waiting uses none of the ten
+        assert len(site.control.asked) == asked
+        site.set_fake(behaviour="")
+        await eventually(running(site))
+        assert site.status()["note"] is None
+        assert site.status()["note_kind"] is None
+        assert site.status()["note_since"] is None
+    assert site.record() == record
+    assert site.count("openshell sandbox create") == 1
+
+
+def test_serve_stays_up_while_the_gateway_refuses_at_start(tmp_path: Path) -> None:
+    """The process, as Kubernetes runs it: no exit, so no crash loop."""
+    tls = localhost_tls(tmp_path / "tls")
+    cli = openshell_stand_in(
+        tmp_path / "bin" / "openshell",
+        FAKE_OPENSHELL=tmp_path / "openshell.json",
+        FAKE_JOURNAL=tmp_path / "journal",
+    )
+    (tmp_path / "openshell.json").write_text(
+        json.dumps({"providers": [], "sandboxes": {}, "behaviour": "gateway-refuses"})
+    )
+    document = settings_document(
+        tmp_path, manager_url="https://localhost:9", ca=tls.certificate, cli=cli
+    )
+    settings = tmp_path / "runtime-manager.json"
+    settings.write_text(json.dumps(document))
+    root = Path(document["state_dir"])
+    manager = subprocess.Popen(
+        [*SERVE, "--settings", str(settings), "serve"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+
+        def waiting() -> bool:
+            assert manager.poll() is None, "the manager exited"
+            try:
+                found = json.loads((root / "status.json").read_text())
+            except (FileNotFoundError, ValueError):
+                return False
+            return found["note_kind"] == "gateway_unreachable"
+
+        asyncio.run(eventually(waiting, timeout=60))
+        status = json.loads((root / "status.json").read_text())
+        assert "Connection refused" in status["note"]
+        assert status["note_since"] is not None
+        manager.send_signal(signal.SIGTERM)
+        output, _ = manager.communicate(timeout=60)
+    finally:
+        if manager.poll() is None:
+            manager.kill()
+            manager.wait()
+    assert manager.returncode == 0
+    assert "the OpenShell gateway does not answer; waiting for it" in output
+
+
+def test_an_unusable_state_directory_is_still_fatal(tmp_path: Path) -> None:
+    tls = localhost_tls(tmp_path / "tls")
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o500)
+    document = settings_document(
+        tmp_path, manager_url="https://localhost:9", ca=tls.certificate
+    ) | {"state_dir": str(locked / "state")}
+    settings = tmp_path / "runtime-manager.json"
+    settings.write_text(json.dumps(document))
+    try:
+        found = subprocess.run(
+            [*SERVE, "--settings", str(settings), "serve"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            env=os.environ | {"PATH": f"{openshell_dir(tmp_path)}:{os.environ['PATH']}"},
+        )
+    finally:
+        locked.chmod(0o700)
+    assert found.returncode == 1
+    assert found.stderr.startswith("error: ")
+    assert "Permission denied" in found.stderr
+    assert "Traceback" not in found.stderr
+
+
+def openshell_dir(tmp_path: Path) -> Path:
+    """A directory with an ``openshell`` of the pinned release, for the version check."""
+    directory = tmp_path / "pinned"
+    directory.mkdir(exist_ok=True)
+    cli = directory / "openshell"
+    cli.write_text(f"#!/bin/sh\necho {OPENSHELL_VERSION_OUTPUT}\n")
+    cli.chmod(0o755)
+    return directory
+
+
+async def test_a_note_clears_when_control_answers_again(site: Site) -> None:
+    await bootstrapped(site)
+    async with serving(site.manager()):
+        await eventually(running(site))
+        assert site.status()["note"] is None
+        await site.control.down()
+        await eventually(noted(site, "control_unreachable"))
+        assert "control's manager listener is unreachable" in site.status()["note"]
+        await site.control.up(site.tls)
+        await eventually(noted(site, None))
+        assert site.status()["note"] is None
+        await eventually(running(site))
+
+
+@pytest.mark.parametrize(
+    ("behaviour", "said"),
+    [("create-fails", "error: create failed"), ("create-silent", "no error text from openshell")],
+)
+async def test_a_failed_replace_names_what_failed(site: Site, behaviour: str, said: str) -> None:
+    await bootstrapped(site)
+    async with serving(site.manager()) as manager:
+        await eventually(running(site))
+        site.set_fake(behaviour=behaviour)
+        error = await site.ask(manager, "replace")
+        assert error == f"openshell sandbox create failed (exit 1): {said}"
+        await eventually(noted(site, "action_failed"))
+        assert site.status()["note"] == f"operator replace failed: {error}"
+        site.set_fake(behaviour="")
+        assert await site.ask(manager, "forget") is None  # an action that succeeds
+        await eventually(noted(site, None))
+
+
+async def test_a_rolled_back_create_is_said_and_cleared_by_the_next_bootstrap(
+    site: Site,
+) -> None:
+    site.set_fake(behaviour="create-rolls-back")
+    async with serving(site.manager(recover_infrastructure=True)) as manager:
+        error = await site.ask(manager, "bootstrap")
+        assert error is not None
+        assert "the gateway rolled back the creation of ss-orch-" in error
+        assert "did not become ready within the bootstrap grace" in error
+        assert "request bootstrap" in error
+        record = site.record()
+        assert record is not None
+        assert record["outcome"] == "create_rolled_back"
+        assert record["reason"] == "sandbox did not become ready within the bootstrap grace"
+        assert record["id"] is not None  # seen once before the gateway rolled it back
+        await eventually(noted(site, "action_failed"))
+        assert "rolled back" in site.status()["note"]
+    # A restart reconnects a recorded sandbox, but never a rolled-back one.
+    async with serving(site.manager(recover_infrastructure=True)) as manager:
+        await site.ticks(10)
+        assert site.recovery()["attempts"] == 0
+        assert site.record() == record
+        assert site.status()["note_kind"] == "action_failed"
+        assert "request bootstrap creates another" in site.status()["note"]
+        site.set_fake(behaviour="")
+        assert await site.ask(manager, "bootstrap") is None  # no forget needed first
+        await eventually(running(site))
+        replaced = site.record()
+        assert replaced is not None
+        assert replaced["name"] != record["name"]
+        assert "outcome" not in replaced
+        assert site.status()["note"] is None
+    assert site.count("openshell sandbox create") == 2
+
+
+async def test_a_rolled_back_record_is_cleared_only_on_confirmed_absence(site: Site) -> None:
+    site.set_fake(behaviour="create-rolls-back")
+    async with serving(site.manager()) as manager:
+        assert await site.ask(manager, "bootstrap") is not None
+        record = site.record()
+        assert record is not None
+        site.set_fake(behaviour="get-fails")  # a gateway error is not absence
+        error = await site.ask(manager, "bootstrap")
+        assert error is not None
+        assert "gateway is not reachable" in error
+        assert site.record() == record
+    assert site.count("openshell sandbox create") == 1

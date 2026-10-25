@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher.config import load_config
+from sandbox_science.launcher.config import LauncherError, error_text, load_config
 from sandbox_science.launcher.mcp import OpenShell, OpenShellError, SandboxMissingError
 from sandbox_science.launcher.state import Layout
 
@@ -427,3 +427,39 @@ async def test_a_successful_lookup_of_another_shape_is_not_absence(
     with pytest.raises(OpenShellError, match="no sandbox record") as raised:
         await cli.sandbox("ss-orch-0123456789")
     assert not isinstance(raised.value, SandboxMissingError)
+
+
+@pytest.mark.parametrize(
+    ("said", "kept"),
+    [
+        (
+            "\x1b[31mError:\x1b[0m   \u00d7 transport error\n"
+            "  \u2570\u2500\u25b6 tcp connect error: Connection refused\n\n",
+            "tcp connect error: Connection refused",
+        ),
+        ("", "no error text from openshell"),
+        ("  \n \n", "no error text from openshell"),
+    ],
+)
+async def test_a_failure_names_the_command_its_exit_and_the_last_line(
+    tmp_path: Path, said: str, kept: str
+) -> None:
+    with pytest.raises(OpenShellError) as raised:
+        await saying(tmp_path, said).run("sandbox", "create", "--name", "x")
+    assert str(raised.value) == f"openshell sandbox create failed (exit 1): {kept}"
+
+
+async def test_a_command_that_never_answers_is_named(tmp_path: Path) -> None:
+    script = tmp_path / "openshell"
+    script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
+    script.chmod(0o755)
+    cli = object.__new__(OpenShell)
+    cli.cli, cli.env = str(script), dict(os.environ)
+    with pytest.raises(OpenShellError, match=r"^openshell sandbox create gave no answer within"):
+        await cli.run("sandbox", "create", timeout=0.5)
+
+
+def test_an_error_without_text_is_named_by_its_type() -> None:
+    assert error_text(TimeoutError()) == "TimeoutError (no error text)"
+    assert error_text(LauncherError("  two\n lines ")) == "two lines"
+    assert len(error_text(LauncherError("x" * 600))) == 512

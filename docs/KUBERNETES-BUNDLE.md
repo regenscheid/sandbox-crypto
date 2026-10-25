@@ -603,8 +603,30 @@ An empty PVC, failed handshake or missing record never creates a runtime. After 
 the manager reconnects to the same recorded sandbox at its own start and after a
 control restart; `request replace` replaces it explicitly, and `request stop --delete`
 is the teardown. `request forget` clears a record whose create never happened (no ID,
-and the gateway answers that the name is absent); it is the operator's decision. Deleting the manager Pod stops the runtime without deleting its
-sandbox. The `orchestrator` image's OCI digest is distinct from its source revision,
+and the gateway answers that the name is absent); it is the operator's decision. When
+the gateway rolls a create back (the create returned, then the sandbox vanished, as
+OpenShell does with one not ready within its bootstrap grace), the request's answer
+and `request status` say so, the record carries `outcome: create_rolled_back` with the
+gateway's reason when it gave one, and the next `request bootstrap` clears that record
+itself, once the gateway confirms the name absent, and creates a new sandbox: no
+`forget` first. Deleting the manager Pod stops the runtime without deleting its
+sandbox.
+
+The manager waits for what it cannot reach instead of exiting. If the OpenShell gateway
+does not answer, at start or later, it keeps running, takes no automatic action and
+uses none of its ten recovery attempts, and asks the gateway again after 5 s, doubling
+to 60 s, until it answers; then it reconnects as usual. It exits (status 1, with
+`error: …` in its log) only on bad settings, an unusable state directory, another
+OpenShell release or a second manager on the same volume.
+
+`request status` shows the serving process under `manager`. Its `note` says what needs
+attention now, and only now: `note_kind` is `blocked` (automatic action needs the
+operator), `gateway_unreachable`, `control_unreachable` or `action_failed`, the first
+of these that holds, and `note_since` when it began. A note clears itself when its
+condition ends, such as control or the gateway answering again or an action that
+succeeds after a failed one. A failed request's answer, and the note, name what failed:
+for an OpenShell command, its name, exit code and the last line it wrote (`openshell
+sandbox create failed (exit 1): …`, or `no error text from openshell`). The `orchestrator` image's OCI digest is distinct from its source revision,
 which must match `control.json`'s `image_revision`.
 
 Do not run `sandbox-science up` against this bundle as a bootstrap workaround: it

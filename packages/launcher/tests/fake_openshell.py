@@ -24,7 +24,11 @@ fails ``sandbox get`` with a gateway error whose text says "not found" (not abse
 runtime's exec before it is ready and ``exec-exits`` soon after; ``exec-floods`` has it
 write a line longer than 64 KiB and then far more than a pipe holds, then ``flood done``
 and a ``flooded`` file beside the state file; ``exec-ignores-term`` has it ignore
-SIGTERM (noting so), so only SIGKILL ends it. ``sandbox create``
+SIGTERM (noting so), so only SIGKILL ends it. ``gateway-refuses`` fails every
+``sandbox`` and ``provider`` command as a CLI whose gateway refuses connections does;
+``create-silent`` fails ``sandbox create`` without a word on stderr; and
+``create-rolls-back`` makes the sandbox Provisioning with a ``message``, answers one
+``sandbox get`` with it and then forgets it, as a gateway that rolled it back. ``sandbox create``
 keeps its ``--driver-config-json``; with the state's ``record`` naming a file, it notes
 that file's content as it was when create ran. ``sandbox upload`` copies each file to
 ``uploads/<sandbox>/`` beside the state file.
@@ -237,6 +241,14 @@ if calls := os.environ.get("FAKE_OPENSHELL_CALLS"):
         core = resource.getrlimit(resource.RLIMIT_CORE)
         log.write(json.dumps({"argv": args, "env": dict(os.environ), "core": core}) + "\n")
 
+if "gateway-refuses" in behaviours() and args[:1] in (["sandbox"], ["provider"]):
+    print(
+        "\x1b[31mError:\x1b[0m   \u00d7 transport error\n"
+        "  \u2570\u2500\u25b6 tcp connect error: Connection refused (os error 111)",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 match args:
     case ["provider", "profile", "list", "-o", "json"]:
         print(json.dumps({"profiles": [{"id": found} for found in load().get("profiles", [])]}))
@@ -269,7 +281,11 @@ match args:
             said = "status: 'Unavailable', self: \"tcp connect error: gateway endpoint not found\""
             print(f"\x1b[31mError:\x1b[0m   \u00d7 {said}", file=sys.stderr)
             sys.exit(1)
-        found = load()["sandboxes"].get(name)
+        state = load()
+        found = state["sandboxes"].get(name)
+        if found is not None and found.pop("rolls_back", False):
+            del state["sandboxes"][name]  # this answer is the last before the rollback
+            save(state)
         if found is None:
             # As OpenShell 0.1.5 reports the gateway's NotFound (tonic 0.14's status).
             said = "status: 'Some requested entity was not found', self: \"sandbox not found\""
@@ -301,12 +317,20 @@ match args:
         if "create-fails" in behaviours():
             print("error: create failed", file=sys.stderr)
             sys.exit(1)
+        if "create-silent" in behaviours():
+            sys.exit(1)
         state = load()
         if record := state.get("record"):
             seen = Path(record).read_text() if Path(record).exists() else "none"
             note(f"record at create {seen.strip()}")
         phase = "Provisioning" if "create-provisioning" in behaviours() else "Ready"
         made = {"id": uuid.uuid4().hex, "phase": phase, "image": image}
+        if "create-rolls-back" in behaviours():
+            made |= {
+                "phase": "Provisioning",
+                "message": "sandbox did not become ready within the bootstrap grace",
+                "rolls_back": True,
+            }
         if placement:
             made["driver_config"] = placement[-1]
             made["policy"] = Path(policy).read_text()

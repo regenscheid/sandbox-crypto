@@ -428,7 +428,7 @@ Verify:
 - `kubectl -n research-runtimes get pods -o custom-columns=NAME:.metadata.name,RUNTIMECLASS:.spec.runtimeClassName,NODE:.spec.nodeName` shows two Pods for the sandbox: the workload Pod with `kata` on an amd64 node, and the supervisor Pod under the default runtime. Its labels give the `openshell.ai/gateway-id` to check against `network.runtimes` (`kubectl -n research-runtimes get pods --show-labels`).
 - Control's `/health` (through `kubectl -n research exec deploy/<name>-app -c workspace` or a port-forward) reports `runtime_ready`.
 
-Never run `sandbox-science up` as a workaround, and never clear the manager's PVC to retry. A failed create with no ID and an absent name is cleared only by the operator's `request forget`. See [bootstrap](KUBERNETES-BUNDLE.md#bootstrap-the-agent-runtime).
+Never run `sandbox-science up` as a workaround, and never clear the manager's PVC to retry. A failed create with no ID and an absent name is cleared only by the operator's `request forget`; a create the gateway rolled back (`request status` says so) is cleared by the next `request bootstrap`. A manager whose gateway or control does not answer keeps running and says so in `request status`'s `note`. See [bootstrap](KUBERNETES-BUNDLE.md#bootstrap-the-agent-runtime).
 
 Rollback: `request stop --delete` is the teardown; `request replace` replaces the sandbox explicitly. Deleting the manager Pod stops the runtime without deleting the sandbox.
 
