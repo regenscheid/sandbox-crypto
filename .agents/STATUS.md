@@ -23,6 +23,7 @@ Updated 2026-10-25. For the owner; one screen. Details: [BACKLOG](BACKLOG.md), [
 - Persistent kernels are the default for computation; one OpenShell version constant.
 - The operator checklist and the backup and restore runbook are written.
 - B9, legibility of agent work in the records (2026-10-25): every tool call names its purpose, kept in the archive and shown in result headers and fold skeletons; task briefs may list deliverables that the result accounts for, and children return tool lessons; review findings have five statuses with reviewer re-checks on later revisions, author dismissals and staleness, migrated in place; memory recall shows each note's basis, date and anchors. The workspace rendering of all this is B10.
+- B10, legibility of agent work in the workspace (2026-10-25): the conversation shows each tool call's purpose with a result gloss, background work in one line, agent messages and children's outcomes as rows, named agents with a breadcrumb on a child's transcript, reviewer findings as compact cards with the five statuses, and the artifacts of each step with an Artifacts panel. Not built: the compute panel, composer completion and a per-message model choice.
 
 ## Verified live on the cluster (test instance, 2026-10-24)
 

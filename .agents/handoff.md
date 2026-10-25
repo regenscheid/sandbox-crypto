@@ -5,7 +5,7 @@ Updated 2026-10-25. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [de
 - **Branch:** `k8s-sync`, in its own worktree, pushed to `origin/k8s-sync`; no PR. Keep the primary checkout and the personal instance as they are.
 - **Checks:** the list in [CONVENTIONS](CONVENTIONS.md#language-and-tooling), including `scripts/check_repo_hygiene.py` (it also checks that links resolve). One suite at a time, at most `-n 4`.
 
-- **B9 is built** (2026-10-25, [backlog](BACKLOG.md)); its control store steps are 83 to 85 and every tool call now needs a `purpose_note`, so a scripted lab call without one is refused. **B10** (the workspace rendering) is the natural next increment after the items below, or before them if the owner wants to see B9's records.
+- **B9 is built** (2026-10-25, [backlog](BACKLOG.md)); its control store steps are 83 to 85 and every tool call now needs a `purpose_note`, so a scripted lab call without one is refused. **B10** (the workspace rendering) is built too (2026-10-25), apart from the compute panel, composer completion and a per-message model choice; the test instance on the cluster still runs the images from before B9 and B10, so a republish and redeploy is what shows them live.
 
 ## Next, in order ([backlog](BACKLOG.md#architecture-2026-10-23-implementation-sequence))
 

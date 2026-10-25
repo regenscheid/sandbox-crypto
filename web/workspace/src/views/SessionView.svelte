@@ -234,6 +234,7 @@
           showArtifact={(entry) => {
             chooseArtifact(entry);
             show('artifacts');
+          }}
           {tree}
           showAgent={(delegation) => {
             focusAgent = delegation;

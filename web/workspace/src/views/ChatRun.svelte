@@ -60,7 +60,6 @@
     showAgents?: (() => void) | null;
     /** The IDs of the session's automatic continuation messages, shown folded. */
     continuations?: ReadonlySet<string>;
-    sessionId?: string | null;
     /** The findings the conversation's rows show, read and read again (B10, item 4). */
     findings?: SessionFindings | null;
     /** The runs' artifact lists, for the strips under the work groups (B10, item 6). */
