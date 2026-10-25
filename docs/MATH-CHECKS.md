@@ -165,13 +165,13 @@ cannot cause a new handoff while current evidence is pending or unavailable.
 A newly proved edit to the failing block can reflag the same finding. Macro and
 renderer dependency changes refresh the exact assessment and audit history without
 consuming either failed-patch opportunity when the block owner revision is unchanged.
-Dependency refresh preserves unaddressed and explicit USER resolutions; a previously
+Dependency refresh preserves a finding at its re-flag bound and explicit USER resolutions; a previously
 mechanically accepted formula can reopen on a new rejection. Available accepted
 checks also update the assessed block owner. Previous ownership is reconciled from
 the last immutable available observation, including pre-fix accepted rows; missing
 or invalid proof never consumes a reflag. Duplicate checks, unchanged spans,
 unrelated edits and restarted attempts do not consume the two-reflag budget.
-Two failing block edits leave it unaddressed.
+Two failing block edits leave it open at its re-flag bound, not offered again.
 Current prose, error, evidence and eligible session attribution follow the new
 check, while append-only history keeps the prior assessment and owner.
 
@@ -181,7 +181,7 @@ generic threshold interruptions. A notice counts as delivered only after a
 successful author model call, and is acknowledged only after the run's record
 is saved in the control store. Failed/zero/final-turn and late-result cases stay pending for a
 later live turn. After the bounded response opportunity, the decision to leave a
-still-rejected finding unaddressed is staged under the exact notice claim. It is
+still-rejected finding at its bound is staged under the exact notice claim. It is
 finalized only after the run's record is saved, in the acknowledgement transaction,
 with current source, exclusion, USER head and latest rejected evidence rechecked.
 A failed save leaves the open notice retryable; an expired claim can rebind that

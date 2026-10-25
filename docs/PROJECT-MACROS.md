@@ -80,7 +80,7 @@ its effective definitions, warnings and context identity are derived again from
 that revision and the checked source when read. Comment attempts retain their
 existing exact body and parent document macro revision. Thread history is
 explicitly displayed under the selected document's diagnostic context, not
-claimed as its original render. A MAIN fix/rebut explanation's anchors are the
+claimed as its original render. A MAIN fix or dismissal explanation's anchors are the
 documents its finding was anchored to at the explanation's decision revision, from
 the finding's transitions (a reflag's assessment replaced the header's anchors only
 when at least as severe), so a later reflag does not change them; an explanation
@@ -123,8 +123,8 @@ batch, lease and actual-work cancellation limits still apply. Effective contexts
 are not stored, so they need no storage budget.
 
 A late result under an old setting remains immutable evidence but cannot change
-current findings, prove removal, supply a new closing notice or finalize staged
-unaddressed state. A fresh context attempt checks all spans. A dependency-only
+current findings, prove removal, supply a new closing notice or finalize a staged
+re-flag bound. A fresh context attempt checks all spans. A dependency-only
 change refreshes exact assessment/evidence without spending the two failed
 author-block-edit reflags. USER decisions, source ownership, shared two closing
 response rounds and save-before-ACK remain unchanged.
