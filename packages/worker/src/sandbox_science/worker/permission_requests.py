@@ -254,6 +254,7 @@ def _described_call(
                 "kind": "mcp",
                 "project_id": project_id,
                 "session_id": session if isinstance(session, str) else None,
+                "run": _text(payload.get("run")) or None,
                 # Only the agent's calls reach a server directly; anything else is code's,
                 # which no class grant covers.
                 "caller_kind": "agent" if payload.get("caller_kind") == "agent" else "code",

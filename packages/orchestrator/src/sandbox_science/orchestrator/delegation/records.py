@@ -512,6 +512,22 @@ class DelegationRecords:
             ).fetchall()
         return [_delegation(row) for row in reversed(rows)], int(total)
 
+    def of_runs(self, project: str, session: str, runs: Sequence[str]) -> dict[str, Delegation]:
+        """The session's delegations whose delegated run is one of ``runs``, by run: a main
+        run, or one the session's records do not list, has none. Where a run was delegated
+        twice, the later delegation."""
+        wanted = sorted(set(runs))
+        if not wanted:
+            return {}
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM delegations WHERE project_id = ? AND session_id = ? "  # noqa: S608
+                "AND run IN (SELECT value FROM json_each(?)) "
+                "ORDER BY started_at, delegation_id",
+                (project, session, json.dumps(wanted)),
+            ).fetchall()
+        return {found.run: found for found in map(_delegation, rows)}
+
     def handbacks(
         self, project: str, session: str, *, parent: str | None = None, work: str | None = None
     ) -> list[Delegation]:

@@ -73,7 +73,12 @@ from sandbox_science.contracts.permission_requests import (
     WorkerPermissionRequest,
 )
 from sandbox_science.orchestrator.connectors import check_proxy
-from sandbox_science.orchestrator.delegation.requests import ChildRequest, ChildRequests
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
+from sandbox_science.orchestrator.delegation.requests import (
+    ChildRequest,
+    ChildRequests,
+    brief_text,
+)
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.project_grants import (
     MAX_GRANT_HOURS,
@@ -88,7 +93,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerCli
 from sandbox_science.policy import normalize_host
 from sandbox_science.policy.approvals import offered
 
-from .context import CONTEXT, identifier, json_answer, json_body, session_record
+from .context import CONTEXT, WorkspaceContext, identifier, json_answer, json_body, session_record
 from .requests import document_answer, dumps
 
 _log = logging.getLogger(__name__)
@@ -354,6 +359,7 @@ def _from_worker(found: WorkerPermissionRequest) -> PendingApproval:
         method=call.method if call else found.http.method if found.http else "",
         policy=found.policy,
         session=found.session_id,
+        run=found.run,
         rule=found.rule,
         reason=found.reason,
         recorded_at=found.recorded_at,
@@ -395,9 +401,41 @@ async def session_requests(request: web.Request) -> web.Response:
         except WorkerAPIError:  # the chat still shows the tool calls; the CLI path remains
             _log.warning("the worker's permission requests are unavailable", exc_info=True)
             found = []
-        listed += [item for item in found if item.session in (None, session)]
+        mine = [item for item in found if item.session in (None, session)]
+        listed += await _with_children(context, project, session, mine)
     shown = [_offered(item).model_dump(mode="json") for item in listed]
     return json_answer(dumps({"requests": shown}))
+
+
+async def _with_children(
+    context: WorkspaceContext, project: str, session: str, items: list[PendingApproval]
+) -> list[PendingApproval]:
+    """The middleware's held calls with the delegated run and its brief, where the call's
+    run is a delegated one of this session (DA-9). The middleware keeps no words of the
+    child's; the card shows the brief alone. A main run, or one the session's records do
+    not list, asks as itself."""
+    runs = [item.run for item in items if item.run and item.session == session]
+    if not runs:
+        return items
+    found = await asyncio.to_thread(
+        DelegationRecords(context.documents).of_runs, project, session, runs
+    )
+    return [
+        item.model_copy(update={"child": _delegated(delegation)})
+        if (delegation := found.get(item.run or "")) is not None and item.session == session
+        else item
+        for item in items
+    ]
+
+
+def _delegated(delegation: Delegation) -> ChildAsked:
+    return ChildAsked(
+        delegation_id=delegation.delegation_id,
+        run=delegation.run,
+        kind=delegation.kind,
+        brief=brief_text(delegation.brief),
+        words="",
+    )
 
 
 def _asked(child: ChildRequest | None) -> ChildAsked | None:

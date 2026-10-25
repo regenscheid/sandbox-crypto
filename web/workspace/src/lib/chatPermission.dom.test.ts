@@ -208,6 +208,26 @@ describe("a delegated agent's held call (D99)", () => {
     expect(target.textContent).not.toContain('The main run said this.');
     expect(button(target, 'Allow')).toBeTruthy();
   });
+
+  it("shows a direct-path child's brief without borrowing the main run's words", () => {
+    const { target } = card(
+      { arguments: '{}', text: 'The main run said this.' },
+      {
+        ...request,
+        run: 'child-run',
+        child: {
+          delegation_id: 'dlg-' + '0'.repeat(24),
+          run: 'child-run',
+          kind: 'check',
+          brief: 'Check the entry.',
+          words: '',
+        },
+      },
+    );
+    expect(target.textContent).toContain('Asked by a delegated agent (check)');
+    expect(target.querySelector('.brief')!.textContent).toContain('Check the entry.');
+    expect(target.textContent).not.toContain('The main run said this.');
+  });
 });
 
 describe('the transcript of a held call', () => {

@@ -226,6 +226,7 @@ async def test_a_held_direct_mcp_call_is_listed_and_answered_for_its_call(
         "agent",
         "session",
     )
+    assert item["run"] == "main-1"  # the run the middleware recorded (DA-4)
     assert item["mcp"] == {
         "server": "papers", "method": "tools/call", "tool": "send", "effect": "communicate",
         "summary": {"recipient": "a@example.org"},
