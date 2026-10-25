@@ -459,39 +459,54 @@ def pin_digest(pin: Mapping[str, str | None]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class DriftSeen:
-    """The newest ``mcp-tools-drift`` record of a server: its number, time and payload."""
+    """A server's newest ``mcp-tools-drift`` record from one pin: its number, time, pin,
+    the digest of the whole listing that drifted (``listing``; None in a record from before
+    listings were digested) and its payload."""
 
     seq: int
     time: str
     pin: str | None
+    listing: str | None
     data: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceSeen:
-    """The newest acceptance of a project's server since its latest drift."""
+    """A project's acceptance of a server's drift from one pin: the listing it accepted."""
 
     seq: int
     time: str
+    listing: str | None
+    """The digest of the listing accepted; None for a drift recorded without one, which an
+    acceptance then ends by coming after it (``drift_seq``)."""
+    drift_seq: int
     data: Mapping[str, object]
+
+
+def _text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 class DriftLedger:
     """Which servers' tool listings drifted from their pins and were not re-accepted since
-    (D96, D103).
+    (D96, D103), by server and pin.
 
-    A server's tool list is the server's, so a drift any sandbox sees holds every project
-    whose classification in force has the pin it drifted from. It ends for one project with
-    an acceptance that names the project (``mcp-tools-accepted`` from the workspace, or
-    ``mcp-classification-accepted``), for every project with the operator's
-    ``mcp-tools-accepted`` that names none, and for any project whose pin changes (a new
-    revision in force). An acceptance counts only after the drift it follows."""
+    Pins differ by project once a project has its own classification revision, so a drift
+    is kept per server and pin: it holds every project whose classification in force has
+    that pin, and a listing seen under another pin is another drift. An acceptance that
+    names a project (``mcp-tools-accepted`` from the workspace, or
+    ``mcp-classification-accepted``) ends the hold for that project and pin, for the listing
+    it accepted (its ``listing``, else the drift's in force when it was recorded): a later
+    listing with the same digest is no new drift, one with another digest holds again. The
+    operator's ``mcp-tools-accepted``, which names no project, ends a server's drifts for
+    every project; a project whose pin changes (a new revision in force) is no longer held
+    by a drift from its old pin."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._last_seq = 0
-        self._drifts: dict[str, DriftSeen] = {}
-        self._accepted: dict[tuple[str, str], AcceptanceSeen] = {}
+        self._drifts: dict[tuple[str, str | None], DriftSeen] = {}
+        self._accepted: dict[tuple[str, str, str | None], AcceptanceSeen] = {}
 
     def load(self, records: Iterable[RecordLike]) -> None:
         with self._lock:
@@ -509,45 +524,72 @@ class DriftLedger:
                 if not isinstance(server, str):
                     continue
                 if record.kind == DRIFT_RECORD:
-                    pin = data.get("pin")
-                    seen = DriftSeen(
-                        record.seq, record.time, pin if isinstance(pin, str) else None, data
+                    pin, listing = _text(data.get("pin")), _text(data.get("listing"))
+                    self._drifts[(server, pin)] = DriftSeen(
+                        record.seq, record.time, pin, listing, data
                     )
-                    self._drift(server, seen)
                 elif isinstance(project, str):
-                    self._accepted[(project, server)] = AcceptanceSeen(
-                        record.seq, record.time, data
-                    )
+                    self._accept(project, server, record, data)
                 elif record.kind == ACCEPTED_RECORD:
-                    self._drifts.pop(server, None)
+                    for key in [key for key in self._drifts if key[0] == server]:
+                        del self._drifts[key]
 
-    def _drift(self, server: str, seen: DriftSeen) -> None:
-        self._drifts[server] = seen
-        for key in [key for key in self._accepted if key[1] == server]:
-            del self._accepted[key]
+    def _accept(
+        self, project: str, server: str, record: RecordLike, data: Mapping[str, object]
+    ) -> None:
+        """A project's acceptance: of the drift from its ``pin`` if it names one, else of
+        each drift of the server in force, for its ``listing`` if it names one, else that
+        drift's."""
+        pin, listing = _text(data.get("pin")), _text(data.get("listing"))
+        targets = [
+            seen
+            for (name, from_pin), seen in self._drifts.items()
+            if name == server and ("pin" not in data or from_pin == pin)
+        ]
+        for seen in targets:
+            self._accepted[(project, server, seen.pin)] = AcceptanceSeen(
+                record.seq, record.time, listing or seen.listing, seen.seq, data
+            )
 
-    def note(self, server: str, pin: str | None, seq: int | None) -> None:
+    def note(
+        self, server: str, pin: str | None, seq: int | None, listing: str | None = None
+    ) -> None:
         """A drift this component just recorded, known before the next read."""
         with self._lock:
-            self._drift(server, DriftSeen(seq or 0, "", pin, {}))
+            self._drifts[(server, pin)] = DriftSeen(seq or 0, "", pin, listing, {})
+
+    def known(self, server: str, pin: str | None, listing: str) -> bool:
+        """Whether the server's drift from ``pin`` is already of this listing: a listing
+        seen again is no new drift, and keeps the acceptances of it."""
+        with self._lock:
+            found = self._drifts.get((server, pin))
+        return found is not None and found.listing == listing
 
     def drifted(self, server: str, pin: str | None, project: str | None = None) -> int | None:
         """The drift record that still makes ``server``'s non-read calls ask, if one does:
-        one from the pin in force now (``pin``), not re-accepted since for ``project``."""
+        one from the pin in force now (``pin``), not accepted for ``project`` since."""
         with self._lock:
-            found = self._drifts.get(server)
-            accepted = (project, server) in self._accepted if project is not None else False
-        if found is None or (found.pin is not None and found.pin != pin) or accepted:
+            found = self._drifts.get((server, pin)) or self._drifts.get((server, None))
+            if found is None:
+                return None
+            accepted = (
+                self._accepted.get((project, server, found.pin)) if project is not None else None
+            )
+        if accepted is not None and (
+            accepted.listing == found.listing
+            if found.listing is not None
+            else accepted.drift_seq >= found.seq
+        ):
             return None
         return found.seq
 
-    def latest(self, server: str) -> DriftSeen | None:
-        """The server's newest drift record, ended or not, unless the operator accepted it
-        for every project."""
+    def latest(self, server: str, pin: str | None) -> DriftSeen | None:
+        """The server's newest drift record from ``pin``, ended or not, unless the operator
+        accepted it for every project."""
         with self._lock:
-            return self._drifts.get(server)
+            return self._drifts.get((server, pin)) or self._drifts.get((server, None))
 
-    def accepted(self, project: str, server: str) -> AcceptanceSeen | None:
-        """The project's newest acceptance of the server since its latest drift."""
+    def accepted(self, project: str, server: str, pin: str | None) -> AcceptanceSeen | None:
+        """The project's newest acceptance of the server's drift from ``pin``."""
         with self._lock:
-            return self._accepted.get((project, server))
+            return self._accepted.get((project, server, pin))

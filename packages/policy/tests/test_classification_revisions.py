@@ -5,6 +5,7 @@ catalog-name validator, and the drift ledger's acceptances by project."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from sandbox_science.policy.classification import (
     changed_tools,
     revision_classification,
     server_classification,
+    widening_reasons,
     widenings,
 )
 from sandbox_science.policy.detection import DriftLedger, pin_digest
@@ -283,7 +285,7 @@ def test_the_diff_names_added_removed_and_changed_tools() -> None:
 
 
 class Rec:
-    def __init__(self, seq: int, kind: str, payload: dict[str, object]) -> None:
+    def __init__(self, seq: int, kind: str, payload: Mapping[str, object]) -> None:
         self.seq, self.kind, self.payload = seq, kind, payload
         self.time = "2026-10-25T12:00:00Z"
 
@@ -294,19 +296,88 @@ class Rec:
 def test_an_acceptance_naming_a_project_ends_the_hold_for_it_alone() -> None:
     pin = pin_digest({"search": "a" * 64})
     ledger = DriftLedger()
-    records: list[RecordLike] = [Rec(1, "mcp-tools-drift", {"server": "papers", "pin": pin})]
+    drift: dict[str, object] = {"server": "papers", "pin": pin, "listing": "L1"}
+    records: list[RecordLike] = [Rec(1, "mcp-tools-drift", drift)]
     ledger.load(records)
     assert ledger.drifted("papers", pin, "p1") == ledger.drifted("papers", pin, "p2") == 1
-    ledger.load([Rec(2, "mcp-tools-accepted", {"server": "papers", "project": "p1"})])
+    accepted = {"server": "papers", "project": "p1", "pin": pin, "listing": "L1"}
+    ledger.load([Rec(2, "mcp-tools-accepted", accepted)])
     assert ledger.drifted("papers", pin, "p1") is None
     assert ledger.drifted("papers", pin, "p2") == 1
     ledger.load([Rec(3, "mcp-classification-accepted", {"server": "papers", "project": "p2"})])
     assert ledger.drifted("papers", pin, "p2") is None
-    # A later drift counts again for both: acceptances before it do not end it.
-    ledger.load([Rec(4, "mcp-tools-drift", {"server": "papers", "pin": pin})])
+    # The same listing seen again is no new drift; another listing holds both again.
+    assert ledger.known("papers", pin, "L1")
+    ledger.load([Rec(4, "mcp-tools-drift", {**drift, "listing": "L2"})])
     assert ledger.drifted("papers", pin, "p1") == 4
-    assert ledger.accepted("p1", "papers") is None
+    assert ledger.drifted("papers", pin, "p2") == 4
     # The operator's acceptance, which names no project, ends it for every project.
     ledger.load([Rec(5, "mcp-tools-accepted", {"server": "papers"})])
     assert ledger.drifted("papers", pin, "p1") is None
-    assert ledger.latest("papers") is None
+    assert ledger.latest("papers", pin) is None
+
+
+def test_drifts_from_different_pins_hold_their_own_projects() -> None:
+    pin_a, pin_b = pin_digest({"search": "a" * 64}), pin_digest({"search": "b" * 64})
+    ledger = DriftLedger()
+    ledger.load([Rec(1, "mcp-tools-drift", {"server": "papers", "pin": pin_a, "listing": "X"})])
+    assert ledger.drifted("papers", pin_a, "A") == 1
+    # Project B, under a revision of its own (pin B), records its own drift: A stays held.
+    ledger.load([Rec(2, "mcp-tools-drift", {"server": "papers", "pin": pin_b, "listing": "X"})])
+    assert ledger.drifted("papers", pin_a, "A") == 1
+    assert ledger.drifted("papers", pin_b, "B") == 2
+    # A's acceptance ends A's hold only, and leaves B's drift and B's hold alone.
+    accepted = {"server": "papers", "project": "A", "pin": pin_a, "listing": "X"}
+    ledger.load([Rec(3, "mcp-tools-accepted", accepted)])
+    assert ledger.drifted("papers", pin_a, "A") is None
+    assert ledger.drifted("papers", pin_b, "B") == 2
+    assert ledger.drifted("papers", pin_a, "C") == 1  # another project under pin A
+
+
+def test_an_acceptance_of_an_older_listing_does_not_end_a_newer_drift() -> None:
+    pin = pin_digest({"search": "a" * 64})
+    ledger = DriftLedger()
+    ledger.load([Rec(1, "mcp-tools-drift", {"server": "papers", "pin": pin, "listing": "L2"})])
+    stale = {"server": "papers", "project": "p1", "pin": pin, "listing": "L1"}
+    ledger.load([Rec(2, "mcp-tools-accepted", stale)])
+    assert ledger.drifted("papers", pin, "p1") == 1
+
+
+def test_widenings_take_an_unmentioned_tool_at_its_decision_time_class() -> None:
+    loaded = policy()
+    current = catalog(SERVER)
+    new = "firecrawl-mcp_brand_new_delete_everything"
+    proposed = revision_classification(revision(entry(new, "read")), SERVER)
+    # No hint: unclassified, which asks; read passes, so it widens.
+    assert call(loaded, new).action is Action.ESCALATE
+    assert call(loaded, new, classification=proposed).action is Action.ALLOW
+    reasons = widening_reasons(loaded.policy, SERVER, current, proposed)
+    assert reasons[new] == ["read passes without asking, where unclassified is escalate"]
+    # A read-only hint made it a read already: classifying it read widens nothing.
+    hinted = widening_reasons(loaded.policy, SERVER, current, proposed, {new: EffectClass.READ})
+    assert new not in hinted
+
+
+def test_widenings_name_a_wider_ceiling_and_a_class_grants_would_cover() -> None:
+    loaded = policy()
+    current = revision_classification(revision(entry(FEEDBACK, "admin")), SERVER)
+    proposed = revision_classification(revision(entry(FEEDBACK, "write")), SERVER)
+    reasons = widening_reasons(loaded.policy, SERVER, current, proposed)
+    assert reasons[FEEDBACK] == [
+        "grant ceiling once -> project (admin -> write)",
+        f"any grant of write on {SERVER} (up to project) would cover it",
+    ]
+    # Back to admin narrows: nothing is listed.
+    assert FEEDBACK not in widening_reasons(loaded.policy, SERVER, proposed, current)
+
+
+def test_an_unreadable_draft_does_not_hide_the_others(tmp_path: Path) -> None:
+    store = PolicyStore(tmp_path)
+    good = store.add_classification_draft(
+        "p1", SERVER, revision(entry(SCRAPE, "read")), created_at=NOW, model="main"
+    )
+    bad = store.add_classification_draft(
+        "p1", SERVER, revision(entry(SCRAPE, "write")), created_at=NOW, model="main"
+    )
+    (tmp_path / "classification-drafts" / "p1" / SERVER / f"{bad.draft}.json").unlink()
+    assert [d.draft for d in store.classification_drafts("p1", SERVER)] == [good.draft]

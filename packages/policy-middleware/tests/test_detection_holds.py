@@ -486,12 +486,12 @@ def test_the_service_reads_response_statuses_only_when_asked(
     assert hold["rule"] == "detect.host-failures"
 
 
-def _drift(middleware: PolicyMiddleware, call: Any, request_id: str) -> None:
-    """A listing that adds a tool and changes a pinned one."""
+def _drift(middleware: PolicyMiddleware, call: Any, request_id: str, what: str = "x") -> None:
+    """A listing that adds a tool (described as ``what``) and changes a pinned one."""
     assert call("tools/list", request_id=request_id).allowed
     check = middleware.check_listing(request_id, "sbx-agent", stream=False)
     assert check is not None
-    added = {"name": "brand_new", "description": "x", "inputSchema": {"type": "object"}}
+    added = {"name": "brand_new", "description": what, "inputSchema": {"type": "object"}}
     changed = {"name": READ_TOOL, "description": "now different", "inputSchema": {}}
     result = {"tools": [added, changed]}
     check.feed(json.dumps({"jsonrpc": "2.0", "id": 7, "result": result}).encode())
@@ -536,8 +536,14 @@ def test_an_acceptance_naming_the_project_ends_its_hold(
     )
     clock.advance(2)
     assert write("w3").allowed
-    # A new drift holds again, until a classification accepted for the project ends it.
+    # The same listing again is no new drift: the acceptance stands.
     _drift(middleware, call, "list-b")
+    assert write("w4a").allowed
+    assert len(records(events, "mcp-tools-drift")) == 1
+    # Another listing is a new drift, held again until a classification accepted for the
+    # project ends it.
+    _drift(middleware, call, "list-c", what="changed again")
+    assert len(records(events, "mcp-tools-drift")) == 2
     assert write("w4").reason_code.startswith("approval_required_r")
     events.append(
         "mcp-classification-accepted",

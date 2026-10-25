@@ -191,7 +191,7 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
             "project": "p1", "server": SERVER, "pin": pin_digest(pins),
             "finding": "tool_list_drift", "added": ["brand_new"], "removed": [],
             "changed": [SCRAPE], "digests": {"brand_new": "c" * 64, SCRAPE: "d" * 64},
-            "hints": {"brand_new": "read"},
+            "hints": {"brand_new": "read"}, "listing": "e" * 64,
         },
     )  # fmt: skip
     drift_path = f"/v1/classifications/{SERVER}/drift/accept"
@@ -204,8 +204,11 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
     assert tools[SCRAPE]["pin_state"] == "changed"
     new = tools["brand_new"]
     assert (new["mentioned"], new["effect"], new["pin_state"], new["escalates"]) == (
-        False, "read", "added", True,
-    )  # fmt: skip
+        False,
+        "read",
+        "added",
+        False,
+    )  # fmt: skip  (its read-only hint makes it a read, which the policy allows)
     status, accepted = await api.post(drift_path, {"project": "p1", "reason": "reviewed"})
     assert status == 201, accepted
     assert accepted == {"accepted_at": NOW.isoformat().replace("+00:00", "Z")}
@@ -213,7 +216,7 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
     assert source == "workspace"
     assert record == {
         "project": "p1", "server": SERVER, "reason": "reviewed", "actor": "user",
-        "operation_id": "op-1",
+        "operation_id": "op-1", "pin": pin_digest(pins), "listing": "e" * 64,
     }  # fmt: skip
     _, [again] = await api.get("/v1/classifications?project=p1")
     assert again["drift"]["held"] is False
@@ -419,3 +422,43 @@ async def test_only_the_projects_own_revisions_export(api: Api) -> None:
                                  headers=headers("harness"))).status == 403  # fmt: skip
     assert (await api.client.get(f"{base}/nothex/export?project=p1",
                                  headers=headers("workspace"))).status == 400  # fmt: skip
+
+
+async def test_a_listed_tool_without_a_hint_classified_read_is_a_widening(api: Api) -> None:
+    pins = catalog(SERVER).pins
+    api.events.append(
+        "mcp-tools-drift", "policy-middleware",
+        {"project": "p1", "server": SERVER, "pin": pin_digest(pins), "added": ["brand_new"],
+         "removed": [], "changed": [], "digests": {"brand_new": "c" * 64}, "hints": {},
+         "listing": "e" * 64},
+    )  # fmt: skip
+    api.draft(classification(("brand_new", "read", "c" * 64)))
+    _, [shown] = await api.get(f"/v1/classifications/{SERVER}/drafts?project=p1")
+    tools = {tool["name"]: tool for tool in shown["tools"]}
+    new = tools["brand_new"]
+    assert (new["widening"], new["current_effect"]) == (True, None)
+    assert new["widening_reasons"] == ["read passes without asking, where unclassified is escalate"]
+
+
+def test_the_projects_policy_is_the_one_bound_to_it(tmp_path: Path) -> None:
+    from sandbox_science.worker.classifications import project_policy
+
+    root = tmp_path / "middleware"
+    store = PolicyStore(root)
+    bound = store.add_policy(EXAMPLE.read_bytes())
+    granted = store.add_policy(EXAMPLE.read_bytes() + b"# another revision\n")
+    environments = cast(
+        Environments,
+        SimpleNamespace(
+            settings=SimpleNamespace(policy_store=root),
+            store=store,
+            records=SimpleNamespace(latest_grant=lambda _project: granted.digest),
+        ),
+    )
+    unbound = project_policy(environments, "p1")
+    assert unbound is not None
+    assert unbound.digest == granted.digest  # no binding: the last grant
+    PolicyStore(root, "projects").bind("p1", bound.digest)
+    found = project_policy(environments, "p1")
+    assert found is not None
+    assert found.digest == bound.digest

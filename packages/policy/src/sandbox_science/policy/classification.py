@@ -312,20 +312,39 @@ def widenings(
     server: str,
     current: ServerClassification | None,
     proposed: ServerClassification,
+    hints: Mapping[str, EffectClass] | None = None,
 ) -> list[str]:
-    """The tools whose classification ``proposed`` widens over ``current`` under ``policy``.
+    """The tools whose classification ``proposed`` widens over ``current`` under ``policy``,
+    by name (``widening_reasons``)."""
+    return sorted(widening_reasons(policy, server, current, proposed, hints))
 
-    The rule: a tool is widened when some call of it, under any combination of the argument
-    conditions either classification's rules for it name, would pass (``allow`` or
-    ``alert``) under ``proposed`` where ``current`` escalates or denies it, a tool either
-    leaves out taking its hints' most permissive class, ``read``. The policy's ``classify``
-    entries win over both, as at decision time; its tool lists are not consulted, so a tool
-    they decide may be reported though its calls would not change (never the reverse).
+
+def widening_reasons(
+    policy: ProjectPolicy,
+    server: str,
+    current: ServerClassification | None,
+    proposed: ServerClassification,
+    hints: Mapping[str, EffectClass] | None = None,
+) -> dict[str, list[str]]:
+    """Why each tool's classification in ``proposed`` widens over ``current`` under
+    ``policy``, by tool.
+
+    The rule: under any combination of the argument conditions either classification's
+    rules for the tool name, a call of it widens when it would pass (``allow`` or
+    ``alert``) under ``proposed`` where ``current`` escalates or denies it; when it still
+    escalates but under a wider grant ceiling; or when it still escalates under a class
+    it did not have, whose ceiling lets a session or project grant of that class cover it
+    (grants are the user's, by class and server: the project may hold one). A tool
+    ``current`` does not mention has the class decision time gives it, its hint's from
+    ``hints`` (the latest listing's), else ``unclassified``; a tool ``proposed`` leaves out
+    takes its hints' most permissive class, ``read``. The policy's ``classify`` entries win
+    over both, as at decision time; its tool lists are not consulted, so a tool they decide
+    may be reported though its calls would not change (never the reverse).
     """
     entry = policy.mcp.servers[server]
     rank = restrictiveness(policy, server)
     names = set(proposed.tools) | set(current.tools if current is not None else {})
-    widened: list[str] = []
+    widened: dict[str, list[str]] = {}
     for name in sorted(names):
         before = current.tools.get(name) if current is not None else None
         after = proposed.tools.get(name)
@@ -335,35 +354,41 @@ def widenings(
             (*(before.rules if before else ()), *(after.rules if after else ()))
         )
         if len(predicates) > _MAX_PREDICATES:
-            widened.append(name)
+            widened[name] = [f"more than {_MAX_PREDICATES} argument conditions: not compared"]
             continue
+        hint = (hints or {}).get(name)
+        reasons: list[str] = []
         for count in range(len(predicates) + 1):
-            if any(
-                _widens(entry, name, _arguments(chosen), rank, policy, server, current, proposed)
-                for chosen in itertools.combinations(predicates, count)
-            ):
-                widened.append(name)
-                break
+            for chosen in itertools.combinations(predicates, count):
+                arguments = _arguments(chosen)
+                was = resolve(entry, name, arguments, rank, hint=hint, project=current).effect
+                now = resolve(
+                    entry, name, arguments, rank, hint=EffectClass.READ, project=proposed
+                ).effect
+                for reason in _wider(policy, server, was, now):
+                    if reason not in reasons:
+                        reasons.append(reason)
+        if reasons:
+            widened[name] = reasons
     return widened
 
 
-def _widens(
-    entry: McpServer,
-    name: str,
-    arguments: Mapping[str, object],
-    rank: Callable[[EffectClass], tuple[int, int]],
-    policy: ProjectPolicy,
-    server: str,
-    current: ServerClassification | None,
-    proposed: ServerClassification,
-) -> bool:
-    hint = EffectClass.READ
-    was = resolve(entry, name, arguments, rank, hint=hint, project=current).effect
-    now = resolve(entry, name, arguments, rank, hint=hint, project=proposed).effect
-    return (
-        class_action(policy, server, now).action in _PASSES
-        and class_action(policy, server, was).action not in _PASSES
-    )
+def _wider(policy: ProjectPolicy, server: str, was: EffectClass, now: EffectClass) -> list[str]:
+    """How a call's treatment widens from class ``was`` to ``now``, in words."""
+    before, after = class_action(policy, server, was), class_action(policy, server, now)
+    if after.action in _PASSES:
+        if before.action not in _PASSES:
+            return [f"{now} passes without asking, where {was} is {before.action}"]
+        return []
+    if after.action is not Action.ESCALATE or before.action is not Action.ESCALATE:
+        return []
+    reasons: list[str] = []
+    grants = list(MaxGrant)
+    if grants.index(after.max_grant) > grants.index(before.max_grant):
+        reasons.append(f"grant ceiling {before.max_grant} -> {after.max_grant} ({was} -> {now})")
+    if now != was and grants.index(after.max_grant) >= grants.index(MaxGrant.SESSION):
+        reasons.append(f"any grant of {now} on {server} (up to {after.max_grant}) would cover it")
+    return reasons
 
 
 def _predicates(rules: Iterable[ArgumentRule]) -> list[tuple[str, object]]:

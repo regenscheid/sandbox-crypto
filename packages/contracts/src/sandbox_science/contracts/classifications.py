@@ -84,8 +84,9 @@ class ClassifiedTool(Contract):
     mentioned: bool
     """False for a tool the classification does not name (one the listing added)."""
     escalates: bool
-    """Whether a call of it asks first: its base class's action under the project's policy,
-    and always for a tool the classification does not mention."""
+    """Whether a call of it without arguments asks first under the project's policy: by its
+    base class, or for a tool the classification does not mention by its hints' class (a
+    ``readOnlyHint`` tool is a read)."""
 
 
 class DriftTool(Contract):
@@ -131,7 +132,12 @@ class DraftTool(ClassifiedTool):
     current_effect: EffectName | None = None
     """Its base class in force, if the classification in force names it."""
     widening: bool
-    """Whether accepting would let some call of it pass that escalates or is denied now."""
+    """Whether accepting would widen what some call of it gets (``widening_reasons``)."""
+    widening_reasons: list[Text] = Field(default_factory=list[str], max_length=16)
+    """Why, in words: a call that would pass without asking where it asks or is denied now,
+    a wider grant ceiling, or a class whose grants (session or project) would cover it.
+    Computed against the project's policy as the policy store binds it to the project
+    (``projects/<project>.json``), else the revision granted to it last."""
 
 
 class ClassificationDraft(Contract):
@@ -165,10 +171,18 @@ class ClassificationAcceptance(Contract):
 
 
 class ClassificationAccepted(Contract):
+    """The revision now in force and what accepting it widened, computed against the
+    project's policy as the policy store binds it to the project, else the revision
+    granted to it last."""
+
     revision: Sha256
     accepted_at: AwareDatetime
     widenings: list[ToolName] = Field(max_length=MAX_TOOLS)
-    """The tools whose acceptance widened what passes without asking."""
+    """The tools whose acceptance widened what their calls get (``DraftTool.widening``)."""
+    widening_reasons: dict[ToolName, list[Text]] = Field(
+        default_factory=dict[str, list[str]], max_length=MAX_TOOLS
+    )
+    """Why, by tool, as ``DraftTool.widening_reasons`` says."""
 
 
 class DriftAcceptance(Contract):

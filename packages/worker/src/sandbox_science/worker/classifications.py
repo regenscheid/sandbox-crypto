@@ -15,9 +15,9 @@ and relays the user's two acceptances:
 - **a drifted tool list**: an ``mcp-tools-accepted`` event naming the project, which ends
   the middleware's hold of the server's non-read calls for it (D103).
 
-The project's policy is that of its newest live environment, else the revision granted to
-it last (``policy add --project``). The single workspace user holds the operator token, so
-the user is the actor (``user``); the workspace has no roles.
+The project's policy is the revision the policy store binds the project to, else the one
+granted to it last (``policy add --project``). The single workspace user holds the operator
+token, so the user is the actor (``user``); the workspace has no roles.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from typing import Final, cast
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentState
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.classifications import (
     MAX_DRIFT_TOOLS,
     ClassificationAccepted,
@@ -54,7 +54,7 @@ from sandbox_science.policy.classification import (
     restrictiveness,
     revision_classification,
     server_classification,
-    widenings,
+    widening_reasons,
 )
 from sandbox_science.policy.detection import (
     ACCEPTED_RECORD,
@@ -125,11 +125,12 @@ class ClassificationDesk:
         force. Blocking."""
         loaded, entry = self._server(project, server)
         current = self._current(project, server, entry)
+        hints = _hints(self._drift(self._drifts(), server, current))
         try:
             stored = self.store.classification_drafts(project, server)
         except StoreError as exc:
             raise PermissionStoreError(str(exc)) from exc
-        return [self._draft(loaded, server, entry, current, draft) for draft in stored]
+        return [self._draft(loaded, server, entry, current, draft, hints) for draft in stored]
 
     def export(self, project: str, server: str, revision: str) -> tuple[bytes, Acceptance | None]:
         """An accepted revision of the project's, its file exactly as stored, to check in
@@ -209,8 +210,10 @@ class ClassificationDesk:
             raise ClassificationReviewError(str(exc), "invalid") from exc
         drifts = self._drifts()
         current = self._current(project, server, entry)
-        _check_tools(proposed, stored.classification, current, self._drift(drifts, server, current))
-        widened = widenings(loaded.policy, server, current, proposed)
+        seen = self._drift(drifts, server, current)
+        _check_tools(proposed, stored.classification, current, seen)
+        reasons = widening_reasons(loaded.policy, server, current, proposed, _hints(seen))
+        widened = sorted(reasons)
         diff = {**changed_tools(current, proposed), "widenings": widened}
         now = self.clock.now()
         previous = self._binding(project, server)
@@ -229,6 +232,7 @@ class ClassificationDesk:
             "replaces": previous,
             "reason": reason,
             "widenings": widened,
+            "widening_reasons": reasons,
             "diff": diff,
             "actor": ACTOR,
             "operation_id": operation_id,
@@ -242,18 +246,26 @@ class ClassificationDesk:
             except StoreError:
                 _log.exception("revision %s of %s stays in force unrecorded", revision, server)
             raise
-        return ClassificationAccepted(revision=revision, accepted_at=now, widenings=widened)
+        return ClassificationAccepted(
+            revision=revision, accepted_at=now, widenings=widened, widening_reasons=reasons
+        )
 
     def _accept_drift(
         self, project: str, server: str, reason: str, operation_id: str
     ) -> DriftAccepted:
-        self._server(project, server)
-        if self._drifts().latest(server) is None:
+        _, entry = self._server(project, server)
+        current = self._current(project, server, entry)
+        seen = self._drift(self._drifts(), server, current)
+        if seen is None:
             raise ClassificationReviewError(f"{server}'s tool list has no drift to accept")
         now = self.clock.now()
+        # The acceptance names the pin and the listing it accepts: a later listing that
+        # differs is a new drift, held again (D103).
         payload = {
             "project": project,
             "server": server,
+            "pin": seen.pin,
+            "listing": seen.listing,
             "reason": reason,
             "actor": ACTOR,
             "operation_id": operation_id,
@@ -294,12 +306,9 @@ class ClassificationDesk:
         drifts: DriftLedger, server: str, current: ServerClassification | None
     ) -> DriftSeen | None:
         """The server's latest drift from the pin in force, if any."""
-        seen = drifts.latest(server)
-        if seen is None or current is None:
+        if current is None:
             return None
-        if seen.pin is not None and seen.pin != pin_digest(current.pins):
-            return None
-        return seen
+        return drifts.latest(server, pin_digest(current.pins))
 
     def _view(
         self,
@@ -321,14 +330,17 @@ class ClassificationDesk:
             for name in _names(seen.data.get("added")):
                 if name not in current.tools:
                     hint = hints.get(name)
+                    effect = cast(EffectName, hint) if hint in _EFFECTS else "unclassified"
                     tools.append(
                         ClassifiedTool(
                             name=name,
-                            effect=cast(EffectName, hint) if hint in _EFFECTS else "unclassified",
+                            effect=effect,
                             sha256=_hex(digests.get(name)),
                             pin_state="added",
                             mentioned=False,
-                            escalates=True,
+                            escalates=_escalates(
+                                loaded, server, entry, current, name, EffectClass(effect)
+                            ),
                         )
                     )
         acceptance = self._acceptance(project, server, current)
@@ -362,9 +374,10 @@ class ClassificationDesk:
         entry: McpServer,
         current: ServerClassification | None,
         draft: Draft,
+        hints: Mapping[str, EffectClass],
     ) -> ClassificationDraft:
         proposed = draft.classification
-        widened = set(widenings(loaded.policy, server, current, proposed))
+        reasons = widening_reasons(loaded.policy, server, current, proposed, hints)
         tools: list[DraftTool] = []
         for name, tool in sorted(proposed.tools.items()):
             was = current.tools.get(name) if current is not None else None
@@ -380,7 +393,8 @@ class ClassificationDesk:
                 DraftTool(
                     **shown.model_dump(),
                     current_effect=was.effect.value if was is not None else None,
-                    widening=name in widened,
+                    widening=name in reasons,
+                    widening_reasons=reasons.get(name, [])[:16],
                 )
             )
         return ClassificationDraft(
@@ -394,21 +408,13 @@ class ClassificationDesk:
 
 
 def project_policy(environments: Environments, project: str) -> LoadedPolicy | None:
-    """The project's policy: its newest live environment's, else the one granted last."""
-    live = [
-        info
-        for info in environments.records.listed([project])
-        if info.state is not EnvironmentState.DELETED and info.kind != "job"
-    ]
-    revision = (
-        max(live, key=lambda info: info.created_at).policy
-        if live
-        else environments.records.latest_grant(project)
-    )
-    if revision is None:
-        return None
+    """The project's policy as the policy store binds it to the project
+    (``projects/<project>.json``, the MCP proxy's binding), else the revision granted to it
+    last (``policy add --project``): what its classifications and widenings are read under."""
     try:
-        return environments.store.policy(revision)
+        revision = PolicyStore(environments.settings.policy_store, "projects").binding(project)
+        revision = revision or environments.records.latest_grant(project)
+        return environments.store.policy(revision) if revision is not None else None
     except StoreError as exc:
         raise PermissionStoreError(str(exc)) from exc
 
@@ -452,9 +458,7 @@ def _tool(
     tool: ToolEntry,
     state: PinState,
 ) -> ClassifiedTool:
-    rank = restrictiveness(loaded.policy, server)
-    base = resolve(entry, name, {}, rank, project=classification).effect
-    escalates = class_action(loaded.policy, server, base).action is Action.ESCALATE
+    escalates = _escalates(loaded, server, entry, classification, name)
     return ClassifiedTool(
         name=name,
         effect=tool.effect.value,
@@ -474,6 +478,28 @@ def _tool(
         mentioned=True,
         escalates=escalates,
     )
+
+
+def _escalates(
+    loaded: LoadedPolicy,
+    server: str,
+    entry: McpServer,
+    classification: ServerClassification | None,
+    name: str,
+    hint: EffectClass | None = None,
+) -> bool:
+    """Whether a call of the tool without arguments asks first, as decision time says."""
+    rank = restrictiveness(loaded.policy, server)
+    base = resolve(entry, name, {}, rank, hint=hint, project=classification).effect
+    return class_action(loaded.policy, server, base).action is Action.ESCALATE
+
+
+def _hints(seen: DriftSeen | None) -> dict[str, EffectClass]:
+    """The hint classes a drift record gives the tools its listing added."""
+    if seen is None:
+        return {}
+    hints = _strings(seen.data.get("hints"))
+    return {name: EffectClass(hint) for name, hint in hints.items() if hint in _EFFECTS}
 
 
 def _pin_state(tool: ToolEntry, name: str, seen: DriftSeen | None) -> PinState:

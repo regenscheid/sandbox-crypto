@@ -276,6 +276,9 @@ class Drift:
     """The listing's digest of each added and changed tool (``mcp_wire.tool_digest``)."""
     hints: Mapping[str, str] = field(default_factory=dict[str, str])
     """The class each added tool's hints give it (D96)."""
+    listing: str | None = None
+    """The digest of the whole listing (``pin_digest`` of every tool's digest by name),
+    which an acceptance accepts: the same listing seen again is no new drift."""
 
 
 class ToolListings:
@@ -363,7 +366,8 @@ class ToolListings:
             return None
         digests = {name: seen[name].digest for name in (*added, *changed)}
         hints = {name: seen[name].hint.value for name in added}
-        return Drift(listing.server, added, removed, changed, digests, hints)
+        whole = pin_digest({name: tool.digest for name, tool in seen.items()})
+        return Drift(listing.server, added, removed, changed, digests, hints, whole)
 
 
 def load_tool_pins(path: Path) -> ToolListings:
@@ -455,6 +459,12 @@ class ListingCheck:
         pinned = self._listing.pin
         pin = pin_digest(pinned) if pinned is not None else None
         added, changed = drift.added[:MAX_DRIFT_NAMES], drift.changed[:MAX_DRIFT_NAMES]
+        if (
+            self._drifts is not None
+            and drift.listing is not None
+            and self._drifts.known(drift.server, pin, drift.listing)
+        ):
+            return  # the drift in force already, accepted for some projects or not
         try:
             seq = self._events.record(
                 DRIFT_RECORD,
@@ -463,6 +473,7 @@ class ListingCheck:
                     "request_id": self._request_id,
                     "finding": DRIFT_FINDING,
                     "pin": pin,
+                    "listing": drift.listing,
                     "added": list(added),
                     "removed": list(drift.removed[:MAX_DRIFT_NAMES]),
                     "changed": list(changed),
@@ -480,4 +491,4 @@ class ListingCheck:
             seq = None
         if self._drifts is not None:
             # Escalates even when unrecorded: the drift was seen, whatever the store says.
-            self._drifts.note(drift.server, pin, seq)
+            self._drifts.note(drift.server, pin, seq, drift.listing)

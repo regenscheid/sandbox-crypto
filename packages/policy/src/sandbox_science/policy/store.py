@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -39,6 +40,8 @@ from typing import Final, Literal, cast
 from .classification import ServerClassification, revision_classification
 from .errors import PolicyLoadError
 from .loader import LoadedPolicy, parse_policy, read_limited
+
+_log = logging.getLogger(__name__)
 
 DIGEST_RE: Final = re.compile(r"sha256:[0-9a-f]{64}")
 """A policy revision: ``sha256:`` and the hex SHA-256 of the policy file."""
@@ -325,11 +328,12 @@ class PolicyStore:
             raise StoreError(f"the draft is not a classification of {server}: {exc}") from exc
         directory = self._draft_directory(project, server)
         draft = cast(str, found.revision)
-        _write_atomic(directory / f"{draft}.yaml", data)
         meta = {"created_at": created_at.isoformat(), "model": model}
+        # The sidecar first: a draft is listed by its file, which then has one.
         _write_atomic(
             directory / f"{draft}.json", (json.dumps(meta, sort_keys=True) + "\n").encode()
         )
+        _write_atomic(directory / f"{draft}.yaml", data)
         return Draft(draft, server, created_at, model, data, found)
 
     def classification_draft(self, project: str, server: str, draft: str) -> Draft | None:
@@ -355,12 +359,18 @@ class PolicyStore:
         directory = self._draft_directory(project, server)
         if not directory.is_dir():
             return []
-        drafts = [
-            found
-            for path in directory.glob("*.yaml")
-            if HEX_RE.fullmatch(path.stem)
-            and (found := self.classification_draft(project, server, path.stem)) is not None
-        ]
+        drafts: list[Draft] = []
+        for path in directory.glob("*.yaml"):
+            if not HEX_RE.fullmatch(path.stem):
+                continue
+            try:
+                found = self.classification_draft(project, server, path.stem)
+            except StoreError as exc:
+                # One unreadable draft hides itself, never the others.
+                _log.warning("draft %s of %s/%s is skipped: %s", path.stem, project, server, exc)
+                continue
+            if found is not None:
+                drafts.append(found)
         drafts.sort(key=lambda found: (found.created_at, found.draft), reverse=True)
         return drafts[:MAX_DRAFTS]
 
