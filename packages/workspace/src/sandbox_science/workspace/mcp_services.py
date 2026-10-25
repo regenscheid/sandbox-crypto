@@ -11,6 +11,10 @@ the browser.
 project's user turned off (``connector_settings.py``): narrowing only, since a name the
 launcher does not configure is refused. A run does not offer a service turned off, and a
 running run's calls to it are refused.
+
+Each service also shows its latest scheduled canary (``canary``), read from the control
+store, where the launcher's canary runner records one bounded listing per server every
+interval (docs/MCP-CONNECTORS.md, "Canaries"); reading it calls nothing.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.contracts.mcp_metadata import McpServiceMetadata
 from sandbox_science.orchestrator.connector_settings import ProjectConnectors
 from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.mcp_canaries import CanaryResult, CanaryStore
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
 from .context import CONTEXT, identifier, json_answer, json_body, no_query
@@ -69,6 +74,16 @@ class McpObservation(Contract):
     listed_tools: int | None
 
 
+class McpCanary(Contract):
+    """The newest scheduled canary of a service: a bounded listing from the trusted side,
+    not a tool call, and not the user's own check."""
+
+    at: datetime
+    status: Literal["listed", "unavailable", "denied", "timeout"]
+    tool_count: int | None = Field(ge=0)
+    elapsed_ms: int = Field(ge=0)
+
+
 class McpServiceView(Contract):
     name: Identifier
     purpose: str
@@ -77,6 +92,7 @@ class McpServiceView(Contract):
     proxy_checked_at: datetime | None = None
     proxy_status: Literal["reachable", "unknown", "unavailable"] = "unknown"
     availability: AvailabilityCheck | None = None
+    canary: McpCanary | None = None
 
 
 class McpInventory(Contract):
@@ -183,17 +199,31 @@ def _observations(
     return found, inspected, skipped
 
 
-def _inventory(store: ProjectStore, project: str, config: Configuration) -> McpInventory:
+def _canary(found: CanaryResult | None) -> McpCanary | None:
+    if found is None:
+        return None
+    return McpCanary(
+        at=found.at, status=found.status, tool_count=found.tool_count, elapsed_ms=found.elapsed_ms
+    )
+
+
+def _inventory(
+    store: ProjectStore, project: str, config: Configuration, canary_store: CanaryStore
+) -> McpInventory:
     record = store.get(project)
     configured = config.services if config.project == project else ()
     names = {item.name for item in configured}
     observations, inspected, skipped = _observations(store, project, names) if names else ({}, 0, 0)
+    canaries = canary_store.latest(names) if names else {}
     return McpInventory(
         project_id=project,
         policy_revision=record.policy,
         services=[
             McpServiceView(
-                name=item.name, purpose=item.purpose, observation=observations.get(item.name)
+                name=item.name,
+                purpose=item.purpose,
+                observation=observations.get(item.name),
+                canary=_canary(canaries.get(item.name)),
             )
             for item in configured
         ],
@@ -213,8 +243,10 @@ async def services(request: web.Request) -> web.Response:
     no_query(request, "MCP service inventory")
     project = identifier(request, "project")
     config = request.app.get(CONFIGURATION, Configuration())
-    store = request.app[CONTEXT].projects
-    answer = await asyncio.to_thread(_inventory, store, project, config)
+    context = request.app[CONTEXT]
+    # The read-only store, as every GET route reads it.
+    canaries = CanaryStore.of(context.documents)
+    answer = await asyncio.to_thread(_inventory, context.projects, project, config, canaries)
     source = config.source
     if source is not None and config.project == project:
 

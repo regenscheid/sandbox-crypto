@@ -3710,6 +3710,31 @@ def _tool_purposes(schema: Schema) -> None:
     )
 
 
+def _mcp_canaries(schema: Schema) -> None:
+    """Version 86: each scheduled MCP canary's result (D103, docs/MCP-CONNECTORS.md,
+    "Canaries"): one bounded ``tools/list`` per configured server, from the trusted side,
+    with no tool call. A listed result has its tool count and listing digest and no
+    error; any other has an error kind and neither. The canary runner prunes each
+    server's rows to 30 days and 10,000 rows."""
+    schema.execute(
+        """CREATE TABLE mcp_canaries (
+    canary_id INTEGER PRIMARY KEY,
+    server TEXT NOT NULL CHECK (length(server) BETWEEN 1 AND 64),
+    at TEXT NOT NULL CHECK (length(at) = 24 AND at = strftime('%Y-%m-%dT%H:%M:%fZ', at)),
+    status TEXT NOT NULL CHECK (status IN ('listed', 'unavailable', 'denied', 'timeout')),
+    tool_count INTEGER CHECK (tool_count IS NULL OR tool_count BETWEEN 0 AND 1000000),
+    digest TEXT CHECK (digest IS NULL OR (length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*')),
+    elapsed_ms INTEGER NOT NULL CHECK (elapsed_ms BETWEEN 0 AND 86400000),
+    error_kind TEXT CHECK (error_kind IS NULL OR (length(error_kind) BETWEEN 1 AND 64
+        AND error_kind NOT GLOB '*[^a-z0-9_]*')),
+    CHECK ((status = 'listed') = (tool_count IS NOT NULL)),
+    CHECK ((status = 'listed') = (digest IS NOT NULL)),
+    CHECK ((status = 'listed') = (error_kind IS NULL))
+) STRICT"""
+    )
+    schema.execute("CREATE INDEX mcp_canaries_server ON mcp_canaries (server, canary_id)")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3795,6 +3820,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _memory_provenance,
     _finding_lifecycle,
     _tool_purposes,
+    _mcp_canaries,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

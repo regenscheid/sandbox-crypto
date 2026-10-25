@@ -562,6 +562,16 @@ class OrchestratorConfig(_Strict):
     """Restart owned services/agent VM and admit interrupted tree recovery."""
 
 
+class CanariesConfig(_Strict):
+    """Scheduled MCP canaries (D103, docs/MCP-CONNECTORS.md, "Canaries"): every ``interval``
+    seconds, one bounded ``tools/list`` per ``[mcp_proxy]`` server through the proxy, from
+    the trusted side, never a tool call. Off by default; on, it needs ``[mcp_proxy]``."""
+
+    enabled: bool = False
+    interval: float = Field(default=900.0, ge=60, le=86400)
+    """Seconds between runs: 15 minutes by default."""
+
+
 class LauncherConfig(_Strict):
     state_dir: ConfigPath = Field(
         default=Path("~/.local/state/sandbox-science"), validate_default=True
@@ -581,12 +591,18 @@ class LauncherConfig(_Strict):
     mcp_proxy: McpProxyConfig | None = None
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     orchestrator: OrchestratorConfig | None = None
+    canaries: CanariesConfig = Field(default_factory=CanariesConfig)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         ids = [project.id for project in self.projects]
         if len(set(ids)) != len(ids):
             raise ValueError("each project is listed once")
+        if self.canaries.enabled and self.mcp_proxy is None:
+            raise ValueError(
+                "canaries list the servers through the MCP proxy: configure [mcp_proxy], or "
+                "leave canaries.enabled off (the direct path has no trusted-side listing)"
+            )
         if self.mcp_proxy is not None:
             if self.mcp_proxy.project is None and len(ids) != 1:
                 raise ValueError("mcp_proxy.project names the project whose runs use it")

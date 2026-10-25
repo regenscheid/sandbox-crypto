@@ -129,6 +129,8 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # tools the main agent gets (lab 39, B5): the servers behind the portal it lists tool by
 # tool, the others by their count, found with a query; and what each server is for, which
 # it marks as the operator's. A key is SERVER/BEHIND: the portal, and the server behind it.
+# [canaries] lists each server on a schedule from the trusted side, never calling a tool,
+# for the workspace's MCP services view and the alerts (docs/MCP-CONNECTORS.md#canaries).
 # [mcp_proxy]
 # image = "sandbox-science/mcp-proxy:d27e41a"
 # providers = ["crypto-research-mcp"]
@@ -150,3 +152,7 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # "crypto-research-mcp/paper-search-mcp" = "papers across arXiv, DBLP, Crossref, OpenAlex and Semantic Scholar, with citations"
 # "crypto-research-mcp/patent-search-mcp" = "patents: search"
 # "crypto-research-mcp/web-fetch-mcp" = "fetch a web page, or its links, as text"
+#
+# [canaries]
+# enabled = true
+# interval = 900

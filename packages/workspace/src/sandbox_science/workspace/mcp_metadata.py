@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Host-to-proxy inspection. Only an explicit USER check performs tools/list."""
+"""Host-to-proxy inspection. In this process only an explicit USER check performs
+tools/list; the scheduled canaries (``mcp_canaries``) make the same listing elsewhere."""
 
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts import Contract
 from sandbox_science.contracts.mcp_metadata import McpServiceMetadata
-from sandbox_science.orchestrator.connectors import ConnectorError, ProxyClient, check_proxy
+from sandbox_science.orchestrator.connectors import ProxyClient, check_proxy
+from sandbox_science.orchestrator.mcp_canaries import list_tools
 
 
 class AvailabilityCheck(Contract):
@@ -60,42 +62,14 @@ class MetadataClient:
             return None
 
     async def check(self, server: str) -> AvailabilityCheck:
-        """Bounded initialize/list only, through the ordinary policy-enforcing proxy."""
+        """Bounded initialize/list only, through the ordinary policy-enforcing proxy: the
+        listing the scheduled canaries make too (``mcp_canaries.list_tools``)."""
         async with self.lock:
             client = ProxyClient(self.url, self.token, timeout=10)
-            status: Literal["listed", "unavailable", "denied", "timeout"] = "listed"
             try:
-                async with asyncio.timeout(15):
-                    cursor: str | None = None
-                    seen: set[str] = set()
-                    for _ in range(32):
-                        result = await client.request(
-                            server,
-                            "tools/list",
-                            {} if cursor is None else {"cursor": cursor},
-                            session="workspace-metadata",
-                        )
-                        if not isinstance(result.get("tools"), list):
-                            status = "unavailable"
-                            break
-                        following = result.get("nextCursor")
-                        if following is None:
-                            break
-                        if not isinstance(following, str) or following in seen:
-                            status = "unavailable"
-                            break
-                        seen.add(following)
-                        cursor = following
-                    else:
-                        status = "unavailable"
-            except TimeoutError:
-                status = "timeout"
-            except ConnectorError as error:
-                status = "denied" if error.kind == "policy_denied" else "unavailable"
-            except (aiohttp.ClientError, ValueError):
-                status = "unavailable"
+                found = await list_tools(client, server, session="workspace-metadata")
             finally:
                 await client.close()
-            checked = AvailabilityCheck(checked_at=datetime.now(UTC), status=status)
+            checked = AvailabilityCheck(checked_at=datetime.now(UTC), status=found.status)
             self.checks[server] = checked
             return checked

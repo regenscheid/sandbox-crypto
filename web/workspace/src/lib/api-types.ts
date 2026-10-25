@@ -1543,6 +1543,14 @@ export interface LockfileSelection {
   lockfile: LockfileRef | null;
 }
 
+/** The newest scheduled canary of a service: a bounded listing from the trusted side, not a tool call, and not the user's own check. */
+export interface McpCanary {
+  at: string;
+  status: "listed" | "unavailable" | "denied" | "timeout";
+  tool_count: number | null;
+  elapsed_ms: number;
+}
+
 export interface McpInventory {
   project_id: string;
   policy_revision: string;
@@ -1597,6 +1605,7 @@ export interface McpServiceView {
   proxy_checked_at: string | null;
   proxy_status: "reachable" | "unknown" | "unavailable";
   availability: AvailabilityCheck | null;
+  canary: McpCanary | null;
 }
 
 export interface McpToolMetadata {

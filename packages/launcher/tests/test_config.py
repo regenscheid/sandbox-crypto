@@ -220,7 +220,10 @@ def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) ->
     uncommented = [line.removeprefix("# ").removeprefix("#") for line in lines[start:]]
     path = tmp_path / "sandbox-science.toml"
     path.write_text("\n".join([*lines[:start], *uncommented]) + "\n")
-    proxy = load_config(path).mcp_proxy
+    loaded = load_config(path)
+    assert loaded.canaries.enabled
+    assert loaded.canaries.interval == 900
+    proxy = loaded.mcp_proxy
     assert proxy is not None
     assert proxy.providers == ("crypto-research-mcp",)
     assert proxy.credentials["crypto-research-mcp.CF_ACCESS_CLIENT_SECRET"] == (
@@ -379,3 +382,43 @@ def test_the_run_service_takes_a_watcher_and_the_math_checks(make_config: Any) -
     assert service.math_checks == site / "dist-math"
     assert service.node == str(site / "bin/node")
     assert load_config(make_config()).run_service.node == "node"  # a name on PATH
+
+
+def test_canaries_are_off_by_default_and_list_the_proxys_servers_when_on(
+    make_config: Any,
+) -> None:
+    from sandbox_science.launcher import parts
+    from sandbox_science.launcher.state import Layout
+
+    config = load_config(make_config({"mcp_proxy": MCP}))
+    assert not config.canaries.enabled
+    assert config.canaries.interval == 900
+    assert parts.canaries_argv(config, Layout(config.state_dir)) is None
+    config = load_config(
+        make_config({"mcp_proxy": MCP, "canaries": {"enabled": True, "interval": 600}})
+    )
+    layout = Layout(config.state_dir)
+    argv = parts.canaries_argv(config, layout)
+    assert argv is not None
+    assert argv[1] == "mcp-canaries"
+    assert argv[argv.index("--interval") + 1] == "600"
+    assert argv[argv.index("--server") + 1] == "s"
+    assert argv[argv.index("--mcp-proxy") + 1] == "http://127.0.0.1:18080"
+    # The run service's caller token: a trusted-side listing, never the operator's token.
+    assert argv[argv.index("--mcp-token-file") + 1] == str(layout.token("mcp-orchestrator"))
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"canaries": {"enabled": True}}, "canaries list the servers through the MCP proxy"),
+        ({"mcp_proxy": MCP, "canaries": {"interval": 30}}, "canaries.interval"),
+        ({"mcp_proxy": MCP, "canaries": {"enabled": True, "every": 60}}, "canaries.every"),
+    ],
+)
+def test_canaries_that_cannot_work_are_refused(
+    make_config: Any, changes: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(LauncherError) as error:
+        load_config(make_config(changes))
+    assert message in str(error.value)

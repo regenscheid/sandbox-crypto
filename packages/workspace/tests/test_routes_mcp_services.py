@@ -133,6 +133,49 @@ async def test_recent_delegated_runs_do_not_hide_main_service_observation(
     assert found.services[0].observation.listed_tools == 4
 
 
+async def test_each_service_shows_its_latest_canary_beside_the_users_check(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    from sandbox_science.orchestrator.mcp_canaries import CanaryResult, CanaryStore
+
+    projects = ProjectStore(state_dir)
+    canaries = CanaryStore(projects.control)
+    when = datetime(2026, 10, 25, 12, tzinfo=UTC)
+    canaries.record(CanaryResult("papers", when, "listed", 12, "d" * 64, 340, None))
+    later = when + timedelta(minutes=15)
+    canaries.record(CanaryResult("papers", later, "timeout", None, None, 15000, "timeout"))
+    canaries.record(CanaryResult("unconfigured", later, "listed", 1, "e" * 64, 5, None))
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        mcp_project="p1",
+        mcp_inventory=(
+            ServiceConfig(name="papers", purpose="Retrieve research papers"),
+            ServiceConfig(name="private", purpose="Private archive"),
+        ),
+    )
+    response = await client.get("/api/v0/projects/p1/mcp-services")
+    assert response.status == 200
+    raw = await response.json()
+    assert raw["services"][0]["canary"] == {
+        "at": "2026-10-25T12:15:00Z",
+        "status": "timeout",
+        "tool_count": None,
+        "elapsed_ms": 15000,
+    }
+    found = McpInventory.model_validate(raw)
+    papers, private = found.services
+    assert papers.canary is not None
+    assert papers.canary.at == later
+    # No canary for a service yet; the user's own check is a separate field, untouched.
+    assert private.canary is None
+    assert papers.availability is None
+    # A server the project does not configure stays out, canary or not.
+    assert [service.name for service in found.services] == ["papers", "private"]
+    assert "digest" not in await response.text()
+
+
 async def test_explicit_metadata_check_is_same_origin_and_does_not_execute_tools(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:

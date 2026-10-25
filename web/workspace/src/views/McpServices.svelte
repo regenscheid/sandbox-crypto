@@ -8,6 +8,7 @@
   import type { ConnectorSettings, McpInventory } from '../lib/api-types';
   import { guardedWrite } from '../lib/mutation';
   import { formatTime } from '../lib/format';
+  import { ageText } from '../lib/questions';
   import { projectHref } from '../lib/router';
   import { visible } from '../lib/text';
   import ClassificationList from './ClassificationList.svelte';
@@ -256,12 +257,18 @@
             ? `${current.availability.status}${stale(current.availability.checked_at) ? ' · stale' : ''} · checked ${formatTime(current.availability.checked_at)}`
             : 'Unknown · no explicit availability check in this workspace process'}.
         </p>
+        <p class="mcp-canary">
+          Canary: {current.canary
+            ? `${current.canary.status} ${ageText(current.canary.at, now)}${current.canary.tool_count === null ? '' : ` · ${current.canary.tool_count} tools`} · ${current.canary.elapsed_ms} ms`
+            : 'none recorded'}.
+        </p>
         <button disabled={checking} onclick={() => void check()}
           >{checking ? 'Checking metadata…' : 'Check availability'}</button
         >
         <p class="muted">
           Checks initialize and list metadata only. A listing does not prove a particular tool call
-          will succeed. Observations become stale after five minutes.
+          will succeed. Observations become stale after five minutes. The canary is the deployment's
+          scheduled listing of the same metadata, when it runs canaries.
         </p>
         <div class="detail-tabs" role="tablist" aria-label="Service details">
           {#each ['overview', 'tools', 'policy', 'observations', 'classification'] as choice}

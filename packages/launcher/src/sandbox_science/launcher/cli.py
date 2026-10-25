@@ -389,6 +389,22 @@ async def _start(
         required=not bool(config.orchestrator and config.orchestrator.recover_infrastructure),
     )
     await supervisor.start(workspace, timeout)
+    if (argv := parts.canaries_argv(config, layout)) is not None:
+        print(f"starting the MCP canaries, every {config.canaries.interval:g} s", flush=True)
+        await supervisor.start(_canaries(argv, layout), timeout)
+
+
+def _canaries(argv: list[str], layout: Layout) -> Part:
+    """The scheduled MCP canaries: started again when they stop, never stopping the rest,
+    since research does not depend on them."""
+    return Part(
+        "mcp-canaries",
+        argv,
+        layout.control,
+        ready_line=parts.CANARIES_READY,
+        required=False,
+        restart=True,
+    )
 
 
 async def _existing(

@@ -392,3 +392,24 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         *repairs, *agent_models, *page,
         *services,
     ]  # fmt: skip
+
+
+CANARIES_READY = "MCP canaries running"
+"""The line ``sandbox-science-harness mcp-canaries`` prints once it runs."""
+
+
+def canaries_argv(config: LauncherConfig, layout: Layout) -> list[str] | None:
+    """The scheduled MCP canaries (docs/MCP-CONNECTORS.md, "Canaries"), when ``[canaries]``
+    is enabled: each ``[mcp_proxy]`` server listed through the proxy with the run service's
+    caller token, the results recorded in the control store. None when they are off."""
+    if not config.canaries.enabled or config.mcp_proxy is None:
+        return None
+    proxy = config.mcp_proxy
+    servers = [option for server in proxy.servers for option in ("--server", server)]
+    return [
+        str(commands(config) / HARNESS), "mcp-canaries",
+        "--state-dir", str(layout.control),
+        "--mcp-proxy", f"http://{proxy.listen}",
+        "--mcp-token-file", str(layout.token(mcp.PROXY_CALLER)),
+        "--interval", f"{config.canaries.interval:g}", *servers,
+    ]  # fmt: skip

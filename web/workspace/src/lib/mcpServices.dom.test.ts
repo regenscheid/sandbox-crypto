@@ -132,3 +132,55 @@ it('checks availability only after an explicit action and never calls a tool', a
   ]);
   expect(requests.every((item) => !item.includes('tools/call'))).toBe(true);
 });
+
+it("shows the latest scheduled canary beside the user's own check", async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-25T12:12:00Z'));
+  const service = {
+    purpose: 'Papers',
+    observation: null,
+    metadata: null,
+    proxy_status: 'reachable',
+    proxy_checked_at: '2026-10-25T12:11:00Z',
+    availability: null,
+  };
+  const inventory = {
+    project_id: 'canary-p',
+    policy_revision: 'a',
+    inspected_runs: 0,
+    skipped_runs: 0,
+    observation_scope: 'Bounded',
+    services: [
+      {
+        ...service,
+        name: 'papers',
+        canary: { at: '2026-10-25T12:00:00Z', status: 'listed', tool_count: 12, elapsed_ms: 340 },
+      },
+      { ...service, name: 'archive', canary: null },
+    ],
+  };
+  const requests: string[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options?: RequestInit) => {
+      requests.push(`${options?.method ?? 'GET'} ${url}`);
+      return new Response(JSON.stringify(inventory));
+    }),
+  );
+  try {
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(mount(McpServices, { target, props: { projectId: 'canary-p' } }));
+    await settle();
+    const line = () => target.querySelector('.mcp-canary')?.textContent?.replace(/\s+/g, ' ');
+    expect(line()).toContain('Canary: listed 12 minutes ago · 12 tools · 340 ms.');
+    expect(target.textContent).toContain('Availability: Unknown');
+    target.querySelectorAll<HTMLButtonElement>('.mcp-row')[1]!.click();
+    flushSync();
+    expect(line()).toContain('Canary: none recorded.');
+    // Reading the canary calls nothing: no check, no tool.
+    expect(requests.filter((item) => item.startsWith('POST'))).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
