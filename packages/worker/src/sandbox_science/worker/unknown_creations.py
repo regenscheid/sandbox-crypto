@@ -152,6 +152,8 @@ def examine(
     complete: bool,
     info: EnvironmentInfo,
     known: Sequence[EnvironmentInfo],
+    *,
+    labelled: bool = False,
 ) -> Listing:
     """Read a sandbox listing for traces of ``info``'s sandbox (B3).
 
@@ -160,8 +162,9 @@ def examine(
     name or ID: a listing from another gateway or workspace, or from a gateway that is
     still rebuilding its index, misses them. A sandbox by the original name gives its
     identity. A sandbox under another name that carries ``ENVIRONMENT_LABEL`` with this
-    environment's ID, and that no other record of the worker names, is a blocker: the
-    label is the worker's own, so only that key counts, never a value alone."""
+    environment's ID, and that no other record of the worker names, is a blocker when
+    the pool labels its sandboxes (``labelled``): the label is the worker's own, so only
+    that key counts, never a value alone. Otherwise the name alone decides."""
     names = tuple(str(entry.get("name")) for entry in entries)
     if not complete:
         return Listing(
@@ -183,7 +186,7 @@ def examine(
             names=names,
         )
     owned = {other.sandbox for other in known}
-    wanted = label_value(info.environment_id)
+    wanted = label_value(info.environment_id) if labelled else None
     for entry in entries:
         name = entry.get("name")
         if name == info.sandbox:

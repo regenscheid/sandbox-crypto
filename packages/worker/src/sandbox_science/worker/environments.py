@@ -1304,7 +1304,13 @@ class Environments:
                 f" grace ({grace:g} s) ago; absence can be observed from {when(absent_from)}"
             )
         entries, complete = await self.cli.sandboxes()
-        listing = examine(entries, complete, info, self.records.identified())
+        listing = examine(
+            entries,
+            complete,
+            info,
+            self.records.identified(),
+            labelled=self.settings.label_environments,
+        )
         if listing.sandbox_id is not None:
             return Outcome(sandbox_id=listing.sandbox_id)
         if listing.blocker is not None:
@@ -1918,7 +1924,7 @@ class Environments:
             for provider in info.providers:
                 args += ["--provider", provider]
             label = label_value(info.environment_id)
-            if label is not None:
+            if self.settings.label_environments and label is not None:
                 args += ["--label", f"{ENVIRONMENT_LABEL}={label}"]
             args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
             await self.cli.run(*args, timeout=self.settings.create_timeout)

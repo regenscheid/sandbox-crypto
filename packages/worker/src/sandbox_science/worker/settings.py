@@ -160,6 +160,10 @@ class EnvironmentSettings(_Model):
     creation_recheck: Annotated[float, Field(ge=1, le=3600)] = 30.0
     """Seconds between the two reads of the gateway that confirm such a sandbox absent, and
     between the running worker's passes over those environments."""
+    label_environments: bool = False
+    """Give each sandbox the worker creates the label ``sandbox-science.io/environment``
+    with its environment's ID, and let reconciliation of an unknown creation look for it.
+    Off by default: turn it on once a gateway has been seen to accept the key."""
     admission: bool = True
     """Admit hosts on demand (D69): when OpenShell drafts a proposal for a host a sandbox
     could not resolve, and the policy could allow a request to it, name it in a revision."""

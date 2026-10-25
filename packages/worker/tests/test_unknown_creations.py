@@ -53,6 +53,12 @@ async def lost(setup: Setup, environment_id: str = "env-1") -> None:
     assert info.sandbox_id is None
 
 
+def label(setup: Setup) -> None:
+    """Turn on ``label_environments`` for the setup's pool."""
+    environments = setup.environments
+    environments.settings = environments.settings.model_copy(update={"label_environments": True})
+
+
 def no_sandbox_touched(setup: Setup) -> None:
     for command in ("delete", "stop", "start"):
         assert setup.fake.calls("sandbox", command) == []
@@ -152,6 +158,7 @@ async def test_a_listing_that_cannot_show_absence_confirms_nothing(
         paused.fake.update(endless_pages=True)
         reason = "more than 32 pages"
     elif problem == "labels":
+        label(paused)
         other = {"id": "x", "name": "ss-other", "labels": {ENVIRONMENT_LABEL: "env-1"}}
         paused.fake.update(extra_listed=[other])
         reason = f"carries {ENVIRONMENT_LABEL}=env-1"
@@ -529,7 +536,22 @@ def test_inherited_openshell_variables_do_not_reach_the_cli(
     assert env["PATH"] == os.environ["PATH"]
 
 
+async def test_creations_carry_no_label_by_default(paused: Setup) -> None:
+    await paused.environments.create(paused.request())
+    [create] = paused.fake.calls("sandbox", "create")
+    assert "--label" not in create
+    # Nor does reconciliation look for one: a labelled stranger does not block.
+    await lost(paused, "env-2")
+    stranger = {"id": "x", "name": "ss-other", "labels": {ENVIRONMENT_LABEL: "env-2"}}
+    paused.fake.update(extra_listed=[stranger])
+    paused.fake_clock().advance(GRACE + 1)
+    await paused.environments.reconcile_creation("env-2")
+    paused.fake_clock().advance(RECHECK)
+    assert (await paused.environments.reconcile_creation("env-2")).action == "rolled_back"
+
+
 async def test_creations_carry_the_environment_label(paused: Setup) -> None:
+    label(paused)
     await paused.environments.create(paused.request())
     long = "e" * 64
     await paused.environments.create(paused.request(long))
@@ -539,6 +561,7 @@ async def test_creations_carry_the_environment_label(paused: Setup) -> None:
 
 
 async def test_a_common_label_value_or_an_owned_sandbox_does_not_block(paused: Setup) -> None:
+    label(paused)
     other, _ = await paused.environments.create(paused.request("env-other"))
     await lost(paused)
     paused.fake.update(
