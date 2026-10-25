@@ -5,7 +5,8 @@
  * by name. A trigger counts at the start of the text or after white space, and its word
  * runs to the caret, so a space (or Escape) closes it. Each open reads its list once and
  * filters it as the user types; choosing an item replaces the trigger and its word with
- * plain text the agent can read (the path, the session ID, the skill's name) and a space.
+ * plain text the agent can read (the path, `#` and the session ID, `/` and the skill's
+ * name) and a space.
  * Nothing else is sent: the message is the text in the box.
  */
 import type { ArtifactListing, ProjectSkills, ProjectView } from './api-types';
@@ -26,8 +27,11 @@ export const MAX_MATCHES = 8;
 
 /** One item to choose: what is inserted, and what the list shows beside it. */
 export interface CompletionOption {
-  /** The plain text inserted: an artifact's path, a session's ID, a skill's name. */
+  /** What the list shows and the word matches: a path, a session's ID, a skill's name. */
   value: string;
+  /** The plain text inserted: the artifact's path, `#` and the session's ID, `/` and the
+   * skill's name, so the agent reads which it is. */
+  insert: string;
   /** A few words about it, shown as text with hidden characters as code points. */
   detail: string;
 }
@@ -91,7 +95,11 @@ export async function sessionArtifacts(
   );
   return listing.artifacts
     .filter((entry) => !entry.deleted)
-    .map((entry) => ({ value: entry.path, detail: `${entry.kind}, revision ${entry.revision}` }));
+    .map((entry) => ({
+      value: entry.path,
+      insert: entry.path,
+      detail: `${entry.kind}, revision ${entry.revision}`,
+    }));
 }
 
 /** The project's sessions, the most recently opened first, by ID. */
@@ -101,6 +109,7 @@ export async function projectSessions(project: string): Promise<CompletionOption
     .sort((a, b) => b.opened_at.localeCompare(a.opened_at))
     .map((item) => ({
       value: item.session_id,
+      insert: `#${item.session_id}`,
       detail: `${item.closed_at ? 'closed' : 'open'} · ${item.runs} ${item.runs === 1 ? 'run' : 'runs'}`,
     }));
 }
@@ -110,6 +119,7 @@ export async function projectSkills(project: string): Promise<CompletionOption[]
   const found = await get<ProjectSkills>(`/projects/${part(project)}/skills`);
   return found.effective.map((skill) => ({
     value: skill.name,
+    insert: `/${skill.name}`,
     detail: skill.short ?? skill.description,
   }));
 }
@@ -225,7 +235,7 @@ export class Completer {
     const option = this.matches()[index];
     if (!trigger || !option) return null;
     this.close();
-    return insertCompletion(text, trigger, caret, option.value);
+    return insertCompletion(text, trigger, caret, option.insert);
   }
 }
 

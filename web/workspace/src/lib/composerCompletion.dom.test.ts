@@ -168,7 +168,7 @@ describe('composer completion', () => {
     key(box, 'ArrowUp');
     key(box, 'Enter');
     await settle();
-    expect(box.value).toBe('As in early ');
+    expect(box.value).toBe('As in #early ');
   });
 
   it("offers the project's skills on /, by name, and a pointer chooses one", async () => {
@@ -185,7 +185,7 @@ describe('composer completion', () => {
       .querySelector('[role="option"]')!
       .dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
     await settle();
-    expect(box.value).toBe('count-points ');
+    expect(box.value).toBe('/count-points ');
     expect(reads['skills']).toBe(1);
   });
 
@@ -225,13 +225,17 @@ describe('completion text', () => {
   });
 
   it('keeps at most eight matches, those starting with the word first', () => {
-    const many = Array.from({ length: 12 }, (_, i) => ({ value: `x${i}a`, detail: '' }));
+    const many = Array.from({ length: 12 }, (_, i) => ({
+      value: `x${i}a`,
+      insert: `x${i}a`,
+      detail: '',
+    }));
     expect(matching(many, '')).toHaveLength(8);
     expect(
       matching(
         [
-          { value: 'b-ab', detail: '' },
-          { value: 'ab', detail: '' },
+          { value: 'b-ab', insert: 'b-ab', detail: '' },
+          { value: 'ab', insert: 'ab', detail: '' },
         ],
         'AB',
       ).map((o) => o.value),
