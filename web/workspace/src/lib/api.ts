@@ -12,6 +12,9 @@ import type {
   ContextText,
   IndexStatus,
   ChartLink,
+  ClassificationAccepted,
+  ClassificationListing,
+  ClassificationView,
   ContextHistoryPage,
   ContextAttemptsPage,
   ContextTimelinePage,
@@ -21,6 +24,8 @@ import type {
   ArtifactListing,
   RevisionListing,
   ConnectorSettings,
+  DraftListing,
+  DriftAccepted,
   AnswerResult,
   GrantListing,
   PendingApproval,
@@ -58,13 +63,6 @@ import type {
   ViewerLink,
 } from './api-types';
 import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
-import type {
-  ClassificationAccepted,
-  ClassificationListing,
-  ClassificationView,
-  DraftListing,
-  DriftAccepted,
-} from './classificationTypes';
 import { artifactQuery, NO_FILTER } from './artifactFiles';
 import type { CategoryBody } from './frontierForm';
 import { ApiError, get, post } from './http';
@@ -717,6 +715,12 @@ export const api = {
       `/projects/${part(project)}/mcp-services/${part(server)}/drift/accept`,
       change,
     ),
+  /**
+   * Where a project revision of a service's classification exports as its YAML, exactly
+   * as stored (CL-3): a link for the browser to follow, not a call.
+   */
+  classificationExportUrl: (project: string, server: string, revision: string) =>
+    `/api/v0/projects/${part(project)}/mcp-services/${part(server)}/classification/revisions/${part(revision)}/export`,
   /** The user's change of the always-loaded and excluded skills, at `expected`. */
   changeSkillSettings: (project: string, change: SkillSettingsChange) =>
     post<SkillSettingsView>(`/projects/${part(project)}/skills/settings`, change),

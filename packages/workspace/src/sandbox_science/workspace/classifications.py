@@ -17,6 +17,9 @@ Routes (``…`` is ``/api/v0/projects/{project}``):
   ``{"yaml", "reason", "operation_id"}``: accept the (edited) draft.
 - ``POST …/mcp-services/{server}/drift/accept`` with ``{"reason", "operation_id"}``:
   re-accept the server's tool list, as ``accept-tools`` does.
+- ``GET …/mcp-services/{server}/classification/revisions/{revision}/export``: the
+  project's accepted revision, its YAML exactly as the worker stored it, with the
+  worker's ``X-Classification-*`` headers, to check in.
 
 A write's ``operation_id`` goes to the worker, which keeps the receipt: the same request
 again answers the first result; another request under that ID is a conflict, which the
@@ -34,8 +37,14 @@ from aiohttp import web
 from pydantic import BaseModel, Field, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind
+from sandbox_science.contracts.classifications import (
+    ClassificationAcceptance,
+    ClassificationDraft,
+    ClassificationInForce,
+    DriftAcceptance,
+)
 from sandbox_science.orchestrator.projects import ProjectError
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import ClassificationExport, WorkerClient
 
 from .context import CONTEXT, identifier, json_answer, json_body, no_query
 from .mcp_services import CONFIGURATION, Configuration
@@ -47,31 +56,59 @@ MAX_YAML_BYTES: Final = 1024 * 1024
 """A classification file's limit, as the policy loader's."""
 MAX_REASON: Final = 500
 _OPERATION: Final = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
-_DRAFT: Final = r"^[0-9a-f]{1,128}$"
+_DRAFT: Final = r"^[0-9a-f]{64}$"
+_REVISION: Final = _DRAFT
 _METHODS: Final = (
     "classifications",
     "classification_drafts",
     "accept_classification_draft",
-    "accept_drift",
+    "accept_classification_drift",
+    "export_classification",
 )
 
 
+class ClassificationListing(Contract):
+    """``GET …/classifications``: the project's configured services' classifications."""
+
+    project: str
+    classifications: list[ClassificationInForce]
+
+
+class ClassificationView(ClassificationInForce):
+    """``GET …/mcp-services/{server}/classification``: one service's, with its project."""
+
+    project: str
+
+
+class DraftListing(Contract):
+    """``GET …/mcp-services/{server}/classification/drafts``: newest first."""
+
+    project: str
+    server: str
+    drafts: list[ClassificationDraft]
+
+
 class ClassificationSource(Protocol):
-    """The worker's classification routes, as the workspace's operator client calls them.
+    """The worker client's classification methods, as the workspace's operator client has
+    them (``WorkerClient``): argument names and order are the client's.
 
     Each answer is the worker's contract value, or its JSON."""
 
-    async def classifications(self, project: str, /) -> object: ...
+    async def classifications(self, project_id: str) -> object: ...
 
-    async def classification_drafts(self, project: str, server: str, /) -> object: ...
+    async def classification_drafts(self, project_id: str, server: str) -> object: ...
 
     async def accept_classification_draft(
-        self, project: str, server: str, draft: str, yaml: str, reason: str, operation_id: str, /
+        self, server: str, draft: str, acceptance: ClassificationAcceptance
     ) -> object: ...
 
-    async def accept_drift(
-        self, project: str, server: str, reason: str, operation_id: str, /
+    async def accept_classification_drift(
+        self, server: str, acceptance: DriftAcceptance
     ) -> object: ...
+
+    async def export_classification(
+        self, project_id: str, server: str, revision: str
+    ) -> ClassificationExport: ...
 
 
 SOURCE: Final = web.AppKey("classification_source", ClassificationSource)
@@ -95,6 +132,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(SERVICE + "/classification/drafts", drafts)
     app.router.add_post(SERVICE + "/classification/drafts/{draft}/accept", accept_draft)
     app.router.add_post(SERVICE + "/drift/accept", accept_drift)
+    app.router.add_get(SERVICE + "/classification/revisions/{revision}/export", export)
 
 
 class _DraftAcceptance(Contract):
@@ -224,9 +262,10 @@ async def accept_draft(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "an acceptance needs a reason")
     if len(body.yaml.encode()) > MAX_YAML_BYTES:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "the classification YAML is too large")
-    answer = await _source(request).accept_classification_draft(
-        project, server, draft, body.yaml, body.reason, body.operation_id
+    acceptance = ClassificationAcceptance(
+        project=project, operation_id=body.operation_id, yaml=body.yaml, reason=body.reason
     )
+    answer = await _source(request).accept_classification_draft(server, draft, acceptance)
     return json_answer(dumps(_record(answer, "acceptance")))
 
 
@@ -245,5 +284,28 @@ async def accept_drift(request: web.Request) -> web.Response:
         ) from None
     if not body.reason.strip():
         raise ProjectError(ErrorKind.INVALID_REQUEST, "a re-acceptance needs a reason")
-    answer = await _source(request).accept_drift(project, server, body.reason, body.operation_id)
+    acceptance = DriftAcceptance(
+        project=project, operation_id=body.operation_id, reason=body.reason
+    )
+    answer = await _source(request).accept_classification_drift(server, acceptance)
     return json_answer(dumps(_record(answer, "re-acceptance")))
+
+
+async def export(request: web.Request) -> web.Response:
+    """The project's accepted revision, its YAML exactly as stored, to check in (CL-3)."""
+    no_query(request, "classification export")
+    project, server = await _service(request)
+    revision = request.match_info["revision"]
+    if re.fullmatch(_REVISION, revision) is None:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid classification revision")
+    found = await _read(request, _source(request).export_classification(project, server, revision))
+    headers = {
+        "Content-Disposition": f'attachment; filename="{server}.classification.yaml"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "X-Classification-Server": found.server,
+        "X-Classification-Revision": found.revision,
+    }
+    if found.accepted_at is not None:
+        headers["X-Classification-Accepted-At"] = found.accepted_at.isoformat()
+    return web.Response(body=found.yaml, content_type="application/yaml", headers=headers)

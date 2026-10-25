@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { expect, it } from 'vitest';
-import type { DraftTool } from './classificationTypes';
+import type { DraftTool } from './api-types';
 import { editable, problems, rewriteYaml, ruleWords, widens } from './classifications';
 
 const YAML = `# SPDX-License-Identifier: MIT
@@ -38,6 +38,7 @@ const tool = (name: string, extra: Partial<DraftTool> = {}): DraftTool => ({
   escalates: false,
   current_effect: 'read',
   widening: false,
+  widening_reasons: [],
   ...extra,
 });
 
@@ -46,7 +47,7 @@ it('says rules in words', () => {
     'actions present → write',
   );
   expect(
-    ruleWords({ argument: 'profile.saveChanges', present: null, equals: true, effect: 'write' }),
+    ruleWords({ argument: 'profile.saveChanges', present: null, equals: 'true', effect: 'write' }),
   ).toBe('profile.saveChanges = true → write');
 });
 
@@ -61,7 +62,7 @@ it('rewrites only the edited tool and keeps unknown fields', () => {
   const edit = editable(tool('scrape'));
   edit.effect = 'write';
   edit.reason = 'Saves "profiles" # sometimes';
-  edit.rules = [{ argument: 'webhook', present: null, equals: 'yes', effect: 'communicate' }];
+  edit.rules = [{ argument: 'webhook', present: null, equals: '"yes"', effect: 'communicate' }];
   edit.significant = [];
   const written = rewriteYaml(YAML, new Map([['scrape', edit]]));
   expect('yaml' in written).toBe(true);
@@ -105,6 +106,23 @@ it('checks edits as the loader would refuse them', () => {
   expect(problems(edit)).toEqual([
     'a reason is required',
     '"bad path!" is not an argument path (names joined by ".")',
+  ]);
+});
+
+it('checks a rule value as JSON text the loader takes', () => {
+  const rule = (equals: string | null) => {
+    const edit = editable(tool('scrape'));
+    edit.rules = [{ argument: 'mode', present: null, equals, effect: 'write' }];
+    return problems(edit);
+  };
+  expect(rule('true')).toEqual([]);
+  expect(rule('3')).toEqual([]);
+  expect(rule('"fast"')).toEqual([]);
+  expect(rule(null)).toEqual(['the rule on mode needs a value']);
+  expect(rule('fast')).toEqual(['the rule on mode has a value that is not JSON']);
+  expect(rule('{"a": 1}')).toEqual(['the rule on mode needs a value']);
+  expect(rule(JSON.stringify('say "hi"'))).toEqual([
+    'the rule on mode has a quote or backslash, or is too long',
   ]);
 });
 

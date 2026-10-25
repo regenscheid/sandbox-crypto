@@ -3,7 +3,7 @@
      configured service's classification in force, opening its Classification tab. -->
 <script lang="ts">
   import { api } from '../lib/api';
-  import type { ClassificationInForce } from '../lib/classificationTypes';
+  import type { ClassificationInForce } from '../lib/api-types';
   import { formatTime } from '../lib/format';
   import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -40,7 +40,7 @@
         <span
           >{item.source.kind === 'catalog'
             ? 'Checked-in file'
-            : `Project revision ${item.source.revision ?? ''}`}</span
+            : `Project revision ${item.source.revision?.slice(0, 12) ?? ''}`}</span
         >
         <span class="muted">{when(item)}</span>
         <span>{item.tools.length} tools</span>

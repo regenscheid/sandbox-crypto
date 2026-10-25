@@ -6,15 +6,16 @@
   import { untrack } from 'svelte';
   import { api } from '../lib/api';
   import type {
-    ArgumentRule,
     ClassificationAccepted,
     ClassificationDraft,
     ClassifiedTool,
-    EffectClass,
-    SignificantKind,
-  } from '../lib/classificationTypes';
+    DraftTool,
+    ToolRule,
+  } from '../lib/api-types';
   import {
     changed,
+    type EffectClass,
+    type SignificantKind,
     EFFECT_CLASSES,
     editable,
     MAX_REASON,
@@ -67,6 +68,15 @@
       )
       .map((tool) => tool.name),
   );
+  /**
+   * Why a tool's acceptance widens, as the worker says for the draft as written; for an
+   * edited tool the view's own estimate stands until the worker answers on acceptance.
+   */
+  function reasonsFor(tool: DraftTool, mine: EditedTool): string {
+    if (changed(mine, tool))
+      return 'Estimated from your edit; the worker lists its reasons on acceptance.';
+    return visible(tool.widening_reasons.join('; ')) || 'The worker marks it as widening.';
+  }
   const invalid = $derived(
     draft.tools.flatMap((tool) =>
       (edits[tool.name] ? problems(edits[tool.name]!) : []).map((text) => `${tool.name}: ${text}`),
@@ -81,15 +91,16 @@
   let significantKind = $state<SignificantKind>('url');
   let significantPath = $state('');
 
-  function value(text: string): boolean | number | string {
-    if (text === 'true' || text === 'false') return text === 'true';
-    if (/^-?(?:0|[1-9][0-9]{0,15})$/.test(text)) return Number(text);
-    return text;
+  /** The rule's value as JSON text: `true`, a whole number, or the text quoted. */
+  function value(text: string): string {
+    if (text === 'true' || text === 'false') return text;
+    if (/^-?(?:0|[1-9][0-9]{0,15})$/.test(text)) return String(Number(text));
+    return JSON.stringify(text);
   }
   function addRule(name: string) {
     const tool = edits[name];
     if (!tool || !ruleArgument.trim()) return;
-    const rule: ArgumentRule = {
+    const rule: ToolRule = {
       argument: ruleArgument.trim(),
       present: ruleCondition === 'present' ? true : null,
       equals: ruleCondition === 'equals' ? value(ruleValue) : null,
@@ -190,7 +201,9 @@
 <section class="classification-draft" aria-label={`Draft ${draft.draft.slice(0, 12)}`}>
   <header>
     <strong>Draft <code>{draft.draft.slice(0, 12)}</code></strong>
-    <span class="muted">created {formatTime(draft.created_at)} · model {visible(draft.model)}</span>
+    <span class="muted"
+      >created {formatTime(draft.created_at)} · model {visible(draft.model ?? 'unknown')}</span
+    >
   </header>
   <p class="framing" role="note">
     Proposed by a model from the server's tool list. Classes, reasons and rules below are the
@@ -216,16 +229,21 @@
             <td>
               {#if before}
                 <span class="pill effect">{before.effect}</span>
-                <p>{visible(before.reason)}</p>
+                <p>{visible(before.reason ?? '')}</p>
                 {#each before.rules as rule}<div class="rule">{ruleWords(rule)}</div>{/each}
               {:else}<span class="muted">Not classified now</span>{/if}
             </td>
             <td>
               {#if proposed && mine}
                 <span class="pill effect">{mine.effect}</span>
-                {#if widens(mine, proposed, before)}<span class="pill failed widening">Widens</span
+                {#if widens(mine, proposed, before)}<span
+                    class="pill failed widening"
+                    title={reasonsFor(proposed, mine)}>Widens</span
                   >{/if}
                 {#if changed(mine, proposed)}<span class="pill info">Edited</span>{/if}
+                {#if widens(mine, proposed, before)}<div class="muted widening-reasons">
+                    {reasonsFor(proposed, mine)}
+                  </div>{/if}
                 <p>{visible(mine.reason)}</p>
                 {#each mine.rules as rule}<div class="rule">{visible(ruleWords(rule))}</div>{/each}
                 {#if mine.significant.length}<div class="muted">
@@ -346,11 +364,22 @@
   </div>
   {#if accepted}
     <p role="status">
-      Accepted as revision {accepted.revision} at {formatTime(accepted.accepted_at)}{accepted
-        .widenings.length
-        ? `; widenings: ${accepted.widenings.join(', ')}`
-        : ''}.
+      Accepted as revision <code>{accepted.revision.slice(0, 12)}</code> at {formatTime(
+        accepted.accepted_at,
+      )}{accepted.widenings.length ? `; widenings: ${accepted.widenings.join(', ')}` : ''}.
     </p>
+    {#if accepted.widenings.length}
+      <ul class="widened">
+        {#each accepted.widenings as name (name)}
+          <li>
+            <code>{visible(name)}</code>
+            {#each accepted.widening_reasons[name] ?? [] as why}<div class="muted">
+                {visible(why)}
+              </div>{/each}
+          </li>
+        {/each}
+      </ul>
+    {/if}
   {:else if !confirming}
     <button type="button" class="primary-button" onclick={open}>Accept…</button>
   {/if}
@@ -366,7 +395,15 @@
           Calls of these tools that ask for approval today would pass without it:
         </p>
         <ul class="widenings">
-          {#each widenings as name}<li><code>{visible(name)}</code></li>{/each}
+          {#each widenings as name}
+            {@const tool = draftByName.get(name)}
+            <li>
+              <code>{visible(name)}</code>
+              {#if tool && edits[name]}<div class="muted">
+                  {reasonsFor(tool, edits[name]!)}
+                </div>{/if}
+            </li>
+          {/each}
         </ul>
       {:else}<p class="muted">None estimated; the worker lists any it finds.</p>{/if}
       <h5>Changes from the classification in force</h5>

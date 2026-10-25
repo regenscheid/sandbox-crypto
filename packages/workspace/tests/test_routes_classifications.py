@@ -4,15 +4,28 @@ answer the worker's refusals as the workspace's errors (CL-1 to CL-6)."""
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import ErrorKind
-from sandbox_science.orchestrator.worker_client import WorkerAPIError
-from sandbox_science.workspace.classifications import from_worker
+from sandbox_science.contracts.classifications import ClassificationAcceptance, DriftAcceptance
+from sandbox_science.orchestrator.worker_client import (
+    ClassificationExport,
+    WorkerAPIError,
+    WorkerClient,
+)
+from sandbox_science.workspace.classifications import (
+    ClassificationListing,
+    ClassificationSource,
+    ClassificationView,
+    DraftListing,
+    from_worker,
+)
 from sandbox_science.workspace.mcp_services import ServiceConfig
 
 from .route_support import WORKER_SECRET, error_of, origin, workspace
@@ -22,6 +35,9 @@ DIGEST = "sha256:" + "d" * 64
 PIN = "e" * 64
 DRAFT = "ab12" * 16
 BASE = "/api/v0/projects/p1"
+EXPORTED = b"server: papers\ntools: {}\n"
+REVISION = hashlib.sha256(EXPORTED).hexdigest()
+WIDENING = "read passes without asking, where unclassified is escalate"
 
 
 def _tool(name: str, effect: str, pin_state: str, **extra: object) -> dict[str, object]:
@@ -81,13 +97,13 @@ class FakeClassifications:
         if self.refusal is not None:
             raise self.refusal
 
-    async def classifications(self, project: str, /) -> object:
-        self.calls.append(("classifications", project))
+    async def classifications(self, project_id: str) -> object:
+        self.calls.append(("classifications", project_id))
         self._check()
         return self.records
 
-    async def classification_drafts(self, project: str, server: str, /) -> object:
-        self.calls.append(("drafts", project, server))
+    async def classification_drafts(self, project_id: str, server: str) -> object:
+        self.calls.append(("drafts", project_id, server))
         self._check()
         return [
             {
@@ -100,7 +116,8 @@ class FakeClassifications:
                     {
                         **_tool("scrape", "write", "current"),
                         "current_effect": "read",
-                        "widening": False,
+                        "widening": True,
+                        "widening_reasons": [WIDENING],
                     }
                 ],
             }
@@ -118,21 +135,43 @@ class FakeClassifications:
         return kept[1]
 
     async def accept_classification_draft(
-        self, project: str, server: str, draft: str, yaml: str, reason: str, operation_id: str, /
+        self, server: str, draft: str, acceptance: ClassificationAcceptance
     ) -> object:
-        request = ("accept", project, server, draft, yaml, reason, operation_id)
+        request = (
+            "accept",
+            acceptance.project,
+            server,
+            draft,
+            acceptance.yaml,
+            acceptance.reason,
+            acceptance.operation_id,
+        )
         self.calls.append(request)
         self._check()
-        answer = {"revision": 3, "accepted_at": "2026-10-25T10:00:00Z", "widenings": ["scrape"]}
-        return self._once(operation_id, request[:-1], answer)
+        answer = {
+            "revision": REVISION,
+            "accepted_at": "2026-10-25T10:00:00Z",
+            "widenings": ["scrape"],
+            "widening_reasons": {"scrape": [WIDENING]},
+        }
+        return self._once(acceptance.operation_id, request[:-1], answer)
 
-    async def accept_drift(
-        self, project: str, server: str, reason: str, operation_id: str, /
-    ) -> object:
-        request = ("drift", project, server, reason, operation_id)
+    async def accept_classification_drift(self, server: str, acceptance: DriftAcceptance) -> object:
+        request = ("drift", acceptance.project, server, acceptance.reason, acceptance.operation_id)
         self.calls.append(request)
         self._check()
-        return self._once(operation_id, request[:-1], {"accepted_at": "2026-10-25T10:05:00Z"})
+        return self._once(
+            acceptance.operation_id, request[:-1], {"accepted_at": "2026-10-25T10:05:00Z"}
+        )
+
+    async def export_classification(
+        self, project_id: str, server: str, revision: str
+    ) -> ClassificationExport:
+        self.calls.append(("export", project_id, server, revision))
+        self._check()
+        return ClassificationExport(
+            server, revision, EXPORTED, datetime(2026, 10, 25, 10, 0, tzinfo=UTC)
+        )
 
 
 async def _client(
@@ -169,6 +208,13 @@ async def test_in_force_views_pass_the_worker_records_through(
     assert drafts["server"] == "web"
     assert drafts["drafts"][0]["draft"] == DRAFT
     assert drafts["drafts"][0]["tools"][0]["current_effect"] == "read"
+    assert drafts["drafts"][0]["tools"][0]["widening_reasons"] == [WIDENING]
+    # The answers are the shapes the browser's generated types describe.
+    ClassificationView.model_validate(
+        await (await client.get(BASE + "/mcp-services/web/classification")).json()
+    )
+    ClassificationListing.model_validate(listing)
+    DraftListing.model_validate(drafts)
     assert ("drafts", "p1", "web") in fake.calls
     # Unknown or unconfigured service, unknown project, a query: refused before the worker.
     calls = len(fake.calls)
@@ -209,7 +255,12 @@ async def test_accepting_a_draft_passes_its_operation_id_to_the_worker(
         return await response.json()
 
     first = await post(body)
-    assert first == {"revision": 3, "accepted_at": "2026-10-25T10:00:00Z", "widenings": ["scrape"]}
+    assert first == {
+        "revision": REVISION,
+        "accepted_at": "2026-10-25T10:00:00Z",
+        "widenings": ["scrape"],
+        "widening_reasons": {"scrape": [WIDENING]},
+    }
     assert fake.calls[-1] == ("accept", "p1", "papers", DRAFT, body["yaml"], "Reviewed", "op-1")
     # The worker keeps the receipt: a retry reaches it again and gets the first answer.
     assert await post(body) == first
@@ -255,6 +306,32 @@ async def test_drift_reacceptance_needs_a_reason_and_passes_its_operation_id(
         path, json={**body, "reason": "Something else"}, headers=origin(client)
     )
     await error_of(response, 409, "conflict")
+
+
+async def test_a_revision_exports_as_its_yaml_with_the_workers_headers(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    fake = FakeClassifications()
+    client = await _client(aiohttp_client, state_dir, static_dir, fake)
+    path = BASE + f"/mcp-services/papers/classification/revisions/{REVISION}/export"
+    response = await client.get(path)
+    assert response.status == 200
+    assert await response.read() == EXPORTED
+    assert response.headers["Content-Type"].startswith("application/yaml")
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["X-Classification-Server"] == "papers"
+    assert response.headers["X-Classification-Revision"] == REVISION
+    assert response.headers["X-Classification-Accepted-At"] == "2026-10-25T10:00:00+00:00"
+    assert response.headers["Content-Disposition"].startswith("attachment;")
+    assert fake.calls == [("export", "p1", "papers", REVISION)]
+    # Not a revision, not a configured service, a query: refused before the worker.
+    await error_of(await client.get(path.replace(REVISION, "NOT-HEX")), 400, "invalid_request")
+    await error_of(await client.get(path.replace("papers", "elsewhere")), 404, "not_found")
+    await error_of(await client.get(path + "?x=1"), 400, "invalid_request")
+    assert len(fake.calls) == 1
+    # The worker's refusal is the workspace's error.
+    fake.refusal = WorkerAPIError(ErrorKind.NOT_FOUND, "no such revision", 404)
+    await error_of(await client.get(path), 404, "not_found")
 
 
 async def test_worker_refusals_answer_as_workspace_errors(
@@ -307,10 +384,19 @@ async def test_without_the_worker_routes_classifications_are_unavailable(
 
 def test_a_worker_client_is_a_source_only_with_every_route() -> None:
     class Partial:
-        async def classifications(self, project: str) -> object:
+        async def classifications(self, project_id: str) -> object:
             return []
 
     fake = FakeClassifications()
     assert from_worker(fake) is fake  # pyright: ignore[reportArgumentType]
     assert from_worker(Partial()) is None  # pyright: ignore[reportArgumentType]
     assert from_worker(None) is None
+
+
+def test_the_workers_client_has_the_source_methods_with_the_sources_signatures() -> None:
+    def as_source(worker: WorkerClient) -> ClassificationSource:
+        return worker  # pyright checks every name, order and type against the client
+
+    worker = WorkerClient("http://worker.invalid", "token")
+    assert from_worker(worker) is worker
+    assert as_source is not None

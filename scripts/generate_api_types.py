@@ -27,6 +27,10 @@ from typing import Any
 from pydantic import BaseModel, TypeAdapter
 from pydantic.json_schema import models_json_schema
 
+from sandbox_science.contracts.classifications import (
+    ClassificationAccepted,
+    DriftAccepted,
+)
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage
 from sandbox_science.contracts.provision_observations import (
     ProvisionDetail,
@@ -68,6 +72,11 @@ from sandbox_science.workspace.chat import (
     QuestionAnswer,
     QuestionListing,
     Requested,
+)
+from sandbox_science.workspace.classifications import (
+    ClassificationListing,
+    ClassificationView,
+    DraftListing,
 )
 from sandbox_science.workspace.context_captures import IndexStatus
 from sandbox_science.workspace.context_inspector import (
@@ -177,6 +186,11 @@ MODELS: tuple[type[BaseModel], ...] = (
     MemoryAnswer,
     ProjectSkills,
     McpInventory,
+    ClassificationListing,
+    ClassificationView,
+    DraftListing,
+    ClassificationAccepted,
+    DriftAccepted,
     FoldProposalList,
     SkillSettingsChange,
     SkillSettingsView,

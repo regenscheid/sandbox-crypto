@@ -11,13 +11,11 @@
  * The draft's DRAFT comment is dropped. The worker checks the result as the loader
  * checks a file; the checks here only catch what would certainly fail.
  */
-import type {
-  ArgumentRule,
-  ClassifiedTool,
-  DraftTool,
-  EffectClass,
-  SignificantKind,
-} from './classificationTypes';
+import type { ClassifiedTool, DraftTool, ToolRule } from './api-types';
+
+export type EffectClass = ClassifiedTool['effect'];
+export type PinState = ClassifiedTool['pin_state'];
+export type SignificantKind = 'url' | 'host' | 'recipient' | 'title' | 'size' | 'query';
 
 export const EFFECT_CLASSES: readonly EffectClass[] = [
   'read',
@@ -40,22 +38,21 @@ const MAX_TOOL_REASON = 200;
 const MAX_LINE = 160;
 const ARGUMENT = /^[A-Za-z0-9_$-]{1,64}(?:\.[A-Za-z0-9_$-]{1,64}){0,7}$/;
 
-/** A rule's condition in words: `actions` present, or `profile.saveChanges` = true. */
-export function condition(rule: ArgumentRule): string {
-  return rule.present
-    ? `${rule.argument} present`
-    : `${rule.argument} = ${JSON.stringify(rule.equals)}`;
+/**
+ * A rule's condition in words: `actions` present, or `profile.saveChanges` = true. A
+ * rule's `equals` is JSON text (`true` and `"true"` differ), shown as it is.
+ */
+export function condition(rule: ToolRule): string {
+  return rule.present ? `${rule.argument} present` : `${rule.argument} = ${rule.equals ?? 'null'}`;
 }
 
 /** A rule in words: "`actions` present → browse". */
-export function ruleWords(rule: ArgumentRule): string {
+export function ruleWords(rule: ToolRule): string {
   return `${condition(rule)} → ${rule.effect}`;
 }
 
 /** Significant arguments in words: "url: url, title: name". */
-export function significantWords(
-  significant: Partial<Record<SignificantKind, string>> | null,
-): string {
+export function significantWords(significant: Record<string, string> | null): string {
   const entries = Object.entries(significant ?? {});
   return entries.length ? entries.map(([kind, path]) => `${kind}: ${path}`).join(', ') : '';
 }
@@ -65,7 +62,7 @@ export interface EditedTool {
   name: string;
   effect: EffectClass;
   reason: string;
-  rules: ArgumentRule[];
+  rules: ToolRule[];
   significant: { kind: SignificantKind; path: string }[];
 }
 
@@ -73,7 +70,7 @@ export function editable(tool: ClassifiedTool): EditedTool {
   return {
     name: tool.name,
     effect: tool.effect,
-    reason: tool.reason,
+    reason: tool.reason ?? '',
     rules: tool.rules.map((rule) => ({ ...rule })),
     significant: Object.entries(tool.significant ?? {}).map(([kind, path]) => ({
       kind: kind as SignificantKind,
@@ -96,6 +93,22 @@ export function changed(tool: EditedTool, draft: ClassifiedTool): boolean {
   return key(tool) !== key(editable(draft));
 }
 
+/** A rule value (JSON text) the loader would refuse, in words; empty when it takes it. */
+function valueProblem(text: string | null): string {
+  if (text === null) return 'needs a value';
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return 'has a value that is not JSON';
+  }
+  if (typeof value === 'string')
+    return /["\\]/.test(value) || value.length > 256
+      ? 'has a quote or backslash, or is too long'
+      : '';
+  return typeof value === 'boolean' || typeof value === 'number' ? '' : 'needs a value';
+}
+
 /** What would make the loader refuse the tool's entry, in words; empty when none. */
 export function problems(tool: EditedTool): string[] {
   const found: string[] = [];
@@ -107,12 +120,8 @@ export function problems(tool: EditedTool): string[] {
     if (!ARGUMENT.test(rule.argument))
       found.push(`"${rule.argument}" is not an argument path (names joined by ".")`);
     if (!rule.present) {
-      if (rule.equals === null) found.push(`the rule on ${rule.argument} needs a value`);
-      if (
-        typeof rule.equals === 'string' &&
-        (/["\\]/.test(rule.equals) || rule.equals.length > 256)
-      )
-        found.push(`the value for ${rule.argument} has a quote or backslash, or is too long`);
+      const wrong = valueProblem(rule.equals);
+      if (wrong) found.push(`the rule on ${rule.argument} ${wrong}`);
     }
   }
   const kinds = tool.significant.map((item) => item.kind);
@@ -158,8 +167,9 @@ export function ruleChanges(
 
 const quoted = (text: string) => `"${text.replace(/["\\#]/g, "'")}"`;
 
-function scalar(value: boolean | number | string | null): string {
-  return typeof value === 'string' ? JSON.stringify(value) : String(value);
+/** A rule's value, JSON text, as a YAML flow scalar: JSON's scalars are YAML's. */
+function scalar(value: string | null): string {
+  return value ?? 'null';
 }
 
 function fields(tool: EditedTool, pad: string): Map<string, string[]> {

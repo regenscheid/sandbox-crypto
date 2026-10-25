@@ -268,6 +268,73 @@ export interface CitationCheckView {
   matches: boolean;
 }
 
+/** The revision now in force and what accepting it widened, computed against the project's policy as the policy store binds it to the project, else the revision granted to it last. */
+export interface ClassificationAccepted {
+  revision: string;
+  accepted_at: string;
+  widenings: string[];
+  widening_reasons: Record<string, string[]>;
+}
+
+/** A draft a model wrote for a project's server: the model's text, never in force. */
+export interface ClassificationDraft {
+  draft: string;
+  server: string;
+  created_at: string;
+  model: string | null;
+  yaml: string;
+  tools: DraftTool[];
+}
+
+/** A configured server's classification in force for a project. */
+export interface ClassificationInForce {
+  server: string;
+  source: ClassificationSource;
+  digest: string;
+  tools: ClassifiedTool[];
+  drift: DriftSummary | null;
+}
+
+/** ``GET …/classifications``: the project's configured services' classifications. */
+export interface ClassificationListing {
+  project: string;
+  classifications: ClassificationInForce[];
+}
+
+/** Where the classification in force comes from: the checked-in catalog (its name and the day its pinned listing was captured) or the project's accepted revision. */
+export interface ClassificationSource {
+  kind: "catalog" | "project";
+  name: string | null;
+  revision: string | null;
+  pinned: string | null;
+  accepted_at: string | null;
+  accepted_by: string | null;
+  reason: string | null;
+}
+
+/** ``GET …/mcp-services/{server}/classification``: one service's, with its project. */
+export interface ClassificationView {
+  server: string;
+  source: ClassificationSource;
+  digest: string;
+  tools: ClassifiedTool[];
+  drift: DriftSummary | null;
+  project: string;
+}
+
+/** One tool as the view shows it. */
+export interface ClassifiedTool {
+  name: string;
+  effect: "read" | "write" | "communicate" | "browse" | "admin" | "unclassified";
+  reason: string | null;
+  rules: ToolRule[];
+  significant: Record<string, string> | null;
+  sha256: string | null;
+  pin_state: "current" | "changed" | "added" | "removed" | "unpinned";
+  mentioned: boolean;
+  escalates: boolean;
+}
+
 /** A flag that was cleared (LG-29): who cleared it, when, and why. */
 export interface ClearedFlag {
   flag_id: string;
@@ -823,6 +890,48 @@ export interface DominatesLink {
   revision: number;
   target: string;
   void: string | null;
+}
+
+/** ``GET …/mcp-services/{server}/classification/drafts``: newest first. */
+export interface DraftListing {
+  project: string;
+  server: string;
+  drafts: ClassificationDraft[];
+}
+
+/** A draft's tool beside the one in force. */
+export interface DraftTool {
+  name: string;
+  effect: "read" | "write" | "communicate" | "browse" | "admin" | "unclassified";
+  reason: string | null;
+  rules: ToolRule[];
+  significant: Record<string, string> | null;
+  sha256: string | null;
+  pin_state: "current" | "changed" | "added" | "removed" | "unpinned";
+  mentioned: boolean;
+  escalates: boolean;
+  current_effect: "read" | "write" | "communicate" | "browse" | "admin" | "unclassified" | null;
+  widening: boolean;
+  widening_reasons: string[];
+}
+
+export interface DriftAccepted {
+  accepted_at: string;
+}
+
+/** The middleware's latest ``mcp-tools-drift`` record of a server from the pin in force. */
+export interface DriftSummary {
+  at: string;
+  pin: string;
+  added: DriftTool[];
+  removed: string[];
+  changed: DriftTool[];
+  held: boolean;
+}
+
+export interface DriftTool {
+  name: string;
+  sha256: string | null;
 }
 
 /** The acknowledgement of one edit; the current plan is read separately. */
@@ -2449,6 +2558,14 @@ export interface ToolRecordReference {
   position: number;
   operation_id: string | null;
   record_bytes: number | null;
+}
+
+/** An argument rule: the call's class when the argument is set (``present``) or has a value (``equals``, as JSON text, so ``true`` and ``"true"`` differ). */
+export interface ToolRule {
+  argument: string;
+  present: boolean | null;
+  equals: string | null;
+  effect: "read" | "write" | "communicate" | "browse" | "admin" | "unclassified";
 }
 
 /** One run of the session's tree. */

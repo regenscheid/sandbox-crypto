@@ -3,7 +3,10 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import ClassificationTab from '../views/ClassificationTab.svelte';
 import McpServices from '../views/McpServices.svelte';
-import type { ClassifiedTool } from './classificationTypes';
+import type { ClassifiedTool } from './api-types';
+
+const REVISION = 'c'.repeat(64);
+const WHY = 'read passes without asking, where unclassified is escalate';
 
 const mounted: ReturnType<typeof mount>[] = [];
 afterEach(async () => {
@@ -98,6 +101,7 @@ const drafts = {
           ...tool('monitor', { reason: 'Lists monitors.' }),
           current_effect: 'unclassified',
           widening: true,
+          widening_reasons: [WHY],
         },
       ],
     },
@@ -118,7 +122,12 @@ function stub() {
       });
       let answer: unknown = {};
       if (url.endsWith('/accept') && url.includes('/drafts/'))
-        answer = { revision: 4, accepted_at: '2026-10-25T10:00:00Z', widenings: ['monitor'] };
+        answer = {
+          revision: REVISION,
+          accepted_at: '2026-10-25T10:00:00Z',
+          widenings: ['monitor'],
+          widening_reasons: { monitor: [WHY] },
+        };
       else if (url.endsWith('/drift/accept')) answer = { accepted_at: '2026-10-25T10:05:00Z' };
       else if (url.endsWith('/classification/drafts')) answer = drafts;
       else if (url.endsWith('/classification')) answer = view;
@@ -196,6 +205,8 @@ it('marks a widening draft and lists the widening in the confirmation', async ()
   expect(draft.textContent).toContain("model's text");
   const row = draft.querySelector('tr[data-tool="monitor"]')!;
   expect(row.querySelector('.widening')?.textContent).toBe('Widens');
+  expect(row.querySelector('.widening')?.getAttribute('title')).toBe(WHY);
+  expect(row.querySelector('.widening-reasons')?.textContent).toContain(WHY);
   // An edit that changes a class back to an escalating one is no widening.
   button(row as HTMLElement, 'Edit').click();
   flushSync();
@@ -211,10 +222,11 @@ it('marks a widening draft and lists the widening in the confirmation', async ()
   button(target, 'Accept…').click();
   flushSync();
   const confirm = target.querySelector('[role="dialog"]')!;
-  expect([...confirm.querySelectorAll('.widenings li')].map((item) => item.textContent)).toEqual([
-    'monitor',
-  ]);
+  expect(
+    [...confirm.querySelectorAll('.widenings li code')].map((item) => item.textContent),
+  ).toEqual(['monitor']);
   expect(confirm.textContent).toContain('unclassified → read');
+  expect(confirm.querySelector('.widenings')?.textContent).toContain(WHY);
   button(target, 'Confirm acceptance').click();
   await settle();
   expect(target.textContent).toContain('A reason is required.');
@@ -230,10 +242,36 @@ it('marks a widening draft and lists the widening in the confirmation', async ()
   expect(body.reason).toBe('Reviewed the listing');
   expect(body.yaml).toBe(YAML);
   expect(body.operation_id).toMatch(/^[0-9a-f-]{36}$/);
-  expect(target.textContent).toContain('Accepted as revision 4');
+  expect(target.textContent).toContain(`Accepted as revision ${REVISION.slice(0, 12)}`);
   expect(target.textContent).toContain('widenings: monitor');
+  expect(target.querySelector('.widened')?.textContent).toContain(WHY);
   // The view is read again after the acceptance.
   expect(requests.filter((item) => item.url.endsWith('/classification'))).toHaveLength(2);
+});
+
+it('links the export of a project revision, and of no catalog file', async () => {
+  const first = await tab();
+  expect(first.target.querySelector('a.export')).toBeNull();
+  const project = {
+    ...view,
+    source: { ...view.source, kind: 'project', revision: REVISION, name: null, pinned: null },
+  };
+  const target = document.createElement('div');
+  document.body.append(target);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      async (url: string) =>
+        new Response(JSON.stringify(url.endsWith('/drafts') ? { ...drafts, drafts: [] } : project)),
+    ),
+  );
+  mounted.push(mount(ClassificationTab, { target, props: { projectId: 'p1', server: 'papers' } }));
+  await settle();
+  const link = target.querySelector<HTMLAnchorElement>('a.export')!;
+  expect(link.textContent).toBe('Export YAML');
+  expect(link.getAttribute('href')).toBe(
+    `/api/v0/projects/p1/mcp-services/papers/classification/revisions/${REVISION}/export`,
+  );
 });
 
 it('re-accepts drift only with a reason', async () => {

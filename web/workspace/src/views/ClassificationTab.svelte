@@ -9,7 +9,7 @@
     ClassifiedTool,
     DraftListing,
     DriftAccepted,
-  } from '../lib/classificationTypes';
+  } from '../lib/api-types';
   import { MAX_REASON, ruleWords, significantWords } from '../lib/classifications';
   import { formatTime } from '../lib/format';
   import { guardedWrite } from '../lib/mutation';
@@ -112,7 +112,8 @@
         In force: checked-in file <code>{visible(source.name ?? view.server)}</code
         >{#if source.pinned}, pinned {source.pinned}{/if}.
       {:else}
-        In force: project revision {source.revision}{#if source.accepted_by}, accepted by {visible(
+        In force: project revision <code>{(source.revision ?? '').slice(0, 12)}</code
+        >{#if source.accepted_by}, accepted by {visible(
             source.accepted_by,
           )}{/if}{#if source.accepted_at}
           at {formatTime(source.accepted_at)}{/if}{#if source.reason}: “{visible(
@@ -120,6 +121,13 @@
           )}”{/if}.
       {/if}
       <span class="muted">Digest <code>{view.digest}</code></span>
+      {#if source.kind === 'project' && source.revision}
+        <a
+          class="export"
+          href={api.classificationExportUrl(projectId, view.server, source.revision)}
+          download>Export YAML</a
+        >
+      {/if}
     </p>
     <div class="table-scroll">
       <table class="tools">
@@ -147,7 +155,7 @@
                   </div>
                 {/if}
               </td>
-              <td>{tool.mentioned ? visible(tool.reason) : ''}</td>
+              <td>{tool.mentioned ? visible(tool.reason ?? '') : ''}</td>
               <td>
                 {#each tool.rules as rule}<div class="rule">
                     {visible(ruleWords(rule))}
@@ -259,6 +267,9 @@
     display: grid;
     gap: 0.2rem;
     margin: 0.5rem 0;
+  }
+  .export {
+    margin-left: 0.5rem;
   }
   .source code {
     overflow-wrap: anywhere;
