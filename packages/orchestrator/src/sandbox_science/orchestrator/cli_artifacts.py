@@ -8,6 +8,7 @@ import asyncio
 import json
 import sys
 from dataclasses import asdict
+from os import statvfs
 from pathlib import Path
 
 from .artifact_blobs import ArtifactBlobs
@@ -51,8 +52,32 @@ async def acknowledge(args: argparse.Namespace) -> int:
         documents.close()
 
 
+def volume_use_percent(path: Path) -> float:
+    """How full the file system holding ``path`` is, as ``df`` counts it: used blocks over
+    used plus those still available to unprivileged writers (the root reserve excluded)."""
+    found = statvfs(path)
+    used = found.f_blocks - found.f_bfree
+    total = used + found.f_bavail
+    return 100.0 if total <= 0 else 100.0 * used / total
+
+
 def maintenance(args: argparse.Namespace) -> int:
-    """Run one policy pass, optionally serializing and checkpointing a scheduler."""
+    """Run one policy pass, optionally serializing and checkpointing a scheduler.
+
+    With ``--at-use-percent``, a pass runs only once the control volume (the database's
+    directory) is at least that full, so a schedule trims "at about N% use" without a
+    controller; below it nothing is read, written or advanced."""
+    if args.at_use_percent is not None:
+        use = volume_use_percent(args.database.parent)
+        if use < args.at_use_percent:
+            report = {
+                "apply": args.apply,
+                "skipped": "below_threshold",
+                "use_percent": round(use, 1),
+                "at_use_percent": args.at_use_percent,
+            }
+            print(json.dumps(report), flush=True)
+            return 0
     policy = load_policy(args.policy)
     if args.cursor_file is None:
         result = maintain(args.database, policy, apply=args.apply, after=args.after or "")
@@ -75,6 +100,13 @@ def main(argv: list[str] | None = None) -> int:
     cursor = maintenance_parser.add_mutually_exclusive_group()
     cursor.add_argument("--after", help="continue after this reference hash")
     cursor.add_argument("--cursor-file", type=Path, help="private persistent scheduled progress")
+    maintenance_parser.add_argument(
+        "--at-use-percent",
+        type=int,
+        choices=range(1, 101),
+        metavar="1-100",
+        help="do nothing while the database's volume is less full than this",
+    )
     ack = commands.add_parser("acknowledge", help="retry a bounded durable worker-retention page")
     ack.add_argument("--database", type=Path, required=True)
     ack.add_argument("--worker", required=True)

@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 
 from . import toml
 from .kubernetes_config import (
@@ -12,6 +14,7 @@ from .kubernetes_config import (
     BundleConfig,
     Capacity,
     Ingress,
+    Maintenance,
     Peer,
     Placement,
     Secret,
@@ -701,4 +704,328 @@ def render(config: BundleConfig) -> dict[str, object]:
         items.extend(_routes(config, config.ingress))
     if config.sandboxes is not None and config.sandboxes.job_budget:
         items.append(_job_budget(config, config.sandboxes.namespace))
+    if config.maintenance is not None:
+        items.extend(_maintenance(config, config.maintenance))
     return {"apiVersion": "v1", "kind": "List", "items": items}
+
+
+# [maintenance]: scheduled control-cache trimming, and the operator's offline worker
+# replica release Job (docs/KUBERNETES-BUNDLE.md#maintenance). Neither Pod mounts a
+# service-account token or gets any cluster authority.
+
+MAINTENANCE = "maintenance"
+RELEASE = "worker-release"
+CONTROL_DATABASE = f"{DATA}/control/control.sqlite3"
+MAINTENANCE_DIR = f"{UNIT_DIR}/maintenance"
+MAINTENANCE_POLICY = "artifact-retention.toml"
+STORAGE_FILES = ("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_CA_BUNDLE")
+"""Control's SDK file variables: the only keys of its Secret the trimming Pod receives."""
+STORAGE_ENVIRONMENT = (*STORAGE_FILES, "AWS_PROFILE", "AWS_REGION")
+RELEASE_DEADLINE = 3600
+RELEASE_KEEP = 7 * 86400
+"""How long a finished release Job (and its log, the report) stays for the operator."""
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def _batch(item: dict[str, object]) -> dict[str, object]:
+    return {**item, "apiVersion": "batch/v1"}
+
+
+def _pod_security() -> dict[str, object]:
+    return {
+        "runAsNonRoot": True,
+        "runAsUser": 1000,
+        "runAsGroup": 1000,
+        "fsGroup": 1000,
+        "fsGroupChangePolicy": "OnRootMismatch",
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+
+
+def _maintenance_policy(maintenance: Maintenance) -> str:
+    """The retention policy file, in the shape of examples/kubernetes/artifact-retention.toml."""
+    policy = toml.dumps(
+        {
+            "max_references": maintenance.max_references,
+            "max_bytes": maintenance.max_bytes,
+            "min_age_seconds": maintenance.min_age_seconds,
+            "archive_before_evict": False,
+        }
+    )
+    return "# Physical local-cache maintenance only. No remote objects or PVCs are deleted.\n" + (
+        policy
+    )
+
+
+def maintenance_cursor(maintenance: Maintenance) -> str:
+    """The pass's progress file, beside the database. Its name carries the policy's digest:
+    the cursor is bound to one policy, so a changed policy starts a new file instead of
+    failing every pass on the old one."""
+    digest = hashlib.sha256(_maintenance_policy(maintenance).encode()).hexdigest()[:16]
+    return f"{DATA}/control/maintenance-apply-{digest}.json"
+
+
+def _storage_credentials(
+    config: BundleConfig, image: str
+) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, str]]:
+    """Copy only the object-store SDK files control's environment names, so the trimming
+    Pod can verify remote copies before evicting; never control's keys or tokens."""
+    environment = config.control.environment
+    passed = {key: environment[key] for key in STORAGE_ENVIRONMENT if key in environment}
+    files = sorted(
+        {
+            environment[key].removeprefix(f"{PRIVATE}/")
+            for key in STORAGE_FILES
+            if key in environment
+        }
+    )
+    if not files:
+        return [], [], passed
+    init: dict[str, object] = {
+        "name": "copy-storage",
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["python3", "-I", COPY_HELPER],
+        "args": [
+            "--source-root",
+            "/source",
+            "--destination-root",
+            PRIVATE,
+            "--files",
+            json.dumps([[file, file] for file in files], separators=(",", ":")),
+        ],
+        "securityContext": _security(),
+        "resources": _resources(_INIT),
+        "volumeMounts": [
+            {"name": "storage-source", "mountPath": "/source", "readOnly": True},
+            {"name": "storage-credentials", "mountPath": PRIVATE},
+        ],
+    }
+    volumes: list[dict[str, object]] = [
+        {
+            "name": "storage-source",
+            "secret": {
+                "secretName": config.secrets.control.name,
+                "defaultMode": 292,
+                "items": [{"key": file, "path": file} for file in files],
+            },
+        },
+        {"name": "storage-credentials", "emptyDir": {"medium": "Memory", "sizeLimit": "4Mi"}},
+    ]
+    return [init], volumes, passed
+
+
+def _maintenance_pod(config: BundleConfig, maintenance: Maintenance) -> dict[str, object]:
+    image = config.images.app
+    inits, volumes, passed = _storage_credentials(config, image)
+    environment = {**_environment(Capacity()), **passed, **LOG_FORMAT}
+    mounts: list[dict[str, object]] = [
+        {"name": "data", "mountPath": f"{DATA}/control", "subPath": "control"},
+        {"name": "scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume
+        {"name": "policy", "mountPath": MAINTENANCE_DIR, "readOnly": True},
+    ]
+    if inits:
+        mounts.append({"name": "storage-credentials", "mountPath": PRIVATE, "readOnly": True})
+    capacity = Capacity()
+    container: dict[str, object] = {
+        "name": MAINTENANCE,
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": [
+            "sandbox-science-artifacts",
+            "maintain",
+            "--database",
+            CONTROL_DATABASE,
+            "--policy",
+            f"{MAINTENANCE_DIR}/{MAINTENANCE_POLICY}",
+            "--apply",
+            "--cursor-file",
+            maintenance_cursor(maintenance),
+            "--at-use-percent",
+            str(maintenance.at_use_percent),
+        ],
+        "securityContext": _security(),
+        "resources": _resources(capacity),
+        "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
+        "volumeMounts": mounts,
+    }
+    return {
+        "restartPolicy": "Never",
+        "automountServiceAccountToken": False,
+        "enableServiceLinks": False,
+        "terminationGracePeriodSeconds": 120,
+        "nodeSelector": {"kubernetes.io/arch": config.app.architecture},
+        # The app PVC is ReadWriteOnce: a second Pod can mount it only on the app Pod's
+        # node, so the pass is scheduled there (and waits while the app Pod is down).
+        "affinity": {
+            "podAffinity": {
+                "requiredDuringSchedulingIgnoredDuringExecution": [
+                    {
+                        "labelSelector": {"matchLabels": _labels(config, "app")},
+                        "topologyKey": "kubernetes.io/hostname",
+                    }
+                ]
+            }
+        },
+        "securityContext": _pod_security(),
+        "initContainers": inits,
+        "containers": [container],
+        "volumes": [
+            {"name": "data", "persistentVolumeClaim": {"claimName": f"{config.name}-app-data"}},
+            {"name": "scratch", "emptyDir": {"sizeLimit": f"{capacity.scratch_mib}Mi"}},
+            {
+                "name": "policy",
+                "configMap": {
+                    "name": f"{config.name}-maintenance-policy",
+                    "defaultMode": 292,
+                    "items": [{"key": MAINTENANCE_POLICY, "path": MAINTENANCE_POLICY}],
+                },
+            },
+            *volumes,
+        ],
+    }
+
+
+def _maintenance(config: BundleConfig, maintenance: Maintenance) -> list[dict[str, object]]:
+    """The policy ConfigMap, the trimming Pods' NetworkPolicy (DNS and the app's external
+    flows, where the object store is; nothing may connect to them) and the CronJob. One
+    pass at a time (``Forbid``, and the cursor's own lock), each bounded by the policy and
+    ``deadline_seconds``; a failed pass is not retried until the next schedule."""
+    network = config.network
+    labels = {**_identity(config), **_labels(config, MAINTENANCE)}
+    egress: list[dict[str, object]] = [
+        {
+            "to": [_peer(network.dns)],
+            "ports": [{"protocol": protocol, "port": 53} for protocol in ("TCP", "UDP")],
+        },
+        *({"to": [_peer(flow.peer)], "ports": _ports(*flow.ports)} for flow in network.app_egress),
+    ]
+    return [
+        _object(
+            config,
+            "ConfigMap",
+            "maintenance-policy",
+            data={MAINTENANCE_POLICY: _maintenance_policy(maintenance)},
+        ),
+        _object(
+            config,
+            "NetworkPolicy",
+            MAINTENANCE,
+            spec={
+                "podSelector": {"matchLabels": _labels(config, MAINTENANCE)},
+                "policyTypes": ["Ingress", "Egress"],
+                "ingress": [],
+                "egress": egress,
+            },
+        ),
+        _batch(
+            _object(
+                config,
+                "CronJob",
+                MAINTENANCE,
+                spec={
+                    "schedule": maintenance.schedule,
+                    "concurrencyPolicy": "Forbid",
+                    "startingDeadlineSeconds": min(maintenance.deadline_seconds, 3600),
+                    "successfulJobsHistoryLimit": 3,
+                    "failedJobsHistoryLimit": 3,
+                    "jobTemplate": {
+                        "metadata": {"labels": labels},
+                        "spec": {
+                            "backoffLimit": 0,
+                            "activeDeadlineSeconds": maintenance.deadline_seconds,
+                            "template": {
+                                "metadata": {"labels": labels},
+                                "spec": _maintenance_pod(config, maintenance),
+                            },
+                        },
+                    },
+                },
+            )
+        ),
+    ]
+
+
+def release_job(
+    config: BundleConfig, *, apply: bool = True, after: str | None = None
+) -> dict[str, object]:
+    """One offline worker replica release page, as a Job the operator creates by hand
+    (``kubectl create -f``; ``generateName`` makes ``kubectl apply`` refuse it) with the
+    pool scaled to zero. It is never part of ``render``.
+
+    The guard is the worker's own: ``artifact-retention`` takes the exclusive ``StateLock``
+    on the pool's state directory and refuses while a worker holds it, and the pool PVC is
+    ReadWriteOnce, so a Pod on another node cannot mount it while the pool Pod does. The
+    Pod has the worker's settings and no network (only the default-deny policy selects
+    it). Online release, beside a serving worker, still needs reader and writer fences."""
+    if after is not None and _SHA256.fullmatch(after) is None:
+        raise ValueError("--after takes a lowercase SHA-256 from the previous report")
+    image = config.images.worker
+    init, private = _credentials(config, "worker", config.secrets.worker, image)
+    capacity = config.worker
+    environment = {**_environment(capacity), **LOG_FORMAT}
+    labels = {**_identity(config), **_labels(config, RELEASE)}
+    container: dict[str, object] = {
+        "name": RELEASE,
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": [
+            "sandbox-science-worker",
+            "artifact-retention",
+            "--settings",
+            f"{PRIVATE}/worker.toml",
+            "--limit",
+            "100",
+            *(["--apply"] if apply else []),
+            *(["--after", after] if after is not None else []),
+        ],
+        "securityContext": _security(),
+        "resources": _resources(capacity),
+        "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
+        "volumeMounts": [
+            {"name": "data", "mountPath": DATA},
+            {"name": "scratch", "mountPath": "/tmp"},  # noqa: S108 - bounded Pod volume
+            {"name": "worker-credentials", "mountPath": PRIVATE, "readOnly": True},
+        ],
+    }
+    job = _batch(
+        _object(
+            config,
+            "Job",
+            RELEASE,
+            spec={
+                "backoffLimit": 0,
+                "activeDeadlineSeconds": RELEASE_DEADLINE,
+                "ttlSecondsAfterFinished": RELEASE_KEEP,
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "automountServiceAccountToken": False,
+                        "enableServiceLinks": False,
+                        "nodeSelector": {"kubernetes.io/arch": config.pool.architecture},
+                        "securityContext": _pod_security(),
+                        "initContainers": [init],
+                        "containers": [container],
+                        "volumes": [
+                            {
+                                "name": "data",
+                                "persistentVolumeClaim": {"claimName": f"{config.name}-pool-data"},
+                            },
+                            *private,
+                            {
+                                "name": "scratch",
+                                "emptyDir": {"sizeLimit": f"{capacity.scratch_mib}Mi"},
+                            },
+                        ],
+                    },
+                },
+            },
+        )
+    )
+    metadata = {
+        "generateName": f"{config.name}-{RELEASE}-",
+        "namespace": config.namespace,
+        "labels": labels,
+    }
+    return {**job, "metadata": metadata}

@@ -4,7 +4,7 @@
 ```
 sandbox-science-package-cache serve --settings cache.toml [--log-level INFO]
 sandbox-science-package-cache stats --settings cache.toml
-sandbox-science-package-cache prune --settings cache.toml
+sandbox-science-package-cache prune --settings cache.toml [--include-pinned]
 sandbox-science-package-cache forget --settings cache.toml KEY_OR_PATH
 ```
 
@@ -12,7 +12,10 @@ sandbox-science-package-cache forget --settings cache.toml KEY_OR_PATH
 so they may run while the cache serves. ``prune`` purges expired negative
 entries and evicts down to the size cap now, as the cache does after storing a
 file, and deletes blobs no entry refers to that are over an hour old (younger
-ones may be about to get their entry). ``forget`` drops one entry, such as a
+ones may be about to get their entry). Like the cache, it protects the files that
+environments' lockfiles pin (``worker_state_dir``), up to ``protect_share`` of the cap,
+unless ``--include-pinned``; ``stats`` and ``prune`` report the pinned and protected
+bytes and the ceiling. ``forget`` drops one entry, such as a
 bad copy of a file the cache cannot verify, so that the next request fetches
 it again: give its cache key (``hackage:hackage/package/split-0.2.5.tar.gz``)
 or the path a client requested (``/hackage/package/split-0.2.5.tar.gz``, as the
@@ -40,6 +43,7 @@ from sandbox_science.contracts.logs import configure_logging
 from .adapter import Fetch
 from .app import KEEPALIVE_TIMEOUT, create_app, negative_expiry, store_key
 from .errors import PackageCacheError, StoreError
+from .pins import lockfile_pins
 from .settings import Settings, load_settings
 from .store import ORPHAN_GRACE, Store
 from .wiring import build_adapters
@@ -69,6 +73,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     stats.add_argument("--settings", type=Path, required=True)
     prune = commands.add_parser("prune", help="evict down to the size cap now")
     prune.add_argument("--settings", type=Path, required=True)
+    prune.add_argument(
+        "--include-pinned", action="store_true", help="also evict files lockfiles pin"
+    )
     forget = commands.add_parser("forget", help="drop one entry, to fetch it again")
     forget.add_argument("--settings", type=Path, required=True)
     forget.add_argument(
@@ -84,7 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "stats":
                 return _stats(settings)
             case "prune":
-                return _prune(settings)
+                return _prune(settings, include_pinned=args.include_pinned)
             case _:
                 return _forget(settings, args.target)
     except (PackageCacheError, OSError) as exc:
@@ -137,21 +144,32 @@ def _open(settings: Settings) -> Store:
     if not settings.cache_dir.is_dir():
         raise StoreError(f"there is no package cache in {settings.cache_dir}")
     return Store(
-        settings.cache_dir, max_size=settings.max_size, negative_expiry=negative_expiry(settings)
+        settings.cache_dir,
+        max_size=settings.max_size,
+        negative_expiry=negative_expiry(settings),
+        pins=lockfile_pins(settings),
+        protect_share=settings.protect_share,
     )
 
 
 def _stats(settings: Settings) -> int:
     with _open(settings) as store:
         stats = store.stats()
-    report = {"entries": stats.entries, "bytes": stats.bytes, "max_size": settings.max_size}
+    report = {
+        "entries": stats.entries,
+        "bytes": stats.bytes,
+        "pinned_bytes": stats.pinned_bytes,
+        "protected_bytes": stats.protected_bytes,
+        "protect_limit": store.protect_limit,
+        "max_size": settings.max_size,
+    }
     print(json.dumps(report))
     return 0
 
 
-def _prune(settings: Settings) -> int:
+def _prune(settings: Settings, *, include_pinned: bool) -> int:
     with _open(settings) as store:
-        evicted = store.evict()
+        evicted = store.evict(include_pinned=include_pinned)
         orphans = store.remove_orphans(min_age=ORPHAN_GRACE)
         stats = store.stats()
     report = {
@@ -160,6 +178,9 @@ def _prune(settings: Settings) -> int:
         "freed_bytes": evicted.bytes + orphans.bytes,
         "entries": stats.entries,
         "bytes": stats.bytes,
+        "pinned_bytes": stats.pinned_bytes,
+        "protected_bytes": stats.protected_bytes,
+        "protect_limit": store.protect_limit,
         "max_size": settings.max_size,
     }
     print(json.dumps(report))

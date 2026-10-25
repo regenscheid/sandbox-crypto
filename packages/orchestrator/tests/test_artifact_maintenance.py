@@ -6,11 +6,12 @@ from __future__ import annotations
 import json
 import os
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
-from sandbox_science.orchestrator import artifact_s3
+from sandbox_science.orchestrator import artifact_s3, cli_artifacts
 from sandbox_science.orchestrator.artifact_blobs import Blob
 from sandbox_science.orchestrator.artifact_config import install as configure
 from sandbox_science.orchestrator.artifact_maintenance import (
@@ -267,3 +268,69 @@ def test_mismatched_cache_size_fails_before_any_eviction(state):
     result = maintain(inventory.documents.path, policy(), apply=True)
     assert result.failed == 1
     assert path.read_bytes() == b"changed local bytes"
+
+
+def _volume(used_percent):
+    """A statvfs result for a 1000-block volume with no root reserve."""
+
+    def statvfs(path):
+        used = used_percent * 10
+        return SimpleNamespace(f_blocks=1000, f_bfree=1000 - used, f_bavail=1000 - used)
+
+    return statvfs
+
+
+@pytest.mark.parametrize(("used", "runs"), [(50, False), (69, False), (70, True), (85, True)])
+def test_use_threshold_skips_below_and_proceeds_at_or_above(
+    state, tmp_path, capsys, monkeypatch, used, runs
+):
+    inventory, _ = state
+    blob = retained(inventory, b"threshold", "one")
+    config = tmp_path / "policy.toml"
+    config.write_text("min_age_seconds = 0\n")
+    cursor = tmp_path / "cursor.json"
+    seen = []
+    measure = _volume(used)
+    monkeypatch.setattr(cli_artifacts, "statvfs", lambda path: seen.append(path) or measure(path))
+    args = [
+        "maintain",
+        "--database",
+        str(inventory.documents.path),
+        "--policy",
+        str(config),
+        "--cursor-file",
+        str(cursor),
+        "--apply",
+        "--at-use-percent",
+        "70",
+    ]
+    assert main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert seen == [inventory.documents.path.parent]
+    if runs:
+        assert "skipped" not in report
+        assert report["evicted_bytes"] == blob.size
+        assert not inventory.blobs.path(blob.sha256).exists()
+        assert cursor.exists()
+    else:
+        assert report == {
+            "apply": True,
+            "skipped": "below_threshold",
+            "use_percent": float(used),
+            "at_use_percent": 70,
+        }
+        assert inventory.blobs.path(blob.sha256).exists()
+        assert not cursor.exists()
+
+
+def test_use_threshold_counts_the_root_reserve_as_unavailable(monkeypatch, tmp_path):
+    reserved = SimpleNamespace(f_blocks=1000, f_bfree=400, f_bavail=350)
+    monkeypatch.setattr(cli_artifacts, "statvfs", lambda path: reserved)
+    assert round(cli_artifacts.volume_use_percent(tmp_path), 2) == round(600 / 950 * 100, 2)
+
+
+@pytest.mark.parametrize("value", ["0", "101", "seventy"])
+def test_use_threshold_rejects_values_outside_one_to_a_hundred(tmp_path, value):
+    args = ["maintain", "--database", str(tmp_path / "db"), "--policy", str(tmp_path / "p")]
+    with pytest.raises(SystemExit):
+        main([*args, "--at-use-percent", value])

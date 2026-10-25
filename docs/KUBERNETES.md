@@ -295,10 +295,14 @@ run-start, completed-operation replay and a manual command retry the same identi
 The [offline worker release command](WORKER.md#offline-capture-replica-retention)
 requires every shared-hash reference to be acknowledged and holds the worker's
 exclusive state lease. A disposable local process test verifies lost-reply recovery,
-dry-run/apply, restart and unchanged control content without recapture. Automatic
-online worker cleanup remains separate work. The bounded control cache maintenance
-command scans referenced content by indexed hash pages, defaults to dry-run and
-can archive before verified eviction. Its private resumable cursor never grants
+dry-run/apply, restart and unchanged control content without recapture. On Kubernetes
+the bundle renders it as a Job the operator creates with the pool scaled to zero
+([offline worker replica release](KUBERNETES-BUNDLE.md#offline-worker-replica-release)).
+Automatic online worker cleanup remains separate work: it needs reader and writer
+fences. The bounded control cache maintenance command scans referenced content by
+indexed hash pages, defaults to dry-run and can archive before verified eviction; the
+bundle's opt-in `[maintenance]` CronJob runs it with `--apply` once the control volume
+is at least 70% full. Its private resumable cursor never grants
 retention authority; unknown or corrupt copies remain local. See
 [artifact maintenance](ARTIFACT-S3.md).
 Complete offline workspace checkpoints now capture native packages, journals,
@@ -376,7 +380,9 @@ Decided 2026-10-23 ([D92, amended](DECISIONS.md)).
   backup to Garage from the start, the GUI by `kubectl port-forward`, and log
   collection into Loki through Alloy (D103). Worker, policy middleware and package
   cache deploy as one unit (D101). Size the app and pool volumes generously (about
-  100 GiB and 200 GiB) and switch cache trimming on at about 70% use.
+  100 GiB and 200 GiB) and switch cache trimming on at about 70% use: the bundle's
+  `[maintenance]` section, whose CronJob passes `--at-use-percent 70` by default
+  ([cache trimming](KUBERNETES-BUNDLE.md#cache-trimming-opt-in)).
 - **Before any research stress test:** cache trimming (maintenance cursor), worker
   replica release with the ACK outbox, workspace checkpoints to Garage, and the GUI
   through the load balancer with Authentik.

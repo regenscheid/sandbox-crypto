@@ -60,6 +60,9 @@ def test_stats_reports_the_store(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert json.loads(capsys.readouterr().out) == {
         "entries": 3,
         "bytes": 30,
+        "pinned_bytes": 0,
+        "protected_bytes": 0,
+        "protect_limit": 1024**2 // 2,
         "max_size": 1024**2,
     }
 
@@ -87,6 +90,9 @@ def test_prune_evicts_to_the_cap_and_deletes_old_orphans(
         "freed_bytes": 606,
         "entries": 3,
         "bytes": 900,
+        "pinned_bytes": 0,
+        "protected_bytes": 0,
+        "protect_limit": 2500,
         "max_size": 5000,
     }
     assert not old.exists()

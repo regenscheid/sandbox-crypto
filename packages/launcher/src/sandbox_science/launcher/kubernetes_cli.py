@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import kubernetes_site, kubernetes_site_config
-from .kubernetes_bundle import render
+from .kubernetes_bundle import release_job, render
 from .kubernetes_config import BundleError, load
 
 
@@ -37,15 +37,19 @@ def write_bundle(path: Path, content: bytes) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Validate site-private TOML, write one deterministic Kubernetes List, or generate
-    the Secrets' contents into a new private directory."""
+    """Validate site-private TOML, write one deterministic Kubernetes List, generate the
+    Secrets' contents into a new private directory, or write the offline worker replica
+    release Job for the operator to create by hand."""
     parser = argparse.ArgumentParser(prog="sandbox-science-kubernetes", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("check", "render", "site"):
+    for name in ("check", "render", "site", "release-job"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
         if name != "check":
             command.add_argument("--output", type=Path, required=True)
+    release = commands.choices["release-job"]
+    release.add_argument("--preview", action="store_true", help="report without releasing")
+    release.add_argument("--after", help="the previous report's next_after")
     args = parser.parse_args(argv)
     try:
         if args.command == "site":
@@ -54,6 +58,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 f"generated the Secrets' contents in {args.output}; read its README.md, "
                 "which lists what is left to the operator; no cluster changes made"
+            )
+            return 0
+        if args.command == "release-job":
+            try:
+                job = release_job(load(args.config), apply=not args.preview, after=args.after)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            write_bundle(args.output, (json.dumps(job, indent=2, sort_keys=True) + "\n").encode())
+            print(
+                "rendered offline; scale the pool to zero, then kubectl create -f the file "
+                "(docs/KUBERNETES-BUNDLE.md#offline-worker-replica-release)"
             )
             return 0
         bundle = render(load(args.config))

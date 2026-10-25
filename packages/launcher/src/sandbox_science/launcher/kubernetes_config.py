@@ -372,6 +372,30 @@ class RuntimeManager(Placement, Capacity):
         return self
 
 
+_SCHEDULE = (
+    r"^(?:@(?:yearly|annually|monthly|weekly|daily|midnight|hourly)"
+    r"|[0-9*/,-]{1,32}(?: [0-9*/,-]{1,32}){4})$"
+)
+
+
+class Maintenance(Model):
+    """Opt-in scheduled control-cache trimming (D92): a CronJob in the bundle's namespace
+    runs one bounded ``sandbox-science-artifacts maintain --apply`` pass, which does nothing
+    while the app's volume is less than ``at_use_percent`` full. The bounds mirror the
+    orchestrator's ``MaintenancePolicy``, which a test loads the rendered policy through."""
+
+    schedule: Annotated[str, StringConstraints(pattern=_SCHEDULE)] = "@daily"
+    """A five-field cron expression or a macro such as ``@daily``, in the controller's time
+    zone; names (``MON``), ``?`` and ``TZ=`` are refused."""
+    at_use_percent: Annotated[int, Field(strict=True, ge=1, le=100)] = 70
+    max_references: Annotated[int, Field(strict=True, ge=1, le=100)] = 25
+    max_bytes: Annotated[int, Field(strict=True, ge=1, le=64 * 1024**3)] = 1024**3
+    min_age_seconds: Annotated[int, Field(strict=True, ge=0, le=3650 * 86400)] = 86400
+    deadline_seconds: Annotated[int, Field(strict=True, ge=60, le=86400)] = 3600
+    """The Job's ``activeDeadlineSeconds``: a pass still running then is stopped; the next
+    one resumes from the cursor."""
+
+
 class BundleConfig(Model):
     name: Annotated[Name, StringConstraints(max_length=40)]
     namespace: Name
@@ -390,6 +414,8 @@ class BundleConfig(Model):
     ingress: Ingress | None = None
     sandboxes: Sandboxes | None = None
     """Absent, nothing is rendered outside the bundle's own namespace."""
+    maintenance: Maintenance | None = None
+    """Absent, no cache trimming is scheduled."""
 
     @model_validator(mode="after")
     def remote_workspace(self) -> Self:
