@@ -33,8 +33,15 @@ from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.model import ToolCall as BareCall
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.runtree import RunTrees
-from sandbox_science.orchestrator.tool_mix import ToolMix, scan, shell_computation
+from sandbox_science.orchestrator.tool_mix import (
+    ToolMix,
+    scan,
+    scan_events,
+    shell_computation,
+    unkept_runs,
+)
 from sandbox_science.orchestrator.tools import LOST_STATE, RESTART_KERNEL_DESCRIPTION, Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
@@ -559,6 +566,7 @@ def test_the_command_counts_each_session_and_the_total(
             "project": "p",
             "session": "t",
             "runs": 1,
+            "runs_from_events": 0,
             "classifier": "shell-computation-1",
             "python": 0,
             "sage": 0,
@@ -601,3 +609,101 @@ def test_the_run_tree_projects_a_records_tool_mix(projects: ProjectStore) -> Non
     runs = {run.run_id: run for run in RunTrees(projects).session("p", "s").runs}
     assert runs["kept"].tool_mix == summary
     assert runs["older"].tool_mix is None
+
+
+LOST_RESULT = json.dumps(
+    {"status": "ok", "state_lost": "the kernel restarted before this cell; earlier state is gone"}
+)
+
+
+def cut_short_run(projects: ProjectStore, run: str) -> None:
+    """A run the loss of its agent VM cut short: it wrote events and no run record. Its
+    last shell call never returned, so it has no ``tool`` event."""
+    state = RunState(projects)
+
+    def assistant(*calls: tuple[str, str, dict[str, Any]]) -> None:
+        state.append(
+            "p",
+            "s",
+            run,
+            "assistant",
+            {
+                "turn": 1,
+                "text": None,
+                "tool_calls": [
+                    {"id": call_id, "name": name, "arguments": json.dumps(arguments)}
+                    for call_id, name, arguments in calls
+                ],
+                "usage": None,
+            },
+        )
+
+    def returned(call_id: str, state_word: str | None, error: str | None, text: str = "{}") -> None:
+        state.append(
+            "p",
+            "s",
+            run,
+            "tool",
+            {
+                "turn": 1,
+                "call_id": call_id,
+                "name": None,
+                "result": text,
+                "outcome": {"state": state_word, "error": error, "exit_code": None},
+            },
+        )
+
+    state.append("p", "s", run, "started", {"role": "main", "run_id": run})
+    assistant(
+        ("a", "python", {"code": "x = 1"}),
+        ("b", "shell", {"script": "python3 attack.py"}),
+        ("c", "shell", {"script": "python3 refused.py"}),
+        ("d", "start_job", {"script": "long.sh"}),
+        ("e", "sage", {"code": "x"}),
+        ("f", "shell", {"script": "sleep 600"}),
+    )
+    returned("a", "completed", None)
+    returned("b", "completed", None)
+    returned("c", None, "invalid_request")
+    returned("d", None, None)
+    returned("e", "completed", None, LOST_RESULT)
+
+
+def test_a_run_that_kept_no_record_is_counted_from_its_events(projects: ProjectStore) -> None:
+    started = datetime(2026, 10, 25, tzinfo=UTC)
+    projects.save_run(_record("s", "kept", started, [_cell("python"), _shell("ls")]))
+    cut_short_run(projects, "cut")
+    assert unkept_runs(projects.control, "p", "s") == ["cut"]
+    assert unkept_runs(projects.control, "p", "t") == []
+    mix = scan_events(projects.control, "p", "s", "cut")
+    # Calls that ran: a cell, two more, a job, a lost-state sage cell, and one shell call
+    # that computed; the refused call and the one that never returned are not counted.
+    assert mix.summary() == {
+        "classifier": "shell-computation-1",
+        "python": 1,
+        "sage": 1,
+        "shell": 1,
+        "shell_computation": 1,
+        "start_job": 1,
+        "restart_kernel": 0,
+        "state_lost": 1,
+    }
+
+
+def test_the_command_counts_runs_without_a_record_from_their_events_and_says_so(
+    projects: ProjectStore, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    started = datetime(2026, 10, 25, tzinfo=UTC)
+    projects.save_run(_record("s", "kept", started, [_cell("python"), _shell("ls")]))
+    cut_short_run(projects, "cut")
+    projects.close()
+    code, text = run_cli(
+        "--state-dir", str(tmp_path), "--project", "p", "--session", "s", capsys=capsys
+    )
+    assert code == 0
+    assert text.splitlines() == [
+        "p/s: 2 runs · 1 run from events · 3 cells (python 2, sage 1) · "
+        "2 shell calls, 1 ran Python · 1 job · kernel state lost once",
+        "total: 2 runs · 1 run from events · 3 cells (python 2, sage 1) · "
+        "2 shell calls, 1 ran Python · 1 job · kernel state lost once",
+    ]

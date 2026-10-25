@@ -6,7 +6,9 @@ Counted by code from the tool calls, never from the model's text: live, as a run
 return (``ToolMix``, kept in the run record's ``summaries.tool_mix``), and offline, over
 the tool records a control store keeps (``scan``, for ``sandbox-science-harness
 tool-mix``), with the same classifier, so a run recorded before the summary existed is
-measured as one recorded after.
+measured as one recorded after. A run that was cut short and kept no record is counted
+from its events (``scan_events``): a ``tool`` event is a call that ran, paired by call ID
+with the ``assistant`` event that made it.
 
 The classifier reads only a shell call's script text. It finds a call that ran Python
 or Sage on code: an interpreter (``python``, ``python3``, ``sage``, ``ipython``,
@@ -390,4 +392,61 @@ def scan(control: ControlStore, project: str, session: str, run: str) -> ToolMix
             if execution is not None:
                 record["execution"] = {"result": {"state_lost": lost == 1}}
             mix.count(str(tool), arguments, record)
+    return mix
+
+
+def unkept_runs(control: ControlStore, project: str, session: str) -> list[str]:
+    """The runs that wrote events but kept no run record (one cut short, such as by the
+    loss of its agent VM), by name."""
+    with control.read() as tx:
+        rows = tx.sql.execute(
+            "SELECT DISTINCT e.run FROM run_events e WHERE e.project_id=? AND e.session_id=? "
+            "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
+            "AND r.session_id=e.session_id AND r.name=e.run) ORDER BY e.run",
+            (project, session),
+        ).fetchall()
+    return [run for (run,) in rows]
+
+
+_LOST: Final = re.compile(r'"state_lost":\s*(?:true|"the kernel restarted)')
+"""A cell result's report of lost state, as the model reads it (a note, not a flag)."""
+
+
+def scan_events(control: ControlStore, project: str, session: str, run: str) -> ToolMix:
+    """One run's counts from its events, for a run with no kept record: each ``tool``
+    event is a call that ran (one whose outcome is an error with no execution state was
+    refused before it ran and is left out), named by the event or else by the
+    ``assistant`` event's call with the same ID, whose arguments say what a shell call
+    ran. A call that never returned has no ``tool`` event and is not counted."""
+    calls: dict[str, tuple[object, object]] = {}
+    mix = ToolMix()
+    with control.read() as tx:
+        rows = tx.sql.execute(
+            "SELECT kind,data FROM run_events WHERE project_id=? AND session_id=? AND run=? "
+            "AND kind IN ('assistant','tool') ORDER BY seq",
+            (project, session, run),
+        ).fetchall()
+    for kind, data in rows:
+        event = cast(dict[str, Any], json.loads(data))
+        if kind == "assistant":
+            for item in cast(list[object], event.get("tool_calls") or []):
+                if isinstance(item, dict):
+                    made = cast(dict[str, Any], item)
+                    if isinstance(made.get("id"), str):
+                        calls[made["id"]] = (made.get("name"), made.get("arguments"))
+            continue
+        name, arguments = calls.get(str(event.get("call_id")), (None, None))
+        tool = event.get("name") or name
+        found = event.get("outcome")
+        outcome = cast(dict[str, Any], found) if isinstance(found, dict) else {}
+        state = outcome.get("state")
+        record: dict[str, Any] = {}
+        if state is not None:
+            record["execution"] = {
+                "result": {"state_lost": _LOST.search(str(event.get("result") or "")) is not None}
+            }
+        elif outcome.get("error") is not None:
+            record["error"] = True
+        if isinstance(tool, str):
+            mix.count(tool, arguments, record)
     return mix
