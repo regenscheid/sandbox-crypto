@@ -40,7 +40,9 @@
   let loggedOut = $state(false);
   let navigationOpen = $state(window.innerWidth > 760);
   let narrow = $state(window.innerWidth <= 760);
-  const inSession = $derived(route.view === 'session' || route.view === 'review');
+  const inSession = $derived(
+    route.view === 'session' || route.view === 'review' || route.view === 'agent',
+  );
   function closeDrawer() {
     if (window.innerWidth <= 760) navigationOpen = false;
   }
@@ -175,6 +177,14 @@
               projectId={routeProject}
               sessionId={routeSession}
               reviewId={route.review}
+            />
+          {/key}
+        {:else if route.view === 'agent'}
+          {#key `${route.project}/${route.session}/${route.delegation}`}
+            <SessionView
+              projectId={routeProject}
+              sessionId={routeSession}
+              agentId={route.delegation}
             />
           {/key}
         {:else if route.view === 'finding'}

@@ -200,7 +200,8 @@ describe("a run's events", () => {
       .find((b) => b.textContent === 'Read newer events')!
       .click();
     await settle();
-    expect(urls).toEqual([
+    // The run tree is read beside the events, for the breadcrumb's names.
+    expect(urls.filter((url) => url.includes('/events'))).toEqual([
       '/api/v0/projects/p1/sessions/s1/runs/child/events?after=0&limit=200',
       '/api/v0/projects/p1/sessions/s1/runs/child/events?after=2&limit=200',
     ]);

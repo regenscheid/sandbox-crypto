@@ -7,7 +7,8 @@
  * - `#/projects/<project>/sessions/<session>` one session and its runs, and
  *   `…/findings/<finding>` one of its review findings, as a ledger entry links to it, and
  *   `…/reviews/<review>` the session with one of its reviews chosen, as a quote's citation
- *   check links to it, `…/tree` its run tree and `…/runs/<run>` one run's events;
+ *   check links to it, `…/agents/<delegation>` the session with one delegation's card open
+ *   in its Agents panel, `…/tree` its run tree and `…/runs/<run>` one run's events;
  * - `#/projects/<project>/documents/<document>` a living document's current revision,
  *   `…/revisions/<number>` one of its revisions, and `…/revisions/<number>/blocks/<block>`
  *   that revision with one block in focus (a finding's anchor, say);
@@ -31,6 +32,7 @@ export type Route =
   | { view: 'project'; project: string }
   | { view: 'session'; project: string; session: string }
   | { view: 'review'; project: string; session: string; review: string }
+  | { view: 'agent'; project: string; session: string; delegation: string }
   | { view: 'tree'; project: string; session: string }
   | { view: 'files'; project: string; session: string; run: string }
   | { view: 'run'; project: string; session: string; run: string }
@@ -130,6 +132,10 @@ export function parseRoute(hash: string): Route {
     const review = decoded(parts[5]!);
     if (review !== null) return { view: 'review', project, session: name, review };
   }
+  if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'agents') {
+    const delegation = decoded(parts[5]!);
+    if (delegation !== null) return { view: 'agent', project, session: name, delegation };
+  }
   if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'findings') {
     const finding = decoded(parts[5]!);
     if (finding !== null) return { view: 'finding', project, session: name, finding };
@@ -223,6 +229,11 @@ export function runHref(project: string, session: string, run: string): string {
 /** A session with one of its consistency reviews chosen in its review panel. */
 export function reviewHref(project: string, session: string, review: string): string {
   return `${sessionHref(project, session)}/reviews/${encodeURIComponent(review)}`;
+}
+
+/** A session with one delegation's card open in its Agents panel. */
+export function agentHref(project: string, session: string, delegation: string): string {
+  return `${sessionHref(project, session)}/agents/${encodeURIComponent(delegation)}`;
 }
 
 export function findingHref(project: string, session: string, finding: string): string {

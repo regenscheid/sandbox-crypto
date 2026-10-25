@@ -417,6 +417,8 @@ export type ChatEntry =
       message?: string;
       /** A wait on background work, or a notice of it, for the transcript's summary row. */
       background?: BackgroundSignal;
+      /** The IDs of the agent messages a notice delivered (PD-44); the notice has no text. */
+      agentMessages?: string[];
     };
 
 /**
@@ -685,6 +687,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         text: said || `Notices from ${text(data['source'])}: ${ids.join(', ')}.`,
         problem: false,
         ...(what && ids.length ? { background: { event: 'notice' as const, what, ids } } : {}),
+        ...(text(data['source']) === 'agent_messages' && ids.length ? { agentMessages: ids } : {}),
       });
     } else if (kind === 'waiting' && 'permission_request' in data) {
       // A connector call held for the user's answer (D76), or the end of that wait.

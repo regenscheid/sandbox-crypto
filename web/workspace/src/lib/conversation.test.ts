@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import type { RunEvent } from './api-types';
+import {
+  agentDirectory,
+  MessageBodies,
+  messageLine,
+  receivedRow,
+  sentRow,
+  type AgentMessagesItem,
+  type ChildOutcomesItem,
+} from './agentMessages';
+import type { AgentMessagePage, AgentMessageView, RunEvent, RunTree } from './api-types';
 import { chatEntries, type Gloss } from './chat';
 import {
   backgroundList,
@@ -21,6 +30,7 @@ import {
   type StepCall,
   type WorkStep,
 } from './conversation';
+import { agentHref, parseRoute } from './router';
 import { activeSubagents, sessionStatus, subagentText } from './sessionStatus';
 import { attachmentMessage, splitAttachments } from './uploads';
 
@@ -443,5 +453,258 @@ describe('times in lists', () => {
     expect(dayAndTime(today, now)).toBe(clock(today));
     expect(dayAndTime(earlier, now)).toMatch(/Oct 17, /);
     expect(dayAndTime(new Date(2025, 0, 2).toISOString(), now)).toMatch(/2025/);
+  });
+});
+
+describe('agent messages and children’s outcomes (B10, item 2)', () => {
+  const ok = (lines = 1) => ({
+    outcome: 'ok',
+    exit_code: null,
+    lines,
+    bytes: null,
+    files: [],
+    more_files: 0,
+    error: null,
+  });
+  const sentResult = (id: string, state = 'queued') =>
+    JSON.stringify({ message_id: id, state, recipient: 'dlg-a', delivered_run: null });
+
+  it('makes a message call its own row, sender to recipient, not a tool row', () => {
+    const events = [
+      event(1, 0, 'assistant', {
+        text: 'Correcting the child.',
+        tool_calls: [
+          call('c1', 'message_child', {
+            delegation_id: 'dlg-a',
+            text: 'Use q = 2^8.\nThen rerun.',
+          }),
+        ],
+      }),
+      event(2, 1, 'tool', {
+        call_id: 'c1',
+        name: 'message_child',
+        result: sentResult('agm-1'),
+        outcome: {},
+        gloss: ok(),
+      }),
+      event(3, 2, 'assistant', { text: 'Done.', tool_calls: [] }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    // A model call that only sent messages: its words, then the message, in order.
+    expect(items.map((item) => item.kind)).toEqual(['reply', 'agent-messages', 'reply']);
+    const row = (items[1] as AgentMessagesItem).rows[0]!;
+    expect(row).toMatchObject({
+      direction: 'sent',
+      tool: 'message_child',
+      child: 'dlg-a',
+      body: 'Use q = 2^8.\nThen rerun.',
+      message: 'agm-1',
+      state: 'queued',
+      done: true,
+      failed: false,
+    });
+    expect(items.some((item) => item.kind === 'work')).toBe(false);
+  });
+
+  it('puts a message sent beside other calls after their group, and keeps them a step', () => {
+    const events = [
+      event(1, 0, 'assistant', {
+        text: '',
+        tool_calls: [
+          call('c1', 'shell', { script: 'ls' }),
+          call('c2', 'message_parent', { text: 'Found a counterexample.' }),
+        ],
+      }),
+      event(2, 1, 'tool', { call_id: 'c2', name: 'message_parent', result: 'not json' }),
+      event(3, 1, 'tool', { call_id: 'c1', name: 'shell', result: 'a', outcome: {} }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    expect(items.map((item) => item.kind)).toEqual(['work', 'agent-messages']);
+    const work = items[0] as Extract<(typeof items)[number], { kind: 'work' }>;
+    expect(work.steps[0]!.calls.map((one) => one.name)).toEqual(['shell']);
+    const row = (items[1] as AgentMessagesItem).rows[0]!;
+    // A result that does not say it was saved is a failure, with its first line.
+    expect(row).toMatchObject({ child: null, failed: true, error: 'not json' });
+  });
+
+  it('makes each message a notice delivered a row of its own, by its ID', () => {
+    const events = [
+      event(1, 0, 'notice', { source: 'agent_messages', ids: ['agm-1', 'agm-2'] }),
+      event(2, 1, 'assistant', { text: 'Noted.', tool_calls: [] }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    expect(items.map((item) => item.kind)).toEqual(['agent-messages', 'reply']);
+    expect((items[0] as AgentMessagesItem).rows.map((row) => [row.direction, row.message])).toEqual(
+      [
+        ['received', 'agm-1'],
+        ['received', 'agm-2'],
+      ],
+    );
+  });
+
+  it("shows a child's outcome once, from its notice or its wait's result", () => {
+    const events = [
+      event(1, 0, 'assistant', {
+        text: '',
+        tool_calls: [call('c1', 'wait_delegations', { delegation_ids: ['dlg-a', 'dlg-b'] })],
+      }),
+      event(2, 0, 'waiting', { delegation_ids: ['dlg-a', 'dlg-b'], mode: 'all' }),
+      event(3, 5, 'tool', {
+        call_id: 'c1',
+        name: 'wait_delegations',
+        result: JSON.stringify({
+          reason: 'ended',
+          delegations: [
+            { delegation_id: 'dlg-a', ended: 'returned', stopped: 'answered' },
+            { delegation_id: 'dlg-b', ended: null },
+          ],
+        }),
+        outcome: {},
+      }),
+      event(4, 6, 'waiting', { delegation_ids: [] }),
+      event(5, 7, 'notice', { source: 'delegations', ids: ['dlg-a', 'dlg-b'] }),
+      event(6, 8, 'assistant', { text: 'Both are back.', tool_calls: [] }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    expect(items.map((item) => item.kind)).toEqual([
+      'work',
+      'background',
+      'child-outcomes',
+      'child-outcomes',
+      'reply',
+    ]);
+    expect((items[2] as ChildOutcomesItem).delegations).toEqual(['dlg-a']);
+    expect((items[3] as ChildOutcomesItem).delegations).toEqual(['dlg-b']);
+  });
+
+  it('keeps the live group on the wait while a child that ended shows after it', () => {
+    const events = [
+      event(1, 0, 'assistant', {
+        text: '',
+        tool_calls: [call('c1', 'wait_delegations', { delegation_ids: ['dlg-a', 'dlg-b'] })],
+      }),
+      event(2, 0, 'waiting', { delegation_ids: ['dlg-a', 'dlg-b'], mode: 'all' }),
+      event(3, 2, 'notice', { source: 'delegations', ids: ['dlg-a'] }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    expect(items.map((item) => item.kind)).toEqual(['work', 'background', 'child-outcomes']);
+    expect(liveWork(items)).toBe(0);
+  });
+
+  const tree = {
+    runs: [
+      { name: 'root', role: 'main', parent: null, delegation: null },
+      { name: 'child', role: 'delegated', parent: 'root', delegation: 'dlg-a' },
+      { name: 'grandchild', role: 'delegated', parent: 'child', delegation: 'dlg-c' },
+    ],
+    delegations: [
+      { delegation_id: 'dlg-a', kind: 'task', brief: { task: 'Count the points\nof the curve.' } },
+      { delegation_id: 'dlg-b', kind: 'check', brief: { check: { handle: 'R-3‮' } } },
+      { delegation_id: 'dlg-c', kind: 'task', brief: { task: 'Factor N.' } },
+    ],
+    delegations_total: 3,
+  } as unknown as RunTree;
+  const view = (fields: Partial<AgentMessageView>): AgentMessageView => ({
+    message_id: 'agm-1',
+    sender_run: 'child',
+    sender_delegation: 'dlg-a',
+    recipient_delegation: null,
+    body: 'Found it.\nDetails follow.',
+    created_at: '2026-10-25T10:00:00Z',
+    delivered_run: null,
+    references: [],
+    ...fields,
+  });
+
+  it('names the agents from the run tree, a check by its entry with hidden characters shown', () => {
+    const root = agentDirectory(tree, 'root', 'main');
+    expect(root.self).toBe('Research agent');
+    expect(root.name('dlg-a')).toBe('Count the points');
+    expect(root.name('dlg-b')).toBe('Check of R-3⟦U+202E⟧');
+    expect(root.name('dlg-x')).toBe('Subagent dlg-x');
+    const child = agentDirectory(tree, 'grandchild');
+    expect([child.self, child.parent]).toEqual(['Factor N.', 'Count the points']);
+    // Before the tree lists it, a run is named by the role it is shown in.
+    expect(agentDirectory(null, 'root', 'main').self).toBe('Research agent');
+    expect(agentDirectory(null, 'other').self).toBe('This agent');
+  });
+
+  it('says who sent what to whom, and how it stands', () => {
+    const root = agentDirectory(tree, 'root', 'main');
+    const sent = sentRow({
+      id: 'c1',
+      name: 'message_child',
+      arguments: JSON.stringify({ delegation_id: 'dlg-a', text: 'Use q = 2^8.' }),
+    });
+    expect(messageLine(sent, root, null)).toEqual({
+      from: 'Research agent',
+      to: 'Count the points',
+      preview: 'Use q = 2^8.',
+      state: 'sending',
+      undelivered: false,
+    });
+    const received = receivedRow('agm-1');
+    // While its body is read, a received message names no sender yet.
+    expect(messageLine(received, root, null)).toMatchObject({ from: 'An agent', preview: '' });
+    expect(messageLine(received, root, view({}))).toMatchObject({
+      from: 'Count the points',
+      to: 'Research agent',
+      preview: 'Found it.',
+      state: 'received',
+    });
+    // The root's own message comes back when its child ended before seeing it.
+    const back = view({
+      sender_run: 'root',
+      sender_delegation: null,
+      recipient_delegation: 'dlg-a',
+    });
+    expect(messageLine(received, root, back)).toMatchObject({
+      from: 'Research agent',
+      to: 'Count the points',
+      undelivered: true,
+    });
+    const child = agentDirectory(tree, 'child');
+    expect(
+      messageLine(
+        received,
+        child,
+        view({ sender_run: 'root', sender_delegation: null, recipient_delegation: 'dlg-a' }),
+      ),
+    ).toMatchObject({ from: 'Research agent', to: 'Count the points', undelivered: false });
+  });
+
+  it('reads each message once, page after page, and again only for one it has not seen', async () => {
+    const pages: Record<string, AgentMessagePage> = {
+      '': { messages: [view({ message_id: 'agm-1' })], next_after: 'agm-1', has_more: true },
+      'agm-1': { messages: [view({ message_id: 'agm-2' })], next_after: 'agm-2', has_more: false },
+      'agm-2': { messages: [], next_after: 'agm-2', has_more: false },
+    };
+    const asked: (string | null)[] = [];
+    const bodies = new MessageBodies(async (after) => {
+      asked.push(after);
+      return pages[after ?? '']!;
+    });
+    const [one, two] = await Promise.all([bodies.get('agm-2'), bodies.get('agm-1')]);
+    expect([one?.message_id, two?.message_id]).toEqual(['agm-2', 'agm-1']);
+    expect(asked).toEqual([null, 'agm-1']);
+    expect(bodies.known('agm-1')?.body).toBe('Found it.\nDetails follow.');
+    expect(await bodies.get('agm-1')).not.toBeNull();
+    expect(asked).toHaveLength(2);
+    // One it has not seen is looked for after the last one read.
+    expect(await bodies.get('agm-9')).toBeNull();
+    expect(asked).toEqual([null, 'agm-1', 'agm-2']);
+  });
+});
+
+describe("a delegation card's link", () => {
+  it('opens the session with the delegation chosen in its Agents panel', () => {
+    expect(agentHref('p 1', 's1', 'dlg-a/b')).toBe('#/projects/p%201/sessions/s1/agents/dlg-a%2Fb');
+    expect(parseRoute(agentHref('p 1', 's1', 'dlg-a/b'))).toEqual({
+      view: 'agent',
+      project: 'p 1',
+      session: 's1',
+      delegation: 'dlg-a/b',
+    });
+    expect(parseRoute('#/projects/p1/sessions/s1/agents/')).toEqual({ view: 'missing' });
   });
 });
