@@ -372,6 +372,23 @@ class StoreReader:
         except sqlite3.Error as exc:
             raise EventStoreError(f"cannot read the event store {self._path}: {exc}") from exc
 
+    def newest(self, limit: int, kinds: Collection[str]) -> Iterator[Record]:
+        """Records of ``kinds`` among the newest ``limit`` records, newest first, from one
+        snapshot; raises RecordError at a malformed one. A reader that wants a time window
+        stops when it meets a record older than its start."""
+        if isinstance(kinds, str):
+            raise TypeError("kinds is a collection of kinds, not one kind")
+        if limit < 1 or not kinds:
+            return
+        marks = ",".join("?" * len(kinds))
+        newest = "(SELECT coalesce(MAX(seq), 0) FROM events)"
+        query = _SELECT + f" WHERE seq > {newest} - ? AND kind IN ({marks}) ORDER BY seq DESC"
+        try:
+            for row in self._db.execute(query, (limit, *kinds)):
+                yield record_from_row(row)
+        except sqlite3.Error as exc:
+            raise EventStoreError(f"cannot read the event store {self._path}: {exc}") from exc
+
     def schema_problems(self) -> list[str]:
         """Ways the database's schema differs from a store's, such as dropped triggers."""
         try:

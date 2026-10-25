@@ -605,6 +605,13 @@ class ExecutionManager:
             kernel_reason=environment.kernel_reason,
         )
 
+    def measured_tier(self, environment_id: str) -> int | None:
+        """The isolation tier the probe measured when the environment's executor last
+        opened, without connecting; None when none has opened since the worker started."""
+        found = self._connections.get(environment_id)
+        location = found.location if found is not None else None
+        return location.isolation_tier if location is not None else None
+
     # Files. Replies are checked like events: a malformed one is an internal error.
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:

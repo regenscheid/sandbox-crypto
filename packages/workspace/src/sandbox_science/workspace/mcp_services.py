@@ -199,7 +199,8 @@ def _observations(
     return found, inspected, skipped
 
 
-def _canary(found: CanaryResult | None) -> McpCanary | None:
+def canary_view(found: CanaryResult | None) -> McpCanary | None:
+    """A service's latest canary as the views show it."""
     if found is None:
         return None
     return McpCanary(
@@ -223,7 +224,7 @@ def _inventory(
                 name=item.name,
                 purpose=item.purpose,
                 observation=observations.get(item.name),
-                canary=_canary(canaries.get(item.name)),
+                canary=canary_view(canaries.get(item.name)),
             )
             for item in configured
         ],

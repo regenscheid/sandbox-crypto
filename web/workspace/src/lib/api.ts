@@ -48,6 +48,7 @@ import type {
   MemoryHistory,
   MemoryProposals,
   McpInventory,
+  ProjectMonitor,
   ModelSettings,
   ProjectAnswer,
   ProjectListing,
@@ -651,6 +652,11 @@ export const api = {
   skills: (project: string) => get<ProjectSkills>(`/projects/${part(project)}/skills`),
   /** Safe configured MCP service identity and bounded historical run observations. */
   mcpServices: (project: string) => get<McpInventory>(`/projects/${part(project)}/mcp-services`),
+  /** The project's monitor figures for a window (D103): counted by the platform, no agent text. */
+  monitor: (project: string, window: '24h' | '7d', signal?: AbortSignal) =>
+    get<ProjectMonitor>(`/projects/${part(project)}/monitor?` + new URLSearchParams({ window }), {
+      signal,
+    }),
   /** The requests that wait for the user's answer in the session (D76, D97): connector
    * tool calls the MCP proxy or the policy middleware holds, and research code's network
    * and package requests. */

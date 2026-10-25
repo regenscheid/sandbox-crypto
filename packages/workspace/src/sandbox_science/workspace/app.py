@@ -69,6 +69,7 @@ from . import (
     mcp_services,
     memory,
     messages,
+    monitor,
     plan_edits,
     plans,
     project_settings,
@@ -411,6 +412,7 @@ def create_app(
         skills,
         mcp_services,
         classifications,
+        monitor,
         messages,
         uploads,
         session_opening,
@@ -428,6 +430,7 @@ def create_app(
         if mcp_classifications is not None
         else classifications.from_worker(job_worker),
     )
+    monitor.configure(app, job_worker)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)

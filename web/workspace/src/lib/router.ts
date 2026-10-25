@@ -19,6 +19,8 @@
  *   recorded, as a delegation's files link to them;
  * - `#/projects/<project>/memory` the project memory: its entries and the proposals that
  *   wait for the user;
+ * - `#/projects/<project>/monitor` the project's monitor figures (D103): calls, approvals,
+ *   holds and drift, spend and tokens, sandbox tiers and canaries;
  * - `#/projects/<project>/ledger` the project's ledger browser,
  *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
@@ -56,6 +58,7 @@ export type Route =
   | { view: 'memory'; project: string }
   | { view: 'skills'; project: string }
   | { view: 'mcp'; project: string }
+  | { view: 'monitor'; project: string }
   | { view: 'documents'; project: string }
   | { view: 'artifacts'; project: string }
   | { view: 'settings'; project: string }
@@ -97,6 +100,7 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts.length === 3 && parts[2] === 'skills') return { view: 'skills', project };
   if (parts.length === 3 && parts[2] === 'mcp') return { view: 'mcp', project };
+  if (parts.length === 3 && parts[2] === 'monitor') return { view: 'monitor', project };
   if (parts.length === 3 && parts[2] === 'documents') return { view: 'documents', project };
   if (parts.length === 3 && parts[2] === 'artifacts') return { view: 'artifacts', project };
   if (parts.length === 3 && parts[2] === 'settings') return { view: 'settings', project };
@@ -191,6 +195,11 @@ export function projectHref(project: string): string {
 
 export function mcpHref(project: string): string {
   return `${projectHref(project)}/mcp`;
+}
+
+/** The project's Monitor view (D103). */
+export function monitorHref(project: string): string {
+  return `${projectHref(project)}/monitor`;
 }
 
 /** The project's documents, beside the one chosen. */

@@ -16,6 +16,7 @@
   import MemoryPage from './views/MemoryPage.svelte';
   import SkillsPage from './views/SkillsPage.svelte';
   import McpServices from './views/McpServices.svelte';
+  import MonitorPage from './views/MonitorPage.svelte';
   import MessageView from './views/MessageView.svelte';
   import IssueList from './views/IssueList.svelte';
   import ProjectList from './views/ProjectList.svelte';
@@ -215,6 +216,10 @@
         {:else if route.view === 'mcp'}
           {#key route.project}
             <McpServices projectId={routeProject} />
+          {/key}
+        {:else if route.view === 'monitor'}
+          {#key route.project}
+            <MonitorPage projectId={routeProject} />
           {/key}
         {:else if route.view === 'documents'}
           {#key route.project}

@@ -13,6 +13,7 @@ from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.classifications import ClassificationDesk
 from sandbox_science.worker.documents_catalog import DocumentsCatalog
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.monitor import MonitorDesk
 from sandbox_science.worker.permission_requests import PermissionDesk
 from sandbox_science.worker.permissions import Permissions
 from sandbox_science.worker.settings import LocalBackendSettings
@@ -52,8 +53,8 @@ async def registered_routes(tmp_path: Path) -> set[Route]:
         state_dir=tmp_path,
     )
     try:
-        # The document-catalog, permission and classification routes are registered only
-        # with a catalog and their desks: include them.
+        # The document-catalog, permission, classification and monitor routes are
+        # registered only with a catalog and their desks: include them.
         permissions = Permissions(tmp_path / "events.db")
         desk = PermissionDesk(permissions, list)
         review = ClassificationDesk(
@@ -68,6 +69,9 @@ async def registered_routes(tmp_path: Path) -> set[Route]:
             document_catalog=catalog,
             permission_desk=desk,
             classification_desk=review,
+            monitor_desk=MonitorDesk(
+                permissions, lambda _projects: [], declared_tier=None, measured_tier=lambda _: None
+            ),
         )
         return {
             _canonical(route.method, route.resource.canonical)

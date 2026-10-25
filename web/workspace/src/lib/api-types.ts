@@ -65,6 +65,16 @@ export interface AnswerResult {
   granted: ProjectGrant[];
 }
 
+/** The permission requests of one kind recorded within the window, by how they stand now: waiting for an answer, approved, denied, or expired (unanswered past their deadline, or withdrawn by the worker as their operation ended). */
+export interface ApprovalCounts {
+  kind: "mcp" | "network" | "packages" | "hold";
+  waiting: number;
+  approved: number;
+  denied: number;
+  expired: number;
+  median_wait_seconds: number | null;
+}
+
 /** An artifact at its latest revision, and who made that revision. */
 export interface ArtifactEntry {
   artifact_id: string;
@@ -149,6 +159,22 @@ export interface BodyChange {
   base: PlanRef;
   body: PlanBody;
   reason: string;
+}
+
+/** One destination's calls of one effect class within the window. An MCP server's row counts its ``mcp-call`` records (every message, ``effect`` ``none`` for one that is not a classified tool call) and its escalations; research code's HTTP and git requests have rows by host, ``effect`` ``network`` (or ``packages`` for a download from the package cache), with only what the middleware records of them: escalations, detections' holds and requests that went through on an approval or with an alert. */
+export interface CallRow {
+  effect: string;
+  server: string | null;
+  host: string | null;
+  allowed: number;
+  escalated: number;
+  denied: number;
+  held: number;
+}
+
+export interface CanaryRow {
+  server: string;
+  canary: McpCanary | null;
 }
 
 export interface CapturedCall {
@@ -936,6 +962,12 @@ export interface DriftTool {
   sha256: string | null;
 }
 
+/** An MCP server whose tool list drifted from its pin and is not accepted again for the project, so its non-read calls ask (D103). */
+export interface DriftedServer {
+  server: string;
+  at: string | null;
+}
+
 /** The acknowledgement of one edit; the current plan is read separately. */
 export interface EditReceipt {
   project_id: string;
@@ -1065,6 +1097,17 @@ export interface EntryView {
 }
 
 export type EnvironmentState = "creating" | "ready" | "stopped" | "deleted";
+
+/** One of the project's environments with its isolation tier (D43). */
+export interface EnvironmentTier {
+  environment_id: string;
+  kind: "session" | "job";
+  profile: string;
+  state: EnvironmentState;
+  declared_tier: number | null;
+  tier: number | null;
+  job_id: string | null;
+}
 
 export interface EnvironmentView {
   environment_id: string;
@@ -1791,6 +1834,34 @@ export interface ModelUsage {
   retried: string[];
 }
 
+/** What the event store's records say for the window. */
+export interface MonitorRecords {
+  sources: ("policy-middleware" | "mcp-proxy")[];
+  scanned: number;
+  truncated: boolean;
+  calls: CallRow[];
+  approvals: ApprovalCounts[];
+  holds: OpenHolds[];
+  drift: DriftedServer[];
+}
+
+export interface MonitorSpend {
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
+  by_role: SpendRow[];
+  by_model: SpendRow[];
+}
+
+/** Holds of a rule that nobody has cleared or stopped, however old (D103). */
+export interface OpenHolds {
+  rule: string;
+  count: number;
+  sessions: string[];
+  oldest_at: string | null;
+}
+
 export interface Origin {
   kind: string;
   message: string | null;
@@ -2017,6 +2088,20 @@ export interface ProjectGrant {
 
 export interface ProjectListing {
   projects: (ProjectSummary | DamagedProject)[];
+}
+
+/** ``GET …/monitor``: the Monitor view's figures. */
+export interface ProjectMonitor {
+  project_id: string;
+  window: "24h" | "7d";
+  since: string;
+  at: string;
+  worker: WorkerMonitor | null;
+  worker_unavailable: string | null;
+  spend: MonitorSpend;
+  model_cost: ModelCost;
+  canaries: CanaryRow[];
+  network_drops: string;
 }
 
 export interface ProjectSession {
@@ -2534,6 +2619,16 @@ export interface SourceRead {
   versions: string | null;
 }
 
+/** Recorded model use of one role or one model within the window. ``cost`` is null when the gateway priced none of its calls; ``unpriced`` counts calls with tokens and no cost. */
+export interface SpendRow {
+  role: string | null;
+  model: string | null;
+  cost: number | null;
+  tokens: number;
+  calls: number;
+  unpriced: number;
+}
+
 /** How the research state labels an entry or a work record (CM-11), so that a failed attempt never reads as an impossibility: ``attempt`` (it did not succeed, or rests on finite evidence only), ``claimed`` or ``disputed`` (an obstruction or negative result not settled), ``flagged`` (settled, but an open flag leaves it unresolved), or ``impossible`` (settled by the ledger), with its scope and assumptions. */
 export interface Standing {
   label: "attempt" | "claimed" | "disputed" | "flagged" | "impossible";
@@ -2712,6 +2807,17 @@ export interface WorkRecord {
   decision: string | null;
   basis: "user" | "user_quoted" | "observed" | "interpreted" | null;
   anchors: Record<string, unknown>[];
+}
+
+/** ``GET /v1/monitor?project=P&window=24h|7d``: one project's monitor figures. */
+export interface WorkerMonitor {
+  project_id: string;
+  window: "24h" | "7d";
+  since: string;
+  at: string;
+  records: MonitorRecords | null;
+  unavailable: string | null;
+  environments: EnvironmentTier[];
 }
 
 /** The worker's observation plus the project it belongs to. */
