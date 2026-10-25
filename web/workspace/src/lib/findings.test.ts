@@ -12,6 +12,7 @@ describe("a user's response to a finding", () => {
     expect(startResponse(finding, null)).toEqual({
       expected: 4,
       explanation: '',
+      successor: '',
       action: 'dismiss',
       references: '',
     });
@@ -65,6 +66,7 @@ describe("a user's response to a finding", () => {
     expect(afterResponse(draft, { revision: 5 })).toEqual({
       expected: 5,
       explanation: '',
+      successor: '',
       action: 'fix',
       references: '',
     });

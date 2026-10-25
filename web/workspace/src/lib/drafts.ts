@@ -110,10 +110,21 @@ export interface FindingDraft {
   explanation: string;
   action: string;
   references: string;
+  /** For setting `superseded`: the finding that replaces it, which the server checks. */
+  successor?: string;
 }
+const findingShape = {
+  expected: revision,
+  explanation: text,
+  action: text,
+  references: text,
+};
+const withSuccessor = shape<Required<FindingDraft>>({ ...findingShape, successor: text });
+const withoutSuccessor = shape<Omit<FindingDraft, 'successor'>>(findingShape);
+// A draft kept before the successor field existed still loads.
 export const findingDrafts = new DraftStore<FindingDraft>(
   'finding',
-  shape<FindingDraft>({ expected: revision, explanation: text, action: text, references: text }),
+  (value: unknown): value is FindingDraft => withSuccessor(value) || withoutSuccessor(value),
 );
 
 /** The project's macro setting, as JSON text. */

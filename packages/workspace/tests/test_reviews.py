@@ -413,3 +413,59 @@ async def test_the_api_serves_each_status_with_its_history_dismissal_and_success
     assert {h["actor_kind"] for h in found["history"][1:]} == {"user"}
     listed = await (await client.get(base + "/findings")).json()
     assert listed["findings"][0]["status"] == "dismissed"
+
+
+async def test_a_finding_names_the_revision_it_reviewed_beside_the_current_one(
+    client, state_dir: Path
+) -> None:
+    """The card shows the revision a finding reviewed and the current one (CR-46): a
+    document the finding is anchored to, at the revision reviewed, beside its head after
+    a later revision; a finding on transcript evidence alone names none."""
+    from sandbox_science.orchestrator.documents import USER, Author
+
+    main = Author(kind="agent", session_id="a", run_id="run-1", role="main", model="scripted")
+    documents = DocumentStore(store_path(state_dir))
+    store = ReviewStore(documents)
+    doc = documents.create(
+        "p1", name="claimed", title="N", text="The count is 16.\n", author=main, session_id="a"
+    ).document_id
+    store.ingest_documents("p1", "a")
+    review = store.dispatch(
+        "p1", "a", "terminal", author_run="run-1", owner="fixture", alias="scripted-reviewer"
+    )
+    assert review
+    held = store.manifest("p1", "a", review, limit=20)["evidence"]
+    evidence = next(i["evidence"] for i in held if i["kind"] == "document")
+    finding = Findings(store).create(
+        "p1",
+        "a",
+        review,
+        "fixture",
+        {
+            "severity": "warn",
+            "category": "contradicting_value",
+            "statement": "The count is wrong.",
+            "anchors": [{"evidence": evidence}],
+            "operation_id": "fixture-doc",
+        },
+    )["finding_id"]
+    store.finish("p1", "a", review, "fixture", "findings", "A document finding.")
+    documents.edit_source(
+        "p1", doc, base=1, text="The count is 15.\n", author=USER, reason="Correct",
+        operation_id="revise-doc",
+    )  # fmt: skip
+    documents.close()
+    base = "/api/v0/projects/p1/sessions/a"
+    found = await (await client.get(base + f"/findings/{finding}")).json()
+    assert found["reviewed_revisions"] == [
+        {"kind": "document", "id": doc, "reviewed": 1, "current": 2}
+    ]
+    listed = await (await client.get(base + "/findings")).json()
+    shown = {f["finding_id"]: f["reviewed_revisions"] for f in listed["findings"]}
+    assert shown[finding] == found["reviewed_revisions"]
+
+
+async def test_a_transcript_finding_names_no_reviewed_revision(client, review_data) -> None:
+    _, _, finding = review_data
+    found = await (await client.get(f"/api/v0/projects/p1/sessions/a/findings/{finding}")).json()
+    assert found["reviewed_revisions"] == []
