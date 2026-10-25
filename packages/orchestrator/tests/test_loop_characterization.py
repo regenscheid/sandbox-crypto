@@ -159,7 +159,7 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
 
     # The CLI saved the record, then acknowledged what it names.
     assert harness.request_states() == {sources.request: "delivered"}
-    assert harness.findings() == {"review": "open", "math": "unaddressed"}
+    assert harness.findings() == {"review": "open", "math": "open at bound"}
     again = await harness.run("run-2", [Reply(calls=[call("plan_read")]), Reply("Answer C.")])
     first, _ = harness.gateway.main
     assert delivered(again, "kernels") == [newer]
@@ -301,8 +301,9 @@ async def test_closing_sources_take_turns_in_todays_order(harness: Harness) -> N
         "reviews": [flagged],
         "math": [math],
     }
-    assert summary(record, "reviews")["counts"] == {"fail:unaddressed": 1}
-    assert harness.findings() == {"review": "unaddressed", "math": "unaddressed"}
+    # A finding at its bound is still open, and counted as open.
+    assert summary(record, "reviews")["counts"] == {"fail:open": 1}
+    assert harness.findings() == {"review": "open at bound", "math": "open at bound"}
 
 
 async def test_a_job_ending_at_closing_continues_the_run_with_its_notice(
@@ -401,7 +402,7 @@ async def test_a_review_response_round_then_the_bound(harness: Harness) -> None:
     assert shape(record.messages) == [*shape(third), ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "It is done, as stated.")
     # Two response rounds, then a third window whose re-flag (r3) reaches no model:
-    # the delivered findings are bounded as unaddressed. A-02 step 4 keeps this or
+    # the delivered findings stay open at their bound. A-02 step 4 keeps this or
     # changes it deliberately: the bound also covers the re-flag no model saw.
     assert reviewer.windows == 3
     assert summary(record, "reviews")["reviews_total"] == 3
@@ -410,14 +411,14 @@ async def test_a_review_response_round_then_the_bound(harness: Harness) -> None:
     assert (reviews["outcome"], len(reviews["reviews"]), reviews["counts"]) == (
         "findings",
         3,
-        {"fail:unaddressed": 1},
+        {"fail:open": 1},
     )
-    assert harness.findings() == {"review": "unaddressed"}
+    assert harness.findings() == {"review": "open at bound"}
 
     again = await harness.run("run-2", [Reply("Fine.")], reviewer=True)
     (seen,) = harness.gateway.main
     assert shape(seen) == [
-        SYSTEM, TASK_MESSAGE, plans("no_current_plan", False), counts(fail_unaddressed=1)
+        SYSTEM, TASK_MESSAGE, plans("no_current_plan", False), counts(fail_open=1)
     ]  # fmt: skip
     assert all_delivered(again) == NOTHING
     assert reviewer.windows == 3  # a conversational answer starts no review

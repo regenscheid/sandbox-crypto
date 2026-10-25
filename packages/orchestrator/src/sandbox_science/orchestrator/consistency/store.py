@@ -32,14 +32,14 @@ from sandbox_science.orchestrator.documents.errors import (
     POLICY_DENIED,
     DocumentError,
 )
-from sandbox_science.orchestrator.documents.project_macros import head, response_view
+from sandbox_science.orchestrator.documents.project_macros import response_view
 from sandbox_science.orchestrator.pricing import CostSource, source_of
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 from sandbox_science.orchestrator.session_plans import SessionPlans
 
 from . import snapshot_reads
 from .actions import Earlier, plan_item
-from .models import ReviewConfig, ReviewOutcome, ReviewType, Scope
+from .models import RECHECK_ATTEMPTS, ReviewConfig, ReviewOutcome, ReviewType, Scope
 from .prompt_bundle import (
     MAX_PROVENANCE_BYTES,
     ProvenanceRead,
@@ -86,8 +86,8 @@ def _reported_cost(cost: object) -> bool:
 
 MANIFEST_PAGE: Final = 50
 """The most items one manifest page lists."""
-CONFIRMATION_ATTEMPTS: Final = 3
-"""Failed or dropped confirmations of the same targets before they are given up."""
+CONFIRMATION_ATTEMPTS: Final = RECHECK_ATTEMPTS
+"""Failed or dropped re-checks of the same targets before they are given up (CR-42)."""
 LEASE_SECONDS: Final = 120
 FAILURE_COOLDOWN_SECONDS: Final = 300
 """Minimum wait between attempts after repeated reviewer failures."""
@@ -121,8 +121,13 @@ _FINDING_FIELDS: Final = (
     "revision",
     "reflags",
     "supersedes",
+    "recheck",
+    "dismissal",
+    "session",
 )
-"""An open finding as a snapshot copies it."""
+"""An open finding as a snapshot copies it, with its queued re-check and the author's
+dismissal, which the review decides (CR-42, CR-43); all but ``session``, the session it
+was raised in, an earlier one for a stale finding's re-check (CR-44)."""
 
 
 def _archived(items: Sequence[EvidenceItem]) -> Json:
@@ -428,14 +433,17 @@ class ReviewStore:
             )
 
     def finding_states(self, project: str, session: str) -> Json:
+        """The session's review findings by status, without math findings and
+        suggestions; an open finding at its re-flag bound counts as ``open at bound``."""
         self.scope(project, session)
         with self.documents.control.read() as tx:
             db = tx.sql
             return dict(
                 db.execute(
-                    "SELECT status,count(*) FROM review_findings WHERE project=? AND session=? "
+                    "SELECT CASE WHEN status='open' AND at_bound=1 THEN 'open at bound' "
+                    "ELSE status END,count(*) FROM review_findings WHERE project=? AND session=? "
                     "AND category NOT IN ('math','handle_citation') "
-                    "GROUP BY status",
+                    "GROUP BY 1",
                     (project, session),
                 )
             )
@@ -557,51 +565,41 @@ class ReviewStore:
         )
 
     def confirmation_targets(self, project: str, session: str) -> list[tuple[str, int]]:
-        """A revision is queued once, with at most two retries after failure/drop.
-
-        An ended inconclusive/capped review leaves the finding unconfirmed but does
-        not repeatedly schedule the same claim. A new response revision can queue it.
-        """
+        """The findings whose queued re-check the session's next dispatch carries (CR-42):
+        open or stale, its own or a stale one of another session queued for it (CR-44),
+        not math or suggestions, tried fewer than ``RECHECK_ATTEMPTS`` times by the
+        session's reviews, and not held by a running review. Each attempt that cannot
+        decide is recorded on the finding, a new revision, so the next dispatch tries it
+        again. All of them, read a page at a time; the snapshot admits what fits."""
         self.scope(project, session)
-        with self.documents.control.read() as tx:
-            db = tx.sql
-            revision = head(db, project)
-            # A review of a target counts when it pinned the response's latest body and,
-            # for a response with a body, the current project macro setting.
-            reviews = (
-                "SELECT count(*) FROM review_confirmation_targets t JOIN review_runs r "
-                "USING(review_id) WHERE t.finding_id=f.finding_id AND t.revision=f.revision "
-                "AND coalesce((SELECT body FROM latest WHERE latest.finding=f.finding_id),0)="
-                "coalesce((SELECT p.body_revision FROM review_response_pins p "
-                "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) "
-                "AND (NOT EXISTS(SELECT 1 FROM text_revisions b WHERE b.subject_type='response' "
-                "AND b.parent=f.finding_id AND b.parent_revision=f.revision) OR EXISTS("
-                "SELECT 1 FROM review_response_pins m WHERE m.review_id=t.review_id AND "
-                "m.finding_id=f.finding_id AND m.macro_revision=:macros)) AND r.state "
-            )
-            return [
-                tuple(row)
-                for row in db.execute(
-                    "WITH latest(finding,body) AS (SELECT f.finding_id,(SELECT b.revision "  # noqa: S608 - fixed SQL
-                    "FROM text_revisions b WHERE b.subject_type='response' AND "
-                    "b.parent=f.finding_id AND b.parent_revision=f.revision "
-                    "ORDER BY b.revision DESC LIMIT 1) "
-                    "FROM review_findings f WHERE f.project=:project AND f.session=:session) "
-                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE "
-                    "project=:project AND session=:session "
+        found: list[tuple[str, int]] = []
+        after = 0
+        while True:
+            with self.documents.control.read() as tx:
+                rows = tx.sql.execute(
+                    "SELECT f.rowid,f.finding_id,f.revision FROM review_findings f WHERE "
+                    "f.project=:project AND recheck IS NOT NULL "
+                    "AND coalesce(json_extract(recheck,'$.session'),f.session)=:session "
                     "AND category NOT IN ('math','handle_citation') "
-                    "AND status='claimed fixed' "
-                    f"AND ({reviews}NOT IN ('running','failed','dropped'))=0 "
-                    f"AND ({reviews}IN ('failed','dropped'))<:attempts "
-                    "ORDER BY f.rowid LIMIT 100",
+                    "AND status IN ('open','stale') "
+                    "AND (SELECT count(*) FROM review_finding_history h JOIN review_runs r "
+                    "ON r.review_id=h.review_id WHERE h.finding_id=f.finding_id "
+                    "AND h.answer='inconclusive' AND r.session=:session)<:attempts "
+                    "AND NOT EXISTS(SELECT 1 FROM review_confirmation_targets t JOIN "
+                    "review_runs r USING(review_id) WHERE t.finding_id=f.finding_id "
+                    "AND t.revision=f.revision AND r.state='running') "
+                    "AND f.rowid>:after ORDER BY f.rowid LIMIT 100",
                     {
                         "project": project,
                         "session": session,
-                        "macros": revision,
-                        "attempts": CONFIRMATION_ATTEMPTS,
+                        "attempts": RECHECK_ATTEMPTS,
+                        "after": after,
                     },
-                )
-            ]
+                ).fetchall()
+            found.extend((row[1], row[2]) for row in rows)
+            if len(rows) < 100:
+                return found
+            after = rows[-1][0]
 
     def dispatch(
         self,
@@ -757,14 +755,32 @@ class ReviewStore:
         finding with its response, and grants for the evidence its anchors name that
         ``granted`` does not hold yet."""
         finding: Json = dict(zip(_FINDING_FIELDS, row, strict=True))
+        raised_in = str(finding.pop("session"))
         finding["anchors"] = json.loads(finding["anchors"])
+        for column in ("recheck", "dismissal"):
+            if finding[column] is not None:
+                finding[column] = json.loads(finding[column])
+        queued = cast(Json, finding["recheck"] or {})
+        dismissal = cast(Json, finding["dismissal"] or {})
+        # The response the review decides on: a re-check's fix, the author's dismissal
+        # awaiting its decision, or else the latest record (CR-42, CR-43).
+        responding: int = finding["revision"]
+        if type(queued.get("response")) is int:
+            responding = cast(int, queued["response"])
+        elif (
+            finding["status"] == "dismissed"
+            and dismissal.get("by") == "agent"
+            and dismissal.get("review") is None
+            and type(dismissal.get("response_revision")) is int
+        ):
+            responding = cast(int, dismissal["response_revision"])
         with self.documents.control.read() as tx:
             db = tx.sql
             response = db.execute(
                 "SELECT reason,payload FROM review_transitions WHERE finding_id=? AND revision=?",
-                (finding["finding"], finding["revision"]),
+                (finding["finding"], responding),
             ).fetchone()
-            body_pin = response_pin(db, finding["finding"], finding["revision"])
+            body_pin = response_pin(db, finding["finding"], responding)
         finding["response"] = (
             {
                 "reason": response[0],
@@ -784,8 +800,42 @@ class ReviewStore:
             )
         items: list[EvidenceItem] = []
         anchors = list(finding["anchors"])
-        if finding["response"]:
-            claimed = finding["response"]["payload"]
+        places = cast(list[Json], queued.get("places", []))
+        if finding["response"] or places:
+            payload = cast(Json, (finding["response"] or {}).get("payload", {}))
+            # What a queued re-check holds: the later revisions that replaced what the
+            # finding reviewed, or that the author's fix names (CR-42), each once.
+            named = {
+                (str(pin.get("document")), pin.get("revision"))
+                for pin in cast(list[Json], payload.get("revisions", []))
+                + cast(list[Json], payload.get("replacements", []))
+            }
+            artifacts = cast(list[Json], payload.get("artifact_revisions", [])) + cast(
+                list[Json], payload.get("artifact_replacements", [])
+            )
+            claimed: Json = {
+                **payload,
+                "replacements": payload.get("replacements", [])
+                + [
+                    {k: v for k, v in place["document"].items() if k != "block"}
+                    for place in places
+                    if "document" in place
+                    and (str(place["document"]["document"]), place["document"]["revision"])
+                    not in named
+                ],
+                "artifact_replacements": payload.get("artifact_replacements", [])
+                + [
+                    place["artifact"]
+                    for place in places
+                    if "artifact" in place and place["artifact"] not in artifacts
+                ],
+                "entry_revisions": payload.get("entry_revisions", [])
+                + [
+                    place["entry"]
+                    for place in places
+                    if "entry" in place and place["entry"] not in payload.get("entry_revisions", [])
+                ],
+            }
             anchors.extend(claimed.get("anchors", []))
             for locator in claimed.get("revisions", []) + claimed.get("replacements", []):
                 revision = self.documents.revision(
@@ -854,7 +904,13 @@ class ReviewStore:
             ):
                 ref = ArtifactRevisionRef.model_validate(raw)
                 claimed_pins.add((ref.artifact_id, ref.revision))
-                location, projection, ready = self.artifact_pin(project, session, ref)
+                try:
+                    location, projection, ready = self.artifact_pin(project, session, ref)
+                except DocumentError:
+                    if raised_in == session:
+                        raise
+                    # A fix made in the finding's own, earlier session pinned it there.
+                    location, projection, ready = self.artifact_pin(project, raised_in, ref)
                 encoded = dump(projection)
                 items.append(
                     EvidenceItem("artifact", dump(location), encoded, digest(encoded), int(ready))
@@ -863,7 +919,7 @@ class ReviewStore:
             # against them (lab 41: a "fix" that misstated results/ell.json was confirmed).
             from .artifacts import cited_artifacts
 
-            texts = [str(finding["response"].get("reason") or ""), dump(claimed)]
+            texts = [str((finding["response"] or {}).get("reason") or ""), dump(claimed)]
             for locator in claimed.get("revisions", []) + claimed.get("replacements", []):
                 texts.append(
                     self.documents.revision(project, locator["document"], locator["revision"]).text
@@ -875,6 +931,7 @@ class ReviewStore:
                 encoded = dump(projection)
                 cited = {**locator, "cited_by": {"finding": finding["finding"]}}
                 items.append(EvidenceItem("artifact", dump(cited), encoded, digest(encoded), 1))
+        items.extend(self._recheck_messages(project, session, finding["finding"], queued))
         # Cross-snapshot access is an explicit immutable grant. Keeping the original ID
         # makes the retained finding/response anchors readable; it does not give the
         # reviewer ambient access to other reviews.
@@ -882,7 +939,7 @@ class ReviewStore:
         for anchored in anchors:
             evidence = anchored["evidence"]
             if evidence not in granted and evidence not in grants:
-                grants[evidence] = self.evidence(project, session, anchored["review"], evidence)
+                grants[evidence] = self.evidence(project, raised_in, anchored["review"], evidence)
         payload = dump(finding)
         held = bool(
             finding["response"] and finding["response"].get("macro_context", {}).get("held")
@@ -905,6 +962,45 @@ class ReviewStore:
             ),
             None if body_pin is None else dump(body_pin),
         )
+
+    def _recheck_messages(
+        self, project: str, session: str, finding: str, queued: Json
+    ) -> list[EvidenceItem]:
+        """The later archive messages a fix of a message-anchored finding names, as the
+        transcript items its re-check reads (CR-42)."""
+        named = cast(list[Json], queued.get("messages") or [])
+        if not named:
+            return []
+        from sandbox_science.orchestrator.context.history import Archive
+
+        archive = Archive(self.documents.control)
+        items: list[EvidenceItem] = []
+        for message in named:
+            found = archive.message(project, str(message["id"]))
+            if found.session != session:
+                raise DocumentError(CONFLICT, "a re-check's message is outside its session")
+            original = dump(found.chat())
+            locator = {
+                "run": found.run,
+                "archive": {"id": found.message_id, "position": found.position},
+                "recheck_of": finding,
+            }
+            payload = {
+                "role": found.entry.role,
+                "content": clipped(original, 32000),
+                "truncated": len(original) > 32000,
+            }
+            encoded = dump(payload)
+            items.append(
+                EvidenceItem(
+                    "transcript",
+                    dump(locator),
+                    encoded,
+                    digest(encoded),
+                    int(len(original) <= 32000),
+                )
+            )
+        return items
 
     def _commit_snapshot(
         self,
@@ -1132,6 +1228,12 @@ class ReviewStore:
         with self.documents.control.read() as tx:
             db = tx.sql
             found = self.load_run(db, project, session, review)
+            # The author's dismissals this review rejected, which its record counts (CR-43).
+            found["dismissals_rejected"] = db.execute(
+                "SELECT count(*) FROM review_records WHERE review_id=? AND kind='dismissal' "
+                "AND json_extract(payload,'$.decision')='rejected'",
+                (review,),
+            ).fetchone()[0]
         found["config"] = json.loads(found["config"])
         found["classifier"] = json.loads(found["classifier"])
         found.pop("owner", None)
@@ -1254,6 +1356,7 @@ class ReviewStore:
                 (outcome, summary, int(cap_reached), self.clock(), review),
             )
             if found["kind"] == "confirmation":
+                self._undecided(db, project, session, found, outcome, summary)
                 if outcome in ("failed", "dropped") and self.confirmation_failed(
                     db, project, session, found["confirmation_key"]
                 ):
@@ -1304,6 +1407,34 @@ class ReviewStore:
                     (found["end_seq"], project, session),
                 )
             self.event(db, project, session, "review.ended", {"review": review, "outcome": outcome})
+
+    def _undecided(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        run: Json,
+        outcome: str,
+        summary: str,
+    ) -> None:
+        """Record each re-check this review held and did not answer as inconclusive, and
+        why: it was capped, failed, or gave no answer with a valid anchor (CR-42)."""
+        from .findings import Findings
+
+        findings = Findings(self)
+        why = clipped(
+            f"The re-check ended {outcome} without an answer with a valid anchor: {summary}",
+            2000,
+        )
+        for finding, revision in db.execute(
+            "SELECT finding_id,revision FROM review_confirmation_targets WHERE review_id=? "
+            "ORDER BY rowid",
+            (run["review_id"],),
+        ).fetchall():
+            # A target may be a stale finding of an earlier session (CR-44).
+            current = findings.load_in(db, project, finding)
+            if current["revision"] == revision:
+                findings.inconclusive(db, run, current, why)
 
     def recover(self, project: str, session: str) -> int:
         """Drop only expired owners, never another live harness process's review."""

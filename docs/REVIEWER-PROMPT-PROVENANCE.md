@@ -12,15 +12,19 @@ separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
 
 [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py)
 assembles one owned reviewer bundle from the unchanged `RUBRIC`,
-`RUBRIC_VERSION="sandbox-consistency-9"` and ordered six `SPECS` in
+`RUBRIC_VERSION="sandbox-consistency-9"`, the re-check instructions `RECHECK`
+(`RECHECK_VERSION="sandbox-recheck-1"`, also in
+[rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py))
+and ordered six `SPECS` in
 [runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py).
+Every new reviewer call is format 3 ([below](#the-re-check-instructions-format-3)).
 It reuses MAIN's schema encoder (`prompts.schema_json`), without MAIN's sections.
 
 The actual schemas, descriptions and order remain `review_manifest`,
 `review_read`, `review_checked`, `review_finding`, `review_decide`, `review_citation`. Each call
 passes `SPECS` itself; the pins are recorded with the call's reservation and not
 checked again before the call (owner decision 3). The existing tool dispatch whitelist, evidence grants, read audits, finding
-operation replay, scientific decisions and confirmation CAS are unchanged.
+operation replay, scientific decisions and re-check CAS are unchanged.
 
 The fixed first user instruction, dynamic evidence/tool results and final-format
 retry instruction are unchanged and outside this system/tool pin. This is not
@@ -31,11 +35,12 @@ separate existing columns; a missing resolved model is not replaced by an alias.
 
 ## Historical envelope and bounds
 
-The envelope contains format version 1, assembly version
+A format 1 envelope contains format version 1, assembly version
 `sandbox-reviewer-bundle-1`, fixed role `reviewer`, bounded rubric version, exact
 rubric text and its UTF-8 byte length/SHA256, ordered tool names/count, canonical
-schema byte length/hash and a bundle digest. The installed rubric is 2,450
-UTF-8 bytes and fits inside the complete 16-KiB envelope ceiling.
+schema byte length/hash and a bundle digest; formats 2 and 3 add the pins below. The
+installed rubric is 8,717 UTF-8 bytes and, with the re-check instructions, fits inside the
+complete 16-KiB envelope ceiling.
 
 Hashes use lowercase hexadecimal SHA256. Canonical JSON uses sorted object
 keys, compact separators, UTF-8 without ASCII escaping and no non-finite values.
@@ -81,6 +86,27 @@ pinned by its hash, not kept. A memory without entries gives no section, and the
 envelope still names its version. Format 1 envelopes, without memory, read as before,
 and a format 2 envelope without a memory pin, or a format 1 one with it, is refused.
 
+## The re-check instructions (format 3)
+
+Since a finding's lifecycle was built (CR-42, CR-43, decided by the owner on 2026-10-25),
+every reviewer call's system message is the rubric, a blank line, the re-check
+instructions, and then, when the reviewed run had the project memory, a blank line and the
+memory section. The rubric `sandbox-consistency-9` is unchanged; its paragraph on
+confirmation, rebuttals and challenged findings is replaced, as the re-check instructions
+say, by them: a finding item with a queued re-check is answered with `review_decide`
+`resolved` or `unresolved`, with at least one anchor in the new revision or message, and
+no answer when the evidence cannot decide; an author's dismissal is accepted or rejected
+(`accept_dismissal`, `reject_dismissal`) and stands either way; a better finding of the
+same work names the one it replaces in `supersedes`. The `review_decide` and
+`review_finding` schemas say the same, so the schema digest changed too.
+
+Such a call's envelope is format 3, assembly `sandbox-reviewer-bundle-3`, and adds
+`recheck`: the instructions' version, exact text, UTF-8 byte count and SHA-256 (at most
+4 KiB of text); `memory` is present when a memory section was given, as in format 2. The
+bundle digest covers both. Format 1 and 2 envelopes of earlier calls read as before; a
+format 3 envelope without its re-check pin, or a format 1 or 2 one with it, is refused, as
+is a re-check pin whose text does not match its byte count and hash.
+
 ## Reservation and legacy reads
 
 `review_calls` has a nullable `prompt_provenance` TEXT column
@@ -125,7 +151,7 @@ outcomes remain durable; a late dropped finish cannot overwrite a terminal
 outcome or a replacement owner.
 
 This ownership covers the accounting awaits only. Raw tool, evidence,
-model-observation, confirmation and controller thread paths keep their own
+model-observation, re-check decision and controller thread paths keep their own
 lifetime rules; this is **not** proof of whole-runner or whole-controller SQL
 ownership under every cancellation race. No SQL transaction spans a model await.
 

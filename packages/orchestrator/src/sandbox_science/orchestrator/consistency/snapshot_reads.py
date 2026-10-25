@@ -333,25 +333,32 @@ def open_findings(
     *,
     limit: int = MAX_SNAPSHOT_FINDINGS,
 ) -> list[tuple[Any, ...]]:
-    """The session's open findings, confirmation targets first, then rebutted, then
-    open, then the rest; one more than a snapshot copies."""
+    """The findings a review weighs: re-check targets first, a stale finding of an earlier
+    session among them (CR-44), then the author's
+    dismissals awaiting a review's decision (CR-43), then open, then stale ones; one more
+    than a snapshot copies. Fixed and superseded findings, and dismissals already decided
+    or the user's, are settled."""
     # Open finding state is copied, so a later user response cannot change what the
     # detached reviewer saw. History remains separately append-only.
+    pending = (
+        "(status='dismissed' AND json_extract(dismissal,'$.by')='agent' "
+        "AND json_type(dismissal,'$.review') IS 'null')"
+    )
     return [
         tuple(row)
         for row in db.execute(
-            "SELECT finding_id,severity,category,statement,anchors,remedy,"
-            "status,revision,reflags,supersedes FROM review_findings f WHERE "
-            "project=? AND session=? AND category!='math' "
-            "AND status NOT IN ('confirmed fixed','withdrawn') ORDER BY CASE WHEN "
-            "finding_id IN (SELECT value FROM json_each(?)) THEN 0 WHEN (SELECT "
-            "json_extract(t.payload,'$.action') FROM review_transitions t "
-            "WHERE t.finding_id=f.finding_id ORDER BY t.revision DESC "
-            "LIMIT 1)='rebut' THEN 1 WHEN status='open' THEN 2 ELSE 3 END,f.rowid "
+            "SELECT finding_id,severity,category,statement,anchors,remedy,"  # noqa: S608 - fixed SQL
+            "status,revision,reflags,supersedes,recheck,dismissal,session FROM review_findings f "
+            "WHERE project=? AND (session=? OR finding_id IN (SELECT value FROM json_each(?))) "
+            "AND category!='math' "
+            f"AND (status IN ('open','stale') OR {pending}) ORDER BY CASE WHEN "
+            "finding_id IN (SELECT value FROM json_each(?)) THEN 0 "
+            f"WHEN {pending} THEN 1 WHEN status='open' THEN 2 ELSE 3 END,f.rowid "
             "LIMIT ?",
             (
                 project,
                 session,
+                dump([target[0] for target in targets]),
                 dump([target[0] for target in targets]),
                 limit + 1,
             ),

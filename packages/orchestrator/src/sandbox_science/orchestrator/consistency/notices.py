@@ -41,17 +41,17 @@ class FindingNotices:
         max_chars: int = 20000,
         raised_for: str | None = None,
     ) -> list[Json]:
-        """The notices to lease to ``run``. With ``raised_for``, a run's ID, the open
-        findings among them are only those the reviews of that run's work raised or
-        decided: the others reach it as counts (the owner, 2026-10-16; CR-16, CR-21 as
-        amended). Challenged findings only inform, and go to any run."""
+        """The notices to lease to ``run``: open findings not at their re-flag bound.
+        With ``raised_for``, a run's ID, only those the reviews of that run's work raised
+        or decided: the others reach it as counts (the owner, 2026-10-16; CR-16, CR-21 as
+        amended). A dismissed, stale or bounded finding is not injected (CR-43, CR-44)."""
         if len(seen) >= MAX_PER_RUN:
             return []
         self.store.scope(project, session)
 
         def notice(row: tuple[Any, ...]) -> Json:
-            finding, revision, severity, statement, review, status, reason = row
-            found: Json = {
+            finding, revision, severity, statement, review, status = row
+            return {
                 "notice_id": f"{finding}-r{revision}",
                 "finding": finding,
                 "revision": revision,
@@ -61,29 +61,26 @@ class FindingNotices:
                 "statement": clipped(statement, 2048),
                 "detail": "Read review_finding_read for the full finding and evidence.",
             }
-            if status == "challenged":
-                found["challenge"] = clipped(str(reason or ""), 2048)
-            return found
 
         # The latest state is authoritative. A response made before delivery
         # makes the older open notice unnecessary, without hiding its history.
         # A run is offered only the open findings reviews of its own work raised or
-        # decided, the rest reaching it as counts, and the challenged ones, which only
-        # inform (the owner, 2026-10-16; CR-16, CR-21, CR-26 as amended).
+        # decided, the rest reaching it as counts (the owner, 2026-10-16; CR-16, CR-21 as
+        # amended).
         return self.leases.offer(
             run,
             seen,
             batch=20,
             max_chars=max_chars,
             select="""SELECT n.finding_id,n.revision,f.severity,f.statement,f.review_id,
-                f.status,t.reason
+                f.status
                 FROM review_notices n JOIN review_findings f USING(finding_id)
                 JOIN review_transitions t ON t.finding_id=n.finding_id
                 AND t.revision=n.revision
                 WHERE n.project=? AND n.session=?
-                AND n.revision=f.revision AND f.status IN ('open','challenged')
+                AND n.revision=f.revision AND f.status='open' AND f.at_bound=0
                 AND f.category NOT IN ('math','handle_citation')
-                AND (f.status='challenged' OR ? IS NULL OR EXISTS(SELECT 1 FROM
+                AND (? IS NULL OR EXISTS(SELECT 1 FROM
                 review_runs r WHERE t.actor='review:'||r.review_id AND r.author_run=?))
                 AND {leased} ORDER BY n.rowid LIMIT ?""",
             parameters=(project, session, raised_for, raised_for),
@@ -101,6 +98,8 @@ class FindingNotices:
             self.leases.acknowledge(tx.sql, project, session, run, notices)
 
     def counts(self, project: str, session: str) -> Json:
+        """The session's open review findings by severity (CR-16, CR-21, CR-47), keyed
+        ``severity:open``; math findings and suggestions are counted elsewhere or not."""
         self.store.scope(project, session)
         if self.store.documents.control.missing:
             return {}
@@ -110,7 +109,7 @@ class FindingNotices:
                 (
                     "SELECT severity,status,count(*) FROM review_findings WHERE "
                     "project=? AND session=? AND category NOT IN ('math','handle_citation') "
-                    "AND status NOT IN ('confirmed fixed','withdrawn') GROUP BY severity,status"
+                    "AND status='open' GROUP BY severity,status"
                 ),
                 (project, session),
             ).fetchall()

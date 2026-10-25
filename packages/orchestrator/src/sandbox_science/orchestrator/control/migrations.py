@@ -3354,6 +3354,350 @@ ON memory_proposals BEGIN SELECT RAISE(ABORT, 'a memory proposal is written once
     )
 
 
+_LEGACY_STATUS: Final = {
+    "open": "open",
+    "claimed fixed": "open",
+    "confirmed fixed": "fixed",
+    "withdrawn": "dismissed",
+    "challenged": "open",
+    "unaddressed": "open",
+    "inconclusive": "open",
+    "superseded": "stale",
+}
+"""Version 84's map from a finding's eight earlier statuses to the five (CR-47)."""
+
+_HISTORY_STATUS: Final = (
+    "CASE t.status WHEN 'claimed fixed' THEN 'open' WHEN 'confirmed fixed' THEN 'fixed' "
+    "WHEN 'withdrawn' THEN 'dismissed' WHEN 'superseded' THEN 'stale' "
+    "WHEN 'challenged' THEN 'open' WHEN 'unaddressed' THEN 'open' "
+    "WHEN 'inconclusive' THEN 'open' ELSE t.status END"
+)
+_HISTORY_ANSWER: Final = (
+    "CASE WHEN t.actor GLOB 'review:*' AND (t.status='confirmed fixed' OR "
+    "(json_valid(t.payload) AND json_extract(t.payload,'$.decision')='confirm')) "
+    "THEN 'resolved' WHEN t.actor GLOB 'review:*' AND json_valid(t.payload) AND "
+    "json_extract(t.payload,'$.decision')='reject' THEN 'unresolved' "
+    "WHEN t.actor GLOB 'review:*' AND json_valid(t.payload) AND "
+    "json_extract(t.payload,'$.decision')='inconclusive' THEN 'inconclusive' END"
+)
+"""A migrated confirmation's answer, as a re-check's: confirmed, rejected or undecided."""
+_ACTOR_KIND: Final = (
+    "CASE WHEN t.actor GLOB 'user:*' THEN 'user' WHEN t.actor GLOB 'review:*' "
+    "THEN 'controller' WHEN t.actor GLOB 'session:*' THEN 'agent' ELSE 'platform' END"
+)
+
+
+def _legacy_payload(raw: object) -> _Json:
+    try:
+        value: object = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return {}
+    return cast(_Json, value) if isinstance(value, dict) else {}
+
+
+def _reviewer_run(schema: Schema, actor: str) -> tuple[str | None, _Json | None]:
+    """The review an actor ``review:<id>`` names, and its reviewer run: alias, resolved
+    model and rubric version; None for another actor."""
+    if not actor.startswith("review:"):
+        return None, None
+    review = actor.removeprefix("review:")
+    row = schema.execute(
+        "SELECT alias,resolved_model,rubric FROM review_runs WHERE review_id=?", (review,)
+    ).fetchone()
+    run = None if row is None else {"alias": row[0], "resolved_model": row[1], "rubric": row[2]}
+    return review, run
+
+
+def _mapped(finding: str, status: str) -> str:
+    """A finding's status among the five: an earlier status mapped (CR-47), one of the five
+    kept; any other refuses the store."""
+    if status in _LEGACY_STATUS:
+        return _LEGACY_STATUS[status]
+    if status in ("fixed", "dismissed", "stale"):
+        return status
+    raise RefusedRowError(f"finding {finding}'s status {status!r}, which no step maps")
+
+
+def _legacy_places(schema: Schema, finding: str, payload: _Json) -> tuple[list[_Json], list[_Json]]:
+    """The places and archive messages a claimed fix named or cited, each strictly later
+    than what the finding reviewed: a later revision of an anchored document, artifact or
+    entry, or a message after its review's snapshot (CR-42)."""
+    row = schema.execute(
+        "SELECT anchors,review_id FROM review_findings WHERE finding_id=?", (finding,)
+    ).fetchone()
+    try:
+        parsed: object = json.loads(row[0]) if isinstance(row[0], str) else []
+    except ValueError:
+        parsed = []
+    anchors = cast(list[_Json], parsed) if isinstance(parsed, list) else []
+    reviewed: dict[tuple[str, str], int] = {}
+    positions: list[int] = []
+    for anchor in anchors:
+        location = cast(_Json, anchor.get("locator") or {})
+        ref = location.get("artifact")
+        key = (
+            ("document", str(location["document"]))
+            if "document" in location
+            else ("artifact", str(cast(_Json, ref).get("artifact_id")))
+            if isinstance(ref, dict)
+            else ("entry", str(location["entry"]))
+            if "entry" in location
+            else None
+        )
+        number = (
+            cast(_Json, ref).get("revision") if isinstance(ref, dict) else location.get("revision")
+        )
+        if key is not None and type(number) is int:
+            reviewed[key] = max(reviewed.get(key, 0), number)
+        archived = location.get("archive")
+        if isinstance(archived, dict) and type(cast(_Json, archived).get("position")) is int:
+            positions.append(cast(int, cast(_Json, archived)["position"]))
+    if row[1] is not None:
+        (held,) = schema.execute(
+            "SELECT max(json_extract(locator,'$.archive.position')) FROM review_evidence "
+            "WHERE review_id=?",
+            (row[1],),
+        ).fetchone()
+        if type(held) is int:
+            positions.append(held)
+    last = max(positions) if positions else None
+
+    def later(kind: str, name: object, number: object) -> bool:
+        key = (kind, str(name))
+        return key in reviewed and type(number) is int and number > reviewed[key]
+
+    places: list[_Json] = []
+    messages: list[_Json] = []
+    for pin in cast(list[_Json], payload.get("revisions", [])):
+        if later("document", pin.get("document"), pin.get("revision")):
+            places.append({"document": pin})
+    for pin in cast(list[_Json], payload.get("artifact_revisions", [])):
+        if later("artifact", pin.get("artifact_id"), pin.get("revision")):
+            places.append({"artifact": pin})
+    for pin in cast(list[_Json], payload.get("entry_revisions", [])):
+        if later("entry", pin.get("entry"), pin.get("revision")):
+            places.append({"entry": pin})
+    for anchor in cast(list[_Json], payload.get("anchors", [])):
+        location = cast(_Json, anchor.get("locator") or {})
+        ref = location.get("artifact")
+        archived = location.get("archive")
+        if "document" in location and later(
+            "document", location["document"], location.get("revision")
+        ):
+            places.append(
+                {
+                    "document": {
+                        k: location[k] for k in ("document", "revision", "sha256") if k in location
+                    }
+                }
+            )
+        elif isinstance(ref, dict) and later(
+            "artifact", cast(_Json, ref).get("artifact_id"), cast(_Json, ref).get("revision")
+        ):
+            places.append({"artifact": ref})
+        elif "entry" in location and later("entry", location["entry"], location.get("revision")):
+            places.append({"entry": {"entry": location["entry"], "handle": location.get("handle"),
+                                     "revision": location["revision"]}})  # fmt: skip
+        elif (
+            isinstance(archived, dict)
+            and isinstance(cast(_Json, archived).get("id"), str)
+            and type(cast(_Json, archived).get("position")) is int
+            and last is not None
+            and cast(int, cast(_Json, archived)["position"]) > last
+        ):
+            found = cast(_Json, archived)
+            messages.append({"id": found["id"], "position": found["position"],
+                             "run": location.get("run")})  # fmt: skip
+    return places, messages
+
+
+def _legacy_finding(schema: Schema, finding: str, status: str, revision: int) -> tuple[str, _Json]:
+    """A finding's new status and lifecycle columns, from its earlier status and its
+    transitions (CR-47)."""
+    rows = schema.execute(
+        "SELECT revision,status,actor,reason,payload,created FROM review_transitions "
+        "WHERE finding_id=? ORDER BY revision",
+        (finding,),
+    ).fetchall()
+    latest = rows[-1] if rows else None
+    columns: _Json = {}
+    if latest is None:
+        return _mapped(finding, status), columns
+    _, _, actor, reason, raw, created = latest
+    payload = _legacy_payload(raw)
+    review, run = _reviewer_run(schema, actor)
+    rebuttal = next(
+        (row for row in reversed(rows) if _legacy_payload(row[4]).get("action") == "rebut"),
+        None,
+    )
+
+    def dismissal(decision: str | None) -> _Json:
+        assert rebuttal is not None  # noqa: S101 - callers check
+        found: _Json = {
+            "by": "agent",
+            "actor": rebuttal[2],
+            "reason": rebuttal[3],
+            "at": rebuttal[5],
+            "response_revision": rebuttal[0],
+            "review": None,
+        }
+        if decision is not None:
+            found["review"] = {"review": review, "decision": decision, "reason": reason,
+                               "at": created}  # fmt: skip
+        return found
+
+    if status == "claimed fixed":
+        # The claimed fix's re-check is queued, holding what the fix named and the
+        # evidence it cited, each later than what the finding reviewed (CR-42, CR-47).
+        places, messages = _legacy_places(schema, finding, payload)
+        columns["recheck"] = {
+            "cause": "fix",
+            "revision": revision,
+            "response": revision,
+            "places": places,
+            "messages": messages,
+            "queued": created,
+            "attempts": 0,
+        }
+    elif status == "confirmed fixed" and review is not None:
+        columns["latest_recheck"] = {
+            "review": review,
+            "answer": "resolved",
+            "why": reason,
+            "anchors": payload.get("anchors", []),
+            "reviewer": run,
+            "at": created,
+        }
+    elif status == "withdrawn":
+        if review is not None and rebuttal is not None:
+            columns["dismissal"] = dismissal("accepted")
+        else:
+            columns["dismissal"] = {"by": "user", "actor": actor, "reason": reason,
+                                    "at": created, "review": None}  # fmt: skip
+    elif status == "challenged":
+        columns["at_bound"] = 1
+        if rebuttal is not None:
+            columns["dismissal"] = dismissal("rejected")
+    elif status == "unaddressed":
+        columns["at_bound"] = 1
+    elif status == "inconclusive" and payload.get("decision") == "inconclusive":
+        # A confirmation that could not decide is its last re-check. One raised on
+        # missing evidence (CR-6) is open, as such a finding is now, with no re-check.
+        columns["latest_recheck"] = {
+            "review": review,
+            "answer": "inconclusive",
+            "why": reason,
+            "anchors": payload.get("anchors", []),
+            "reviewer": run,
+            "at": created,
+        }
+    return _mapped(finding, status), columns
+
+
+def _finding_lifecycle(schema: Schema) -> None:
+    """Version 84: a finding's lifecycle in the review store (consistency review, CR-40 to
+    CR-47). A finding keeps its record in ``review_findings`` and gains its successor
+    (``superseded_by``), its latest re-check, the author's dismissal, its queued re-check
+    and whether it is open at the re-flag bound; ``review_finding_history`` holds each
+    change with its actor's kind, the re-check's answer and its review, revision, anchors
+    and reviewer run. Today's transitions become the history's first rows, with their
+    actors, times and reasons, and the eight statuses become five.
+
+    The step can run again over its own result and changes nothing: a column or table
+    that exists is kept, a transition already in the history is not copied again, and a
+    finding is mapped only while its current revision has no history row."""
+    have = {str(row[1]) for row in schema.execute("PRAGMA table_info(review_findings)")}
+    for name, definition in (
+        ("superseded_by", "TEXT REFERENCES review_findings(finding_id)"),
+        ("latest_recheck", "TEXT CHECK (latest_recheck IS NULL OR json_valid(latest_recheck))"),
+        ("dismissal", "TEXT CHECK (dismissal IS NULL OR json_valid(dismissal))"),
+        ("recheck", "TEXT CHECK (recheck IS NULL OR json_valid(recheck))"),
+        ("at_bound", "INTEGER NOT NULL DEFAULT 0 CHECK (at_bound IN (0, 1))"),
+    ):
+        if name not in have:
+            schema.execute(f"ALTER TABLE review_findings ADD COLUMN {name} {definition}")
+    schema.execute(
+        """CREATE TABLE IF NOT EXISTS review_finding_history (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_id TEXT NOT NULL REFERENCES review_findings(finding_id),
+    revision INTEGER NOT NULL,
+    transition INTEGER UNIQUE REFERENCES review_transitions(seq),
+    status TEXT NOT NULL
+        CHECK (status IN ('open','fixed','dismissed','superseded','stale')),
+    former TEXT,
+    actor TEXT NOT NULL,
+    actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user','controller','platform','agent')),
+    reason TEXT NOT NULL,
+    answer TEXT CHECK (answer IS NULL OR answer IN ('resolved','unresolved','inconclusive')),
+    review_id TEXT,
+    recheck TEXT CHECK (recheck IS NULL OR json_valid(recheck)),
+    created REAL NOT NULL
+) STRICT"""
+    )
+    schema.execute(
+        "CREATE INDEX IF NOT EXISTS review_finding_history_finding "
+        "ON review_finding_history(finding_id,seq)"
+    )
+    legacy = schema.execute(
+        "SELECT finding_id,status,revision FROM review_findings f WHERE NOT EXISTS("
+        "SELECT 1 FROM review_finding_history h WHERE h.finding_id=f.finding_id "
+        "AND h.revision=f.revision) ORDER BY rowid"
+    ).fetchall()
+    known = (*_LEGACY_STATUS, "fixed", "dismissed", "stale")
+    unknown = schema.execute(
+        "SELECT finding_id,revision,status FROM review_transitions WHERE status NOT IN "  # noqa: S608 - fixed SQL
+        f"({','.join('?' * len(known))}) ORDER BY seq LIMIT 1",
+        known,
+    ).fetchone()
+    if unknown is not None:
+        raise RefusedRowError(
+            f"revision {unknown[1]} of finding {unknown[0]} has the status {unknown[2]!r}, "
+            "which no step maps"
+        )
+    for finding, status, revision in legacy:
+        mapped, columns = _legacy_finding(schema, finding, status, revision)
+        schema.execute(
+            "UPDATE review_findings SET status=?,latest_recheck=?,dismissal=?,recheck=?,"
+            "at_bound=? WHERE finding_id=?",
+            (
+                mapped,
+                *(
+                    None if columns.get(key) is None else json.dumps(columns[key])
+                    for key in ("latest_recheck", "dismissal", "recheck")
+                ),
+                int(columns.get("at_bound", 0)),
+                finding,
+            ),
+        )
+    schema.execute(
+        "INSERT INTO review_finding_history(finding_id,revision,transition,status,"  # noqa: S608 - fixed SQL
+        "former,actor,actor_kind,reason,answer,review_id,recheck,created) SELECT "
+        f"t.finding_id,t.revision,t.seq,{_HISTORY_STATUS},"
+        f"CASE WHEN {_HISTORY_STATUS}=t.status THEN NULL ELSE t.status END,"
+        f"t.actor,{_ACTOR_KIND},t.reason,{_HISTORY_ANSWER},"
+        "CASE WHEN t.actor GLOB 'review:*' THEN substr(t.actor,8) END,NULL,t.created "
+        "FROM review_transitions t WHERE NOT EXISTS(SELECT 1 FROM review_finding_history h "
+        "WHERE h.transition=t.seq) ORDER BY t.seq"
+    )
+    for statement in (
+        """CREATE TRIGGER IF NOT EXISTS review_finding_history_update
+BEFORE UPDATE ON review_finding_history
+BEGIN SELECT RAISE(ABORT, 'review evidence/history is immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS review_finding_history_delete
+BEFORE DELETE ON review_finding_history
+BEGIN SELECT RAISE(ABORT, 'review evidence/history is immutable'); END""",
+        """CREATE TRIGGER IF NOT EXISTS review_findings_status_insert
+BEFORE INSERT ON review_findings
+WHEN NEW.status NOT IN ('open','fixed','dismissed','superseded','stale')
+BEGIN SELECT RAISE(ABORT, 'a finding has one of the five statuses'); END""",
+        """CREATE TRIGGER IF NOT EXISTS review_findings_status_update
+BEFORE UPDATE OF status ON review_findings
+WHEN NEW.status NOT IN ('open','fixed','dismissed','superseded','stale')
+BEGIN SELECT RAISE(ABORT, 'a finding has one of the five statuses'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3437,6 +3781,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _cost_notices,
     _agent_message_references,
     _memory_provenance,
+    _finding_lifecycle,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

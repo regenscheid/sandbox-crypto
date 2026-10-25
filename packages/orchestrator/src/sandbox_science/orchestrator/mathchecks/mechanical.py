@@ -105,9 +105,9 @@ class MechanicalFindings:
         return value
 
     def _user_resolved(self, db: sqlite3.Connection, current: Json) -> bool:
-        if current["status"] == "withdrawn":
+        if current["status"] == "dismissed":
             return True
-        if current["status"] != "confirmed fixed":
+        if current["status"] != "fixed":
             return False
         # Unknown retained decision metadata conservatively preserves resolution.
         valid = (
@@ -192,18 +192,18 @@ class MechanicalFindings:
     def _accept(
         self, db: sqlite3.Connection, job: Json, item: Json, current: Json, identity: str
     ) -> None:
-        """The exact current formula renders: the finding is confirmed fixed."""
+        """The exact current formula renders: the finding is fixed (CR-38, CR-41)."""
         db.execute(
             "UPDATE math_finding_state SET input_sha256=?,"
             "owner_revision=coalesce(?,owner_revision) "
             "WHERE finding_id=?",
             (identity, item["owner"]["revision"], current["finding_id"]),
         )
-        if current["status"] not in ("confirmed fixed", "withdrawn"):
+        if current["status"] not in ("fixed", "dismissed"):
             self.findings.transition(
                 db,
                 current,
-                "confirmed fixed",
+                "fixed",
                 "platform:math",
                 "The exact current formula was accepted by the configured renderer.",
                 {
@@ -241,11 +241,11 @@ class MechanicalFindings:
         current["session"] = author.session_id
         previous_owner = self._previous_owner(db, job, item)
         block_edit = previous_owner is not None and item["owner"]["revision"] != previous_owner
-        status = "unaddressed" if current["reflags"] + int(block_edit) >= 2 else "open"
-        if not block_edit and (
-            current["status"] == "unaddressed" or self._user_resolved(db, current)
-        ):
-            status = current["status"]
+        # Two re-flags bring it to its bound: open, and not offered again (CR-30, CR-47).
+        status = "open"
+        bound = current["at_bound"] or current["reflags"] + int(block_edit) >= 2
+        if not block_edit and (current["at_bound"] or self._user_resolved(db, current)):
+            status, bound = current["status"], current["at_bound"]
         result = self.findings.transition(
             db,
             current,
@@ -262,12 +262,13 @@ class MechanicalFindings:
                 "owner": item["owner"],
             },
             reflag=block_edit and current["reflags"] < 2,
+            columns={"at_bound": True} if bound and not current["at_bound"] else None,
         )
         db.execute(
             "UPDATE math_finding_state SET input_sha256=?,owner_revision=? WHERE finding_id=?",
             (identity, item["owner"]["revision"], current["finding_id"]),
         )
-        if status == "open":
+        if status == "open" and not bound:
             self._notice(db, job, author, current["finding_id"], result["revision"])
 
     def _raise(
@@ -372,8 +373,8 @@ class MechanicalFindings:
             (
                 "SELECT s.finding_id,s.block,s.span,f.session FROM math_finding_state "
                 "s JOIN review_findings f USING(finding_id) WHERE s.document=? AND "
-                "s.checked_revision<=? AND s.checked_revision>=? AND f.status NOT IN ('confirmed "
-                "fixed','withdrawn')"
+                "s.checked_revision<=? AND s.checked_revision>=? AND f.status NOT IN ('fixed',"
+                "'dismissed')"
             ),
             (
                 source_key(job),
@@ -395,7 +396,7 @@ class MechanicalFindings:
             self.findings.transition(
                 db,
                 current,
-                "confirmed fixed",
+                "fixed",
                 "platform:math",
                 "The formula was removed from the complete current saved source revision.",
                 {

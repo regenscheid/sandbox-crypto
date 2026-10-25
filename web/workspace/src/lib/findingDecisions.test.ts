@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // A finding's statement, remedy and explanations are text an agent wrote that the user
-// confirms, dismisses or rebuts, and agents read again (threat model, A3): each is shown
+// fixes, dismisses or sets a status on, and agents read again (threat model, A3): each is shown
 // exactly, every hidden character a code point, where the user decides, and a rendering
 // that hides anything has a banner beside it with the links it hides.
 import { render } from 'svelte/server';
@@ -22,7 +22,7 @@ function finding(statement: string, remedy: string | null): Finding {
     category: 'unsupported_claim',
     statement,
     remedy,
-    status: 'claimed fixed',
+    status: 'open',
     revision: 2,
     reflags: 0,
     anchors: [],
@@ -55,7 +55,7 @@ function body(text: string): Body {
 function transition(reason: string): Transition {
   return {
     revision: 2,
-    status: 'claimed fixed',
+    status: 'open',
     actor: 'main',
     reason,
     payload: { note: reason },

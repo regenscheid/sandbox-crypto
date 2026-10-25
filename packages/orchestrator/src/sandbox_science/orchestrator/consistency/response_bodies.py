@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.documents.project_macros import (
     response_view,
 )
 
+from .models import DISMISSAL_CHARACTERS
 from .values import RECEIPTS, agent_text, digest, dump, identifier
 
 if TYPE_CHECKING:
@@ -93,7 +94,7 @@ def original(
         raise DocumentError(NOT_FOUND, "response is outside this scope")
     if (
         origin != "review"
-        or payload.get("action") not in ("fix", "rebut")
+        or payload.get("action") not in ("fix", "rebut", "dismiss")
         or author.kind != "agent"
         or author.role != "main"
         or author.session_id != s
@@ -344,6 +345,18 @@ class ResponseBodies:
             )
         if (current["revision"], current["sha256"]) != (value.base, value.sha256):
             raise DocumentError(CONFLICT, "response source changed since this edit was drafted")
+        with self.store.documents.control.read() as tx:
+            action = tx.sql.execute(
+                "SELECT json_extract(payload,'$.action') FROM review_transitions "
+                "WHERE finding_id=? AND revision=?",
+                (value.finding, value.response_revision),
+            ).fetchone()
+        if action == ("dismiss",) and len(value.body) > DISMISSAL_CHARACTERS:
+            # A dismissal's reason keeps its bound when corrected (CR-43).
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"a dismissal's reason is at most {DISMISSAL_CHARACTERS:,} characters",
+            )
         prepared = prepare(value.body, author, current)
         with self.store.documents.control.write() as tx:
             db = tx.sql
@@ -406,7 +419,7 @@ def legacy_query() -> str:
         "JOIN review_findings f USING(finding_id) WHERE f.project=? AND f.origin='review' "
         "AND typeof(t.payload)='text' AND CASE WHEN length(CAST(t.payload AS BLOB))<=131072 "
         "THEN CASE WHEN json_valid(t.payload) THEN json_extract(t.payload,'$.action') "
-        "IN ('fix','rebut') AND json_extract(t.payload,'$.author.kind')='agent' "
+        "IN ('fix','rebut','dismiss') AND json_extract(t.payload,'$.author.kind')='agent' "
         "AND json_extract(t.payload,'$.author.role')='main' ELSE 0 END ELSE 0 END "
         "AND NOT EXISTS(SELECT 1 FROM text_math_sources s WHERE s.subject_type='response' "
         "AND s.parent=t.finding_id AND s.parent_revision=t.revision) AND NOT EXISTS(SELECT 1 FROM "

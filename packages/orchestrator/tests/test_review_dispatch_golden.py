@@ -13,7 +13,12 @@ context (lab 42's B5), ``sandbox-consistency-6`` to take earlier runs' actions a
 context, ``sandbox-consistency-7`` to know that a rejected rebuttal with evidence is a
 challenge, ``sandbox-consistency-8`` to suggest the handle of a ledger entry an answer
 relies on without naming it, and ``sandbox-consistency-9`` to check cryptographic claims
-from their form; a change to any of them changes what a reviewer sees."""
+from their form; a change to any of them changes what a reviewer sees. The finding
+lifecycle (CR-40 to CR-47) changed them once more without a rubric: a copied finding
+carries its queued re-check and the author's dismissal, a fix leaves it ``open``, and the
+run record counts the dismissals the review rejected. A fix now names something later than
+what its finding reviewed (CR-42), so the confirmation's finding reviews a document's
+first revision and its fix names the second, which the snapshots hold."""
 
 from __future__ import annotations
 
@@ -29,16 +34,23 @@ from sandbox_science.orchestrator.consistency import store as storage
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.documents import USER
 
-from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
+from .test_consistency import (
+    MAIN,
+    anchor,
+    claim,
+    dispatch,
+    raise_finding,
+    reviewed_document,
+    revise,
+)
 from .test_consistency import store as store
 
 GOLDEN = {
     # Author and fallback windows now include recent prior evidence for boundary checks.
-    "author": "4cef6cc46c1308ee44b658f14a491c445d6c0ea8a22d64231147866b1cd4098b",
-    "confirmation": "6ae15307f7227483d1e32f4ec987b6c1b07d0fa2b06041efa6f047dc65872478",
-    "fallback": "529721381219fc0076c10fd74d967885b339dfe42d60515afe6e05a88ea71bbe",
+    "author": "544ceec45a0e01c3a735f3926f75f47749a40877c8ab25c87ecd9866507461d7",
+    "confirmation": "c8305297afdcd3e94eecdaca85c9eaf9130837a8320498e32798ff1795e86d7b",
+    "fallback": "18cc2b302958157d76d6fbb16ed6bd37d0434aefa52d716a51e5621b2321e9b8",
 }
 
 
@@ -85,15 +97,13 @@ def fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-def fixed_finding(reviews: ReviewStore, documents: Any, **overrides: Any) -> tuple[str, int]:
-    """A finding claimed fixed with a changed document revision and response evidence."""
+def fixed_finding(reviews: ReviewStore, **overrides: Any) -> tuple[str, int]:
+    """A finding on a document revision and the session's claim, whose fix names the
+    document's later revision, which queues its re-check."""
     claim(reviews)
-    original = dispatch(reviews)
-    raised = raise_finding(reviews, original, **overrides)
+    doc, original, anchors = reviewed_document(reviews, "There are 16.\n", "fix")
+    raised = raise_finding(reviews, original, anchors=anchors, **overrides)
     reviews.finish("p", "s", original, "owner", "findings", "The count is wrong.")
-    doc = documents.create(
-        "p", name="fix", title="N", text="There are 15.\n", author=USER, session_id="s"
-    ).document_id
     response = Findings(reviews).respond(
         "p",
         "s",
@@ -102,7 +112,7 @@ def fixed_finding(reviews: ReviewStore, documents: Any, **overrides: Any) -> tup
             "expected": 1,
             "action": "fix",
             "explanation": "Corrected the count in the document.",
-            "revisions": [[doc, 1]],
+            "revisions": revise(reviews, doc, "There are 15.\n"),
             "operation_id": "fix",
         },
         MAIN,
@@ -129,8 +139,8 @@ def test_author_work_snapshot(store) -> None:
 
 
 def test_a_confirmation_that_fits(store) -> None:
-    reviews, documents, _ = store
-    fixed_finding(reviews, documents)
+    reviews, _, _ = store
+    fixed_finding(reviews)
     confirmation = dispatch(reviews, "confirmation")
     found = snapshot(reviews, confirmation)
     assert found["run"]["kind"] == "confirmation"
@@ -141,8 +151,8 @@ def test_a_confirmation_that_fits(store) -> None:
 def test_a_confirmation_that_does_not_fit_falls_back_to_terminal(
     store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    reviews, documents, _ = store
-    fixed_finding(reviews, documents, statement="The count is wrong. " * 100)
+    reviews, _, _ = store
+    fixed_finding(reviews, statement="The count is wrong. " * 100)
     claim(reviews, "The final author answer.", "final-answer")
     monkeypatch.setattr(storage, "MAX_ITEM_BYTES", 512)
     fallback = dispatch(reviews, "confirmation")
@@ -161,7 +171,7 @@ def test_a_fallback_reads_the_configuration_again(
     configuration as it is then: disabled meanwhile, it dispatches nothing; reconfigured,
     the review records the new configuration."""
     reviews, documents, _ = store
-    fixed_finding(reviews, documents, statement="The count is wrong. " * 100)
+    fixed_finding(reviews, statement="The count is wrong. " * 100)
     claim(reviews, "The final author answer.", "final-answer")
     monkeypatch.setattr(storage, "MAX_ITEM_BYTES", 512)
     revision = type(documents).revision

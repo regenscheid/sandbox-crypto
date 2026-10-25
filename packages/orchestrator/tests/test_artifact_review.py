@@ -175,7 +175,8 @@ def fix(reviews, found, ref, operation="fix-count"):
 
 
 def decide(reviews, review, found, evidence):
-    return Findings(reviews).confirm(
+    """The re-check's ``resolved``, anchored to ``evidence``."""
+    return Findings(reviews).decide(
         "p",
         "s",
         review,
@@ -183,7 +184,7 @@ def decide(reviews, review, found, evidence):
         {
             "finding": found["finding_id"],
             "expected": found["revision"],
-            "decision": "confirm",
+            "decision": "resolved",
             "explanation": "Read the original and changed source.",
             "anchors": [{"evidence": evidence}],
             "operation_id": "confirm-count",
@@ -378,7 +379,7 @@ def test_claim_confirmation_pins_exact_sources_and_empty(state, changed) -> None
         reviews.read_evidence("p", "s", confirm, item["evidence"], owner="owner")
     new_item = next(i for i in evidence if i["locator"].get("artifact", {}).get("revision") == 2)
     result = decide(reviews, confirm, claimed, new_item["evidence"])
-    assert result["status"] == "confirmed fixed"
+    assert result["status"] == "fixed"
     assert reviews.read_evidence("p", "s", confirm, original)["text"] == "count = 16\n"
     assert old.sha256 != new.sha256
 
@@ -401,10 +402,13 @@ def test_confirmation_requires_full_source_exposure_and_cannot_confirm_binary(st
     with pytest.raises(DocumentError, match="read"):
         decide(reviews, confirm, claimed, original)
     reviews.finish("p", "s", confirm, "owner", "inconclusive", "Not fully read.")
+    # The re-check that could not decide is recorded on the finding, which stays open.
+    current = Findings(reviews).get("p", "s", found["finding_id"])
+    assert (current["status"], current["latest_recheck"]["answer"]) == ("open", "inconclusive")
     # A newly claimed oversized revision is metadata-only, even with an exact pin.
     binary = publish(state, "op3", b"b" * (TEXT_BYTES + 1))
     ingest_artifacts(reviews, "p", "s")
-    again = fix(reviews, claimed, binary, "new-claim")
+    again = fix(reviews, current, binary, "new-claim")
     confirm = dispatch(reviews, "confirmation")
     for item in items(reviews, confirm):
         start = 0
@@ -446,7 +450,10 @@ def test_fix_refs_need_relevant_same_session_exact_grants(state) -> None:
         reviews.artifact_pin("p", "s", unrelated.model_copy(update={"sha256": "b" * 64}))
 
 
-def test_supersession_is_not_confirmation_and_mixed_anchor_is_not_replaced(state) -> None:
+def test_a_new_artifact_revision_queues_a_recheck_and_is_not_a_fix(state) -> None:
+    """A later revision of the artifact a finding reviewed queues its re-check, holding
+    the new revision, and leaves it open (CR-28 as decided, CR-42); the next snapshot
+    holds the new revision."""
     reviews, _, _ = state
     publish(state)
     ingest_artifacts(reviews, "p", "s")
@@ -456,12 +463,11 @@ def test_supersession_is_not_confirmation_and_mixed_anchor_is_not_replaced(state
     reviews.finish("p", "s", review, "owner", "findings", "Wrong count.")
     new = publish(state, "op2", b"new result")
     ingest_artifacts(reviews, "p", "s")
-    Findings(reviews).supersede("p", "s")
-    superseded = Findings(reviews).get("p", "s", found["finding_id"])
-    assert superseded["status"] == "superseded"
-    assert superseded["history"][-1]["payload"]["artifact_replacements"] == [
-        new.model_dump(mode="json")
-    ]
+    assert Findings(reviews).queue_rechecks("p", "s") == 1
+    queued = Findings(reviews).get("p", "s", found["finding_id"])
+    assert queued["status"] == "open"
+    assert queued["history"][-1]["payload"]["places"] == [{"artifact": new.model_dump(mode="json")}]
+    assert all(entry["status"] != "fixed" for entry in queued["history"])
     next_review = dispatch(reviews)
     assert any(
         i["locator"].get("artifact", {}).get("revision") == 2 for i in items(reviews, next_review)
@@ -737,7 +743,7 @@ async def test_scoped_api_reads_and_exact_artifact_fix_claim(state, tmp_path: Pa
         origin = str(client.make_url("/")).rstrip("/")
         reply = await client.post(claim_url, json=body, headers={"Origin": origin})
         assert reply.status == 200
-        assert (await reply.json())["status"] == "claimed fixed"
+        assert (await reply.json())["status"] == "open"
         replay = await client.post(claim_url, json=body, headers={"Origin": origin})
         assert (await replay.json())["replayed"]
         forged = {**body, "operation_id": "forged-claim", "actor": "USER"}
@@ -827,7 +833,7 @@ async def test_synthetic_browser_fixture_pins_and_confirms_exact_claim(
         )
         await helper["confirm"](path)
         result = json.loads(capsys.readouterr().out)
-        assert result["finding"]["status"] == "confirmed fixed"
+        assert result["finding"]["status"] == "fixed"
         assert result["review"]["resolved_model"] == "scripted"
     finally:
         documents.close()

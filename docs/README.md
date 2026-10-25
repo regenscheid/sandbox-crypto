@@ -61,7 +61,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Skills](SKILLS.md) | Importing skill packs from git or an archive, their reports, and the projects' pins; the built-in pack |
 | [Math checks](MATH-CHECKS.md) | Durable math checks of document revisions, and the isolated renderer |
 | [Comment math](COMMENT-MATH.md) | Math checks of comment and reply bodies |
-| [Finding prose math](FINDING-PROSE-MATH.md) | Math checks of MAIN fix and rebut explanations |
+| [Finding prose math](FINDING-PROSE-MATH.md) | Math checks of MAIN fix and dismissal explanations |
 | [Consistency review](CONSISTENCY-REVIEW.md) | The automatic consistency reviewer |
 | **Workspace GUI** | |
 | [Workspace](WORKSPACE.md) | The research GUI and its server: running it, security, API, views and rendering |

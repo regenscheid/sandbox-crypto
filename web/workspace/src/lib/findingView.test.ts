@@ -7,10 +7,16 @@ import {
   actorText,
   anchorView,
   decisions,
+  dismissalText,
   raisedText,
+  recheckText,
   resolved,
+  setStatus,
   severityText,
+  statusClass,
+  statusLabel,
   statusText,
+  successorText,
   transitionText,
 } from './findingView';
 import { when } from './reviewText';
@@ -19,23 +25,87 @@ import type { Finding, Review, Transition } from './reviews';
 type Anchor = Finding['anchors'][number];
 
 describe('the finding card', () => {
-  it('counts only confirmed fixed and withdrawn as resolved (CR-27)', () => {
-    expect(['confirmed fixed', 'withdrawn'].map(resolved)).toEqual([true, true]);
-    for (const status of ['open', 'claimed fixed', 'unaddressed', 'superseded', 'inconclusive'])
-      expect(resolved(status)).toBe(false);
-    expect(statusText('superseded')).toMatch(/nothing was checked/);
-    // The owner, 2026-10-16: a rejected rebuttal with evidence leaves both sides, no round.
-    expect(statusText('challenged')).toMatch(/rebuttal stands/);
-    expect(resolved('challenged')).toBe(false);
+  it('counts fixed, superseded and dismissed as resolved (CR-41)', () => {
+    expect(['fixed', 'superseded', 'dismissed'].map(resolved)).toEqual([true, true, true]);
+    for (const status of ['open', 'stale']) expect(resolved(status)).toBe(false);
     expect(statusText('constructor')).toBe('constructor');
+  });
+
+  it('gives each of the five statuses its chip, class and text', () => {
+    const chips = {
+      open: 'Open',
+      fixed: 'Fixed',
+      dismissed: 'Dismissed',
+      superseded: 'Superseded',
+      stale: 'Stale',
+    } as const;
+    for (const [status, chip] of Object.entries(chips)) {
+      expect(statusLabel({ status: status as Finding['status'] })).toBe(chip);
+      expect(statusClass(status)).toBe(`status-${status}`);
+      expect(statusText(status)).toMatch(new RegExp(`^${chip}: `));
+    }
+    expect(statusClass('claimed fixed')).toBe('status-unknown');
+  });
+
+  it('says plainly when an open finding was last re-checked inconclusively', () => {
+    const latest = (answer: 'resolved' | 'unresolved' | 'inconclusive') =>
+      ({ review: 'rv-2', answer, why: 'w' }) as NonNullable<Finding['latest_recheck']>;
+    expect(statusLabel({ status: 'open', latest_recheck: latest('inconclusive') })).toBe(
+      'Open, last re-check inconclusive',
+    );
+    expect(statusLabel({ status: 'open', latest_recheck: latest('unresolved') })).toBe('Open');
+    expect(statusLabel({ status: 'stale', latest_recheck: latest('inconclusive') })).toBe('Stale');
+    expect(statusText('open', latest('inconclusive'))).toMatch(/last re-check was inconclusive/);
+    expect(statusText('open', latest('unresolved'))).toBe(statusText('open'));
   });
 
   it('offers only the decisions the status allows', () => {
     const actions = (status: string) => decisions(status).map((item) => item.action);
-    expect(actions('open')).toEqual(['rebut', 'fix', 'confirm', 'dismiss']);
-    expect(actions('unaddressed')).toEqual(['rebut', 'fix', 'confirm', 'dismiss', 'reopen']);
-    expect(actions('withdrawn')).toEqual(['reopen']);
-    expect(actions('confirmed fixed')).toEqual(['reopen']);
+    expect(actions('open')).toEqual(['fix', 'dismiss', 'set:fixed', 'set:superseded', 'set:stale']);
+    expect(actions('stale')).toEqual(['fix', 'dismiss', 'set:open', 'set:fixed', 'set:superseded']);
+    expect(actions('fixed')).toEqual(['dismiss', 'set:open', 'set:superseded', 'set:stale']);
+    expect(actions('superseded')).toEqual(['dismiss', 'set:open', 'set:fixed', 'set:stale']);
+    expect(actions('dismissed')).toEqual(['set:open', 'set:fixed', 'set:superseded', 'set:stale']);
+    expect(decisions('open')[2]!.label).toBe('Set to fixed, as the user');
+    expect(setStatus('set:stale')).toBe('stale');
+    expect([setStatus('fix'), setStatus('set:withdrawn'), setStatus('rebut')]).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it('tells a dismissal, a successor and a re-check in words', () => {
+    const dismissal = {
+      by: 'agent',
+      actor: 'session:s1',
+      reason: 'The bound holds.',
+      at: 1791990000,
+      review: { review: 'rv-3', decision: 'rejected', reason: 'No proof.', at: 1791990100 },
+    } as NonNullable<Finding['dismissal']>;
+    expect(dismissalText(dismissal)).toEqual([
+      `Dismissed by the main agent of session s1 · ${when(1791990000)}: The bound holds.`,
+      'Review rv-3 rejected the dismissal: No proof.',
+    ]);
+    expect(dismissalText({ ...dismissal, by: 'user', review: null })[0]).toMatch(
+      /^Dismissed by the user/,
+    );
+    expect(successorText({ supersedes: 'f-1', superseded_by: 'f-3' })).toEqual([
+      'It replaced finding f-1.',
+      'It was replaced by finding f-3.',
+    ]);
+    expect(successorText({ supersedes: null })).toEqual([]);
+    expect(
+      recheckText({
+        latest_recheck: { review: 'rv-2', answer: 'unresolved', why: 'Still wrong.' } as never,
+        recheck: { cause: 'fix' } as never,
+        at_bound: true,
+      }),
+    ).toEqual([
+      'Last re-check, review rv-2: unresolved. Still wrong.',
+      'A re-check is queued (after a claimed fix).',
+      'At its re-flag bound: the agent is not offered it again.',
+    ]);
   });
 
   it('links a document anchor to its revision with the block in focus', () => {
@@ -90,12 +160,21 @@ describe('the finding card', () => {
   it('tells a history step in words', () => {
     const entry = {
       revision: 2,
-      status: 'claimed fixed',
+      status: 'fixed',
       actor: 'agent:run-1',
       created: 1791990000,
     };
     expect(transitionText(entry as Transition)).toBe(
-      `Revision 2: claimed fixed, by agent:run-1 · ${when(1791990000)}`,
+      `Revision 2: fixed, by agent:run-1 · ${when(1791990000)}`,
+    );
+    expect(
+      transitionText({
+        ...entry,
+        former_status: 'confirmed fixed',
+        answer: 'resolved',
+      } as Transition),
+    ).toBe(
+      `Revision 2: fixed (recorded as confirmed fixed), re-check resolved, by agent:run-1 · ${when(1791990000)}`,
     );
   });
 });
@@ -134,7 +213,7 @@ describe('the finding card, after review', () => {
     findingDrafts.save('p:s:finding-kept', {
       expected: 2,
       explanation: 'It is fixed.',
-      action: 'confirm',
+      action: 'rebut',
       references: '',
     });
     const finding = {
@@ -144,7 +223,7 @@ describe('the finding card, after review', () => {
       category: 'math',
       statement: 'S',
       remedy: null,
-      status: 'confirmed fixed',
+      status: 'fixed',
       revision: 3,
       reflags: 0,
       anchors: [],
@@ -152,8 +231,78 @@ describe('the finding card, after review', () => {
     const html = render(FindingCard, {
       props: { projectId: 'p', sessionId: 's', finding, changed: async () => {} },
     }).body.replace(/\s+/g, ' ');
-    expect(html).toContain('confirm (kept, not allowed now)');
-    expect(html).toContain('Your kept decision, confirm, is not allowed');
+    expect(html).toContain('rebut (kept, not allowed now)');
+    expect(html).toContain('Your kept decision, rebut, is not allowed');
     expect(html).toMatch(/<button disabled[^>]*>\s*Save user response/);
+  });
+});
+
+describe('the finding card, for each status', () => {
+  const base = {
+    finding_id: 'finding-s',
+    review_id: null,
+    severity: 'warn',
+    category: 'math',
+    statement: 'S',
+    remedy: null,
+    revision: 3,
+    reflags: 0,
+    anchors: [],
+  };
+  const html = (extra: Record<string, unknown>) =>
+    render(FindingCard, {
+      props: {
+        projectId: 'p',
+        sessionId: 's',
+        finding: { ...base, ...extra } as unknown as Finding,
+        changed: async () => {},
+      },
+    }).body.replace(/\s+/g, ' ');
+
+  it.each([
+    ['open', 'Open'],
+    ['fixed', 'Fixed'],
+    ['dismissed', 'Dismissed'],
+    ['superseded', 'Superseded'],
+    ['stale', 'Stale'],
+  ])('shows %s as a chip', (status, label) => {
+    expect(html({ status })).toMatch(
+      new RegExp(`<span class="chip status-${status}[ "][^>]*>${label}</span>`),
+    );
+  });
+
+  it('shows the inconclusive re-check, the dismissal and the lineage', () => {
+    const open = html({
+      status: 'open',
+      latest_recheck: { review: 'rv-2', answer: 'inconclusive', why: 'No evidence.' },
+    });
+    expect(open).toContain('>Open, last re-check inconclusive</span>');
+    expect(open).toContain('Last re-check, review rv-2: inconclusive. No evidence.');
+    const dismissed = html({
+      status: 'dismissed',
+      dismissal: { by: 'user', actor: 'user:user', reason: 'Not a defect.', at: 1791990000 },
+      supersedes: 'finding-old',
+      superseded_by: 'finding-new',
+    });
+    expect(dismissed).toContain('Dismissed by the user');
+    expect(dismissed).toContain('Not a defect.');
+    expect(dismissed).toContain('It replaced finding finding-old.');
+    expect(dismissed).toContain('It was replaced by finding finding-new.');
+    expect(dismissed).toContain('Set to open, as the user');
+  });
+
+  it('describes the new behaviour and offers the revisions field only for a fix', () => {
+    const text = html({ status: 'open' });
+    expect(text).toContain('A claimed fix queues a re-check; only a re-check or the user');
+    expect(text).not.toContain('unconfirmed until a confirmation review');
+    expect(text).not.toContain('Changed document revisions');
+    findingDrafts.save('p:s:finding-s', {
+      expected: 3,
+      explanation: 'Fixed in r2.',
+      action: 'fix',
+      references: '',
+    });
+    expect(html({ status: 'open' })).toContain('Changed document revisions');
+    findingDrafts.clear('p:s:finding-s');
   });
 });

@@ -3,7 +3,10 @@
 
 Format 1 pins the rubric and the tool schemas. Format 2 (assembly
 ``sandbox-reviewer-bundle-2``) also pins the project memory section given after the
-rubric: the reviewed run's memory (docs/specs/project-memory.md, PM-6, PM-8).
+rubric: the reviewed run's memory (docs/specs/project-memory.md, PM-6, PM-8). Format 3
+(assembly ``sandbox-reviewer-bundle-3``) pins the re-check instructions given after the
+rubric and before any memory section, with their text (docs/specs/consistency-review.md,
+CR-42, CR-43).
 """
 
 from __future__ import annotations
@@ -28,6 +31,10 @@ MAX_PROVENANCE_BYTES = 16 * 1024
 ASSEMBLY_VERSION = "sandbox-reviewer-bundle-1"
 MEMORY_ASSEMBLY = "sandbox-reviewer-bundle-2"
 """The assembly whose system message is the rubric, then the project memory section."""
+RECHECK_ASSEMBLY = "sandbox-reviewer-bundle-3"
+"""The assembly whose system message is the rubric, the re-check instructions, then the
+project memory section if one is given."""
+MAX_RECHECK_BYTES = 4 * 1024
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -49,13 +56,42 @@ def _rubric(text: str) -> bytes:
     return raw
 
 
+class RecheckPin(Contract):
+    """Format 3: the re-check instructions given after the rubric, by version and text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    version: Identifier
+    text: str = Field(max_length=MAX_RECHECK_BYTES)
+    bytes: int = Field(strict=True, ge=0, le=MAX_RECHECK_BYTES)
+    sha256: Digest
+
+    @model_validator(mode="after")
+    def _pins(self) -> Self:
+        raw = self.text.encode("utf-8")
+        if len(raw) != self.bytes or hashlib.sha256(raw).hexdigest() != self.sha256:
+            raise ValueError("reviewer re-check pin mismatch")
+        return self
+
+
+def recheck_pin(version: str, text: str) -> RecheckPin:
+    raw = text.encode("utf-8")
+    return RecheckPin(
+        version=version, text=text, bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest()
+    )
+
+
 def _fields(pin: ReviewerProvenance) -> dict[str, object]:
     """Preflight copied models before dumping or allocating aggregate JSON."""
     if (
         not isinstance(cast(object, pin), ReviewerProvenance)
         or type(pin.format_version) is not int
-        or (pin.format_version, pin.assembly_version, pin.memory is None)
-        not in ((1, ASSEMBLY_VERSION, True), (2, MEMORY_ASSEMBLY, False))
+        or (pin.format_version, pin.assembly_version, pin.memory is None, pin.recheck is None)
+        not in (
+            (1, ASSEMBLY_VERSION, True, True),
+            (2, MEMORY_ASSEMBLY, False, True),
+            (3, RECHECK_ASSEMBLY, True, False),
+            (3, RECHECK_ASSEMBLY, False, False),
+        )
         or pin.role != "reviewer"
     ):
         raise ValueError("invalid reviewer provenance scalars")
@@ -64,6 +100,10 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
         if not isinstance(cast(object, pin.memory), MemoryPin):
             raise ValueError("invalid reviewer memory pin")
         memory = {"memory": MemoryPin.model_validate(pin.memory.model_dump()).model_dump()}
+    if pin.recheck is not None:
+        if not isinstance(cast(object, pin.recheck), RecheckPin):
+            raise ValueError("invalid reviewer re-check pin")
+        memory["recheck"] = RecheckPin.model_validate(pin.recheck.model_dump()).model_dump()
     raw = _rubric(pin.rubric_text)
     if (
         not isinstance(cast(object, pin.rubric_version), str)
@@ -119,10 +159,10 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
 
 class ReviewerProvenance(Contract):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    format_version: int = Field(default=1, strict=True, ge=1, le=2)
-    assembly_version: Literal["sandbox-reviewer-bundle-1", "sandbox-reviewer-bundle-2"] = (
-        ASSEMBLY_VERSION
-    )
+    format_version: int = Field(default=1, strict=True, ge=1, le=3)
+    assembly_version: Literal[
+        "sandbox-reviewer-bundle-1", "sandbox-reviewer-bundle-2", "sandbox-reviewer-bundle-3"
+    ] = ASSEMBLY_VERSION
     role: Literal["reviewer"] = "reviewer"
     rubric_version: Identifier
     rubric_text: str = Field(max_length=MAX_SYSTEM_BYTES)
@@ -134,7 +174,9 @@ class ReviewerProvenance(Contract):
     schemas_sha256: Digest
     bundle_sha256: Digest
     memory: MemoryPin | None = None
-    """Format 2: the project memory section given after the rubric."""
+    """Formats 2 and 3: the project memory section given after the rubric."""
+    recheck: RecheckPin | None = None
+    """Format 3: the re-check instructions given after the rubric."""
 
     @model_validator(mode="after")
     def _pins(self) -> Self:
@@ -175,15 +217,25 @@ class ReviewerBundle:
 
     @property
     def system(self) -> str:
-        """The system message: the rubric, then the memory section if one was given."""
-        rubric = self.provenance.rubric_text
-        return rubric if self.memory_text is None else rubric + SEPARATOR + self.memory_text
+        """The system message: the rubric, the re-check instructions in format 3, then the
+        memory section if one was given."""
+        parts = [self.provenance.rubric_text]
+        if self.provenance.recheck is not None:
+            parts.append(self.provenance.recheck.text)
+        if self.memory_text is not None:
+            parts.append(self.memory_text)
+        return SEPARATOR.join(parts)
 
 
 def assemble_reviewer(
-    system: str, version: str, specs: Sequence[ToolSpec], memory: MemoryGiven | None = None
+    system: str,
+    version: str,
+    specs: Sequence[ToolSpec],
+    memory: MemoryGiven | None = None,
+    recheck: RecheckPin | None = None,
 ) -> ReviewerBundle:
-    """The reviewer's input: format 1 without ``memory``, format 2 with it."""
+    """The reviewer's input: format 3 with ``recheck``, as the runner gives it; otherwise
+    format 1 without ``memory`` and format 2 with it, as earlier records were made."""
     raw = _rubric(system)
     canonical = schema_json(specs)
     names = tuple(spec.name for spec in specs)
@@ -201,6 +253,10 @@ def assemble_reviewer(
     if memory is not None:
         pin = pin.model_copy(
             update={"format_version": 2, "assembly_version": MEMORY_ASSEMBLY, "memory": memory.pin}
+        )
+    if recheck is not None:
+        pin = pin.model_copy(
+            update={"format_version": 3, "assembly_version": RECHECK_ASSEMBLY, "recheck": recheck}
         )
     fields = _fields(pin)
     pin = pin.model_copy(

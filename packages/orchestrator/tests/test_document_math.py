@@ -193,14 +193,14 @@ async def test_two_failing_patches_reflag_but_unrelated_revisions_do_not(stores)
     patch(docs, doc, r"\unknown{z}", "try-two")
     await drain(reviews, ScriptedChecker())
     assert get(reviews)[0]["reflags"] == 2
-    assert get(reviews)[0]["status"] == "unaddressed"
+    assert (get(reviews)[0]["status"], get(reviews)[0]["at_bound"]) == ("open", True)
     revision = get(reviews)[0]["revision"]
     for ordinal in (3, 4):
         patch(docs, doc, rf"\unknown{{attempt{ordinal}}}", f"try-{ordinal}")
         await drain(reviews, ScriptedChecker(error=f"Exact error {ordinal}"))
         current = get(reviews)[0]
         assert current["reflags"] == 2
-        assert current["status"] == "unaddressed"
+        assert (current["status"], current["at_bound"]) == ("open", True)
         assert current["revision"] == revision + ordinal - 2
         assert f"Exact error {ordinal}" in current["statement"]
         assert current["source"]["checked_revision"] == docs.document("p", doc).head
@@ -225,7 +225,7 @@ async def test_accept_remove_and_unavailable_are_distinct(stores) -> None:
     )
     await drain(reviews, ScriptedChecker("accepted"))
     (found,) = get(reviews)
-    assert found["status"] == "confirmed fixed"
+    assert found["status"] == "fixed"
     assert (
         Findings(reviews).get("p", "s", found["finding_id"])["history"][-1]["payload"]["action"]
         == "mechanical_accept"
@@ -243,7 +243,7 @@ async def test_accept_remove_and_unavailable_are_distinct(stores) -> None:
     )
     await drain(reviews, ScriptedChecker())
     current = get(reviews)[0]
-    assert current["status"] == "confirmed fixed"
+    assert current["status"] == "fixed"
     assert (
         Findings(reviews).get("p", "s", current["finding_id"])["history"][-1]["payload"]["action"]
         == "mechanical_removal"
@@ -560,14 +560,15 @@ async def test_model_math_authority_denied_user_cas_unchanged(stores) -> None:
     raw = {
         "finding": found["finding_id"],
         "expected": 1,
-        "action": "confirm",
+        "action": "set",
+        "status": "fixed",
         "explanation": "Explicit USER confirmation.",
         "operation_id": "decision",
     }
     with pytest.raises(DocumentError):
         Findings(reviews).respond("p", "s", raw, MAIN)
     result = Findings(reviews).respond("p", "s", raw, USER)
-    assert result["status"] == "confirmed fixed"
+    assert result["status"] == "fixed"
     assert result["revision"] == 2
     assert Findings(reviews).respond("p", "s", raw, USER)["replayed"]
     with pytest.raises(DocumentError, match="changed"):
@@ -979,7 +980,7 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
         )
         == 0
     )
-    assert get(reviews)[0]["status"] == ("open" if failure else "unaddressed")
+    assert (get(reviews)[0]["status"], get(reviews)[0]["at_bound"]) == ("open", not failure)
     with docs.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] == "saved"
@@ -1010,7 +1011,7 @@ async def test_staged_bound_rebinds_after_failed_save_and_rechecks_current_evide
         db = tx.sql
         assert db.execute("SELECT run FROM math_ignored").fetchone()[0] == "new-saved"
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] is None
-    expected = "unaddressed"
+    expected = ("open", True)
     if change == "user":
         Findings(reviews).respond(
             "p",
@@ -1024,16 +1025,16 @@ async def test_staged_bound_rebinds_after_failed_save_and_rechecks_current_evide
             },
             USER,
         )
-        expected = "withdrawn"
+        expected = ("dismissed", False)
     elif change != "none":
         patch(docs, doc, "x" if change == "accepted" else r"\newUnknown{x}", "concurrent-source")
         if change != "pending":
             await drain(reviews, ScriptedChecker("accepted") if change == "accepted" else None)
-        expected = "confirmed fixed" if change == "accepted" else "open"
+        expected = ("fixed", False) if change == "accepted" else ("open", False)
     # Trusted save-success callback: staged run AND notice claim must both match;
     # current source/USER/evidence is fenced again inside this transaction.
     notices.acknowledge("p", "s", "new-saved", list(ids))
-    assert get(reviews)[0]["status"] == expected
+    assert (get(reviews)[0]["status"], get(reviews)[0]["at_bound"]) == expected
     with docs.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] == "new-saved"
@@ -1177,7 +1178,8 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
             hooks=hooks,
         )
     assert (transcript.failure, transcript.final_text) == ("harness", None)
-    assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"
+    science = Findings(reviews).get("p", "s", scientific["finding_id"])
+    assert (science["status"], science["at_bound"]) == ("open", True)
     math = next(f for f in get(reviews) if f["origin"] == "math")
     assert math["status"] == "open"
     now = datetime.now(UTC)
@@ -1206,7 +1208,8 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
         == 1
     )
     assert Findings(reviews).get("p", "s", math["finding_id"])["status"] == "open"
-    assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"
+    science = Findings(reviews).get("p", "s", scientific["finding_id"])
+    assert (science["status"], science["at_bound"]) == ("open", True)
 
 
 @pytest.mark.asyncio

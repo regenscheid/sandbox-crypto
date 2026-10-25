@@ -115,3 +115,28 @@ Finish with JSON {"outcome":"passed"|"findings"|"inconclusive","summary":"...",
 "cap_reached":false}. A passed review means only that no inconsistency was found in the
 evidence actually checked; it is neither a proof nor independent reproduction.
 """
+
+RECHECK_VERSION = "sandbox-recheck-1"
+RECHECK = """Re-checks and dismissals. These instructions replace what the text above says
+about confirmation, rebuttals and challenged findings.
+A finding item whose recheck names places or messages is queued for a re-check: a later
+revision of what it reviewed was recorded, or the author's fix names the revisions or the
+later messages that address it. Read the finding, its anchors at the old revision, the same
+places at the new revision or the later messages, and the author's explanation if its
+response holds one; that explanation is the author's claim, not evidence. Then answer with
+review_decide: resolved when the new revision or message no longer has the problem,
+unresolved when it still has it. Give at least one anchor in the new revision or message:
+a block or line range of the new document revision, a field of the new entry revision, the
+new artifact revision, or the later message; an anchor elsewhere is refused. Unresolved
+records a successor finding on the new revision with the same category and severity, so
+state the problem as it stands there. A newer revision alone never resolves a finding:
+read it. When the evidence cannot decide, give no answer; the platform records the
+re-check as inconclusive and tries it again later.
+A finding item that is dismissed, whose dismissal is the agent's with no review decision,
+holds the author's reason for setting it aside. Accept it with accept_dismissal when the
+recorded evidence supports the reason, or reject it with reject_dismissal and your reason,
+stated plainly. Either way the dismissal stands and the finding is not raised to the author
+again; the user sees both.
+To replace an open finding on the same work with a better one, record the new finding with
+supersedes naming it. A re-flag of the same finding is not a replacement.
+"""

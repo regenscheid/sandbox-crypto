@@ -226,7 +226,8 @@ async def confirm(path: Path) -> None:
         if (
             found["review_id"] != marker["review"]
             or found["category"] != "contradicting_value"
-            or found["status"] != "claimed fixed"
+            or found["status"] != "open"
+            or (found.get("recheck") or {}).get("cause") != "fix"
             or documents.revision("review-demo", marker["document"], 1).text != REPORT
         ):
             raise ValueError("the target is not the seeded synthetic contradiction")
@@ -283,7 +284,7 @@ async def confirm(path: Path) -> None:
                         "arguments": {
                             "finding": finding,
                             "expected": revision,
-                            "decision": "confirm",
+                            "decision": "resolved",
                             "explanation": (
                                 "Synthetic scripted acceptance: the exact changed "
                                 "revision agrees with the pinned15 output."
@@ -301,7 +302,7 @@ async def confirm(path: Path) -> None:
                     {
                         "outcome": "findings",
                         "summary": (
-                            "The synthetic claimed fix was confirmed; other "
+                            "The synthetic fix's re-check found it resolved; other "
                             "findings retain their own states."
                         ),
                         "cap_reached": False,

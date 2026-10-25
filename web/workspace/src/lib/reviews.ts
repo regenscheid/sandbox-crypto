@@ -38,6 +38,45 @@ export interface Evidence {
   sha256: string;
   complete: boolean;
 }
+/** The five statuses of a finding in the review store (consistency-review.md, CR-40). */
+export type FindingStatus = 'open' | 'fixed' | 'dismissed' | 'superseded' | 'stale';
+export type RecheckAnswer = 'resolved' | 'unresolved' | 'inconclusive';
+/** The last re-check of a finding: a review's answer, with the reviewer that gave it. */
+export interface LatestRecheck {
+  review: string;
+  answer: RecheckAnswer;
+  why: string;
+  anchors: Json;
+  places: Json;
+  messages: Json;
+  reviewer: { alias: string | null; resolved_model: string | null; rubric: string };
+  at: number;
+  successor?: string | null;
+}
+/** A dismissal, who gave it and why, and the review that judged it, once one did. */
+export interface Dismissal {
+  by: 'agent' | 'user';
+  actor: string;
+  reason: string;
+  at: number;
+  response_revision?: number;
+  review: null | {
+    review: string;
+    decision: 'accepted' | 'rejected';
+    reason: string;
+    at: number;
+  };
+}
+/** A re-check waiting to run, and why it was queued. */
+export interface QueuedRecheck {
+  cause: 'revision' | 'fix';
+  revision: number;
+  response: number;
+  places: Json;
+  messages: Json;
+  queued: number;
+  attempts: number;
+}
 export interface Finding {
   finding_id: string;
   review_id: string | null;
@@ -47,7 +86,16 @@ export interface Finding {
   category: string;
   statement: string;
   remedy: string | null;
-  status: string;
+  status: FindingStatus;
+  /** The finding this one replaced, and the one that replaced it. */
+  supersedes?: string | null;
+  superseded_by?: string | null;
+  latest_recheck?: LatestRecheck | null;
+  dismissal?: Dismissal | null;
+  /** A queued re-check. */
+  recheck?: QueuedRecheck | null;
+  /** Open at its re-flag bound: not offered to the agent again. */
+  at_bound?: boolean;
   revision: number;
   reflags: number;
   anchors: ({
@@ -76,8 +124,15 @@ export interface ResponseBody {
 }
 export interface Transition {
   revision: number;
-  status: string;
+  status: FindingStatus;
   actor: string;
+  actor_kind?: 'user' | 'controller' | 'platform' | 'agent';
+  /** The old status name of a migrated row, else null. */
+  former_status?: string | null;
+  /** A re-check's answer, its review and its record, when the step was one. */
+  answer?: RecheckAnswer | null;
+  review?: string | null;
+  recheck?: Json | null;
   reason: string;
   payload: Json;
   created: number;

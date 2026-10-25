@@ -15,7 +15,12 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, notices
-from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
+from sandbox_science.orchestrator.consistency.rubric import (
+    RECHECK,
+    RECHECK_VERSION,
+    RUBRIC,
+    RUBRIC_VERSION,
+)
 from sandbox_science.orchestrator.delegation.prompt import (
     CHECK_PROMPT,
     CHECK_VERSION,
@@ -127,6 +132,12 @@ GOLDEN = {
     "sandbox-notice-review-findings-1": (
         "d9fe98f7e1b697bb2d3264496fd601484a9dbce030d3fd0985e049aabd9e67a1"
     ),
+    "sandbox-notice-review-findings-2": (
+        "9e4659970a1e74fe7bedc00b01ee88617d668680ed96723dbcfb90495a790207"
+    ),
+    "sandbox-notice-review-counts-3": (
+        "dfe8661e41ed5d39580aa412d49c6e115480bb04e4d468affe2d6d4f5edc8c64"
+    ),
     "sandbox-notice-review-challenged-1": (
         "11b7df629d84233aae8275c05199f83db8d5f4f94b75517e4b77065b759ec47c"
     ),
@@ -151,6 +162,7 @@ GOLDEN = {
     "sandbox-delegated-task-8": "0928db5b6b9d08a097dd67464f69ff56eae48890d32f982dd2e516d71ae157fc",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
     "sandbox-consistency-9": "3905f61a0b76144e6ec941e436cd37dea2343b76a7f84f34e5ecf65d8048a588",
+    "sandbox-recheck-1": "70923310becc982206fb8caad884bacc282ce182c065f9e978f653ff412eb7fa",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
     "sandbox-memory-reviewer-1": (
         "d391d1a7e6c33b4fca0970450432103c38b5ea34b80821210f7c9d27f80b9742"
@@ -189,6 +201,7 @@ def installed() -> dict[str, str]:
         GUIDANCE_VERSION: GUIDANCE,
         PROMPT_VERSION: WATCHER_PROMPT,
         RUBRIC_VERSION: RUBRIC,
+        RECHECK_VERSION: RECHECK,
         RUN_VERSION: RUN_FRAMING,
         REVIEWER_VERSION: REVIEWER_FRAMING,
         WATCHER_VERSION: WATCHER_FRAMING,
