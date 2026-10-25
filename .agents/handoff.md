@@ -9,6 +9,8 @@ Updated 2026-10-25. Read [STATUS](STATUS.md), [CONVENTIONS](CONVENTIONS.md), [de
 
 - **A10's offline part is built** (2026-10-25): run `sandbox-science-harness tool-mix --state-dir <copy>` on a copy of the SNOVA archive to get the shell-versus-cell mix; agents do not read the personal instance.
 
+- **2026-10-25, later:** A3's classification review view, B4 to B6's offline parts and the lost-kernel acceptance are on `k8s-sync`; the Monitor view (B5's dashboards) is the next increment in flight. The cluster's test instance predates all of it: a republish and redeploy, then the live checks the backlog lists (MCP, canaries, alert rules, the job budget drain, the maintenance CronJob), is what remains of B3 to B6.
+
 ## Next, in order ([backlog](BACKLOG.md#architecture-2026-10-23-implementation-sequence))
 
 1. **A2, the direct MCP path (D98):** run the babbage lab of [the prototype](../docs/specs/mcp-middleware-prototype.md); then workspace answers to the middleware's MCP requests, denied-tool listings and binary results. The owner then decides whether the MCP proxy retires.
