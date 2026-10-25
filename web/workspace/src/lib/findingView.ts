@@ -6,8 +6,9 @@
  */
 import type { Json } from './api';
 import { locatorText, when } from './reviewText';
-import type { Finding, Review, Transition } from './reviews';
-import { documentHref } from './router';
+import type { Finding, Review, ReviewedRevision, Transition } from './reviews';
+import { documentHref, findingHref, ledgerEntryHref, messageHref } from './router';
+import { visible } from './text';
 
 const STATUSES: Readonly<Record<string, string>> = {
   open: 'Open: raised and not settled; it needs a fix, a dismissal or a decision.',
@@ -99,32 +100,9 @@ export function decisions(status: string): Decision[] {
   return list;
 }
 
-/** A dismissal in words: who gave it, why, and what a review made of it. */
-export function dismissalText(dismissal: NonNullable<Finding['dismissal']>): string[] {
-  const who = dismissal.by === 'user' ? 'the user' : actorText(dismissal.actor);
-  const lines = [`Dismissed by ${who} · ${when(dismissal.at)}: ${dismissal.reason}`];
-  if (dismissal.review) {
-    const { review, decision, reason } = dismissal.review;
-    lines.push(`Review ${review} ${decision} the dismissal: ${reason}`);
-  }
-  return lines;
-}
-
-/** The finding this one replaced and the one that replaced it, in words. */
-export function successorText(finding: Pick<Finding, 'supersedes' | 'superseded_by'>): string[] {
+/** A finding's re-check queue in words: a queued re-check, and the re-flag bound. */
+export function queuedText(finding: Pick<Finding, 'recheck' | 'at_bound'>): string[] {
   const lines: string[] = [];
-  if (finding.supersedes) lines.push(`It replaced finding ${finding.supersedes}.`);
-  if (finding.superseded_by) lines.push(`It was replaced by finding ${finding.superseded_by}.`);
-  return lines;
-}
-
-/** A finding's re-check state in words: the last answer, a queued re-check, the re-flag bound. */
-export function recheckText(
-  finding: Pick<Finding, 'latest_recheck' | 'recheck' | 'at_bound'>,
-): string[] {
-  const lines: string[] = [];
-  const last = finding.latest_recheck;
-  if (last) lines.push(`Last re-check, review ${last.review}: ${last.answer}. ${last.why}`);
   if (finding.recheck)
     lines.push(
       `A re-check is queued (${finding.recheck.cause === 'fix' ? 'after a claimed fix' : 'after a revision'}).`,
@@ -148,6 +126,14 @@ type Anchor = Finding['anchors'][number];
 const text = (value: Json | undefined): string =>
   typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 
+/** The archive message a locator names, when it names one (`msg-…`). */
+function archived(locator: Record<string, Json>): string | null {
+  const archive = locator['archive'];
+  if (typeof archive !== 'object' || archive === null || Array.isArray(archive)) return null;
+  const id = archive['id'];
+  return typeof id === 'string' && /^msg-[0-9a-f]{16}$/.test(id) ? id : null;
+}
+
 export function anchorView(project: string, anchor: Anchor): AnchorView {
   const locator = anchor.locator ?? {};
   const block = text(anchor['block'] as Json) || text(locator['block']);
@@ -166,6 +152,13 @@ export function anchorView(project: string, anchor: Anchor): AnchorView {
     where = `the explanation of finding ${text(locator['finding'])}, response ${text(locator['response_revision'])}`;
   else if (document && typeof revision === 'number')
     href = documentHref(project, document, revision, block || undefined);
+  else if (text(locator['entry']))
+    href = ledgerEntryHref(
+      project,
+      text(locator['entry']),
+      typeof revision === 'number' ? revision : undefined,
+    );
+  else if (archived(locator)) href = messageHref(project, archived(locator)!);
   return {
     text: `${where}${math}${lines}`,
     href,
@@ -215,4 +208,194 @@ export function raisedText(finding: Finding, review: Review | undefined): string
   const model = review.resolved_model ?? 'an unknown model';
   const alias = review.alias ? `, alias ${review.alias}` : '';
   return `Raised by ${review.kind} review ${review.review_id}: ${model}${alias}, rubric ${review.rubric}.`;
+}
+
+/** A finding the card links to: its ID and its card. */
+export interface FindingLink {
+  id: string;
+  href: string;
+}
+
+/**
+ * The finding this one replaced and the one that replaced it (CR-44), each linked to its
+ * card; the successor is the one the user set, or the one an unresolved re-check raised.
+ */
+export function lineage(
+  project: string,
+  session: string,
+  finding: Pick<Finding, 'supersedes' | 'superseded_by' | 'latest_recheck'>,
+): { predecessor: FindingLink | null; successor: FindingLink | null } {
+  const link = (id: string | null | undefined): FindingLink | null =>
+    id ? { id, href: findingHref(project, session, id) } : null;
+  return {
+    predecessor: link(finding.supersedes),
+    successor: link(finding.superseded_by ?? finding.latest_recheck?.successor),
+  };
+}
+
+/** One thing a finding reviewed, at the revision reviewed and now (CR-46). */
+export interface RevisionView {
+  /** What it is, in words: a document, an artifact or a ledger entry by its handle. */
+  what: string;
+  reviewed: number;
+  reviewedHref: string | null;
+  current: number | null;
+  currentHref: string | null;
+  /** Its current revision, in words: the same, a later one, or unreadable. */
+  state: string;
+}
+
+/** What a finding reviewed and where each now stands, as the server read it. */
+export function revisionViews(
+  project: string,
+  revisions: readonly ReviewedRevision[] | undefined,
+): RevisionView[] {
+  return (revisions ?? []).map((item) => {
+    const href = (revision: number) =>
+      item.kind === 'document'
+        ? documentHref(project, item.id, revision)
+        : item.kind === 'entry'
+          ? ledgerEntryHref(project, item.id, revision)
+          : null;
+    const what =
+      item.kind === 'entry'
+        ? `ledger entry ${item.handle || item.id}`
+        : `${item.kind === 'document' ? 'document' : 'artifact'} ${item.id}`;
+    const current = item.current;
+    const state =
+      current === null
+        ? 'its current revision could not be read'
+        : current > item.reviewed
+          ? `now at revision ${current}`
+          : 'still the current revision';
+    return {
+      what: visible(what),
+      reviewed: item.reviewed,
+      reviewedHref: href(item.reviewed),
+      current,
+      currentHref: current !== null && current !== item.reviewed ? href(current) : null,
+      state,
+    };
+  });
+}
+
+/** The latest re-check as the card shows it (CR-42, CR-46). */
+export interface RecheckView {
+  /** "resolved", "unresolved", or "open, last re-check inconclusive" for an open finding. */
+  answer: string;
+  /** Why, as the reviewer (or the controller) gave it: agent text, hidden characters shown. */
+  why: string;
+  /** Which review answered, with which model, and when. */
+  by: string;
+  /** The evidence anchors it gave in the new revision or message. */
+  anchors: AnchorView[];
+  /** The new revisions it looked at, in words, with links where the workspace has a page. */
+  places: { text: string; href: string | null }[];
+}
+
+const record = (value: Json | undefined): Record<string, Json> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {};
+
+/** A place a re-check looked at (a later document, artifact or entry revision), in words. */
+function placeView(project: string, place: Json): { text: string; href: string | null } {
+  const found = record(place);
+  const document = record(found['document']);
+  const artifact = record(found['artifact']);
+  const entry = record(found['entry']);
+  if (text(document['document']) && typeof document['revision'] === 'number')
+    return {
+      text: visible(locatorText(document)),
+      href: documentHref(
+        project,
+        text(document['document']),
+        document['revision'],
+        text(document['block']) || undefined,
+      ),
+    };
+  if (text(artifact['artifact_id']))
+    return {
+      text: visible(
+        `artifact ${text(artifact['artifact_id'])} revision ${text(artifact['revision'])}`,
+      ),
+      href: null,
+    };
+  if (text(entry['entry']))
+    return {
+      text: visible(locatorText(entry)),
+      href: ledgerEntryHref(
+        project,
+        text(entry['entry']),
+        typeof entry['revision'] === 'number' ? entry['revision'] : undefined,
+      ),
+    };
+  return { text: 'a later record', href: null };
+}
+
+/** The latest re-check's answer, reviewer, evidence and places, or null when none ran. */
+export function recheckView(
+  project: string,
+  finding: Pick<Finding, 'status' | 'latest_recheck'>,
+): RecheckView | null {
+  const last = finding.latest_recheck;
+  if (!last) return null;
+  const answer =
+    last.answer === 'inconclusive' && finding.status === 'open'
+      ? INCONCLUSIVE
+      : `last re-check ${last.answer}`;
+  const model = last.reviewer?.resolved_model ?? 'an unknown model';
+  const alias = last.reviewer?.alias ? `, alias ${last.reviewer.alias}` : '';
+  const anchors = Array.isArray(last.anchors) ? (last.anchors as Anchor[]) : [];
+  const places = Array.isArray(last.places) ? last.places : [];
+  return {
+    answer,
+    why: visible(last.why),
+    by: visible(
+      `Review ${last.review} · ${model}${alias}${typeof last.at === 'number' ? ` · ${when(last.at)}` : ''}`,
+    ),
+    anchors: anchors.map((anchor) => {
+      const view = anchorView(project, anchor);
+      return { ...view, text: visible(view.text) };
+    }),
+    places: places.map((place) => placeView(project, place)),
+  };
+}
+
+/** A dismissal as the card shows it: who gave it, when, the reason, and a review's judgement. */
+export interface DismissalView {
+  who: string;
+  at: string;
+  /** The reason: the user's own text as written, an agent's with hidden characters shown. */
+  reason: string;
+  byAgent: boolean;
+  review: { text: string; reason: string } | null;
+}
+
+export function dismissalView(dismissal: NonNullable<Finding['dismissal']>): DismissalView {
+  const byAgent = dismissal.by !== 'user';
+  const judged = dismissal.review;
+  return {
+    who: byAgent ? actorText(dismissal.actor) : 'the user',
+    at: when(dismissal.at),
+    reason: byAgent ? visible(dismissal.reason) : dismissal.reason,
+    byAgent,
+    review: judged
+      ? {
+          text: `Review ${judged.review} ${judged.decision} the dismissal · ${when(judged.at)}`,
+          reason: visible(judged.reason),
+        }
+      : byAgent
+        ? { text: 'No review has judged the dismissal yet.', reason: '' }
+        : null,
+  };
+}
+
+const SUCCESSOR = /^finding-[0-9a-f]{24}$/;
+
+/** The successor a user names when setting a finding superseded: empty, or a finding ID. */
+export function parseSuccessor(value: string): string | null {
+  const found = value.trim();
+  if (!found) return null;
+  if (!SUCCESSOR.test(found))
+    throw new Error('A successor is a finding ID: finding- and 24 hex digits.');
+  return found;
 }

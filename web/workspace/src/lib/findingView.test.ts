@@ -3,20 +3,24 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 import FindingCard from '../views/FindingCard.svelte';
 import { findingDrafts } from './drafts';
+import { findingResponse } from './findings';
 import {
   actorText,
   anchorView,
   decisions,
-  dismissalText,
+  dismissalView,
+  lineage,
+  parseSuccessor,
+  queuedText,
+  recheckView,
+  revisionViews,
   raisedText,
-  recheckText,
   resolved,
   setStatus,
   severityText,
   statusClass,
   statusLabel,
   statusText,
-  successorText,
   transitionText,
 } from './findingView';
 import { when } from './reviewText';
@@ -83,29 +87,113 @@ describe('the finding card', () => {
       at: 1791990000,
       review: { review: 'rv-3', decision: 'rejected', reason: 'No proof.', at: 1791990100 },
     } as NonNullable<Finding['dismissal']>;
-    expect(dismissalText(dismissal)).toEqual([
-      `Dismissed by the main agent of session s1 · ${when(1791990000)}: The bound holds.`,
-      'Review rv-3 rejected the dismissal: No proof.',
-    ]);
-    expect(dismissalText({ ...dismissal, by: 'user', review: null })[0]).toMatch(
-      /^Dismissed by the user/,
+    expect(dismissalView(dismissal)).toEqual({
+      who: 'the main agent of session s1',
+      at: when(1791990000),
+      reason: 'The bound holds.',
+      byAgent: true,
+      review: {
+        text: `Review rv-3 rejected the dismissal · ${when(1791990100)}`,
+        reason: 'No proof.',
+      },
+    });
+    // An agent's reason shows its hidden characters; the user's own text stays as written.
+    expect(dismissalView({ ...dismissal, reason: 'a\u202eb' }).reason).toBe('a⟦U+202E⟧b');
+    const user = dismissalView({ ...dismissal, by: 'user', reason: 'a\u202eb', review: null });
+    expect([user.who, user.reason, user.review]).toEqual(['the user', 'a\u202eb', null]);
+    expect(dismissalView({ ...dismissal, review: null }).review?.text).toBe(
+      'No review has judged the dismissal yet.',
     );
-    expect(successorText({ supersedes: 'f-1', superseded_by: 'f-3' })).toEqual([
-      'It replaced finding f-1.',
-      'It was replaced by finding f-3.',
-    ]);
-    expect(successorText({ supersedes: null })).toEqual([]);
+    expect(lineage('p', 's', { supersedes: 'f-1', superseded_by: 'f-3' })).toEqual({
+      predecessor: { id: 'f-1', href: '#/projects/p/sessions/s/findings/f-1' },
+      successor: { id: 'f-3', href: '#/projects/p/sessions/s/findings/f-3' },
+    });
     expect(
-      recheckText({
-        latest_recheck: { review: 'rv-2', answer: 'unresolved', why: 'Still wrong.' } as never,
+      lineage('p', 's', { supersedes: null, latest_recheck: { successor: 'f-4' } as never })
+        .successor?.id,
+    ).toBe('f-4');
+    expect(
+      queuedText({
         recheck: { cause: 'fix' } as never,
         at_bound: true,
       }),
     ).toEqual([
-      'Last re-check, review rv-2: unresolved. Still wrong.',
       'A re-check is queued (after a claimed fix).',
       'At its re-flag bound: the agent is not offered it again.',
     ]);
+  });
+
+  it('shows the latest re-check with its answer, reviewer, evidence and places', () => {
+    const latest = {
+      review: 'rv-2',
+      answer: 'unresolved',
+      why: 'Still 15.\u200b',
+      anchors: [{ evidence: 'e', review: 'rv-2', locator: { document: 'doc-1', revision: 4 } }],
+      places: [{ document: { document: 'doc-1', revision: 4, sha256: 'x' } }, { other: 1 }],
+      messages: [],
+      reviewer: { alias: 'reviewer', resolved_model: 'model-r', rubric: 'r1' },
+      at: 1791990000,
+    } as unknown as NonNullable<Finding['latest_recheck']>;
+    const view = recheckView('p', { status: 'superseded', latest_recheck: latest })!;
+    expect(view.answer).toBe('last re-check unresolved');
+    expect(view.why).toBe('Still 15.⟦U+200B⟧');
+    expect(view.by).toBe(`Review rv-2 · model-r, alias reviewer · ${when(1791990000)}`);
+    expect(view.anchors.map((a) => [a.text, a.href])).toEqual([
+      ['document doc-1 revision 4', '#/projects/p/documents/doc-1/revisions/4'],
+    ]);
+    expect(view.places).toEqual([
+      { text: 'document doc-1 revision 4', href: '#/projects/p/documents/doc-1/revisions/4' },
+      { text: 'a later record', href: null },
+    ]);
+    const open = recheckView('p', {
+      status: 'open',
+      latest_recheck: { ...latest, answer: 'inconclusive', anchors: [], places: [] },
+    })!;
+    expect(open.answer).toBe('open, last re-check inconclusive');
+    expect(recheckView('p', { status: 'open', latest_recheck: null })).toBeNull();
+  });
+
+  it('names the revision reviewed beside the current one', () => {
+    expect(
+      revisionViews('p', [
+        { kind: 'document', id: 'doc-1', reviewed: 1, current: 3 },
+        { kind: 'entry', id: 'le-1', handle: 'thm-1', reviewed: 2, current: 2 },
+        { kind: 'artifact', id: 'art-1', reviewed: 1, current: null },
+      ]),
+    ).toEqual([
+      {
+        what: 'document doc-1',
+        reviewed: 1,
+        reviewedHref: '#/projects/p/documents/doc-1/revisions/1',
+        current: 3,
+        currentHref: '#/projects/p/documents/doc-1/revisions/3',
+        state: 'now at revision 3',
+      },
+      {
+        what: 'ledger entry thm-1',
+        reviewed: 2,
+        reviewedHref: '#/projects/p/ledger/le-1/revisions/2',
+        current: 2,
+        currentHref: null,
+        state: 'still the current revision',
+      },
+      {
+        what: 'artifact art-1',
+        reviewed: 1,
+        reviewedHref: null,
+        current: null,
+        currentHref: null,
+        state: 'its current revision could not be read',
+      },
+    ]);
+    expect(revisionViews('p', undefined)).toEqual([]);
+  });
+
+  it('takes an empty successor or a finding ID, and refuses anything else', () => {
+    const id = `finding-${'a'.repeat(24)}`;
+    expect(parseSuccessor('  ')).toBeNull();
+    expect(parseSuccessor(` ${id} `)).toBe(id);
+    expect(() => parseSuccessor('finding-1')).toThrow(/finding ID/);
   });
 
   it('links a document anchor to its revision with the block in focus', () => {
@@ -277,7 +365,9 @@ describe('the finding card, for each status', () => {
       latest_recheck: { review: 'rv-2', answer: 'inconclusive', why: 'No evidence.' },
     });
     expect(open).toContain('>Open, last re-check inconclusive</span>');
-    expect(open).toContain('Last re-check, review rv-2: inconclusive. No evidence.');
+    expect(open).toMatch(
+      /<strong>open, last re-check inconclusive<\/strong>(<!--\[0-->)?: No evidence\./,
+    );
     const dismissed = html({
       status: 'dismissed',
       dismissal: { by: 'user', actor: 'user:user', reason: 'Not a defect.', at: 1791990000 },
@@ -286,9 +376,83 @@ describe('the finding card, for each status', () => {
     });
     expect(dismissed).toContain('Dismissed by the user');
     expect(dismissed).toContain('Not a defect.');
-    expect(dismissed).toContain('It replaced finding finding-old.');
-    expect(dismissed).toContain('It was replaced by finding finding-new.');
+    expect(dismissed).toMatch(
+      /It replaced finding <a href="#\/projects\/p\/sessions\/s\/findings\/finding-old"><code>finding-old<\/code><\/a>/,
+    );
+    expect(dismissed).toMatch(
+      /It was replaced by finding <a href="#\/projects\/p\/sessions\/s\/findings\/finding-new"><code>finding-new<\/code><\/a>/,
+    );
     expect(dismissed).toContain('Set to open, as the user');
+  });
+
+  it('shows the full card: identifier, statement, revisions, re-check evidence and history', () => {
+    const text = html({
+      status: 'open',
+      reviewed_revisions: [{ kind: 'document', id: 'doc-1', reviewed: 1, current: 2 }],
+      latest_recheck: {
+        review: 'rv-2',
+        answer: 'inconclusive',
+        why: 'Capped.',
+        anchors: [{ locator: { entry: 'le-1', handle: 'thm-1', revision: 3 } }],
+        places: [],
+        reviewer: { alias: null, resolved_model: 'model-r', rubric: 'r1' },
+        at: 1791990000,
+      },
+    });
+    expect(text).toContain('<code class="finding-id');
+    expect(text).toContain('finding-s</code>');
+    expect(text).toContain("The reviewer's statement");
+    expect(text).toMatch(
+      /reviewed at (<!--\[0-->)?<a href="#\/projects\/p\/documents\/doc-1\/revisions\/1"/,
+    );
+    expect(text).toMatch(/now at <a href="#\/projects\/p\/documents\/doc-1\/revisions\/2"/);
+    expect(text).toContain(
+      '<a href="#/projects/p/ledger/le-1/revisions/3">ledger entry thm-1 revision 3</a>',
+    );
+    expect(text).toContain('Who set which status, when, and why');
+  });
+
+  it('offers the successor field only when setting superseded, and sends it', () => {
+    expect(html({ status: 'open' })).not.toContain('Successor finding');
+    findingDrafts.save('p:s:finding-s', {
+      expected: 3,
+      explanation: 'Replaced.',
+      action: 'set:superseded',
+      references: '',
+      successor: '',
+    });
+    expect(html({ status: 'open' })).toContain('aria-label="Successor finding"');
+    findingDrafts.clear('p:s:finding-s');
+    const finding = { ...base, status: 'open' } as unknown as Finding;
+    const draft = {
+      expected: 3,
+      explanation: 'Replaced.',
+      action: 'set:superseded',
+      references: '',
+      successor: `finding-${'b'.repeat(24)}`,
+    };
+    expect(findingResponse(finding, draft)).toEqual({
+      finding: 'finding-s',
+      expected: 3,
+      action: 'set',
+      status: 'superseded',
+      explanation: 'Replaced.',
+      successor: `finding-${'b'.repeat(24)}`,
+    });
+    expect(findingResponse(finding, { ...draft, successor: '' })).not.toHaveProperty('successor');
+    expect(findingResponse(finding, { ...draft, action: 'set:stale' })).not.toHaveProperty(
+      'successor',
+    );
+    expect(() => findingResponse(finding, { ...draft, successor: 'nope' })).toThrow();
+    // A draft kept before the successor field existed still loads.
+    findingDrafts.save('p:s:old', {
+      expected: 1,
+      explanation: 'x',
+      action: 'dismiss',
+      references: '',
+    });
+    expect(findingDrafts.load('p:s:old').draft?.action).toBe('dismiss');
+    findingDrafts.clear('p:s:old');
   });
 
   it('describes the new behaviour and offers the revisions field only for a fix', () => {

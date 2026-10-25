@@ -107,8 +107,19 @@ export interface Finding {
   } & Record<string, Json>)[];
   history?: Transition[];
   history_before?: number | null;
+  /** What it reviewed, each at the revision reviewed beside its current one (CR-46). */
+  reviewed_revisions?: ReviewedRevision[];
   response_generation?: number;
   macro_context?: MacroContext;
+}
+/** A document, artifact or ledger entry a finding reviewed, then and now. */
+export interface ReviewedRevision {
+  kind: 'document' | 'artifact' | 'entry';
+  id: string;
+  handle?: string | null;
+  reviewed: number;
+  /** Its current revision, or null when it can no longer be read. */
+  current: number | null;
 }
 export interface ResponseBody {
   source: string;
