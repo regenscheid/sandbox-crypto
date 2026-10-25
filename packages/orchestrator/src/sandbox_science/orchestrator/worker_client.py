@@ -95,6 +95,7 @@ from sandbox_science.contracts.classifications import (
     DriftAccepted,
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.monitor import MonitorWindow, WorkerMonitor
 from sandbox_science.contracts.permission_requests import (
     PermissionConfirmation,
     PermissionConfirmed,
@@ -557,6 +558,18 @@ class WorkerClient:
         (D98): any client, for its own projects."""
         return await self._call(
             "POST", f"/v1/permission-requests/{seq}/confirm", PermissionConfirmed, asked
+        )
+
+    # Monitor figures, for the workspace's Monitor view (D103).
+
+    async def monitor(self, project_id: str, window: MonitorWindow) -> WorkerMonitor:
+        """The project's monitor figures for the window: an operator client's read."""
+        return await self._call(
+            "GET",
+            "/v1/monitor",
+            WorkerMonitor,
+            params={"project": project_id, "window": window},
+            max_bytes=4 * 1024 * 1024,
         )
 
     # MCP servers' classifications, for the workspace's review view (D96, CL-6).

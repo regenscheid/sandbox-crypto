@@ -27,6 +27,7 @@ from .environments import Environments, OpenShellCli, confirmed_daemon_loss
 from .job_sandboxes import JobSandboxes, ManagerPort
 from .lifecycle import UNMANAGED, EnvironmentLifecycle
 from .manager import ExecutionManager
+from .monitor import MonitorDesk
 from .package_clients import cache_endpoint
 from .permission_requests import PermissionDesk
 from .permissions import Permissions
@@ -236,8 +237,20 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         if provisioner.permissions is not None and environments is not None
         else None
     )
+    figures = (
+        MonitorDesk(
+            provisioner.permissions,
+            environments.records.listed,
+            declared_tier=environments.isolation_tier,
+            measured_tier=manager.measured_tier,
+            classifications=review,
+            clock=manager.clock,
+        )
+        if environments is not None
+        else None
+    )
     app = create_app(
         manager, token, environments, settings.clients, provisioner, documents,
-        permission_desk=desk, classification_desk=review,
+        permission_desk=desk, classification_desk=review, monitor_desk=figures,
     )  # fmt: skip
     return WorkerParts(lock, store, documents, shared, environments, manager, provisioner, app)

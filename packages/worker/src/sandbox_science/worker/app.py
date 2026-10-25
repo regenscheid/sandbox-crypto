@@ -85,6 +85,7 @@ from sandbox_science.contracts.documents import (
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.logs import log_context
+from sandbox_science.contracts.monitor import WINDOWS, MonitorWindow
 from sandbox_science.contracts.permission_requests import (
     PermissionConfirmation,
     PermissionConfirmed,
@@ -113,6 +114,7 @@ from .job_sandboxes import RESERVED_OPERATION as RESERVED_JOB_OPERATION
 from .job_sandboxes import offers
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
+from .monitor import MonitorDesk
 from .operation_lookup import lookup
 from .permission_requests import PermissionDesk, PermissionRequestError
 from .permissions import PermissionStoreError
@@ -130,6 +132,7 @@ ENVIRONMENTS: Final = web.AppKey("environments", Environments)
 PROVISIONER: Final = web.AppKey("provisioner", Provisioner)
 PERMISSION_DESK: Final = web.AppKey("permission_desk", PermissionDesk)
 CLASSIFICATION_DESK: Final = web.AppKey("classification_desk", ClassificationDesk)
+MONITOR_DESK: Final = web.AppKey("monitor_desk", MonitorDesk)
 DOCUMENT_CATALOG: Final = web.AppKey("document_catalog", DocumentsCatalog)
 CATALOG_WORK: Final = web.AppKey("catalog_work", set[asyncio.Task[CatalogStatus]])
 CATALOG_EXECUTOR: Final = web.AppKey("catalog_executor", ThreadPoolExecutor)
@@ -212,6 +215,7 @@ def create_app(
     *,
     permission_desk: PermissionDesk | None = None,
     classification_desk: ClassificationDesk | None = None,
+    monitor_desk: MonitorDesk | None = None,
     heartbeat: float = EVENT_HEARTBEAT_SECONDS,
     file_write_timeout: float = 300.0,
 ) -> web.Application:
@@ -357,6 +361,10 @@ def create_app(
         # The classification review: in force, drafts and the user's acceptances (CL-6).
         app[CLASSIFICATION_DESK] = classification_desk
         app.add_routes(CLASSIFICATION_ROUTES)
+    if monitor_desk is not None:
+        # A project's monitor figures, counted from the records (D103).
+        app[MONITOR_DESK] = monitor_desk
+        app.add_routes([web.get("/v1/monitor", monitor)])
     app.add_routes(
         [
             web.get("/v1/ready", readiness),
@@ -1070,6 +1078,23 @@ async def confirm_permission_request(request: web.Request) -> web.Response:
     except PermissionStoreError as exc:
         raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from None
     return _json(PermissionConfirmed(confirmed=confirmed))
+
+
+async def monitor(request: web.Request) -> web.Response:
+    """One project's monitor figures for a window (D103): an operator client's only, as
+    they count other clients' calls and requests."""
+    if not _client(request).operator:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "monitor figures need an operator client")
+    if set(request.query) != {"project", "window"}:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name a project and a window")
+    project_id = _identifier(request.query["project"], "project")
+    window = request.query["window"]
+    if window not in WINDOWS:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "the window is 24h or 7d")
+    _allowed(request, project_id)
+    desk = request.app[MONITOR_DESK]
+    found = await asyncio.to_thread(desk.figures, project_id, cast(MonitorWindow, window))
+    return _json(found)
 
 
 # MCP servers' classifications (D96, CL-1 to CL-6).
