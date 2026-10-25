@@ -196,6 +196,24 @@ Verified in the test deployment on four amd64 nodes: the smoke Pod printed the g
 
 Rollback: `kubectl delete pod kata-smoke`; `kubectl delete runtimeclass kata` (no sandbox may exist); `kubectl label node <node> example.org/kata-capable-` removes a label.
 
+### 3.1 Guest kernel override (while the extension ships Kata 3.32.0)
+
+Kata 3.32.0's guest kernel 6.18.35 has CVE-2026-53381, a virtio-fs use-after-free that an OpenShell sandbox trips at startup: the VM's agent dies and the shim stops the VM about 35 s after it boots, deterministically on some hosts and intermittently on others (found 2026-10-25 with Kata's console; `virtiofsd` without `--announce-submounts` does not avoid it). Kata 4.3.1's guest kernel (6.18.56) fixes it, with the extension's runtime, agent and rootfs unchanged: 9 of 9 sandboxes started where 0 of 13 had. Until a Talos release ships Kata 4.3 or newer, boot that kernel instead:
+
+1. **Deliver the kernel.** Extract `opt/kata/share/kata-containers/vmlinux-6.18.56-208` from `kata-static-4.3.1-amd64.tar.zst` (the Kata release asset; no checksum file is published, so record the SHA-256 you downloaded), put it in a small private image, and run a DaemonSet on the Kata nodes that copies it to `/var/lib/kata-kernel/` through a `hostPath` (its namespace needs `pod-security.kubernetes.io/enforce=privileged`, as Longhorn's does). Verify: `talosctl -n <node> ls /var/lib/kata-kernel`.
+2. **Point the `kata` handler at a copy of the configuration.** The extension's `/usr/local/share/kata-containers/configuration.toml` is read-only. Write a copy with one changed line, `kernel = "/var/lib/kata-kernel/vmlinux-6.18.56-208"`, to `/var/lib/kata-containers/configuration.toml` through `machine.files`, and set the handler's `ConfigPath` to it in `/etc/cri/conf.d/20-customization.part`:
+
+   ```toml
+   [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.kata.options]
+     ConfigPath = "/var/lib/kata-containers/configuration.toml"
+   ```
+
+   **Replace `machine.files` as a whole**, with a JSON patch (`[{"op": "replace", "path": "/machine/files", "value": [...]}]`, integer `permissions`), keeping the node's other entries: Talos's strategic merge appends `machine.files` entries, and a second entry for the same path makes `writeUserFiles` fail at boot (`EtcFileSpecs ... already exists`), after which the node comes up NotReady with no `cri` service. Apply with `--mode=reboot` (the CRI part needs one); dry-run first.
+3. **Verify** with the smoke Pod above (`uname -r` prints `6.18.56`), then an OpenShell sandbox (step 9 or a throwaway `openshell sandbox create`), which must reach `Ready` in under a minute.
+4. **Remove the override** (restore `machine.files` without the two entries, delete the DaemonSet) when the extension's Kata is 4.3 or newer; a frozen copy of its configuration would otherwise outlive its defaults.
+
+Kata's console, for the next guest-side problem: a second handler whose configuration sets `enable_debug = true` in `[hypervisor.clh]`, `[agent.kata]` and `[runtime]`, selected by its own RuntimeClass, plus containerd at `[debug] level = "debug"` on that node (the shim writes the guest console only when started with `-debug`); the lines appear in `talosctl logs cri` as `vmconsole=`, and at that volume the log wraps within minutes, so stream it (`talosctl logs cri -f`) while reproducing.
+
 ## 4. The Agent Sandbox controller
 
 OpenShell 0.1.5 needs the Agent Sandbox controller and its CRDs before the chart; the chart installs neither ([OpenShell setup](https://docs.nvidia.com/openshell/kubernetes/setup)). Pin **v1.0.3**, the release OpenShell 0.1.5's own e2e scripts use; its controller image is multi-arch, so it runs on either kind of node. Apply it server-side:
