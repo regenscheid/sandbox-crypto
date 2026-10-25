@@ -6,10 +6,18 @@
      with what a person may not see as its code point. -->
 <script lang="ts">
   import { untrack } from 'svelte';
-  import type { KernelScope } from '../lib/kernels';
+  import type { KernelInfo, KernelObservation, KernelScope } from '../lib/kernels';
   import type { RunEvent, RunTree, TreeRun } from '../lib/api-types';
   import { chatApi, chatEntries, PAGE } from '../lib/chat';
-  import { callSummary, clock, elapsed, foldTranscript, type StepCall } from '../lib/conversation';
+  import {
+    callSummary,
+    clock,
+    elapsed,
+    foldTranscript,
+    rowLabel,
+    type StepCall,
+  } from '../lib/conversation';
+  import { kernelCells, kernelNotObserved, type PendingCall } from '../lib/kernelCells';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { agentName } from '../lib/runTree';
   import { visible } from '../lib/text';
@@ -35,6 +43,8 @@
   }
   let view = $state<PollState<Running[]>>(initialPoll());
   let now = $state(Date.now());
+  /** The kernel panel's latest observation, which each kernel's current cell is joined to. */
+  let observation = $state<PollState<KernelObservation> | null>(null);
 
   /** The calls of a run's events that have no result yet, with when each was made. */
   function pending(events: readonly RunEvent[]): Running['calls'] {
@@ -87,10 +97,32 @@
   const callState = (call: StepCall) => (call.name.startsWith('wait') ? 'waiting' : 'running');
   const delegation = (run: TreeRun) =>
     tree?.delegations.find((item) => item.delegation_id === run.delegation) ?? null;
-  const calls = $derived(
+  const calls = $derived<PendingCall[]>(
     (view.data ?? []).flatMap(({ run, calls }) => calls.map((item) => ({ ...item, run }))),
   );
+  const kernels = $derived(observation?.data?.kernels ?? null);
+  /** Each observed kernel's current cell: its owner's oldest cell call without a result. */
+  const cells = $derived(kernelCells(kernels ?? [], calls));
 </script>
+
+{#snippet detail(kernel: KernelInfo)}
+  {@const current = cells.get(kernel.kernel_id) ?? null}
+  {@const label = current ? rowLabel(current.call) : null}
+  <p class="kernel-cell" data-kernel={kernel.kernel_id}>
+    {#if current && label}
+      <strong>Running now</strong> ({agentName(current.run, delegation(current.run))}):
+      {#if label.says}
+        <span class="muted">the agent's words:</span> {label.text}
+      {:else}
+        <span class="muted">its code, first line:</span> <code>{label.text}</code>
+      {/if}
+      · since {clock(current.at)} · {elapsed(current.at, now)}
+    {:else}
+      <strong>Idle</strong>
+      <span class="muted">(no {kernel.language} call is waiting on this kernel)</span>
+    {/if}
+  </p>
+{/snippet}
 
 <section aria-label="Compute">
   <h2>Running now</h2>
@@ -106,6 +138,12 @@
       </div>
       {#if callSummary(call)}<p class="agent-task mono">{callSummary(call)}</p>{/if}
       <p class="agent-detail">{agentName(run, delegation(run))}</p>
+      {#if kernelNotObserved({ call, at, run }, kernels)}
+        <p class="muted">
+          Its kernel was not observed (the observation is missing, stale or lacks it), so it is not
+          listed under the session kernels.
+        </p>
+      {/if}
     </article>
   {:else}
     {#if view.data}<p class="empty-note">Nothing is executing now.</p>{/if}
@@ -115,6 +153,10 @@
       {projectId}
       {sessionId}
       environmentId={kernelScope.environmentId}
+      onobserve={(state) => {
+        observation = state;
+      }}
+      {detail}
     />{/if}
 </section>
 
