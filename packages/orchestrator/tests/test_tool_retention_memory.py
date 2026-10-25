@@ -44,7 +44,8 @@ class Model:
         if self.turn > count:
             return ModelTurn('Done')
         return ModelTurn(None, tool_calls=(
-            ToolCall(str(self.turn), 'arithmetic', json.dumps({'step': self.turn})),))
+            ToolCall(str(self.turn), 'arithmetic', json.dumps(
+                {'step': self.turn, 'purpose_note': 'Computing one more step'})),))
 
 async def arithmetic(request):
     return ToolOutcome('4 (sample)', {'execution': {'state': 'succeeded',

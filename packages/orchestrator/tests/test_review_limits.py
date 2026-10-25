@@ -20,8 +20,9 @@ import pytest
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.runner import READ_CHARACTERS, Read, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 
+from .scripted import ScriptedModel, ToolCall
 from .test_consistency import claim, dispatch
 from .test_consistency import store as store
 

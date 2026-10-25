@@ -23,7 +23,7 @@ from sandbox_science.orchestrator import loop
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
-from sandbox_science.orchestrator.model import ModelTurn, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.skills import SkillStore, snapshot
 from sandbox_science.orchestrator.skills import tool as skills_tool
@@ -31,6 +31,8 @@ from sandbox_science.orchestrator.skills.sources import Fetched, PackFile
 from sandbox_science.orchestrator.skills.tool import MAX_READ, SkillTool
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ToolCall
 
 
 def _skill(name: str, body: str) -> PackFile:

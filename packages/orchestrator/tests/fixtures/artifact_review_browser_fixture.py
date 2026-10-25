@@ -278,7 +278,15 @@ async def confirm(path: Path) -> None:
         assert review is not None
         items = reviews.manifest(PROJECT, SESSION, review, limit=20)["evidence"]
         changed = next(i for i in items if i["locator"].get("artifact") == marker["corrected"])
-        calls = [{"name": "review_read", "arguments": {"evidence": i["evidence"]}} for i in items]
+        # Every call names its purpose (docs/specs/tools.md, Purpose 1).
+        reading = "Reading one evidence item of the snapshot"
+        calls = [
+            {
+                "name": "review_read",
+                "arguments": {"purpose_note": reading, "evidence": i["evidence"]},
+            }
+            for i in items
+        ]
         turns = [
             {"tool_calls": calls},
             {
@@ -286,6 +294,7 @@ async def confirm(path: Path) -> None:
                     {
                         "name": "review_decide",
                         "arguments": {
+                            "purpose_note": "Confirming the claimed fix of the finding",
                             "finding": marker["finding"],
                             "expected": found["revision"],
                             "decision": "confirm",
@@ -301,6 +310,7 @@ async def confirm(path: Path) -> None:
                     {
                         "name": "review_checked",
                         "arguments": {
+                            "purpose_note": "Recording the corrected count as checked",
                             "statement": "Synthetic exact corrected count agrees with fixture15.",
                             "evidence": [changed["evidence"], marker["evidence"]],
                         },

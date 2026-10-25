@@ -12,13 +12,16 @@ separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
 
 [consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py)
 assembles one owned reviewer bundle from the unchanged `RUBRIC`,
-`RUBRIC_VERSION="sandbox-consistency-9"` and ordered six `SPECS` in
-[runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py).
+`RUBRIC_VERSION="sandbox-consistency-9"`, the purpose guidance `PURPOSE`
+(`sandbox-reviewer-purpose-1`) and the ordered `SPECS` in
+[runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py),
+each offered with the required `purpose_note` (`purpose.offered`; [tools
+spec](specs/tools.md#purpose-of-each-call)), so the schema pin covers the field.
 It reuses MAIN's schema encoder (`prompts.schema_json`), without MAIN's sections.
 
-The actual schemas, descriptions and order remain `review_manifest`,
+The actual descriptions and order remain `review_manifest`,
 `review_read`, `review_checked`, `review_finding`, `review_decide`, `review_citation`. Each call
-passes `SPECS` itself; the pins are recorded with the call's reservation and not
+passes the runner's offered specs; the pins are recorded with the call's reservation and not
 checked again before the call (owner decision 3). The existing tool dispatch whitelist, evidence grants, read audits, finding
 operation replay, scientific decisions and confirmation CAS are unchanged.
 
@@ -74,6 +77,23 @@ section's byte count and SHA-256; the bundle digest covers it. The section's tex
 pinned by its hash, not kept. A memory without entries gives no section, and the
 envelope still names its version. Format 1 envelopes, without memory, read as before,
 and a format 2 envelope without a memory pin, or a format 1 one with it, is refused.
+
+## The purpose guidance (format 3)
+
+Every reviewer call since B9 is format 3, assembly `sandbox-reviewer-bundle-3`. Its
+system message is the rubric, a blank line, the purpose guidance
+(`sandbox-reviewer-purpose-1`: every call names its purpose in `purpose_note`, for the
+reader, and the purpose changes nothing about what the call may do), then, when the
+review was given one, the memory section after another blank line. The envelope adds
+`purpose`, the guidance's section pin (ID `reviewer-purpose`, version, byte count and
+SHA-256), which the bundle digest covers; `memory` is there exactly when a memory pin
+was given, as in format 2. Formats 1 and 2 read as before and are no longer written; a
+format 3 envelope without a purpose pin, or an earlier one with it, is refused.
+
+The runner checks each call's purpose before anything else reads it, refuses one
+without a valid purpose with `invalid_request`, and passes the call on without it. The
+review's record of the call (`review_records`, kind `tool`) keeps its arguments without
+the purpose and the purpose beside them.
 
 ## Reservation and legacy reads
 

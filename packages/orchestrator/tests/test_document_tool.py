@@ -18,15 +18,11 @@ import pytest_asyncio
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, DocumentTool
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import (
-    Message,
-    ModelTurn,
-    ScriptedModel,
-    ToolCall,
-    ToolSpec,
-)
+from sandbox_science.orchestrator.model import Message, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ScriptedModel, ToolCall
 
 pytestmark = pytest.mark.asyncio
 

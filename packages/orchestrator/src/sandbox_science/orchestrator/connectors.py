@@ -77,6 +77,7 @@ from .documents.agent_text import hidden_characters
 from .effects import UnknownEffectError
 from .mcp_binaries import BinarySink
 from .model import ToolSpec
+from .purpose import offered
 from .worker_client import dump
 
 _log = logging.getLogger(__name__)
@@ -426,11 +427,13 @@ class ConnectorTool:
 
     @property
     def sha256(self) -> str:
-        """The SHA-256 of the spec the model is given, which the run's record keeps."""
+        """The SHA-256 of the spec the model is given, with the ``purpose_note`` every
+        tool is offered with (Purpose 1), which the run's record keeps."""
+        given = offered(self.spec)
         spec = {
-            "name": self.spec.name,
-            "description": self.spec.description,
-            "parameters": self.spec.parameters,
+            "name": given.name,
+            "description": given.description,
+            "parameters": given.parameters,
         }
         return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
 

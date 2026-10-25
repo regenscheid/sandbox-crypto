@@ -32,6 +32,9 @@ from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+PURPOSE = "Running one step of the fixture"
+"""The purpose each scripted call names (docs/specs/tools.md, Purpose 1)."""
+
 
 def rss() -> int:
     return next(
@@ -61,7 +64,10 @@ async def measure(root: Path, count: int) -> dict[str, object]:
     class Reviewer:
         async def complete(self, messages, tools):
             if messages[-1]["role"] == "user":
-                return ModelTurn(None, tool_calls=(ToolCall("manifest", "review_manifest", "{}"),))
+                manifest = json.dumps({"purpose_note": PURPOSE})
+                return ModelTurn(
+                    None, tool_calls=(ToolCall("manifest", "review_manifest", manifest),)
+                )
             return ModelTurn(
                 json.dumps(
                     {"outcome": "inconclusive", "summary": "Fixture read.", "cap_reached": False}
@@ -102,7 +108,11 @@ async def measure(root: Path, count: int) -> dict[str, object]:
             return ModelTurn(
                 None,
                 tool_calls=(
-                    ToolCall(str(self.turn), "arithmetic", json.dumps({"step": self.turn})),
+                    ToolCall(
+                        str(self.turn),
+                        "arithmetic",
+                        json.dumps({"step": self.turn, "purpose_note": PURPOSE}),
+                    ),
                 ),
                 native=b"n" * 65536,
                 native_format="fixture",

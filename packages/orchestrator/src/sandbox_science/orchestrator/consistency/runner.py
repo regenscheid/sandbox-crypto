@@ -24,6 +24,7 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
+from sandbox_science.orchestrator.purpose import PurposeError, offered_all, split, without
 from sandbox_science.orchestrator.view_image import ImageViewer, Viewed, framed
 
 from .citations import record_citation
@@ -211,7 +212,9 @@ class ReviewerRunner:
         self.images = images
         """The review's own viewer, when its model accepts images; its drawings are the
         platform's executions, never the reviewer's (CR-2, CR-F8)."""
-        self.specs = (*SPECS, VIEW_IMAGE) if images is not None else SPECS
+        # Each with the required purpose_note, as every model is offered its tools
+        # (docs/specs/tools.md, Purpose 1).
+        self.specs = offered_all((*SPECS, VIEW_IMAGE) if images is not None else SPECS)
         self.viewed: list[Viewed] = []
         """Images viewed this turn, which follow its results."""
         self.findings = Findings(store)
@@ -222,11 +225,23 @@ class ReviewerRunner:
         self.config = ReviewConfig.model_validate(self.record["config"])
 
     async def tool(self, call: ToolCall) -> str:
+        """One of the reviewer's calls. Its purpose is checked before anything else
+        reads it and taken out of its arguments; the review's record keeps it beside
+        them (Purpose 2 to 4)."""
         await asyncio.to_thread(
             self.store.grant, self.project, self.session, self.review, self.owner
         )
-        if call.name not in {spec.name for spec in self.specs}:
-            result: Json = {"error": "tool_not_granted", "tool": clipped(call.name, 128)}
+        purpose: str | None = None
+        try:
+            parts = split(call)
+        except PurposeError as error:
+            refused: str | None = error.message
+        else:
+            refused, call, purpose = None, parts.call, parts.purpose
+        if refused is not None:
+            result: Json = {"error": "invalid_request", "message": clipped(refused, 1000)}
+        elif call.name not in {spec.name for spec in self.specs}:
+            result = {"error": "tool_not_granted", "tool": clipped(call.name, 128)}
         elif len(call.arguments) > 64000:
             result = {"error": "invalid_request", "message": "review arguments exceed their bound"}
         else:
@@ -335,7 +350,8 @@ class ReviewerRunner:
             {
                 "id": clipped(call.id, 128),
                 "tool": clipped(call.name, 128),
-                "arguments": clipped(call.arguments, 64000),
+                "arguments": clipped(without(call.arguments), 64000),
+                **({"purpose": purpose} if purpose is not None else {}),
                 "result": result,
             },
             owner=self.owner,

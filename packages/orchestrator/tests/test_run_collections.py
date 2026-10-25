@@ -14,9 +14,10 @@ from sandbox_science.orchestrator.context.history.receipts import Receipts
 from sandbox_science.orchestrator.harness import Finished, save
 from sandbox_science.orchestrator.hooks import Notice, TurnHook
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore
 
+from .scripted import ScriptedModel
 from .test_tool_journal import CONTEXT, RUN, logger, toolbox
 from .test_tool_journal import projects as projects
 

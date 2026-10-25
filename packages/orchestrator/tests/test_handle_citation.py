@@ -30,10 +30,10 @@ from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunne
 from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, TASK_PROMPT, TASK_VERSION
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
-from sandbox_science.orchestrator.model import ScriptedModel
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .scripted import ScriptedModel
 from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
@@ -58,7 +58,7 @@ def advisory(reviews: Any, review: str, **overrides: Any) -> dict[str, Any]:
 
 
 def test_the_main_and_task_prompts_ask_for_the_handle_in_fixed_text() -> None:
-    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-16", "sandbox-delegated-task-14")
+    assert (MAIN_VERSION, TASK_VERSION) == ("sandbox-main-17", "sandbox-delegated-task-15")
 
     assert SYSTEM_PROMPT.count(CITE) == 1
     assert "relies on a ledger entry, or declines or reopens something because of one" in (

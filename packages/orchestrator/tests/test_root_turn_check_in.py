@@ -25,12 +25,13 @@ from sandbox_science.orchestrator.continuity.resources import (
 from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.loop import Transcript, run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.resource_hooks import Resources
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import ToolOutcome
 
+from .scripted import ScriptedModel, ToolCall
 from .test_resource_requests import setup
 from .test_tool_journal import RUN, toolbox
 from .test_tool_journal import projects as projects

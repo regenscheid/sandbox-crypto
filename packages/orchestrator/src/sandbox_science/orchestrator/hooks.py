@@ -255,7 +255,9 @@ class TurnHook:
         """Around each tool call the run makes, once its intent is saved: ``handler`` runs
         it, through the gates. What a wrap returns is the outcome the runaway guard, the
         tool point's notices and the transcript see. The report round's calls, which do
-        not run, pass no wrap. The default calls it once."""
+        not run, pass no wrap. The default calls it once. ``call`` is as the model wrote
+        it, its ``purpose_note`` included: the toolbox checks the purpose and takes it
+        out before any gate or handler, and a wrap decides nothing on it (Purpose 3)."""
         return await handler(call, operation)
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:

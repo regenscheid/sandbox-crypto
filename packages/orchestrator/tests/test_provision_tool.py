@@ -28,11 +28,12 @@ from sandbox_science.contracts import (
     ResolvedFile,
 )
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.provision import PROVISION, ProvisionTools
 from sandbox_science.orchestrator.tools import Toolbox, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import fake_worker_app
+
+from .scripted import ToolCall
 
 pytestmark = pytest.mark.asyncio
 

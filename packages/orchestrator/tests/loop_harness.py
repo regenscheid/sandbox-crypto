@@ -54,6 +54,8 @@ from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
+from .scripted import PURPOSE
+
 TOKEN = "test-secret-loop-characterization-0123456789"
 API_KEY = "test-secret-loop-characterization-gateway"
 POLICY = "sha256:" + "c" * 64
@@ -314,6 +316,16 @@ def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
     return name, arguments
 
 
+def purposed(arguments: Json) -> Json:
+    """A scripted call's arguments as the model sends them: with ``PURPOSE`` (Purpose 1)
+    unless the test names a purpose, or leaves it out with ``None``."""
+    if "purpose_note" not in arguments:
+        return {"purpose_note": PURPOSE, **arguments}
+    return {
+        key: value for key, value in arguments.items() if value is not None or key != "purpose_note"
+    }
+
+
 @dataclass
 class Gateway:
     """Answers the main alias from ``script``, delegated runs (on whichever alias, told
@@ -402,7 +414,7 @@ class Gateway:
             output.append(
                 {"id": f"fc_litellm_{self.numbered}", "type": "function_call",
                  "status": "completed", "call_id": f"call-{self.numbered}", "name": name,
-                 "arguments": json.dumps(arguments)}
+                 "arguments": json.dumps(purposed(arguments))}
             )  # fmt: skip
         text = json.dumps(
             {"id": f"resp_litellm_{turn}", "object": "response", "status": "completed",
@@ -454,7 +466,7 @@ class Gateway:
             self.numbered += 1
             content.append(
                 {"type": "tool_use", "id": f"toolu_{self.numbered}", "name": name,
-                 "input": arguments}
+                 "input": purposed(arguments)}
             )  # fmt: skip
         text = json.dumps(
             {"id": f"msg_{turn}", "type": "message", "role": "assistant",
@@ -562,7 +574,7 @@ class Gateway:
                 {
                     "id": f"call-{self.numbered}",
                     "type": "function",
-                    "function": {"name": name, "arguments": json.dumps(arguments)},
+                    "function": {"name": name, "arguments": json.dumps(purposed(arguments))},
                 }
             )
         message: Json = {"role": "assistant", "content": reply.text}

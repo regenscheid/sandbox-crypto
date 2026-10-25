@@ -74,6 +74,7 @@ from .memory_tools import MemoryTool
 from .model import ToolCall, ToolSpec
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
+from .purpose import COLLISION, PurposeError, collides, offered, split, without
 from .question_tool import QuestionTool
 from .recording import FileRecorder, Written, with_recorded
 from .resource_hooks import Resources
@@ -445,12 +446,13 @@ SPECS: Final = (
 def operation_id(prefix: str, call: ToolCall) -> str:
     """A worker operation ID for a tool call: stable, path-safe and at most 128 characters.
 
-    It ends with a digest of the whole call, its name and arguments included. A
+    It ends with a digest of the whole call, its name and arguments included, but
+    not its purpose (Purpose 3), so a call's identity does not depend on it. A
     different call never meets an earlier call's operation, however long the
     prefix; the same call at the same place in a run with the same ID does, and
     gets the earlier result instead of running again.
     """
-    whole = json.dumps([prefix, call.id, call.name, call.arguments])
+    whole = json.dumps([prefix, call.id, call.name, without(call.arguments)])
     digest = hashlib.sha256(whole.encode()).hexdigest()[:16]
     readable = _UNSAFE.sub("-", f"{prefix}-{call.id}").lstrip("-._")[:111].rstrip("-._")
     return f"{readable}-{digest}" if readable else f"op-{digest}"
@@ -691,11 +693,15 @@ class Toolbox:
         self.connectors = connectors
         """The run's connector tools: indexed in ``mcp_tools``, and offered once loaded."""
         self.deferred: dict[str, ToolEntry] = {}
+        self.unloadable: dict[str, str] = {}
+        """Connector tools that are not loaded, with why: a schema that defines the
+        purpose field itself (Purpose 1)."""
+        self._offered: dict[str, tuple[ToolSpec, ToolSpec]] = {}
         if connectors is not None:
             self._defer(connectors, {entry.spec.name for entry in entries})
             # A server whose listing failed is unavailable, not missing: mcp_tools says
             # so, and lists it once more (lab 41, B4).
-            if self.deferred or connectors.failed:
+            if self.deferred or connectors.failed or self.unloadable:
                 entries.append(self._mcp_tools_entry(connectors))
         self.entries = {entry.spec.name: entry for entry in entries}
         if len(self.entries) != len(entries):
@@ -719,6 +725,10 @@ class Toolbox:
             if entry.spec.name in taken:
                 _log.warning("connector tool %s is not offered: its name is taken", entry.spec.name)
                 del connectors.tools[entry.spec.name]
+            elif collides(entry.spec):
+                _log.warning("connector tool %s is not offered: %s", entry.spec.name, COLLISION)
+                self.unloadable[entry.spec.name] = COLLISION
+                del connectors.tools[entry.spec.name]
             else:
                 self.deferred[entry.spec.name] = entry
 
@@ -728,8 +738,15 @@ class Toolbox:
     @property
     def specs(self) -> tuple[ToolSpec, ...]:
         """The tools every model call carries: the run's own, and the connector tools
-        loaded so far."""
-        return tuple(entry.spec for entry in self.entries.values())
+        loaded so far, each with the required ``purpose_note`` (Purpose 1)."""
+        found: list[ToolSpec] = []
+        for name, entry in self.entries.items():
+            kept = self._offered.get(name)
+            if kept is None or kept[0] is not entry.spec:
+                kept = (entry.spec, offered(entry.spec))
+                self._offered[name] = kept
+            found.append(kept[1])
+        return tuple(found)
 
     def _load(self, names: Sequence[str]) -> tuple[list[str], list[str], list[str], list[str]]:
         """Load connector tools into the run: those loaded now, before, unknown (a
@@ -780,7 +797,8 @@ class Toolbox:
                 "these servers could not be listed: their tools are unavailable in this run, "
                 "not missing; say so rather than conclude that no such tool exists"
             )
-        added, before, unknown, over = self._load(list(dict.fromkeys(cast(list[str], names))))
+        asked = list(dict.fromkeys(cast(list[str], names)))
+        added, before, unknown, over = self._load([n for n in asked if n not in self.unloadable])
         answer["loaded"] = added
         if before:
             answer["already_loaded"] = before
@@ -792,6 +810,12 @@ class Toolbox:
             notes.append(
                 "these are the harness's own tools, not connector tools: they need no "
                 "loading, so call them by name when you have them"
+            )
+        if self.unloadable:
+            answer["not_loadable"] = dict(self.unloadable)
+            notes.append(
+                "these connector tools cannot be loaded in this run, for the reason given: "
+                "they are unavailable, not missing"
             )
         if over:
             answer["not_loaded"] = over
@@ -838,12 +862,34 @@ class Toolbox:
     ) -> ToolOutcome:
         """Run one tool call; definite failures become errors for the model.
 
+        Its ``purpose_note`` is checked first, before anything else reads the call: a
+        call without one, or with one outside its limits, is refused with
+        ``invalid_request``, and nothing runs. The rest of the harness, its gates and
+        handlers, raw ones included, gets the call without it; the record keeps it as
+        ``purpose`` (Purpose 2 and 3).
+
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
         class; with plan tools, the plan's gate is always among them. After the call, the
         run's next safe point, the result carries notices of changes others made to the
         documents the run has seen (LD-15).
         """
+        try:
+            parts = split(call)
+        except PurposeError as error:
+            return _failure(ErrorKind.INVALID_REQUEST, error.message)
+        call, purpose = parts.call, parts.purpose
+        outcome = await self._dispatch(call, operation, model, gates)
+        outcome.record["purpose"] = purpose
+        return outcome
+
+    async def _dispatch(
+        self,
+        call: ToolCall,
+        operation: str,
+        model: str | None,
+        gates: Sequence[TurnHook],
+    ) -> ToolOutcome:
         entry = self.entries.get(call.name)
         if entry is None and self.delegated and call.name not in self.deferred:
             return _failure(

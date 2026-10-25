@@ -23,12 +23,12 @@ from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLi
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
 from sandbox_science.orchestrator.jobs import JobTools
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.recording import FileRecorder, RecordedFiles, Written
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import eventually
 
+from .scripted import ToolCall
 from .test_artifact_publication import CONTEXT, TOKEN
 from .test_artifact_publication import worker_url as worker_url
 

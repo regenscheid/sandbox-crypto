@@ -19,11 +19,12 @@ from sandbox_science.orchestrator.delegation.records import DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.hooks import Closing, Notice, TurnHook
 from sandbox_science.orchestrator.loop import Transcript, run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import run_id_of
 from sandbox_science.orchestrator.resource_hooks import Resources
 from sandbox_science.testing import FakeClock, eventually
 
+from .scripted import ScriptedModel
 from .test_artifact_inventory import record as publish
 from .test_resource_requests import decide, setup
 from .test_tool_journal import CONTEXT, RUN, toolbox

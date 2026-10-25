@@ -48,6 +48,7 @@ from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, Tool
 from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
 from sandbox_science.orchestrator.plan_tools import Plans
+from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
 from .models import CallbackModel
@@ -261,7 +262,7 @@ class Prepared:
                     raise TransportError("conflict", "no completed tool observation")
                 call, outcome = self.observed_tool
                 if self.on_tool is not None:
-                    await self.on_tool(call.name, call.arguments, outcome)
+                    await self.on_tool(call.name, without(call.arguments), outcome)
                 self.observed_tool, self.observation = None, None
                 return None
             request = typed(HookRequest, value)
@@ -455,7 +456,7 @@ class Prepared:
             self.shadow.context.usage.append(request.usage)
         retained = None
         if request.kind == "tool_result" and call is not None and outcome is not None:
-            record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
             retained = self.log.retained_tool(record)
             self.shadow.tool_records.append(retained)
             self.observation, self.observed_slots = record, set()

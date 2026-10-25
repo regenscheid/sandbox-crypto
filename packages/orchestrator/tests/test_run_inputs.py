@@ -15,7 +15,7 @@ from sandbox_science.orchestrator.context.history.export import EvidenceExport
 from sandbox_science.orchestrator.context.history.verify_export import verify
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.run_inputs import (
     INPUT_BYTES,
@@ -26,6 +26,7 @@ from sandbox_science.orchestrator.run_inputs import (
 from sandbox_science.orchestrator.tools import ToolOutcome
 
 from .control_versions import older_store
+from .scripted import ScriptedModel
 from .test_evidence_export import decode
 from .test_tool_journal import CALL, CONTEXT, RUN, toolbox
 from .test_tool_journal import projects as projects

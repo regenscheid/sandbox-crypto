@@ -25,11 +25,14 @@ from sandbox_science.orchestrator.context.history.retention import (
 from sandbox_science.orchestrator.harness import Finished, save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
+from sandbox_science.orchestrator.model import ModelTurn, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
+from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tool_status import tool_outcome
 from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ScriptedModel, ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env-p")
 START = datetime(2026, 10, 16, tzinfo=UTC)
@@ -88,7 +91,8 @@ async def test_observers_see_original_then_final_save_keeps_preview_and_exact_re
                 raise asyncio.CancelledError()
 
     async def callback(name, arguments, outcome):
-        assert (name, arguments) == (CALL.name, CALL.arguments)
+        # The record's arguments are the call's without its purpose (Purpose 3).
+        assert (name, arguments) == (CALL.name, without(CALL.arguments))
         assert len(outcome.record["payload"]["text"]) == 600000
         seen.append("callback")
         if ending == "callback_error":
@@ -143,7 +147,7 @@ async def test_observers_see_original_then_final_save_keeps_preview_and_exact_re
     try:
         full = Archive(reopened.control).tool_record("p", reference.message, max_bytes=4 * 1024**2)
         assert full["payload"]["text"] == "\u00e9\U0001f680\x00" * 200000
-        assert full["arguments"] == CALL.arguments
+        assert full["arguments"] == without(CALL.arguments)
         assert reopened.run("p", "s", RUN).tools[0] == preview
     finally:
         reopened.close()

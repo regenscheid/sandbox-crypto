@@ -24,6 +24,7 @@ from sandbox_science.orchestrator.control.errors import BUSY
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.model import Message, ToolCall
 from sandbox_science.orchestrator.notices import DELEGATIONS, REQUESTS
+from sandbox_science.orchestrator.purpose import purpose_of, without
 
 from .archive import Archive, Archived, Entry
 from .operations import ToolJournal, ToolRecord
@@ -79,7 +80,13 @@ class RunArchive:
         entry = entry_of(message, appended, task_refs=self.message_ids)
         call, outcome = appended.call, appended.outcome
         reads = (
-            reads_of(call.name, call.arguments, outcome.record, entry.content or "", outcome.saved)
+            reads_of(
+                call.name,
+                without(call.arguments),
+                outcome.record,
+                entry.content or "",
+                outcome.saved,
+            )
             if appended.kind == "tool_result" and call is not None and outcome is not None
             else []
         )
@@ -92,7 +99,7 @@ class RunArchive:
             reads=reads,
             tool_record=(
                 ToolRecord(
-                    {"tool": call.name, "arguments": call.arguments, **outcome.record},
+                    {"tool": call.name, "arguments": without(call.arguments), **outcome.record},
                     appended.operation_id,
                 )
                 if appended.kind == "tool_result" and call is not None and outcome is not None
@@ -202,6 +209,7 @@ def entry_of(message: Message, appended: Appended, *, task_refs: Sequence[str] =
             text,
             source=call.name[:128],
             call_id=call.id[:128],
+            purpose=purpose_of(call.arguments),
             files=links(outcome.record) if outcome is not None else None,
             saved=outcome.saved if outcome is not None else {},
         )

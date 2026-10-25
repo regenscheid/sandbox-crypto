@@ -25,13 +25,16 @@ from sandbox_science.orchestrator.documents.tool import SPECS as DOCUMENT_SPECS
 from sandbox_science.orchestrator.jobs import JOB_SPECS, JobNotices
 from sandbox_science.orchestrator.ledger.tool import SPECS as LEDGER_SPECS
 from sandbox_science.orchestrator.memory_tools import SPECS as MEMORY_SPECS
-from sandbox_science.orchestrator.model import ToolCall, ToolSpec
+from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.plan_tools import SPECS as PLAN_SPECS
+from sandbox_science.orchestrator.purpose import offered as with_purpose
 from sandbox_science.orchestrator.question_tool import SPECS as QUESTION_SPECS
 from sandbox_science.orchestrator.resource_hooks import SPEC as RESOURCE_SPEC
 from sandbox_science.orchestrator.skills.tool import SPEC as SKILL_SPEC
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="e", actor="agent")
 
@@ -101,7 +104,8 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
         "check": "d53a38f1959543ffea98de7fe9148f0e34c3919d91bad3dd4ca96b727c7d7acd",
     }
     assert hashlib.sha256(encoded.encode()).hexdigest() == expected[role]
-    assert toolbox.specs == tuple(entry.spec for entry in toolbox.entries.values())
+    # Each as the model is offered it, with the required purpose_note (Purpose 1).
+    assert toolbox.specs == tuple(with_purpose(entry.spec) for entry in toolbox.entries.values())
 
 
 @pytest.mark.parametrize("role", ["main", "task", "check"])

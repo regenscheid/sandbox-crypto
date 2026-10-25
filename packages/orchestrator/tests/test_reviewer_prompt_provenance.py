@@ -26,15 +26,12 @@ from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSI
 from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, store_path
-from sandbox_science.orchestrator.model import (
-    ModelError,
-    ModelTurn,
-    ScriptedModel,
-    ToolCall,
-    ToolSpec,
-)
+from sandbox_science.orchestrator.model import ModelError, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.purpose import GUIDANCE, offered_all
 from sandbox_science.orchestrator.runstate import RunState
+
+from .scripted import ScriptedModel, ToolCall
 
 
 @pytest.fixture
@@ -54,7 +51,8 @@ def store(tmp_path):
 
 
 def bundle():
-    return assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS)
+    # As the runner offers them, each with the required purpose_note (Purpose 1).
+    return assemble_reviewer(RUBRIC, RUBRIC_VERSION, offered_all(SPECS))
 
 
 def reserve(reviews, review, **kwargs):
@@ -86,7 +84,8 @@ def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     assert assemble_reviewer(RUBRIC + "\n", RUBRIC_VERSION, SPECS).provenance != pin
     assert assemble_reviewer(RUBRIC, RUBRIC_VERSION, tuple(reversed(SPECS))).provenance != pin
     copied = tuple(
-        ToolSpec(s.name, s.description, dict(reversed(s.parameters.items()))) for s in SPECS
+        ToolSpec(s.name, s.description, dict(reversed(s.parameters.items())))
+        for s in offered_all(SPECS)
     )
     reordered = assemble_reviewer(RUBRIC, RUBRIC_VERSION, copied)
     assert reordered.provenance == pin
@@ -147,8 +146,8 @@ async def test_actual_multi_turn_input_is_reserved_before_each_call(store):
 
         async def complete(self, messages, tools):
             self.calls += 1
-            assert messages[0] == {"role": "system", "content": RUBRIC}
-            assert json.dumps(projection(tools)) == unchanged
+            assert messages[0] == {"role": "system", "content": RUBRIC + "\n\n" + GUIDANCE}
+            assert json.dumps(projection(tools)) == json.dumps(projection(offered_all(SPECS)))
             assert json.loads(messages[1]["content"]) == {
                 "review": review,
                 "instruction": "Read review_manifest first. Check only this pinned snapshot.",

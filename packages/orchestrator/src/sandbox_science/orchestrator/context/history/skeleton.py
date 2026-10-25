@@ -4,11 +4,15 @@ span's archived messages (docs/specs/context-management.md, CM-17, CM-18).
 
 The skeleton is a chronological outline of the span, one line an item, each within a
 budget in tokens: a user message's ID and first words (its text is in the state block);
-an answer's text as its head and tail; a tool call's tool, key arguments, outcome,
-output size and result ID, with the result's text when there is room; a ledger, plan or
+an answer's text as its head and tail; a tool call as its purpose (its ``purpose_note``,
+the agent's words) and its result's gloss: the outcome, the output's size, the files it
+saved and the result's ID, with the result's text when there is room, or, for a call
+archived without a purpose, its tool, key arguments, outcome, output size and result
+ID as before (docs/specs/context-management.md, CM-18 as decided for B9); a ledger, plan or
 memory change whole; a delegation outcome's head; a retrieval's query and the IDs it
 returned; a notice's source and IDs. Over its share, tool results are squeezed first,
-then tool arguments, then answers' text, then delegation outcomes; user lines never.
+then tool arguments and purposes (a purpose keeps its head, and the gloss is never cut),
+then answers' text, then delegation outcomes; user lines never.
 
 Marker lines come from the records, never from model text: each decision change with
 its reason and reopen condition; each caveat, each evidence scope note and each piece of
@@ -30,6 +34,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.purpose import purpose_of, without
+
 from .archive import Archived
 from .reads import Read, merged, spans
 
@@ -46,7 +52,8 @@ BUDGETS: Final = {
     "change": 500,
 }
 """Each item's budget in tokens: a call's line takes its tool, outcome and ID beside its
-arguments' budget, and up to the result's of its text."""
+arguments' budget, and up to the result's of its text. A call with a purpose takes its
+gloss beside the arguments' budget, which its purpose takes instead."""
 SQUEEZES: Final = ({"result": 0}, {"args": 10}, {"assistant": 30}, {"outcome": 40})
 """What a skeleton over its share gives up, in order."""
 CHANGES: Final = frozenset({"ledger_change", "ledger_import", "memory_propose"})
@@ -81,6 +88,8 @@ class _Item:
     text: str = ""
     args: str = ""
     result: str = ""
+    purpose: str = ""
+    """A call's purpose, the agent's words; its ``head`` is then its result's gloss."""
 
 
 @dataclass
@@ -165,9 +174,9 @@ def _add(span: _Span, row: Archived, results: dict[tuple[str, str | None], Archi
             span.items.append(_Item("assistant", f"{at} assistant", text=content))
         for call in entry.tool_calls:
             function = cast(Json, call.get("function") or {})
-            name, args = str(function.get("name")), str(function.get("arguments") or "")
+            name, written = str(function.get("name")), str(function.get("arguments") or "")
             result = results.get((row.run, str(call.get("id"))))
-            _call(span, name, args, result)
+            _call(span, name, without(written), result, purpose_of(written) or "")
 
 
 def outcome_of(found: Json) -> str | None:
@@ -184,9 +193,12 @@ def failed(state: str | None) -> bool:
     return state is not None and state.split()[0] in FAILED
 
 
-def _call(span: _Span, name: str, args: str, result: Archived | None) -> None:
+def _call(span: _Span, name: str, args: str, result: Archived | None, purpose: str) -> None:
     if result is None:
-        span.items.append(_Item("call", f"{name}: no result", args=args))
+        if purpose:
+            span.items.append(_Item("call", "no result", purpose=purpose))
+        else:
+            span.items.append(_Item("call", f"{name}: no result", args=args))
         return
     at, text = result.message_id, result.entry.content or ""
     found = _json(text)
@@ -212,6 +224,16 @@ def _call(span: _Span, name: str, args: str, result: Archived | None) -> None:
             span.sampled.setdefault(str(path), at)
     if name == "read_file" and "sample" not in found:
         span.read.add(str(_json(args).get("path")))
+    if purpose:
+        files = (
+            [str(path) for path in cast(Json, saved).values()] if isinstance(saved, dict) else []
+        )
+        shown = [_cut(path, 60) for path in files[:2]]
+        if len(files) > 2:
+            shown.append(f"and {len(files) - 2} more")
+        gloss = [outcome, _size(text), *([f"saved {', '.join(shown)}"] if shown else []), at]
+        span.items.append(_Item("call", ", ".join(gloss), result=text, purpose=purpose))
+        return
     head = f"{at} {name} → {outcome}, {len(text):,} characters"
     span.items.append(_Item("call", head, args=args, result=text))
 
@@ -283,6 +305,11 @@ def _line(item: _Item, budgets: dict[str, int]) -> str:
         return _cut(item.head, budgets[item.kind])
     if item.kind in ("notice", "retrieval"):
         return _cut(item.head, budgets[item.kind])
+    if item.kind == "call" and item.purpose:
+        line = f"{_head(item.purpose, budgets['args'])} → {item.head}"
+        if budgets["result"] and item.result:
+            line += f"; {_cut(item.result, budgets['result'])}"
+        return line
     if item.kind == "call":
         line = f"{item.head}; arguments {_cut(_compact(item.args), budgets['args'])}"
         if budgets["result"] and item.result:
@@ -393,6 +420,24 @@ def _cut(text: str, chars: int) -> str:
         return text[: max(0, chars)] + " [...]"
     half = (chars - 20) // 2
     return f"{text[:half]} [... {len(text) - 2 * half:,} characters ...] {text[-half:]}"
+
+
+def _head(text: str, chars: int) -> str:
+    """``text`` within ``chars``: its head, with a marker for the cut."""
+    text = text.strip()
+    if len(text) <= chars:
+        return text
+    return text[: max(0, chars - 6)].rstrip() + " [...]"
+
+
+def _size(text: str) -> str:
+    """A result's size, as a reader takes it in at a glance."""
+    size = len(text.encode("utf-8", "replace"))
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KiB"
+    return f"{size / (1024 * 1024):.1f} MiB"
 
 
 def flat(text: str) -> str:

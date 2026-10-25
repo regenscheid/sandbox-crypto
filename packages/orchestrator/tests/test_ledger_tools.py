@@ -21,7 +21,6 @@ from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.hooks import Effect, Refusal, TurnHook
 from sandbox_science.orchestrator.ledger.tool import SPECS, LedgerTool
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.plan_tools import PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import SessionPlans
@@ -29,6 +28,7 @@ from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .ledger_support import AnchoredLedger as Ledger
+from .scripted import ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
 OTHER = ExecutionContext(project_id="p", session_id="s2", environment_id="env2")

@@ -486,7 +486,7 @@ async def test_a_task_is_shown_a_messages_references_with_it(world: World) -> No
 
 def test_the_task_prompt_says_references_exist_and_how_to_ask() -> None:
     """DA-15: a child lacking context asks its parent, which may answer with references."""
-    assert TASK_VERSION == "sandbox-delegated-task-14"
+    assert TASK_VERSION == "sandbox-delegated-task-15"
     assert "When you lack context to go on, ask your parent with message_parent" in TASK_PROMPT
     assert "by reference" in TASK_PROMPT
     assert references.PREFIX == "reference_refused: "
@@ -518,10 +518,12 @@ def test_messages_from_before_references_carry_none(tmp_path: Path) -> None:
     projects.close()
     target = tmp_path / "old" / "control.sqlite3"
     target.parent.mkdir()
-    older_store(current / "control.sqlite3", target, before(migrations.MIGRATIONS[-1]))
+    # The step to version 82, wherever later steps put it.
+    step = migrations.MIGRATIONS[82 - migrations.BASELINE]
+    older_store(current / "control.sqlite3", target, before(step))
     store = ControlStore(target)
     try:
-        assert migrations.VERSION == 82
+        assert migrations.VERSION >= 82
         (found,) = AgentMessageStore(store).pending(PROJECT, SESSION, child)
         assert (found.message_id, found.references) == (sent.message_id, ())
         with store.write() as tx, pytest.raises(Exception, match="an agent message is kept"):

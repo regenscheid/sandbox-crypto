@@ -18,6 +18,8 @@ import pytest
 
 from sandbox_science.orchestrator.consistency.prompt_bundle import (
     MEMORY_ASSEMBLY,
+    PURPOSE,
+    PURPOSE_ASSEMBLY,
     assemble_reviewer,
     encode_provenance,
 )
@@ -83,7 +85,8 @@ async def test_the_reviewer_is_given_the_runs_memory_as_guidance(
 
     await ReviewerRunner(reviews, "p", "s", review, "o", Model(), memory=given).run()
     system = cast(str, seen[0][0]["content"])
-    assert system.startswith(RUBRIC + "\n\n" + REVIEWER_FRAMING)
+    # The purpose guidance comes between the rubric and the memory (Purpose 6).
+    assert system.startswith(RUBRIC + "\n\n" + PURPOSE.text + "\n\n" + REVIEWER_FRAMING)
     assert "not evidence" in system
     assert "Write finite fields as GF(p)." in system
     assert "Accepted after the run started." not in system
@@ -93,8 +96,8 @@ async def test_the_reviewer_is_given_the_runs_memory_as_guidance(
     assert pinned.status == "complete"
     assert pinned.provenance is not None
     assert (pinned.provenance.format_version, pinned.provenance.assembly_version) == (
-        2,
-        MEMORY_ASSEMBLY,
+        3,
+        PURPOSE_ASSEMBLY,
     )
     assert pinned.provenance.memory == given.pin
     assert (given.pin.version, given.pin.entries) == (1, ("mem-1@1",))
@@ -102,21 +105,26 @@ async def test_the_reviewer_is_given_the_runs_memory_as_guidance(
 
 def test_a_reviewer_pin_names_its_memory_or_none() -> None:
     plain = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS)
-    assert (plain.provenance.format_version, plain.provenance.memory) == (1, None)
-    assert plain.system == RUBRIC
+    assert (plain.provenance.format_version, plain.provenance.memory) == (3, None)
+    assert plain.system == RUBRIC + "\n\n" + PURPOSE.text
     given = for_reviewer(0, ())
     empty = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS, given)
-    assert (empty.provenance.format_version, empty.system) == (2, RUBRIC)
+    assert (empty.provenance.format_version, empty.system) == (3, plain.system)
+    assert empty.provenance.memory == given.pin
     for change in (
-        {"memory": None},
+        {"purpose": None},
+        {"format_version": 2},
         {"format_version": 1},
+        {"assembly_version": MEMORY_ASSEMBLY},
         {"assembly_version": "sandbox-reviewer-bundle-1"},
     ):
         with pytest.raises(ValueError, match="reviewer"):
             encode_provenance(empty.provenance.model_copy(update=change))
     with pytest.raises(ValueError, match="reviewer"):
         encode_provenance(
-            plain.provenance.model_copy(update={"format_version": 2, "memory": given.pin})
+            plain.provenance.model_copy(
+                update={"format_version": 2, "assembly_version": MEMORY_ASSEMBLY}
+            )
         )
     moved = given.pin.model_copy(update={"version": 7})
     with pytest.raises(ValueError, match="reviewer"):

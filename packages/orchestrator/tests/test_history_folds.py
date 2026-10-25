@@ -66,8 +66,9 @@ from .test_model_limits import TOO_LONG
 
 Json = dict[str, Any]
 CONTEXT = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
-ENRICHED = ["--context-ceiling", "110000", "--fold-chunk", "10000"]
-"""C = 110,000 and K = 10,000: trigger 82,500, wall 99,000."""
+ENRICHED = ["--context-ceiling", "120000", "--fold-chunk", "10000"]
+"""C = 120,000 and K = 10,000: trigger 90,000, wall 108,000. The system message and
+the tools, every tool with its purpose_note (Purpose 5), stay under a fifth of C."""
 SMALL = [*ENRICHED, "--skeleton-only-folds"]
 """The same, its folds skeleton-only and applied at once."""
 
@@ -256,7 +257,7 @@ async def test_applied_fold_keeps_recent_context_beyond_five_results(harness: Ha
     """Drive the real fold path: the recent floor protects more than five raw results."""
     harness.gateway.per_token = 4.0
     identifiers = seed(harness, 60, size=6_000)
-    options = ["--context-ceiling", "110000", "--fold-chunk", "40000", "--skeleton-only-folds"]
+    options = ["--context-ceiling", "120000", "--fold-chunk", "40000", "--skeleton-only-folds"]
     result = await harness.run("recent-floor", [Reply("Done.")], options=options)
     assert folds(result)["folds"]
     (request,) = harness.gateway.main
@@ -1057,7 +1058,7 @@ async def test_a_fold_enriched_while_the_run_goes_on_is_applied_by_the_wall(
     run goes on, by the run's own model sent the run's request unchanged and one
     instruction; past the wall the run waits for it and applies it with its narrative."""
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
     (made,) = folds(record)["folds"]
@@ -1090,7 +1091,7 @@ async def test_a_fold_enrichment_reads_the_prompt_cache_of_the_run_it_follows(
     before it did, and then the one instruction: the gateway can read all of the run's
     view from the cache the run wrote."""
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     options = [*ENRICHED, "--api", "main=responses"]
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=options)
@@ -1116,7 +1117,7 @@ async def test_a_failed_enrichment_is_tried_once_more_then_the_fold_is_skeleton_
     skeleton-only, the view unchanged until it is applied."""
     harness.gateway.per_token = 4.0
     harness.gateway.enrich = [Reply(calls=[("plan_read", {})]), Reply("Not JSON at all.")]
-    seed(harness, 13)
+    seed(harness, 14)
     outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
     record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
     (made,) = folds(record)["folds"]
@@ -1139,7 +1140,7 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
     harness.gateway.per_token = 4.0
     narrative = json.dumps({"narrative": "Earlier work, as its outline shows.", "keys": []})
     harness.gateway.enrich = [Reply(narrative, cost="0.0042")]
-    seed(harness, 13)
+    seed(harness, 14)
 
     async def kept() -> None:
         for _ in range(200):
@@ -1184,7 +1185,7 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
 async def test_saved_answer_includes_fold_cancelled_during_run_cleanup(harness: Harness) -> None:
     """The persisted run summary is captured after its fold lease settles."""
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def blocked_enrichment() -> None:
@@ -1913,7 +1914,7 @@ async def test_fold_size_repair_runs_through_gateway_and_keeps_cached_prefix(
     harness: Harness,
 ) -> None:
     harness.gateway.per_token = 4.0
-    seed(harness, 13)
+    seed(harness, 14)
     harness.gateway.enrich = [
         Reply(answer_with("x" * 20_000)),
         Reply(answer_with("Earlier work remains conditional.", keys=[])),

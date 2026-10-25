@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Final
 
 from .hooks import ModelHandler, RunView, ToolHandler, TurnHook, overrides
 from .model import GATEWAY_BUDGET, ContextLimitError, GatewayBudgetError, ModelTurn, ToolCall
+from .purpose import without
 
 if TYPE_CHECKING:
     from .loop import Transcript
@@ -161,7 +162,9 @@ class Runaway:
     - tool calls that failed with the same error, the same kind and the same message,
       whatever the tool or its arguments;
     - tool calls of the same tool with the same arguments that got the same result,
-      other than ``POLLS``, whose same answer is time passing;
+      other than ``POLLS``, whose same answer is time passing; the arguments are
+      compared without the call's ``purpose_note``, so rewording the purpose of a
+      repeated call does not start the count again (Purpose 3);
     - closing answers that a hook held back for another turn (a ``retry``), with no
       tool call between them.
 
@@ -189,7 +192,8 @@ class Runaway:
         elif call.name in POLLS:
             self._seen(None, "")
         else:
-            arguments = hashlib.sha256(call.arguments.encode("utf-8", "replace")).hexdigest()
+            compared = without(call.arguments)
+            arguments = hashlib.sha256(compared.encode("utf-8", "replace")).hexdigest()
             self._seen(
                 ("same_call", call.name, arguments, digest),
                 f"made the same {call.name} call with the same arguments and got the same result",

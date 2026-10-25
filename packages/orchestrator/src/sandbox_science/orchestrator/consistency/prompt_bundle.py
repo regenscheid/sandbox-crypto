@@ -3,7 +3,10 @@
 
 Format 1 pins the rubric and the tool schemas. Format 2 (assembly
 ``sandbox-reviewer-bundle-2``) also pins the project memory section given after the
-rubric: the reviewed run's memory (docs/specs/project-memory.md, PM-6, PM-8).
+rubric: the reviewed run's memory (docs/specs/project-memory.md, PM-6, PM-8). Format 3
+(assembly ``sandbox-reviewer-bundle-3``) gives the purpose guidance after the rubric,
+before any memory section, and pins it (docs/specs/tools.md, Purpose 5 and 6); its
+memory pin is there exactly when the review was given a memory section's framing.
 """
 
 from __future__ import annotations
@@ -13,14 +16,22 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Annotated, Literal, Self, cast
+from typing import Annotated, Final, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ToolSpec
-from sandbox_science.orchestrator.prompts import SEPARATOR, MemoryPin, schema_json
+from sandbox_science.orchestrator.prompts import (
+    SEPARATOR,
+    MemoryPin,
+    PromptPin,
+    Section,
+    schema_json,
+)
+from sandbox_science.orchestrator.prompts import pin as pin_section
+from sandbox_science.orchestrator.purpose import GUIDANCE
 
 MAX_SYSTEM_BYTES = 64 * 1024
 MAX_SCHEMA_BYTES = 512 * 1024
@@ -28,6 +39,15 @@ MAX_PROVENANCE_BYTES = 16 * 1024
 ASSEMBLY_VERSION = "sandbox-reviewer-bundle-1"
 MEMORY_ASSEMBLY = "sandbox-reviewer-bundle-2"
 """The assembly whose system message is the rubric, then the project memory section."""
+PURPOSE_ASSEMBLY = "sandbox-reviewer-bundle-3"
+"""The assembly whose system message is the rubric, the purpose guidance, then the
+project memory section if one is given."""
+PURPOSE_VERSION = "sandbox-reviewer-purpose-1"
+PURPOSE: Final = Section("reviewer-purpose", PURPOSE_VERSION, GUIDANCE)
+"""What the reviewer is told of each call's purpose (Purpose 6)."""
+Assembly = Literal[
+    "sandbox-reviewer-bundle-1", "sandbox-reviewer-bundle-2", "sandbox-reviewer-bundle-3"
+]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -54,11 +74,21 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
     if (
         not isinstance(cast(object, pin), ReviewerProvenance)
         or type(pin.format_version) is not int
-        or (pin.format_version, pin.assembly_version, pin.memory is None)
-        not in ((1, ASSEMBLY_VERSION, True), (2, MEMORY_ASSEMBLY, False))
+        or (pin.format_version, pin.assembly_version, pin.memory is None, pin.purpose is None)
+        not in (
+            (1, ASSEMBLY_VERSION, True, True),
+            (2, MEMORY_ASSEMBLY, False, True),
+            (3, PURPOSE_ASSEMBLY, True, False),
+            (3, PURPOSE_ASSEMBLY, False, False),
+        )
         or pin.role != "reviewer"
     ):
         raise ValueError("invalid reviewer provenance scalars")
+    purpose: dict[str, object] = {}
+    if pin.purpose is not None:
+        if not isinstance(cast(object, pin.purpose), PromptPin):
+            raise ValueError("invalid reviewer purpose pin")
+        purpose = {"purpose": PromptPin.model_validate(pin.purpose.model_dump()).model_dump()}
     memory: dict[str, object] = {}
     if pin.memory is not None:
         if not isinstance(cast(object, pin.memory), MemoryPin):
@@ -98,6 +128,7 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
         + sum(5 if ord(c) < 32 else 1 if c in {'"', "\\"} else 0 for c in pin.rubric_text)
         + sum(len(name) + 3 for name in pin.tool_names)
         + len(_json(memory))
+        + len(_json(purpose))
     )
     if cost > MAX_PROVENANCE_BYTES:
         raise ValueError("reviewer provenance exceeds its bound")
@@ -114,15 +145,14 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
         "schema_bytes": pin.schema_bytes,
         "schemas_sha256": pin.schemas_sha256,
         **memory,
+        **purpose,
     }
 
 
 class ReviewerProvenance(Contract):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    format_version: int = Field(default=1, strict=True, ge=1, le=2)
-    assembly_version: Literal["sandbox-reviewer-bundle-1", "sandbox-reviewer-bundle-2"] = (
-        ASSEMBLY_VERSION
-    )
+    format_version: int = Field(default=1, strict=True, ge=1, le=3)
+    assembly_version: Assembly = ASSEMBLY_VERSION
     role: Literal["reviewer"] = "reviewer"
     rubric_version: Identifier
     rubric_text: str = Field(max_length=MAX_SYSTEM_BYTES)
@@ -134,7 +164,9 @@ class ReviewerProvenance(Contract):
     schemas_sha256: Digest
     bundle_sha256: Digest
     memory: MemoryPin | None = None
-    """Format 2: the project memory section given after the rubric."""
+    """Formats 2 and 3: the project memory section given after the rubric."""
+    purpose: PromptPin | None = None
+    """Format 3: the purpose guidance given after the rubric (Purpose 6)."""
 
     @model_validator(mode="after")
     def _pins(self) -> Self:
@@ -175,15 +207,22 @@ class ReviewerBundle:
 
     @property
     def system(self) -> str:
-        """The system message: the rubric, then the memory section if one was given."""
-        rubric = self.provenance.rubric_text
-        return rubric if self.memory_text is None else rubric + SEPARATOR + self.memory_text
+        """The system message: the rubric, the purpose guidance for format 3, then the
+        memory section if one was given."""
+        parts = [self.provenance.rubric_text]
+        if self.provenance.purpose is not None:
+            parts.append(PURPOSE.text)
+        if self.memory_text is not None:
+            parts.append(self.memory_text)
+        return SEPARATOR.join(parts)
 
 
 def assemble_reviewer(
     system: str, version: str, specs: Sequence[ToolSpec], memory: MemoryGiven | None = None
 ) -> ReviewerBundle:
-    """The reviewer's input: format 1 without ``memory``, format 2 with it."""
+    """The reviewer's input, format 3: the rubric, the purpose guidance, then the
+    project memory section when ``memory`` is given. Formats 1 and 2 are read, no longer
+    written."""
     raw = _rubric(system)
     canonical = schema_json(specs)
     names = tuple(spec.name for spec in specs)
@@ -198,10 +237,14 @@ def assemble_reviewer(
         schemas_sha256=hashlib.sha256(b"reviewer-tool-schemas-v1\0" + canonical).hexdigest(),
         bundle_sha256="0" * 64,
     )
-    if memory is not None:
-        pin = pin.model_copy(
-            update={"format_version": 2, "assembly_version": MEMORY_ASSEMBLY, "memory": memory.pin}
-        )
+    pin = pin.model_copy(
+        update={
+            "format_version": 3,
+            "assembly_version": PURPOSE_ASSEMBLY,
+            "purpose": pin_section(PURPOSE),
+            "memory": memory.pin if memory is not None else None,
+        }
+    )
     fields = _fields(pin)
     pin = pin.model_copy(
         update={

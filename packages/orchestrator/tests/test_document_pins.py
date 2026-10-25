@@ -19,10 +19,10 @@ from sandbox_science.orchestrator.documents import USER, Author, DocumentError, 
 from sandbox_science.orchestrator.documents.pins import text_references
 from sandbox_science.orchestrator.documents.tool import _CITING, SPECS, DocumentTool
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ScriptedModel
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .scripted import ScriptedModel
 from .test_artifact_inventory import CONTEXT, SOURCE, record
 
 AGENT = Author(kind="agent", session_id="s1", run_id="run1", role="main", tool_call="c1")

@@ -33,7 +33,6 @@ from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.ledger import gate
 from sandbox_science.orchestrator.ledger.models import EvidenceLink, GateClause
 from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -43,6 +42,7 @@ from .loop_harness import PROJECT, TOKEN, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .scripted import ToolCall
 from .test_delegation import RESULT, results, started, wait
 from .test_delegation import delegating as delegating
 from .test_ledger import DELEGATED, MAIN, NEW, change
