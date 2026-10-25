@@ -13,10 +13,12 @@ from pathlib import Path
 
 from aiohttp import web
 
-LOST_SEED = """import json, math, pathlib
+LOST_SEED = """import json, math, os, pathlib
 y = math.factorial(20)
 pathlib.Path('results').mkdir(exist_ok=True)
 pathlib.Path('results/lost-seed.json').write_text(json.dumps({'y': y}))
+stat = pathlib.Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()
+print(json.dumps({'kernel_pid': os.getpid(), 'kernel_start': stat[19]}))
 """
 
 

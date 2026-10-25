@@ -417,8 +417,11 @@ def scan_events(control: ControlStore, project: str, session: str, run: str) -> 
     event is a call that ran (one whose outcome is an error with no execution state was
     refused before it ran and is left out), named by the event or else by the
     ``assistant`` event's call with the same ID, whose arguments say what a shell call
-    ran. A call that never returned has no ``tool`` event and is not counted."""
+    ran. A call that never returned has no ``tool`` event, and is counted only if a
+    resumed session reconciled it: that writes its result to the archive under this run
+    (never an event), so those records add the calls no event counted."""
     calls: dict[str, tuple[object, object]] = {}
+    returned: set[str] = set()
     mix = ToolMix()
     with control.read() as tx:
         rows = tx.sql.execute(
@@ -435,6 +438,7 @@ def scan_events(control: ControlStore, project: str, session: str, run: str) -> 
                     if isinstance(made.get("id"), str):
                         calls[made["id"]] = (made.get("name"), made.get("arguments"))
             continue
+        returned.add(str(event.get("call_id")))
         name, arguments = calls.get(str(event.get("call_id")), (None, None))
         tool = event.get("name") or name
         found = event.get("outcome")
@@ -449,4 +453,21 @@ def scan_events(control: ControlStore, project: str, session: str, run: str) -> 
             record["error"] = True
         if isinstance(tool, str):
             mix.count(tool, arguments, record)
+    with control.read() as tx:
+        reconciled = tx.sql.execute(
+            f"SELECT {_FIELDS.format('t.record')},m.call_id FROM archive_tool_records t "  # noqa: S608
+            "JOIN archive_messages m ON m.project=t.project AND m.message_id=t.message_id "
+            "WHERE t.project=? AND t.session=? AND t.run=? "
+            "AND json_extract(t.record,'$.reconciled')=1 ORDER BY m.position",
+            (project, session, run),
+        ).fetchall()
+    for tool, arguments, error, execution, lost, _, call_id in reconciled:
+        if call_id in returned:
+            continue  # its own event already counted it
+        record = {}
+        if error is not None:
+            record["error"] = True
+        if execution is not None:
+            record["execution"] = {"result": {"state_lost": lost == 1}}
+        mix.count(str(tool), arguments, record)
     return mix

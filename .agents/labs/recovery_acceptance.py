@@ -607,27 +607,28 @@ class Lab:
             "PASS recursive agent interruption and original child effect reconciliation", flush=True
         )
 
-    def kill_kernel(self, original, marker=None):
+    def kill_kernel(self, original, identity=None):
         """Kill the one kernel process of a running session's cell by its exact PID, and
-        wait until the worker no longer observes it. With ``marker``, a path the session's
-        cells wrote below their working directory, the kernel is the one whose working
-        directory holds it (the sessions of this lab share one environment, so another
-        session's kernel may be alive); without it, the environment's only kernel."""
+        wait until the worker no longer observes it. ``identity`` is the ``(pid, start)``
+        the session's own seed cell reported from inside its kernel (the worker's
+        records hold no PID, and the probe cannot read another process's working
+        directory); the sessions of this lab share one environment, so another
+        session's kernel may be alive. Without it, the environment's only kernel."""
         context = original["context"]
         before = self.worker("POST", "/v1/kernels/observe", {"context": context})
         assert len(before["kernels"]) == 1, before
         environment = self.worker("GET", "/v1/environments/" + context["environment_id"])
         # Verify the PID/start pair immediately before killing that process alone.
         code = """import json,os,pathlib,signal,sys
-marker=sys.argv[1] if len(sys.argv)>1 else None
+want=(int(sys.argv[1]),sys.argv[2]) if len(sys.argv)>2 else None
 found=[]
 for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
  try:
-  words=path.read_bytes().split(b'\\0')
-  if b'ipykernel_launcher' in words and (not marker or (path.parent/'cwd'/marker).is_file()):
-   found.append((int(path.parent.name),(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19]))
+  if b'ipykernel_launcher' in path.read_bytes().split(b'\\0'):
+   pair=(int(path.parent.name),(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19])
+   if want is None or pair==want: found.append(pair)
  except (OSError,ValueError): pass
-assert len(found)==1,found
+assert len(found)==1,(want,found)
 pid,stamp=found[0]
 assert pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]==stamp
 os.kill(pid,signal.SIGKILL)
@@ -645,7 +646,7 @@ print(json.dumps({'pid':pid,'start':stamp}))
                 "-I",
                 "-c",
                 code,
-                *([marker] if marker else []),
+                *([str(identity[0]), identity[1]] if identity else []),
             ).stdout
         )
         absent = wait(
@@ -711,7 +712,12 @@ print(json.dumps({'pid':pid,'start':stamp}))
             },
         )
         original = wait(lambda: self.shell_running("lost"), seconds=240)
-        before, absent, killed = self.kill_kernel(original, marker=LOST_FILE)
+        seed = next(item for item in self.results("lost")["tools"] if item.get("tool") == "python")
+        # The seed cell printed its own kernel's PID and start time; that is the identity.
+        reported = json.loads(seed["execution"]["result"]["stdout"]["text"])
+        identity = (reported["kernel_pid"], reported["kernel_start"])
+        before, absent, killed = self.kill_kernel(original, identity)
+        assert killed == {"pid": identity[0], "start": identity[1]}, (killed, identity)
         self.evidence("lost-kernel-loss", {"before": before, "absent": absent, "killed": killed})
         wait(lambda: self.settled("lost"), seconds=180)
         result = self.results("lost")

@@ -690,6 +690,36 @@ def test_a_run_that_kept_no_record_is_counted_from_its_events(projects: ProjectS
     }
 
 
+def test_a_call_reconciled_after_the_run_was_cut_short_counts_once(
+    projects: ProjectStore,
+) -> None:
+    """The holding shell call ("f") never returned; the resumed session reconciled it into
+    the archive under the cut run, which wrote no event for it and kept no record."""
+    cut_short_run(projects, "cut")
+    before = scan_events(projects.control, "p", "s", "cut")
+    assert before.shell == 1
+    script = json.dumps({"script": "python3 held.py"})
+    ToolJournal(projects.control).start(CONTEXT, "cut", "op-f", BareCall("f", "shell", script))
+    reconciled = {"tool": "shell", "arguments": script, "execution": {}, "reconciled": True}
+    entry = Entry("tool", "tool_result", "{}", source="shell", call_id="f")
+    Archive(projects.control).append(
+        "p", "s", "cut", entry, tool_record=ToolRecord(reconciled, "op-f")
+    )
+    # A call whose event also returned is counted by the event alone.
+    ToolJournal(projects.control).start(CONTEXT, "cut", "op-a", BareCall("a", "python", "{}"))
+    twice = {"tool": "python", "arguments": "{}", "execution": {}, "reconciled": True}
+    Archive(projects.control).append(
+        "p",
+        "s",
+        "cut",
+        Entry("tool", "tool_result", "{}", source="python", call_id="a"),
+        tool_record=ToolRecord(twice, "op-a"),
+    )
+    after = scan_events(projects.control, "p", "s", "cut")
+    assert (after.shell, after.shell_computation, after.python) == (2, 2, 1)
+    assert after.summary() == {**before.summary(), "shell": 2, "shell_computation": 2}
+
+
 def test_the_command_counts_runs_without_a_record_from_their_events_and_says_so(
     projects: ProjectStore, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
