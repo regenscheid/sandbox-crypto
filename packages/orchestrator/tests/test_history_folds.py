@@ -71,10 +71,10 @@ ENRICHED = ["--context-ceiling", "120000", "--fold-chunk", "10000"]
 the tools, every tool with its purpose_note (Purpose 5), stay under a fifth of C."""
 SMALL = [*ENRICHED, "--skeleton-only-folds"]
 """The same, its folds skeleton-only and applied at once."""
-ROOMY_ENRICHED = ["--context-ceiling", "120000", "--fold-chunk", "10000"]
-"""``ENRICHED`` with room for a system message and tools up to 24,000 tokens, 20% of
-120,000 (CM-27), as the MAIN prompt, the delegate tools and every tool's purpose_note
-have grown."""
+ROOMY_ENRICHED = ["--context-ceiling", "130000", "--fold-chunk", "10000"]
+"""``ENRICHED`` with room for a system message and tools past 24,000 tokens, up to 26,000,
+20% of 130,000 (CM-27), as the MAIN prompt, the delegate tools and every tool's
+purpose_note have grown (about 24,700 tokens with all four B9 lanes)."""
 ROOMY = [*ROOMY_ENRICHED, "--skeleton-only-folds"]
 
 

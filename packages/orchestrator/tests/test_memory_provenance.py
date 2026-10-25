@@ -47,13 +47,14 @@ from sandbox_science.orchestrator.memory import (
 )
 from sandbox_science.orchestrator.memory_prompt import for_reviewer, for_run, for_watcher
 from sandbox_science.orchestrator.memory_tools import MemoryTool
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .control_versions import before, older_store
+from .scripted import ScriptedModel, ToolCall
 from .test_ledger import MAIN as LEDGER_AUTHOR
 from .test_ledger import NEW
 from .test_ledger_provenance import change, refused, result, said

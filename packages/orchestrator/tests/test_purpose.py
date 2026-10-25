@@ -23,7 +23,12 @@ from sandbox_science.orchestrator.consistency.prompt_bundle import (
     PURPOSE_ASSEMBLY,
     assemble_reviewer,
 )
-from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
+from sandbox_science.orchestrator.consistency.rubric import (
+    RECHECK,
+    RECHECK_VERSION,
+    RUBRIC,
+    RUBRIC_VERSION,
+)
 from sandbox_science.orchestrator.consistency.runner import SPECS as REVIEWER_SPECS
 from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
 from sandbox_science.orchestrator.context.history import Archive, Archived, Entry
@@ -500,7 +505,10 @@ def test_the_reviewers_bundle_gives_and_pins_the_purpose_guidance() -> None:
     assert pin.purpose is not None
     assert pin.memory is None
     assert (pin.purpose.id, pin.purpose.version) == ("reviewer-purpose", PURPOSE.version)
-    assert bundle.system == f"{RUBRIC}\n\n{GUIDANCE}"
+    # Format 3 also carries the re-check instructions, which come before the guidance.
+    assert pin.recheck is not None
+    assert pin.recheck.version == RECHECK_VERSION
+    assert bundle.system == f"{RUBRIC}\n\n{RECHECK}\n\n{GUIDANCE}"
 
 
 def test_every_prompt_says_each_call_names_its_purpose() -> None:
