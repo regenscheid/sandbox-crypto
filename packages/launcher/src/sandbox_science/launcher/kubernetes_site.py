@@ -322,6 +322,9 @@ def cache_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
         "listen": f"{POD_NETWORK}:{CACHE_PORT}",
         "public_url": _cache_url(site, bundle),
         "cache_dir": f"{DATA}/package-cache",
+        # The worker's lockfile store on the same PVC: files its recent lockfiles pin are
+        # kept from eviction (docs/PACKAGE-CACHE.md, "Storage and eviction").
+        "lockfile_dir": f"{DATA}/worker/lockfiles",
     }
 
 

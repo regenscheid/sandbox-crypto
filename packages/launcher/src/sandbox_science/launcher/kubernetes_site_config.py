@@ -50,6 +50,8 @@ DEFAULT_DOMAIN = "cluster.local"
 CACHE_ECOSYSTEMS = ("pypi", "conda", "cargo", "go", "npm", "opam", "hackage")
 """The package cache's ecosystems (``package_cache.settings.Settings``); the launcher
 never imports the cache, so a test compares the two."""
+_CLUSTER_CACHE_KEYS = frozenset(("listen", "public_url", "cache_dir", "lockfile_dir"))
+"""Cache settings the bundle fixes: the Pod's listener and URL, and its PVC's paths."""
 
 
 class Placement(Model):
@@ -159,7 +161,7 @@ class Site(Model):
     profiles: dict[Identifier, Profile] = Field(min_length=1, max_length=32)
     openshell: OpenShell
     cache: dict[str, JsonValue] | None = None
-    """The package cache's settings besides its fixed listener, URL and directory; given
+    """The package cache's settings besides its fixed listener, URL and directories; given
     exactly when the bundle enables the cache."""
     extra_files: dict[Role, dict[Key, ConfigPath]] = Field(
         default_factory=dict[Role, dict[str, Path]]
@@ -176,8 +178,8 @@ class Site(Model):
                 raise ValueError(f"project {project.id}'s profile is not one of profiles")
             if any(pack not in self.skills.packs for pack in project.skills):
                 raise ValueError(f"project {project.id} names a pack skills.packs does not")
-        if self.cache is not None and {"listen", "public_url", "cache_dir"} & self.cache.keys():
-            raise ValueError("the cache's listener, URL and directory are the cluster's")
+        if self.cache is not None and _CLUSTER_CACHE_KEYS & self.cache.keys():
+            raise ValueError("the cache's listener, URL and directories are the cluster's")
         model = urlsplit(self.model.url).hostname or ""
         if model.endswith(".svc"):
             # The agent runtime reaches the model gateway from its sandbox, whose DNS
