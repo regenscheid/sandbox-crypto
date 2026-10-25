@@ -9,6 +9,18 @@
  * other bookkeeping (a run started, folds, a run that answered) stays out of the
  * conversation; the activity log has it. A run that stopped with a problem says so.
  */
+import {
+  answerSent,
+  endedInWait,
+  MESSAGE_TOOLS,
+  receivedRow,
+  sentFor,
+  sentFromResult,
+  sentRow,
+  type AgentMessageRow,
+  type AgentMessagesItem,
+  type ChildOutcomesItem,
+} from './agentMessages';
 import type { RunEvent } from './api-types';
 import type { BackgroundSignal, ChatEntry, Gloss } from './chat';
 import type { FindingNotice } from './findingRows';
@@ -76,7 +88,9 @@ export type TranscriptItem =
   | { kind: 'work'; seq: number; from: string; to: string; steps: WorkStep[] }
   | BackgroundItem
   | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string }
-  | FindingsItem;
+  | FindingsItem
+  | AgentMessagesItem
+  | ChildOutcomesItem;
 
 /** The findings a review or math notice offered the agent, one row each (B10, item 4). */
 export interface FindingsItem {
@@ -101,7 +115,7 @@ export function foldTranscript(
   const items: TranscriptItem[] = [];
   let work: Extract<TranscriptItem, { kind: 'work' }> | null = null;
   /** The background rows of the open group, shown right after it. */
-  let later: BackgroundItem[] = [];
+  let later: (BackgroundItem | AgentMessagesItem | ChildOutcomesItem)[] = [];
   /** Every background row so far, the latest last, for its wait's end and notices. */
   const background: BackgroundItem[] = [];
   const flush = () => {
@@ -121,11 +135,107 @@ export function foldTranscript(
     for (const item of background)
       if (item.waited && !item.ended) Object.assign(item, { ended: true, to: at(seq) });
   };
+  /** The agent messages this run sent so far, for their calls' results (B10, item 2). */
+  const sent: AgentMessageRow[] = [];
+  /** The delegations whose outcome block is shown, each once. */
+  const outcomes = new Set<string>();
+  /**
+   * A message or an outcome block: after the open group while one of its calls waits for
+   * its result, else in order, ending the group, so that the conversation keeps its order.
+   */
+  const place = (item: AgentMessagesItem | ChildOutcomesItem) => {
+    const open = work?.steps.some((step) => step.calls.some((call) => !call.done));
+    if (open) later.push(item);
+    else {
+      flush();
+      items.push(item);
+    }
+  };
+  const outcome = (seq: number, ids: readonly string[]) => {
+    const fresh = [...new Set(ids)].filter((id) => !outcomes.has(id));
+    for (const id of fresh) outcomes.add(id);
+    if (fresh.length) place({ kind: 'child-outcomes', seq, at: at(seq), delegations: fresh });
+  };
   let signalled = false;
   for (const entry of entries) {
+    if (entry.kind === 'note' && entry.agentMessages) {
+      place({
+        kind: 'agent-messages',
+        seq: entry.seq,
+        at: at(entry.seq),
+        rows: entry.agentMessages.map(receivedRow),
+      });
+      signalled = false;
+      continue;
+    }
     if (entry.kind === 'note' && entry.background) {
       signal(entry.seq, at(entry.seq), entry.background, background, show, signalled);
       signalled = true;
+      if (entry.background.event === 'notice' && entry.background.what === 'delegations')
+        outcome(entry.seq, entry.background.ids);
+      continue;
+    }
+    if (entry.kind === 'tool' && MESSAGE_TOOLS.has(entry.name)) {
+      const row = sentFor(sent, entry);
+      if (row) answerSent(row, entry);
+      else {
+        const made = sentFromResult(entry);
+        sent.push(made);
+        place({ kind: 'agent-messages', seq: entry.seq, at: at(entry.seq), rows: [made] });
+      }
+      signalled = false;
+      continue;
+    }
+    if (entry.kind === 'assistant' && entry.calls.some((call) => MESSAGE_TOOLS.has(call.name))) {
+      const rows = entry.calls.filter((call) => MESSAGE_TOOLS.has(call.name)).map(sentRow);
+      sent.push(...rows);
+      const messages: AgentMessagesItem = {
+        kind: 'agent-messages',
+        seq: entry.seq,
+        at: at(entry.seq),
+        rows,
+      };
+      const rest = entry.calls.filter((call) => !MESSAGE_TOOLS.has(call.name));
+      if (rest.length === 0) {
+        // A model call that only sent messages: its words, then its messages, in order.
+        endWaits(entry.seq);
+        flush();
+        if (entry.text.trim())
+          items.push({
+            kind: 'reply',
+            seq: entry.seq,
+            at: at(entry.seq),
+            text: entry.text,
+            pins: entry.pins,
+          });
+        items.push(messages);
+        signalled = false;
+        continue;
+      }
+      // Its other calls are a step of the group as before; its messages follow the group.
+      endWaits(entry.seq);
+      const asking = rest.some((call) => asked.has(call.id));
+      const current = group(entry.seq);
+      current.steps.push({
+        seq: entry.seq,
+        at: at(entry.seq),
+        text: asking ? '' : entry.text,
+        calls: rest.map((call) => ({ ...call, done: false, outcome: '', result: '' })),
+      });
+      current.to = at(entry.seq);
+      if (asking) {
+        flush();
+        if (entry.text.trim())
+          items.push({
+            kind: 'reply',
+            seq: entry.seq,
+            at: at(entry.seq),
+            text: entry.text,
+            pins: entry.pins,
+          });
+        items.push(messages);
+      } else later.push(messages);
+      signalled = false;
       continue;
     }
     signalled = false;
@@ -207,6 +317,7 @@ export function foldTranscript(
         });
       group(entry.seq).to = at(entry.seq);
       waited(entry, background);
+      outcome(entry.seq, endedInWait(entry));
     } else if (entry.kind === 'note' && entry.problem) {
       flush();
       items.push(entry);
@@ -218,13 +329,16 @@ export function foldTranscript(
 
 /**
  * The index of the work group a live run is on: the last item, or the last work group with
- * only background rows after it, which show beside what runs now; -1 when there is none.
+ * only background rows and children's outcomes after it, which show beside what runs now;
+ * -1 when there is none.
  */
 export function liveWork(items: readonly TranscriptItem[]): number {
   for (let index = items.length - 1; index >= 0; index--) {
     const kind = items[index]!.kind;
     if (kind === 'work') return index;
-    if (kind !== 'background') return -1;
+    // A child's outcome that came while the run waited stays beside the group, as its
+    // wait's row does.
+    if (kind !== 'background' && kind !== 'child-outcomes') return -1;
   }
   return -1;
 }

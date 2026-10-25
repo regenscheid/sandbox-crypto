@@ -33,6 +33,7 @@
   import Markdown from '../lib/Markdown.svelte';
   import { macroSet } from '../lib/macros';
   import { copiedValues } from '../lib/copiedNumbers';
+  import { reviewHref } from '../lib/router';
   let {
     projectId,
     sessionId,
@@ -143,6 +144,10 @@
     {#each recheckText(finding) as line}<p class="muted">{visible(line)}</p>{/each}
     <p class="muted">Severity {finding.severity}: {severityText(finding.severity)}.</p>
     {#if finding.origin !== 'math'}<p class="muted">{raisedText(finding, review)}</p>{/if}
+    <!-- The reviewer's calls are its review's audit records, in the review panel (B10.3). -->
+    {#if finding.review_id}<p class="muted">
+        <a href={reviewHref(projectId, sessionId, finding.review_id)}>The review's audit records</a>
+      </p>{/if}
     <p class="muted">
       <code>{finding.finding_id}</code> · revision {finding.revision} · {finding.reflags} reflags
     </p>

@@ -284,7 +284,7 @@ export function agentName(
   if (run.role === 'main') return 'Research agent';
   const brief = delegation ? briefView(delegation) : null;
   if (delegation?.kind === 'check')
-    return brief?.entry ? `Check of ${brief.entry.handle}` : 'Independent check';
+    return brief?.entry ? `Check of ${visible(brief.entry.handle)}` : 'Independent check';
   if (!brief?.task) return 'Subagent';
   const line =
     brief.task
@@ -293,3 +293,105 @@ export function agentName(
       ?.trim() ?? '';
   return line.length > 70 ? `${line.slice(0, 69)}…` : line;
 }
+
+/** One deliverable of a task's brief and how its result accounted for it (PD-45). */
+export interface DeliverableView {
+  /** Its number, `d1` to `d12`. */
+  id: string;
+  title: string;
+  /** `produced`, `partial`, `not_produced`, or `unaccounted` when the result left it out. */
+  status: string;
+  /** Its line: `d1 title · produced → path@rev`, `d2 title · not produced: reason`. */
+  line: string;
+}
+
+/** What a deliverable's accounting names: a file revision, a path, an entry or an answer. */
+function produced(item: Record<string, unknown>): string {
+  const path = typeof item.path === 'string' ? visible(item.path) : '';
+  const revision = Number.isSafeInteger(item.revision) ? `@${item.revision as number}` : '';
+  if (path) return `${path}${revision}`;
+  if (typeof item.entry === 'string') return visible(item.entry);
+  if (typeof item.answer === 'string') {
+    const line = item.answer.split('\n').find((part) => part.trim()) ?? '';
+    return `“${visible(line.trim().length > 120 ? `${line.trim().slice(0, 119)}…` : line.trim())}”`;
+  }
+  return '';
+}
+
+/**
+ * The brief's deliverables with their accounting, in the brief's order: what each produced,
+ * what a partial one misses, why one was not produced, or that the result left it out. A
+ * task that ended without a result accounts for none (PD-45); a running one, or a brief
+ * that lists none, has an empty list.
+ */
+export function deliverablesView(
+  delegation: Pick<Delegation, 'brief' | 'result' | 'ended'>,
+): DeliverableView[] {
+  const asked = Array.isArray(record(delegation.brief).deliverables)
+    ? (record(delegation.brief).deliverables as unknown[]).map(record)
+    : [];
+  if (!asked.length || delegation.ended === null) return [];
+  const given = new Map<string, Record<string, unknown>>();
+  const accounted = record(delegation.result).deliverables;
+  if (Array.isArray(accounted))
+    for (const item of accounted.map(record))
+      if (typeof item.id === 'string') given.set(item.id, item);
+  return asked.map((wanted, index) => {
+    const id = typeof wanted.id === 'string' ? wanted.id : `d${index + 1}`;
+    const title = typeof wanted.title === 'string' ? visible(wanted.title) : '';
+    const item = given.get(id);
+    const status = typeof item?.status === 'string' ? item.status : 'unaccounted';
+    const named = item ? produced(item) : '';
+    const said = (field: unknown) => (typeof field === 'string' ? visible(field) : '');
+    const how =
+      status === 'produced'
+        ? `produced${named ? ` → ${named}` : ''}`
+        : status === 'partial'
+          ? `partial${named ? ` → ${named}` : ''}${item?.missing ? `; missing: ${said(item.missing)}` : ''}`
+          : status === 'not_produced'
+            ? `not produced${item?.reason ? `: ${said(item.reason)}` : ''}`
+            : status === 'unaccounted'
+              ? 'unaccounted'
+              : visible(status);
+    return { id: visible(id), title, status, line: `${visible(id)} ${title} · ${how}` };
+  });
+}
+
+/** A task's lessons, its notes on operating the tools in its own words (DA-27). */
+export function lessonsOf(delegation: Pick<Delegation, 'result'>): string[] {
+  const lessons = record(delegation.result).lessons;
+  return Array.isArray(lessons)
+    ? lessons.filter((lesson): lesson is string => typeof lesson === 'string').map(visible)
+    : [];
+}
+
+/**
+ * A result's status in words, saying when the platform set it rather than the child (a
+ * task that left deliverables out ends `blocked`, PD-45), with the child's own status.
+ */
+export function statusText(delegation: Pick<Delegation, 'result'>): string {
+  const result = record(delegation.result);
+  const status = text(result.status);
+  if (record(result.set_by).status !== 'platform') return status;
+  const child = text(result.child_status);
+  return `${status}, set by the platform${child ? `; the child said ${child}` : ''}`;
+}
+
+/**
+ * A run's line from the session's main agent down to it, in the tree's runs, for the run
+ * view's breadcrumb: the main run first and the run last. A run the tree does not list
+ * is alone; a parent the tree does not list ends the line there.
+ */
+export function lineage(runs: readonly TreeRun[], name: string): TreeRun[] {
+  const byName = new Map(runs.map((run) => [run.name, run]));
+  const line: TreeRun[] = [];
+  let at = byName.get(name);
+  while (at !== undefined && line.length <= DEPTH && !line.includes(at)) {
+    line.unshift(at);
+    at = at.parent === null ? undefined : byName.get(at.parent);
+  }
+  return line;
+}
+
+/** The most runs a breadcrumb follows up, as the server does (runtree.py, DEPTH). */
+const DEPTH = 8;

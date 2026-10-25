@@ -51,6 +51,7 @@ from sandbox_science.orchestrator.model_settings import ModelSettings
 from sandbox_science.orchestrator.project_grants import GrantListing
 from sandbox_science.orchestrator.runtree import RunTree
 from sandbox_science.orchestrator.uploads import UploadPage
+from sandbox_science.workspace.agent_messages import AgentMessagePage
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
 from sandbox_science.workspace.approvals import AnswerResult, PendingListing
 from sandbox_science.workspace.artifacts import (
@@ -137,6 +138,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     ProjectAnswer,
     SessionDetail,
     RunTree,
+    AgentMessagePage,
     WorkspaceObservation,
     WorkspacePlan,
     BodyChange,

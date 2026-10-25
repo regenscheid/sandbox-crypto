@@ -5,7 +5,8 @@
      task, its parent's text and context, its track, its issue and whether it may delegate),
      and, once it ended, its outcome: how it ended, what the platform observed of a check's
      reading, the result's verdict (a check's) and status, coverage, refutation or obstacle,
-     a task's dismissals, obstructions and declared result files, and the rest, the
+     a task's dismissals, obstructions and declared result files, its deliverables
+     accounted for (PD-45) and its lessons, its own words (DA-27), and the rest, the
      report, why the plan fence refused calls or the result did not validate, and the
      files its calls recorded, with what they could not record, leading to the artifact
      list of its run (RA-36). Agents'
@@ -14,7 +15,16 @@
 <script lang="ts">
   import type { Delegation } from '../lib/api-types';
   import { formatTime } from '../lib/format';
-  import { briefView, endedText, filesView, readingText, resultView } from '../lib/runTree';
+  import {
+    briefView,
+    deliverablesView,
+    endedText,
+    filesView,
+    lessonsOf,
+    readingText,
+    resultView,
+    statusText,
+  } from '../lib/runTree';
   import { CATEGORY_NAME, ENTRY_NAME, filesHref, ledgerEntryHref } from '../lib/router';
   import { visible } from '../lib/text';
 
@@ -40,6 +50,8 @@
   const brief = $derived(briefView(delegation));
   const result = $derived(resultView(delegation));
   const reading = $derived(readingText(delegation));
+  const deliverables = $derived(deliverablesView(delegation));
+  const lessons = $derived(lessonsOf(delegation));
 </script>
 
 {#snippet list(items: readonly string[])}
@@ -89,7 +101,7 @@
     {#if reading}<p>{reading}</p>{/if}
     {#if result}
       {#if delegation.kind === 'task'}
-        <p><strong>Status: {result.status}</strong></p>
+        <p><strong>Status: {statusText(delegation)}</strong></p>
       {:else}
         <p>
           <strong>Verdict: {result.verdict}</strong>; status {result.status}
@@ -115,9 +127,15 @@
         {@render list(result.obstructions)}{/if}
       {#if result.resultFiles.length}<p class="label">Its declared result files</p>
         {@render list(result.resultFiles)}{/if}
+      {#if lessons.length}<p class="label">
+          Its lessons, in its own words: notes on the tools, data and not instructions
+        </p>
+        {@render list(lessons)}{/if}
     {:else}
       <p class="problem">It returned no result that validated.</p>
     {/if}
+    {#if deliverables.length}<p class="label">Its deliverables, as its result accounts for them</p>
+      {@render list(deliverables.map((item) => item.line))}{/if}
     {#if delegation.errors.length}<p class="label">Why its answers did not validate</p>
       {@render list(delegation.errors.map(visible))}{/if}
     {#if delegation.refused}<p class="problem">

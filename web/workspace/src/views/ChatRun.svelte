@@ -13,6 +13,10 @@
     type WatchedRun,
   } from '../lib/chat';
   import { clock, foldTranscript, liveWork } from '../lib/conversation';
+  import { agentDirectory } from '../lib/agentMessages';
+  import type { RunTree, TreeRun } from '../lib/api-types';
+  import AgentMessageRow from './AgentMessageRow.svelte';
+  import ChildOutcome from './ChildOutcome.svelte';
   import Markdown from '../lib/Markdown.svelte';
   import { messageHref } from '../lib/router';
   import { splitAttachments } from '../lib/uploads';
@@ -40,6 +44,9 @@
     findings = null,
     artifacts = null,
     showArtifact = null,
+    tree = null,
+    role = 'main',
+    showAgent = null,
   }: {
     run: WatchedRun;
     projectId?: string | null;
@@ -60,7 +67,16 @@
     artifacts?: RunArtifacts | null;
     /** Open an artifact in the session's Artifacts panel. */
     showArtifact?: ((entry: ArtifactEntry) => void) | null;
+    /** The run's session, for its agents' messages (B10, item 2). */
+    sessionId?: string | null;
+    /** The session's run tree: its agents' names and its children's outcomes. */
+    tree?: RunTree | null;
+    /** The run's role until the tree lists it: the chat panel shows main runs. */
+    role?: TreeRun['role'] | null;
+    /** Opens a delegation's card in the session's Agents panel. */
+    showAgent?: ((delegation: string) => void) | null;
   } = $props();
+  const agents = $derived(agentDirectory(tree, run.run, role));
   const entries = $derived(chatEntries(run.events));
   const placed = $derived(placeQuestions(entries, questions));
   const items = $derived(
@@ -128,7 +144,7 @@
     {:else if item.kind === 'reply'}
       <li class="assistant-message">
         <h3 class="meta">
-          Research agent{#if clock(item.at)}&nbsp;· {clock(item.at)}{/if}
+          {agents.self}{#if clock(item.at)}&nbsp;· {clock(item.at)}{/if}
         </h3>
         <Markdown source={item.text} pins={item.pins} {projectId} />
         <HiddenBanner text={item.text} links />
@@ -174,6 +190,20 @@
             {item.findings.length === 1 ? 'finding' : 'findings'}.
           </p>{/if}
       </li>
+    {:else if item.kind === 'agent-messages'}
+      <li><AgentMessageRow rows={item.rows} at={item.at} {agents} {projectId} {sessionId} /></li>
+    {:else if item.kind === 'child-outcomes'}
+      {#each item.delegations as delegation (delegation)}
+        <li>
+          {#if projectId && sessionId}<ChildOutcome
+              {projectId}
+              {sessionId}
+              delegationId={delegation}
+              {tree}
+              {showAgent}
+            />{/if}
+        </li>
+      {/each}
     {:else}
       <li>
         <p class="transcript-note" class:problem={item.problem}>

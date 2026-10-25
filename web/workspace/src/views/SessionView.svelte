@@ -40,18 +40,27 @@
     projectId,
     sessionId,
     reviewId = null,
+    agentId = null,
   }: {
     projectId: string;
     sessionId: string;
     /** A review to choose in the review panel, as a link names it. */
     reviewId?: string | null;
+    /** A delegation whose card to open in the Agents panel, as a link names it. */
+    agentId?: string | null;
   } = $props();
   type Panel =
     'plan' | 'agents' | 'context' | 'reviews' | 'compute' | 'documents' | 'artifacts' | 'activity';
   let panel = $state<Panel | null>(
-    untrack(() => (reviewId ? 'reviews' : window.innerWidth > 1120 ? 'plan' : null)),
+    untrack(() =>
+      agentId ? 'agents' : reviewId ? 'reviews' : window.innerWidth > 1120 ? 'plan' : null,
+    ),
   );
-  let visited = $state<Panel[]>(untrack(() => (reviewId ? ['reviews'] : ['plan'])));
+  let visited = $state<Panel[]>(
+    untrack(() => (agentId ? ['agents'] : reviewId ? ['reviews'] : ['plan'])),
+  );
+  /** The delegation whose card the Agents panel opens: a link's, or a chat block's. */
+  let focusAgent = $state<string | null>(untrack(() => agentId));
   const browserScope = untrack(() => `session-browser:${projectId}:${sessionId}`);
   const keptBrowser = untrack(() => browserState.load(browserScope).draft ?? {});
   let activityCategory = $state(keptBrowser.category ?? 'all');
@@ -225,6 +234,10 @@
           showArtifact={(entry) => {
             chooseArtifact(entry);
             show('artifacts');
+          {tree}
+          showAgent={(delegation) => {
+            focusAgent = delegation;
+            show('agents');
           }}
         />
       {/if}
@@ -264,7 +277,7 @@
             />
           </div>{/if}
         {#if visited.includes('agents')}<div hidden={panel !== 'agents'}>
-            <SessionAgents {projectId} {sessionId} {tree} />
+            <SessionAgents {projectId} {sessionId} {tree} focus={focusAgent} />
           </div>{/if}
         {#if visited.includes('context')}<div hidden={panel !== 'context'}>
             <SessionContext {projectId} {sessionId} {tree} />

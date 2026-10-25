@@ -420,6 +420,8 @@ export type ChatEntry =
       background?: BackgroundSignal;
       /** The findings a review or math notice offered, for the transcript's finding rows. */
       findings?: FindingNotice[];
+      /** The IDs of the agent messages a notice delivered (PD-44); the notice has no text. */
+      agentMessages?: string[];
     };
 
 /**
@@ -691,6 +693,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         ...(FINDING_SOURCES.has(text(data['source'])) && noticeFindings(ids).length
           ? { findings: noticeFindings(ids) }
           : {}),
+        ...(text(data['source']) === 'agent_messages' && ids.length ? { agentMessages: ids } : {}),
       });
     } else if (kind === 'waiting' && 'permission_request' in data) {
       // A connector call held for the user's answer (D76), or the end of that wait.

@@ -48,7 +48,7 @@
   import ChatPermission from './ChatPermission.svelte';
   import ChatQuestion from './ChatQuestion.svelte';
   import { api, type PermissionDecision } from '../lib/api';
-  import type { PendingApproval } from '../lib/api-types';
+  import type { PendingApproval, RunTree } from '../lib/api-types';
   import { heldCall } from '../lib/conversation';
   import ChatRecovery from './ChatRecovery.svelte';
   import ChatRun from './ChatRun.svelte';
@@ -70,6 +70,8 @@
     subagents = null,
     showAgents = null,
     showArtifact = null,
+    tree = null,
+    showAgent = null,
   }: {
     projectId: string;
     sessionId: string;
@@ -80,6 +82,10 @@
     showAgents?: (() => void) | null;
     /** Open an artifact from a strip in the session's Artifacts panel (B10, item 6). */
     showArtifact?: ((entry: ArtifactEntry) => void) | null;
+    /** The session's run tree, for agents' names and children's outcomes (B10). */
+    tree?: RunTree | null;
+    /** Opens a delegation's card in the Agents panel. */
+    showAgent?: ((delegation: string) => void) | null;
   } = $props();
   let attach = $state<ReturnType<typeof ChatAttachments> | null>(null);
   let attachMenu = $state(false);
@@ -332,6 +338,8 @@
           {findings}
           {artifacts}
           {showArtifact}
+          {tree}
+          {showAgent}
         />
       {/each}
       <ChatWaiting messages={waiting} {starting} sending={echo} />

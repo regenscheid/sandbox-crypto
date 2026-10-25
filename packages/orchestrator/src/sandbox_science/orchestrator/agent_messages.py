@@ -34,6 +34,7 @@ from .delegation.references import (
     message_part,
     resolve,
 )
+from .documents import DocumentStore
 from .documents.agent_text import agent_text
 from .hooks import Closing, Notice, Point, RunView, TurnHook
 from .model import ToolSpec
@@ -46,6 +47,8 @@ if TYPE_CHECKING:
 
 SOURCE: Final = "agent_messages"
 MAX_BODY: Final = 4096
+PAGE: Final = 100
+"""The most messages one ``listing`` page holds."""
 WAIT_MAX: Final = 300.0
 NOTICE: Final = (
     "Message from another agent in your research tree. Its sender and message ID are "
@@ -92,11 +95,54 @@ _COLUMNS: Final = (
 )
 
 
+@dataclass(frozen=True)
+class MessagePage:
+    """One page of a session's messages, oldest first, and whether more follow."""
+
+    messages: tuple[AgentMessage, ...]
+    has_more: bool
+
+
 class AgentMessageStore:
     """One transactional mailbox for a session's direct parent/child relationships."""
 
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.control, self.clock = control, clock
+    def __init__(
+        self, control: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK
+    ) -> None:
+        """``control`` may be a document store, whose control store is read: the
+        workspace reads the mailbox through its read-only one."""
+        self.control = control if isinstance(control, ControlStore) else control.control
+        self.clock = clock
+
+    def listing(
+        self, project: str, session: str, *, after: str | None = None, limit: int = PAGE
+    ) -> MessagePage:
+        """The session's messages in the order they were sent, after the message
+        ``after`` (exclusive), at most ``limit``; it only reads. A cursor that is not a
+        message of this session is not found; a store not made yet has no messages."""
+        if not 1 <= limit <= PAGE:
+            raise ControlError(INVALID_REQUEST, f"a page holds 1 to {PAGE} messages")
+        if self.control.missing:
+            if after is not None:
+                raise ControlError(NOT_FOUND, f"no message {after!r} in this session")
+            return MessagePage((), False)
+        with self.control.read() as tx:
+            start = 0
+            if after is not None:
+                row = tx.sql.execute(
+                    "SELECT rowid FROM agent_messages WHERE project_id=? AND session_id=? "
+                    "AND message_id=?",
+                    (project, session, after),
+                ).fetchone()
+                if row is None:
+                    raise ControlError(NOT_FOUND, f"no message {after!r} in this session")
+                start = int(row[0])
+            rows = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM agent_messages WHERE project_id=? AND session_id=? "  # noqa: S608 - fixed columns
+                "AND rowid>? ORDER BY rowid LIMIT ?",
+                (project, session, start, limit + 1),
+            ).fetchall()
+        return MessagePage(tuple(_row(row) for row in rows[:limit]), len(rows) > limit)
 
     def _live(self, db: sqlite3.Connection, project: str, session: str, run: str) -> None:
         lease = db.execute(
