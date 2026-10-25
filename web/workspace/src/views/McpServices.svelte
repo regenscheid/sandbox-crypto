@@ -10,6 +10,8 @@
   import { formatTime } from '../lib/format';
   import { projectHref } from '../lib/router';
   import { visible } from '../lib/text';
+  import ClassificationList from './ClassificationList.svelte';
+  import ClassificationTab from './ClassificationTab.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import GrantsPanel from './GrantsPanel.svelte';
   import PaneResizer from './PaneResizer.svelte';
@@ -151,6 +153,13 @@
   availability for a bounded metadata listing through the proxy.
 </p>
 <GrantsPanel {projectId} />
+<ClassificationList
+  {projectId}
+  onopen={(server) => {
+    selected = server;
+    tab = 'classification';
+  }}
+/>
 {#if error}<ErrorMessage {error} />
   <p role="status">Inventory refresh failed; any retained observation is previous data.</p>
   <button type="button" onclick={() => void load()}>Retry inventory</button>
@@ -255,7 +264,7 @@
           will succeed. Observations become stale after five minutes.
         </p>
         <div class="detail-tabs" role="tablist" aria-label="Service details">
-          {#each ['overview', 'tools', 'policy', 'observations'] as choice}
+          {#each ['overview', 'tools', 'policy', 'observations', 'classification'] as choice}
             <button
               type="button"
               role="tab"
@@ -357,6 +366,8 @@
               Applicable proxy policy is unknown because the metadata source is unavailable. Project
               record revision: {shown.policy_revision}.
             </p>{/if}
+        {:else if tab === 'classification'}
+          <ClassificationTab {projectId} server={current.name} />
         {:else}
           {#if current.observation}<dl class="facts">
               <dt>Recorded result</dt>
