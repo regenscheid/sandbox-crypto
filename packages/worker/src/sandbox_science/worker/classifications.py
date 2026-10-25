@@ -131,6 +131,18 @@ class ClassificationDesk:
             raise PermissionStoreError(str(exc)) from exc
         return [self._draft(loaded, server, entry, current, draft) for draft in stored]
 
+    def export(self, project: str, server: str, revision: str) -> tuple[bytes, Acceptance | None]:
+        """An accepted revision of the project's, its file exactly as stored, to check in
+        (CL-3), and its acceptance record. Blocking."""
+        try:
+            data = self.store.classification_revision_bytes(project, server, revision)
+        except StoreError as exc:
+            raise ClassificationReviewError(str(exc), "missing") from exc
+        try:
+            return data, self.store.acceptance(project, server, revision)
+        except StoreError as exc:
+            raise PermissionStoreError(str(exc)) from exc
+
     # Acceptances.
 
     def accept_draft(

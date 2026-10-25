@@ -252,6 +252,20 @@ class PolicyStore:
         path = self._revisions(project, server) / f"{check_hex(revision)}.yaml"
         return _load_classification(path, server, revision, "classification revision")
 
+    def classification_revision_bytes(self, project: str, server: str, revision: str) -> bytes:
+        """A stored revision's file, exactly as accepted, for export: StoreError when the
+        project has no such revision of the server's classification."""
+        path = self._revisions(project, server) / f"{check_hex(revision)}.yaml"
+        try:
+            data = read_limited(path)
+        except PolicyLoadError as exc:
+            if isinstance(exc.__cause__, FileNotFoundError):
+                raise StoreError(f"no classification revision {revision} of {server}") from exc
+            raise StoreError(f"classification revision {revision} cannot be read: {exc}") from exc
+        if hashlib.sha256(data).hexdigest() != revision:
+            raise StoreError(f"{path} does not hold classification revision {revision}")
+        return data
+
     def acceptance(self, project: str, server: str, revision: str) -> Acceptance | None:
         """The record of a revision's acceptance, or None if it has none."""
         path = self._revisions(project, server) / f"{check_hex(revision)}.json"

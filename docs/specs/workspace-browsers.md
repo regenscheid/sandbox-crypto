@@ -143,6 +143,8 @@ numbered CL-n.
     worker's operator token; a multi-user workspace would need a role. The middleware reads
     the binding at every call, so a revision applies at the next call, not only at the next
     policy revision; the widening rule is in [connectors](../MCP-CONNECTORS.md#project-revisions).
+    An accepted revision exports as its stored YAML through `GET /v1/classifications/{server}/
+    revisions/{revision}/export?project=P` ([worker](../WORKER.md)).
 - CL-4. **Drift.** When the middleware records `tool_list_drift` for a server, the tab
   shows the added, removed and changed tools with their digests, dated, and the
   middleware's hold (its non-read calls ask until re-accepted, D103). **Re-accept** from

@@ -1132,11 +1132,31 @@ async def accept_classification_drift(request: web.Request) -> web.Response:
     return _json(accepted, status=201)
 
 
+async def export_classification(request: web.Request) -> web.Response:
+    """A project's accepted revision, its YAML exactly as stored, to check in (CL-3)."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    server = _server_name(request)
+    revision = request.match_info["revision"]
+    if not _HEX_RE.fullmatch(revision):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid classification revision")
+    data, acceptance = await _reviewed(lambda: desk.export(project, server, revision))
+    headers = {
+        "X-Classification-Server": server,
+        "X-Classification-Revision": revision,
+        "Cache-Control": "no-store",
+    }
+    if acceptance is not None:
+        headers["X-Classification-Accepted-At"] = acceptance.accepted_at.isoformat()
+    return web.Response(body=data, content_type="application/yaml", headers=headers)
+
+
 CLASSIFICATION_ROUTES: Final = (
     web.get("/v1/classifications", classifications_in_force),
     web.get("/v1/classifications/{server}/drafts", classification_drafts),
     web.post("/v1/classifications/{server}/drafts/{draft}/accept", accept_classification_draft),
     web.post("/v1/classifications/{server}/drift/accept", accept_classification_drift),
+    web.get("/v1/classifications/{server}/revisions/{revision}/export", export_classification),
 )
 _SERVER_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _HEX_RE: Final = re.compile(r"[0-9a-f]{64}")

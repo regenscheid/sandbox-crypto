@@ -5,6 +5,7 @@ acceptances, operator-only, over the policy store and the middleware's event sto
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.event_store import EventStore, StoreReader
+from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.policy import LoadedPolicy
 from sandbox_science.policy.classification import catalog
 from sandbox_science.policy.detection import pin_digest
@@ -369,3 +371,51 @@ async def test_an_acceptance_without_an_operation_id_is_invalid(api: Api) -> Non
         headers=headers("workspace"),
     )
     assert bad.status == 400
+
+
+async def test_an_accepted_revision_exports_as_the_bytes_stored(api: Api) -> None:
+    text = classification((FEEDBACK, "admin", None))
+    draft = api.draft(text)
+    path = f"/v1/classifications/{SERVER}/drafts/{draft}/accept"
+    _, accepted = await api.post(path, {"project": "p1", "yaml": text, "reason": "ok"})
+    revision = accepted["revision"]
+    export = f"/v1/classifications/{SERVER}/revisions/{revision}/export?project=p1"
+    response = await api.client.get(export, headers=headers("workspace"))
+    assert response.status == 200
+    data = await response.read()
+    assert data == text.encode()
+    assert hashlib.sha256(data).hexdigest() == revision
+    assert response.content_type == "application/yaml"
+    assert response.headers["X-Classification-Server"] == SERVER
+    assert response.headers["X-Classification-Revision"] == revision
+    assert response.headers["X-Classification-Accepted-At"] == accepted["accepted_at"].replace(
+        "Z", "+00:00"
+    )
+    # The worker client reads it back and checks its digest.
+    client = WorkerClient(str(api.client.make_url("")).rstrip("/"), TOKENS["workspace"])
+    try:
+        exported = await client.export_classification("p1", SERVER, revision)
+    finally:
+        await client.close()
+    assert (exported.yaml, exported.revision, exported.server) == (data, revision, SERVER)
+    assert exported.accepted_at == NOW
+
+
+async def test_only_the_projects_own_revisions_export(api: Api) -> None:
+    text = classification((FEEDBACK, "admin", None))
+    draft = api.draft(text)
+    path = f"/v1/classifications/{SERVER}/drafts/{draft}/accept"
+    _, accepted = await api.post(path, {"project": "p1", "yaml": text, "reason": "ok"})
+    revision = accepted["revision"]
+    base = f"/v1/classifications/{SERVER}/revisions"
+    assert (await api.client.get(f"{base}/{'0' * 64}/export?project=p1",
+                                 headers=headers("workspace"))).status == 404  # fmt: skip
+    # Another project has no such revision, whatever the token.
+    assert (await api.client.get(f"{base}/{revision}/export?project=p2",
+                                 headers=headers(None))).status == 404  # fmt: skip
+    assert (await api.client.get(f"{base}/{revision}/export?project=p2",
+                                 headers=headers("workspace"))).status == 403  # fmt: skip
+    assert (await api.client.get(f"{base}/{revision}/export?project=p1",
+                                 headers=headers("harness"))).status == 403  # fmt: skip
+    assert (await api.client.get(f"{base}/nothex/export?project=p1",
+                                 headers=headers("workspace"))).status == 400  # fmt: skip

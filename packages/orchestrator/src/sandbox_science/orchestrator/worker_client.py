@@ -17,6 +17,7 @@ import logging
 import re
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, TypeVar
 
@@ -604,6 +605,34 @@ class WorkerClient:
             acceptance,
         )
 
+    async def export_classification(
+        self, project_id: str, server: str, revision: str
+    ) -> ClassificationExport:
+        """A project's accepted classification revision, its YAML exactly as stored, to
+        check in; WorkerAPIError when its bytes do not hash to ``revision``."""
+        try:
+            async with self._http().get(
+                f"{self.base_url}/v1/classifications/{_server(server)}/revisions/"
+                f"{_draft(revision)}/export",
+                params={"project": project_id},
+                headers={**self._headers, **PROTOCOL},
+                timeout=aiohttp.ClientTimeout(sock_connect=10, sock_read=CALL_TIMEOUT),
+            ) as response:
+                await check_protocol(response)
+                data = await _bounded_body(response.content, MAX_YAML_CHARS + 1)
+                if response.status >= 400:
+                    raise _error(data, response.status)
+                accepted = response.headers.get("X-Classification-Accepted-At")
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, f"cannot reach the worker: {exc}") from exc
+        if hashlib.sha256(data).hexdigest() != revision:
+            raise WorkerAPIError(ErrorKind.INTERNAL, "the exported revision fails its digest")
+        try:
+            at = datetime.fromisoformat(accepted) if accepted is not None else None
+        except ValueError:
+            at = None
+        return ClassificationExport(server, revision, data, at)
+
     # Executions.
 
     async def submit(self, request: ExecutionRequest) -> Execution:
@@ -1131,6 +1160,16 @@ async def _selected_owned[T](work: asyncio.Task[T], *, cancel_on_interrupt: bool
             work.result()
         raise first
     return work.result()
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationExport:
+    """An accepted classification revision as exported: its file's bytes, as stored."""
+
+    server: str
+    revision: str
+    yaml: bytes
+    accepted_at: datetime | None
 
 
 def _server(name: str) -> str:
