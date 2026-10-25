@@ -28,11 +28,11 @@ from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.file_settings import ProjectFiles
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.recording import FileRecorder
 from sandbox_science.orchestrator.tools import LONG_OUTPUT, SAGE, SPECS, Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
+from .scripted import ToolCall
 from .test_artifact_publication import CONTEXT, TOKEN
 from .test_artifact_publication import worker_url as worker_url
 

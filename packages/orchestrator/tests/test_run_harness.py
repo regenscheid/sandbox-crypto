@@ -24,12 +24,14 @@ from sandbox_science.orchestrator.harness import (
 )
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathchecks.jobs import Checker
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.run_inputs import RunInputs
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+
+from .scripted import ScriptedModel, ToolCall
 
 
 class Worker:

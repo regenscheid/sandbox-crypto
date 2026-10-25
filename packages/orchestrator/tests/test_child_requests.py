@@ -27,13 +27,13 @@ from sandbox_science.orchestrator.delegation.fence import ChildFence
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.delegation.requests import ChildApproval, ChildRequests
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.orchestrator.tools import PDF_READS
 
 from .loop_harness import PLAN, PROJECT, SESSION, USER_PLANS
+from .scripted import ToolCall
 from .test_capability_assembly import offered
 
 COMPUTE = (

@@ -24,7 +24,7 @@ from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.jobs import JOB_SPECS, JobTools
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelError, ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelError, ModelTurn
 from sandbox_science.orchestrator.plan_tools import (
     GUIDANCE_VERSION,
     MAX_REQUEST_BYTES,
@@ -41,6 +41,8 @@ from sandbox_science.orchestrator.session_plans import (
 )
 from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+
+from .scripted import ScriptedModel, ToolCall
 
 
 def body(goal="Check the claim", *, count=1):

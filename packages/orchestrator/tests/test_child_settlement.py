@@ -270,6 +270,7 @@ def test_pages_exclude_missing_final_records_before_limit_and_remain_bounded(tmp
 
 def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypatch):
     from sandbox_science.orchestrator.context.history import Archive, inspector_index
+    from sandbox_science.orchestrator.context.history import archive as archive_module
     from sandbox_science.orchestrator.context.history.archive import Entry
     from sandbox_science.orchestrator.control import migrations
 
@@ -282,6 +283,10 @@ def test_schema64_upgrade_preserves_existing_run_and_archive(tmp_path, monkeypat
         # Schema 64's archive writer had no inspector index. Keep its real
         # immutable append and old schema, omitting only that newer derived hook.
         previous.setattr(inspector_index, "append", lambda *args: None)
+        # Nor had it a tool result's purpose (version 83): its writer's columns.
+        fields = tuple(name for name in archive_module._FIELDS if name != "purpose")
+        previous.setattr(archive_module, "_FIELDS", fields)
+        previous.setattr(archive_module, "_COLUMNS", ", ".join((*archive_module._PLACE, *fields)))
         state, documents = stores(tmp_path)
         state.projects.open_session("p", "s", dedicated=False)
         state.projects.save_run(record(RUN))

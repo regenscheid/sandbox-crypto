@@ -13,10 +13,10 @@ import pytest
 import pytest_asyncio
 
 from sandbox_science.orchestrator.jobs import JOB_SPECS, STOP_AT_FAILURE
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.tools import SPECS, Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .scripted import ToolCall
 from .test_artifact_publication import CONTEXT, TOKEN
 from .test_artifact_publication import worker_url as worker_url
 

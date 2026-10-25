@@ -41,6 +41,7 @@ from .loop_harness import GATEWAY_VERSION, PROJECT, SESSION, TASK, Harness, Repl
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .scripted import PURPOSE
 from .test_delegation import CHECK, REPORT, wait
 from .test_delegation import delegating as delegating
 
@@ -115,8 +116,8 @@ async def test_each_message_is_archived_whole_as_it_is_added(
     assert task.entry.content == TASK  # as the run added it
     assert task.chat()["content"] == f"[{task.message_id} · task]\n{TASK}"
     assert str(result.chat()["content"]).startswith(
-        f"[{result.message_id} · tool result · shell]\n{{"
-    )
+        f'[{result.message_id} · tool result · shell · purpose: "{PURPOSE}"]\n{{'
+    )  # the call's purpose, quoted as the agent's (CM-4a as decided for B9)
     assert (result.entry.source, result.entry.call_id) == ("shell", "call-1")
     assert archive.tool_record(PROJECT, result.message_id) == record.tools[0]
     assert answer.content == "Looking."  # the model's, as it wrote it

@@ -22,10 +22,12 @@ from sandbox_science.orchestrator.hooks import (
     TurnHook,
 )
 from sandbox_science.orchestrator.loop import Transcript, run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ScriptedModel, ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
 

@@ -15,6 +15,7 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, notices
+from sandbox_science.orchestrator.consistency.prompt_bundle import PURPOSE as REVIEWER_PURPOSE
 from sandbox_science.orchestrator.consistency.rubric import (
     RECHECK,
     RECHECK_VERSION,
@@ -68,8 +69,14 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
-    "sandbox-main-17": "f1bc8a873f34eed3cece5010ab2492ae19cdc4d402a20e49b4803bf07ea6a6a9",
-    "sandbox-delegated-task-15": "50168345bc5d9d59bfb096ac6fa0b32efc60f211426e02cfc97a396e05191af4",
+    "sandbox-main-17": "e561ed7a48219b4f77e36f1aef66fff91470eee6a25e1209872a34f48b913a03",
+    "sandbox-delegated-check-14": (
+        "bfdcf6ddb5c617e0ed8e57be6b487eee00ff83b634db256a134ca49a4c11728f"
+    ),
+    "sandbox-delegated-task-15": "7d4103e50fed2edab8d374551b316ea5a210e4d2f277c24af3c0edc609956c73",
+    "sandbox-reviewer-purpose-1": (
+        "4f5db2eae8a280b2143acc04406570ee23c04cb6578ddd488755d962fb16ec6e"
+    ),
     "sandbox-memory-run-2": "c867f955b0a7f7cd8afd5cd2a8d7be993ec43cd9972643518dd71b27c647ee40",
     "sandbox-memory-reviewer-2": (
         "c06234678fe2609a96d97ba8ab39a15121085ba9befbcca14c02ce350f3e75d1"
@@ -201,6 +208,7 @@ def installed() -> dict[str, str]:
         PROMPT_VERSION: WATCHER_PROMPT,
         RUBRIC_VERSION: RUBRIC,
         RECHECK_VERSION: RECHECK,
+        REVIEWER_PURPOSE.version or "": REVIEWER_PURPOSE.text,
         RUN_VERSION: RUN_FRAMING,
         REVIEWER_VERSION: REVIEWER_FRAMING,
         WATCHER_VERSION: WATCHER_FRAMING,

@@ -262,7 +262,14 @@ async def confirm(path: Path) -> None:
                 break
             after = page["next_after"]
         calls = [
-            {"name": "review_read", "arguments": {"evidence": item["evidence"]}} for item in items
+            {
+                "name": "review_read",
+                "arguments": {
+                    "purpose_note": "Reading one evidence item of the snapshot",
+                    "evidence": item["evidence"],
+                },
+            }
+            for item in items
         ]
         turns: list[dict[str, Any]] = [
             {"tool_calls": calls[start : start + 16]} for start in range(0, len(calls), 16)
@@ -282,6 +289,7 @@ async def confirm(path: Path) -> None:
                     {
                         "name": "review_decide",
                         "arguments": {
+                            "purpose_note": "Confirming the claimed fix of the finding",
                             "finding": finding,
                             "expected": revision,
                             "decision": "resolved",

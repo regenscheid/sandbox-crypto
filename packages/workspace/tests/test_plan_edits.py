@@ -32,6 +32,10 @@ from sandbox_science.workspace.app import create_app
 TOKEN = "test-secret-plan-edit-login-0123456789"
 PATH = "/api/v0/projects/p1/sessions/a/plan"
 
+# Every call names its purpose (docs/specs/tools.md, Purpose 1).
+PURPOSED = '{"purpose_note":"Reading the session plan first"}'
+SHELL = '{"purpose_note":"Running a synthetic command","command":"synthetic"}'
+
 
 def authority(session="a"):
     return PlanAuthority(
@@ -402,11 +406,11 @@ async def test_actual_http_user_edit_requires_successful_main_current_read(
             ModelTurn(
                 None,
                 (
-                    ToolCall("read", "plan_read", "{}"),
-                    ToolCall("too-early", "shell", '{"command":"synthetic"}'),
+                    ToolCall("read", "plan_read", PURPOSED),
+                    ToolCall("too-early", "shell", SHELL),
                 ),
             ),
-            ModelTurn(None, (ToolCall("after-delivery", "shell", '{"command":"synthetic"}'),)),
+            ModelTurn(None, (ToolCall("after-delivery", "shell", SHELL),)),
             ModelTurn("Finished the authorized work"),
         ]
     )

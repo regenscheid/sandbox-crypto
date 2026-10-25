@@ -67,8 +67,6 @@ from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
     ModelError,
     OpenAICompatibleModel,
-    ScriptedModel,
-    ToolCall,
     ToolSpec,
     _parse_completion,
 )
@@ -76,6 +74,9 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import eventually, fake_worker_app
+
+from .scripted import ScriptedModel, ToolCall
+from .scripted import script as scripted
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
@@ -1098,7 +1099,7 @@ async def test_projects_give_sessions_their_environments(
 
     async def run(session: str, turns: list[dict[str, Any]], *extra: str) -> list[str]:
         script, transcript = tmp_path / f"{session}.json", tmp_path / f"{session}-t.json"
-        script.write_text(json.dumps([*turns, {"text": "done"}]))
+        script.write_text(json.dumps(scripted([*turns, {"text": "done"}])))
         status = await asyncio.to_thread(
             cli.main,
             ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",
@@ -1162,7 +1163,7 @@ async def test_runs_with_a_state_dir_write_living_documents(
 
     async def run(session: str, turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
         script, transcript = tmp_path / f"{session}.json", tmp_path / f"{session}-t.json"
-        script.write_text(json.dumps([*turns, {"text": "done"}]))
+        script.write_text(json.dumps(scripted([*turns, {"text": "done"}])))
         status = await asyncio.to_thread(
             cli.main,
             ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",

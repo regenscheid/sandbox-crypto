@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.context.history.collections import Collection
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.projects import run_id_of
+from sandbox_science.orchestrator.purpose import without
 
 Json = dict[str, Any]
 
@@ -110,6 +111,10 @@ def held_calls(
     return found
 
 
+def _without(arguments: object) -> object:
+    return without(arguments) if isinstance(arguments, str) else arguments
+
+
 def results(
     archive: Archive, project: str, session: str, run: str, tools: Sequence[Json | None]
 ) -> Sequence[Json | None]:
@@ -132,8 +137,11 @@ def results(
     cached = len(found)
     for index, (record, row) in enumerate(zip(tools, returned, strict=False)):
         while answer is not None and answer.position < row.position:
+            # A record keeps a call's arguments without its purpose (Purpose 3).
             asked = {
-                str(call.get("id")): cast(Json, call.get("function") or {}).get("arguments")
+                str(call.get("id")): _without(
+                    cast(Json, call.get("function") or {}).get("arguments")
+                )
                 for call in answer.entry.tool_calls
             }
             answer = next(answers, None)

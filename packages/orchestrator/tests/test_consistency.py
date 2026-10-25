@@ -25,8 +25,9 @@ from sandbox_science.orchestrator.documents import (
     store_path,
 )
 from sandbox_science.orchestrator.harness import save
-from sandbox_science.orchestrator.model import ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore
+
+from .scripted import ScriptedModel
 
 MAIN = Author(kind="agent", session_id="s", run_id="author-1", role="main", model="scripted")
 
@@ -1225,7 +1226,9 @@ async def test_final_provider_usage_over_budget_is_capped(store) -> None:
     claim(reviews)
     review = dispatch(reviews)
     evidence = anchor(reviews, review)["evidence"]
-    from sandbox_science.orchestrator.model import ModelTurn, ToolCall
+    from sandbox_science.orchestrator.model import ModelTurn
+
+    from .scripted import ToolCall
 
     class Overspend:
         calls = 0
@@ -1261,7 +1264,9 @@ async def test_a_review_has_no_token_stop_by_default(store) -> None:
     claim(reviews)
     review = dispatch(reviews)
     evidence = anchor(reviews, review)["evidence"]
-    from sandbox_science.orchestrator.model import ModelTurn, ToolCall
+    from sandbox_science.orchestrator.model import ModelTurn
+
+    from .scripted import ToolCall
 
     class Overspend:
         calls = 0

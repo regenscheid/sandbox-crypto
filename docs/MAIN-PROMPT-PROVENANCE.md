@@ -49,7 +49,10 @@ builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first mode
 - `sections`: each section's ID, version, UTF-8 byte count and SHA-256;
 - `tools`: the offered tool names, in order, and the byte count and SHA-256 of their
   schemas as compact UTF-8 JSON (`name`, `description`, `parameters`) with each
-  object's keys sorted and arrays and tools in their order;
+  object's keys sorted and arrays and tools in their order. The schemas are as the
+  model is offered them, each with the required `purpose_note` the harness adds
+  ([tools spec](specs/tools.md#purpose-of-each-call)), so a run since B9 pins a
+  different hash for the same tools than one before;
 - `notices`: the ID, version, byte count and SHA-256 of every notice framing in
   [`notices.py`](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py);
 - `memory`, for a run with the project's stores: the memory framing's version, the

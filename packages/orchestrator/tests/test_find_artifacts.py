@@ -19,9 +19,10 @@ from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.ledger.tool import SPECS as LEDGER_SPECS
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ToolCall
 
 pytestmark = pytest.mark.asyncio
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")

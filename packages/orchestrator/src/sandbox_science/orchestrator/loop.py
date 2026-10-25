@@ -49,6 +49,8 @@ from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase
 from .prompts import Section, assemble, schema_json
+from .purpose import GUIDANCE as PURPOSE_GUIDANCE
+from .purpose import without
 from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
@@ -90,6 +92,7 @@ SYSTEM_PROMPT: Final = (
     "part of a file rather than writing it whole, and grep and glob rather than grep or "
     "find in the shell. Publish files that are results. "
     "Report only what the tools actually returned. "
+    f"{PURPOSE_GUIDANCE} "
     "Every new user chat message reaches you, the root, not your children. Decide whether "
     "to handle it yourself, create or revise the session plan, or send a targeted update "
     "to a direct child with message_child. A child has not seen the user's message: "
@@ -647,7 +650,7 @@ async def _report(
             {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
             Appended("tool_result", call=call, outcome=outcome),
         )
-        record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+        record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
         transcript.tool_records.append(
             transcript.context.log.retained_tool(record)
             if transcript.context.log is not None
@@ -726,7 +729,9 @@ async def _run_task(
                 {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
                 Appended("tool_result", call=call, outcome=outcome, operation_id=operation),
             )
-            record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
+            # The record's arguments are the call's as the harness ran it, without its
+            # purpose, which the record keeps beside them (Purpose 3).
+            record = {"tool": call.name, "arguments": without(call.arguments), **outcome.record}
             index = len(transcript.tool_records)
             retained = (
                 transcript.context.log.retained_tool(record)
@@ -745,7 +750,7 @@ async def _run_task(
                         transcript, record if isinstance(hook, KernelCheck) else outcome.record
                     )
                 if on_tool is not None:
-                    await on_tool(call.name, call.arguments, outcome)
+                    await on_tool(call.name, without(call.arguments), outcome)
                 if outcome.image is not None:
                     viewed.append(outcome.image)
             finally:

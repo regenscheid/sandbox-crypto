@@ -44,7 +44,7 @@ from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.documents.agent_text import hidden_characters
 from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
+from sandbox_science.orchestrator.model import ModelTurn, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.prompts import pin_tools, schema_json
 from sandbox_science.orchestrator.runstate import RunState
@@ -66,6 +66,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .scripted import ScriptedModel, ToolCall
 from .test_delegation import CHECK, children, results, wait
 from .test_delegation import delegating as delegating
 

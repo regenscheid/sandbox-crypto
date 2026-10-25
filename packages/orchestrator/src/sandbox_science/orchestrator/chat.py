@@ -46,6 +46,7 @@ from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .notices import REDELIVERED
 from .projects import ModelUsage, RunRecord
+from .purpose import purpose_of, without
 from .runstate import (
     MAX_EVENT_BYTES,
     PAGE,
@@ -438,17 +439,27 @@ class EventLog(TurnHook):
             {
                 "turn": self.replies,
                 "text": message.get("content"),
-                "tool_calls": [
-                    {
-                        "id": call.get("id"),
-                        "name": call.get("function", {}).get("name"),
-                        "arguments": call.get("function", {}).get("arguments"),
-                    }
-                    for call in calls
-                ],
+                # Each call's arguments as the harness ran them, and its purpose apart
+                # from them, the agent's words (Purpose 3): what a card shows of a call.
+                "tool_calls": [shown_call(call) for call in calls],
                 "usage": used.model_dump(mode="json") if used is not None else None,
             },
         )
+
+
+def shown_call(call: Mapping[str, Any]) -> dict[str, Any]:
+    """A tool call as the run's events show it: its arguments without its purpose, and
+    the purpose, when it named a valid one, apart from them."""
+    function = cast(Mapping[str, Any], call.get("function") or {})
+    arguments = function.get("arguments")
+    shown: dict[str, Any] = {
+        "id": call.get("id"),
+        "name": function.get("name"),
+        "arguments": without(arguments) if isinstance(arguments, str) else arguments,
+    }
+    if isinstance(arguments, str) and (purpose := purpose_of(arguments)) is not None:
+        shown["purpose"] = purpose
+    return shown
 
 
 def _context_stop(record: RunRecord) -> dict[str, Any]:

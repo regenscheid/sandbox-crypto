@@ -3698,6 +3698,18 @@ BEGIN SELECT RAISE(ABORT, 'a finding has one of the five statuses'); END""",
         schema.execute(statement)
 
 
+def _tool_purposes(schema: Schema) -> None:
+    """Version 85: a tool result's call's purpose (its ``purpose_note``), which the
+    result's header quotes (docs/specs/tools.md, Purpose 4; context management, CM-4a).
+    A result archived before has none, and its header renders as it was sent."""
+    schema.execute(
+        "ALTER TABLE archive_messages ADD COLUMN purpose TEXT CHECK (purpose IS NULL OR "
+        "(kind = 'tool_result' AND length(purpose) BETWEEN 8 AND 120 "
+        "AND instr(purpose, char(10)) = 0 AND instr(purpose, '\"') = 0 "
+        "AND instr(purpose, '[') = 0 AND instr(purpose, ']') = 0))"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3782,6 +3794,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _agent_message_references,
     _memory_provenance,
     _finding_lifecycle,
+    _tool_purposes,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

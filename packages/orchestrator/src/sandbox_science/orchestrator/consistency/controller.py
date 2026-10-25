@@ -34,6 +34,7 @@ from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
 from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
 from sandbox_science.orchestrator.projects import recorded
+from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.view_image import ImageViewer
 
 from .actions import action_of
@@ -223,7 +224,13 @@ def source_of(
         for c in cast(list[Any], (asked or {}).get("tool_calls") or [])
         if cast(Json, c).get("id") == call_id
     ]
-    if len(made) != 1 or made[0].get("name") != name or made[0].get("arguments") != raw:
+    written = made[0].get("arguments") if len(made) == 1 else None
+    # The record keeps the call's arguments without its purpose (Purpose 3).
+    if (
+        len(made) != 1
+        or made[0].get("name") != name
+        or (without(written) if isinstance(written, str) else written) != raw
+    ):
         return None
     try:
         arguments: object = json.loads(str(raw or "{}"))

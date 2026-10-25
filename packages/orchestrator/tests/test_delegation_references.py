@@ -518,7 +518,9 @@ def test_messages_from_before_references_carry_none(tmp_path: Path) -> None:
     projects.close()
     target = tmp_path / "old" / "control.sqlite3"
     target.parent.mkdir()
-    older_store(current / "control.sqlite3", target, before(migrations._agent_message_references))
+    # The step to version 82, wherever later steps put it.
+    step = migrations.MIGRATIONS[82 - migrations.BASELINE]
+    older_store(current / "control.sqlite3", target, before(step))
     store = ControlStore(target)
     try:
         assert migrations.VERSION >= 82

@@ -20,7 +20,6 @@ from sandbox_science.orchestrator import question_tool
 from sandbox_science.orchestrator.context.history import body
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.documents import store_path
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.question_tool import CANCELLED, STOPPED, QuestionTool
 from sandbox_science.orchestrator.questions import Answer, Question, Questions
@@ -30,6 +29,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .scripted import ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env-1")
 CURVES = [

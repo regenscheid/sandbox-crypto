@@ -32,13 +32,13 @@ from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.orchestrator.delegation.effects import SESSION_TOOLS, reach
 from sandbox_science.orchestrator.delegation.fence import ChildFence
 from sandbox_science.orchestrator.effects import UnknownEffectError
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .loop_harness import PLAN, USER_PLANS
+from .scripted import ToolCall
 from .test_capability_assembly import offered
 from .test_child_requests import stores as stores
 

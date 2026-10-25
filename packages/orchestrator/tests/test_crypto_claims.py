@@ -25,8 +25,8 @@ from sandbox_science.orchestrator.consistency.models import (
 )
 from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
 from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunner
-from sandbox_science.orchestrator.model import ScriptedModel
 
+from .scripted import ScriptedModel
 from .test_consistency import MAIN, anchor, claim, dispatch
 from .test_consistency import store as store
 

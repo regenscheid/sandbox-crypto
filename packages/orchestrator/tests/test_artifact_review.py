@@ -36,7 +36,6 @@ from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import Author, DocumentError, DocumentStore, store_path
-from sandbox_science.orchestrator.model import ScriptedModel, ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -46,6 +45,8 @@ from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
+
+from .scripted import ScriptedModel, ToolCall
 
 TOKEN = "test-secret-artifact-review-0123456789"
 

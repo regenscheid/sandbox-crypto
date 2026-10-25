@@ -21,12 +21,13 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.effects import UnknownEffectError
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall, ToolSpec
+from sandbox_science.orchestrator.model import ModelTurn, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Request, Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .control_versions import older_store
+from .scripted import ScriptedModel, ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env-p")
 RUN = "20261016T030000000000Z-run-1"

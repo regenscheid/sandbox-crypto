@@ -24,11 +24,13 @@ from sandbox_science.orchestrator.documents.annotations import Annotations, dump
 from sandbox_science.orchestrator.documents.tool import WorkRequests
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import Message, ModelTurn, ScriptedModel, ToolSpec
+from sandbox_science.orchestrator.model import Message, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
+
+from .scripted import ScriptedModel
 
 AGENT = Author(kind="agent", session_id="a", run_id="run-a", role="main", model="scripted")
 TEXT = (

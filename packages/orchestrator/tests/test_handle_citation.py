@@ -31,10 +31,10 @@ from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunne
 from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, TASK_PROMPT, TASK_VERSION
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
-from sandbox_science.orchestrator.model import ScriptedModel
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .scripted import ScriptedModel
 from .test_consistency import (
     MAIN,
     anchor,

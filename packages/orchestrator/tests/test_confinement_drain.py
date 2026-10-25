@@ -33,13 +33,13 @@ from sandbox_science.orchestrator.delegation.records import Delegation, Delegati
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.hooks import Closing, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock, eventually
 
+from .scripted import ToolCall
 from .test_consistency import claim, dispatch, raise_finding
 from .test_tool_journal import RUN, logger
 from .test_tool_journal import projects as projects

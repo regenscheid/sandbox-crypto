@@ -31,7 +31,6 @@ from sandbox_science.orchestrator.model import (
     Message,
     ModelError,
     ModelTurn,
-    ToolCall,
     ToolSpec,
 )
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -44,6 +43,7 @@ from .loop_harness import PROJECT, SESSION, TOKEN, Harness
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .scripted import ToolCall
 
 pytestmark = pytest.mark.slow
 

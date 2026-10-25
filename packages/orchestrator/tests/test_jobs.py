@@ -39,19 +39,14 @@ from sandbox_science.orchestrator.jobs import (
 )
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import (
-    Message,
-    ModelError,
-    ModelTurn,
-    ScriptedModel,
-    ToolCall,
-    ToolSpec,
-)
+from sandbox_science.orchestrator.model import Message, ModelError, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.watcher_prompt import assemble_watcher
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import FakeClock, eventually
+
+from .scripted import ScriptedModel, ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
 

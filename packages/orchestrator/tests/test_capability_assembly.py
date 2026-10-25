@@ -25,13 +25,16 @@ from sandbox_science.orchestrator.documents.tool import SPECS as DOCUMENT_SPECS
 from sandbox_science.orchestrator.jobs import JOB_SPECS, JobNotices
 from sandbox_science.orchestrator.ledger.tool import SPECS as LEDGER_SPECS
 from sandbox_science.orchestrator.memory_tools import SPECS as MEMORY_SPECS
-from sandbox_science.orchestrator.model import ToolCall, ToolSpec
+from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.plan_tools import SPECS as PLAN_SPECS
+from sandbox_science.orchestrator.purpose import offered as with_purpose
 from sandbox_science.orchestrator.question_tool import SPECS as QUESTION_SPECS
 from sandbox_science.orchestrator.resource_hooks import SPEC as RESOURCE_SPEC
 from sandbox_science.orchestrator.skills.tool import SPEC as SKILL_SPEC
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+
+from .scripted import ToolCall
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="e", actor="agent")
 
@@ -96,12 +99,13 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
         sort_keys=True,
     )
     expected = {
-        "main": "6fb845ffdaa3a11b3e75fc872afafd74cbe2b9b279b2bb3998748da752705751",
-        "task": "fd0e9f1e8bc1fa76aaeccffd7a45e7d1649b757ac3afe3982e44626a407c980d",
-        "check": "440721f01af752f5a4acb160e9416b7f904f9a518c32093f6aeae99aa1371806",
+        "main": "1a6278bc6532130c179b8fdfb740974917ceac92e32c06de2910ae9f4b2f2b01",
+        "task": "89ceafbc69afcb821538d3ec2b87002542d7912af8c21da01441232124d0b0ec",
+        "check": "4de8bf0a2ce1624c968a7ea5132ec0d28970600f2d2452a301a23bf69d5dabeb",
     }
     assert hashlib.sha256(encoded.encode()).hexdigest() == expected[role]
-    assert toolbox.specs == tuple(entry.spec for entry in toolbox.entries.values())
+    # Each as the model is offered it, with the required purpose_note (Purpose 1).
+    assert toolbox.specs == tuple(with_purpose(entry.spec) for entry in toolbox.entries.values())
 
 
 @pytest.mark.parametrize("role", ["main", "task", "check"])

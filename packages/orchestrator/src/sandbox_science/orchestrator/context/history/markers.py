@@ -41,6 +41,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
 
+from sandbox_science.orchestrator.purpose import without
+
 from .archive import PAGE
 from .record import FoldRecord, flat
 from .skeleton import failed, outcome_of
@@ -302,7 +304,8 @@ def _succeeded(
                 calls.clear()
                 for call in row.entry.tool_calls:
                     function = cast(Json, call.get("function") or {})
-                    args = _same(str(function.get("arguments") or ""))
+                    # The same call whatever its purpose says (Purpose 3).
+                    args = _same(without(str(function.get("arguments") or "")))
                     digest = hashlib.sha256(args.encode()).hexdigest()
                     calls[row.run, str(call.get("id"))] = (str(function.get("name")), digest)
             elif row.entry.kind == "tool_result":

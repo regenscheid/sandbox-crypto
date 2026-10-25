@@ -11,6 +11,10 @@ added it. A message the platform writes is sent with a header line naming its ID
 kind, such as ``[msg-5f0c2e9a41d7b386 · tool result · sage]``, and with a backslash
 before each line of its content that looks like one (``escape``): ``Archived.chat``
 renders that, the same each time, so that what a model call was sent can be rebuilt.
+A tool result whose call named its purpose (its ``purpose_note``) keeps the purpose,
+and its header names it, quoted as the agent's: ``[msg-… · tool result · sage ·
+purpose: "…"]``. A result archived before purposes has none, so its header renders as
+it was sent.
 Changing ``header`` or ``escape`` changes how earlier messages render, which the prompt
 cache and Claude's thinking bind to, so either needs a new scheme rather than an edit.
 A model's answer keeps its content as the model wrote it, beside the gateway's native
@@ -53,6 +57,8 @@ from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOU
 from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
+from sandbox_science.orchestrator.purpose import PurposeError
+from sandbox_science.orchestrator.purpose import check as check_purpose
 
 from .limits import METADATA_BYTES, WorkingMemoryLimitError
 from .operations import (
@@ -124,6 +130,7 @@ _FIELDS: Final = (
     "alias",
     "prefix",
     "adapter_state",
+    "purpose",
 )
 _COLUMNS: Final = ", ".join((*_PLACE, *_FIELDS))
 _TERM: Final = re.compile(r'"([^"]*)"|(\S+)')
@@ -134,12 +141,19 @@ _JOINED: Final = (
 _INDEXES: Final = ("archive_words", "archive_trigrams")
 
 
-def header(message_id: str, kind: str, source: str | None = None) -> str:
+def header(
+    message_id: str, kind: str, source: str | None = None, purpose: str | None = None
+) -> str:
     """The first line of a message the platform writes (CM-4a): its ID, its kind and,
-    for a notice or a tool result, its source or tool."""
+    for a notice or a tool result, its source or tool; for a tool result whose call
+    named its purpose, the purpose, quoted and labelled as the agent's. A purpose holds
+    no ``[``, ``]``, ``"`` or line break (``purpose.check``), so it cannot close the
+    header or start a line."""
     parts = [message_id, LABELS[kind]]
     if source and kind in ("notice", "tool_result"):
         parts.append(_UNSAFE.sub("_", source)[:64])
+    if purpose is not None and kind == "tool_result":
+        parts.append(f'purpose: "{purpose}"')
     return "[" + " · ".join(parts) + "]\n"
 
 
@@ -213,6 +227,9 @@ class Entry:
     """The digest of what the model was given for an answer (``model.prefix_digest``)."""
     adapter_state: Json | None = None
     """What the adapter that made an answer keeps of its call (``ModelTurn``)."""
+    purpose: str | None = None
+    """A tool result's call's purpose, as the model wrote it, when it named a valid one
+    (docs/specs/tools.md, Purpose 4): agent text, which its header quotes."""
     saved: Mapping[str, str] = field(default_factory=dict[str, str], compare=False)
     """The texts of the files saved behind a tool result's sample, by path, as the run
     gives them to the archive; ``Archive.files`` reads them back."""
@@ -321,7 +338,9 @@ class Archived:
                 prefix=entry.prefix,
                 adapter_state=entry.adapter_state,
             )
-        content = header(self.message_id, entry.kind, entry.source) + escape(entry.content or "")
+        content = header(self.message_id, entry.kind, entry.source, entry.purpose) + escape(
+            entry.content or ""
+        )
         message: Json = {"role": entry.role, "content": content}
         if entry.call_id is not None:
             message["tool_call_id"] = entry.call_id
@@ -408,6 +427,13 @@ class Archive:
             raise ControlError(INVALID_REQUEST, "a tool record must accompany a tool result")
         if model_usage is not None and entry.kind != "assistant":
             raise ControlError(INVALID_REQUEST, "model usage must accompany an assistant response")
+        if entry.purpose is not None:
+            if entry.kind != "tool_result":
+                raise ControlError(INVALID_REQUEST, "only a tool result names a purpose")
+            try:
+                check_purpose(entry.purpose)
+            except PurposeError as error:
+                raise ControlError(INVALID_REQUEST, error.message) from None
         created = self.clock.now().astimezone(UTC).isoformat()
         # Trusted repositories may join an already-authorized write so their durable
         # decision and visible archive entry commit together; external input cannot set Tx.
@@ -508,8 +534,8 @@ class Archive:
         """A message's place and labels without loading any of its body fields."""
         with self.control.read() as tx:
             row = tx.sql.execute(
-                "SELECT session,position,run,parent,created,role,kind,source,call_id,model "
-                "FROM archive_messages WHERE project=? AND message_id=?",
+                "SELECT session,position,run,parent,created,role,kind,source,call_id,model,"
+                "purpose FROM archive_messages WHERE project=? AND message_id=?",
                 (project, message_id),
             ).fetchone()
         if row is None:
@@ -525,6 +551,7 @@ class Archive:
             "source",
             "call_id",
             "model",
+            "purpose",
         )
         return {"message_id": message_id, **dict(zip(keys, row, strict=True))}
 
@@ -571,6 +598,7 @@ class Archive:
                 call_id=cast(str | None, info["call_id"]),
                 tool_calls=tuple(json.loads(raw_calls or "[]")),
                 model=cast(str | None, info["model"]),
+                purpose=cast(str | None, info.get("purpose")),
             ),
         )
 
@@ -702,7 +730,7 @@ class Archive:
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT message_id,session,position,run,parent,created,role,kind,source,"
-                "call_id,model "
+                "call_id,model,purpose "
                 "FROM archive_messages WHERE project=? AND session=? AND position>=? "
                 "AND position<=? AND (? IS NULL OR run IN (SELECT value FROM json_each(?)) "
                 "OR message_id IN (SELECT value FROM json_each(?))) "
@@ -730,6 +758,7 @@ class Archive:
             "source",
             "call_id",
             "model",
+            "purpose",
         )
         return [dict(zip(keys, row, strict=True)) for row in rows]
 
@@ -1044,13 +1073,13 @@ def _hit(
         raise ControlError(NOT_FOUND, "search hit's immutable message disappeared")
     if size > METADATA_BYTES:
         row = db.execute(
-            "SELECT session,position,run,parent,created,role,kind,source,call_id,model "
-            "FROM archive_messages WHERE project=? AND message_id=?",
+            "SELECT session,position,run,parent,created,role,kind,source,call_id,model,"
+            "purpose FROM archive_messages WHERE project=? AND message_id=?",
             (project, message_id),
         ).fetchone()
         if row is None:
             raise ControlError(NOT_FOUND, "search hit's immutable message disappeared")
-        session, position, run, parent, created, role, kind, source, call_id, model = row
+        session, position, run, parent, created, role, kind, source, call_id, model, purpose = row
         metadata = Archived(
             project,
             message_id,
@@ -1059,7 +1088,7 @@ def _hit(
             run,
             parent,
             created,
-            Entry(role, kind, None, source=source, call_id=call_id, model=model),
+            Entry(role, kind, None, source=source, call_id=call_id, model=model, purpose=purpose),
         )
         snippet = (
             _snippet(text, needles)

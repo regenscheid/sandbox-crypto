@@ -32,15 +32,12 @@ from sandbox_science.orchestrator.consistency.rubric import (
 from sandbox_science.orchestrator.consistency.runner import SPECS, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, store_path
-from sandbox_science.orchestrator.model import (
-    ModelError,
-    ModelTurn,
-    ScriptedModel,
-    ToolCall,
-    ToolSpec,
-)
+from sandbox_science.orchestrator.model import ModelError, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.purpose import GUIDANCE, offered_all
 from sandbox_science.orchestrator.runstate import RunState
+
+from .scripted import ScriptedModel, ToolCall
 
 
 @pytest.fixture
@@ -61,9 +58,10 @@ def store(tmp_path):
 
 def bundle():
     """The reviewer's input as the runner assembles it: format 3, with the re-check
-    instructions (CR-42, CR-43)."""
+    instructions (CR-42, CR-43) and the purpose guidance, and the tools as the runner
+    offers them, each with the required purpose_note (Purpose 1)."""
     return assemble_reviewer(
-        RUBRIC, RUBRIC_VERSION, SPECS, None, recheck_pin(RECHECK_VERSION, RECHECK)
+        RUBRIC, RUBRIC_VERSION, offered_all(SPECS), None, recheck_pin(RECHECK_VERSION, RECHECK)
     )
 
 
@@ -88,7 +86,8 @@ def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     pin = original.provenance
     assert (pin.format_version, pin.assembly_version) == (3, "sandbox-reviewer-bundle-3")
     assert pin.recheck == recheck_pin(RECHECK_VERSION, RECHECK)
-    assert original.system == RUBRIC + "\n\n" + RECHECK
+    assert pin.purpose is not None
+    assert original.system == RUBRIC + "\n\n" + RECHECK + "\n\n" + GUIDANCE
     assert pin.rubric_text == RUBRIC
     assert pin.rubric_version == RUBRIC_VERSION
     assert pin.rubric_bytes == len(RUBRIC.encode())
@@ -99,7 +98,8 @@ def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     assert assemble_reviewer(RUBRIC + "\n", RUBRIC_VERSION, SPECS).provenance != pin
     assert assemble_reviewer(RUBRIC, RUBRIC_VERSION, tuple(reversed(SPECS))).provenance != pin
     copied = tuple(
-        ToolSpec(s.name, s.description, dict(reversed(s.parameters.items()))) for s in SPECS
+        ToolSpec(s.name, s.description, dict(reversed(s.parameters.items())))
+        for s in offered_all(SPECS)
     )
     reordered = assemble_reviewer(
         RUBRIC, RUBRIC_VERSION, copied, None, recheck_pin(RECHECK_VERSION, RECHECK)
@@ -162,8 +162,11 @@ async def test_actual_multi_turn_input_is_reserved_before_each_call(store):
 
         async def complete(self, messages, tools):
             self.calls += 1
-            assert messages[0] == {"role": "system", "content": RUBRIC + "\n\n" + RECHECK}
-            assert json.dumps(projection(tools)) == unchanged
+            assert messages[0] == {
+                "role": "system",
+                "content": RUBRIC + "\n\n" + RECHECK + "\n\n" + GUIDANCE,
+            }
+            assert json.dumps(projection(tools)) == json.dumps(projection(offered_all(SPECS)))
             assert json.loads(messages[1]["content"]) == {
                 "review": review,
                 "instruction": "Read review_manifest first. Check only this pinned snapshot.",

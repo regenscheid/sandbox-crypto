@@ -27,7 +27,7 @@ from sandbox_science.orchestrator.harness import (
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.memory_tools import MemoryTool
-from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.model import ModelTurn
 from sandbox_science.orchestrator.plan_tools import PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
@@ -35,6 +35,7 @@ from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .scripted import ScriptedModel, ToolCall
 from .test_run_harness import Sink, Worker
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
