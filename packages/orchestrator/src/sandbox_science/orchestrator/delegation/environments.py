@@ -411,7 +411,15 @@ async def reconcile(
         )
         try:
             if planned is not None:
-                holder, (files, named) = planned
+                holder, own = planned
+                (files, named), others = await threaded(
+                    records.shared_plan,
+                    context.project_id,
+                    context.session_id,
+                    holder.delegation_id,
+                    environment.environment_id,
+                    own,
+                )
                 account = await placement.close(
                     environment.environment_id,
                     holder.delegation_id,
@@ -423,6 +431,14 @@ async def reconcile(
                     context.session_id,
                     holder.delegation_id,
                     account,
+                )
+                await threaded(
+                    records.handed_back,
+                    context.project_id,
+                    context.session_id,
+                    others,
+                    account,
+                    holder.delegation_id,
                 )
             else:
                 await placement.end(environment.environment_id, reason)

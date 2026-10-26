@@ -69,6 +69,7 @@ from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
     Ending,
+    reopen_in,
 )
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
@@ -910,9 +911,13 @@ async def test_after_an_unavailable_environment_a_new_delegate_is_admitted(
 # A Resume through ``Recovery`` (CE-12).
 
 
-def _interrupted_tree(tmp_path: Path, environment_id: str) -> tuple[Any, Any, Any, str]:
+def _interrupted_tree(
+    tmp_path: Path, environment_id: str, *, reopened: bool = False
+) -> tuple[Any, Any, Any, str]:
     """A root and its task child, interrupted, whose delegation worked in
-    ``environment_id``."""
+    ``environment_id``; with ``reopened``, the child had returned a first result naming
+    ``basis.txt``, its parent's message reopened it, and its next run was interrupted
+    (PD-46)."""
     from pydantic import TypeAdapter
 
     from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
@@ -961,14 +966,39 @@ def _interrupted_tree(tmp_path: Path, environment_id: str) -> tuple[Any, Any, An
                     started_at=datetime.now(UTC), environment_id=environment_id,
                 ),
             )  # fmt: skip
-            delegations.end("p", "s", delegation, Ending("interrupted", "interrupted"))
+            if not reopened:
+                delegations.end("p", "s", delegation, Ending("interrupted", "interrupted"))
+                continue
+            held: dict[str, JsonValue] = {
+                "environment_id": environment_id,
+                "end": "held",
+                "plan": {"files": ["basis.txt"], "retained": []},
+            }
+            delegations.end(
+                "p", "s", delegation,
+                Ending("returned", "answered", result={"status": "partial"}, environment=held),
+            )  # fmt: skip
+            with state.projects.control.write() as tx:
+                tx.sql.execute(
+                    "UPDATE research_work SET state='completed' WHERE project='p' AND work=?",
+                    (run,),
+                )
+                found = reopen_in(tx.sql, "p", "s", delegation, AGAIN, cap=None)
+            works.admit(
+                "p", "s", AGAIN, parent=parent, work=found.work, predecessor=run,
+                epoch=found.epoch,
+            )  # fmt: skip
+            delegations.abandon("p", "s")  # the reopened run was interrupted
     works.interrupt("p", "s", RUN)
     return state, documents, works, CHILD
 
 
-@pytest.mark.parametrize("gone", [False, True])
+AGAIN = "20261017T030009000000Z-run-reopened"
+
+
+@pytest.mark.parametrize(("gone", "reopened"), [(False, False), (True, False), (False, True)])
 async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
-    tmp_path: Path, gone: bool
+    tmp_path: Path, gone: bool, reopened: bool
 ) -> None:
     from sandbox_science.contracts import KernelObservation
     from sandbox_science.orchestrator.continuity.recovery import Recovery
@@ -1029,7 +1059,9 @@ async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
         ) -> ChildEnvironment:
             return service.end(environment_id, request)
 
-    state, documents, works, child_run = _interrupted_tree(tmp_path, previous.environment_id)
+    state, documents, works, child_run = _interrupted_tree(
+        tmp_path, previous.environment_id, reopened=reopened
+    )
     done = json.dumps({"status": "complete", "summary": "Recovered"})
     harness = RealHarness(
         cast(WorkerClient, Resuming()),
@@ -1067,6 +1099,15 @@ async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
         assert back.delegation_id == continuation.delegation_id
         assert continuation.environment["end"] == "released"
         assert works.get("p", "s", child_run).state == "completed"
+        if reopened:
+            # The first result's file comes back in the environment's one hand-back,
+            # once, and the reopened delegation's account says with whom (PD-46).
+            assert back.files == ("basis.txt",)
+            original = records.get("p", "s", "dlg-" + "9" * 24)
+            assert original.environment is not None
+            assert original.environment["end"] == "released"
+            assert original.environment["handed_back_with"] == continuation.delegation_id
+            assert "plan" not in original.environment
     finally:
         documents.close()
         state.projects.close()

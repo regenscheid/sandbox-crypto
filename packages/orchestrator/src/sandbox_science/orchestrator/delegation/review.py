@@ -149,11 +149,28 @@ class Closer:
         environment_id = delegation.environment_id
         if self.placement is None or environment_id is None:
             return delegation
-        files, named = plan
         try:
+            # With what the environment's other delegations left planned: a Resume continues
+            # a reopened task in it under a delegation of its own (CE-12, PD-46).
+            (files, named), others = await threaded(
+                self.records.shared_plan,
+                project,
+                session,
+                delegation.delegation_id,
+                environment_id,
+                plan,
+            )
             retained = tuple(RetainedFile.model_validate(item) for item in named)
             account = await self.placement.close(
                 environment_id, delegation.delegation_id, (files, retained)
+            )
+            await threaded(
+                self.records.handed_back,
+                project,
+                session,
+                others,
+                account,
+                delegation.delegation_id,
             )
         except Exception:
             _log.warning(

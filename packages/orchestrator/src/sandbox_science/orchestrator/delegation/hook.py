@@ -698,8 +698,16 @@ class Delegations(TurnHook):
             # own, and is kept when it was ready (CE-4); a reopened task's earlier results'
             # files still come back (CE-6, PD-46).
             try:
-                plan = await self._earlier_plan(child.delegation_id)
+                plan, others = await self._earlier_plan(child.delegation_id, child.environment_id)
                 found = await self.placement.close(child.environment_id, child.delegation_id, plan)
+                await threaded(
+                    self.records.handed_back,
+                    self.context.project_id,
+                    self.context.session_id,
+                    others,
+                    found,
+                    child.delegation_id,
+                )
             except Exception:
                 _log.exception("child environment %s was not ended", child.environment_id)
             else:
@@ -709,17 +717,23 @@ class Delegations(TurnHook):
         )
 
     async def _earlier_plan(
-        self, delegation_id: str
-    ) -> tuple[tuple[str, ...], tuple[RetainedFile, ...]] | None:
-        """The hand-back of a delegation's earlier results, a reopened task's; ``None``
-        when it has none."""
+        self, delegation_id: str, environment_id: str
+    ) -> tuple[tuple[tuple[str, ...], tuple[RetainedFile, ...]] | None, tuple[str, ...]]:
+        """The hand-back of a delegation's earlier results, a reopened task's, and of
+        those its environment's other delegations left planned; ``None`` when there is
+        none; and those delegations."""
         context = self.context
-        files, named = await threaded(
-            self.records.union_plan, context.project_id, context.session_id, delegation_id, ((), ())
+        (files, named), others = await threaded(
+            self.records.shared_plan,
+            context.project_id,
+            context.session_id,
+            delegation_id,
+            environment_id,
+            ((), ()),
         )
         if not files and not named:
-            return None
-        return files, tuple(RetainedFile.model_validate(item) for item in named)
+            return None, others
+        return (files, tuple(RetainedFile.model_validate(item) for item in named)), others
 
     async def _end(
         self,

@@ -1719,18 +1719,28 @@ class Harness:
             }
         else:
             # Its end, other than a return, hands back every result's files: a reopened
-            # task's earlier results' too (CE-6, PD-46).
-            files, named = await threaded(
-                records.union_plan,
+            # task's earlier results', and those of the delegation a Resume continued it
+            # from in this environment (CE-6, CE-12, PD-46), in its one hand-back.
+            (files, named), others = await threaded(
+                records.shared_plan,
                 context.project_id,
                 context.session_id,
                 finished.delegation,
+                environment_id,
                 (plan[0], tuple(r.model_dump(mode="json") for r in plan[1])),
             )
             kept = await placement.close(
                 environment_id,
                 finished.delegation,
                 (files, tuple(RetainedFile.model_validate(r) for r in named)),
+            )
+            await threaded(
+                records.handed_back,
+                context.project_id,
+                context.session_id,
+                others,
+                kept,
+                finished.delegation,
             )
         if (previous := self.restarted.pop(environment_id, None)) is not None:
             kept["restarted"] = {

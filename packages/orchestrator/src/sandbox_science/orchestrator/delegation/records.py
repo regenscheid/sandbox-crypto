@@ -637,11 +637,28 @@ class DelegationRecords:
         with self.control.read() as tx:
             found = tx.sql.execute(
                 "SELECT environment_id FROM delegations WHERE project_id = ? AND session_id = ? "
-                "AND environment_id IS NOT NULL AND run IN (SELECT run FROM research_attempts "
+                "AND environment_id IS NOT NULL AND (run IN (SELECT run FROM research_attempts "
                 "WHERE project = ? AND session = ? AND work = ? UNION SELECT run FROM "
                 "research_continuations WHERE project = ? AND session = ? AND work = ?) "
+                # A reopened task whose new run never began is the work's by its results.
+                "OR delegation_id IN (SELECT r.delegation_id FROM delegation_results r "
+                "JOIN research_attempts a ON a.project = r.project_id "
+                "AND a.session = r.session_id AND a.run = r.run WHERE a.project = ? "
+                "AND a.session = ? AND a.work = ?)) "
                 "ORDER BY started_at DESC, delegation_id DESC LIMIT 1",
-                (project, session, project, session, work, project, session, work),
+                (
+                    project,
+                    session,
+                    project,
+                    session,
+                    work,
+                    project,
+                    session,
+                    work,
+                    project,
+                    session,
+                    work,
+                ),
             ).fetchone()
         return None if found is None else str(found[0])
 
@@ -998,6 +1015,56 @@ class DelegationRecords:
         with self.control.read() as tx:
             return _union(tx.sql, project, session, delegation_id, latest)
 
+    def shared_plan(
+        self,
+        project: str,
+        session: str,
+        delegation_id: str,
+        environment_id: str,
+        latest: tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]],
+    ) -> tuple[tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]], tuple[str, ...]]:
+        """What a child environment's one hand-back brings back as it goes (CE-6, PD-46):
+        ``latest`` with every result of ``delegation_id`` and of each other delegation
+        that worked in it (a Resume continues a reopened task in it under a delegation of
+        its own) and whose account still plans its hand-back; and those delegations, whose
+        accounts ``handed_back`` then closes."""
+        with self.control.read() as tx:
+            db = tx.sql
+            plans = [_union(db, project, session, delegation_id, latest)]
+            others: list[str] = []
+            for other, found in db.execute(
+                "SELECT delegation_id, environment FROM delegations WHERE project_id = ? "
+                "AND session_id = ? AND environment_id = ? AND delegation_id <> ? "
+                "AND ended IS NOT NULL AND coalesce(review, '') <> 'awaiting' "
+                "ORDER BY started_at, delegation_id",
+                (project, session, environment_id, delegation_id),
+            ).fetchall():
+                loaded: object = json.loads(found) if found is not None else None
+                account = cast(dict[str, JsonValue], loaded) if isinstance(loaded, dict) else None
+                if (planned := held_plan(account)) is None:
+                    continue
+                plans.append(_union(db, project, session, str(other), planned))
+                others.append(str(other))
+        return _merge(plans), tuple(others)
+
+    def handed_back(
+        self,
+        project: str,
+        session: str,
+        delegation_ids: Sequence[str],
+        account: dict[str, JsonValue],
+        by: str,
+    ) -> None:
+        """Close the planned hand-back of each of ``delegation_ids`` with ``account``, the
+        one hand-back of their environment, which ``by``'s close made."""
+        for other in delegation_ids:
+            self.closed_environment(
+                project,
+                session,
+                other,
+                {k: v for k, v in {**account, "handed_back_with": by}.items() if k != "restarted"},
+            )
+
     def accepted_for(self, project: str, session: str, parent: str) -> list[Delegation]:
         """The returned tasks of ``parent`` that the platform accepted for it as its run
         ended, which its own parent is told of (PD-46)."""
@@ -1259,6 +1326,14 @@ def _union(
         loaded: object = json.loads(found)
         if isinstance(loaded, dict) and (earlier := held_plan(cast(dict[str, JsonValue], loaded))):
             plans.append(earlier)
+    return _merge(plans)
+
+
+def _merge(
+    plans: Sequence[tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]],
+) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]:
+    """Hand-back plans as one, the first's first, each path once: a file a plan names by
+    its revision is not copied."""
     files: dict[str, None] = {}
     retained: dict[str, dict[str, JsonValue]] = {}
     for copy, named in plans:
