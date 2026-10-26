@@ -1957,6 +1957,75 @@ async def test_the_runtime_sandbox_is_bound_to_the_projects_revision_for_an_oper
     assert (await api.call("DELETE", path, LAUNCHER_TOKEN))[1]["unbound"] is False
 
 
+BINDER_TOKEN = "test-secret-binder-" + "0" * 24
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/v1/permission-requests?project=p1", None),
+        ("POST", "/v1/permission-requests/1/answer", {"approve": True, "scope": "call"}),
+        ("POST", "/v1/permission-requests/1/confirm", {}),
+        ("POST", "/v1/classifications/papers/drafts/" + "a" * 64 + "/accept", {}),
+        ("POST", "/v1/classifications/papers/drift/accept", {}),
+        ("POST", "/v1/mcp-listings", {}),
+        ("POST", "/v1/job-sandboxes/exec-1/release", {}),
+        ("POST", "/v1/recovery/fence", {}),
+        ("GET", "/v1/environments", None),
+        ("POST", "/v1/environments", {}),
+        ("DELETE", "/v1/environments/env-1", None),
+        ("GET", "/v1/ready", None),
+        ("GET", "/v1/runtime-sandboxes", None),
+        ("GET", "/v1/no-such-route", None),
+    ],
+)
+async def test_a_binding_only_client_reaches_the_runtime_binding_routes_alone(
+    setup: Setup,
+    aiohttp_client: ClientFactory,
+    tmp_path: Path,
+    method: str,
+    path: str,
+    body: object,
+) -> None:
+    """Review of a2/direct-wiring: the Kubernetes runtime manager's worker client binds and
+    unbinds the runtime's sandbox for its project and does nothing else."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    binder = ClientSettings(
+        name="manager", token_sha256=token_digest(BINDER_TOKEN), projects=("p1",),
+        binding_only=True,
+    )  # fmt: skip
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, binder))
+    )
+    api = Api(client, setup)
+    try:
+        assert await api.refused(method, path, BINDER_TOKEN, body) == (403, "policy_denied")
+        setup.environments.records.grant("p1", setup.policy)
+        bound = {"project_id": "p1", "sandbox_id": "sbx-agent"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", BINDER_TOKEN, bound)
+        assert (status, reply["policy"]) == (200, setup.policy)
+        other = {"project_id": "p2", "sandbox_id": "sbx-agent"}
+        assert await api.refused("POST", "/v1/runtime-sandboxes", BINDER_TOKEN, other) == (
+            403,
+            "policy_denied",
+        )
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-agent", BINDER_TOKEN)
+        assert (status, reply["unbound"]) == (200, True)
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_binding_only_client_has_no_other_permission() -> None:
+    for extra in ("operator", "recovery_control", "artifact_retention", "document_catalog"):
+        with pytest.raises(ValueError, match="binding_only"):
+            ClientSettings(
+                name="manager", token_sha256="0" * 64, projects=("p1",),
+                binding_only=True, **{extra: True},
+            )  # fmt: skip
+
+
 async def start_api(
     setup: Setup, aiohttp_client: ClientFactory, root: Path
 ) -> tuple[Api, ExecutionManager]:

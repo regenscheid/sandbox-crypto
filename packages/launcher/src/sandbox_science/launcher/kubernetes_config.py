@@ -73,9 +73,9 @@ DIRECT_MANAGER_FILES: tuple[str, ...] = (
     "agent-mcp-policy.yaml",
     "runtime-mcp.json",
 )
-"""The runtime manager's further keys with ``[mcp_direct]``: its operator token for the
-worker, which binds the runtime's sandbox (``WorkerLink``), the runtime sandbox's compiled
-MCP egress and the runtime client's servers (``ManagerMcp``)."""
+"""The runtime manager's further keys with ``[mcp_direct]``: its binding-only token for the
+worker (never its control token), which binds the runtime's sandbox (``WorkerLink``), the
+runtime sandbox's compiled MCP egress and the runtime client's servers (``ManagerMcp``)."""
 MANAGER_ONLY = frozenset(
     (*GATEWAY_PROFILE, "manager-control.token", "model.key", *DIRECT_MANAGER_FILES)
 )
@@ -464,7 +464,7 @@ class McpDirect(Model):
     connector calls made by the runtime's own client in its sandbox, through OpenShell's
     native rules and the policy middleware. The runtime manager compiles nothing: the site
     generator compiles the runtime sandbox's egress from the site's policy into the
-    manager's Secret, with an operator token for the worker that binds the sandbox. The
+    manager's Secret, with a binding-only token for the worker that binds the sandbox. The
     manager Pod registers ``provider`` with the gateway from the Secret
     ``provider_secret`` (made by the operator with ``kubectl create secret generic …
     --from-env-file=<path>``, docs/KUBERNETES-PREP.md) in an init container of its own,
