@@ -872,10 +872,22 @@ class Delegations(TurnHook):
                 )
                 for delegation_id, _ in abandoned:
                     _log.warning("delegation %s lost its process: interrupted", delegation_id)
-            if self.placement is not None and not self.recovering:
+            if (
+                self.placement is not None
+                and not self.recovering
+                and (
+                    self.limits.child_environments != "off"
+                    or await threaded(
+                        self.records.uses_child_environments,
+                        context.project_id,
+                        context.session_id,
+                    )
+                )
+            ):
                 # Child environments nothing will use: never written, or left idle (CE-4).
-                # Also under "off": a project switched off may still hold children. A
-                # recovering run's Resume decides its children's environments itself.
+                # Also under "off" when the session had children: a project switched off
+                # may still hold some. A recovering run's Resume decides its children's
+                # environments itself.
                 await reconcile(self.placement, self.records, self.limits)
         try:
             yield

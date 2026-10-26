@@ -290,13 +290,15 @@ def test_the_table_refuses_inconsistent_rows(control: ControlStore) -> None:
 
 def test_a_store_from_before_canaries_gains_the_table(tmp_path: Path) -> None:
     path = store_path(tmp_path)
-    with at_version(migrations.VERSION - 1):
+    # The version just before the canaries' step, wherever later steps put it.
+    before = migrations.BASELINE + migrations.MIGRATIONS.index(migrations._mcp_canaries) - 1
+    with at_version(before):
         older = ControlStore(path)
         older.initialize()
         older.close()
     db = sqlite3.connect(path)
     try:
-        assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION - 1,)
+        assert db.execute("PRAGMA user_version").fetchone() == (before,)
         assert db.execute(
             "SELECT count(*) FROM sqlite_master WHERE name = 'mcp_canaries'"
         ).fetchone() == (0,)

@@ -472,6 +472,17 @@ class DelegationRecords:
             ).fetchall()
         return [_delegation(row) for row in rows]
 
+    def uses_child_environments(self, project: str, session: str) -> bool:
+        """Whether any of the session's delegations was placed in a child environment:
+        a project switched to ``off`` may still hold some, which the reconcile ends."""
+        with self.control.read() as tx:
+            found = tx.sql.execute(
+                "SELECT 1 FROM delegations WHERE project_id = ? AND session_id = ? "
+                "AND environment_id IS NOT NULL LIMIT 1",
+                (project, session),
+            ).fetchone()
+        return found is not None
+
     def work_environment(self, project: str, session: str, work: str) -> str | None:
         """The child environment the latest of a research work's delegations worked in,
         if any had one: where a Resume continues it (CE-12)."""
