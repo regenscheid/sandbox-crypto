@@ -1020,12 +1020,13 @@ async def test_a_learned_ceiling_carries_to_the_next_run(harness: Harness) -> No
     the model took, is kept in the run's record; a later run whose first call fails for
     its length caps at it."""
     harness.gateway.per_token = 4.0
-    seed(harness, 18)  # about 106,000 tokens with the system message and tools
+    seed(harness, 20)  # about 118,000 tokens with the system message and tools: its cap
+    # leaves the prompt within 20% of the ceiling (MAX_PROMPT)
     first = await harness.run(
         "run-1", [Reply(calls=[("plan_read", {})]), Reply(status=400, error=TOO_LONG)]
     )
     capped = folds(first)["capped"]
-    assert 100_000 < capped < 120_000
+    assert 100_000 < capped < 130_000
     # Run 1's fold and stubs leave run 2 nothing above its floor to fold: it caps, and
     # stops for the length the gateway refused.
     second = await harness.run("run-2", [Reply(status=400, error=TOO_LONG)], status=3)
