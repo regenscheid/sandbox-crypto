@@ -90,6 +90,13 @@ The operation catalog is explicit:
   call ID are refused. A retry of the same item answers the recorded reply; the kept items
   are recorded in the call's tool record. The runtime's direct MCP client runs in its own
   sandbox; the host holds no MCP credential or placeholder.
+- Report a complete listing the runtime's direct MCP client read (`report_mcp_listing`,
+  runtime to host, D98): the server, each tool's name, digest and hint (at most 2,048) and
+  the listing's digest. The client first removes the tools its server's compiled native
+  rules deny, so the model never sees one. The host binds the project, session and run
+  (the attempt's, or with no attempt the canaries' project) and admits only one of the
+  attempt's connector servers or the canaries' servers, then forwards it to the worker,
+  which decides drift and records it. A listing the host or worker refuses is not shown.
 - In the other direction, list one MCP server's tools through the runtime's direct client
   for the control service's canaries (`list_mcp_tools`, host to runtime, D103): `tools/list`
   only, at most 32 pages within 15 s, answering the outcome (status, count, digest, error
