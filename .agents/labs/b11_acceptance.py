@@ -117,9 +117,11 @@ print(json.dumps({
 """
 
 PYGMENTIZE_SCRIPT = r"""set -e
-which=$(command -v pygmentize)
-printf 'which %s\n' "$which"
-if [ -L "$which" ]; then printf 'kind link %s\n' "$(readlink "$which")"; else printf 'kind file\n'; fi
+# The first pygmentize on PATH is the executor's package-wrapper link to the layer's;
+# the layer's own script must be a file, never a link into the base.
+printf 'which %s\n' "$(command -v pygmentize)"
+layer=/opt/sandbox-science/bin/pygmentize
+if [ -L "$layer" ]; then printf 'kind link %s\n' "$(readlink "$layer")"; else printf 'kind file\n'; fi
 printf 'version %s\n' "$(pygmentize -V)"
 printf 'highlight %s\n' "$(printf 'x = 1\n' | pygmentize -l python -f html | head -c 60)"
 """
