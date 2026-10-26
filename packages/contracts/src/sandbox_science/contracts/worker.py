@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 13
+PROTOCOL_VERSION: Final = 14
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -223,12 +223,13 @@ class CellRequest(Contract):
         return self
 
 
-Feature = Literal["pdf", "admission", "provisioning", "jobs", "job_sandboxes"]
+Feature = Literal["pdf", "admission", "provisioning", "jobs", "job_sandboxes", "child_environments"]
 """Capabilities beyond kernels that an environment can offer. ``pdf`` needs pdf_oxide (D59);
 ``admission`` means the worker admits hosts ahead of use (D69, ``AdmissionRequest``);
 ``provisioning`` that it installs capabilities and packages on request (``ProvisionRequest``,
 Conda provisioning); ``job_sandboxes`` that a job may name one of the capabilities'
-``job_profiles`` (D93)."""
+``job_profiles`` (D93); ``child_environments`` that a delegation may run in an
+environment of its own, made from this one (docs/specs/child-environments.md, CE-1)."""
 FEATURES: Final[tuple[Feature, ...]] = ("pdf", "jobs")
 """The features an executor may report; the worker adds ``admission`` itself."""
 PdfOperation = Literal["info", "pages", "search", "render", "draw"]

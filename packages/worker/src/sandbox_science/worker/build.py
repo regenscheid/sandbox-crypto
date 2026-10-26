@@ -21,6 +21,7 @@ from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
 from .catalog import CatalogError, load_catalog
+from .child_environments import ChildEnvironments
 from .classifications import ClassificationDesk, project_policy
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments, OpenShellCli, confirmed_daemon_loss
@@ -151,10 +152,13 @@ class WorkerParts:
     manager: ExecutionManager
     provisioner: Provisioner
     app: web.Application
+    children: ChildEnvironments | None = None
 
     async def close(self) -> None:
         """Stop the provisioner and the manager, then close every store, after the app."""
         try:
+            if self.children is not None:
+                await self.children.close()
             await self.provisioner.close()
             await self.manager.close()
             if self.provisioner.permissions is not None:
@@ -219,6 +223,10 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
         sandboxes = JobSandboxes(environments, store, clock=clock)
         sandboxes.port = ManagerPort(manager, provisioner)
         manager.job_sandboxes = sandboxes
+    children = None
+    if environments is not None and environments.settings.child_profiles:
+        children = ChildEnvironments(environments, store, clock=clock)
+        children.port = ManagerPort(manager, provisioner)
     desk = (
         PermissionDesk(
             provisioner.permissions, lambda: environments.records.listed(None), manager.clock
@@ -252,5 +260,8 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
     app = create_app(
         manager, token, environments, settings.clients, provisioner, documents,
         permission_desk=desk, classification_desk=review, monitor_desk=figures,
+        children=children,
     )  # fmt: skip
-    return WorkerParts(lock, store, documents, shared, environments, manager, provisioner, app)
+    return WorkerParts(
+        lock, store, documents, shared, environments, manager, provisioner, app, children
+    )

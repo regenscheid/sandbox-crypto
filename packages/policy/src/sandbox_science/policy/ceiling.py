@@ -164,6 +164,12 @@ def effective_resources(
         job_sandboxes=_clamp("job_sandboxes", requested.job_sandboxes, caps.job_sandboxes, notices)
         if requested.job_sandboxes is not None
         else None,
+        child_environments_max=_clamp(
+            "child_environments_max",
+            requested.child_environments_max,
+            caps.child_environments_max,
+            notices,
+        ),
         model_budget_usd_per_day=_clamp(
             "model_budget_usd_per_day",
             requested.model_budget_usd_per_day,

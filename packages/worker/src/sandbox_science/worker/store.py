@@ -33,6 +33,7 @@ from sandbox_science.contracts.jsonio import strict_loads
 from sandbox_science.contracts.output_observations import Gap, OutputPage, OutputReport, OutputScope
 
 from .artifact_retention import ArtifactRetention
+from .child_records import ChildRecords
 from .classification_receipts import ClassificationReceipts
 from .errors import WorkerError
 from .job_records import JobSandboxRecords
@@ -109,6 +110,7 @@ class Store:
         self.artifact_retention = ArtifactRetention(self._db)
         self.classification_receipts = ClassificationReceipts(self._db)
         self.job_sandboxes = JobSandboxRecords(self._db)
+        self.child_environments = ChildRecords(self._db)
         # Each start closes the gate of every environment with an unfinished operation
         # until the provisioner classifies it, and holds one marked for recovery:
         # never infer readiness from the absence of a gate row. A store from before

@@ -57,6 +57,7 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
 )
+from sandbox_science.contracts.child_environments import is_child_environment
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.policy import (
     HardFloor,
@@ -938,6 +939,12 @@ class Environments:
                 f"environment IDs ending in -job- and 12 hex digits are the worker's own, for"
                 f" job sandboxes; choose another than {request.environment_id!r}",
             )
+        if is_child_environment(request.environment_id):
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST,
+                f"environment IDs ending in -child- and 12 hex digits are the worker's own,"
+                f" for child environments; choose another than {request.environment_id!r}",
+            )
         async with self._lock(request.environment_id):
             existing = self.records.get(request.environment_id)
             if existing is not None and existing.project_id != request.project_id:
@@ -1063,9 +1070,57 @@ class Environments:
         ``ScheduleTimeoutError`` and is deleted by identity, as any failed creation is."""
         if JOB_ENVIRONMENT.fullmatch(environment_id) is None:
             raise WorkerError(ErrorKind.INTERNAL, f"{environment_id!r} is no job environment ID")
+        return await self._create_derived(
+            session_environment,
+            environment_id,
+            {"kind": "job", "job_id": job_id},
+            launch,
+            require_workspace_prefix=require_workspace_prefix,
+            schedule_timeout=schedule_timeout,
+        )
+
+    async def create_child(
+        self,
+        session_environment: str,
+        environment_id: str,
+        delegation_id: str,
+        session_id: str,
+        launch: str,
+        *,
+        require_workspace_prefix: bool,
+        schedule_timeout: float,
+    ) -> EnvironmentInfo:
+        """Create a child environment (CE-1, CE-3, CE-10): a new environment of kind
+        ``child`` for one delegated run, made as a job sandbox is, from the session
+        environment's image, policy revision, providers and admitted hosts. ``launch`` is
+        the child profile's driver configuration, narrowed by the policy's caps."""
+        if not is_child_environment(environment_id):
+            raise WorkerError(ErrorKind.INTERNAL, f"{environment_id!r} is no child environment ID")
+        return await self._create_derived(
+            session_environment,
+            environment_id,
+            {"kind": "child", "delegation_id": delegation_id, "session_id": session_id},
+            launch,
+            require_workspace_prefix=require_workspace_prefix,
+            schedule_timeout=schedule_timeout,
+        )
+
+    async def _create_derived(
+        self,
+        session_environment: str,
+        environment_id: str,
+        identity: dict[str, str],
+        launch: str,
+        *,
+        require_workspace_prefix: bool,
+        schedule_timeout: float,
+    ) -> EnvironmentInfo:
+        """An environment of another kind made from a session environment, under the new
+        environment's lock: its record first, then its sandbox."""
+        what = "a job sandbox" if identity["kind"] == "job" else "a child environment"
         async with self._lock(environment_id):
             if self.records.get(environment_id) is not None:
-                raise WorkerError(ErrorKind.CONFLICT, f"job environment {environment_id} exists")
+                raise WorkerError(ErrorKind.CONFLICT, f"environment {environment_id} exists")
             session = self.get(session_environment)
             if session.kind != "session" or session.state not in (
                 EnvironmentState.READY,
@@ -1073,7 +1128,7 @@ class Environments:
             ):
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE,
-                    f"environment {session_environment!r} is {session.state}; a job sandbox"
+                    f"environment {session_environment!r} is {session.state}; {what}"
                     " starts from a ready session environment",
                 )
             policy = self._policy(session.policy)
@@ -1088,21 +1143,22 @@ class Environments:
             while self.records.sandbox_taken(name):
                 name = new_sandbox_name()
             now = self.clock.now()
-            info = EnvironmentInfo(
-                environment_id=environment_id,
-                project_id=session.project_id,
-                profile=session.profile,
-                image=session.image,
-                sandbox=name,
-                policy=session.policy,
-                providers=providers,
-                state=EnvironmentState.CREATING,
-                findings=_findings(compiled),
-                admitted_hosts=compiled.admitted,
-                created_at=now,
-                updated_at=now,
-                kind="job",
-                job_id=job_id,
+            info = EnvironmentInfo.model_validate(
+                {
+                    "environment_id": environment_id,
+                    "project_id": session.project_id,
+                    "profile": session.profile,
+                    "image": session.image,
+                    "sandbox": name,
+                    "policy": session.policy,
+                    "providers": providers,
+                    "state": EnvironmentState.CREATING,
+                    "findings": _findings(compiled),
+                    "admitted_hosts": compiled.admitted,
+                    "created_at": now,
+                    "updated_at": now,
+                    **identity,
+                }
             )
             self.records.save(
                 info, driver_config=launch, require_workspace_prefix=require_workspace_prefix
@@ -1124,15 +1180,16 @@ class Environments:
                 }
             )
             self.records.save(ready)
-            _log.info("created job sandbox %s for job %s", name, job_id)
+            _log.info("created %s %s as environment %s", what, name, environment_id)
             return ready
 
     async def stop_job(self, environment_id: str) -> bool:
-        """Stop a job sandbox to retain it (JS-25): its executor goes, its disk stays, and
-        its CPU and memory are freed. Returns whether OpenShell says it is stopped."""
+        """Stop a job sandbox or a child environment to retain it (JS-25, CE-4): its
+        executor goes, its disk stays, and its CPU and memory are freed. Returns whether
+        OpenShell says it is stopped."""
         async with self._lock(environment_id):
             info = self.get(environment_id)
-            if info.kind != "job" or info.state is not EnvironmentState.READY:
+            if info.kind == "session" or info.state is not EnvironmentState.READY:
                 return info.state is EnvironmentState.STOPPED
             if self.release is not None:
                 await self.release(environment_id)
@@ -1144,7 +1201,7 @@ class Environments:
             try:
                 await self.cli.run("sandbox", "stop", info.sandbox)
             except WorkerError as error:
-                _log.warning("could not stop job sandbox %s: %s", info.sandbox, error.message)
+                _log.warning("could not stop sandbox %s: %s", info.sandbox, error.message)
                 return False
             return await self._stopped(info, wait=True)
 
@@ -1971,7 +2028,7 @@ class Environments:
         except NotReadyError as exc:
             raise ScheduleTimeoutError(
                 ErrorKind.UNAVAILABLE,
-                f"the job sandbox was not placed within {timeout:g} s; no node had room",
+                f"the sandbox was not placed within {timeout:g} s; no node had room",
             ) from exc
 
     async def _wait_ready(

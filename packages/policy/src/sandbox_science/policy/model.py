@@ -189,6 +189,10 @@ class Resources(StrictModel):
     job_sandboxes: Annotated[StrictInt, Field(ge=0, le=64)] | None = None
     """Job sandboxes a project may have creating, preparing, running or collecting at
     once (D93); unset at both layers means 0, so the feature is off until granted."""
+    child_environments_max: Annotated[StrictInt, Field(ge=0, le=64)] | None = None
+    """Child environments a project may have at once, for delegated runs that each work
+    in an environment of their own (docs/specs/child-environments.md, CE-9); unset at
+    both layers means 2, and 0 turns them off whatever the project's setting says."""
     model_budget_usd_per_day: Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)] | None = None
 
 
