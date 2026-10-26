@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- The session's agents from its run tree: those working now, then those that finished,
-     each by name with its state, in words (what it was asked, how it ended) rather than its
+<!-- The session's agents from its run tree: those working now, then the returned tasks
+     that await their parent's review (PD-46), then those that finished, each by name with
+     its state, in words (what it was asked, how it ended) rather than its
      record, and who delegated it when that was not the research agent. "View activity"
      shows a run's events, "Its transcript" the run view, "Its delegation card" the whole
      delegation (open when a link or a chat block names it, `focus`), "Context management"
@@ -10,7 +11,15 @@
   import { browserState } from '../lib/browserState';
   import type { Delegation, RunTree, TreeRun } from '../lib/api-types';
   import { clock, firstLine } from '../lib/conversation';
-  import { agentName, briefView, endedText, resultView, stateText } from '../lib/runTree';
+  import {
+    agentName,
+    briefView,
+    earlierResults,
+    endedText,
+    resultView,
+    standingText,
+    stateText,
+  } from '../lib/runTree';
   import { runHref, treeHref } from '../lib/router';
   import { visible } from '../lib/text';
   import AgentActivity from './AgentActivity.svelte';
@@ -38,7 +47,13 @@
     tree?.delegations.find((item) => item.delegation_id === run.delegation) ?? null;
   const runs = $derived([...(tree?.runs ?? [])].reverse());
   const running = $derived(runs.filter((run) => run.state === 'running'));
-  const finished = $derived(runs.filter((run) => run.state !== 'running'));
+  /** A returned task's latest run, while the task awaits its parent's review (PD-46). */
+  const reviewing = (run: TreeRun) => {
+    const record = delegation(run);
+    return record?.review === 'awaiting' && record.run === run.name;
+  };
+  const returned = $derived(runs.filter((run) => run.state !== 'running' && reviewing(run)));
+  const finished = $derived(runs.filter((run) => run.state !== 'running' && !reviewing(run)));
   /** The run that delegated a run, when that was not the research agent. */
   const delegator = (run: TreeRun) => {
     const parent = tree?.runs.find((item) => item.name === run.parent);
@@ -47,7 +62,7 @@
   /** How an agent stands, in a word or two: running, or how it ended. */
   function standing(run: TreeRun, record: Delegation | null): string {
     if (run.state === 'running') return 'running';
-    if (record?.ended) return record.ended.replaceAll('_', ' ');
+    if (record?.ended) return standingText(record);
     return stateText(run);
   }
   let section = $state<HTMLElement | null>(null);
@@ -138,7 +153,13 @@
     {#if record}
       <details class="agent-delegation" open={focus === record.delegation_id}>
         <summary>Its delegation card</summary>
-        <DelegationCard {projectId} {sessionId} runId={run.run_id} delegation={record} />
+        <DelegationCard
+          {projectId}
+          {sessionId}
+          runId={run.run_id}
+          delegation={record}
+          earlier={earlierResults(tree, record.delegation_id)}
+        />
       </details>
     {/if}
   </article>
@@ -150,6 +171,13 @@
     {#each running as run (run.name)}{@render card(run, true)}{:else}<p class="muted">
         No agent is working now.
       </p>{/each}
+    {#if returned.length}
+      <h2>Awaiting review</h2>
+      <p class="muted">
+        Returned to the agent that delegated them, which accepts each or sends it feedback.
+      </p>
+      {#each returned as run (run.name)}{@render card(run, false)}{/each}
+    {/if}
     {#if finished.length}
       <h2>Finished</h2>
       {#each finished as run (run.name)}{@render card(run, false)}{/each}

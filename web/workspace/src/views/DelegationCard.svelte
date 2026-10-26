@@ -9,15 +9,18 @@
      accounted for (PD-45) and its lessons, its own words (DA-27), and the rest, the
      report, why the plan fence refused calls or the result did not validate, and the
      files its calls recorded, with what they could not record, leading to the artifact
-     list of its run (RA-36). Agents'
+     list of its run (RA-36); and a returned task's review (PD-46): awaiting review, or
+     accepted or cancelled, by whom and why, with the parent's note, its result's number
+     and its earlier results folded. Agents'
      text is shown as text, each character a person may not see as its code point. Only
      props, so a test renders it on the server. -->
 <script lang="ts">
-  import type { Delegation } from '../lib/api-types';
+  import type { Delegation, DelegationResult } from '../lib/api-types';
   import { formatTime } from '../lib/format';
   import {
     briefView,
     deliverablesView,
+    earlierText,
     endedText,
     filesView,
     lessonsOf,
@@ -33,12 +36,15 @@
     sessionId,
     runId = null,
     delegation,
+    earlier = [],
   }: {
     projectId: string;
     sessionId: string;
     /** The delegated run's ID, by which the artifact list finds its files; null when unknown. */
     runId?: string | null;
     delegation: Delegation;
+    /** A reopened task's earlier results, oldest first (PD-46). */
+    earlier?: readonly DelegationResult[];
   } = $props();
   const files = $derived(filesView(delegation));
   // The artifact list takes identifiers only, as the server does.
@@ -95,9 +101,20 @@
       Model: {brief.model}{brief.limits ? `; limits granted: ${brief.limits}` : ''}
     </p>
   </details>
-  <p>{endedText(delegation)}</p>
+  <p>
+    {delegation.results > 1 ? `Result ${delegation.results} · ` : ''}{endedText(delegation)}
+  </p>
+  {#if delegation.reviewed_at}<p class="muted review">
+      {delegation.reviewed_by === 'platform' ? 'Closed by the platform' : 'Closed by its parent'}
+      {formatTime(delegation.reviewed_at)}{#if delegation.review_note}: <span class="said"
+          >{visible(delegation.review_note)}</span
+        >{/if}
+    </p>{/if}
   {#if delegation.ended !== null}
-    {#if delegation.ended_at}<p class="muted">Ended {formatTime(delegation.ended_at)}</p>{/if}
+    {#if delegation.ended_at}<p class="muted">
+        {delegation.results > 1 ? 'Returned again' : 'Ended'}
+        {formatTime(delegation.ended_at)}
+      </p>{/if}
     {#if reading}<p>{reading}</p>{/if}
     {#if result}
       {#if delegation.kind === 'task'}
@@ -162,6 +179,12 @@
         </ul>
       {/if}
       {#if files.gaps.length}<p class="problem">Not recorded: {files.gaps.join('; ')}.</p>{/if}
+    {/if}
+    {#if earlier.length}
+      <details class="earlier-results">
+        <summary>Its earlier results ({earlier.length})</summary>
+        {@render list(earlier.map(earlierText))}
+      </details>
     {/if}
     <p class="muted">
       Ran on {delegation.alias ? visible(delegation.alias) : 'an alias it did not name'}{delegation

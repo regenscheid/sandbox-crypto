@@ -84,6 +84,12 @@ const delegation = (id: string, fields: Partial<Delegation> = {}): Delegation =>
   files: null,
   environment_id: null,
   environment: null,
+  results: 0,
+  review: null,
+  reviewed_at: null,
+  reviewed_by: null,
+  review_reason: null,
+  review_note: null,
   ...fields,
 });
 
@@ -121,6 +127,7 @@ const tree: RunTree = {
     delegation('dlg-c', { run: 'grandchild', parent: 'child', brief: { task: 'Factor N.' } }),
   ],
   delegations_total: 2,
+  earlier: [],
 };
 
 describe('an agent message row', () => {
@@ -382,5 +389,181 @@ describe('the conversation', () => {
     );
     expect(Object.keys(views)).toHaveLength(2);
     for (const source of Object.values(views)) expect(String(source)).not.toContain('{@html');
+  });
+});
+
+describe("a returned task's review (PD-46)", () => {
+  const ID = 'dlg-0123456789abcdef01234567';
+  const reviewed: RunTree = {
+    runs: [
+      run('root', { role: 'main', parent: null, run_id: 'id-root' }),
+      run('first-run', { delegation: ID }),
+      run('second-run', { delegation: ID, started_at: '2026-10-25T11:00:00Z' }),
+      run('other-run', { delegation: 'dlg-b' }),
+      run('busy-run', { delegation: 'dlg-r', state: 'running', stopped: null }),
+    ],
+    delegations: [
+      delegation(ID, {
+        run: 'second-run',
+        brief: { task: 'Build the lattice basis.' },
+        ended: 'returned',
+        stopped: 'answered',
+        results: 2,
+        review: 'awaiting',
+        result: { status: 'complete', summary: 'Checked the 256-bit parameters.' },
+      }),
+      delegation('dlg-b', {
+        run: 'other-run',
+        brief: { task: 'Tabulate a^16 mod 17.' },
+        ended: 'returned',
+        stopped: 'answered',
+        results: 1,
+        review: 'accepted',
+        review_reason: 'parent_ended',
+        reviewed_by: 'platform',
+        reviewed_at: '2026-10-25T12:00:00Z',
+        result: { status: 'complete', summary: 'All ones.' },
+      }),
+      delegation('dlg-r', { run: 'busy-run', brief: { task: 'Factor N.' } }),
+    ],
+    delegations_total: 3,
+    earlier: [
+      {
+        delegation_id: ID,
+        number: 1,
+        run: 'first-run',
+        ended: 'returned',
+        stopped: 'answered',
+        report: null,
+        ended_at: '2026-10-25T10:30:00Z',
+        refused: null,
+        result: { status: 'partial', summary: 'The 128-bit basis is built‮.\nMore.' },
+        errors: [],
+        alias: null,
+        models: [],
+        read_entry: null,
+        read_proofs: null,
+        files: null,
+        environment: null,
+      },
+    ],
+  };
+
+  it('shows the outcome block awaiting review, its number and its earlier result folded', () => {
+    const target = show(ChildOutcome, {
+      projectId: 'p1',
+      sessionId: 's1',
+      delegationId: ID,
+      tree: reviewed,
+    });
+    const state = target.querySelector('.outcome-state')!.textContent!.replace(/\s+/g, ' ');
+    expect(state.trim()).toBe('Result 2 of 2 · It returned (answered) · awaiting review.');
+    const folded = target.querySelector<HTMLDetailsElement>('details.earlier-results')!;
+    expect(folded.open).toBe(false);
+    expect(folded.querySelector('summary')!.textContent).toBe('Earlier results (1)');
+    expect(folded.querySelector('li')!.textContent).toBe(
+      'Result 1 · returned, partial: The 128-bit basis is built⟦U+202E⟧.',
+    );
+    // Its transcript is its latest run's.
+    expect(
+      [...target.querySelectorAll('a')]
+        .find((a) => a.textContent === 'Its transcript')!
+        .getAttribute('href'),
+    ).toBe('#/projects/p1/sessions/s1/runs/second-run');
+  });
+
+  it('says when a notice named an earlier result than the latest', () => {
+    const target = show(ChildOutcome, {
+      projectId: 'p1',
+      sessionId: 's1',
+      delegationId: ID,
+      tree: {
+        ...reviewed,
+        delegations: [
+          { ...reviewed.delegations[0]!, results: 3 },
+          ...reviewed.delegations.slice(1),
+        ],
+      },
+    });
+    expect(target.textContent).toContain('Result 3 of 3');
+    const earlierNotice = show(ChildOutcome, {
+      projectId: 'p1',
+      sessionId: 's1',
+      delegationId: `${ID}.2`,
+      tree: {
+        ...reviewed,
+        delegations: [
+          { ...reviewed.delegations[0]!, results: 3 },
+          ...reviewed.delegations.slice(1),
+        ],
+      },
+    });
+    expect(earlierNotice.textContent!.replace(/\s+/g, ' ')).toContain(
+      'This notice was of result 2; the task was reopened since',
+    );
+  });
+
+  it('shows an acceptance for the parent on the card, by the platform and why', () => {
+    const target = show(DelegationCard, {
+      projectId: 'p1',
+      sessionId: 's1',
+      delegation: reviewed.delegations[1]!,
+    });
+    const text = target.textContent!.replace(/\s+/g, ' ');
+    expect(text).toContain(
+      'It returned (answered) · accepted for its parent, whose run ended without reviewing it.',
+    );
+    expect(text).toContain('Closed by the platform');
+    const card = show(DelegationCard, {
+      projectId: 'p1',
+      sessionId: 's1',
+      delegation: {
+        ...reviewed.delegations[0]!,
+        review: 'accepted',
+        review_reason: 'parent',
+        reviewed_by: 'root',
+        reviewed_at: '2026-10-25T12:00:00Z',
+        review_note: 'The 256-bit check‮ settles it.',
+      },
+      earlier: reviewed.earlier,
+    });
+    const said = card.textContent!.replace(/\s+/g, ' ');
+    expect(said).toContain('Result 2 · It returned (answered) · accepted by its parent.');
+    expect(said).toContain('Closed by its parent');
+    expect(said).toContain('The 256-bit check⟦U+202E⟧ settles it.');
+    expect(card.querySelector('details.earlier-results summary')!.textContent).toBe(
+      'Its earlier results (1)',
+    );
+  });
+
+  it('lists returned tasks apart from running and closed ones in the Agents panel', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 500 })),
+    );
+    const target = show(SessionAgents, { projectId: 'p1', sessionId: 's1', tree: reviewed });
+    const sections = [...target.querySelectorAll('h2')].map((h) => h.textContent);
+    expect(sections).toEqual(['Working now', 'Awaiting review', 'Finished']);
+    const after = (heading: string) => {
+      const found: string[] = [];
+      let node = [...target.querySelectorAll('h2')].find(
+        (h) => h.textContent === heading,
+      )!.nextElementSibling;
+      while (node && node.tagName !== 'H2') {
+        if (node.matches('article')) found.push(node.querySelector('strong')!.textContent!);
+        node = node.nextElementSibling;
+      }
+      return found;
+    };
+    expect(after('Working now')).toEqual(['Factor N.']);
+    expect(after('Awaiting review')).toEqual(['Build the lattice basis.']);
+    expect(after('Finished')).toEqual([
+      'Tabulate a^16 mod 17.',
+      'Build the lattice basis.',
+      'Research agent',
+    ]);
+    const pills = [...target.querySelectorAll('[data-delegation] .pill')].map((p) => p.textContent);
+    expect(pills).toContain('returned · awaiting review');
+    expect(pills).toContain('accepted');
   });
 });

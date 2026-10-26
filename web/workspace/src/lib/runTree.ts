@@ -7,7 +7,7 @@
  * files' paths are agents' text, shown with each character a person may not see as its
  * code point.
  */
-import type { Delegation, TreeRun } from './api-types';
+import type { Delegation, DelegationResult, RunTree, TreeRun } from './api-types';
 import { sizeText } from './pdfAnchors';
 import { visible } from './text';
 
@@ -135,11 +135,77 @@ export function briefView(delegation: Pick<Delegation, 'brief'>): BriefView {
 }
 
 /** How a delegation ended, in words: the platform's observation, then the run's stop. */
-export function endedText(delegation: Pick<Delegation, 'ended' | 'stopped'>): string {
+export function endedText(
+  delegation: Pick<Delegation, 'ended' | 'stopped'> &
+    Partial<Pick<Delegation, 'review' | 'review_reason'>>,
+): string {
   if (delegation.ended === null) return 'Running: no outcome yet.';
   const ended = delegation.ended.replaceAll('_', ' ');
   const stopped = delegation.stopped === null ? '' : ` (${visible(delegation.stopped)})`;
-  return `It ${ended === 'returned' ? 'returned' : `ended: ${ended}`}${stopped}.`;
+  const review = reviewText(delegation);
+  return `It ${ended === 'returned' ? 'returned' : `ended: ${ended}`}${stopped}${review ? ` · ${review}` : ''}.`;
+}
+
+const ACCEPTED: Record<string, string> = {
+  parent: 'accepted by its parent',
+  parent_ended: 'accepted for its parent, whose run ended without reviewing it',
+  session_closed: 'accepted as the session closed',
+  review_max: 'accepted after it waited too long for review',
+};
+
+/**
+ * A returned task's review (PD-46), in words: awaiting its parent's, or how it closed;
+ * null for a check, a delegation that has not returned, or one from before reviews.
+ */
+export function reviewText(
+  delegation: Partial<Pick<Delegation, 'review' | 'review_reason'>>,
+): string | null {
+  switch (delegation.review) {
+    case 'awaiting':
+      return 'awaiting review';
+    case 'cancelled':
+      return 'cancelled by its parent after it returned';
+    case 'accepted':
+      return ACCEPTED[delegation.review_reason ?? 'parent'] ?? 'accepted';
+    default:
+      return null;
+  }
+}
+
+/** A delegation's state in a word or two, as the Agents panel's pill shows it (PD-46). */
+export function standingText(delegation: Pick<Delegation, 'ended' | 'review'>): string {
+  if (delegation.ended === null) return 'running';
+  if (delegation.review === 'awaiting') return 'returned · awaiting review';
+  if (delegation.review) return delegation.review;
+  return delegation.ended.replaceAll('_', ' ');
+}
+
+/**
+ * A delegation outcome's notice key, as a notice names it: the delegation's ID for its
+ * first result, `<id>.<n>` for a reopened task's nth (PD-46).
+ */
+export function noticeKey(key: string): { delegation: string; result: number | null } {
+  const found = /^(dlg-[0-9a-f]{24})\.([0-9]+)$/.exec(key);
+  return found
+    ? { delegation: found[1]!, result: Number(found[2]) }
+    : { delegation: key, result: null };
+}
+
+/** A delegation's earlier results the tree lists, oldest first (PD-46). */
+export function earlierResults(
+  tree: Pick<RunTree, 'earlier'> | null,
+  delegationId: string,
+): DelegationResult[] {
+  return (tree?.earlier ?? []).filter((item) => item.delegation_id === delegationId);
+}
+
+/** An earlier result in a line: its number, how it ended, and its status and summary. */
+export function earlierText(item: DelegationResult): string {
+  const summary = text(record(item.result)['summary']);
+  const status = text(record(item.result)['status']);
+  const how = item.ended === 'returned' ? 'returned' : `ended: ${item.ended.replaceAll('_', ' ')}`;
+  const head = summary.split('\n')[0] ?? '';
+  return `Result ${item.number} · ${how}${status ? `, ${status}` : ''}${head ? `: ${head}` : ''}`;
 }
 
 /** A check's result as the delegated run returned it: its claims, each as text. */
