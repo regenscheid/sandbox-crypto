@@ -320,5 +320,7 @@ export function outcomeOf(text: string): Delegation | null {
     read_entry: typeof outcome.read_entry === 'boolean' ? outcome.read_entry : null,
     read_proofs: typeof outcome.read_proofs === 'boolean' ? outcome.read_proofs : null,
     files: null,
+    environment_id: null,
+    environment: null,
   };
 }

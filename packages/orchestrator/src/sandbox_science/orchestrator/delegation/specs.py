@@ -125,6 +125,13 @@ class TaskBrief(Contract):
     deliverables: tuple[Deliverable, ...] = Field(default=(), max_length=MAX_DELIVERABLES)
     """What the child is to hand back, which its result accounts for (PD-45); optional,
     and written once with the brief."""
+    environment: Literal["shared", "own"] | None = None
+    """Where it works, where the project gives tasks environments of their own (CE-2):
+    ``shared`` keeps a small task in the session's environment. ``own`` under a project
+    that gives none is answered with a notice, and the task shares."""
+    profile: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    """A child profile of the worker's, by name, for a task in its own environment (CE-3);
+    the project's otherwise. Never a size or a node."""
 
 
 class CheckBrief(Contract):
@@ -266,6 +273,17 @@ SPECS: Final = (
                         "required": ["title", "kind", "description"],
                         "additionalProperties": False,
                     },
+                },
+                "environment": {
+                    "type": "string",
+                    "enum": ["shared", "own"],
+                    "description": "For a task, optional, where the project gives tasks "
+                    "environments of their own: shared runs it in the session's environment",
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "For a task in its own environment, optional: a child "
+                    "profile of the project's by name",
                 },
                 "references": {
                     **SCHEMA,

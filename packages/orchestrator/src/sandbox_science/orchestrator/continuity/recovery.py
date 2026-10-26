@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.chat import session_lease
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.control.errors import CONFLICT, NOT_FOUND
+from sandbox_science.orchestrator.delegation.environments import continue_in
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.environment_claim import environment_claim
 from sandbox_science.orchestrator.harness import Admitted, RunRequest, tier_in_effect
@@ -521,13 +522,42 @@ class Recovery:
             requests=False,
             operator=False,
         )
+        context, session_environment = self._context(blueprint.context), None
+        if delegation is not None:
+            own = await self._own_environment(work, request, context, delegation)
+            if own is not None:
+                session_environment = context.environment_id
+                context = context.model_copy(update={"environment_id": own})
         return Admitted(
             request,
             run_id,
-            self._context(blueprint.context),
+            context,
             tuple(capabilities.languages),
             tuple(capabilities.features),
             True,
             plan.started,
             capabilities.kernel_reason,
+            session_environment=session_environment,
         )
+
+    async def _own_environment(
+        self, work: Work, request: RunRequest, context: ExecutionContext, delegation: str
+    ) -> str | None:
+        """Where a delegated continuation works (CE-12): in the child environment its
+        work's last delegation had, while it is still ready; in a new one, with its inputs
+        copied again, when that one is gone; in the session's when it had none."""
+        control = self.stores.projects.control
+        records = DelegationRecords(control, clock=self.harness.clock)
+        previous = await threaded(records.work_environment, self.project, self.session, work.work)
+        if previous is None:
+            return None
+        original = await threaded(
+            records.get, self.project, self.session, request.delegation or delegation
+        )
+        chosen, replaced = await continue_in(
+            self.harness.placement_for(context), previous, delegation, original.brief
+        )
+        if replaced is not None:
+            self.harness.restarted[chosen] = replaced
+        await threaded(records.place, self.project, self.session, delegation, chosen)
+        return chosen

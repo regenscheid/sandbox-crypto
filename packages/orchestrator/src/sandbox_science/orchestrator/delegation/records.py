@@ -61,9 +61,14 @@ TREE: Final = 500
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
     "ended_at, refused, acknowledged, result, errors, alias, models, read_entry, "
-    "read_proofs, files"
+    "read_proofs, files, environment_id, environment"
 )
-_JSON: Final = ("brief", "result", "errors", "models", "files")
+_JSON: Final = ("brief", "result", "errors", "models", "files", "environment")
+ENVIRONMENT_BYTES: Final = 65536
+"""The most a delegation's environment outcome takes, as UTF-8 JSON."""
+ChildEnvironments = Literal["off", "tasks", "all"]
+"""Which delegated runs work in an environment of their own (CE-2): none, tasks, or every
+delegation, checks included."""
 _OFFERED: Final = (
     "(d.parent = ? OR (? IS NULL AND NOT EXISTS (SELECT 1 FROM delegations AS p "
     "WHERE p.project_id = d.project_id AND p.session_id = d.session_id AND p.run = d.parent)))"
@@ -168,6 +173,13 @@ class DelegationSettings(Contract):
     fallback: Alias | None = None
     """The alias a delegated run calls when the gateway lists none of the one it was to
     call (PD-30); without it, such a delegation is refused."""
+    child_environments: ChildEnvironments = "off"
+    """Which delegated runs get an environment of their own, made from the session's
+    (docs/specs/child-environments.md, CE-2): ``off`` (every run shares the session's),
+    ``tasks`` (tasks do; checks share it) or ``all``. A task brief may ask to share."""
+    child_profile: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")] | None = None
+    """The worker's child profile for this project's child environments; ``None`` for the
+    pool's default (CE-3)."""
 
     @field_validator("models")
     @classmethod
@@ -216,6 +228,11 @@ class Delegation(Contract):
     """The artifact revisions and tombstones the child's calls recorded, as the platform
     observed them: at most 200 (``files``), their ``total`` and the calls' ``gaps``
     (RA-36). ``None`` when its calls recorded nothing."""
+    environment_id: str | None = None
+    """The child environment its run works in (CE-11); ``None`` when it shares the
+    session's."""
+    environment: dict[str, JsonValue] | None = None
+    """How its child environment ended, with the hand-back's account (CE-6, CE-11)."""
 
 
 @dataclass(frozen=True)
@@ -233,6 +250,7 @@ class Ending:
     read_entry: bool | None = None
     read_proofs: bool | None = None
     files: dict[str, JsonValue] | None = None
+    environment: dict[str, JsonValue] | None = None
 
 
 class DelegationRecords:
@@ -307,7 +325,8 @@ class DelegationRecords:
             try:
                 written = db.execute(
                     "INSERT INTO delegations (delegation_id, project_id, session_id, parent, "  # noqa: S608
-                    "run, kind, brief, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? "
+                    "run, kind, brief, started_at, environment_id) "
+                    "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? "
                     "WHERE (? IS NULL OR (SELECT count(*) FROM delegations WHERE project_id = ? "
                     "AND session_id = ? AND ended IS NULL) < ?) "
                     f"AND (? IS NULL OR NOT EXISTS ({_ON_TRACK}))",
@@ -320,6 +339,7 @@ class DelegationRecords:
                         delegation.kind,
                         _json(delegation.brief),
                         delegation.started_at.astimezone(UTC).isoformat(),
+                        delegation.environment_id,
                         cap,
                         project,
                         session,
@@ -405,7 +425,8 @@ class DelegationRecords:
             tx.sql.execute(
                 "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ?, "
                 "refused = ?, result = ?, errors = ?, alias = ?, models = ?, read_entry = ?, "
-                "read_proofs = ?, files = ? WHERE project_id = ? AND session_id = ? "
+                "read_proofs = ?, files = ?, environment = ? WHERE project_id = ? "
+                "AND session_id = ? "
                 "AND delegation_id = ? AND ended IS NULL",
                 (
                     ending.ended,
@@ -420,12 +441,43 @@ class DelegationRecords:
                     None if ending.read_entry is None else int(ending.read_entry),
                     None if ending.read_proofs is None else int(ending.read_proofs),
                     _files(ending.files),
+                    _environment(ending.environment),
                     project,
                     session,
                     delegation_id,
                 ),
             )
             return _one(tx.sql, project, session, delegation_id)
+
+    def work_environment(self, project: str, session: str, work: str) -> str | None:
+        """The child environment the latest of a research work's delegations worked in,
+        if any had one: where a Resume continues it (CE-12)."""
+        with self.control.read() as tx:
+            found = tx.sql.execute(
+                "SELECT environment_id FROM delegations WHERE project_id = ? AND session_id = ? "
+                "AND environment_id IS NOT NULL AND run IN (SELECT run FROM research_attempts "
+                "WHERE project = ? AND session = ? AND work = ? UNION SELECT run FROM "
+                "research_continuations WHERE project = ? AND session = ? AND work = ?) "
+                "ORDER BY started_at DESC, delegation_id DESC LIMIT 1",
+                (project, session, project, session, work, project, session, work),
+            ).fetchone()
+        return None if found is None else str(found[0])
+
+    def place(self, project: str, session: str, delegation_id: str, environment_id: str) -> None:
+        """Name the child environment of a running delegation that has none yet: a
+        continuation's, which a Resume reserves before it knows where it runs (CE-12).
+        Written once."""
+        with self.control.write() as tx:
+            changed = tx.sql.execute(
+                "UPDATE delegations SET environment_id = ? WHERE project_id = ? "
+                "AND session_id = ? AND delegation_id = ? AND ended IS NULL "
+                "AND (environment_id IS NULL OR environment_id = ?)",
+                (environment_id, project, session, delegation_id, environment_id),
+            ).rowcount
+        if changed != 1:
+            raise ControlError(
+                CONFLICT, f"delegation {delegation_id!r} has ended or works elsewhere"
+            )
 
     def abandon(
         self,
@@ -639,6 +691,32 @@ def _files(files: dict[str, JsonValue] | None) -> str | None:
         if len(text.encode()) <= FILES_BYTES or not listed:
             return text
         listed = listed[: len(listed) // 2]
+
+
+def _environment(environment: dict[str, JsonValue] | None) -> str | None:
+    """The environment's outcome as the table keeps it: its hand-back's lists cut until
+    the whole fits ``ENVIRONMENT_BYTES``."""
+    if environment is None:
+        return None
+    found = dict(environment)
+    while len(_json(found).encode()) > ENVIRONMENT_BYTES:
+        back = found.get("hand_back")
+        if not isinstance(back, dict):
+            return _json({k: v for k, v in found.items() if k != "hand_back"})
+        cut = dict(back)
+        longest = max(
+            (k for k, v in cut.items() if isinstance(v, list) and v),
+            key=lambda k: len(_json(cut[k])),
+            default=None,
+        )
+        if longest is None:
+            found.pop("hand_back")
+            continue
+        listed = cast(list[JsonValue], cut[longest])
+        cut[longest] = listed[: len(listed) // 2]
+        cut["cut"] = True
+        found["hand_back"] = cut
+    return _json(found)
 
 
 def _json(value: object) -> str:

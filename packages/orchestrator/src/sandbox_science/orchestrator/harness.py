@@ -34,6 +34,7 @@ from sandbox_science.contracts import (
     Location,
     new_id,
 )
+from sandbox_science.contracts.child_environments import is_child_environment
 from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.recovery import RecoveryFence
@@ -74,6 +75,13 @@ from .continuity.resources import ResourceRequests
 from .control import ControlError
 from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
+from .delegation.environments import (
+    UNAVAILABLE,
+    WALL_TIME,
+    ChildPlacement,
+    account,
+    hand_back_plan,
+)
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Deadline, Delegations
 from .delegation.models import ModelChoice
@@ -420,6 +428,9 @@ class Admitted:
     """Why the environment offers no Python kernel, when its executor said."""
     job_profiles: tuple[JobProfileOffer, ...] = ()
     """The job sandbox sizes the worker grants the project (D93)."""
+    session_environment: str | None = None
+    """For a delegated run in an environment of its own (CE-1), the session's, which
+    ``context`` no longer names; ``None`` when ``context`` is the session's."""
 
 
 async def admit(
@@ -651,6 +662,11 @@ class Harness:
         """The limits the gateway's model information gave, once it gave them."""
         self._learned: dict[str, int] = {}
         """Each alias's ceiling a context error capped, for later runs (CM-43)."""
+        self.restarted: dict[str, str] = {}
+        """Child environments a Resume made anew, each with the one it replaced, which
+        was gone (CE-12): the outcome says the child restarted."""
+        self.environment_poll = 5.0
+        """Seconds between looks at a child environment being made."""
 
     def project_policy(self, project: str) -> Callable[[], Awaitable[str | None]] | None:
         """How a claim reads the project's current policy revision, to follow a change
@@ -1367,6 +1383,25 @@ class Harness:
             stop=stop,
             recovering=recovering,
             clock=clock,
+            placement=self.placement(admitted),
+        )
+
+    def placement(self, admitted: Admitted) -> ChildPlacement:
+        """The session's child environments, through the worker (CE-1): made from the
+        session's environment, whichever environment ``admitted`` works in."""
+        context = admitted.context
+        if admitted.session_environment is not None:
+            context = context.model_copy(update={"environment_id": admitted.session_environment})
+        return self.placement_for(context)
+
+    def placement_for(self, context: ExecutionContext) -> ChildPlacement:
+        """The child environments made from ``context``'s environment, the session's."""
+        return ChildPlacement(
+            self.client,
+            context.model_copy(update={"authority": None}),
+            self.settings.min_isolation_tier,
+            self.clock,
+            self.environment_poll,
         )
 
     def _blueprint(self, admitted: Admitted) -> Blueprint:
@@ -1428,8 +1463,20 @@ class Harness:
                     update={"reasoning_effort": previous.reasoning_effort if previous else None}
                 )
         request = dataclasses.replace(request, model_profiles=profiles_for_child)
+        # A child of a run in its own environment is admitted in the session's: its own
+        # place is decided as it starts (CE-1), and its blueprint names the session's.
+        context = (
+            parent.context
+            if parent.session_environment is None
+            else parent.context.model_copy(update={"environment_id": parent.session_environment})
+        )
         return dataclasses.replace(
-            parent, request=request, run_id=child.run_id, started_at=child.started_at
+            parent,
+            request=request,
+            run_id=child.run_id,
+            started_at=child.started_at,
+            context=context,
+            session_environment=None,
         )
 
     async def run_child(
@@ -1443,9 +1490,53 @@ class Harness:
             raise ValueError("a delegated run needs the state directory's stores")
         admitted = self._child_admitted(parent, memory_version, child)
         sink = _ChildSink(child.run_id)
-        finished = await self.start(admitted, sink, stop=stop)
+        expires: datetime | None = None
+        if child.environment_id is not None:
+            # Its own environment (CE-4): the run starts once it is ready; one that never
+            # is ends the delegation ``failed``, its environment released.
+            placement = self.placement(admitted)
+            found = await placement.ready(child.environment_id)
+            if found.phase != "ready":
+                await threaded(
+                    WorkRecords(self.stores.projects.control).never_started,
+                    admitted.context.project_id,
+                    admitted.context.session_id,
+                    run_name(admitted.started_at, admitted.run_id),
+                    UNAVAILABLE,
+                )
+                return ChildEnd(
+                    UNAVAILABLE,
+                    True,
+                    None,
+                    errors=(
+                        f"environment_unavailable: {found.message or 'it was not made ready'}",
+                    ),
+                    alias=child.alias or self.delegated.alias,
+                    environment=account(found, None),
+                )
+            admitted = dataclasses.replace(
+                admitted,
+                context=admitted.context.model_copy(
+                    update={"environment_id": child.environment_id}
+                ),
+                session_environment=admitted.context.environment_id,
+            )
+            expires = found.expires_at
+        own_stop, expired = stop, asyncio.Event()
+        watch: asyncio.Task[None] | None = None
+        if expires is not None:
+            # Its profile's wall time ends the run as a limit (CE-9).
+            own_stop = asyncio.Event()
+            watch = asyncio.create_task(_until(stop, own_stop, expired, expires, self.clock))
+        try:
+            finished = await self.start(admitted, sink, stop=own_stop)
+        finally:
+            if watch is not None:
+                watch.cancel()
         if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
             finished.transcript.stopped = "interrupted"
+        elif finished.transcript.stopped == "cancelled" and expired.is_set():
+            finished.transcript.stopped = WALL_TIME
         completed = await self.finalize(finished, error=sink.error)
         if completed.child is None:
             raise RuntimeError("a delegated run completed without a child settlement")
@@ -1471,7 +1562,46 @@ class Harness:
             if finished.delegation is not None
             else None
         )
+        if end is not None and is_child_environment(finished.context.environment_id):
+            end = dataclasses.replace(end, environment=await self._close_environment(finished, end))
         return await self.finalizer().finish(finished, end=end, error=error)
+
+    async def _close_environment(self, finished: Finished, end: ChildEnd) -> dict[str, JsonValue]:
+        """Hand a delegated run's files back into the session's environment and end its
+        own (CE-4, CE-6); an interrupted run's is kept for a Resume to continue in
+        (CE-12)."""
+        environment_id = finished.context.environment_id
+        if finished.transcript.stopped == "interrupted":
+            return {
+                "environment_id": environment_id,
+                "end": "kept",
+                "message": "kept for a Resume of the run to continue in",
+            }
+        if self.stores is None or finished.delegation is None:
+            raise ValueError("a child environment's end needs the stores and its delegation")
+        context = finished.context
+        project = await threaded(self.stores.projects.get, context.project_id)
+        session = project.sessions.get(context.session_id)
+        if session is None:
+            raise ValueError("the delegated run's session is gone")
+        placement = self.placement_for(
+            context.model_copy(update={"environment_id": session.environment_id})
+        )
+        found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
+        plan = hand_back_plan(
+            end.result,
+            found.recorded if found is not None else {},
+            found.published if found is not None else (),
+            end.files,
+        )
+        kept = await placement.close(environment_id, finished.delegation, plan)
+        if (previous := self.restarted.pop(environment_id, None)) is not None:
+            kept["restarted"] = {
+                "replaced": previous,
+                "message": "its environment was gone at the Resume, so it restarted in a new"
+                " one with its inputs copied again",
+            }
+        return kept
 
     async def checkpoint_child(self, finished: Finished) -> ChildSettlement:
         """Save typed validation evidence before final persistence can complete work."""
@@ -1980,6 +2110,31 @@ def _recorded(
     kept: dict[str, JsonValue] = dict(files) if files is not None else {"total": 0, "files": []}
     kept["results"] = list[JsonValue](results)
     return kept
+
+
+async def _until(
+    stop: asyncio.Event,
+    own: asyncio.Event,
+    expired: asyncio.Event,
+    expires: datetime,
+    clock: Clock,
+) -> None:
+    """Set ``own`` when ``stop`` is set or ``expires`` passes, and ``expired`` for the latter."""
+    waiting = asyncio.ensure_future(stop.wait())
+    try:
+        while not waiting.done():
+            left = (expires - clock.now()).total_seconds()
+            if left <= 0:
+                expired.set()
+                break
+            pause = asyncio.ensure_future(clock.sleep(min(left, 60.0)))
+            try:
+                await asyncio.wait({waiting, pause}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                pause.cancel()
+    finally:
+        waiting.cancel()
+        own.set()
 
 
 class _ChildSink:
