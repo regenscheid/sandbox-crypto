@@ -148,7 +148,13 @@ export function endedInWait(entry: ToolEntry): string[] {
   return listed
     .map(object)
     .filter((one) => typeof one['ended'] === 'string' && typeof one['delegation_id'] === 'string')
-    .map((one) => one['delegation_id'] as string);
+    .map((one) =>
+      // A reopened task's later result is a block of its own, keyed as its notice is
+      // (PD-46).
+      typeof one['result_number'] === 'number' && one['result_number'] > 1
+        ? `${one['delegation_id'] as string}.${one['result_number']}`
+        : (one['delegation_id'] as string),
+    );
 }
 
 /** Who is who in a transcript: this run's name and its parent's, and any delegation's. */

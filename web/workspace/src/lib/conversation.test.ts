@@ -577,6 +577,32 @@ describe('agent messages and children’s outcomes (B10, item 2)', () => {
     expect((items[3] as ChildOutcomesItem).delegations).toEqual(['dlg-b']);
   });
 
+  it("shows a reopened task's later result as a block of its own (PD-46)", () => {
+    const events = [
+      event(1, 0, 'notice', { source: 'delegations', ids: ['dlg-a'] }),
+      event(2, 1, 'assistant', {
+        text: '',
+        tool_calls: [call('c1', 'wait_delegations', { delegation_ids: ['dlg-a'] })],
+      }),
+      event(3, 5, 'tool', {
+        call_id: 'c1',
+        name: 'wait_delegations',
+        result: JSON.stringify({
+          reason: 'ended',
+          delegations: [
+            { delegation_id: 'dlg-a', ended: 'returned', stopped: 'answered', result_number: 2 },
+          ],
+        }),
+        outcome: {},
+      }),
+      event(4, 6, 'notice', { source: 'delegations', ids: ['dlg-a.2'] }),
+      event(5, 7, 'assistant', { text: 'Accepted.', tool_calls: [] }),
+    ];
+    const items = foldTranscript(chatEntries(events), events);
+    const blocks = items.filter((item) => item.kind === 'child-outcomes') as ChildOutcomesItem[];
+    expect(blocks.map((item) => item.delegations)).toEqual([['dlg-a'], ['dlg-a.2']]);
+  });
+
   it('shows a delegation that ended without a wait as its outcome block alone', () => {
     const events = [
       event(1, 0, 'assistant', { text: 'Delegating.', tool_calls: [] }),
