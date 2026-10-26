@@ -793,9 +793,9 @@ class ChildEnvironments:
             async with self._lock(row.environment_id):
                 current = self._record(row.environment_id)
                 if current.phase == "retained":
-                    if current.retained_until is not None and current.retained_until <= now:
-                        if (await self._release(row.environment_id)).phase == "released":
-                            released.append(row.environment_id)
+                    due = current.retained_until is not None and current.retained_until <= now
+                    if due and (await self._release(row.environment_id)).phase == "released":
+                        released.append(row.environment_id)
                 elif now >= current.expires_at + timedelta(seconds=WALL_TIME_GRACE):
                     current = self.records.update(
                         row.environment_id,

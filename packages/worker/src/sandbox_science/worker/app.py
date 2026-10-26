@@ -372,9 +372,10 @@ def create_app(
         app[CLASSIFICATION_DESK] = classification_desk
         app.add_routes(CLASSIFICATION_ROUTES)
     if children is not None:
-        # Delegated runs' own environments (docs/specs/child-environments.md).
+        # Delegated runs' own environments (docs/specs/child-environments.md); without
+        # them, their routes answer ``unsupported``.
         app[CHILDREN] = children
-        app.add_routes(CHILD_ROUTES)
+    app.add_routes(CHILD_ROUTES)
     if monitor_desk is not None:
         # A project's monitor figures, counted from the records (D103).
         app[MONITOR_DESK] = monitor_desk
