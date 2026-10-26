@@ -12,6 +12,7 @@ filesystem_policy:
   - /dev/urandom
   - /dev/random
   - /opt/sandbox-science-frozen
+  - /opt/sandbox-science-base
   read_write:
   - /tmp
   - /dev/null

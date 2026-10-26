@@ -23,7 +23,9 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
-PREFIX = Path(sys.prefix)
+PREFIX = Path(sys.base_prefix)
+"""The image's Conda environment: in the research images the base under the workspace's layer,
+whose interpreter runs this (docs/IMAGES.md, "The environment outside the workspace")."""
 RECORD_DIR = Path("/usr/share/sandbox-science")
 
 PERMISSIVE = frozenset(
@@ -324,19 +326,28 @@ def command_record(args: argparse.Namespace) -> None:
     workspace_prefix = Path("/sandbox/.sandbox-science-prefix")
     home = Path("/sandbox")
     if research:
+        alias = Path("/opt/sandbox-science")
         if (
-            PREFIX.resolve() != workspace_prefix
+            Path("/opt/sandbox-science-base") != PREFIX
+            or PREFIX.is_symlink()
             or workspace_prefix.is_symlink()
-            or not Path("/opt/sandbox-science").is_symlink()
+            or not (workspace_prefix / ".sandbox-science-layer").is_file()
+            or not alias.is_symlink()
+            or alias.resolve() != workspace_prefix
         ):
-            problems.append("research prefix must live under /sandbox with its /opt symlink")
+            problems.append(
+                "research base must be /opt/sandbox-science-base, under a layer in /sandbox"
+                " that /opt/sandbox-science links to"
+            )
         if set(home.iterdir()) != {workspace_prefix}:
             problems.append("research home contains files outside its package prefix")
         if (workspace_prefix / ".sandbox-science-prefix-id").exists():
             problems.append("image must not seed a workspace prefix identity")
+        record["workspace_prefix"] = str(workspace_prefix)
         record["workspace_prefix_protocol"] = 1
     # An extracted package cache would duplicate the retained base package bytes.
-    for directory in (PREFIX / "pkgs",) if research else (home, PREFIX / "pkgs"):
+    pkgs = (PREFIX / "pkgs", workspace_prefix / "pkgs")
+    for directory in pkgs if research else (home, PREFIX / "pkgs"):
         if directory.is_dir() and any(directory.iterdir()):
             problems.append(f"{directory} is not empty")
     if args.policy == "permissive":

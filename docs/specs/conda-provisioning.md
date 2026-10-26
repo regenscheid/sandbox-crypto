@@ -10,7 +10,7 @@ Out of scope: base images and the `crypto-base` recipe (D46); the cache itself (
 
 Terms:
 
-- **Environment**: a project's default environment or a dedicated session environment, described by an `EnvironmentRecord`. Its managed Conda prefix is a declared writable volume (D48).
+- **Environment**: a project's default environment or a dedicated session environment, described by an `EnvironmentRecord`. Its managed Conda prefix is a declared writable volume (D48): in the research images, the workspace's layer over the image's read-only base environment, which installs go into ([images](../IMAGES.md#the-environment-outside-the-workspace-b11)).
 - **Environment revision**: a counter of the environment's dependency and configuration state. Revision 0 is the base profile's image digest and lockfile. Each completed change adds one.
 - **Capability**: a named function a worker can perform, such as `sage`, `gp` or `latex`, with a versioned probe.
 - **Probe**: a small functional check run in the environment that passes only on an expected result. An import or version check is a weaker probe and is labeled as one.

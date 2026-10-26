@@ -1668,34 +1668,37 @@ def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
     )
 
 
-def test_a_research_sandbox_reads_the_images_frozen_trees_and_never_writes_them() -> None:
+@pytest.mark.parametrize("image_path", ["/opt/sandbox-science-frozen", "/opt/sandbox-science-base"])
+def test_a_research_sandbox_reads_the_images_packages_and_never_writes_them(
+    image_path: str,
+) -> None:
     # The research images keep GAP, Giac, Maxima's data, ECL and the compilers at
-    # /opt/sandbox-science-frozen, which the prefix in the workspace links to (docs/IMAGES.md).
-    assert RESEARCH_IMAGE_READ_ONLY == ("/opt/sandbox-science-frozen",)
+    # /opt/sandbox-science-frozen, and the base environment under the workspace's layer at
+    # /opt/sandbox-science-base; the workspace links to both (docs/IMAGES.md).
+    assert RESEARCH_IMAGE_READ_ONLY == ("/opt/sandbox-science-frozen", "/opt/sandbox-science-base")
     filesystem = compile_research(EXAMPLE).policy.filesystem_policy
     assert filesystem is not None
-    assert "/opt/sandbox-science-frozen" in filesystem.read_only
+    assert image_path in filesystem.read_only
     assert not any(
-        path == "/opt/sandbox-science-frozen" or "/opt/sandbox-science-frozen".startswith(path)
-        for path in filesystem.read_write
+        path == image_path or image_path.startswith(path) for path in filesystem.read_write
     )
     # The image's own section cannot make them, or a directory above them, writable.
-    for path in ("/opt/sandbox-science-frozen", "/opt"):
+    for path in (image_path, "/opt"):
         with pytest.raises(ValidationError, match="stays read-only"):
             SandboxFilesystem(read_write=(path,))
-    # The prefix beside it is no parent of it and stays writable.
+    # The workspace prefix's link beside them is no parent of them and stays writable.
     target = TARGETS.sandbox.model_copy(
         update={"filesystem": SandboxFilesystem(read_write=("/opt/sandbox-science",))}
     )
     compiled = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
     assert compiled is not None
     assert "/opt/sandbox-science" in compiled.read_write
-    assert "/opt/sandbox-science-frozen" in compiled.read_only
-    # The services' sandboxes run images without frozen trees.
+    assert image_path in compiled.read_only
+    # The services' sandboxes run images without them.
     assert TARGETS.orchestrator is not None
     orchestrator = compile_orchestrator(TARGETS.orchestrator).filesystem_policy
     assert orchestrator is not None
-    assert "/opt/sandbox-science-frozen" not in orchestrator.read_only
+    assert image_path not in orchestrator.read_only
 
 
 @pytest.mark.parametrize("which", ["research", "orchestrator", "mcp-proxy"])

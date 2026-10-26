@@ -397,11 +397,18 @@ def bounded_command(argv: Sequence[str], length: int | None = None) -> list[str]
 @dataclass(frozen=True, slots=True)
 class Places:
     """Where an environment records its packages: Conda's ``conda-meta``, and pip's
-    ``dist-info`` and ``egg-info`` directories in the prefix's and the user's site-packages."""
+    ``dist-info`` and ``egg-info`` directories in the prefix's and the user's site-packages.
+
+    In a research image's workspace layer, a virtual environment over the image's read-only
+    Conda environment (docs/IMAGES.md, "The environment outside the workspace"), the prefix
+    is the layer, where runtime installs go, and ``base_conda_meta`` and ``base_site`` are
+    the base's places, whose packages the layer's interpreter imports too."""
 
     conda_meta: str
     site: tuple[str, ...]
     user: str | None = None
+    base_conda_meta: str | None = None
+    base_site: tuple[str, ...] = ()
 
     @classmethod
     def here(cls) -> Places:
@@ -414,27 +421,70 @@ class Places:
         with contextlib.suppress(Exception):
             user = site.getusersitepackages()
         site_paths = tuple(dict.fromkeys([paths["purelib"], paths["platlib"]]))
-        return cls(os.path.join(sys.prefix, "conda-meta"), site_paths, user)
+        base = layered_base()
+        if base is None:
+            return cls(os.path.join(sys.prefix, "conda-meta"), site_paths, user)
+        variables = {"base": base, "platbase": sys.base_exec_prefix}
+        below = sysconfig.get_paths(vars=variables)
+        return cls(
+            os.path.join(sys.prefix, "conda-meta"),
+            site_paths,
+            user,
+            os.path.join(base, "conda-meta"),
+            tuple(dict.fromkeys([below["purelib"], below["platlib"]])),
+        )
+
+    @property
+    def base_prefix(self) -> str | None:
+        """The base environment under a layer; None for a whole environment."""
+        return None if self.base_conda_meta is None else os.path.dirname(self.base_conda_meta)
 
     def all(self) -> list[str]:
         user = [self.user] if self.user else []
-        return list(dict.fromkeys([self.conda_meta, *self.site, *user]))
+        base = [self.base_conda_meta] if self.base_conda_meta else []
+        return list(dict.fromkeys([self.conda_meta, *self.site, *user, *base, *self.base_site]))
 
     def to_json(self) -> Message:
-        return {"conda_meta": self.conda_meta, "site": list(self.site), "user": self.user}
+        return {
+            "conda_meta": self.conda_meta,
+            "site": list(self.site),
+            "user": self.user,
+            "base_conda_meta": self.base_conda_meta,
+            "base_site": list(self.base_site),
+        }
 
     @classmethod
     def from_json(cls, value: object) -> Places:
         fields = cast(Message, value) if isinstance(value, dict) else {}
         conda_meta, site, user = fields.get("conda_meta"), fields.get("site"), fields.get("user")
+        base_meta, base_site = fields.get("base_conda_meta"), fields.get("base_site", [])
         entries = cast(list[object], site) if isinstance(site, list) else []
-        if not isinstance(conda_meta, str) or not all(isinstance(item, str) for item in entries):
+        below = cast(list[object], base_site) if isinstance(base_site, list) else [None]
+        if (
+            not isinstance(conda_meta, str)
+            or not all(isinstance(item, str) for item in [*entries, *below])
+            or not (base_meta is None or isinstance(base_meta, str))
+        ):
             raise ValueError("malformed places")
         return cls(
             conda_meta,
             tuple(str(item) for item in entries),
             user if isinstance(user, str) else None,
+            base_meta,
+            tuple(str(item) for item in below),
         )
+
+
+def layered_base() -> str | None:
+    """The read-only base environment under the running interpreter's workspace layer: a
+    virtual environment over a Conda environment's interpreter (docs/IMAGES.md, "The
+    environment outside the workspace"). None for a whole environment, such as a workspace
+    prefix seeded from an earlier image, or a developer's virtual environment."""
+    if sys.prefix == sys.base_prefix or not os.path.isdir(
+        os.path.join(sys.base_prefix, "conda-meta")
+    ):
+        return None
+    return sys.base_prefix
 
 
 def fingerprint(places: Places) -> str:
@@ -475,12 +525,30 @@ def lockfile(places: Places) -> Message:
     the lockfile's patterns: one that does not is left out, and a record whose name,
     version or build cannot be held counts as skipped. The worker names the package
     cache's URLs by their channels and upstream URLs.
+
+    Over a base environment it lists what the layer's interpreter finds: the layer's Conda
+    packages, then the base's of every other name (the layer keeps a record of each base
+    package, without its files, so the base's appear only where a runtime ``remove`` left
+    them in the read-only base); the layer's pip distributions, then the base's not
+    shadowed by one of the same name. Revision 0 is the base alone, so what runtime installs
+    added is the difference, as for a whole environment.
     """
     conda, owned, skipped = _conda_packages(places.conda_meta)
+    if places.base_conda_meta is not None:
+        # A malformed base record is malformed in the layer too, and counted there.
+        below, below_owned, _ = _conda_packages(places.base_conda_meta)
+        names = {item["name"] for item in conda}
+        conda += [item for item in below if item["name"] not in names]
+        owned |= below_owned
     pip: list[Message] = []
     for directory in places.site:
         found, left = _distributions(directory, "prefix", owned)
         pip += found
+        skipped += left
+    shadowing = {_project(item["name"]) for item in pip}
+    for directory in places.base_site:
+        found, left = _distributions(directory, "prefix", owned)
+        pip += [item for item in found if _project(item["name"]) not in shadowing]
         skipped += left
     if places.user and places.user not in places.site:
         found, left = _distributions(places.user, "user", owned)
@@ -499,6 +567,11 @@ def lockfile(places: Places) -> Message:
         "pip": pip[:MAX_PACKAGES],
         "skipped": skipped + max(0, len(conda) - MAX_PACKAGES) + max(0, len(pip) - MAX_PACKAGES),
     }
+
+
+def _project(name: str) -> str:
+    """A distribution's name as pip compares them (PEP 503)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _conda_packages(directory: str) -> tuple[list[Message], set[str], int]:
@@ -1127,7 +1200,7 @@ def refresh(state: State, config: Config, path: str) -> list[str]:
     gone, so that ``command -v`` tells the truth; return the wrapped names. The rest of
     the state directory is put back too, should research code have removed it."""
     prepare(state, config)
-    _mirror(state, Path(config.prefix))
+    _mirror(state, Path(config.prefix), config.places.base_prefix)
     wrapped: list[str] = []
     for name in tool_names():
         target = state.bin / name
@@ -1151,31 +1224,38 @@ def refresh(state: State, config: Config, path: str) -> list[str]:
     return wrapped
 
 
-def _mirror(state: State, prefix: Path) -> None:
+def _mirror(state: State, prefix: Path, base: str | None = None) -> None:
     """Lay the prefix out around the wrappers, so that what scripts look for beside a
     package manager, or beside its Python, is there: ``$(dirname "$(command -v
     conda)")/../etc/profile.d/conda.sh``, ``$(dirname "$(command -v pip)")/python`` and
     ``$(dirname "$(command -v python)")/jupyter``. Every entry of the prefix but ``bin`` is
     a link, and so is every program in its ``bin`` but the package managers, which have
     wrappers, and the Pythons, which have stand-ins that run the prefix's own. A link
-    whose target is gone goes too."""
-    entries: list[str] = []
-    with contextlib.suppress(OSError), os.scandir(prefix) as scan:
-        entries = [entry.name for entry in scan if entry.name != "bin"]
-    programs: list[str] = []
-    with contextlib.suppress(OSError), os.scandir(prefix / "bin") as scan:
-        skipped = {*tool_names(), *PYTHONS}
-        programs = [entry.name for entry in scan if entry.name not in skipped]
+    whose target is gone goes too. Under a workspace layer, ``base``'s entries and programs
+    that the layer lacks are linked from the base."""
+    places = [prefix] if base is None else [prefix, Path(base)]
+    entries: dict[str, Path] = {}
+    programs: dict[str, Path] = {}
+    skipped = {*tool_names(), *PYTHONS}
+    for place in reversed(places):  # the layer's last, so that they win
+        with contextlib.suppress(OSError), os.scandir(place) as scan:
+            entries |= {entry.name: place / entry.name for entry in scan if entry.name != "bin"}
+        with contextlib.suppress(OSError), os.scandir(place / "bin") as scan:
+            programs |= {
+                entry.name: place / "bin" / entry.name
+                for entry in scan
+                if entry.name not in skipped
+            }
     for directory in (state.mirror, state.bin):
         with contextlib.suppress(OSError), os.scandir(directory) as scan:
             for entry in list(scan):
                 if entry.is_symlink() and not os.path.exists(entry.path):
                     with contextlib.suppress(OSError):
                         os.unlink(entry.path)
-    for name in entries:
-        _link(state.mirror / name, prefix / name)
-    for name in programs:
-        _link(state.bin / name, prefix / "bin" / name)
+    for name, target in entries.items():
+        _link(state.mirror / name, target)
+    for name, target in programs.items():
+        _link(state.bin / name, target)
     for name in PYTHONS:
         real = prefix / "bin" / name
         if real.is_file() and os.access(real, os.X_OK):
@@ -1515,7 +1595,7 @@ class Turn:
                 )
             cleaned = True
             with contextlib.suppress(OSError):
-                _mirror(self.state, Path(self.config.prefix))
+                _mirror(self.state, Path(self.config.prefix), self.config.places.base_prefix)
             after = fingerprint(self.config.places)
             entry: Message = {
                 "version": RECORD_VERSION,

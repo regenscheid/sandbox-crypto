@@ -135,6 +135,74 @@ def make_prefix(directory: Path, *, kernels: bool = False) -> Prefix:
     return Prefix(root, python, site, directory / "installs.log")
 
 
+def make_layer(directory: Path) -> Prefix:
+    """A workspace layer over a stand-in base, laid out as the research images lay them out
+    (docs/IMAGES.md, "The environment outside the workspace"). The base has Conda records,
+    its own site-packages and a program, and shares the test interpreter's standard library;
+    the layer is a virtual environment of the base's interpreter with the base's records
+    without their files, and the stand-in package managers."""
+    real, version = Path(sys.base_prefix), f"python{sys.version_info[0]}.{sys.version_info[1]}"
+    base = directory / "base"
+    (base / "bin").mkdir(parents=True)
+    # The base's interpreter is a file of its own, as in the images: Python finds its
+    # prefix from where the file really is.
+    executable = os.path.realpath(real / "bin" / version)
+    try:
+        os.link(executable, base / "bin" / version)
+    except OSError:
+        shutil.copy2(executable, base / "bin" / version)
+    (base / "bin" / "python").symlink_to(version)
+    stdlib = base / "lib" / version
+    stdlib.mkdir(parents=True)
+    for entry in (real / "lib" / version).iterdir():
+        if entry.name != "site-packages":
+            (stdlib / entry.name).symlink_to(entry)
+    below = stdlib / "site-packages"
+    below.mkdir()
+    (below / "basemod.py").write_text("VALUE = 'from the base'\n")
+    _dist(below, "basepkg", "1.0", "conda")
+    _dist(below, "basepip", "2.0", "pip")
+    tool = base / "bin" / "basetool"
+    tool.write_text("#!/bin/sh\necho basetool ran\n")
+    tool.chmod(0o755)
+    (base / "conda-meta").mkdir()
+    record = {
+        "name": "basepkg",
+        "version": "1.0",
+        "build": "0",
+        "url": "https://conda.anaconda.org/conda-forge/noarch/basepkg-1.0-0.conda",
+        "sha256": "e" * 64,
+        "files": [f"lib/{version}/site-packages/basepkg-1.0.dist-info/METADATA", "bin/basetool"],
+    }
+    _meta(base / "conda-meta", "basepkg-1.0-0", record)
+    for place in (below, base / "conda-meta", base / "bin"):
+        place.chmod(0o555)  # read-only, as the image's base is
+    root = directory / "prefix"
+    (root / "bin").mkdir(parents=True)
+    for name in ("python", "python3", version):
+        (root / "bin" / name).symlink_to(base / "bin" / version)
+    (root / "pyvenv.cfg").write_text(f"home = {base}/bin\ninclude-system-site-packages = true\n")
+    site = root / "lib" / version / "site-packages"
+    site.mkdir(parents=True)
+    (root / "conda-meta").mkdir()
+    _meta(root / "conda-meta", "basepkg-1.0-0", {**record, "files": []})
+    (root / "conda-meta" / "history").write_text("")
+    shutil.copy(FAKE, site / "fakepm.py")
+    (site / "pip").mkdir()
+    (site / "pip" / "__init__.py").write_text("")
+    (site / "pip" / "__main__.py").write_text(
+        "import sys\nimport fakepm\nsys.exit(fakepm.main(['pip', *sys.argv[1:]]))\n"
+    )
+    python = root / "bin" / "python"
+    for name in ("pip", "pip3", "micromamba"):
+        script = root / "bin" / name
+        script.write_text(f'#!/bin/sh\nexec "{python}" -m fakepm {name} "$@"\n')
+        script.chmod(0o755)
+    # The kernel packages of the test's own environment, after the layer's and the base's.
+    (site / "zz-test-kernels.pth").write_text(sysconfig.get_paths()["purelib"] + "\n")
+    return Prefix(root, python, site, directory / "installs.log")
+
+
 @dataclass
 class Sandbox:
     """A prefix with wrappers and the hook in place, as an executor sets them up."""
@@ -727,6 +795,69 @@ async def test_changes_are_recorded_as_managed_or_unmanaged(worker: Worker) -> N
     assert "toolz" not in [item.name for item in lockfile.pip]
     assert by_micromamba.lockfile is not None
     assert by_micromamba.lockfile.conda_packages == 1
+
+
+@pytest_asyncio.fixture
+async def layered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Worker]:
+    """A worker whose environment is a workspace layer over a read-only base (B11)."""
+    prefix = make_layer(tmp_path)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("FAKEPM_LOG", str(prefix.log))
+    async with await Worker.started(tmp_path / "worker", prefix) as started:
+        yield started
+
+
+@pytest.mark.asyncio
+async def test_a_layer_installs_into_itself_and_its_lockfile_lists_the_base_too(
+    layered: Worker,
+) -> None:
+    base = layered.prefix.root.parent / "base"
+    below = next(base.glob("lib/python3*/site-packages"))
+    before = sorted(path.name for path in below.iterdir())
+    probe = (
+        'readlink -f "$(command -v basetool)"; basetool; '
+        'echo "$JUPYTER_PATH"; echo "$CONDA_PREFIX"; '
+        "python -c 'import basemod, sys; print(basemod.VALUE, sys.prefix != sys.base_prefix)'"
+    )
+    ran = await layered.call("op-0", script=probe)
+    assert ran["state"] == "succeeded", ran["result"]
+    lines = ran["result"]["stdout"]["text"].splitlines()
+    # The base's programs are on PATH, beside the wrappers too, its Jupyter data on
+    # JUPYTER_PATH.
+    assert lines[:2] == [str(base / "bin" / "basetool"), "basetool ran"]
+    assert lines[2].split(os.pathsep)[-1] == str(base / "share" / "jupyter")
+    assert lines[3] == str(layered.prefix.root)
+    assert lines[4] == "from the base True"
+    zero, _ = await eventually(lambda: _lockfile_of(layered, 0), describe="revision 0's lockfile")
+    # Revision 0 is the base: its Conda package, and the distribution pip installed there;
+    # the Conda package's own distribution is not listed again.
+    assert [item.name for item in zero.conda] == ["basepkg"]
+    assert [(item.name, item.version) for item in zero.pip] == [("basepip", "2.0")]
+    installed = await layered.call("op-1", script="pip install alpha && pip install basepip")
+    assert installed["state"] == "succeeded", installed["result"]
+    cell = await layered.call(
+        "op-2", kind="cell", code="import basemod, sys\nprint(basemod.VALUE, sys.prefix)"
+    )
+    assert cell["result"]["stdout"]["text"] == f"from the base {layered.prefix.root}\n"
+    history = await layered.revisions()
+    last = history.revisions[-1]
+    lockfile, _ = await layered.lockfile(last.revision)
+    assert [item.name for item in lockfile.conda] == ["basepkg"]
+    # What pip installed is in the layer, and the layer's basepip shadows the base's.
+    assert sorted((item.name, item.version) for item in lockfile.pip) == [
+        ("alpha", "1.0"),
+        ("basepip", "1.0"),
+    ]
+    assert (layered.prefix.site / "alpha-1.0.dist-info").is_dir()
+    assert sorted(path.name for path in below.iterdir()) == before
+
+
+async def _lockfile_of(worker: Worker, revision: int) -> tuple[Lockfile, bytes] | None:
+    history = await worker.revisions()
+    found = [entry for entry in history.revisions if entry.revision == revision]
+    if not found or found[0].lockfile is None:
+        return None
+    return await worker.lockfile(revision)
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: MIT
 """The research prefix's image layout (docs/IMAGES.md, "Prefix layout").
 
-  prefix_layout.py trim PREFIX           remove what a sandbox never reads
-  prefix_layout.py freeze PREFIX FROZEN  move the frozen trees out of the workspace seed
-  prefix_layout.py check PREFIX FROZEN   check the layout an image build left
+  prefix_layout.py trim PREFIX                    remove what a sandbox never reads
+  prefix_layout.py freeze PREFIX FROZEN           move the frozen trees to their read-only path
+  prefix_layout.py layer BASE LAYER               the workspace's layer over the base (B11)
+  prefix_layout.py check PREFIX FROZEN [--layer]  check the layout an image build left
 
-The research prefix lives in the workspace, and OpenShell copies the image's workspace into
-every new environment's volume, file by file, within a fixed grace period. ``trim`` removes
+The research images keep their Conda environment, the base, in the image at
+``/opt/sandbox-science-base``, read-only. OpenShell copies the image's workspace into every new
+environment's volume, file by file, within a fixed grace period; what it copies of the
+environment is only ``layer``'s output: a small writable environment at the workspace prefix's
+path that runtime installs go into, a Python virtual environment over the base's interpreter that
+is also a Conda prefix (docs/IMAGES.md, "The environment outside the workspace"). ``trim`` removes
 documentation, conda's package test files and static libraries that sit beside a shared one
 (the compiler toolchain's own archives stay). ``freeze`` moves large trees nobody installs into
 at runtime (GAP, Giac, Maxima and ECL, the compiler toolchain) to a read-only image path with the
@@ -31,9 +36,21 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 PREFIX = Path("/sandbox/.sandbox-science-prefix")
+"""The workspace prefix: the layer in an image of this layout, the whole environment in a
+workspace seeded from an earlier one."""
 FROZEN = Path("/opt/sandbox-science-frozen")
+BASE = Path("/opt/sandbox-science-base")
+"""The research images' Conda environment, read-only (workspace_prefix.BASE)."""
+ALIAS = Path("/opt/sandbox-science")
+"""The stable path of the interpreter, kernelspecs and launchers: a link to ``PREFIX``."""
+LAYER_MARKER = ".sandbox-science-layer"
+"""The layer's marker, which tells it from a whole prefix (workspace_prefix.LAYER_MARKER)."""
+LAYER_VERSION = 1
 MANIFEST = "manifest.json"
 MANIFEST_VERSION = 1
+SLIM = ("files", "paths_data")
+"""What a base package's record in the layer leaves out: micromamba solves with the rest, and
+unlinking a record without files removes nothing from the read-only base."""
 
 DOCUMENTATION = ("share/doc", "share/man", "share/gtk-doc", "etc/conda/test-files")
 """Read by people, never by a program in the sandbox. conda's test files are its packages'
@@ -273,6 +290,169 @@ def _owner(path: Path) -> tuple[int, int]:
     return info.st_uid, info.st_gid
 
 
+# The layer.
+
+
+def _python_version(base: Path) -> str:
+    """The base's Python version, from its Conda record."""
+    for record in sorted((base / "conda-meta").glob("python-[0-9]*.json")):
+        return str(json.loads(record.read_text())["version"])
+    raise SystemExit(f"no python record in {base / 'conda-meta'}")
+
+
+def _launcher_lines(data: bytes, old: bytes, new: bytes) -> bytes | None:
+    """``data`` with ``old`` replaced by ``new`` in its first two lines, where a script names
+    its interpreter (``#!`` and pip's ``'''exec'`` form); None when they do not name it."""
+    if not data.startswith(b"#!"):
+        return None
+    lines = data.split(b"\n", 2)
+    head = [line.replace(old, new) for line in lines[:2]]
+    if head == lines[:2]:
+        return None
+    return b"\n".join([*head, *lines[2:]])
+
+
+def launchers(base: Path, alias: Path = ALIAS) -> int:
+    """Make the base's Python scripts and kernelspecs start ``alias``'s interpreter, the
+    layer's, so that every Python program sees what runtime installs added; returns how many
+    files changed. Other interpreters (perl, sh) keep their lines."""
+    old, new = f"{base}/bin/python".encode(), f"{alias}/bin/python".encode()
+    changed = 0
+    for entry in sorted(os.scandir(base / "bin"), key=lambda e: e.name):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        path = Path(entry.path)
+        with path.open("rb") as stream:
+            data = stream.read()
+        rewritten = _launcher_lines(data, old, new)
+        if rewritten is None:
+            continue
+        info = path.lstat()
+        path.write_bytes(rewritten)
+        os.chmod(path, stat.S_IMODE(info.st_mode))
+        changed += 1
+    for spec in sorted((base / "share/jupyter/kernels").glob("*/kernel.json")):
+        document = json.loads(spec.read_text())
+        argv = document.get("argv")
+        if isinstance(argv, list) and argv and str(argv[0]).startswith(old.decode()):
+            argv[0] = new.decode() + str(argv[0])[len(old) :]
+            spec.write_text(json.dumps(document, indent=1) + "\n")
+            changed += 1
+    return changed
+
+
+def _slim(record: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in record.items() if key not in SLIM} | {"files": []}
+
+
+def _shared_library(entry: os.DirEntry[str]) -> bool:
+    return ".so" in entry.name and (entry.is_symlink() or not entry.is_dir())
+
+
+def layer(base: Path, layer: Path, alias: Path = ALIAS) -> dict[str, object]:
+    """Write the workspace's layer over ``base`` at ``layer``, which must not exist.
+
+    A virtual environment of the base's interpreter, so that its Python's ``sys.prefix`` is
+    the layer, which pip, ``python -m pip``, uv and Jupyter install into unconfigured, and the
+    layer's ``site-packages`` comes before the base's. It is a Conda prefix too: ``conda-meta``
+    holds each base package's record without its files, so micromamba solves against the base
+    and links only new packages here. ``bin`` and ``lib`` hold a link to each base program and
+    shared library: ``/opt/sandbox-science/bin/<program>`` keeps working, and a package
+    installed here finds the base's libraries through its ``$ORIGIN/../lib``. A package
+    installed here replaces the links it overlaps.
+    """
+    version = _python_version(base)
+    layer.mkdir()
+    (layer / "pyvenv.cfg").write_text(
+        f"home = {base}/bin\ninclude-system-site-packages = true\nversion = {version}\n"
+    )
+    marker = {"version": LAYER_VERSION, "base": str(base)}
+    (layer / LAYER_MARKER).write_text(json.dumps(marker) + "\n")
+    counts = {"programs": 0, "libraries": 0, "records": 0}
+    (layer / "bin").mkdir()
+    for entry in sorted(os.scandir(base / "bin"), key=lambda e: e.name):
+        (layer / "bin" / entry.name).symlink_to(base / "bin" / entry.name)
+        counts["programs"] += 1
+    minor = ".".join(version.split(".")[:2])
+    (layer / "lib" / f"python{minor}" / "site-packages").mkdir(parents=True)
+    for entry in sorted(os.scandir(base / "lib"), key=lambda e: e.name):
+        if _shared_library(entry):
+            (layer / "lib" / entry.name).symlink_to(base / "lib" / entry.name)
+            counts["libraries"] += 1
+    (layer / "conda-meta").mkdir()
+    for record in sorted((base / "conda-meta").iterdir()):
+        if record.name.endswith(".json"):
+            slim = _slim(json.loads(record.read_text()))
+            (layer / "conda-meta" / record.name).write_text(json.dumps(slim, indent=1) + "\n")
+            counts["records"] += 1
+        elif record.name in ("history", "pinned"):
+            shutil.copyfile(record, layer / "conda-meta" / record.name)
+    entries = sum(len(dirs) + len(names) for _, dirs, names in _walk(layer))
+    return {"base": str(base), "layer": str(layer), "python": version, **counts, "entries": entries}
+
+
+def check_layer(base: Path, layer: Path, alias: Path = ALIAS) -> list[str]:
+    """What is wrong with the layer and the base an image build left; empty when nothing is."""
+    problems: list[str] = []
+    if layer.is_symlink() or not layer.is_dir():
+        return [f"{layer} is not a directory"]
+    try:
+        marker = json.loads((layer / LAYER_MARKER).read_text())
+    except (OSError, ValueError):
+        marker = None
+    if marker != {"version": LAYER_VERSION, "base": str(base)}:
+        problems.append(f"{layer / LAYER_MARKER} does not name {base}")
+    config = (layer / "pyvenv.cfg").read_text() if (layer / "pyvenv.cfg").is_file() else ""
+    for line in (f"home = {base}/bin", "include-system-site-packages = true"):
+        if line not in config.splitlines():
+            problems.append(f"{layer / 'pyvenv.cfg'} lacks {line!r}")
+    for entry in os.scandir(base / "bin"):
+        link = layer / "bin" / entry.name
+        if not link.is_symlink() or os.readlink(link) != str(base / "bin" / entry.name):
+            problems.append(f"{link} is not a link to the base's program")
+    for entry in os.scandir(base / "lib"):
+        link = layer / "lib" / entry.name
+        if _shared_library(entry) and (
+            not link.is_symlink() or os.readlink(link) != str(base / "lib" / entry.name)
+        ):
+            problems.append(f"{link} is not a link to the base's library")
+    records = {record.name for record in (base / "conda-meta").glob("*.json")}
+    slim = {record.name for record in (layer / "conda-meta").glob("*.json")}
+    if records != slim:
+        problems.append(f"{layer / 'conda-meta'} differs from the base's records")
+    for name in sorted(records & slim):
+        expected = _slim(json.loads((base / "conda-meta" / name).read_text()))
+        if json.loads((layer / "conda-meta" / name).read_text()) != expected:
+            problems.append(f"{layer / 'conda-meta' / name} is not the base's record")
+    for name in ("pinned",):
+        if (base / "conda-meta" / name).exists() and (
+            (layer / "conda-meta" / name).read_bytes() != (base / "conda-meta" / name).read_bytes()
+        ):
+            problems.append(f"{layer / 'conda-meta' / name} differs from the base's")
+    if any(layer.glob("lib/python3*/site-packages/*")):
+        problems.append(f"{layer} has packages of its own")
+    old = f"{base}/bin/python".encode()
+    for entry in os.scandir(base / "bin"):
+        if entry.is_file() and not entry.is_symlink():
+            with open(entry.path, "rb") as stream:
+                head = stream.read(4096)
+            if _launcher_lines(head, old, b"") is not None:
+                problems.append(f"{entry.path} starts the base's interpreter, not the layer's")
+    for spec in (base / "share/jupyter/kernels").glob("*/kernel.json"):
+        argv = json.loads(spec.read_text()).get("argv") or [""]
+        if str(argv[0]).startswith(old.decode()):
+            problems.append(f"{spec} starts the base's interpreter, not the layer's")
+    if (base / "pkgs").is_dir() and any((base / "pkgs").iterdir()):
+        problems.append(f"{base / 'pkgs'} is not empty")
+    for directory, dirs, names in _walk(base):
+        for name in [".", *dirs, *names]:
+            info = (directory / name).lstat()
+            if info.st_uid != 0 or (not stat.S_ISLNK(info.st_mode) and info.st_mode & 0o022):
+                problems.append(f"{directory / name} is writable by others than root")
+                return problems
+    return problems
+
+
 # Checking.
 
 
@@ -347,6 +527,12 @@ def main(argv: list[str]) -> int:
         command = sub.add_parser(name)
         command.add_argument("prefix", type=Path)
         command.add_argument("frozen", type=Path)
+    sub.choices["check"].add_argument(
+        "--layer", type=Path, help="also check this layer over the prefix, the base"
+    )
+    command = sub.add_parser("layer")
+    command.add_argument("base", type=Path)
+    command.add_argument("layer", type=Path)
     args = parser.parse_args(argv)
     if args.command == "trim":
         print(json.dumps({"trimmed": trim(args.prefix)}))
@@ -354,7 +540,13 @@ def main(argv: list[str]) -> int:
     if args.command == "freeze":
         print(json.dumps({"frozen": freeze(args.prefix, args.frozen)}))
         return 0
+    if args.command == "layer":
+        rewritten = launchers(args.base)
+        print(json.dumps({"layer": layer(args.base, args.layer), "launchers": rewritten}))
+        return 0
     problems = check(args.prefix, args.frozen)
+    if args.layer is not None:
+        problems += check_layer(args.prefix, args.layer)
     for problem in problems:
         print(f"prefix layout: {problem}", file=sys.stderr)
     return 1 if problems else 0

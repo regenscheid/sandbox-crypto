@@ -99,12 +99,18 @@ ENV HOME=/sandbox \
     GIT_CONFIG_SYSTEM=/etc/gitconfig
 WORKDIR /sandbox
 
-# Research packages live in the workspace that every supported driver retains.
-# Move the empty directory before installation, avoiding duplicate package layers.
-# /opt remains the stable interpreter/shebang and kernelspec compatibility path.
+# The research environment, the base, stays in the image at /opt/sandbox-science-base, owned by
+# root and read-only, outside the workspace OpenShell copies into every new environment (B11).
+# The workspace prefix becomes a small writable layer over it, which runtime installs go into,
+# written once the base is complete (common/prefix_layout.py layer). /opt/sandbox-science stays
+# the stable path of the interpreter, kernelspecs and launchers: a link to the workspace prefix,
+# which in a workspace seeded from an earlier image is that image's whole prefix.
 FROM base AS research-base
-RUN mv /opt/sandbox-science /sandbox/.sandbox-science-prefix && \
-    ln -s /sandbox/.sandbox-science-prefix /opt/sandbox-science
+RUN rmdir /opt/sandbox-science && \
+    ln -s /sandbox/.sandbox-science-prefix /opt/sandbox-science && \
+    install -d -o 0 -g 0 -m 0755 /opt/sandbox-science-base
+ENV PATH=/opt/sandbox-science/bin:/opt/sandbox-science-base/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    JUPYTER_PATH=/opt/sandbox-science-base/share/jupyter
 
 # Compile for the image's target platform, independently of the worker host.
 # Only the library reaches research images; the compiler stays in this stage.
@@ -121,17 +127,24 @@ RUN --mount=type=bind,from=binding-inventory,source=shim/sched_self.c,target=/tm
 # ---------------------------------------------------------------------------------------------
 FROM research-base AS minimal
 COPY --from=scheduler-shim /output/ /usr/local/lib/sandbox-science/shim/
-# micromamba keeps the extracted packages of a lockfile install (hard links into the environment)
-# under pkgs/, which `clean -a` leaves; a copy of the prefix would duplicate them. It runs as the
-# sandbox account; the trimming as root, in the same step, so that no layer keeps what it removes
-# (common/prefix_layout.py). Nothing is frozen: the profile has no heavy trees, and freezing its
-# one linker link would pin the linker against a runtime install of the compilers.
+# The base, installed as root and writable by nobody else, so that it stays read-only (a few
+# packages ship group-writable files). micromamba keeps the extracted packages
+# of a lockfile install (hard links into the environment) under pkgs/, which `clean -a` leaves.
+# The trimming runs in the same step, so that no layer keeps what it removes
+# (common/prefix_layout.py). Nothing is frozen: the profile has no heavy trees.
 RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
     --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
-    setpriv --reuid=1000 --regid=1000 --clear-groups -- sh -c \
-        'micromamba install -y -n base -f /tmp/conda-lock.yml && micromamba clean -a -y' && \
-    find /opt/sandbox-science/pkgs -mindepth 1 -delete && \
-    python -I -B /tmp/prefix_layout.py trim /sandbox/.sandbox-science-prefix
+    micromamba install -y -r /opt/sandbox-science-base -p /opt/sandbox-science-base \
+        -f /tmp/conda-lock.yml && \
+    MAMBA_ROOT_PREFIX=/opt/sandbox-science-base micromamba clean -a -y && \
+    find /opt/sandbox-science-base/pkgs -mindepth 1 -delete && \
+    chmod -R go-w /opt/sandbox-science-base && \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py trim /opt/sandbox-science-base
+# The workspace's layer over the base, and the base's Python launchers pointed at it.
+RUN --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py layer \
+        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix && \
+    chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix
 USER 1000:1000
 RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
     python -B /tmp/image_report.py kernels python3
@@ -144,12 +157,13 @@ ARG VERSION=unknown
 ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
 ARG LICENSES=NOASSERTION
 USER root
-# Remove build home files while retaining the research prefix seeded into the workspace.
+# Remove build home files while retaining the layer seeded into the workspace.
 RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
     --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
     --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
     find /sandbox -mindepth 1 -maxdepth 1 ! -name .sandbox-science-prefix -exec rm -rf -- {} + && \
-    python -I -B /tmp/prefix_layout.py check /sandbox/.sandbox-science-prefix /opt/sandbox-science-frozen && \
+    python -I -B /tmp/prefix_layout.py check /opt/sandbox-science-base /opt/sandbox-science-frozen \
+        --layer /sandbox/.sandbox-science-prefix && \
     python -B /tmp/image_report.py record \
         --profile minimal --policy permissive --revision "${REVISION}" --source-url "${SOURCE_URL}" \
         --base-image "${UBUNTU_IMAGE}" --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" \
@@ -177,20 +191,23 @@ RUN --mount=type=bind,source=crypto-base/apt-packages.txt,target=/tmp/apt-packag
     grep -v -e '^#' -e '^$' /tmp/apt-packages.txt | \
         xargs apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" install -y --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
-# The Conda install, trimmed, and its frozen trees (GAP, Giac, Maxima's and ECL's, the compiler
-# toolchain) moved to /opt/sandbox-science-frozen, read-only and outside the workspace that
-# OpenShell copies into each new environment, with a link at each place (common/prefix_layout.py,
-# docs/IMAGES.md). One step, so that no layer keeps what it removes or moves: micromamba runs as
-# the sandbox account, the rest as root.
+# The base, installed as root and writable by nobody else, trimmed, and its frozen trees (GAP,
+# Giac, Maxima's and ECL's, the compiler toolchain) moved to /opt/sandbox-science-frozen with a
+# link at each place, where workspaces seeded from earlier images link to them too
+# (common/prefix_layout.py, docs/IMAGES.md). One step, so that no layer keeps what it removes or
+# moves.
 RUN --mount=type=bind,source=crypto-base/conda-lock.yml,target=/tmp/conda-lock.yml \
     --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
-    setpriv --reuid=1000 --regid=1000 --clear-groups -- sh -c \
-        'micromamba install -y -n base -f /tmp/conda-lock.yml && micromamba clean -a -y' && \
-    find /opt/sandbox-science/pkgs -mindepth 1 -delete && \
-    python -I -B /tmp/prefix_layout.py trim /sandbox/.sandbox-science-prefix && \
-    python -I -B /tmp/prefix_layout.py freeze /sandbox/.sandbox-science-prefix /opt/sandbox-science-frozen
-USER 1000:1000
-# G6K has no conda-forge package; build it with the environment's compilers for a named CPU level.
+    micromamba install -y -r /opt/sandbox-science-base -p /opt/sandbox-science-base \
+        -f /tmp/conda-lock.yml && \
+    MAMBA_ROOT_PREFIX=/opt/sandbox-science-base micromamba clean -a -y && \
+    find /opt/sandbox-science-base/pkgs -mindepth 1 -delete && \
+    chmod -R go-w /opt/sandbox-science-base && \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py trim /opt/sandbox-science-base && \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py freeze \
+        /opt/sandbox-science-base /opt/sandbox-science-frozen
+# G6K has no conda-forge package; build it with the environment's compilers for a named CPU level,
+# into the base, as root like the rest of it.
 ARG TARGETARCH
 ARG G6K_MARCH_AMD64
 ARG G6K_MARCH_ARM64
@@ -198,17 +215,25 @@ RUN --mount=type=bind,from=g6k-src,target=/tmp/g6k-src \
     --mount=type=bind,source=crypto-base/build-g6k.sh,target=/tmp/build-g6k.sh \
     --mount=type=bind,source=crypto-base/patch-g6k-arm64.py,target=/tmp/patch-g6k-arm64.py \
     cp -r /tmp/g6k-src /tmp/g6k && \
-    G6K_TARGET_ARCH="${TARGETARCH}" \
+    G6K_TARGET_ARCH="${TARGETARCH}" PIP_ROOT_USER_ACTION=ignore \
     G6K_MARCH=$([ "${TARGETARCH}" = arm64 ] && echo "${G6K_MARCH_ARM64}" || echo "${G6K_MARCH_AMD64}") \
-        micromamba run -n base bash /tmp/build-g6k.sh /tmp/g6k && \
+        MAMBA_ROOT_PREFIX=/opt/sandbox-science-base micromamba run -p /opt/sandbox-science-base \
+            bash /tmp/build-g6k.sh /tmp/g6k && \
     rm -rf /tmp/g6k
 RUN --mount=type=bind,from=lattice-estimator-src,target=/tmp/lattice-estimator-src \
     cp -r /tmp/lattice-estimator-src /tmp/lattice-estimator && \
-    python -m pip install --no-deps --no-build-isolation --no-index --no-cache-dir /tmp/lattice-estimator && \
+    /opt/sandbox-science-base/bin/python -m pip install --root-user-action=ignore --no-deps \
+        --no-build-isolation --no-index --no-cache-dir /tmp/lattice-estimator && \
     rm -rf /tmp/lattice-estimator
 RUN --mount=type=bind,source=crypto-base/requirements.txt,target=/tmp/requirements.txt \
-    python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
-        -r /tmp/requirements.txt
+    /opt/sandbox-science-base/bin/python -m pip install --root-user-action=ignore --no-deps \
+        --only-binary=:all: --require-hashes --no-cache-dir -r /tmp/requirements.txt
+# The workspace's layer over the complete base, and the base's Python launchers pointed at it.
+RUN --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
+    /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py layer \
+        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix && \
+    chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix
+USER 1000:1000
 RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
     python -B /tmp/image_report.py kernels python3 sagemath
 
@@ -225,7 +250,8 @@ RUN --mount=type=bind,source=crypto-base/conda-lock.yml,target=/tmp/conda-lock.y
     --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
     --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
     find /sandbox -mindepth 1 -maxdepth 1 ! -name .sandbox-science-prefix -exec rm -rf -- {} + && \
-    python -I -B /tmp/prefix_layout.py check /sandbox/.sandbox-science-prefix /opt/sandbox-science-frozen && \
+    python -I -B /tmp/prefix_layout.py check /opt/sandbox-science-base /opt/sandbox-science-frozen \
+        --layer /sandbox/.sandbox-science-prefix && \
     g6k_march=$([ "${TARGETARCH}" = arm64 ] && echo "${G6K_MARCH_ARM64}" || echo "${G6K_MARCH_AMD64}") && \
     python -B /tmp/image_report.py record \
         --profile crypto-base --policy report --revision "${REVISION}" --source-url "${SOURCE_URL}" \

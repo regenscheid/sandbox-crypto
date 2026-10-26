@@ -181,15 +181,23 @@ def test_the_research_builds_trim_freeze_and_check_in_their_install_steps() -> N
     stages = dict(zip(parts[1::2], parts[2::2], strict=True))
     for profile in ("minimal", "crypto-base"):
         stage = stages[profile]
-        install = stage.index("micromamba install -y -n base -f /tmp/conda-lock.yml")
-        trim = stage.index("prefix_layout.py trim /sandbox/.sandbox-science-prefix")
-        check = stage.index(
-            "prefix_layout.py check /sandbox/.sandbox-science-prefix /opt/sandbox-science-frozen"
+        install = stage.index(
+            "micromamba install -y -r /opt/sandbox-science-base -p /opt/sandbox-science-base"
         )
-        assert install < trim < check
-        assert "setpriv --reuid=1000 --regid=1000" in stage[:install]
+        trim = stage.index("prefix_layout.py trim /opt/sandbox-science-base")
+        layer = stage.index(
+            "prefix_layout.py layer \\\n"
+            "        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix"
+        )
+        check = stage.index(
+            "prefix_layout.py check /opt/sandbox-science-base /opt/sandbox-science-frozen \\\n"
+            "        --layer /sandbox/.sandbox-science-prefix"
+        )
+        assert install < trim < layer < check
+        assert "chmod -R go-w /opt/sandbox-science-base" in stage[install:trim]
         freeze = (
-            "prefix_layout.py freeze /sandbox/.sandbox-science-prefix /opt/sandbox-science-frozen"
+            "prefix_layout.py freeze \\\n"
+            "        /opt/sandbox-science-base /opt/sandbox-science-frozen"
         )
         # minimal freezes nothing; crypto-base freezes in the install's RUN, so no layer keeps
         # the files it moves.
@@ -197,7 +205,136 @@ def test_the_research_builds_trim_freeze_and_check_in_their_install_steps() -> N
             assert freeze not in stage
             assert "\nRUN " not in stage[install:trim]
         else:
-            assert trim < stage.index(freeze) < check
+            assert trim < stage.index(freeze) < layer
             assert "\nRUN " not in stage[install : stage.index(freeze)]
     assert Path("/opt/sandbox-science-frozen") == layout.FROZEN
     assert Path("/sandbox/.sandbox-science-prefix") == layout.PREFIX
+    assert Path("/opt/sandbox-science-base") == layout.BASE
+    assert Path("/opt/sandbox-science") == layout.ALIAS
+
+
+def test_the_worker_checks_the_layer_the_build_leaves() -> None:
+    """The worker's layout check (workspace_prefix.py) reads what ``layer`` writes."""
+    from sandbox_science.worker import workspace_prefix
+
+    assert workspace_prefix.BASE == layout.BASE
+    assert workspace_prefix.PREFIX == layout.PREFIX
+    assert workspace_prefix.ALIAS == layout.ALIAS
+    assert workspace_prefix.LAYER_MARKER == layout.LAYER_MARKER
+    assert workspace_prefix.LAYER_VERSION == layout.LAYER_VERSION
+
+
+@pytest.fixture
+def base(tmp_path: Path) -> Path:
+    """A base shaped like minimal's: an interpreter, Python scripts, a perl script, a
+    library with its links, kernelspecs and Conda records."""
+    root = tmp_path / "base"
+    _write(root / "bin/python3.14")
+    (root / "bin/python").symlink_to("python3.14")
+    _write(root / "bin/pip", f"#!{root}/bin/python3.14\nimport pip\n")
+    _write(root / "bin/sage", f"#!/bin/sh\n'''exec' {root}/bin/python \"$0\" \"$@\"\n'''\n")
+    _write(root / "bin/tool.pl", f"#!{root}/bin/perl\nprint 1;\n")
+    _write(root / "bin/elf", "\x7fELF python")
+    _write(root / "lib/libgmp.so.10.5.0")
+    (root / "lib/libgmp.so.10").symlink_to("libgmp.so.10.5.0")
+    (root / "lib/libgmp.so").symlink_to("libgmp.so.10.5.0")
+    _write(root / "lib/libgmp.a")
+    _write(root / "lib/python3.14/site-packages/x-1.0.dist-info/METADATA")
+    (root / "lib/pkgconfig").mkdir()
+    spec = {"argv": [f"{root}/bin/python", "-m", "ipykernel_launcher"], "language": "python"}
+    _write(root / "share/jupyter/kernels/python3/kernel.json", json.dumps(spec))
+    sage = {"argv": ["python", "-m", "sage.repl.ipython_kernel"], "language": "sage"}
+    _write(root / "share/jupyter/kernels/sagemath/kernel.json", json.dumps(sage))
+    _record(root, "python", "3.14.8", "h0", ["bin/python3.14"])
+    _record(root, "gmp", "6.3.0", "h1", ["lib/libgmp.so.10.5.0", "lib/libgmp.so"])
+    _write(root / "conda-meta/history", "==> 2026-10-26 <==\n")
+    _write(root / "conda-meta/pinned", "gmp==6.3.0=h1\n")
+    return root
+
+
+def test_the_layer_is_a_small_environment_over_the_base(base: Path, tmp_path: Path) -> None:
+    layer = tmp_path / "layer"
+    alias = tmp_path / "alias"
+    assert layout.launchers(base, alias) == 3
+    made = layout.layer(base, layer, alias)
+    assert (made["programs"], made["libraries"], made["records"]) == (6, 3, 2)
+    assert made["entries"] == sum(len(d) + len(n) for _, d, n in os.walk(layer))
+    # Python scripts and kernelspecs start the layer's interpreter; other interpreters and
+    # programs keep theirs.
+    assert (base / "bin/pip").read_text().startswith(f"#!{alias}/bin/python3.14\n")
+    assert f"'''exec' {alias}/bin/python " in (base / "bin/sage").read_text()
+    assert (base / "bin/tool.pl").read_text().startswith(f"#!{base}/bin/perl")
+    assert (base / "bin/elf").read_text() == "\x7fELF python"
+    spec = json.loads((base / "share/jupyter/kernels/python3/kernel.json").read_text())
+    assert spec["argv"][0] == f"{alias}/bin/python"
+    assert (
+        json.loads((base / "share/jupyter/kernels/sagemath/kernel.json").read_text())["argv"][0]
+        == "python"
+    )
+    # A virtual environment of the base's interpreter that sees the base's packages.
+    config = (layer / "pyvenv.cfg").read_text().splitlines()
+    assert config == [
+        f"home = {base}/bin",
+        "include-system-site-packages = true",
+        "version = 3.14.8",
+    ]
+    marker = json.loads((layer / layout.LAYER_MARKER).read_text())
+    assert marker == {"version": 1, "base": str(base)}
+    assert os.readlink(layer / "bin/python") == str(base / "bin/python")
+    assert os.readlink(layer / "bin/pip") == str(base / "bin/pip")
+    assert sorted(path.name for path in (layer / "lib").iterdir()) == [
+        "libgmp.so",
+        "libgmp.so.10",
+        "libgmp.so.10.5.0",
+        "python3.14",
+    ]
+    assert os.readlink(layer / "lib/libgmp.so.10") == str(base / "lib/libgmp.so.10")
+    assert list((layer / "lib/python3.14/site-packages").iterdir()) == []
+    # The base's records without their files, its history and pins.
+    gmp = json.loads((layer / "conda-meta/gmp-6.3.0-h1.json").read_text())
+    assert gmp == {"name": "gmp", "version": "6.3.0", "build": "h1", "files": []}
+    assert (layer / "conda-meta/pinned").read_text() == "gmp==6.3.0=h1\n"
+    assert (layer / "conda-meta/history").exists()
+    owner = os.getuid()
+    problems = layout.check_layer(base, layer, alias)
+    # Run as another user than root, the base's ownership is all the check refuses.
+    assert problems == ([] if owner == 0 else [f"{base} is writable by others than root"])
+
+
+@pytest.mark.parametrize(
+    "damage", ["marker", "home", "program", "library", "record", "packages", "launcher", "pkgs"]
+)
+def test_the_layer_check_finds_what_is_wrong(base: Path, tmp_path: Path, damage: str) -> None:
+    layer, alias = tmp_path / "layer", tmp_path / "alias"
+    layout.launchers(base, alias)
+    layout.layer(base, layer, alias)
+    expected = {
+        "marker": "does not name",
+        "home": "lacks 'home",
+        "program": "is not a link to the base's program",
+        "library": "is not a link to the base's library",
+        "record": "is not the base's record",
+        "packages": "has packages of its own",
+        "launcher": "starts the base's interpreter",
+        "pkgs": "is not empty",
+    }[damage]
+    if damage == "marker":
+        (layer / layout.LAYER_MARKER).write_text("{}")
+    elif damage == "home":
+        (layer / "pyvenv.cfg").write_text("home = /elsewhere/bin\n")
+    elif damage == "program":
+        (layer / "bin/pip").unlink()
+    elif damage == "library":
+        (layer / "lib/libgmp.so.10").unlink()
+        (layer / "lib/libgmp.so.10").symlink_to("/elsewhere/libgmp.so.10")
+    elif damage == "record":
+        (layer / "conda-meta/gmp-6.3.0-h1.json").write_text('{"name": "gmp"}')
+    elif damage == "packages":
+        _write(layer / "lib/python3.14/site-packages/y.py")
+    elif damage == "launcher":
+        _write(base / "bin/late", f"#!{base}/bin/python3.14\n")
+        (layer / "bin/late").symlink_to(base / "bin/late")
+    else:
+        _write(base / "pkgs/x.conda")
+    problems = layout.check_layer(base, layer, alias)
+    assert any(expected in problem for problem in problems), problems
