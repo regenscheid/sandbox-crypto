@@ -52,7 +52,7 @@ import posixpath
 import re
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import BaseModel, ConfigDict
 
@@ -66,6 +66,8 @@ from sandbox_science.contracts import (
     WriteFileRequest,
 )
 from sandbox_science.contracts.child_environments import (
+    HAND_BACK_MANIFEST,
+    HAND_BACK_RESERVED,
     ChildEndReason,
     ChildEnvironment,
     ChildEnvironmentEnd,
@@ -150,6 +152,16 @@ class _PrepareError(Exception):
         self.message = message
 
 
+_EVENTS: Final[dict[str, str]] = {
+    "preparing": "child_environment_created",
+    "ready": "child_environment_ready",
+    "collecting": "child_environment_collecting",
+    "released": "child_environment_released",
+    "retained": "child_environment_retained",
+}
+"""The life-cycle events a phase change logs (CE-11)."""
+
+
 def limit(resources: Resources) -> int:
     """The child environments a project may have at once (CE-9)."""
     found = resources.child_environments_max
@@ -194,6 +206,12 @@ class ChildEnvironments:
 
     # Admission (CE-3, CE-7, CE-9), before anything is created.
 
+    def granted(self, resources: Resources, own: str | None) -> list[str]:
+        """The child profiles a project may use (CE-3): the policy's list, as the pool
+        offers them; without one, the project's own (or the pool's default) only."""
+        names = resources.child_profiles if resources.child_profiles is not None else (own,)
+        return [name for name in names if name is not None and name in self.settings.child_profiles]
+
     def offered(self, resources: Resources) -> bool:
         """Whether a project under ``resources`` may have child environments here."""
         return bool(self.settings.child_profiles) and limit(resources) > 0
@@ -203,7 +221,7 @@ class ChildEnvironments:
         governing = self.environments.governing(environment_id)
         if governing is None:
             raise WorkerError(
-                ErrorKind.UNAVAILABLE,
+                ErrorKind.CONFLICT,
                 f"environment {environment_id!r} has no ready policy to make a child"
                 " environment under",
             )
@@ -235,15 +253,17 @@ class ChildEnvironments:
                 ErrorKind.POLICY_DENIED,
                 "child environments are off for this project (child_environments_max is 0)",
             )
-        name = request.profile or self.settings.child_default
+        own = request.project_profile or self.settings.child_default
+        name = request.profile or own
+        granted = self.granted(resources, own)
         profile = self.settings.child_profiles.get(name) if name is not None else None
-        if name is None or profile is None:
-            offered = ", ".join(sorted(self.settings.child_profiles))
+        if name is None or profile is None or name not in granted:
+            listed = ", ".join(granted) or "none"
             raise WorkerError(
                 ErrorKind.POLICY_DENIED,
-                f"child profile {name!r} is not offered (offered: {offered})"
+                f"child profile {name!r} is not granted to this project (granted: {listed})"
                 if name is not None
-                else f"name a child profile; this pool has no default (offered: {offered})",
+                else f"name a child profile; this pool has no default (granted: {listed})",
             )
         declared = min(profile.isolation_tier, self.environments.isolation_tier)
         if request.min_isolation_tier is not None and declared < request.min_isolation_tier:
@@ -278,8 +298,9 @@ class ChildEnvironments:
                  " max_child_environments"),
             ):  # fmt: skip
                 if most is not None and count >= most:
+                    # A definite refusal, as a job sandbox's limit is (JS-10): nothing ran.
                     raise WorkerError(
-                        ErrorKind.UNAVAILABLE,
+                        ErrorKind.POLICY_DENIED,
                         f"limit_reached: {what} of {most} is reached; child environments"
                         f" alive: {', '.join(row.environment_id for row in project) or 'none'}",
                     )
@@ -447,7 +468,7 @@ class ChildEnvironments:
                 "environment_unavailable",
                 f"the child environment could not be created: {error.message}",
             ) from error
-        self.records.update(environment_id, now=self.clock.now(), phase="preparing")
+        self._update(environment_id, phase="preparing")
         session = ExecutionContext(
             project_id=record.project_id,
             session_id=record.session_id,
@@ -461,7 +482,13 @@ class ChildEnvironments:
                 location = await port.location(environment_id)
                 theirs = await port.location(record.session_environment)
                 minimum = max(planned.min_isolation_tier or 0, theirs.isolation_tier or 0)
-                if location.isolation_tier is None or location.isolation_tier < minimum:
+                if (
+                    location.isolation_tier is None
+                    or location.isolation_tier < minimum
+                    or (location.isolation_tier >= 2 and location.isolation_evidence is None)
+                ):
+                    # A tier above 1 stands only on the probe's evidence, as a session
+                    # environment's does (D43).
                     raise _PrepareError(
                         "isolation_insufficient",
                         f"the child environment runs at isolation tier {location.isolation_tier};"
@@ -487,7 +514,7 @@ class ChildEnvironments:
         )
         now = self.clock.now()
         self.records.record_step(environment_id, "prepared", prepared.model_dump_json(), now)
-        self.records.update(environment_id, now=now, phase="ready", ready_at=now)
+        self._update(environment_id, phase="ready", ready_at=now)
         _log.info("child environment %s is ready", environment_id)
 
     async def _stage(
@@ -535,6 +562,8 @@ class ChildEnvironments:
                 )
             stored = self.records.hand_back(environment_id)
             if stored is not None:
+                # Its copy in the session may be what a restart cut short.
+                await self._write_copy(request.context, stored)
                 return stored
             if record.phase not in ("ready", "collecting"):
                 raise WorkerError(
@@ -546,7 +575,7 @@ class ChildEnvironments:
 
     async def _collect(self, record: ChildRecord, request: HandBackRequest) -> ChildHandBack:
         environment_id = record.environment_id
-        self.records.update(environment_id, now=self.clock.now(), phase="collecting")
+        self._update(environment_id, phase="collecting")
         session = request.context
         child = session.model_copy(update={"environment_id": environment_id})
         target = hand_back_target(request.delegation_id)
@@ -614,10 +643,11 @@ class ChildEnvironments:
             complete=complete,
             ended_at=self.clock.now(),
         )
+        # The session's copy first, then the record that says the hand-back is made: a
+        # restart between them writes the copy again from the recorded steps.
+        await self._write_copy(session, manifest)
         self.records.save_hand_back(environment_id, manifest, self.clock.now())
-        stored = self.records.hand_back(environment_id) or manifest
-        await self._write_copy(session, stored)
-        return stored
+        return self.records.hand_back(environment_id) or manifest
 
     async def _copy(
         self,
@@ -632,6 +662,8 @@ class ChildEnvironments:
         def leave(reason: str) -> _Copied:
             return _Copied(left=UncollectedFile(path=source[:4096], reason=reason[:300]))
 
+        if source == HAND_BACK_RESERVED or source.startswith(f"{HAND_BACK_RESERVED}/"):
+            return leave(f"{HAND_BACK_RESERVED}/ is the hand-back's own; no file is copied there")
         try:
             validate_relative_path(target)
         except ValueError:
@@ -653,13 +685,14 @@ class ChildEnvironments:
         return _Copied(collected=ManifestFile(path=target, size=len(data), sha256=digest))
 
     async def _write_copy(self, session: ExecutionContext, manifest: ChildHandBack) -> None:
-        """``work/<delegation_id>/manifest.json`` in the session: an untrusted copy."""
+        """``work/<delegation_id>/.handback/manifest.json`` in the session: an untrusted copy,
+        written whole by one file write."""
         text = manifest.model_dump_json(indent=2).encode()
         try:
             await self._port().write_file(
                 WriteFileRequest(
                     context=session,
-                    path=f"{manifest.target}/manifest.json",
+                    path=f"{manifest.target}/{HAND_BACK_MANIFEST}",
                     content_b64=base64.b64encode(text).decode(),
                 )
             )
@@ -682,9 +715,9 @@ class ChildEnvironments:
         if record.phase in ("released", "retained"):
             return record
         steps = self.records.steps(environment_id)
-        if reason == "session_closed":
+        if reason in ("session_closed", "abandoned"):
             self.records.record_step(
-                environment_id, "release", '"session_closed"', self.clock.now()
+                environment_id, "release", json.dumps(reason), self.clock.now()
             )
         closing = "release" in self.records.steps(environment_id)
         manifest = self.records.hand_back(environment_id)
@@ -694,9 +727,8 @@ class ChildEnvironments:
             )
         if record.phase in ("creating", "preparing"):
             if record.failure is None:
-                self.records.update(
+                self._update(
                     environment_id,
-                    now=self.clock.now(),
                     message="its delegation ended before it was ready",
                 )
             return await self._release(environment_id)
@@ -711,9 +743,7 @@ class ChildEnvironments:
 
     async def _fail(self, environment_id: str, failure: ChildFailure, message: str) -> None:
         _log.warning("child environment %s failed (%s): %s", environment_id, failure, message)
-        self.records.update(
-            environment_id, now=self.clock.now(), failure=failure, message=message[:1000]
-        )
+        self._update(environment_id, failure=failure, message=message[:1000])
         await self._release(environment_id)
 
     async def _release(self, environment_id: str) -> ChildRecord:
@@ -722,15 +752,13 @@ class ChildEnvironments:
         info = self.environments.records.get(environment_id)
         now = self.clock.now()
         if info is None or info.state is EnvironmentState.DELETED:
-            return self.records.update(environment_id, now=now, phase="released")
+            return self._update(environment_id, phase="released")
         try:
             await self.environments.delete(environment_id)
         except WorkerError as error:
             _log.warning("child environment %s was not released: %s", environment_id, error)
-            return self.records.update(
-                environment_id, now=now, phase="retained", retained_until=now
-            )
-        return self.records.update(environment_id, now=self.clock.now(), phase="released")
+            return self._update(environment_id, phase="retained", retained_until=now)
+        return self._update(environment_id, phase="released")
 
     async def _retain(self, environment_id: str, why: str) -> ChildRecord:
         """Stop the child environment and keep it until the retention deadline, releasing
@@ -738,15 +766,14 @@ class ChildEnvironments:
         record = self._record(environment_id)
         info = self.environments.records.get(environment_id)
         if info is None or info.state is EnvironmentState.DELETED:
-            return self.records.update(environment_id, now=self.clock.now(), phase="released")
+            return self._update(environment_id, phase="released")
         try:
             await self.environments.stop_job(environment_id)
         except WorkerError as error:
             _log.warning("child environment %s did not stop: %s", environment_id, error)
         now = self.clock.now()
-        kept = self.records.update(
+        kept = self._update(
             environment_id,
-            now=now,
             phase="retained",
             message=why,
             retained_until=now + timedelta(seconds=self.settings.child_retention),
@@ -797,13 +824,14 @@ class ChildEnvironments:
                     if due and (await self._release(row.environment_id)).phase == "released":
                         released.append(row.environment_id)
                 elif now >= current.expires_at + timedelta(seconds=WALL_TIME_GRACE):
-                    current = self.records.update(
+                    current = self._update(
                         row.environment_id,
-                        now=now,
                         failure="wall_time",
                         message="its wall time ran out and its delegation did not end it",
                     )
                     await self._end(current, "delegation_ended")
+        # Released rows past the retention are pruned: their delegations keep the account.
+        self.records.prune(now - timedelta(seconds=self.settings.child_retention))
         return released
 
     async def start(self) -> None:
@@ -886,6 +914,29 @@ class ChildEnvironments:
         )
 
     # Helpers.
+
+    def _update(self, environment_id: str, **changes: Any) -> ChildRecord:
+        """Change a row, and log its life-cycle event when its phase changes (CE-11): once
+        a transition, with its environment, delegation and session."""
+        before = self._record(environment_id)
+        after = self.records.update(environment_id, now=self.clock.now(), **changes)
+        if after.phase != before.phase:
+            event = _EVENTS.get(after.phase)
+            if event is not None:
+                _log.info(
+                    "child environment %s is %s",
+                    environment_id,
+                    after.phase,
+                    extra={
+                        "event": event,
+                        "environment": environment_id,
+                        "delegation": after.delegation_id,
+                        "session": after.session_id,
+                        "project": after.project_id,
+                        "failure": after.failure,
+                    },
+                )
+        return after
 
     def _port(self) -> EnvironmentPort:
         if self.port is None:

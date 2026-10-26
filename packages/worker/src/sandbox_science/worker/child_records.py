@@ -80,6 +80,8 @@ def create_schema(db: sqlite3.Connection) -> None:
         "CREATE INDEX child_environments_session"
         " ON child_environments(project_id, session_id, phase)"
     )
+    # Every count and sweep reads the rows in some phases: never a scan of the released.
+    db.execute("CREATE INDEX child_environments_phase ON child_environments(phase, created_at)")
     db.execute(
         """CREATE TABLE child_progress (
     environment_id TEXT NOT NULL REFERENCES child_environments(environment_id),
@@ -94,18 +96,29 @@ def create_schema(db: sqlite3.Connection) -> None:
         " BEGIN SELECT RAISE(ABORT, 'child environment steps are recorded once'); END"
     )
     db.execute(
+        "CREATE TRIGGER child_progress_kept BEFORE DELETE ON child_progress"
+        " WHEN (SELECT phase FROM child_environments WHERE environment_id ="
+        " OLD.environment_id) IS NOT 'released'"
+        " BEGIN SELECT RAISE(ABORT, 'only a released child environment is pruned'); END"
+    )
+    db.execute(
         """CREATE TABLE child_hand_backs (
     environment_id TEXT PRIMARY KEY REFERENCES child_environments(environment_id),
     manifest TEXT NOT NULL CHECK (length(CAST(manifest AS BLOB)) BETWEEN 2 AND 4194304),
     recorded_at TEXT NOT NULL
 ) STRICT"""
     )
-    for action in ("UPDATE", "DELETE"):
-        db.execute(
-            f"CREATE TRIGGER child_hand_backs_immutable_{action.lower()} BEFORE {action}"
-            " ON child_hand_backs BEGIN SELECT RAISE(ABORT, 'hand-back manifests are"
-            " immutable'); END"
-        )
+    db.execute(
+        "CREATE TRIGGER child_hand_backs_immutable_update BEFORE UPDATE ON child_hand_backs"
+        " BEGIN SELECT RAISE(ABORT, 'hand-back manifests are immutable'); END"
+    )
+    # Pruned with its released row, once the delegation's outcome keeps its account.
+    db.execute(
+        "CREATE TRIGGER child_hand_backs_immutable_delete BEFORE DELETE ON child_hand_backs"
+        " WHEN (SELECT phase FROM child_environments WHERE environment_id ="
+        " OLD.environment_id) IS NOT 'released'"
+        " BEGIN SELECT RAISE(ABORT, 'hand-back manifests are immutable'); END"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,14 +222,50 @@ class ChildRecords:
         project_id: str | None = None,
         session_id: str | None = None,
     ) -> list[ChildRecord]:
-        """Rows in ``phases`` (every row without), of a project and session, oldest first."""
-        rows = self.db.execute(
-            _SELECT + " WHERE (? IS NULL OR project_id=?) AND (? IS NULL OR session_id=?)"
-            " ORDER BY created_at, environment_id LIMIT 1000",
-            (project_id, project_id, session_id, session_id),
-        ).fetchall()
-        records = [_record(row) for row in rows]
-        return [record for record in records if phases is None or record.phase in phases]
+        """Rows in ``phases``, of a project and session, oldest first: every one of them,
+        filtered in SQL. Without ``phases``, the newest 1,000 rows of every phase."""
+        where = "(? IS NULL OR project_id=?) AND (? IS NULL OR session_id=?)"
+        values: list[object] = [project_id, project_id, session_id, session_id]
+        if phases is not None:
+            listed = sorted(phases)
+            where += f" AND phase IN ({','.join('?' * len(listed))})"
+            values += listed
+            rows = self.db.execute(
+                f"{_SELECT} WHERE {where} ORDER BY created_at, environment_id",
+                values,
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                f"{_SELECT} WHERE {where} ORDER BY created_at DESC, environment_id DESC LIMIT 1000",
+                values,
+            ).fetchall()
+            rows.reverse()
+        return [_record(row) for row in rows]
+
+    def prune(self, before: datetime) -> int:
+        """Delete released rows last changed before ``before``, with their steps and
+        manifests: their delegations' outcomes keep the account. The number deleted."""
+        found = [
+            str(row[0])
+            for row in self.db.execute(
+                "SELECT environment_id FROM child_environments WHERE phase='released'"
+                " AND updated_at < ? ORDER BY updated_at LIMIT 1000",
+                (before.isoformat(),),
+            ).fetchall()
+        ]
+        for environment_id in found:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                for table in ("child_progress", "child_hand_backs", "child_environments"):
+                    self.db.execute(
+                        f"DELETE FROM {table} WHERE environment_id=?",  # noqa: S608 - fixed tables
+                        (environment_id,),
+                    )
+                self.db.execute("COMMIT")
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+        return len(found)
 
     def record_step(self, environment_id: str, step: str, record: str, now: datetime) -> str:
         """Record one step once; return its record, the first one when it was recorded."""

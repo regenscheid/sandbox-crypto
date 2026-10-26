@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import sqlite3
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,13 +32,16 @@ from sandbox_science.contracts import (
     ErrorKind,
     ExecutionContext,
     FileListing,
+    IsolationEvidence,
     ListFilesRequest,
+    Location,
     SessionCloseRequest,
 )
 from sandbox_science.contracts.child_environments import (
     ChildEnvironment,
     ChildEnvironmentEnd,
     ChildEnvironmentRequest,
+    ChildPhase,
     HandBackRequest,
     RetainedFile,
     is_child_environment,
@@ -48,6 +53,7 @@ from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.child_environments import ChildEnvironments
+from sandbox_science.worker.child_records import ACTIVE, ChildRecord
 from sandbox_science.worker.environments import Environments
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
@@ -81,7 +87,19 @@ def child_profile(**changes: Any) -> ChildProfile:
 
 
 class SizedPort(FakePort):
-    """A ``FakePort`` whose listings carry each file's size, as the worker's do."""
+    """A ``FakePort`` whose listings carry each file's size, and whose probe gives its
+    evidence, as the worker's do; ``unprobed`` environments report none."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.unprobed: set[str] = set()
+
+    async def location(self, environment_id: str) -> Location:
+        found = await super().location(environment_id)
+        if environment_id in self.unprobed:
+            return found
+        evidence = IsolationEvidence(kernel="separate", sentinel="hidden")
+        return found.model_copy(update={"isolation_evidence": evidence})
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         listing = await super().list_files(request)
@@ -305,10 +323,13 @@ async def test_a_request_is_refused_before_anything_is_created(tmp_path: Path) -
     )  # fmt: skip
     try:
         await pool.session()
+        small = {"profile": "small", "project_profile": "small"}
         refusals = (
-            (pool.request(profile="huge"), "not offered"),
-            (pool.request(profile="small", min_isolation_tier=3), "isolation_insufficient"),
-            (pool.request(profile="small", inputs=("data",)), "inputs_too_large: input"),
+            (pool.request(profile="huge"), "'huge' is not granted"),
+            # Without a policy list, only the project's own profile is granted (CE-3).
+            (pool.request(profile="small"), r"not granted to this project \(granted: standard\)"),
+            (pool.request(**small, min_isolation_tier=3), "isolation_insufficient"),
+            (pool.request(**small, inputs=("data",)), "inputs_too_large: input"),
         )
         for request, reason in refusals:
             with pytest.raises(WorkerError, match=reason):
@@ -410,7 +431,7 @@ async def test_a_complete_hand_back_releases_the_child_environment(pool: Pool) -
     assert [f.path for f in back.collected] == [f"{target}/out/report.md", f"{target}/out/big.bin"]
     assert back.retained == (retained,)
     assert pool.port.files[SESSION, f"{target}/out/report.md"] == b"# Report\n"
-    copy = json.loads(pool.port.files[SESSION, f"{target}/manifest.json"])
+    copy = json.loads(pool.port.files[SESSION, f"{target}/.handback/manifest.json"])
     assert copy["complete"] is True
     # Asked again, the stored manifest answers; nothing is copied twice.
     again = pool.back(("out/report.md", "out/big.bin"), retained=(retained,))
@@ -645,3 +666,179 @@ def test_a_child_contract_bounds_its_inputs() -> None:
         )
     with pytest.raises(ValidationError):
         ChildEnvironmentRequest(context=CONTEXT, delegation_id=DELEGATION, inputs=("../up",))
+
+
+# The review of 2026-10-26.
+
+
+def _row(n: int, phase: ChildPhase, at: datetime) -> ChildRecord:
+    return ChildRecord(
+        f"p1-child-{n:012x}", f"dlg-{n:024x}", "p1", "s1", SESSION, "standard",
+        phase, None, None, at, at, None, None, at, at,
+    )  # fmt: skip
+
+
+def test_listings_filter_by_phase_past_a_thousand_released_rows(tmp_path: Path) -> None:
+    """Counts and sweeps see every active row, however many released rows came first;
+    released rows past the retention are pruned with their steps and manifests."""
+    store = Store(tmp_path / "worker.sqlite3")
+    try:
+        records = store.child_environments
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        for n in range(1001):
+            records.insert(
+                _row(n, "released" if n < 1000 else "ready", start + timedelta(seconds=n))
+            )
+        records.record_step(f"p1-child-{0:012x}", "inputs", "{}", start)
+        assert [r.environment_id for r in records.listed(phases=ACTIVE)] == [
+            f"p1-child-{1000:012x}"
+        ]
+        assert len(records.listed(phases=ACTIVE, project_id="p1", session_id="s1")) == 1
+        assert len(records.listed()) == 1000  # the newest thousand, the active one among them
+        assert records.listed()[-1].phase == "ready"
+        assert records.prune(start + timedelta(seconds=500)) == 500
+        assert records.get(f"p1-child-{0:012x}") is None
+        assert records.steps(f"p1-child-{0:012x}") == {}
+        assert records.get(f"p1-child-{1000:012x}") is not None
+        records.record_step(f"p1-child-{1000:012x}", "inputs", "{}", start)
+        with pytest.raises(sqlite3.IntegrityError, match="pruned"):
+            records.db.execute("DELETE FROM child_progress")
+    finally:
+        store.close()
+
+
+async def test_admission_counts_past_a_thousand_released_rows(tmp_path: Path) -> None:
+    pool = Pool(tmp_path)
+    try:
+        await pool.session(pool.add(granting(tmp_path, "one.yaml", child_environments_max=1)))
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        for n in range(1000):
+            pool.store.child_environments.insert(_row(n, "released", start))
+        await pool.ready()
+        with pytest.raises(WorkerError, match="limit_reached") as caught:
+            await pool.children.admit(pool.request("dlg-" + "b" * 24))
+        # A definite refusal: 403, never a 5xx a client would read as an unknown outcome.
+        assert caught.value.kind is ErrorKind.POLICY_DENIED
+        assert caught.value.status == 403
+    finally:
+        await pool.close()
+
+
+async def test_the_limit_reaches_the_client_as_a_definite_refusal(
+    tmp_path: Path, aiohttp_client: ClientFactory
+) -> None:
+    """Over HTTP, through the orchestrator's own client: a readable refusal naming the
+    limit, not an uncertain failure."""
+    from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+
+    pool = Pool(tmp_path)
+    manager = _manager(pool)
+    try:
+        await pool.session(pool.add(granting(tmp_path, "one.yaml", child_environments_max=1)))
+        await pool.ready()
+        server: TestClient[Any, Any] = await aiohttp_client(
+            create_app(manager, TOKEN, pool.environments, children=pool.children)
+        )
+        client = WorkerClient(str(server.make_url("/")).rstrip("/"), TOKEN)
+        try:
+            with pytest.raises(WorkerAPIError) as caught:
+                await client.create_child_environment(pool.request("dlg-" + "b" * 24))
+        finally:
+            await client.close()
+        assert (caught.value.kind, caught.value.status, caught.value.uncertain) == (
+            ErrorKind.POLICY_DENIED,
+            403,
+            False,
+        )
+        assert "limit_reached: this project's child_environments_max of 1" in caught.value.message
+    finally:
+        await manager.close()
+        await pool.close()
+
+
+async def test_a_policy_list_grants_child_profiles(tmp_path: Path) -> None:
+    pool = Pool(
+        tmp_path,
+        child_profiles={"standard": child_profile(), "large": child_profile()},
+        default_child_profile="standard",
+    )
+    try:
+        await pool.session(
+            pool.add(granting(tmp_path, "list.yaml", child_profiles=["standard", "large"]))
+        )
+        made = await pool.ready(profile="large")
+        assert made.profile == "large"
+    finally:
+        await pool.close()
+
+
+async def test_a_declared_vm_tier_needs_the_probes_evidence(pool: Pool) -> None:
+    pool.port.located.clear()
+    made, _ = await pool.children.admit(pool.request())
+    pool.port.unprobed.add(made.environment_id)
+    pool.port.located.set()
+    found = await pool.settled(made.environment_id)
+    assert (found.phase, found.failure) == ("released", "isolation_insufficient")
+
+
+async def test_the_manifest_has_a_reserved_name_and_is_written_again(pool: Pool) -> None:
+    made = await pool.ready()
+    child = made.environment_id
+    pool.port.files[child, ".handback/manifest.json"] = b'{"forged": true}'
+    pool.port.files[child, "out.txt"] = b"ok"
+    back = await pool.children.hand_back(child, pool.back((".handback/manifest.json", "out.txt")))
+    assert [f.path for f in back.not_collected] == [".handback/manifest.json"]
+    target = f"work/{DELEGATION}/.handback/manifest.json"
+    assert json.loads(pool.port.files[SESSION, target])["environment_id"] == child
+    del pool.port.files[SESSION, target]  # as a restart between the copy and the record
+    again = await pool.children.hand_back(child, pool.back((".handback/manifest.json", "out.txt")))
+    assert again == back
+    assert (SESSION, target) in pool.port.files
+
+
+async def test_life_cycle_events_are_logged_once_a_transition(
+    pool: Pool, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sandbox_science.worker.child_environments")
+    made = await pool.ready()
+    pool.port.files[made.environment_id, "a.txt"] = b"a"
+    await pool.children.hand_back(made.environment_id, pool.back(("a.txt",)))
+    await pool.children.end(made.environment_id, pool.end())
+    await pool.children.end(made.environment_id, pool.end())
+    events = [
+        (getattr(r, "event", None), getattr(r, "delegation", None), getattr(r, "session", None))
+        for r in caplog.records
+        if str(getattr(r, "event", "")).startswith("child_environment_")
+    ]
+    assert [e[0] for e in events] == [
+        "child_environment_created",
+        "child_environment_ready",
+        "child_environment_collecting",
+        "child_environment_released",
+    ]
+    assert {e[1:] for e in events} == {(DELEGATION, "s1")}
+
+
+async def test_an_abandoned_one_is_released_without_retention(pool: Pool) -> None:
+    made = await pool.ready()
+    ended = await pool.children.end(made.environment_id, pool.end("abandoned"))
+    assert ended.phase == "released"
+
+
+async def test_a_session_close_after_the_hand_back_finds_nothing(pool: Pool) -> None:
+    """CE-F3's end: the child environment went with its hand-back."""
+    made = await pool.ready()
+    await pool.children.hand_back(made.environment_id, pool.back(()))
+    assert (await pool.children.end(made.environment_id, pool.end())).phase == "released"
+    assert await pool.children.close_session(CONTEXT) == []
+
+
+def _manager(pool: Pool) -> ExecutionManager:
+    return ExecutionManager(
+        pool.store,
+        LocalBackend(LocalBackendSettings(), pool.tmp / "worker"),
+        Blobs(pool.tmp / "worker" / "artifacts"),
+        pool_id="test",
+        max_artifact_size=1 << 20,
+        state_dir=pool.tmp / "worker",
+    )

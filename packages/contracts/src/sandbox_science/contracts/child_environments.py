@@ -40,6 +40,9 @@ MAX_CHILD_INPUTS: Final = 20
 """Paths a request copies in at most: a brief's inputs (DA-17's 20)."""
 CHILD_WALL_TIME_MAX: Final = 7 * 24 * 3600.0
 """The longest a child environment may be kept for its run (CE-9)."""
+HAND_BACK_MANIFEST: Final = ".handback/manifest.json"
+"""The hand-back's manifest, under its target: a reserved name no handed-back file takes."""
+HAND_BACK_RESERVED: Final = ".handback"
 HAND_BACK_DIRECTORY: Final = "work"
 """The session workspace directory a hand-back writes under, one directory a delegation
 (DA-19's write area, CE-6)."""
@@ -58,10 +61,11 @@ ChildFailure = Literal[
     "wall_time",
 ]
 """Why a child environment never became ready, or was ended by the worker."""
-ChildEndReason = Literal["delegation_ended", "session_closed"]
+ChildEndReason = Literal["delegation_ended", "session_closed", "abandoned"]
 """Why the orchestrator ends a child environment: its delegation ended (released after a
-complete hand-back, kept otherwise), or its session closed (released without retention,
-JS-25's rule)."""
+complete hand-back, kept otherwise); its session closed (released without retention,
+JS-25's rule); or nothing will use it again, such as one admitted for a delegation that
+was never written, or an interrupted run's left idle (released without retention)."""
 
 
 def child_environment_id(project_id: str) -> str:
@@ -93,7 +97,10 @@ class ChildEnvironmentRequest(Contract):
     """The session's: its environment is the one the child environment is made from."""
     delegation_id: Identifier
     profile: JobProfileName | None = None
-    """A child profile the pool offers; ``None`` for the pool's default (CE-3)."""
+    """A child profile the pool offers; ``None`` for the project's (CE-3)."""
+    project_profile: JobProfileName | None = None
+    """The project's own child profile (its delegation setting); ``None`` for the pool's
+    default. Where the policy grants no list of child profiles, it is the one granted."""
     inputs: tuple[RelativePath, ...] = Field(default=(), max_length=MAX_CHILD_INPUTS)
     """Session workspace paths, files or directories, copied to ``inputs/`` (CE-7). A
     path that names nothing is listed as missing, since a brief's inputs are also text."""
@@ -127,8 +134,8 @@ class HandBackRequest(Contract):
 
 
 class ChildHandBack(Contract):
-    """A hand-back's manifest: stored once, and written once to
-    ``work/<delegation_id>/manifest.json`` in the session (an untrusted copy)."""
+    """A hand-back's manifest: stored once, and written to
+    ``work/<delegation_id>/.handback/manifest.json`` in the session (an untrusted copy)."""
 
     delegation_id: Identifier
     environment_id: Identifier
@@ -188,6 +195,8 @@ __all__ = [
     "CHILD_ENVIRONMENT",
     "CHILD_WALL_TIME_MAX",
     "HAND_BACK_DIRECTORY",
+    "HAND_BACK_MANIFEST",
+    "HAND_BACK_RESERVED",
     "MAX_CHILD_INPUTS",
     "ChildEndReason",
     "ChildEnvironment",
