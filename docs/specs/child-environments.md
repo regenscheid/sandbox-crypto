@@ -186,6 +186,13 @@ platform places a child by the project's settings. No change to checks' evidence
   Python prefix out of the workspace) would cut each seed to seconds and is this design's
   natural prerequisite for `all`.
 
+  *Amended 2026-10-26 by the owner, replacing the as-built reading above (PD-46):* a
+  child's environment stays while the child runs, waits, or has returned and awaits its
+  parent's review. It is handed back and released when the parent accepts the
+  delegation or cancels it, when the parent's run ends without accepting it, at the
+  session's close, or at `review_max`. A message to a returned delegation reopens it in
+  the same environment.
+
 ## Fixtures
 
 **CE-F1 A task in its own environment** (CE-1 to CE-6, `scripted`):
@@ -220,6 +227,11 @@ platform places a child by the project's settings. No change to checks' evidence
 `message_parent` and waits in `wait_agent_message`; while it waits, its environment
 stays; the parent answers, the child continues and returns `complete`; the environment
 is released after its one hand-back, and the session's close finds nothing to release.
+
+*Amended 2026-10-26 by the owner, replacing the as-built reading above (PD-46):* the
+fixture as first written holds: the parent's `message_child` reopens the returned
+delegation in the same environment, the child returns `complete`, the parent accepts it,
+and the environment is released after that acceptance's hand-back.
 
 **CE-F4 Not ready in time** (CE-4):
 - *Given* a profile with `schedule_timeout: 60`.
