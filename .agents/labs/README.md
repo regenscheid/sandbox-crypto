@@ -91,9 +91,18 @@ and an agent runtime sandbox from the `orchestrator` image (built from committed
 the `crypto-research-mcp` provider attached. The provider is registered by
 `sandbox_science.launcher.access_provider` from the file's path, as the launcher's
 `provider_env_file` does; the fixture never opens anything under the secrets directory. The
-portal's URL is read at run time from the personal instance's policy, which
-`~/.config/sandbox-science/personal.toml` names; it is never written to the repository or
-exported. The personal instance is not touched.
+portal's URL lives in the policy file, not in the launcher config: the lab reads it at run
+time from the personal instance's policy (`personal-policy.yaml`), which the `[worker] policy`
+of `~/.config/sandbox-science/personal.toml` names, and never writes it to the repository or
+exports it. A deployment's portal URL is in its own policy file in the same way. The portal's
+servers share one `tools/list` and one policy entry, `crypto-research-mcp`, and their tools'
+server is the prefix of their names (`attack-catalog-mcp_`, `e-print-mcp_`, `portal_`). The
+personal instance is not touched.
+
+The lab registers the provider with the product's helper and the installed CLI as they are
+(the helper no longer takes an empty `.git` directory in babbage's home for a checkout), and
+binds its hand-made agent sandbox through the worker's `POST /v1/runtime-sandboxes`, the route
+the runtime owner and the runtime manager use for the product's own.
 
 ```bash
 .venv/bin/python -I .agents/labs/direct_mcp.py prepare
