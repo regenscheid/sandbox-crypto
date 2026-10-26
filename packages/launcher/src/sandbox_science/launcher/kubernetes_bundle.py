@@ -56,6 +56,8 @@ UNIT_VOLUME = "unit-config"
 POOL_SERVICES = ("worker", "middleware", "cache")
 OPENSHELL_CLI = "/usr/local/bin/openshell"
 """The OpenShell CLI in the ``trusted-app`` image (images/Containerfile)."""
+PROVIDER_KEYS = ("CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET")
+"""The provider Secret's keys the registering init container gets (``access_provider.KEYS``)."""
 REGISTER_PROVIDER = "register-mcp-provider"
 """The manager Pod's init container that registers the direct path's provider (D98)."""
 _INIT = Capacity(
@@ -454,7 +456,7 @@ def _credentials(
 def _register_provider(config: BundleConfig, image: str) -> dict[str, object]:
     """The manager Pod's init container that registers the direct path's provider with the
     gateway from the operator's Secret, before the manager creates a sandbox it attaches
-    to (D98). The Secret's values are this container's environment alone
+    to (D98). The Secret's two keys are this container's environment alone
     (``access_provider --from-environment``); the manager never sees them."""
     direct = config.mcp_direct
     assert direct is not None  # noqa: S101 - rendered only with [mcp_direct]
@@ -471,8 +473,17 @@ def _register_provider(config: BundleConfig, image: str) -> dict[str, object]:
             "--provider",
             direct.provider,
         ],
-        "envFrom": [{"secretRef": {"name": direct.provider_secret}}],
-        "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
+        # Only the provider's two keys, never whatever else the Secret holds.
+        "env": [
+            *(
+                {
+                    "name": key,
+                    "valueFrom": {"secretKeyRef": {"name": direct.provider_secret, "key": key}},
+                }
+                for key in PROVIDER_KEYS
+            ),
+            *({"name": key, "value": environment[key]} for key in sorted(environment)),
+        ],
         "securityContext": _security(),
         "resources": _resources(_INIT),
         "volumeMounts": [

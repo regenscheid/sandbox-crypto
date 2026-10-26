@@ -423,10 +423,11 @@ pool ceiling admit. With it:
 - **The renderer** gives the runtime manager's Pod an init container,
   `register-mcp-provider`, after its copy init: it runs
   `python3 -I -m sandbox_science.launcher.access_provider --from-environment` with the
-  manager's OpenShell CLI profile, and the Secret `provider_secret` as its environment
-  (`envFrom`) and no other container's, and creates the provider in the gateway, or updates
-  it, before the manager starts. The Secret's keys are `CF_ACCESS_CLIENT_ID` and
-  `CF_ACCESS_CLIENT_SECRET`; the operator makes it from a file
+  manager's OpenShell CLI profile, and the Secret `provider_secret`'s two keys,
+  `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`, as its environment (each by name, with
+  `secretKeyRef`: never any other key of the Secret) and no other container's, and creates the
+  provider in the gateway, or updates it, before the manager starts. The Secret holds those two
+  keys only; the operator makes it from a file
   ([prep](KUBERNETES-PREP.md#the-direct-mcp-paths-provider)). The manager's NetworkPolicy
   adds the worker's TCP 8100, and the pool's admits the manager there.
 - **The site generator** compiles the runtime sandbox's egress from the site's policy, pool
@@ -435,8 +436,11 @@ pool ceiling admit. With it:
   only the runtime's interpreter, and the policy middleware (the targets file's
   registration) for their hosts, with the project and the caller `agent-runtime`. It writes
   it as `agent-mcp-policy.yaml` in the manager's Secret, the runtime client's servers with
-  each one's tool admission as `runtime-mcp.json`, and an operator token for the worker,
-  `manager-worker.token`, whose client (`manager`) the worker knows for that project alone.
+  each one's tool admission as `runtime-mcp.json`, and a token for the worker,
+  `manager-worker.token`, generated apart from the manager's control token (which control sees
+  on every manager request), whose client (`manager`) the worker knows as `binding_only` for
+  that project alone: it may bind and unbind the runtime's sandbox and reach no other route
+  ([worker](WORKER.md)).
   `runtime-manager.json` gets the `worker` link (the worker Service, verified with the
   private CA in `control-ca.crt`) and `mcp` (the two files and the provider);
   `control.json` gets `direct` (the run service's servers, `about` and `index`); and

@@ -1730,7 +1730,17 @@ def test_the_direct_path_links_the_manager_to_the_worker_and_registers_its_provi
     assert names[-1] == "register-mcp-provider"
     assert names.index("copy-runtime-manager") < names.index("register-mcp-provider")
     register = spec["initContainers"][-1]
-    assert register["envFrom"] == [{"secretRef": {"name": "research-mcp-provider"}}]
+    # Only the provider's two keys, by name: never every key of the Secret.
+    assert "envFrom" not in register
+    secret_keys = [
+        (item["name"], item["valueFrom"]["secretKeyRef"])
+        for item in register["env"]
+        if "valueFrom" in item
+    ]
+    assert secret_keys == [
+        (key, {"name": "research-mcp-provider", "key": key})
+        for key in ("CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET")
+    ]
     assert register["command"] == [
         "python3",
         "-I",
@@ -1744,25 +1754,33 @@ def test_the_direct_path_links_the_manager_to_the_worker_and_registers_its_provi
         "--provider",
         "crypto-research-mcp",
     ]
-    environment = {item["name"]: item["value"] for item in register["env"]}
+    environment = {item["name"]: item["value"] for item in register["env"] if "value" in item}
     assert environment["XDG_CONFIG_HOME"] == "/private/xdg"
     assert {mount["mountPath"]: mount.get("readOnly") for mount in register["volumeMounts"]} == {
         "/private": True,
         "/tmp": None,
     }
-    for container in spec["containers"]:
-        assert "envFrom" not in container
-    referenced = {
-        source["secretRef"]["name"]
+    referenced = [
+        (container["name"], variable["valueFrom"]["secretKeyRef"]["name"])
         for item in items
         if item["kind"] == "Deployment"
         for container in [
             *item["spec"]["template"]["spec"]["containers"],
             *item["spec"]["template"]["spec"]["initContainers"],
         ]
-        for source in container.get("envFrom", [])
-    }
-    assert referenced == {"research-mcp-provider"}
+        for variable in container.get("env", [])
+        if "valueFrom" in variable
+    ]
+    assert referenced == [("register-mcp-provider", "research-mcp-provider")] * 2
+    assert not any(
+        "envFrom" in container
+        for item in items
+        if item["kind"] == "Deployment"
+        for container in [
+            *item["spec"]["template"]["spec"]["containers"],
+            *item["spec"]["template"]["spec"]["initContainers"],
+        ]
+    )
     # Without it, nothing of the direct path is rendered.
     plain = pod(objects(), "runtime-manager")
     assert "register-mcp-provider" not in [init["name"] for init in plain["initContainers"]]

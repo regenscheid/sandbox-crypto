@@ -322,9 +322,9 @@ class OpenShell:
 
 
 def from_environment(environment: Mapping[str, str]) -> dict[str, str]:
-    """The two values from the process's environment, where a Kubernetes Secret made with
-    ``kubectl create secret generic … --from-env-file`` puts them (``envFrom``), checked as
-    a file's are."""
+    """The two values from the process's environment, where the bundle puts a Kubernetes
+    Secret's two keys (made with ``kubectl create secret generic … --from-env-file``, each
+    given by ``secretKeyRef``), checked as a file's are."""
     found: dict[str, str] = {}
     for name in KEYS:
         value = environment.get(name, "").strip(BLANK)
@@ -379,7 +379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--from-environment",
         action="store_true",
         help="read CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET from the environment "
-        "instead of a file (a Kubernetes Secret given with envFrom)",
+        "instead of a file (a Kubernetes Secret's two keys)",
     )
     parser.add_argument("--profile", type=Path, help="cloudflare-access.yaml; needed with a file")
     parser.add_argument("--openshell", required=True, help="the OpenShell CLI's absolute path")
