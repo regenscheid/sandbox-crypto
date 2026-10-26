@@ -76,7 +76,6 @@ from .control import ControlError
 from .control.errors import NOT_FOUND
 from .delegation import prompt as delegated_prompt
 from .delegation.environments import (
-    UNAVAILABLE,
     WALL_TIME,
     ChildPlacement,
     account,
@@ -1386,6 +1385,22 @@ class Harness:
             placement=self.placement(admitted),
         )
 
+    async def child_tier_refusal(self, environment_id: str) -> str | None:
+        """Why a child environment may not run the project's work: its own tier in effect,
+        as its probe left it, below the harness's minimum (CE-10, D43); ``None`` when it
+        may."""
+        minimum = self.settings.min_isolation_tier
+        if minimum is None:
+            return None
+        location = (await self.client.capabilities(environment_id)).location
+        tier = tier_in_effect(location)
+        if tier is not None and tier >= minimum:
+            return None
+        return (
+            f"isolation_insufficient: the child environment has {describe_isolation(location)};"
+            f" tier {minimum} is required"
+        )
+
     def placement(self, admitted: Admitted) -> ChildPlacement:
         """The session's child environments, through the worker (CE-1): made from the
         session's environment, whichever environment ``admitted`` works in."""
@@ -1496,21 +1511,27 @@ class Harness:
             # is ends the delegation ``failed``, its environment released.
             placement = self.placement(admitted)
             found = await placement.ready(child.environment_id)
-            if found.phase != "ready":
+            refused = (
+                f"environment_unavailable: {found.message or 'it was not made ready'}"
+                if found.phase != "ready"
+                else await self.child_tier_refusal(child.environment_id)
+            )
+            if refused is not None:
+                if found.phase == "ready":
+                    # Not isolated enough for the project: nothing runs in it (CE-10).
+                    found = await placement.end(child.environment_id, "abandoned")
                 await threaded(
                     WorkRecords(self.stores.projects.control).never_started,
                     admitted.context.project_id,
                     admitted.context.session_id,
                     run_name(admitted.started_at, admitted.run_id),
-                    UNAVAILABLE,
+                    refused.split(":", 1)[0],
                 )
                 return ChildEnd(
-                    UNAVAILABLE,
+                    refused.split(":", 1)[0],
                     True,
                     None,
-                    errors=(
-                        f"environment_unavailable: {found.message or 'it was not made ready'}",
-                    ),
+                    errors=(refused,),
                     alias=child.alias or self.delegated.alias,
                     environment=account(found, None),
                 )

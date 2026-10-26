@@ -180,6 +180,16 @@ class DelegationSettings(Contract):
     child_profile: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")] | None = None
     """The worker's child profile for this project's child environments; ``None`` for the
     pool's default (CE-3)."""
+    child_idle_max: int | None = Field(default=None, ge=60, le=604_800)
+    """Seconds an ended delegation's child environment may sit unused (an interrupted run
+    never resumed) before it is released; ``None``, the default, for
+    ``child_orphan_idle`` (CE-4, question 4)."""
+    child_orphan_grace: int = Field(default=900, ge=60, le=86_400)
+    """Seconds a child environment no delegation names (admitted, then never written) is
+    kept before it is released."""
+    child_orphan_idle: int = Field(default=86_400, ge=60, le=604_800)
+    """Seconds an ended delegation's child environment is kept unused without
+    ``child_idle_max``."""
 
     @field_validator("models")
     @classmethod
@@ -448,6 +458,19 @@ class DelegationRecords:
                 ),
             )
             return _one(tx.sql, project, session, delegation_id)
+
+    def by_environment(
+        self, project: str, session: str, environment_id: str, delegation_id: str
+    ) -> list[Delegation]:
+        """The session's delegations that name the child environment, or that it was made
+        for: the one it was admitted for, and continuations a Resume placed in it."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM delegations WHERE project_id = ? AND session_id = ? "  # noqa: S608
+                "AND (environment_id = ? OR delegation_id = ?)",
+                (project, session, environment_id, delegation_id),
+            ).fetchall()
+        return [_delegation(row) for row in rows]
 
     def work_environment(self, project: str, session: str, work: str) -> str | None:
         """The child environment the latest of a research work's delegations worked in,

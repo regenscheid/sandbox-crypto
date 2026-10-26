@@ -26,11 +26,18 @@ from typing import Final, Literal, Protocol
 
 from pydantic import JsonValue
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext
+from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
+    Capabilities,
+    Clock,
+    ErrorKind,
+    ExecutionContext,
+)
 from sandbox_science.contracts.child_environments import (
     ChildEndReason,
     ChildEnvironment,
     ChildEnvironmentEnd,
+    ChildEnvironmentList,
     ChildEnvironmentRequest,
     ChildHandBack,
     HandBackRequest,
@@ -38,9 +45,10 @@ from sandbox_science.contracts.child_environments import (
     hand_back_target,
 )
 from sandbox_science.contracts.worker import MAX_MANIFEST_FILES, validate_relative_path
+from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from .records import ChildEnvironments
+from .records import ChildEnvironments, DelegationRecords, DelegationSettings
 
 _log = logging.getLogger(__name__)
 
@@ -48,6 +56,11 @@ Placement = Literal["shared", "own"]
 OWN_UNDER_OFF: Final = (
     "This project runs every delegated run in the session's environment "
     "(child_environments is off), so the task shares it as briefed otherwise."
+)
+NOT_OFFERED: Final = (
+    "The worker offers this project no environments of their own (its policy's "
+    "child_environments_max is 0, or the pool has no child profiles), so the delegated "
+    "run shares the session's environment."
 )
 WAITING: Final = (
     "The child works in an environment of its own, made from the session's; it starts "
@@ -161,6 +174,8 @@ def hand_back_plan(
 class ChildEnvironmentClient(Protocol):
     """The worker client's calls a placement makes."""
 
+    async def capabilities(self, environment_id: str) -> Capabilities: ...
+
     async def create_child_environment(
         self, request: ChildEnvironmentRequest
     ) -> ChildEnvironment: ...
@@ -168,6 +183,8 @@ class ChildEnvironmentClient(Protocol):
     async def child_environment(
         self, environment_id: str, context: ExecutionContext
     ) -> ChildEnvironment: ...
+
+    async def child_environments(self, context: ExecutionContext) -> ChildEnvironmentList: ...
 
     async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack: ...
 
@@ -187,16 +204,28 @@ class ChildPlacement:
     clock: Clock = SYSTEM_CLOCK
     poll_seconds: float = 5.0
 
+    async def offered(self) -> bool:
+        """Whether the worker offers this project child environments at all: a pool with
+        child profiles, under a policy whose ``child_environments_max`` is not 0 (CE-9).
+        Without them every delegation shares the session's environment."""
+        found = await self.client.capabilities(self.context.environment_id)
+        return "child_environments" in found.features
+
     async def admit(
-        self, delegation_id: str, inputs: Sequence[str], profile: str | None = None
+        self,
+        delegation_id: str,
+        inputs: Sequence[str],
+        profile: str | None = None,
+        project_profile: str | None = None,
     ) -> ChildEnvironment:
-        """Admit the delegation's own environment, of ``profile`` or the pool's default;
-        the worker's refusal as it gave it."""
+        """Admit the delegation's own environment, of ``profile`` or the project's
+        (``project_profile``, or the pool's default); the worker's refusal as it gave it."""
         return await self.client.create_child_environment(
             ChildEnvironmentRequest(
                 context=self.context,
                 delegation_id=delegation_id,
                 profile=profile,
+                project_profile=project_profile,
                 inputs=file_inputs(inputs),
                 min_isolation_tier=self.min_isolation_tier,
             )
@@ -204,6 +233,9 @@ class ChildPlacement:
 
     async def get(self, environment_id: str) -> ChildEnvironment:
         return await self.client.child_environment(environment_id, self.context)
+
+    async def listed(self) -> tuple[ChildEnvironment, ...]:
+        return (await self.client.child_environments(self.context)).environments
 
     async def ready(self, environment_id: str) -> ChildEnvironment:
         """The child environment once the worker says it is ready or has failed; past its
@@ -213,7 +245,7 @@ class ChildPlacement:
             if found.phase not in ("creating", "preparing"):
                 return found
             if self.clock.now() > found.ready_by + timedelta(seconds=READY_MARGIN):
-                ended = await self.end(environment_id, "delegation_ended")
+                ended = await self.end(environment_id, "abandoned")
                 return ended.model_copy(
                     update={
                         "failure": "environment_unavailable",
@@ -236,29 +268,37 @@ class ChildPlacement:
         plan: tuple[tuple[str, ...], tuple[RetainedFile, ...]] | None,
     ) -> dict[str, JsonValue]:
         """Hand back what ``plan`` names, when the run reached its end, then end the child
-        environment; the account the delegation's outcome keeps. Without ``plan`` there is
-        no hand-back, and an environment that became ready is kept (CE-4)."""
+        environment; the account the delegation's outcome keeps. Without ``plan``, or when
+        the hand-back fails, it is still ended: the worker keeps one whose hand-back was
+        not completed, with the reason, and releases one that never became ready (CE-4)."""
         back: ChildHandBack | None = None
-        error: str | None = None
-        try:
-            if plan is not None:
-                files, retained = plan
-                request = HandBackRequest(
-                    context=self.context,
-                    delegation_id=delegation_id,
-                    files=files,
-                    retained=retained,
-                )
+        errors: list[str] = []
+        if plan is not None:
+            files, retained = plan
+            request = HandBackRequest(
+                context=self.context, delegation_id=delegation_id, files=files, retained=retained
+            )
+            try:
                 back = await self._retried(lambda: self.client.hand_back(environment_id, request))
+            except WorkerAPIError as failure:
+                _log.warning(
+                    "child environment %s handed nothing back: %s", environment_id, failure
+                )
+                errors.append(f"the hand-back failed: {failure.message}")
+        try:
             ended = await self.end(environment_id, "delegation_ended")
         except WorkerAPIError as failure:
             _log.warning("child environment %s was not ended: %s", environment_id, failure)
-            error = failure.message
+            errors.append(f"it was not ended: {failure.message}")
             try:
                 ended = await self.get(environment_id)
             except WorkerAPIError:
-                return {"environment_id": environment_id, "end": "unknown", "message": error}
-        return account(ended, back or ended.hand_back, error)
+                return {
+                    "environment_id": environment_id,
+                    "end": "unknown",
+                    "message": "; ".join(errors),
+                }
+        return account(ended, back or ended.hand_back, "; ".join(errors) or None)
 
     async def _retried[T](self, call: Callable[[], Awaitable[T]]) -> T:
         for attempt in range(TRIES):
@@ -279,9 +319,10 @@ async def continue_in(
 ) -> tuple[str, str | None]:
     """Where a resumed delegated run works (CE-12): in ``previous``, its last child
     environment, while it is ready; otherwise in a new one for ``delegation_id``, made as
-    the original ``brief``'s was, with its inputs copied again. Returns the environment
-    and, for a new one, the one it replaced; raises ``WorkerAPIError`` when the new one
-    is refused or never becomes ready."""
+    the original ``brief``'s was, with its inputs copied again. One whose hand-back a
+    crash cut short (``collecting``) first finishes it, and is ended. Returns the
+    environment and, for a new one, the one it replaced; raises ``WorkerAPIError`` when
+    the new one is refused or never becomes ready."""
     try:
         found = await placement.get(previous)
     except WorkerAPIError as error:
@@ -290,11 +331,17 @@ async def continue_in(
         found = None
     if found is not None and found.phase == "ready":
         return previous, None
+    if found is not None and found.phase == "collecting":
+        # Its run ended and handed back part of its files: the worker finishes the
+        # recorded hand-back as it ends it, so they reach the session.
+        await placement.end(previous, "delegation_ended")
     inputs, profile = brief.get("inputs"), brief.get("profile")
+    named = profile if isinstance(profile, str) else None
     made = await placement.admit(
         delegation_id,
         [str(i) for i in inputs] if isinstance(inputs, list) else [],
-        profile if isinstance(profile, str) else None,
+        named,
+        named,
     )
     ready = await placement.ready(made.environment_id)
     if ready.phase != "ready":
@@ -303,6 +350,59 @@ async def continue_in(
             f"environment_unavailable: {ready.message or 'it was not made ready'}",
         )
     return made.environment_id, previous
+
+
+async def reconcile(
+    placement: ChildPlacement,
+    records: DelegationRecords,
+    settings: DelegationSettings,
+) -> list[str]:
+    """End the session's child environments nothing will use (CE-4): one no delegation
+    names, past ``child_orphan_grace`` from its admission (admitted, then never
+    written: the orchestrator stopped in between), released; and one whose delegations
+    have all ended, idle past ``child_idle_max`` (or ``child_orphan_idle``) from the last
+    end, such as an interrupted run never resumed: released when it was interrupted,
+    ended as its delegation otherwise. Their IDs. A worker that cannot say is left
+    alone; the session's close and the worker's sweep end them later."""
+    context = placement.context
+    try:
+        found = await placement.listed()
+    except WorkerAPIError as error:
+        _log.warning("child environments not reconciled: %s", error)
+        return []
+    now = placement.clock.now()
+    idle = timedelta(seconds=settings.child_idle_max or settings.child_orphan_idle)
+    ended: list[str] = []
+    for environment in found:
+        if environment.phase not in ("creating", "preparing", "ready", "collecting"):
+            continue
+        holders = await threaded(
+            records.by_environment,
+            context.project_id,
+            context.session_id,
+            environment.environment_id,
+            environment.delegation_id,
+        )
+        reason: ChildEndReason | None = None
+        if not holders:
+            if now - environment.created_at > timedelta(seconds=settings.child_orphan_grace):
+                reason = "abandoned"
+        elif all(d.ended_at is not None for d in holders):
+            last = max(d.ended_at for d in holders if d.ended_at is not None)
+            if now - last > idle:
+                interrupted = any(d.ended == "interrupted" for d in holders)
+                reason = "abandoned" if interrupted else "delegation_ended"
+        if reason is None:
+            continue
+        try:
+            await placement.end(environment.environment_id, reason)
+        except WorkerAPIError as error:
+            _log.warning(
+                "child environment %s was not ended: %s", environment.environment_id, error
+            )
+            continue
+        ended.append(environment.environment_id)
+    return ended
 
 
 def account(
@@ -350,6 +450,7 @@ def waiting_notice(delegation_id: str) -> str:
 
 
 __all__ = [
+    "NOT_OFFERED",
     "OWN_UNDER_OFF",
     "UNAVAILABLE",
     "WALL_TIME",
@@ -361,5 +462,6 @@ __all__ = [
     "file_inputs",
     "hand_back_plan",
     "placement",
+    "reconcile",
     "waiting_notice",
 ]

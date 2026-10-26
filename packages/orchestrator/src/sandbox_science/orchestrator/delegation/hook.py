@@ -70,7 +70,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
-from .environments import ChildPlacement, placement, waiting_notice
+from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, waiting_notice
 from .models import Choice, ModelChoice
 from .outcome import Asked, Target, asked_of, proof_reads
 from .prompt import brief_text, check_task, evidence_line, task_text
@@ -372,21 +372,20 @@ class Delegations(TurnHook):
         asked = brief.environment if isinstance(brief, TaskBrief) else None
         where, placed_notice = placement(self.limits.child_environments, planned.kind, asked)
         environment = None
-        if where == "own":
-            if self.placement is None:
-                raise WorkerAPIError(
-                    ErrorKind.UNAVAILABLE,
-                    "environment_unavailable: this run cannot give a delegation an "
-                    "environment of its own",
-                )
+        if where == "own" and (self.placement is None or not await self.placement.offered()):
+            # Off at the worker (CE-9): the delegation shares, and says so.
+            where, placed_notice = "shared", NOT_OFFERED
+        if where == "own" and self.placement is not None:
             # Admitted before the delegation is written: a refusal leaves no delegation,
             # and nothing is queued or silently shared (CE-9).
             inputs = planned.brief.get("inputs")
+            # A brief's profile is the worker's to grant: the policy's list, or the
+            # project's own only (CE-3).
             environment = await self.placement.admit(
                 delegation_id,
                 [str(i) for i in inputs] if isinstance(inputs, list) else [],
-                (brief.profile if isinstance(brief, TaskBrief) else None)
-                or self.limits.child_profile,
+                brief.profile if isinstance(brief, TaskBrief) else None,
+                self.limits.child_profile,
             )
         started = self.clock.now().astimezone(UTC)
         limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": tokens}
@@ -873,6 +872,9 @@ class Delegations(TurnHook):
                 )
                 for delegation_id, _ in abandoned:
                     _log.warning("delegation %s lost its process: interrupted", delegation_id)
+            if self.placement is not None and self.limits.child_environments != "off":
+                # Child environments nothing will use: never written, or left idle (CE-4).
+                await reconcile(self.placement, self.records, self.limits)
         try:
             yield
         finally:

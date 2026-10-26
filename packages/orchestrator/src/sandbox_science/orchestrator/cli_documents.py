@@ -123,6 +123,9 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 changes["child_environments"] = args.child_environments
             if args.child_profile is not None:  # empty: the pool's default
                 changes["child_profile"] = args.child_profile.strip() or None
+            for name in ("child_idle_max", "child_orphan_grace", "child_orphan_idle"):
+                if (value := getattr(args, name)) is not None:
+                    changes[name] = value or None if name == "child_idle_max" else value
             found = (
                 delegations.configure(args.project, **changes)
                 if changes
@@ -637,6 +640,23 @@ def add_parsers(commands: Any) -> None:
         choices=("off", "tasks", "all"),
         help="delegation: which delegated runs work in an environment of their own, made "
         "from the session's: none (off, the default), tasks, or all, checks included",
+    )
+    projects.add_argument(
+        "--child-idle-max",
+        type=int,
+        help="delegation: seconds an ended delegation's child environment may sit unused "
+        "before it is released; 0 for --child-orphan-idle's (the default)",
+    )
+    projects.add_argument(
+        "--child-orphan-grace",
+        type=int,
+        help="delegation: seconds a child environment no delegation names is kept (900)",
+    )
+    projects.add_argument(
+        "--child-orphan-idle",
+        type=int,
+        help="delegation: seconds an ended delegation's child environment is kept unused "
+        "without --child-idle-max (86400)",
     )
     projects.add_argument(
         "--child-profile",

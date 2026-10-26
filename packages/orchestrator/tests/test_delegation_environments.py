@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -32,22 +32,31 @@ from aiohttp.test_utils import TestServer
 from pydantic import JsonValue
 
 from sandbox_science.contracts import (
+    Capabilities,
     ErrorKind,
     ExecutionContext,
+    Location,
     ReadFileRequest,
     WriteFileRequest,
 )
 from sandbox_science.contracts.child_environments import (
     ChildEnvironment,
     ChildEnvironmentEnd,
+    ChildEnvironmentList,
     ChildEnvironmentRequest,
     ChildHandBack,
     HandBackRequest,
     RetainedFile,
     hand_back_target,
 )
-from sandbox_science.contracts.worker import ManifestFile, UncollectedFile
+from sandbox_science.contracts.worker import (
+    PROTOCOL_VERSION,
+    Feature,
+    ManifestFile,
+    UncollectedFile,
+)
 from sandbox_science.orchestrator.delegation.environments import (
+    NOT_OFFERED,
     OWN_UNDER_OFF,
     ChildPlacement,
     continue_in,
@@ -63,6 +72,7 @@ from sandbox_science.orchestrator.delegation.records import (
 )
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
+from sandbox_science.testing import FakeClock
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
@@ -98,6 +108,10 @@ class ChildService:
     requests: list[ChildEnvironmentRequest] = field(default_factory=list[ChildEnvironmentRequest])
     hand_backs: list[HandBackRequest] = field(default_factory=list[HandBackRequest])
     ended: list[str] = field(default_factory=list[str])
+    reasons: list[str] = field(default_factory=list[str])
+    offers: bool = True
+    """Whether the worker offers child environments (its capabilities' feature)."""
+    failing_hand_back: bool = False
 
     def alive(self) -> list[ChildEnvironment]:
         return [c for c in self.made.values() if c.phase in ("creating", "ready", "collecting")]
@@ -109,7 +123,7 @@ class ChildService:
                 return found
         if len(self.alive()) >= self.limit:
             raise WorkerAPIError(
-                ErrorKind.UNAVAILABLE,
+                ErrorKind.POLICY_DENIED,
                 f"limit_reached: this project's child_environments_max of {self.limit} is "
                 "reached; child environments alive: "
                 + ", ".join(c.environment_id for c in self.alive()),
@@ -144,6 +158,8 @@ class ChildService:
 
     async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack:
         self.hand_backs.append(request)
+        if self.failing_hand_back:
+            raise WorkerAPIError(ErrorKind.CONFLICT, "the hand-back failed")
         found = self.made[environment_id]
         assert self.manager is not None
         child = request.context.model_copy(update={"environment_id": environment_id})
@@ -180,11 +196,12 @@ class ChildService:
 
     def end(self, environment_id: str, request: ChildEnvironmentEnd) -> ChildEnvironment:
         self.ended.append(environment_id)
+        self.reasons.append(request.reason)
         found = self.made[environment_id]
         if found.phase in ("released", "retained"):
             return found
         back = found.hand_back
-        if request.reason == "session_closed" or (back is not None and back.complete):
+        if request.reason != "delegation_ended" or (back is not None and back.complete):
             ended = found.model_copy(update={"phase": "released"})
         else:
             ended = found.model_copy(
@@ -200,6 +217,15 @@ class ChildService:
         return ended
 
     # As the worker client, for the hook's own tests.
+
+    async def capabilities(self, environment_id: str) -> Capabilities:
+        location = Location(pool_id="test", backend="local", hostname="h")
+        features: tuple[Feature, ...] = ("child_environments",) if self.offers else ()
+        return Capabilities(protocol=PROTOCOL_VERSION, languages=(), location=location,
+                            features=features)  # fmt: skip
+
+    async def child_environments(self, context: ExecutionContext) -> ChildEnvironmentList:
+        return ChildEnvironmentList(environments=tuple(self.made.values()))
 
     async def create_child_environment(self, request: ChildEnvironmentRequest) -> ChildEnvironment:
         return self.admit(request)
@@ -225,12 +251,24 @@ class ChildService:
         handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
     ) -> web.StreamResponse:
         path = request.path
+        if path == "/v1/capabilities":
+            # The session's environment offers child environments, as a pool with child
+            # profiles does.
+            response = await handler(request)
+            assert isinstance(response, web.Response)
+            assert response.text is not None
+            found = json.loads(response.text)
+            if self.offers and found.get("location"):
+                found["features"] = [*found["features"], "child_environments"]
+            return web.json_response(found, status=response.status)
         if not path.startswith("/v1/child-environments"):
             return await handler(request)
         try:
             if path == "/v1/child-environments" and request.method == "POST":
                 body = ChildEnvironmentRequest.model_validate_json(await request.read())
                 return _json(self.admit(body), 201)
+            if path == "/v1/child-environments":
+                return _json(ChildEnvironmentList(environments=tuple(self.made.values())))
             environment_id = path.split("/")[3]
             if path.endswith("/hand-back"):
                 body = HandBackRequest.model_validate_json(await request.read())
@@ -241,11 +279,14 @@ class ChildService:
             return _json(self.made[environment_id])
         except WorkerAPIError as error:
             return web.json_response(
-                {"error": {"kind": error.kind.value, "message": error.message}}, status=503
+                {"error": {"kind": error.kind.value, "message": error.message}},
+                status=403 if error.kind is ErrorKind.POLICY_DENIED else 409,
             )
 
 
-def _json(model: ChildEnvironment | ChildHandBack, status: int = 200) -> web.Response:
+def _json(
+    model: ChildEnvironment | ChildHandBack | ChildEnvironmentList, status: int = 200
+) -> web.Response:
     return web.Response(
         text=model.model_dump_json(), status=status, content_type="application/json"
     )
@@ -665,3 +706,367 @@ async def test_a_resume_restarts_in_a_new_one_with_its_inputs(service: ChildServ
     service.ready = False
     with pytest.raises(WorkerAPIError, match="environment_unavailable"):
         await continue_in(place, "p-child-000000000000", "dlg-" + "e" * 24, brief)
+
+
+# The review of 2026-10-26.
+
+
+async def test_a_brief_profile_is_the_workers_to_grant(
+    tmp_path: Path, service: ChildService
+) -> None:
+    """CE-3: the brief's profile and the project's own reach the worker, which grants
+    the policy's list or, without one, the project's own only."""
+
+    async def runner(child: Child, stop: asyncio.Event) -> ChildEnd:
+        return ChildEnd("answered", False, json.dumps(DONE), result=DONE)
+
+    made, _, projects, documents = _placed(tmp_path, runner, service, "tasks")
+    DelegationRecords(projects.control).configure(PROJECT, child_profile="standard")
+    made.limits = DelegationRecords(projects.control).settings(PROJECT)
+    try:
+        async with made.lease():
+            await made.call("delegate", {"task": "Sieve.", "profile": "large"})
+            await asyncio.gather(*(c.task for c in made.children.values()))
+        (asked,) = service.requests
+        assert (asked.profile, asked.project_profile) == ("large", "standard")
+    finally:
+        documents.close()
+        projects.close()
+
+
+async def test_a_worker_offering_none_shares_with_a_notice(
+    tmp_path: Path, service: ChildService
+) -> None:
+    """CE-9: ``child_environments_max: 0`` or a pool without child profiles is off."""
+    service.offers = False
+
+    async def runner(child: Child, stop: asyncio.Event) -> ChildEnd:
+        assert child.environment_id is None
+        return ChildEnd("answered", False, json.dumps(DONE), result=DONE)
+
+    made, _, projects, documents = _placed(tmp_path, runner, service, "tasks")
+    try:
+        async with made.lease():
+            text, _ = await made.call("delegate", {"task": "Sieve."})
+            await asyncio.gather(*(c.task for c in made.children.values()))
+        assert json.loads(text)["environment"] == {"placement": "shared", "notice": NOT_OFFERED}
+        assert service.requests == []
+    finally:
+        documents.close()
+        projects.close()
+
+
+async def test_a_failed_hand_back_still_ends_the_environment(service: ChildService) -> None:
+    place = ChildPlacement(service, SESSION_CONTEXT)
+    made = await place.admit(DELEGATION, [])
+    service.failing_hand_back = True
+    kept = await place.close(made.environment_id, DELEGATION, (("a.txt",), ()))
+    assert service.ended == [made.environment_id]
+    assert kept["end"] == "retained"
+    assert "the hand-back failed" in str(kept["error"])
+
+
+async def test_orphans_and_idle_environments_are_released(
+    tmp_path: Path, service: ChildService
+) -> None:
+    """An environment admitted for a delegation never written (the orchestrator stopped
+    in between) is released past ``child_orphan_grace``; one whose run was interrupted
+    and never resumed, past ``child_idle_max``."""
+
+    async def runner(child: Child, stop: asyncio.Event) -> ChildEnd:
+        raise AssertionError("no child starts")
+
+    made, records, projects, documents = _placed(tmp_path, runner, service, "tasks")
+    made.limits = DelegationRecords(projects.control).configure(
+        PROJECT, child_orphan_grace=60, child_idle_max=60
+    )
+    assert made.placement is not None
+    clock = FakeClock(datetime.now(UTC))
+    made.placement.clock = clock
+    try:
+        # Admitted, then the process stopped before the delegation was written.
+        orphan = await made.placement.admit("dlg-" + "f" * 24, [])
+        # An interrupted run's environment, never resumed.
+        idle_delegation = made_delegation(7)
+        records.start(PROJECT, SESSION, idle_delegation)
+        idle = await made.placement.admit(idle_delegation.delegation_id, [])
+        records.place(PROJECT, SESSION, idle_delegation.delegation_id, idle.environment_id)
+        records.end(PROJECT, SESSION, idle_delegation.delegation_id,
+                    Ending("interrupted", "interrupted"))  # fmt: skip
+        async with made.lease():
+            pass  # within the bounds: both stay
+        assert service.ended == []
+        clock.advance(300)
+        async with made.lease():
+            pass
+        assert sorted(service.ended) == sorted([orphan.environment_id, idle.environment_id])
+        assert set(service.reasons) == {"abandoned"}
+    finally:
+        documents.close()
+        projects.close()
+
+
+async def test_a_resume_finishes_a_hand_back_cut_short(service: ChildService) -> None:
+    place = ChildPlacement(service, SESSION_CONTEXT)
+    first = await place.admit(DELEGATION, [])
+    service.made[first.environment_id] = service.made[first.environment_id].model_copy(
+        update={"phase": "collecting"}
+    )
+    chosen, replaced = await continue_in(place, first.environment_id, "dlg-" + "d" * 24, {})
+    assert replaced == first.environment_id
+    assert service.ended == [first.environment_id]
+    assert service.reasons == ["delegation_ended"]
+    assert chosen != first.environment_id
+
+
+async def test_the_child_environments_own_tier_must_meet_the_minimum(
+    tmp_path: Path, service: ChildService
+) -> None:
+    """CE-10: the tier in effect is the child environment's own, with the probe's
+    evidence; a declared tier alone does not count."""
+    from sandbox_science.contracts import IsolationEvidence
+    from sandbox_science.orchestrator.harness import Harness as RealHarness
+    from sandbox_science.orchestrator.harness import Settings
+    from sandbox_science.orchestrator.worker_client import WorkerClient
+
+    from .test_run_harness import main
+
+    tiers: dict[str, Location] = {
+        "unprobed": Location(pool_id="t", backend="openshell", hostname="h", isolation_tier=3),
+        "probed": Location(
+            pool_id="t", backend="openshell", hostname="h", isolation_tier=3,
+            isolation_evidence=IsolationEvidence(kernel="separate", sentinel="hidden"),
+        ),
+    }  # fmt: skip
+
+    class Tiers:
+        async def capabilities(self, environment_id: str) -> Capabilities:
+            return Capabilities(
+                protocol=PROTOCOL_VERSION, languages=(), location=tiers[environment_id]
+            )
+
+    harness = RealHarness(
+        cast(WorkerClient, Tiers()), main(), settings=Settings(min_isolation_tier=3)
+    )
+    assert await harness.child_tier_refusal("probed") is None
+    refused = await harness.child_tier_refusal("unprobed")
+    assert refused is not None
+    assert refused.startswith("isolation_insufficient: ")
+
+
+async def test_a_waiting_child_keeps_its_environment_and_an_ended_one_releases_it(
+    owning: Harness, service: ChildService
+) -> None:
+    """CE-F3 as amended: a child waiting for its parent (``wait_agent_message``) is still
+    running, and keeps its environment; once its delegation ends, the hand-back is made
+    and the environment released (an ended delegation takes no message, PD-44)."""
+    seen: list[list[str]] = []
+
+    async def look() -> None:
+        seen.append(list(service.ended))
+
+    await owning.run(
+        "root",
+        [Reply(calls=[TASK]), wait(), Reply("Done.")],
+        delegated=[
+            Reply(calls=[call("message_parent", text="Partial: table.txt so far.")]),
+            Reply(calls=[call("wait_agent_message", timeout_seconds=0.2)], before=look),
+            Reply(calls=[call("write_file", path="table.txt", content="1\n")], before=look),
+            Reply(calls=[call("write_file", path="notes.txt", content="n\n")]),
+            Reply(json.dumps(RESULT), before=look),
+        ],
+    )
+    assert seen == [[], [], []]
+    (environment,) = service.made.values()
+    assert environment.phase == "released"
+    assert service.ended == [environment.environment_id]
+
+
+async def test_after_an_unavailable_environment_a_new_delegate_is_admitted(
+    owning: Harness, service: ChildService
+) -> None:
+    """CE-F4's end: nothing is held after the failure; the next delegate gets one."""
+    service.ready = False
+
+    async def ready_again() -> None:
+        service.ready = True
+
+    root = await owning.run(
+        "root",
+        [Reply(calls=[TASK]), wait(), Reply(calls=[TASK], before=ready_again), wait(),
+         Reply("Done.")],
+        delegated=[
+            Reply(calls=[call("write_file", path="table.txt", content="1\n")]),
+            Reply(calls=[call("write_file", path="notes.txt", content="n\n")]),
+            Reply(json.dumps(RESULT)),
+        ],
+    )  # fmt: skip
+    first, second = started(root)
+    assert delegation(owning, first).ended == "failed"
+    assert delegation(owning, second).ended == "returned"
+    assert len(service.requests) == 2
+
+
+# A Resume through ``Recovery`` (CE-12).
+
+
+def _interrupted_tree(tmp_path: Path, environment_id: str) -> tuple[Any, Any, Any, str]:
+    """A root and its task child, interrupted, whose delegation worked in
+    ``environment_id``."""
+    from pydantic import TypeAdapter
+
+    from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+    from sandbox_science.orchestrator.harness import RunRequest
+
+    from .test_run_harness import stores
+    from .test_tool_journal import RUN
+    from .test_work_ownership import CHILD
+
+    state, documents = stores(tmp_path)
+    session = state.projects.open_session("p", "s", dedicated=False)
+    context = ExecutionContext(
+        project_id="p",
+        session_id="s",
+        environment_id=session.environment_id,
+        policy_revision=state.projects.get("p").policy,
+    )
+    works = WorkRecords(state.projects.control)
+    delegations = DelegationRecords(state.projects.control)
+    delegation = "dlg-" + "9" * 24
+    for run, parent in ((RUN, None), (CHILD, RUN)):
+        owner = works.admit("p", "s", run, parent=parent)
+        request = RunRequest(
+            "p", "s", "Continue research", parent=parent,
+            delegation=delegation if parent else None, tokens=100000 if parent else None,
+            alias="scripted", memory_version=0, root=RUN if parent else None,
+        )  # fmt: skip
+        Blueprints(state.projects.control).save(
+            owner,
+            Blueprint(
+                context=context,
+                request=TypeAdapter(RunRequest).dump_python(
+                    request, mode="json", exclude={"history", "stop_by"}
+                ),
+            ),
+        )
+        if parent:
+            delegations.start(
+                "p",
+                "s",
+                Delegation(
+                    delegation_id=delegation, parent=parent, run=run, kind="task",
+                    brief={"task": "Continue research", "inputs": ["data/a.csv"],
+                           "environment": "own", "profile": "standard"},
+                    started_at=datetime.now(UTC), environment_id=environment_id,
+                ),
+            )  # fmt: skip
+            delegations.end("p", "s", delegation, Ending("interrupted", "interrupted"))
+    works.interrupt("p", "s", RUN)
+    return state, documents, works, CHILD
+
+
+@pytest.mark.parametrize("gone", [False, True])
+async def test_a_resume_continues_in_its_environment_or_restarts_in_a_new_one(
+    tmp_path: Path, gone: bool
+) -> None:
+    from sandbox_science.contracts import KernelObservation
+    from sandbox_science.orchestrator.continuity.recovery import Recovery
+    from sandbox_science.orchestrator.harness import Harness as RealHarness
+    from sandbox_science.orchestrator.harness import Role, Settings
+    from sandbox_science.orchestrator.model import ModelTurn
+    from sandbox_science.orchestrator.worker_client import WorkerClient
+
+    from .scripted import ScriptedModel
+    from .test_run_harness import Sink, main
+    from .test_run_harness import Worker as LocalWorker
+    from .test_tree_recovery import drive
+
+    service = ChildService()
+    session_context = ExecutionContext(project_id="p", session_id="s", environment_id="e")
+    previous = service.admit(
+        ChildEnvironmentRequest(context=session_context, delegation_id="dlg-" + "9" * 24)
+    )
+    if gone:
+        service.made[previous.environment_id] = service.made[previous.environment_id].model_copy(
+            update={"phase": "released"}
+        )
+
+    class Resuming(LocalWorker):
+        async def observe_kernels(self, context: ExecutionContext) -> KernelObservation:
+            return KernelObservation(
+                environment_id=context.environment_id, session_id=context.session_id,
+                observed_at=datetime.now(UTC), kernels=(),
+            )  # fmt: skip
+
+        async def close_session(self, context: ExecutionContext, *, run: str | None = None) -> None:
+            return None
+
+        async def child_environment(
+            self, environment_id: str, context: ExecutionContext
+        ) -> ChildEnvironment:
+            return await service.child_environment(environment_id, context)
+
+        async def create_child_environment(
+            self, request: ChildEnvironmentRequest
+        ) -> ChildEnvironment:
+            return service.admit(request)
+
+        async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack:
+            service.hand_backs.append(request)
+            back = ChildHandBack(
+                delegation_id=request.delegation_id, environment_id=environment_id,
+                target=hand_back_target(request.delegation_id), complete=True,
+                ended_at=datetime.now(UTC),
+            )  # fmt: skip
+            service.made[environment_id] = service.made[environment_id].model_copy(
+                update={"phase": "collecting", "hand_back": back}
+            )
+            return back
+
+        async def end_child_environment(
+            self, environment_id: str, request: ChildEnvironmentEnd
+        ) -> ChildEnvironment:
+            return service.end(environment_id, request)
+
+    state, documents, works, child_run = _interrupted_tree(tmp_path, previous.environment_id)
+    done = json.dumps({"status": "complete", "summary": "Recovered"})
+    harness = RealHarness(
+        cast(WorkerClient, Resuming()),
+        main("Recovered root"),
+        delegated=Role(ScriptedModel([ModelTurn(done) for _ in range(4)]), "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    try:
+        sink = Sink()
+        failed = await drive(Recovery(harness, "p", "s", request), sink, asyncio.Event())
+        assert not failed, sink.errors
+        records = DelegationRecords(state.projects.control)
+        continuation = next(
+            d
+            for d in records.listed("p", "s")[0]
+            if d.delegation_id != "dlg-" + "9" * 24 and d.kind == "task"
+        )
+        assert continuation.environment is not None
+        if gone:
+            (_, again) = service.requests
+            assert again.delegation_id == continuation.delegation_id
+            assert again.inputs == ("data/a.csv",)
+            assert continuation.environment_id != previous.environment_id
+            restarted = continuation.environment["restarted"]
+            assert isinstance(restarted, dict)
+            assert restarted["replaced"] == previous.environment_id
+        else:
+            assert len(service.requests) == 1
+            assert continuation.environment_id == previous.environment_id
+            assert "restarted" not in continuation.environment
+        (back,) = service.hand_backs
+        assert back.delegation_id == continuation.delegation_id
+        assert continuation.environment["end"] == "released"
+        assert works.get("p", "s", child_run).state == "completed"
+    finally:
+        documents.close()
+        state.projects.close()

@@ -557,6 +557,9 @@ class Recovery:
         chosen, replaced = await continue_in(
             self.harness.placement_for(context), previous, delegation, original.brief
         )
+        refused = await self.harness.child_tier_refusal(chosen)
+        if refused is not None:
+            raise ControlError(CONFLICT, refused)
         if replaced is not None:
             self.harness.restarted[chosen] = replaced
         await threaded(records.place, self.project, self.session, delegation, chosen)
