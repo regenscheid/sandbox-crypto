@@ -54,7 +54,9 @@ from sandbox_science.launcher import runtime_owner
 from sandbox_science.launcher.config import LauncherError, error_text
 from sandbox_science.launcher.infrastructure import InfrastructureRecovery, RecoveryState
 from sandbox_science.launcher.mcp import DEAD_PHASES, OpenShell, SandboxMissingError
+from sandbox_science.launcher.runtime_binding import WorkerBinding
 from sandbox_science.launcher.runtime_owner import CreateRolledBackError, Owned
+from sandbox_science.launcher.sandboxes import WorkerApi
 from sandbox_science.launcher.state import private_dir, write_private
 from sandbox_science.policy.openshell import compile_orchestrator
 
@@ -166,6 +168,7 @@ class RuntimeManager:
         *,
         cli: OpenShell | None = None,
         control: ControlClient | None = None,
+        binding: runtime_owner.Binding | None = None,
         clock: Clock = SYSTEM_CLOCK,
         poll: float = 1.0,
         health_interval: float = 5.0,
@@ -183,6 +186,7 @@ class RuntimeManager:
             ca_file=settings.control_ca_file,
             token_file=settings.manager_token_file,
         )
+        self.binding = binding or self._worker_binding(settings)
         self.clock, self.poll = clock, poll
         self.health_interval, self.steady = health_interval, steady
         self.gateway_backoff, self.gateway_interval = gateway_backoff, gateway_interval
@@ -555,6 +559,14 @@ class RuntimeManager:
             output.cancel()
             await asyncio.gather(output, return_exceptions=True)
 
+    @staticmethod
+    def _worker_binding(settings: RuntimeManagerSettings) -> runtime_owner.Binding | None:
+        link = settings.worker
+        if link is None:
+            return None
+        api = WorkerApi(link.url, link.token_file, link.ca_file)
+        return WorkerBinding(api, link.project, say)
+
     async def _create_and_attach(self, driver_config: str) -> None:
         policy = self.root / "policy.yaml"
         write_private(policy, compile_orchestrator(self.settings.policy).to_yaml())
@@ -570,6 +582,7 @@ class RuntimeManager:
                 timeout=self.settings.start_timeout,
                 driver_config=driver_config,
                 clock=self.clock,
+                binding=self.binding,
             )
         except CreateRolledBackError as exc:
             self.ownership.mark_rolled_back(exc.reason, self.clock.now())
@@ -586,7 +599,11 @@ class RuntimeManager:
             return False
         _ours(owned)
         deleted = await runtime_owner.delete_recorded(
-            self.ownership, self.cli, timeout=self.settings.stop_timeout, clock=self.clock
+            self.ownership,
+            self.cli,
+            timeout=self.settings.stop_timeout,
+            clock=self.clock,
+            binding=self.binding,
         )
         self.attached = None
         return deleted

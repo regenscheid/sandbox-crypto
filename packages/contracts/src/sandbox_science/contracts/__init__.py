@@ -40,6 +40,9 @@ from .environments import (
     HostPort,
     PolicyRevision,
     PolicyRevisionRequest,
+    RuntimeSandboxBinding,
+    RuntimeSandboxRequest,
+    RuntimeSandboxUnbound,
     SuspendResult,
 )
 from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
@@ -234,6 +237,9 @@ __all__ = [
     "RevisionSummary",
     "RevisionSummaryPage",
     "RichOutput",
+    "RuntimeSandboxBinding",
+    "RuntimeSandboxRequest",
+    "RuntimeSandboxUnbound",
     "SessionCloseRequest",
     "SessionClosed",
     "ShellRequest",

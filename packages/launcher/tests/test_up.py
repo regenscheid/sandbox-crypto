@@ -427,9 +427,19 @@ def test_runtime_loss_preserves_ui_and_explicit_replacement_rotates_only_agent(
     assert layout.token("runtime-control").read_text() != token
     assert (layout.root / "orchestrator/generation").read_text() != generation
     assert f"openshell sandbox delete {original['name']}" in site["journal"].read_text()
+    # The worker binds each runtime sandbox by ID to the project's policy revision when it is
+    # Ready, and unbinds the old one once it is deleted; the launcher writes no store.
+    project = load_config(launcher.config).mcp_project()
+    bindings = site["journal"].with_name("journal.bindings")
+    assert bindings.read_text().splitlines() == [
+        f"bind {project} {original['id']}",
+        f"unbind {original['id']}",
+        f"bind {project} {replacement['id']}",
+    ]
     assert launcher.command("status").returncode == 0
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
+    assert bindings.read_text().splitlines()[-1] == f"unbind {replacement['id']}"
 
 
 def test_replacement_request_for_another_launcher_cannot_stop_the_runtime(

@@ -63,6 +63,25 @@ class ManagerOpenShell(Contract):
         return {"XDG_CONFIG_HOME": DEFAULT_XDG_CONFIG_HOME, **value}
 
 
+Origin = Annotated[str, Field(min_length=1, max_length=2048)]
+
+
+class WorkerLink(Contract):
+    """The worker route that binds the runtime's sandbox in the policy middleware's store
+    (``runtime_binding``): its origin, the CA that verifies it, an operator client's bearer
+    token and the project whose policy revision decides the sandbox."""
+
+    url: Origin
+    ca_file: Path
+    token_file: Path
+    project: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+    @field_validator("url")
+    @classmethod
+    def _origin(cls, value: str) -> str:
+        return _origin(value)
+
+
 class ControlModels(BaseModel):
     """The non-secret model part of ``control.json``; its other keys are ignored, so the
     copy may be the whole file."""
@@ -114,9 +133,6 @@ def _origin(value: str) -> str:
     return value.rstrip("/")
 
 
-Origin = Annotated[str, Field(min_length=1, max_length=2048)]
-
-
 class RuntimeManagerSettings(Contract):
     """What ``sandbox-science-runtime-manager`` runs with; see the module's docstring."""
 
@@ -140,6 +156,10 @@ class RuntimeManagerSettings(Contract):
     runtime: KubernetesProfile
     """The runtime sandbox's placement: Kata on amd64 only (tier 3)."""
     openshell: ManagerOpenShell = Field(default_factory=ManagerOpenShell)
+    worker: WorkerLink | None = None
+    """When given, the runtime's sandbox is bound to the project's policy revision through
+    the worker when it is Ready, and unbound when it is deleted. Without it nothing binds
+    the sandbox, and the policy middleware refuses its MCP requests (``sandbox_unbound``)."""
     start_timeout: float = Field(default=300.0, gt=0, le=3600)
     stop_timeout: float = Field(default=30.0, gt=0, le=600)
     recover_infrastructure: bool = False

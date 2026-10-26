@@ -33,12 +33,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import importlib.util
 import json
 import re
 import secrets
-import shutil
 import sys
 import time
 import tomllib
@@ -212,10 +210,7 @@ class DirectLab(recovery.OwnedRoot):
             env={**self.env, "MIDDLEWARE_EXTRA": "mcp_listings = true"},
             timeout=180,
         )
-        # The provider, from the owner's file by its path: only the helper reads it. The
-        # helper refuses a CLI inside any git checkout, and babbage's home has a .git
-        # directory, so it gets a byte-identical copy of the installed CLI in this root.
-        cli = self.private_cli()
+        # The provider, from the owner's file by its path: only the helper reads it.
         registered = recovery.run(
             [
                 str(REPO / ".venv/bin/python"),
@@ -226,7 +221,7 @@ class DirectLab(recovery.OwnedRoot):
                 "--profile",
                 str(PROFILE),
                 "--openshell",
-                str(cli),
+                str(OS_BIN / "openshell"),
             ],
             env=self.env,
             timeout=180,
@@ -256,25 +251,12 @@ class DirectLab(recovery.OwnedRoot):
                 "identity": {k: v for k, v in self.identity.items() if k != "source"},
                 "provider_registered": SERVER in names,
                 "provider_helper_exit": registered.returncode,
-                "provider_cli_copy_identical": True,
                 "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
                 "compiled": compiled,
                 "sandbox": self.sandbox_name(),
             },
         )
         print("up", self.path, flush=True)
-
-    def private_cli(self) -> Path:
-        """A copy of the installed OpenShell CLI in this root, checked byte for byte."""
-        source = OS_BIN / "openshell"
-        directory = self.path / "bin"
-        directory.mkdir(mode=0o700)
-        copy = directory / "openshell"
-        shutil.copyfile(source, copy)
-        copy.chmod(0o755)
-        digest = hashlib.sha256(source.read_bytes()).hexdigest()
-        assert hashlib.sha256(copy.read_bytes()).hexdigest() == digest
-        return copy
 
     def start_worker(self):
         directory = self.path / "worker"
@@ -423,20 +405,17 @@ operator = true
 
         found = recovery.wait(ready, seconds=600)
         self.remember_sandboxes()
-        # The middleware decides only sandboxes bound to a stored revision (as the worker
-        # binds the research sandboxes it creates); nothing binds the agent's yet.
-        recovery.run(
-            [
-                str(REPO / ".venv/bin/sandbox-science-policy-middleware"),
-                "bind",
-                "--state-dir",
-                str(self.path / "middleware/state"),
-                "--sandbox",
-                found["id"],
-                "--policy",
-                str(self.path / "policy.yaml"),
-            ]
+        # The middleware decides only sandboxes bound to a stored revision. The launcher's
+        # runtime owner binds the agent's sandbox through this worker route, as the lab's
+        # worker binds a research sandbox; the lab creates its sandbox by hand, so it asks
+        # the same route with the operator token.
+        bound = self.worker(
+            "POST",
+            "/v1/runtime-sandboxes",
+            {"project_id": PROJECT, "sandbox_id": found["id"]},
+            operator=True,
         )
+        assert bound["sandbox_id"] == found["id"]
         shell = ["sandbox", "exec", "-n", name, "--no-tty", "--no-login-shell", "--"]
         self.cli(*shell, "mkdir", "-p", REMOTE)
         self.cli(
