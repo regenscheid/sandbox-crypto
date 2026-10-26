@@ -756,9 +756,7 @@ class Executor:
             raise ToolError("unavailable", "prefix restoration has an active package turn")
         try:
             async with self.admission.observing:
-                prefix = await asyncio.to_thread(
-                    workspace_prefix.report, sys.prefix, sys.base_prefix
-                )
+                prefix = await asyncio.to_thread(workspace_prefix.report, sys.prefix)
                 actual = await asyncio.to_thread(provisioning.fingerprint, self.places)
                 if (
                     set(baseline) != {"identity", "fingerprint"}
@@ -1171,7 +1169,7 @@ class Executor:
             **(
                 {
                     "workspace_prefix": {
-                        **workspace_prefix.report(sys.prefix, sys.base_prefix),
+                        **workspace_prefix.report(sys.prefix),
                         "fingerprint": await asyncio.to_thread(
                             provisioning.fingerprint, self.places
                         ),

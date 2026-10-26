@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -144,8 +145,8 @@ def describe(python_prefix: str, base_prefix: str | None = None) -> dict[str, st
     Never call this for ordinary/local executors: their Python prefix belongs to the
     operator. The image contains no marker, so first workspace seeding copies only
     packages, and each independent retained workspace receives its own identity.
-    ``base_prefix`` is the running interpreter's base (``sys.base_prefix``); a layer's must
-    be the image's base, and a whole prefix's is itself.
+    ``base_prefix`` is the running interpreter's base, ``sys.base_prefix`` unless given; a
+    layer's must be the image's base.
     """
     if (
         PREFIX.is_symlink()
@@ -159,7 +160,7 @@ def describe(python_prefix: str, base_prefix: str | None = None) -> dict[str, st
     ):
         raise OSError("required workspace prefix layout is missing or incompatible")
     if os.path.lexists(PREFIX / LAYER_MARKER):
-        check_layer(python_prefix if base_prefix is None else base_prefix)
+        check_layer(sys.base_prefix if base_prefix is None else base_prefix)
     elif os.path.lexists(PREFIX / "pyvenv.cfg"):
         raise OSError("workspace prefix is a virtual environment without the layer's marker")
     else:

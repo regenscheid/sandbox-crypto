@@ -803,8 +803,13 @@ async def layered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncItera
     prefix = make_layer(tmp_path)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("FAKEPM_LOG", str(prefix.log))
-    async with await Worker.started(tmp_path / "worker", prefix) as started:
-        yield started
+    try:
+        async with await Worker.started(tmp_path / "worker", prefix) as started:
+            yield started
+    finally:
+        for place in (tmp_path / "base").rglob("*"):
+            if place.is_dir() and not place.is_symlink():
+                place.chmod(0o755)  # so that the test's directory can be removed
 
 
 @pytest.mark.asyncio
