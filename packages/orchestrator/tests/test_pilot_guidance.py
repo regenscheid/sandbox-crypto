@@ -163,7 +163,7 @@ async def test_general_pilot_is_offered_once_with_unchanged_tools_and_phase_orde
         assert transcript.tool_records == []
         pins = transcript.context.prompt_provenance
         assert isinstance(pins, PromptPins)
-        assert pins.sections[0].version == MAIN_VERSION == "sandbox-main-17"
+        assert pins.sections[0].version == MAIN_VERSION == "sandbox-main-18"
         assert pins.sections[0] == pin(Section("main", MAIN_VERSION, SYSTEM_PROMPT))
         assert ("stock" in [section.id for section in pins.sections]) == bool(selection)
     finally:

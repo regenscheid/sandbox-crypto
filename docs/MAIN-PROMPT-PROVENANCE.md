@@ -15,7 +15,7 @@ The system message is its sections' texts joined by a blank line, in order
 ([`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 `_sections`):
 
-1. `main`, version `sandbox-main-17`: `SYSTEM_PROMPT`. A caller's other system text is
+1. `main`, version `sandbox-main-18`: `SYSTEM_PROMPT`. A caller's other system text is
    a `custom` section with no version; supplying the exact built-in text counts as
    `main`, which says what the text is, not who supplied it.
 2. `stock`, with the selected template's version, when a research template is
@@ -52,7 +52,11 @@ builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first mode
   object's keys sorted and arrays and tools in their order. The schemas are as the
   model is offered them, each with the required `purpose_note` the harness adds
   ([tools spec](specs/tools.md#purpose-of-each-call)), so a run since B9 pins a
-  different hash for the same tools than one before;
+  different hash for the same tools than one before. A run offered the delegate tools
+  since PD-46 lists `accept_delegation` among them, and `message_child`'s and
+  `cancel_delegation`'s descriptions say what they do to a returned task, so its tool
+  pins differ from a run's before
+  ([plans and delegation](specs/plans-and-delegation.md#parent-review));
 - `notices`: the ID, version, byte count and SHA-256 of every notice framing in
   [`notices.py`](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py);
 - `memory`, for a run with the project's stores: the memory framing's version, the

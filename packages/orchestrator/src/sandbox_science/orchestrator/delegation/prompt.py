@@ -85,7 +85,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-15"
+TASK_VERSION: Final = "sandbox-delegated-task-16"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -174,7 +174,13 @@ TASK_PROMPT: Final = (
     "still decide each call. "
     "When you may delegate, put what you learned operating the tools in a brief's context "
     "as observations with their evidence named by references, and pass a child's lessons "
-    "on as your own text."
+    "on as your own text. "
+    "Your parent reviews what you return: it accepts it, or it sends feedback with a "
+    "message, which reopens your task. A reopened task continues from its own history, "
+    "your earlier messages and results, with the parent's message as its next input, in "
+    "the same kernels, whose variables are still there, and the same files: do not "
+    "repeat work you already did, address the message, and return your whole result "
+    "again, every deliverable accounted for, as your result replaces the earlier one."
 )
 TASK: Final = Section("delegated-task", TASK_VERSION, TASK_PROMPT)
 
