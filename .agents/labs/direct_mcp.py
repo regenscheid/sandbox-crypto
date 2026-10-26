@@ -505,6 +505,7 @@ operator = true
                     timeout=600,
                     binding=binding,
                     providers=(SERVER,),
+                    project=PROJECT,
                 )
             )
         finally:
