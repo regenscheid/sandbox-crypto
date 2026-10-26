@@ -26,6 +26,8 @@ import sys
 import time
 from typing import Any
 
+import aiohttp
+
 from sandbox_science.orchestrator.confinement.requests import ControlRequestCheck
 from sandbox_science.orchestrator.confinement.transport import Channel, TransportError
 from sandbox_science.orchestrator.connectors import ConnectorError
@@ -46,15 +48,47 @@ def emit(value: dict[str, Any]) -> None:
 
 
 class RecordingClient(DirectClient):
-    """DirectClient, noting each answer's status, media type and size (never its body)."""
+    """DirectClient, noting each answer's status, media type, size and the response head's
+    encoding and caching fields (never its body). With ``identity`` it asks for an
+    unencoded answer (``Accept-Encoding: identity``), a lab diagnosis of listings."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.answers: list[dict[str, Any]] = []
+        self.heads: list[dict[str, Any]] = []
+        self.identity = False
+
+    def _client(self) -> aiohttp.ClientSession:
+        if self._http is None:
+            trace = aiohttp.TraceConfig()
+
+            async def ended(session, context, params) -> None:  # type: ignore[no-untyped-def]
+                headers = params.response.headers
+                self.heads.append(
+                    {
+                        "content_encoding": headers.get("Content-Encoding"),
+                        "cache_control": headers.get("Cache-Control"),
+                        "content_length": "Content-Length" in headers,
+                        "transfer_encoding": headers.get("Transfer-Encoding"),
+                    }
+                )
+
+            trace.on_request_end.append(ended)
+            self._http = aiohttp.ClientSession(
+                timeout=self._timeout, trust_env=True, trace_configs=[trace]
+            )
+        return self._http
+
+    def _headers(self, server, session, mcp_session, run):  # type: ignore[no-untyped-def]
+        headers = super()._headers(server, session, mcp_session, run)
+        if self.identity:
+            headers["Accept-Encoding"] = "identity"
+        return headers
 
     async def _post(self, server, message, session, mcp_session, run):  # type: ignore[no-untyped-def]
         status, kind, body = await super()._post(server, message, session, mcp_session, run)
         params = message.get("params") or {}
+        head = self.heads[-1] if self.heads else {}
         self.answers.append(
             {
                 "method": message.get("method"),
@@ -62,6 +96,8 @@ class RecordingClient(DirectClient):
                 "status": status,
                 "media": kind,
                 "bytes": len(body),
+                "identity_asked": self.identity,
+                **{key: value for key, value in head.items() if isinstance(value, str | bool)},
             }
         )
         return status, kind, body
@@ -139,6 +175,35 @@ async def call(client: RecordingClient, args: argparse.Namespace, tool: str, arg
     )
 
 
+async def listing(client: RecordingClient, args: argparse.Namespace, step: str) -> dict:
+    started = time.monotonic()
+    try:
+        tools: list[dict[str, Any]] = []
+        cursor: str | None = None
+        pages = 0
+        while pages < 5:
+            params: dict[str, Any] = {} if cursor is None else {"cursor": cursor}
+            result = await client.request(SERVER, "tools/list", params, session=args.session)
+            pages += 1
+            tools += [tool for tool in result.get("tools", []) if isinstance(tool, dict)]
+            cursor = result.get("nextCursor") if isinstance(result.get("nextCursor"), str) else None
+            if cursor is None:
+                break
+        found = {
+            "t": "step",
+            "step": step,
+            "ok": True,
+            "pages": pages,
+            "more": cursor is not None,
+            "seconds": round(time.monotonic() - started, 3),
+            **listing_summary(tools, args.escalated, args.denied),
+        }
+    except Exception as error:
+        found = {"t": "step", "step": step, "ok": False, **failure(error)}
+    emit(found)
+    return found
+
+
 async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
     # Proof 4: what the runtime's processes hold.
     emit(
@@ -156,32 +221,12 @@ async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
         }
     )
     # Proof 3: the listing, read whole by the middleware and rewritten.
-    started = time.monotonic()
-    try:
-        tools: list[dict[str, Any]] = []
-        cursor: str | None = None
-        pages = 0
-        while pages < 5:
-            params: dict[str, Any] = {} if cursor is None else {"cursor": cursor}
-            result = await client.request(SERVER, "tools/list", params, session=args.session)
-            pages += 1
-            tools += [tool for tool in result.get("tools", []) if isinstance(tool, dict)]
-            cursor = result.get("nextCursor") if isinstance(result.get("nextCursor"), str) else None
-            if cursor is None:
-                break
-        emit(
-            {
-                "t": "step",
-                "step": "listing",
-                "ok": True,
-                "pages": pages,
-                "more": cursor is not None,
-                "seconds": round(time.monotonic() - started, 3),
-                **listing_summary(tools, args.escalated, args.denied),
-            }
-        )
-    except Exception as error:
-        emit({"t": "step", "step": "listing", "ok": False, **failure(error)})
+    found = await listing(client, args, "listing")
+    if args.identity_fallback and found.get("error") == "tool_listing_unreadable":
+        # Diagnosis: the same listing, asking the server for an unencoded answer.
+        client.identity = True
+        await listing(client, args, "listing_identity")
+        client.identity = False
     # Proof 1: a denied tool, refused by OpenShell's native rules.
     try:
         await call(client, args, args.denied, {})
@@ -243,6 +288,10 @@ async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
         }
     )
     # Proof 3: an error answer passes back to the client.
+    if args.skip_error_answer:
+        emit({"t": "step", "step": "error_answer", "skipped": True})
+        emit({"t": "step", "step": "answers", "answers": client.answers})
+        return
     try:
         result = await call(client, args, args.invalid_tool, {})
         emit(
@@ -286,6 +335,8 @@ async def main() -> None:
     parser.add_argument("--invalid-tool", required=True)
     parser.add_argument("--reads", required=True, help="JSON list of [tool, arguments]")
     parser.add_argument("--hold-seconds", type=float, default=150.0)
+    parser.add_argument("--skip-error-answer", action="store_true")
+    parser.add_argument("--no-identity-fallback", dest="identity_fallback", action="store_false")
     args = parser.parse_args()
 
     async def send(text: str) -> None:

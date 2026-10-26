@@ -104,6 +104,9 @@ READS = [
     ["firecrawl-mcp_firecrawl_scrape", {"url": PAGE, "formats": ["markdown"]}],
 ]
 """One read each on e-print, nist-csrc and web-fetch, and one small firecrawl scrape."""
+RERUN_READS = [["portal_list_servers", {}]]
+"""A later lab's allowed call: the portal's own listing of its servers, so that the reads
+an earlier lab made upstream are not made again (``proofs --plan rerun``)."""
 _RECORD_FIELDS = (
     "project",
     "caller",
@@ -378,6 +381,7 @@ operator = true
             "escalated_admitted": ESCALATED in admitted,
             "denied_admitted": DENIED in admitted,
             "allowed_reads_admitted": all(tool in admitted for tool, _ in READS),
+            "rerun_reads_admitted": all(tool in admitted for tool, _ in RERUN_READS),
             "deny_rules": len(endpoint.deny_rules or ()),
             "middleware_config_mcp": config.get("mcp"),
             "findings": [
@@ -446,17 +450,20 @@ operator = true
 
     # proofs
 
-    def proofs(self):
+    def proofs(self, plan: str):
         url = json.loads((self.path / "portal.json").read_text())["url"]
+        number = len(list((self.path / "evidence").glob("proofs-*.json"))) + 1
+        reads = READS if plan == "full" else RERUN_READS
         before = self.records()
-        driven = asyncio.run(self.drive(url))
+        driven = asyncio.run(self.drive(url, reads, skip_error_answer=plan != "full"))
         records = self.records()[len(before) :]
-        self.evidence("agent-steps", driven["steps"])
-        self.evidence("records", records)
-        self.judge(driven, records)
+        self.evidence(f"agent-steps-{number}", driven["steps"])
+        self.evidence(f"records-{number}", records)
+        self.judge(driven, records, reads, number, plan)
 
-    async def drive(self, url: str) -> dict[str, Any]:
-        attempt = "lab-attempt-" + secrets.token_hex(8)
+    async def drive(self, url: str, reads: list, *, skip_error_answer: bool) -> dict[str, Any]:
+        # An attempt capability as the host issues them (wire.AttemptId).
+        attempt = "cap-" + secrets.token_hex(24)
         check = WorkerRequestCheck(
             WorkerClient(f"http://127.0.0.1:{self.ports['worker']}", self.token("harness"))
         )
@@ -466,7 +473,8 @@ operator = true
             PYTHON, "-I", REMOTE + "/direct_mcp_agent.py",
             "--url", url, "--project", PROJECT, "--session", SESSION, "--run", RUN,
             "--attempt", attempt, "--escalated", ESCALATED, "--denied", DENIED,
-            "--invalid-tool", INVALID, "--reads", json.dumps(READS),
+            "--invalid-tool", INVALID, "--reads", json.dumps(reads),
+            *(["--skip-error-answer"] if skip_error_answer else []),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env=self.env, limit=32 * 1024 * 1024,
         )  # fmt: skip
@@ -600,7 +608,14 @@ operator = true
                 found.append(kept)
         return found
 
-    def judge(self, driven: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    def judge(
+        self,
+        driven: dict[str, Any],
+        records: list[dict[str, Any]],
+        planned: list,
+        number: int,
+        plan: str,
+    ) -> None:
         steps = {step["step"]: step for step in driven["steps"] if step["step"] != "read"}
         reads = [step for step in driven["steps"] if step["step"] == "read"]
         calls = [r for r in records if r["kind"] == "mcp-call"]
@@ -633,7 +648,7 @@ operator = true
         proof1["pass"] = (
             denied.get("ok") is True
             and proof1["denied_reached_middleware"] == 0
-            and proof1["allowed_reads_passed"] == len(READS)
+            and proof1["allowed_reads_passed"] == len(planned)
             and proof1["escalated_reached_middleware"] >= 1
         )
         card = cards[0] if cards else {}
@@ -678,10 +693,34 @@ operator = true
             and escalated.get("ok") is True
         )
         listing_answers = [a for a in answers if a.get("method") == "tools/list"]
+        identity = steps.get("listing_identity")
         proof3 = {
             "listing_media": sorted({a["media"] for a in listing_answers}),
-            "listing_bytes": [a["bytes"] for a in listing_answers],
+            "listing_answers": listing_answers,
             "listing": {k: v for k, v in listing.items() if k not in ("t", "step")},
+            "listing_identity": (
+                {k: v for k, v in identity.items() if k not in ("t", "step")}
+                if identity is not None
+                else None
+            ),
+            "other_answer_heads": sorted(
+                {
+                    json.dumps(
+                        {
+                            k: a.get(k)
+                            for k in (
+                                "media",
+                                "content_encoding",
+                                "cache_control",
+                                "content_length",
+                            )
+                        },
+                        sort_keys=True,
+                    )
+                    for a in answers
+                    if a.get("method") != "tools/list"
+                }
+            ),
             "drift_records": [r for r in records if r["kind"] == "mcp-tools-drift"],
             "error_answer": {k: v for k, v in error_answer.items() if k not in ("t", "step")},
             "answer_media": sorted({a["media"] for a in answers}),
@@ -692,10 +731,22 @@ operator = true
             and listing.get("denied_listed") is False
             and listing.get("escalated_marked") is True
             and listing.get("marked_with_effect") == listing.get("tools")
-            and error_answer.get("ok") is True
+            and (error_answer.get("ok") is True or error_answer.get("skipped") is True)
+        )
+        found = identity or {}
+        proof3["pass_with_identity_encoding"] = bool(
+            found.get("ok")
+            and found.get("denied_listed") is False
+            and found.get("escalated_marked") is True
+            and found.get("marked_with_effect") == found.get("tools")
         )
         variables = environment.get("variables", {})
-        upstream = bool(listing.get("ok")) and proof1["allowed_reads_passed"] > 0
+        upstream = bool(
+            listing.get("ok")
+            or (identity or {}).get("ok")
+            or proof1["allowed_reads_passed"] > 0
+            or escalated.get("ok")
+        )
         proof4 = {
             "variables": variables,
             "upstream_calls_succeeded": upstream,
@@ -717,7 +768,10 @@ operator = true
             },
             "agent_exit_code": driven["exit_code"],
             "held_reports": len(driven["held"]),
+            "run": number,
+            "plan": plan,
         }
+        self.evidence(f"proofs-{number}", result)
         self.evidence("proofs", result)
         for name in (
             "proof_1_native_rules",
@@ -741,6 +795,13 @@ def main():
     parser.add_argument("action", choices=("prepare", "up", "proofs", "cleanup", "abort"))
     parser.add_argument("lab", nargs="?", type=Path)
     parser.add_argument("--personal", type=Path, default=PERSONAL)
+    parser.add_argument(
+        "--plan",
+        choices=("full", "rerun"),
+        default="full",
+        help="rerun: the portal's own listing as the allowed call and no error answer, so a "
+        "later lab does not repeat an earlier lab's upstream reads",
+    )
     args = parser.parse_args()
     if args.action == "prepare":
         print(prepare())
@@ -751,7 +812,7 @@ def main():
     if args.action == "up":
         lab.up(args.personal)
     elif args.action == "proofs":
-        lab.proofs()
+        lab.proofs(args.plan)
     elif args.action == "cleanup":
         assert (lab.path / "evidence/proofs.json").exists(), "run proofs first, or use abort"
         lab.cleanup()
