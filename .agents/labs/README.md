@@ -80,6 +80,42 @@ success. No raw logs, tokens, gateway databases or TLS material are exported.
 See the [qualification report](../docs/agent-reports/openshell-recovery-acceptance-2026-10-18.md)
 for baseline failures, the narrow host fix and the exact revisions qualified.
 
+## Direct MCP path against the owner's portal (D98, A2)
+
+`direct_mcp.py` runs proofs 1 to 4 of the [prototype](../../docs/specs/mcp-middleware-prototype.md#recommendation)
+against the owner's real MCP portal, with the owner's approval (2026-10-26) to reuse the
+personal instance's Cloudflare Access file by path. It reuses this file's machinery
+(`make_root`, `OwnedRoot`, `recovery_acceptance_up.sh` with `MIDDLEWARE_EXTRA="mcp_listings = true"`):
+a marked `/var/tmp/ss-direct-mcp-*` root, its own gateway, middleware, worker, ports and units,
+and an agent runtime sandbox from the `orchestrator` image (built from committed inputs) with
+the `crypto-research-mcp` provider attached. The provider is registered by
+`sandbox_science.launcher.access_provider` from the file's path, as the launcher's
+`provider_env_file` does; the fixture never opens anything under the secrets directory. The
+portal's URL is read at run time from the personal instance's policy, which
+`~/.config/sandbox-science/personal.toml` names; it is never written to the repository or
+exported. The personal instance is not touched.
+
+```bash
+.venv/bin/python -I .agents/labs/direct_mcp.py prepare
+.venv/bin/python -I .agents/labs/direct_mcp.py up "$LAB"
+.venv/bin/python -I .agents/labs/direct_mcp.py proofs "$LAB"
+.venv/bin/python -I .agents/labs/direct_mcp.py cleanup "$LAB"   # or abort "$LAB"
+```
+
+The lab policy is `examples/policy.yaml` with the portal's URL, `attack-catalog-mcp_get_catalog_info`
+escalated and `attack-catalog-mcp_list_taxonomy` denied; every other tool's class comes from the
+checked-in classification. `proofs` uploads `direct_mcp_agent.py` and runs `DirectClient` in the
+agent sandbox over one `openshell sandbox exec` session whose standard streams carry the
+confinement `Channel`: the client's `ControlRequestCheck` asks the lab host's `confirm_request`,
+which binds the lab's project and asks the worker (`confinement.requests.confirm` with
+`WorkerRequestCheck`, as `HostLoops` does). A confirmed hold is answered through the worker's
+answer route with the operator token, as the workspace does, and the client calls again every
+3 s. Upstream calls are kept to the listings, one read each on e-print, nist-csrc, web-fetch and
+attack-catalog (the escalated tool, after approval), one firecrawl scrape of a small public page,
+and one attack-catalog call without its required argument for the error answer. Proof 5 (binary
+results) is recorded as pending. Receipts carry counts, reason codes, request numbers and tool
+names only, and are exported with a SHA-256 manifest to `/var/tmp/ss-direct-mcp-evidence-*`.
+
 Lab32's `provisioning_revision_packages.py` reads exact recorded package/license
 inventories. Root-owned acceptance on signed `6d4c448`/helper `c85126d4` passed
 worker/workspace/native paging and separately qualified stopped-VM reads. The old
