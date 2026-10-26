@@ -80,6 +80,16 @@ def _in_force(server: str) -> dict[str, object]:
             "removed": ["old"],
             "changed": [{"name": "crawl", "sha256": PIN}],
             "held": True,
+            "drifts": [
+                {
+                    "listing": "e" * 64,
+                    "at": "2026-10-25T09:00:00Z",
+                    "source": "runtime",
+                    "added": [{"name": "monitor", "sha256": PIN}],
+                    "removed": ["old"],
+                    "changed": [{"name": "crawl", "sha256": PIN}],
+                }
+            ],
         },
     }
 
@@ -157,7 +167,14 @@ class FakeClassifications:
         return self._once(acceptance.operation_id, request[:-1], answer)
 
     async def accept_classification_drift(self, server: str, acceptance: DriftAcceptance) -> object:
-        request = ("drift", acceptance.project, server, acceptance.reason, acceptance.operation_id)
+        request = (
+            "drift",
+            acceptance.project,
+            server,
+            acceptance.reason,
+            tuple(acceptance.listings),
+            acceptance.operation_id,
+        )
         self.calls.append(request)
         self._check()
         return self._once(
@@ -297,10 +314,17 @@ async def test_drift_reacceptance_needs_a_reason_and_passes_its_operation_id(
     )
     await error_of(response, 400, "invalid_request")
     assert fake.calls == []
-    body = {"reason": "Checked the added tool", "operation_id": "d-1"}
+    # Without the digests of the listings it showed, it is refused before the worker.
+    missing = {"reason": "Checked the added tool", "operation_id": "d-1"}
+    response = await client.post(path, json=missing, headers=origin(client))
+    await error_of(response, 400, "invalid_request")
+    assert fake.calls == []
+    body = {**missing, "listings": ["e" * 64]}
     first = await (await client.post(path, json=body, headers=origin(client))).json()
     assert first == {"accepted_at": "2026-10-25T10:05:00Z"}
-    assert fake.calls[-1] == ("drift", "p1", "web", "Checked the added tool", "d-1")
+    assert fake.calls[-1] == (
+        "drift", "p1", "web", "Checked the added tool", ("e" * 64,), "d-1",
+    )  # fmt: skip
     assert await (await client.post(path, json=body, headers=origin(client))).json() == first
     response = await client.post(
         path, json={**body, "reason": "Something else"}, headers=origin(client)
@@ -374,7 +398,7 @@ async def test_without_the_worker_routes_classifications_are_unavailable(
     await error_of(
         await client.post(
             BASE + "/mcp-services/papers/drift/accept",
-            json={"reason": "r", "operation_id": "n-1"},
+            json={"reason": "r", "operation_id": "n-1", "listings": []},
             headers=origin(client),
         ),
         503,

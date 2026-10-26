@@ -177,7 +177,8 @@ async def test_only_an_operator_client_reads_or_accepts_for_its_own_projects(api
     assert (await api.post(path, body, who="harness"))[0] == 403
     assert (await api.post(path, {**body, "project": "p2"}))[0] == 403
     drift = f"/v1/classifications/{SERVER}/drift/accept"
-    assert (await api.post(drift, {"project": "p1", "reason": "r"}, who="harness"))[0] == 403
+    body = {"project": "p1", "reason": "r", "listings": []}
+    assert (await api.post(drift, body, who="harness"))[0] == 403
     assert api.store.classification("p1", SERVER) is None
     assert api.records("mcp-tools-accepted") == []
 
@@ -200,6 +201,9 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
     assert drift["held"] is True
     assert drift["added"] == [{"name": "brand_new", "sha256": "c" * 64}]
     assert drift["changed"] == [{"name": SCRAPE, "sha256": "d" * 64}]
+    [listing] = drift["drifts"]
+    assert (listing["listing"], listing["source"]) == ("e" * 64, "middleware")
+    assert listing["added"] == drift["added"]
     tools = {tool["name"]: tool for tool in shown["tools"]}
     assert tools[SCRAPE]["pin_state"] == "changed"
     new = tools["brand_new"]
@@ -209,7 +213,8 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
         "added",
         False,
     )  # fmt: skip  (its read-only hint makes it a read, which the policy allows)
-    status, accepted = await api.post(drift_path, {"project": "p1", "reason": "reviewed"})
+    accept = {"project": "p1", "reason": "reviewed", "listings": ["e" * 64]}
+    status, accepted = await api.post(drift_path, accept)
     assert status == 201, accepted
     assert accepted == {"accepted_at": NOW.isoformat().replace("+00:00", "Z")}
     [(source, record)] = api.records("mcp-tools-accepted")
@@ -224,7 +229,7 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
 
 
 async def test_re_accepting_needs_a_drift_and_a_known_server(api: Api) -> None:
-    body = {"project": "p1", "reason": "r"}
+    body = {"project": "p1", "reason": "r", "listings": []}
     status, _ = await api.post(f"/v1/classifications/{SERVER}/drift/accept", body)
     assert status == 409
     status, _ = await api.post("/v1/classifications/other/drift/accept", body)
@@ -345,14 +350,14 @@ async def test_a_retried_acceptance_gets_its_first_answer_and_a_reused_id_confli
     # Another project's operation IDs are its own; the other route's reuse conflicts.
     drift = f"/v1/classifications/{SERVER}/drift/accept"
     status, refused = await api.post(drift, {"operation_id": "accept-1", "project": "p1",
-                                             "reason": "r"})  # fmt: skip
+                                             "reason": "r", "listings": []})  # fmt: skip
     assert status == 409
     api.events.append(
         "mcp-tools-drift", "policy-middleware",
         {"project": "p1", "server": SERVER, "pin": None, "added": ["x"], "removed": [],
          "changed": []},
     )  # fmt: skip
-    body = {"operation_id": "drift-1", "project": "p1", "reason": "seen"}
+    body = {"operation_id": "drift-1", "project": "p1", "reason": "seen", "listings": []}
     status, first = await api.post(drift, body)
     assert status == 201, first
     api.desk.clock.advance(60)
@@ -566,7 +571,8 @@ async def test_replaying_an_accepted_listing_never_ends_a_newer_hold(api: Api) -
     assert status == 200
     assert found["drifted"]
     status, accepted = await api.post(
-        f"/v1/classifications/{SERVER}/drift/accept", {"project": "p1", "reason": "fine"}
+        f"/v1/classifications/{SERVER}/drift/accept",
+        {"project": "p1", "reason": "fine", "listings": [a["listing"]]},
     )
     assert status == 201, accepted
     assert ledger_for(api).drifted(SERVER, pin, "p1") is None
@@ -581,7 +587,8 @@ async def test_replaying_an_accepted_listing_never_ends_a_newer_hold(api: Api) -
     assert ledger_for(api).drifted(SERVER, pin, "p1") == held
     # The user's acceptance names every listing it accepts: it ends the hold.
     status, _ = await api.post(
-        f"/v1/classifications/{SERVER}/drift/accept", {"project": "p1", "reason": "seen"}
+        f"/v1/classifications/{SERVER}/drift/accept",
+        {"project": "p1", "reason": "seen", "listings": [b["listing"]]},
     )
     assert status == 201
     assert ledger_for(api).drifted(SERVER, pin, "p1") is None
@@ -602,3 +609,35 @@ async def test_every_report_taken_is_recorded_and_reports_are_rate_limited(api: 
     # The rate is per caller: another client of the project still reports.
     status, _ = await report(api, reported(), who="workspace")
     assert status == 200
+
+
+async def test_a_newer_drift_never_hides_an_older_one_from_review_or_acceptance(api: Api) -> None:
+    # The review's second probe (2026-10-26): a real drift B adds evil_write; a runtime's
+    # newer report C adds harmless. The review shows both, and an acceptance that does not
+    # name exactly what it showed is refused.
+    pin = pin_digest(catalog(SERVER).pins)
+    b = reported({"evil_write": "2" * 64})
+    assert (await report(api, b))[0] == 200
+    c = reported({"harmless": "3" * 64})
+    assert (await report(api, c))[0] == 200
+    status, shown = await api.get("/v1/classifications?project=p1")
+    assert status == 200
+    drift = shown[0]["drift"]
+    listings = drift["drifts"]
+    assert [item["listing"] for item in listings] == [c["listing"], b["listing"]]
+    assert [[tool["name"] for tool in item["added"]] for item in listings] == [
+        ["harmless"],
+        ["evil_write"],
+    ]
+    assert {item["source"] for item in listings} == {"runtime"}
+    path = f"/v1/classifications/{SERVER}/drift/accept"
+    status, refused = await api.post(
+        path, {"project": "p1", "reason": "looks fine", "listings": [c["listing"]]}
+    )
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
+    assert "review again" in refused["error"]["message"]
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is not None
+    both = [c["listing"], b["listing"]]
+    status, _ = await api.post(path, {"project": "p1", "reason": "both seen", "listings": both})
+    assert status == 201
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is None

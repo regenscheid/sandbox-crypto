@@ -34,12 +34,13 @@ import json
 import logging
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.classifications import (
+    MAX_DRIFT_LISTINGS,
     MAX_DRIFT_TOOLS,
     ClassificationAccepted,
     ClassificationDraft,
@@ -48,6 +49,7 @@ from sandbox_science.contracts.classifications import (
     ClassifiedTool,
     DraftTool,
     DriftAccepted,
+    DriftListing,
     DriftSummary,
     DriftTool,
     EffectName,
@@ -71,6 +73,7 @@ from sandbox_science.policy.detection import (
     ACCEPTED_RECORD,
     CLASSIFICATION_ACCEPTED,
     LISTING_REPORTED_RECORD,
+    RUNTIME_SOURCE,
     DriftLedger,
     DriftSeen,
     pin_digest,
@@ -192,19 +195,30 @@ class ClassificationDesk:
         return ClassificationAccepted.model_validate_json(answer)
 
     def accept_drift(
-        self, project: str, server: str, reason: str, operation_id: str
+        self,
+        project: str,
+        server: str,
+        reason: str,
+        operation_id: str,
+        listings: Sequence[str] = (),
     ) -> DriftAccepted:
         """Re-accept a server's drifted tool list for the project (CL-4), once per
-        ``operation_id``. Blocking."""
-        asked = {"accept": "drift", "server": server, "reason": reason}
+        ``operation_id``: exactly the drifted ``listings`` the review showed. Blocking."""
+        shown = sorted(set(listings))
+        asked = {"accept": "drift", "server": server, "reason": reason, "listings": shown}
 
         def act() -> str:
-            return self._accept_drift(project, server, reason, operation_id).model_dump_json()
+            accepted = self._accept_drift(project, server, reason, operation_id, shown)
+            return accepted.model_dump_json()
 
         return DriftAccepted.model_validate_json(self._once(project, operation_id, asked, act))
 
     def _once(
-        self, project: str, operation_id: str, asked: Mapping[str, str], act: Callable[[], str]
+        self,
+        project: str,
+        operation_id: str,
+        asked: Mapping[str, object],
+        act: Callable[[], str],
     ) -> str:
         text = json.dumps(asked, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         digest = hashlib.sha256(text.encode()).hexdigest()
@@ -276,7 +290,7 @@ class ClassificationDesk:
         )
 
     def _accept_drift(
-        self, project: str, server: str, reason: str, operation_id: str
+        self, project: str, server: str, reason: str, operation_id: str, shown: list[str]
     ) -> DriftAccepted:
         _, entry = self._server(project, server)
         current = self._current(project, server, entry)
@@ -289,12 +303,17 @@ class ClassificationDesk:
         # not accepted from that pin: a later listing that differs is a new drift, held
         # again (D103), and a record never ends a hold by itself.
         held = drifts.unaccepted(server, seen.pin, project)
+        unaccepted = sorted({drift.listing for drift in held if drift.listing is not None})
+        if shown != unaccepted:
+            # Accept nothing the user did not see: a listing recorded since the review, or
+            # one it did not show.
+            raise ClassificationReviewError("the drift changed; review again")
         payload = {
             "project": project,
             "server": server,
             "pin": seen.pin,
             "listing": seen.listing,
-            "listings": [drift.listing for drift in held if drift.listing is not None],
+            "listings": unaccepted,
             "reason": reason,
             "actor": ACTOR,
             "operation_id": operation_id,
@@ -630,10 +649,41 @@ def _summary(
         return None
     if at.tzinfo is None:
         return None
-    digests = _strings(seen.data.get("digests"))
+    newest = _listing(seen, at)
+    if newest is None:
+        return None
+    held = drifts.unaccepted(server, pin_digest(current.pins), project)
+    shown = [
+        found
+        for drift in (held or [seen])[:MAX_DRIFT_LISTINGS]
+        if (found := _listing(drift, None)) is not None
+    ]
     return DriftSummary(
         at=at,
         pin=pin,
+        added=newest.added,
+        removed=newest.removed,
+        changed=newest.changed,
+        held=bool(held),
+        drifts=shown,
+    )
+
+
+def _listing(seen: DriftSeen, at: datetime | None) -> DriftListing | None:
+    """One drifted listing as the review shows it; None when its record's time does not
+    read as one."""
+    if at is None:
+        try:
+            at = datetime.fromisoformat(seen.time.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if at.tzinfo is None:
+            return None
+    digests = _strings(seen.data.get("digests"))
+    return DriftListing(
+        listing=_hex(seen.listing),
+        at=at,
+        source="runtime" if seen.source == RUNTIME_SOURCE else "middleware",
         added=[
             DriftTool(name=name, sha256=_hex(digests.get(name)))
             for name in _names(seen.data.get("added"))
@@ -643,7 +693,6 @@ def _summary(
             DriftTool(name=name, sha256=_hex(digests.get(name)))
             for name in _names(seen.data.get("changed"))
         ],
-        held=drifts.drifted(server, pin_digest(current.pins), project) is not None,
     )
 
 

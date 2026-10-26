@@ -73,6 +73,24 @@ const view = {
     removed: ['gone'],
     changed: [{ name: 'crawl', sha256: PIN }],
     held: true,
+    drifts: [
+      {
+        listing: 'b'.repeat(64),
+        at: '2026-10-25T09:00:00Z',
+        source: 'runtime',
+        added: [{ name: 'monitor', sha256: PIN }],
+        removed: ['gone'],
+        changed: [{ name: 'crawl', sha256: PIN }],
+      },
+      {
+        listing: 'a'.repeat(64),
+        at: '2026-10-25T08:00:00Z',
+        source: 'middleware',
+        added: [{ name: 'evil_write', sha256: PIN }],
+        removed: [],
+        changed: [],
+      },
+    ],
   },
 };
 
@@ -196,6 +214,12 @@ it('shows the classification in force read-only, with pin states and escalation'
   expect(target.querySelector('.drift')?.textContent).toContain(
     "The middleware holds this server's non-read calls",
   );
+  // Every unaccepted listing is shown, an older one's tools too, with who recorded it.
+  const listings = target.querySelectorAll('.drift .listing');
+  expect(listings.length).toBe(2);
+  expect(listings[0]!.textContent).toContain("the agent runtime's report");
+  expect(listings[1]!.textContent).toContain('evil_write');
+  expect(listings[1]!.textContent).toContain('the middleware');
   expect(requests.every((item) => item.method === 'GET')).toBe(true);
 });
 
@@ -287,7 +311,10 @@ it('re-accepts drift only with a reason', async () => {
   expect(posts.map((item) => item.url)).toEqual([
     '/api/v0/projects/p1/mcp-services/papers/drift/accept',
   ]);
-  expect((posts[0]!.body as Record<string, string>).reason).toBe('Checked the new tool');
+  const body = posts[0]!.body as { reason: string; listings: string[] };
+  expect(body.reason).toBe('Checked the new tool');
+  // It names exactly the listings it showed.
+  expect(body.listings).toEqual(['b'.repeat(64), 'a'.repeat(64)]);
   expect(target.textContent).toContain('Re-accepted at');
 });
 

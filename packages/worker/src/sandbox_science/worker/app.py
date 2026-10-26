@@ -1240,7 +1240,9 @@ async def accept_classification_drift(request: web.Request) -> web.Response:
     desk = _classifications(request, body.project)
     server = _server_name(request)
     accepted = await _reviewed(
-        lambda: desk.accept_drift(body.project, server, body.reason, body.operation_id)
+        lambda: desk.accept_drift(
+            body.project, server, body.reason, body.operation_id, body.listings
+        )
     )
     return _json(accepted, status=201)
 

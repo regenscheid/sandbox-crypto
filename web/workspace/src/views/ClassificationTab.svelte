@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- A service's Classification tab (docs/specs/workspace-browsers.md, CL-1 to CL-4): the
      classification in force, read-only, with each tool's pin state; the drafts beside it;
-     and the latest drift with Re-accept. Viewing reads the worker's records only. -->
+     and every unaccepted drift with Re-accept. Viewing reads the worker's records only. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type {
@@ -82,10 +82,14 @@
     writeError = null;
     saving = true;
     try {
+      // Exactly the drifted listings shown: the worker refuses a set that changed since.
+      const listings = (view?.drift?.drifts ?? []).flatMap((item) =>
+        item.listing ? [item.listing] : [],
+      );
       reaccepted = await guardedWrite(
         'classification-drift',
         `${projectId}:${server}`,
-        { reason },
+        { reason, listings },
         (change) => api.acceptDrift(projectId, server, change),
       );
       reason = '';
@@ -178,29 +182,40 @@
       {#if view.drift}
         {@const drift = view.drift}
         <p>
-          The tool list differed from the pins at {formatTime(drift.at)} (pin
-          <code>{drift.pin}</code>).
+          The tool list differed from the pins (pin <code>{drift.pin}</code>).
           {#if drift.held}<strong>The middleware holds this server's non-read calls</strong>: they
-            ask for approval until the tool list is re-accepted.{:else}No calls are held.{/if}
+            ask for approval until every listing below is re-accepted.{:else}No calls are held.{/if}
         </p>
-        <dl class="facts">
-          <dt>Added</dt>
-          <dd>
-            {#each drift.added as item}<div>
-                <code>{visible(item.name)}</code> <small class="muted">{item.sha256}</small>
-              </div>{:else}None{/each}
-          </dd>
-          <dt>Removed</dt>
-          <dd>
-            {#each drift.removed as name}<div><code>{visible(name)}</code></div>{:else}None{/each}
-          </dd>
-          <dt>Changed</dt>
-          <dd>
-            {#each drift.changed as item}<div>
-                <code>{visible(item.name)}</code> <small class="muted">{item.sha256}</small>
-              </div>{:else}None{/each}
-          </dd>
-        </dl>
+        {#each drift.drifts as item}
+          <section class="listing" aria-label="Drifted listing">
+            <p>
+              At {formatTime(item.at)}, recorded by {item.source === 'runtime'
+                ? "the agent runtime's report"
+                : 'the middleware'}{#if item.listing}
+                (listing <small class="muted">{item.listing}</small>){/if}:
+            </p>
+            <dl class="facts">
+              <dt>Added</dt>
+              <dd>
+                {#each item.added as tool}<div>
+                    <code>{visible(tool.name)}</code> <small class="muted">{tool.sha256}</small>
+                  </div>{:else}None{/each}
+              </dd>
+              <dt>Removed</dt>
+              <dd>
+                {#each item.removed as name}<div>
+                    <code>{visible(name)}</code>
+                  </div>{:else}None{/each}
+              </dd>
+              <dt>Changed</dt>
+              <dd>
+                {#each item.changed as tool}<div>
+                    <code>{visible(tool.name)}</code> <small class="muted">{tool.sha256}</small>
+                  </div>{:else}None{/each}
+              </dd>
+            </dl>
+          </section>
+        {/each}
         <p class="muted">
           Re-accepting keeps a changed tool's class, leaves an added tool unclassified until a
           classification names it, and lists a removed one as gone.

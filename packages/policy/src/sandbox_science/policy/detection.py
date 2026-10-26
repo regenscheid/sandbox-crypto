@@ -469,15 +469,17 @@ def pin_digest(pin: Mapping[str, str | None]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class DriftSeen:
-    """A server's newest ``mcp-tools-drift`` record from one pin: its number, time, pin,
-    the digest of the whole listing that drifted (``listing``; None in a record from before
-    listings were digested) and its payload."""
+    """A server's ``mcp-tools-drift`` record of one listing from one pin: its number, time,
+    pin, the digest of the whole listing that drifted (``listing``; None in a record from
+    before listings were digested), its payload and who wrote it (``source``: the
+    middleware, or ``runtime`` for the worker's record of a runtime's report)."""
 
     seq: int
     time: str
     pin: str | None
     listing: str | None
     data: Mapping[str, object]
+    source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,7 +553,11 @@ class DriftLedger:
                     continue
                 if record.kind == DRIFT_RECORD:
                     pin, listing = _text(data.get("pin")), _text(data.get("listing"))
-                    seen = DriftSeen(record.seq, record.time, pin, listing, data)
+                    source = getattr(record, "source", None)
+                    seen = DriftSeen(
+                        record.seq, record.time, pin, listing, data,
+                        source if isinstance(source, str) else None,
+                    )  # fmt: skip
                     self._drifts.setdefault((server, pin), {})[listing] = seen
                 elif isinstance(project, str):
                     self._accept(project, server, record, data)

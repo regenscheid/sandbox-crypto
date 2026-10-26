@@ -949,7 +949,17 @@ export interface DriftAccepted {
   accepted_at: string;
 }
 
-/** The middleware's latest ``mcp-tools-drift`` record of a server from the pin in force. */
+/** One listing a server's tools drifted to from the pin in force: its digest (None in a record from before listings were digested), when and by whom it was recorded (the middleware, which read it, or ``runtime``, from the agent runtime's report), and how it differs from the pin. */
+export interface DriftListing {
+  listing: string | null;
+  at: string;
+  source: "middleware" | "runtime";
+  added: DriftTool[];
+  removed: string[];
+  changed: DriftTool[];
+}
+
+/** A server's drift from the pin in force: its newest unaccepted ``mcp-tools-drift`` record (else its newest), in the top fields, and in ``drifts`` every listing the project has not accepted, newest first, each of which a re-acceptance must name. */
 export interface DriftSummary {
   at: string;
   pin: string;
@@ -957,6 +967,7 @@ export interface DriftSummary {
   removed: string[];
   changed: DriftTool[];
   held: boolean;
+  drifts: DriftListing[];
 }
 
 export interface DriftTool {
