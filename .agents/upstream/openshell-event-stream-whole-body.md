@@ -1,6 +1,6 @@
 # OpenShell: a `text/event-stream` response is never offered for whole-body inspection
 
-**Status.** Kept here, not filed upstream: filing is the owner's call. Observed on babbage on 2026-10-26 by the direct MCP lab ([labs README](../labs/README.md#direct-mcp-path-against-the-owners-portal-d98-a2)), against a real Cloudflare MCP portal. It was seen in the gateway's behaviour, not located in OpenShell's source: the source paths are left for whoever files it to add.
+**Status.** Filed 2026-10-26 by the owner's request as [NVIDIA/OpenShell#4929](https://github.com/NVIDIA/OpenShell/issues/4929). Observed on babbage on 2026-10-26 by the direct MCP lab ([labs README](../labs/README.md#direct-mcp-path-against-the-owners-portal-d98-a2)), against a real Cloudflare MCP portal.
 
 **Affects.** OpenShell v0.1.5, a sandbox with an `mcp` endpoint and a supervisor middleware (`network_middlewares`) that handles HTTP responses.
 
