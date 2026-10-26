@@ -344,11 +344,22 @@ two native minimal builds and their merge as a registry smoke test, and
 `publish_scope=trusted` runs only the trusted service images (four builds, two
 merges) without `crypto_base`. `all` covers all six profiles; selecting it
 without confirming `crypto_base=true` fails input validation before any
-publication job starts. The trusted packages are not private-checked: new GHCR
-packages are private, and a cluster reads them with a pull secret. Pull-request jobs remain read-only and cannot publish.
+publication job starts. Pull-request jobs remain read-only and cannot publish.
 
-New GHCR packages default to private. Before pushing or merging `crypto-base`,
-the workflow checks that the package's GitHub visibility is private. An architecture
+Every image package stays private (`.agents/handoff.md`, "Standing rules"); a
+cluster reads them with the `ghcr-pull` Secret ([Kubernetes
+prep](KUBERNETES-PREP.md#1-namespaces-and-the-pull-secret)). Before any build
+pushes, a `check-visibility` job reads each package the run will push
+(`gh api /users/{owner}/packages/container/sandbox-crypto%2F<name> --jq
+.visibility`) and fails, naming each package that exists and is not private. A
+package that does not exist yet is allowed; GitHub creates it on the first push,
+and it may be created public, inheriting this public repository's visibility. So each platform job re-checks its
+package after its push, and fails if GitHub created it public. The API cannot
+change visibility: the owner sets the package private in its GitHub package
+settings (Package settings, Danger Zone, Change visibility) and reruns. `crypto-base`
+is stricter: its private package must already exist, so the workflow never creates it. The
+`trusted-app` and `trusted-worker` packages were public from their first push
+(2026-10-23) to 2026-10-26, which is why the check now covers every package. An architecture
 digest may name an OCI index containing one image plus a provenance attestation.
 `publish_index.py` resolves only its image leaf, accepts attestations bound to that
 leaf, and verifies that the shared tag contains exactly the AMD64 and ARM64 images.

@@ -13,7 +13,8 @@ Every step goes in the file ``FAKE_JOURNAL`` names, one line each, and ``FAKE_PA
 - ``child-stays``: it starts a child in its own session, which outlives it.
 - ``suspend-busy``: the worker suspends nothing, as for sandboxes in use.
 - ``suspend-slow``: the worker takes 20 s to answer a suspension.
-- ``old-protocol``: the worker speaks protocol 5.
+- ``old-protocol``: the worker speaks protocol 5 on its environment routes.
+- ``old-protocol-bind``: the worker speaks protocol 5 on its runtime-sandbox routes.
 
 The harness's ``skills`` commands answer as for a control store with no import and no
 pin: ``import`` and ``pin`` answer an import at the commit ``c`` * 40 with one skill.
@@ -23,6 +24,11 @@ for its clients' projects, from the environments in the OpenShell stand-in's fil
 (``FAKE_OPENSHELL``); a suspension stops the sandbox there too. As the worker does, it
 answers from the sandbox's phase: one recorded stopped whose sandbox is still Ready is
 stopped again.
+
+It answers ``POST /v1/runtime-sandboxes`` and ``DELETE /v1/runtime-sandboxes/{id}`` for an
+operator client's projects, and writes ``bind PROJECT ID`` and ``unbind ID`` lines to
+``FAKE_JOURNAL`` with ``.bindings`` added (apart from the journal, whose order other
+tests check).
 
 The run service and the workspace note ``LEAK_CHECK`` and ``PASSED_ON`` when they see
 them.
@@ -102,9 +108,10 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def answer(self, status: int, body: object) -> None:
             data = json.dumps(body).encode()
+            old = "old-protocol-bind" if "/runtime-sandboxes" in self.path else "old-protocol"
             self.send_response(status)
             self.send_header(
-                "X-Worker-Protocol", "5" if behaviour == "old-protocol" else str(PROTOCOL_VERSION)
+                "X-Worker-Protocol", "5" if behaviour == old else str(PROTOCOL_VERSION)
             )
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
@@ -125,10 +132,39 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             mine = [item for item in found if item["project_id"] in client["projects"]]
             return self.answer(200, {"environments": mine})
 
+        def bindings(self, line: str) -> None:
+            with lock, Path(os.environ["FAKE_JOURNAL"] + ".bindings").open("a") as handle:
+                handle.write(line + "\n")
+
+        def do_DELETE(self) -> None:
+            client = self.client()
+            if client is None:
+                return self.refuse(401, "unauthorized")
+            match = re.fullmatch(r"/v1/runtime-sandboxes/([^/]+)", self.path)
+            if match is None:
+                return self.refuse(404, "not_found")
+            if not client.get("operator"):
+                return self.refuse(403, "policy_denied")
+            self.bindings(f"unbind {match[1]}")
+            return self.answer(200, {"sandbox_id": match[1], "unbound": True})
+
         def do_POST(self) -> None:
             client = self.client()
             if client is None:
                 return self.refuse(401, "unauthorized")
+            if self.path == "/v1/runtime-sandboxes":
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                if not client.get("operator") or body["project_id"] not in client["projects"]:
+                    return self.refuse(403, "policy_denied")
+                self.bindings(f"bind {body['project_id']} {body['sandbox_id']}")
+                return self.answer(
+                    200,
+                    {
+                        "sandbox_id": body["sandbox_id"],
+                        "project_id": body["project_id"],
+                        "policy": "sha256:" + "d" * 64,
+                    },
+                )
             match = re.fullmatch(r"/v1/environments/([^/]+)/suspend", self.path)
             if match is None:
                 return self.refuse(404, "not_found")

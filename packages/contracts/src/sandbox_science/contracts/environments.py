@@ -49,6 +49,32 @@ class PolicyRevisionRequest(Contract):
     policy: PolicyRevision
 
 
+class RuntimeSandboxRequest(Contract):
+    """Bind the agent runtime's sandbox to its project's policy revision.
+
+    The runtime's sandbox is the launcher's, not the worker's: the worker only tells the
+    policy middleware's store which revision decides the sandbox's requests.
+    """
+
+    project_id: Identifier
+    sandbox_id: Identifier
+    """The gateway's immutable ID of the sandbox, not its name."""
+
+
+class RuntimeSandboxBinding(Contract):
+    """The revision the runtime's sandbox is now bound to."""
+
+    sandbox_id: Identifier
+    project_id: Identifier
+    policy: PolicyRevision
+
+
+class RuntimeSandboxUnbound(Contract):
+    sandbox_id: Identifier
+    unbound: bool
+    """Whether the sandbox had a binding to remove."""
+
+
 class EnvironmentInfo(Contract):
     environment_id: Identifier
     project_id: Identifier
