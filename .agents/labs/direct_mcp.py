@@ -417,8 +417,22 @@ operator = true
             found = json.loads(self.cli("sandbox", "get", name, "-o", "json").stdout)
             return found if found.get("phase") == "Ready" else None
 
-        recovery.wait(ready, seconds=600)
+        found = recovery.wait(ready, seconds=600)
         self.remember_sandboxes()
+        # The middleware decides only sandboxes bound to a stored revision (as the worker
+        # binds the research sandboxes it creates); nothing binds the agent's yet.
+        recovery.run(
+            [
+                str(REPO / ".venv/bin/sandbox-science-policy-middleware"),
+                "bind",
+                "--state-dir",
+                str(self.path / "middleware/state"),
+                "--sandbox",
+                found["id"],
+                "--policy",
+                str(self.path / "policy.yaml"),
+            ]
+        )
         shell = ["sandbox", "exec", "-n", name, "--no-tty", "--no-login-shell", "--"]
         self.cli(*shell, "mkdir", "-p", REMOTE)
         self.cli(
