@@ -248,6 +248,7 @@ def test_a_rebuild_keeps_the_tables_triggers_and_the_views_and_triggers_that_nam
             "job_manifests_immutable_delete",
             "job_progress_immutable",
             "child_progress_immutable",
+            "child_progress_kept",
             "child_hand_backs_immutable_update",
             "child_hand_backs_immutable_delete",
         }
