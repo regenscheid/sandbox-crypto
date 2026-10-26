@@ -82,7 +82,11 @@ SHARED = ("ceiling.yaml", "targets.yaml", "gateway-public.pem")
 """Nonsecret site files any service's ``extra_files`` may name."""
 POOL_TOKEN = "pool-token"  # noqa: S105 - a Secret key's name, not a token
 MANAGER_CLIENT = "manager"
-"""The runtime manager's worker client on the direct MCP path: an operator of one project."""
+"""The runtime manager's worker client on the direct MCP path, which may only bind and unbind
+the runtime's sandbox for one project (``binding_only``)."""
+MANAGER_WORKER_TOKEN = "manager-worker"  # noqa: S105 - a token's key, not a token
+"""The key of that client's token among the generated tokens: never ``manager``, the
+manager's bearer token for control, which control sees on every manager request."""
 GATEWAY_VALUES = "gateway/openshell-values-middleware.yaml"
 """The OpenShell chart's values that register the middleware (``_gateway_values``)."""
 _INPUT_BYTES = 64 * 1024
@@ -487,8 +491,8 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     digests = {name: _digest(tokens[name]) for name in ("harness", "workspace")}
     egress = direct_egress(site, bundle)
     if egress is not None:
-        tokens[MANAGER_CLIENT] = _token()
-        digests[MANAGER_CLIENT] = _digest(tokens[MANAGER_CLIENT])
+        tokens[MANAGER_WORKER_TOKEN] = _token()
+        digests[MANAGER_CLIENT] = _digest(tokens[MANAGER_WORKER_TOKEN])
     models = control_models(site.model, site.skills, site.runtime.revision)
     gateway = bundle.runtime_manager.openshell_gateway
     profile = _cli_tree(gateway, site.openshell.endpoint, manager_identity)
@@ -522,7 +526,7 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
             **{key: profile[place] for key, place in GATEWAY_PROFILE.items()},
             **(
                 {
-                    "manager-worker.token": tokens[MANAGER_CLIENT].encode(),
+                    "manager-worker.token": tokens[MANAGER_WORKER_TOKEN].encode(),
                     "agent-mcp-policy.yaml": direct_mcp.fragment_yaml(egress).encode(),
                     "runtime-mcp.json": _json(egress.runtime()),
                 }

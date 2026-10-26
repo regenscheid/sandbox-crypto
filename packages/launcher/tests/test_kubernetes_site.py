@@ -356,7 +356,8 @@ def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp
     # The worker knows the manager as an operator of the direct path's project alone.
     worker = load_worker(secrets / "worker/worker.toml")
     (client,) = [client for client in worker.clients if client.name == "manager"]
-    assert client.operator
+    assert client.binding_only
+    assert not client.operator
     assert client.projects == ("crypto",)
     assert not client.recovery_control
     token = (secrets / "runtime-manager/manager-worker.token").read_text()
@@ -398,6 +399,22 @@ def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp
     readme = (output / "README.md").read_text()
     assert "kubectl -n research-test create secret generic test-mcp-provider" in readme
     assert "--from-env-file=<path>" in readme
+
+
+def test_the_managers_worker_token_is_not_its_control_token(tmp_path):
+    """Review of a2/direct-wiring (HIGH): control sees the manager's bearer token on every
+    manager request, so the manager's worker token must be another value, and control's
+    stored digest must not be the worker token's."""
+    output = generate(tmp_path, direct=True)
+    manager = output / "secrets/runtime-manager"
+    control = (manager / "manager-control.token").read_text()
+    worker = (manager / "manager-worker.token").read_text()
+    assert control != worker
+    stored = (output / "secrets/control/runtime-manager-token.sha256").read_text()
+    assert stored == _digest(control)
+    assert stored != _digest(worker)
+    clients = load_worker(output / "secrets/worker/worker.toml").clients
+    assert {client.token_sha256 for client in clients}.isdisjoint({_digest(control)})
 
 
 def test_a_direct_path_for_another_project_is_refused(tmp_path):
