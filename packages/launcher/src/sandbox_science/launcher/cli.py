@@ -86,7 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             command.add_argument(
                 "--refresh-provider",
                 action="store_true",
-                help="register [mcp_proxy] provider_env_file's provider again, though it exists",
+                help="register the provider_env_file's provider again, though it exists",
             )
             command.add_argument(
                 "--update-skills",
@@ -339,11 +339,14 @@ async def _start(
     update: bool = False,
 ) -> None:
     timeout = config.start_timeout
-    if config.mcp_proxy is not None:
+    if mcp.provided(config) is not None:
+        # The proxy's sandbox's providers, or the agent runtime's on the direct path.
         await mcp.register_provider(config, layout, supervisor, refresh=refresh)
         await mcp.check_providers(config)
     elif refresh:
-        raise LauncherError("--refresh-provider needs [mcp_proxy] provider_env_file")
+        raise LauncherError(
+            "--refresh-provider needs [mcp_proxy] or [mcp_direct] provider_env_file"
+        )
     worker_env = passed(config.worker.pass_env)
     if config.worker.unit is not None:
         await _adopt_unit(config.worker.unit, supervisor, timeout)

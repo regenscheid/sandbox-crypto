@@ -47,7 +47,8 @@ address is a loopback one. ``[openshell]`` is the worker's own table (docs/WORKE
 the launcher passes it on with its paths made absolute, and runs its own OpenShell
 commands with its ``cli`` and ``env``. The model's key file is only named here: the
 launcher never reads it, and gives its path to the run service. Nor does it open
-``[mcp_proxy] provider_env_file``: a process of its own does (access_provider.py).
+``[mcp_proxy]`` or ``[mcp_direct] provider_env_file``: a process of its own does
+(access_provider.py).
 """
 
 from __future__ import annotations
@@ -554,8 +555,8 @@ class McpProxyConfig(_Strict):
 class McpDirectServer(_Strict):
     """A server the agent runtime's direct MCP client reaches (D98)."""
 
-    url: str = Field(pattern=r"^https?://[\x21-\x7e]{1,2040}$")
-    """Its URL, as the project policy names it."""
+    url: str | None = Field(default=None, pattern=r"^https?://[\x21-\x7e]{1,2040}$")
+    """Its URL: by default the project policy's, which it must equal when given."""
     credentials: dict[
         Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$")],
         Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")],
@@ -565,15 +566,54 @@ class McpDirectServer(_Strict):
 
 
 class McpDirectConfig(_Strict):
-    """The direct MCP path's client in the agent runtime's sandbox (D98 prototype,
-    docs/specs/mcp-middleware-prototype.md): today it serves the canaries' listings when
-    there is no ``[mcp_proxy]``. Needs ``[orchestrator]``. The launcher does not yet compile
-    the runtime sandbox's egress to these servers (``compile_agent_mcp``) or attach their
-    provider; until a deployment does, the canaries report them unavailable."""
+    """The direct MCP path (D98, docs/specs/mcp-middleware-prototype.md): the agent's
+    connector calls made by the agent runtime's own client, in its sandbox, through
+    OpenShell's native ``protocol: mcp`` rules and the policy middleware, with no MCP
+    proxy. ``up`` compiles the runtime sandbox's egress to these servers from the project
+    policy (``compile_agent_mcp``), attaches ``providers`` to the sandbox and binds it to
+    the project's policy revision. Needs ``[orchestrator]``, and excludes ``[mcp_proxy]``.
+    """
 
     servers: dict[Identifier, McpDirectServer] = Field(min_length=1, max_length=64)
+    """The policy's MCP servers whose tools the agent gets."""
     project: Identifier | None = None
     """The project whose policy the policy middleware applies; by default the only one."""
+    providers: tuple[Identifier, ...] = Field(default=(), max_length=16)
+    """The OpenShell providers with the servers' credentials, attached to the runtime's
+    sandbox: its processes hold their placeholders, never the values."""
+    about: dict[
+        IndexKey, Annotated[str, StringConstraints(max_length=200), AfterValidator(_said)]
+    ] = Field(default_factory=dict[str, str])
+    """What each server is for, as ``[mcp_proxy] about`` says it."""
+    index: tuple[IndexKey, ...] | None = Field(default=None, min_length=1)
+    """The servers whose tools the index lists one by one, as ``[mcp_proxy] index``."""
+    provider_env_file: ConfigPath | None = None
+    """As ``[mcp_proxy] provider_env_file``: the owner's file with the Cloudflare Access
+    service token, from which ``up`` registers the provider when it is missing. The
+    launcher never opens it."""
+    provider_profile: ConfigPath | None = None
+    """The provider's OpenShell profile; needed with ``provider_env_file``."""
+
+    @model_validator(mode="after")
+    def _registered(self) -> Self:
+        for key in (*self.about, *(self.index or ())):
+            if key.partition("/")[0] not in self.servers:
+                raise ValueError(
+                    f"mcp_direct.about and index name one of mcp_direct.servers, or "
+                    f"SERVER/BEHIND for one behind it: {key!r}"
+                )
+        if self.provider_env_file is not None:
+            if self.provider_profile is None:
+                raise ValueError(
+                    "mcp_direct.provider_env_file needs provider_profile, the provider's "
+                    "OpenShell profile (examples/openshell/profiles/cloudflare-access.yaml)"
+                )
+            if PROVIDER not in self.providers:
+                raise ValueError(
+                    f"mcp_direct.provider_env_file registers the provider {PROVIDER}, which "
+                    "mcp_direct.providers must name"
+                )
+        return self
 
 
 class OrchestratorConfig(_Strict):
@@ -635,6 +675,11 @@ class LauncherConfig(_Strict):
                 "canaries list the servers through the MCP proxy or the agent runtime's direct "
                 "client: configure [mcp_proxy] or [mcp_direct], or leave canaries.enabled off"
             )
+        if self.mcp_direct is not None and self.mcp_proxy is not None:
+            raise ValueError(
+                "configure one MCP path: [mcp_proxy] (the MCP proxy, the default) or "
+                "[mcp_direct] (the agent runtime's own client, D98), not both"
+            )
         if self.mcp_direct is not None:
             if self.orchestrator is None:
                 raise ValueError("mcp_direct's client runs in the agent runtime: [orchestrator]")
@@ -679,9 +724,12 @@ class LauncherConfig(_Strict):
         return addresses
 
     def mcp_project(self) -> str:
-        """The project whose runs use the MCP proxy, when there is one."""
+        """The project whose runs use the MCP proxy or the direct path, when there is one;
+        the runtime's sandbox is bound to its policy revision."""
         if self.mcp_proxy is not None and self.mcp_proxy.project is not None:
             return self.mcp_proxy.project
+        if self.mcp_direct is not None and self.mcp_direct.project is not None:
+            return self.mcp_direct.project
         return self.projects[0].id
 
     @staticmethod

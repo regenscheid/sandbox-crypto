@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from . import access_provider, toml
-from .config import LauncherConfig, LauncherError, McpProxyConfig
+from .config import LauncherConfig, LauncherError, McpDirectConfig, McpProxyConfig
 from .state import Layout, ensure_token, private_dir, write_private
 from .supervise import Part, Supervisor, environment, passed
 
@@ -168,6 +168,12 @@ def settings(config: LauncherConfig) -> McpProxyConfig:
     return config.mcp_proxy
 
 
+def provided(config: LauncherConfig) -> McpProxyConfig | McpDirectConfig | None:
+    """The MCP path whose providers the gateway must have: the proxy's sandbox's, or the
+    agent runtime's on the direct path (D98); a config has at most one."""
+    return config.mcp_proxy or config.mcp_direct
+
+
 def sources(config: LauncherConfig) -> dict[str, Path]:
     """The policy, targets and pool ceiling the proxy's sandbox is made from."""
     mcp, environments = settings(config), config.openshell.environments
@@ -246,10 +252,12 @@ async def register_provider(
     with ``refresh``, in a process of its own: the launcher never opens the file. The
     process gets the parts' usual environment and ``[openshell] env`` alone, and the
     OpenShell CLI as an absolute path, found as running it would find it."""
-    mcp = settings(config)
-    if mcp.provider_env_file is None or mcp.provider_profile is None:
+    mcp = provided(config)
+    if mcp is None or mcp.provider_env_file is None or mcp.provider_profile is None:
         if refresh:
-            raise LauncherError("--refresh-provider needs [mcp_proxy] provider_env_file")
+            raise LauncherError(
+                "--refresh-provider needs [mcp_proxy] or [mcp_direct] provider_env_file"
+            )
         return
     provider = access_provider.PROVIDER
     if not refresh and provider in await _providers(config):
@@ -264,7 +272,7 @@ async def register_provider(
         [sys.executable, "-I", "-m", access_provider.__name__, str(mcp.provider_env_file),
          "--profile", str(mcp.provider_profile), "--provider", provider,
          "--openshell", cli],
-        layout.mcp,
+        private_dir(layout.mcp),
         config.start_timeout,
         env,
     )  # fmt: skip
@@ -284,8 +292,11 @@ async def _providers(config: LauncherConfig) -> set[str]:
 
 
 async def check_providers(config: LauncherConfig) -> None:
+    mcp = provided(config)
+    if mcp is None or not mcp.providers:
+        return
     names = await _providers(config)
-    for provider in settings(config).providers:
+    for provider in mcp.providers:
         if provider not in names:
             raise LauncherError(
                 f"the OpenShell provider {provider} does not exist: create it with the MCP "

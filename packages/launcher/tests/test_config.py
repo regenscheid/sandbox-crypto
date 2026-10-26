@@ -434,40 +434,56 @@ DIRECT = {
 }
 
 
-def test_without_the_proxy_the_canaries_ask_the_runtimes_direct_client(make_config: Any) -> None:
+def test_without_the_proxy_the_canaries_ask_the_runtimes_direct_client(
+    make_config: Any, tmp_path: Path
+) -> None:
     import json
 
     from sandbox_science.launcher import orchestrator, parts
 
+    from .test_direct_mcp import DIRECT, direct_files
+
+    direct_files(tmp_path)
     config = load_config(make_config({"mcp_direct": DIRECT, "canaries": {"enabled": True}}))
     layout = parts.prepare(config)
     # No canary part: the control service runs them over the runtime's connection.
     assert parts.canaries_argv(config, layout) is None
     directory, upload = orchestrator.prepare(config, layout)
     host = json.loads((directory / "control.json").read_text())
-    assert host["canaries"] == {"project": "crypto", "servers": ["papers"], "interval": 900.0}
+    assert host["canaries"] == {
+        "project": "crypto",
+        "servers": ["crypto-research-mcp"],
+        "interval": 900.0,
+    }
     assert "proxy" not in host
-    runtime = json.loads((upload / "runtime.json").read_text())
-    assert runtime["mcp"] == {"project": "crypto", **DIRECT}
+    assert json.loads((upload / "runtime.json").read_text())["mcp"]["project"] == "crypto"
     # Off, control runs none; the runtime keeps its client.
     config = load_config(make_config({"mcp_direct": DIRECT}))
     directory, upload = orchestrator.prepare(config, parts.prepare(config))
     assert "canaries" not in json.loads((directory / "control.json").read_text())
     assert "mcp" in json.loads((upload / "runtime.json").read_text())
-    # With the proxy too, the canaries list through the proxy, as before.
-    config = load_config(
-        make_config({"mcp_proxy": MCP, "mcp_direct": DIRECT, "canaries": {"enabled": True}})
-    )
-    layout = parts.prepare(config)
-    assert parts.canaries_argv(config, layout) is not None
-    directory, _ = orchestrator.prepare(config, layout)
-    assert "canaries" not in json.loads((directory / "control.json").read_text())
 
 
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
         ({"mcp_direct": DIRECT, "orchestrator": None}, "mcp_direct's client runs in the agent"),
+        ({"mcp_direct": DIRECT, "mcp_proxy": MCP}, "configure one MCP path"),
+        (
+            {"mcp_direct": {**DIRECT, "provider_env_file": "cf.env"}},
+            "provider_env_file needs provider_profile",
+        ),
+        (
+            {
+                "mcp_direct": {
+                    **DIRECT,
+                    "provider_env_file": "cf.env",
+                    "provider_profile": "profile.yaml",
+                }
+            },
+            "mcp_direct.providers must name",
+        ),
+        ({"mcp_direct": {**DIRECT, "about": {"other": "x"}}}, "mcp_direct.about and index"),
         ({"mcp_direct": {**DIRECT, "project": "other"}}, "is not a project"),
         ({"mcp_direct": {"servers": {}}}, "mcp_direct.servers"),
         ({"mcp_direct": {"servers": {"p": {"url": "ftp://x"}}}}, "mcp_direct.servers"),
