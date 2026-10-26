@@ -850,7 +850,9 @@ async def bind_runtime_sandbox(request: web.Request) -> web.Response:
     body = RuntimeSandboxRequest.model_validate_json(await _body(request))
     environments = _runtime_sandbox(request)
     _allowed(request, body.project_id)
-    revision = await asyncio.to_thread(environments.bind_runtime, body.project_id, body.sandbox_id)
+    revision = await asyncio.to_thread(
+        environments.bind_runtime, body.project_id, body.sandbox_id, _client(request).projects
+    )
     return _json(
         RuntimeSandboxBinding(
             sandbox_id=body.sandbox_id, project_id=body.project_id, policy=revision

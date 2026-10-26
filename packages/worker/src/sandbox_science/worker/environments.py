@@ -1218,7 +1218,9 @@ class Environments:
             return False
         return document.get("phase") not in _DEAD_PHASES
 
-    def bind_runtime(self, project_id: str, sandbox_id: str) -> str:
+    def bind_runtime(
+        self, project_id: str, sandbox_id: str, projects: frozenset[str] | None = None
+    ) -> str:
         """Bind the agent runtime's sandbox to the project's policy revision: the one the
         policy store binds to the project (the MCP proxy's binding), else the one granted to
         it last. The policy middleware decides only sandboxes bound to a stored revision.
@@ -1228,6 +1230,15 @@ class Environments:
         """
         self._not_an_environment(sandbox_id)
         try:
+            entry = self.store.binding_entry(sandbox_id)
+            if projects is not None and entry is not None and entry[1] != project_id:
+                # Another project's runtime sandbox (or a binding of no recorded project) is
+                # never taken over by a client limited to some projects; its own may move to
+                # a new revision.
+                raise WorkerError(
+                    ErrorKind.POLICY_DENIED,
+                    f"sandbox {sandbox_id!r} is bound, and not for {project_id}",
+                )
             revision = PolicyStore(self.settings.policy_store, "projects").binding(project_id)
             revision = revision or self.records.latest_grant(project_id)
             if revision is None:

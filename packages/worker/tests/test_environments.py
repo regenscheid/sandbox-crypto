@@ -2048,6 +2048,19 @@ async def test_a_project_scoped_client_unbinds_only_its_own_projects_runtime_san
             body = {"project_id": project, "sandbox_id": f"sbx-{project}"}
             assert (await api.call("POST", "/v1/runtime-sandboxes", token, body))[0] == 200
         assert store.binding_entry("sbx-p2") == (setup.policy, "p2")
+        # p2's runtime sandbox cannot be rebound to p1 by p1's manager (review probe).
+        claim = {"project_id": "p1", "sandbox_id": "sbx-p2"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", one, claim)
+        assert (status, reply["error"]["kind"]) == (403, "policy_denied")
+        assert "p2" not in reply["error"]["message"].replace("sbx-p2", "")
+        assert store.binding_entry("sbx-p2") == (setup.policy, "p2")
+        # Its own runtime sandbox may move to a new revision.
+        newer = setup.add(variant(setup.tmp, "no-providers.yaml", providers=False))
+        setup.environments.records.grant("p1", newer)
+        own = {"project_id": "p1", "sandbox_id": "sbx-p1"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", one, own)
+        assert (status, reply["policy"]) == (200, newer)
+        assert store.binding_entry("sbx-p1") == (newer, "p1")
         # p2's runtime sandbox: refused to p1's manager, naming only p1.
         status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-p2", one)
         assert (status, reply["error"]["kind"]) == (403, "policy_denied")
