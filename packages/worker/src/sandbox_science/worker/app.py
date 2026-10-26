@@ -55,6 +55,9 @@ from sandbox_science.contracts import (
     ProvisionRequest,
     PublishRequest,
     ReadFileRequest,
+    RuntimeSandboxBinding,
+    RuntimeSandboxRequest,
+    RuntimeSandboxUnbound,
     SessionClosed,
     SessionCloseRequest,
     StageCheckRequest,
@@ -373,6 +376,8 @@ def create_app(
             web.get("/v1/environments", list_environments),
             web.get("/v1/environments/{environment_id}", get_environment),
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
+            web.post("/v1/runtime-sandboxes", bind_runtime_sandbox),
+            web.delete("/v1/runtime-sandboxes/{sandbox_id}", unbind_runtime_sandbox),
             web.delete("/v1/environments/{environment_id}", delete_environment),
             web.post("/v1/environments/{environment_id}/admissions", admit_hosts),
             web.post("/v1/environments/{environment_id}/suspend", suspend_environment),
@@ -785,6 +790,38 @@ async def revise_environment(request: web.Request) -> web.Response:
     project_id = environments.get(environment_id).project_id
     _revision(request, environments, project_id, body.policy)
     return _json(await environments.revise(environment_id, body.policy))
+
+
+def _runtime_sandbox(request: web.Request) -> Environments:
+    """Only an operator client (the launcher) binds the agent runtime's sandbox, which no
+    environment record names."""
+    if not _client(request).operator:
+        raise WorkerError(
+            ErrorKind.POLICY_DENIED, "binding the runtime's sandbox needs an operator client"
+        )
+    return _environments(request)
+
+
+async def bind_runtime_sandbox(request: web.Request) -> web.Response:
+    """Bind the agent runtime's sandbox to its project's policy revision in the policy
+    store, so that the policy middleware decides its MCP requests."""
+    body = RuntimeSandboxRequest.model_validate_json(await _body(request))
+    environments = _runtime_sandbox(request)
+    _allowed(request, body.project_id)
+    revision = await asyncio.to_thread(environments.bind_runtime, body.project_id, body.sandbox_id)
+    return _json(
+        RuntimeSandboxBinding(
+            sandbox_id=body.sandbox_id, project_id=body.project_id, policy=revision
+        )
+    )
+
+
+async def unbind_runtime_sandbox(request: web.Request) -> web.Response:
+    """Remove the binding of a runtime sandbox that was deleted."""
+    environments = _runtime_sandbox(request)
+    sandbox_id = _identifier(request.match_info["sandbox_id"], "sandbox_id")
+    removed = await asyncio.to_thread(environments.unbind_runtime, sandbox_id)
+    return _json(RuntimeSandboxUnbound(sandbox_id=sandbox_id, unbound=removed))
 
 
 async def delete_environment(request: web.Request) -> web.Response:
