@@ -4,7 +4,9 @@ Status: Decided by the owner (2026-10-26): all six questions as recommended. Fir
 increment built 2026-10-26, fake CLI only; not qualified on a cluster: the worker's kind,
 admission, preparation, hand-back, retention, release and restart rules
 ([worker](../WORKER.md#child-environments)), the delegation's setting, placement, records
-and outcome, the run in its own environment, and a Resume's choice of environment. Open:
+and outcome, the run in its own environment, and a Resume's choice of environment; the
+parent's review (PD-46, built 2026-10-26): a returned task keeps its environment until it
+closes. Open:
 the Compute tab's children's kernels (CE-8), the workspace's environment views (CE-11's
 GUI part), the prompts' guidance (CE-13), inputs from control's retained content
 (CE-7), files over 100 MiB in a hand-back (as JS's delivery step 4: CE-F1's 1.5 GiB
@@ -189,12 +191,18 @@ platform places a child by the project's settings. No change to checks' evidence
   the Python environment out of the workspace) cuts each seed to seconds, this design's
   natural prerequisite for `all`.
 
-  *Amended 2026-10-26 by the owner, replacing the as-built reading above (PD-46):* a
+  *Amended 2026-10-26 by the owner, replacing the as-built reading above (PD-46); built
+  2026-10-26:* a
   child's environment stays while the child runs, waits, or has returned and awaits its
   parent's review. It is handed back and released when the parent accepts the
   delegation or cancels it, when the parent's run ends without accepting it, at the
   session's close, or at `review_max`. A message to a returned delegation reopens it in
   the same environment.
+  As built, the hand-back is planned at each return and kept with that result
+  (`end: held`); the close hands back every result's files once and releases the
+  environment, its account replacing the delegation's `closing` mark; the run-start sweep
+  leaves an environment alone while a delegation that names it runs or awaits review
+  ([plans and delegation](plans-and-delegation.md#parent-review)).
 
 ## Fixtures
 
@@ -231,7 +239,8 @@ platform places a child by the project's settings. No change to checks' evidence
 stays; the parent answers, the child continues and returns `complete`; the environment
 is released after its one hand-back, and the session's close finds nothing to release.
 
-*Amended 2026-10-26 by the owner, replacing the as-built reading above (PD-46):* the
+*Amended 2026-10-26 by the owner, replacing the as-built reading above (PD-46); built
+2026-10-26 (`test_parent_review.py`):* the
 fixture as first written holds: the parent's `message_child` reopens the returned
 delegation in the same environment, the child returns `complete`, the parent accepts it,
 and the environment is released after that acceptance's hand-back.

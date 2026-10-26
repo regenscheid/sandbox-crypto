@@ -15,7 +15,12 @@ A child completes these steps in order:
    every requested write and acknowledgement succeeded.
 5. Settle the saved child outcome, its delegation handback and ledger operation,
    then persist the settlement receipt.
-6. Release the worker kernels only for completed or explicitly stopped child work.
+6. Release the worker kernels only for completed or explicitly stopped child work,
+   and not for a returned task that awaits its parent's review: its kernels stop when
+   it is accepted or cancelled ([plans and delegation](specs/plans-and-delegation.md#parent-review),
+   PD-46). A returned task's own child environment is not handed back or released at
+   step 1 either: its hand-back is planned and kept with the result, and made when the
+   task closes.
 
 The fresh child path and resumed child path both settle before releasing kernels.
 A resumed root uses the same record-and-acknowledgement steps without a child
@@ -28,7 +33,10 @@ stages independently of the run's status. A model failure can have status 1 and
 fully confirmed persistence. `AttemptCompletion` additionally carries the settled
 child result and whether kernels were retained, released or left for cleanup.
 These values report the completed call; the existing durable receipts remain the
-source of truth after a process restart. No storage schema changes are required.
+source of truth after a process restart. A typed settlement is kept per run (control
+store step 88): a reopened task has one for each of its runs, and an outcome is written
+only while its run is the delegation's latest, so a late replay of an earlier run's
+settlement never writes over the next.
 
 A saved record by itself does not prove successful child completion. Missing or
 failed acknowledgement/completion receipts produce the existing
