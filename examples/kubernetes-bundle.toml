@@ -144,3 +144,15 @@ scratch_mib = 512
 # [[ingress.traefik]]   # the controller's Pods: the only peers let in to ports 8200 and 8201
 # namespace_labels = { "kubernetes.io/metadata.name" = "traefik-public" }
 # pod_labels = { "app.kubernetes.io/name" = "traefik" }
+
+# Optional: the direct MCP path (D98, docs/KUBERNETES-BUNDLE.md#the-direct-mcp-path-opt-in):
+# the agent's connector calls made by the runtime's own client, with the provider registered
+# from a Secret the operator makes with `kubectl create secret generic … --from-env-file`
+# (docs/KUBERNETES-PREP.md). Without it the cluster's agent has no connectors.
+# [mcp_direct]
+# project = "crypto"
+# provider = "crypto-research-mcp"
+# provider_secret = "research-mcp-provider"
+#
+# [mcp_direct.servers.crypto-research-mcp]
+# credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }

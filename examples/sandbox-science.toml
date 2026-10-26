@@ -153,6 +153,19 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # "crypto-research-mcp/patent-search-mcp" = "patents: search"
 # "crypto-research-mcp/web-fetch-mcp" = "fetch a web page, or its links, as text"
 #
+# Or, instead of [mcp_proxy] (never both), the direct path (D98, docs/MCP-CONNECTORS.md#the-direct-path):
+# the agent runtime's own client makes the connector calls from its sandbox, through
+# OpenShell's native rules and the policy middleware (whose settings need mcp_listings = true).
+# The proxy stays the default until the babbage lab passes.
+# [mcp_direct]
+# providers = ["crypto-research-mcp"]
+# provider_env_file = "/path/to/the/owners/cloudflare.env"
+# provider_profile = "openshell/profiles/cloudflare-access.yaml"
+# index = ["crypto-research-mcp/e-print-mcp", "crypto-research-mcp/nist-csrc-mcp"]
+#
+# [mcp_direct.servers.crypto-research-mcp]   # its URL is the project policy's
+# credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
+#
 # [canaries]
 # enabled = true
 # interval = 900

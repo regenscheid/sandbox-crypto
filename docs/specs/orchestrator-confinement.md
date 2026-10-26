@@ -81,25 +81,33 @@ The operation catalog is explicit:
 - Confirm whether one MCP permission request is a refused call's, for the attempt's
   project, which the host binds: yes or no from the policy middleware's records through
   the worker (`confirm_request`, D98), never the request's record.
+- In the other direction, make one MCP request of the attempt's connectors on the direct
+  path (`mcp_request`, host to runtime, D98, `[mcp_direct]`): a `tools/list`, or a
+  `tools/call` the host's toolbox admitted, with the attempt, session, run and the model's
+  call ID. The runtime's direct client makes it from its sandbox, through OpenShell's
+  native rules and the policy middleware, and answers the result (binary items replaced by
+  the host's notes) or the failure; the host takes a held call's failure only for a
+  request it confirmed for the attempt, and a lost answer to a call is an unknown effect.
 - Keep one binary item of a direct-path connector call's result as an artifact revision
   of the attempt's run (`publish_mcp_binary`, runtime to host, D98): the model's call ID,
-  media type, SHA-256 and bytes. The call must be the attempt's logged, unexecuted tool
-  intent and a connector tool's; the host takes its tool and server from its own index.
+  media type, SHA-256 and bytes. The call must be the connector call whose `mcp_request`
+  the host is relaying at that moment; the host takes its tool and server from its own
+  index.
   At most 8 MiB decoded per item and per call and 100 items per call; a digest mismatch,
   a non-binary media type (other than `image/*`, `audio/*`, `application/*`) and any other
   call ID are refused. A retry of the same item answers the recorded reply; the kept items
   are recorded in the call's tool record with the source `runtime`, and published as the
   runtime's (`runtime-mcp:<tool>`). It is off unless the run's connector calls take the
-  direct path (`Connectors.path`), which nothing sets yet; a call the host's `tool`
-  capability ran publishes nothing, and one with published results cannot then be run by
-  the host. The runtime's direct MCP client runs in its own sandbox; the host holds no MCP
-  credential or placeholder.
+  direct path (`Connectors.path`), and it runs outside the attempt's lock, which that
+  call's `tool` holds while the runtime answers. The runtime's direct MCP client runs in its
+  own sandbox; the host holds no MCP credential or placeholder.
 - Report a complete listing the runtime's direct MCP client read (`report_mcp_listing`,
   runtime to host, D98): the server, each tool's name, digest and hint (at most 2,048) and
   the listing's digest. The client first removes the tools its server's compiled native
   rules deny, so the model never sees one. The host binds the project, session and run
-  (the attempt's, or with no attempt the canaries' project) and admits only one of the
-  attempt's connector servers or the canaries' servers, then forwards it to the worker,
+  (the attempt's, also while it is being prepared and lists its connectors, or with no
+  attempt the canaries' project) and admits only one of the attempt's connector servers,
+  the direct path's while it is prepared, or the canaries' servers, then forwards it to the worker,
   which decides drift and records it; a report can start or keep a hold, never end one,
   and the worker takes at most 10 a minute per caller, project and server. A listing the
   host or worker refuses is not shown.
@@ -121,7 +129,9 @@ outcome is reconciled.
 ## Launcher and replacement
 
 The launcher starts the worker and control service first. It compiles the sandbox
-policy with only model gateway, worker, MCP proxy and scoped state-service egress.
+policy with only model gateway, worker, MCP proxy and scoped state-service egress, or,
+with `[mcp_direct]` instead of the proxy, the direct path's `protocol: mcp` endpoints and
+the policy middleware for their hosts (D98), with their provider attached.
 It records a fresh sandbox name before create and its first observed immutable ID
 before phase validation. An uncertain create retains its record; observed absence
 without an identity is not deletion proof. Replacement waits for identity-checked,

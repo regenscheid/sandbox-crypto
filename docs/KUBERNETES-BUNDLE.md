@@ -129,7 +129,7 @@ corresponding cluster authority; this is not a replacement for cluster Secret po
 | `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` |
 | `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` |
 | optional `secrets.cache` | `cache.toml` |
-| `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, and the OpenShell CLI profile `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key` |
+| `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, and the OpenShell CLI profile `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key`; with `[mcp_direct]` also `manager-worker.token`, `agent-mcp-policy.yaml` and `runtime-mcp.json` ([the direct MCP path](#the-direct-mcp-path-opt-in)) |
 
 The runtime manager's Secret is its own (no other service may name it) and takes no
 `extra_files`. No other service's `extra_files` may name `manager-control.token`,
@@ -350,7 +350,9 @@ public half is `jwt_public_key`; the client identities, which the gateway's CA i
 and the project initialization (`policy add`, `project create`, `session open`), whose
 commands the README lists. `runtime-manager.json`'s `policy.worker_api` names the worker
 Service only because `OrchestratorTarget` requires one; the runtime never calls it and
-the pool's NetworkPolicy refuses it. Skill packs are not imported.
+the pool's NetworkPolicy refuses it. Skill packs are not imported. With the bundle's
+`[mcp_direct]` it also generates the [direct MCP path](#the-direct-mcp-path-opt-in)'s files;
+the provider's Secret is the operator's.
 
 ## Explicit network authority
 
@@ -364,7 +366,9 @@ no connection; it reaches only DNS, control's TCP 8444 and the required
 `network.gateway` peer and ports (the OpenShell gateway). The pool Pod reaches the same
 gateway peer and ports, since the worker creates every research sandbox through the
 gateway with its own client identity; the app Pod does not. Cache TCP 8090 requires both
-`secrets.cache` and nonempty `network.sandboxes`. These are approved peer selectors,
+`secrets.cache` and nonempty `network.sandboxes`. With `[mcp_direct]`, the runtime manager
+also reaches the worker's TCP 8100, and the pool admits it there, to bind the runtime's
+sandbox. These are approved peer selectors,
 not a promise that arbitrary OpenShell Pods have the template's labels. Sandbox traffic leaves through each sandbox's OpenShell supervisor Pod, so
 `network.runtimes` must select supervisor Pods; their labels are fixed by OpenShell, so
 the rule admits every supervisor of the gateway, and the runtime token decides which
@@ -391,6 +395,60 @@ policy outside this renderer. CNI enforcement, Service DNAT ordering, node-local
 host-network supervisors and OpenShell's independently scheduled supervisors need
 live qualification. NetworkPolicy cannot authenticate a permitted IP/label, and
 does not replace middleware token verification or OpenShell sandbox policy.
+
+## The direct MCP path (opt-in)
+
+Without it the cluster runs no MCP proxy and the agent has no connectors. With it, the
+agent's connector calls take the direct path (D98, [MCP connectors](MCP-CONNECTORS.md#the-direct-path)):
+control's run service admits each call and the agent runtime's own client makes it from its
+sandbox, through OpenShell's native `protocol: mcp` rules and the policy middleware. The
+MCP proxy stays the default path until the babbage lab passes; the cluster has only this
+one.
+
+```toml
+[mcp_direct]
+project = "crypto"                        # a site project: the policy the middleware applies
+provider = "crypto-research-mcp"          # the OpenShell provider (the default)
+provider_secret = "research-mcp-provider" # the Secret the operator creates (below)
+# index = ["crypto-research-mcp/e-print-mcp"]
+[mcp_direct.servers.crypto-research-mcp]
+credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
+[mcp_direct.about]
+"crypto-research-mcp" = "Cryptography research servers"
+```
+
+Each server must be one of the site policy's, whose URL it takes, and one the floor and the
+pool ceiling admit. With it:
+
+- **The renderer** gives the runtime manager's Pod an init container,
+  `register-mcp-provider`, after its copy init: it runs
+  `python3 -I -m sandbox_science.launcher.access_provider --from-environment` with the
+  manager's OpenShell CLI profile, and the Secret `provider_secret` as its environment
+  (`envFrom`) and no other container's, and creates the provider in the gateway, or updates
+  it, before the manager starts. The Secret's keys are `CF_ACCESS_CLIENT_ID` and
+  `CF_ACCESS_CLIENT_SECRET`; the operator makes it from a file
+  ([prep](KUBERNETES-PREP.md#the-direct-mcp-paths-provider)). The manager's NetworkPolicy
+  adds the worker's TCP 8100, and the pool's admits the manager there.
+- **The site generator** compiles the runtime sandbox's egress from the site's policy, pool
+  ceiling and targets (`launcher.direct_mcp`, as `sandbox-science up` does): one inspected
+  `protocol: mcp` endpoint per server, bound to the provider's credentials and admitting
+  only the runtime's interpreter, and the policy middleware (the targets file's
+  registration) for their hosts, with the project and the caller `agent-runtime`. It writes
+  it as `agent-mcp-policy.yaml` in the manager's Secret, the runtime client's servers with
+  each one's tool admission as `runtime-mcp.json`, and an operator token for the worker,
+  `manager-worker.token`, whose client (`manager`) the worker knows for that project alone.
+  `runtime-manager.json` gets the `worker` link (the worker Service, verified with the
+  private CA in `control-ca.crt`) and `mcp` (the two files and the provider);
+  `control.json` gets `direct` (the run service's servers, `about` and `index`); and
+  `middleware.toml` gets `mcp_listings = true`.
+- **The runtime manager** merges the egress into the runtime sandbox's policy beside its
+  platform services, attaches the provider to the sandbox (`--provider`), binds the sandbox
+  to the project's revision through the worker once it is Ready, and gives the runtime its
+  servers in `runtime.json`. It compiles nothing and never reads the provider's values.
+
+The egress is compiled from the site's policy file: after a new policy revision, generate the
+Secrets anew. The fence admits tools by the catalog's classification, not a project's
+accepted revision of it.
 
 ## Job sandboxes and node drains
 
