@@ -14,6 +14,7 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -83,14 +84,24 @@ def variable_reads(data: bytes, suffix: str) -> set[str]:
 
 
 def generate(
-    prefix: Path, sites: tuple[Path, ...], *, dpkg: Path = Path("/var/lib/dpkg")
+    prefix: Path,
+    sites: tuple[Path, ...],
+    *,
+    dpkg: Path = Path("/var/lib/dpkg"),
+    base: Path | None = None,
 ) -> dict[str, Any]:
     """Generate deterministic provenance from installed ownership metadata.
 
+    ``base`` is the read-only environment under a workspace layer (docs/IMAGES.md, "The
+    environment outside the workspace"): its Conda records own the files, the layer's
+    records of the same packages own none, and ``sites`` includes its site-packages.
     Large program files are explicitly outside this extractor's policy. Unexpected
     unreadability or a total bound refuses publication; names are never silently cut.
     """
     prefix = prefix.resolve()
+    roots = (prefix,) if base is None else (base.resolve(), prefix)
+    # A layer's interpreter names its sites through the /opt link to the workspace.
+    sites = tuple(site.resolve() for site in sites)
     owned: dict[tuple[str, str], tuple[Path, str]] = {}
     packages: set[str] = set()
     origins: dict[str, dict[str, str]] = {}
@@ -103,7 +114,16 @@ def generate(
     # Resolving a root for every owned file repeats filesystem walks tens of
     # thousands of times on a fresh executor. The root itself cannot change
     # during this scan; the package fingerprint is checked again before publish.
-    roots: dict[Path, Path] = {}
+    resolved_roots: dict[Path, Path] = {}
+
+    def within(candidate: Path) -> tuple[Path, str] | None:
+        """The installation root ``candidate`` is in, and its path there."""
+        for root in roots:
+            try:
+                return root, str(candidate.relative_to(root))
+            except ValueError:
+                continue
+        return None
 
     def add(package: str, root: Path, relative: str) -> None:
         if len(relative) > 4096 or len(package) > 512 or any(ord(c) < 32 for c in package):
@@ -128,18 +148,25 @@ def generate(
             return
         candidate = root / relative_path
         try:
-            if root not in roots:
-                roots[root] = root.resolve()
+            if root not in resolved_roots:
+                resolved_roots[root] = root.resolve()
             resolved = candidate.resolve()
-            resolved.relative_to(roots[root])
+            resolved.relative_to(resolved_roots[root])
         except (ValueError, OSError, RuntimeError):
+            if base is not None and root == prefix and within(candidate.resolve()) is not None:
+                return  # the layer's link to the base's file, which the base's record owns
             notes.add(f"{package}: external/symlink target outside package root")
             return
         owned[(package, relative)] = (resolved, relative)
 
     try:
-        for meta in sorted((prefix / "conda-meta").glob("*.json")):
-            metadata_bytes = scoped_read(meta, prefix)
+        records = [
+            (place, meta)
+            for place in roots
+            for meta in sorted((place / "conda-meta").glob("*.json"))
+        ]
+        for root, meta in records:
+            metadata_bytes = scoped_read(meta, root)
             record = json.loads(metadata_bytes)
             package = f"conda:{record['name']}@{record['version']}:{record.get('build', '')}"
             if len(package) > 512 or any(ord(c) < 32 for c in package):
@@ -156,8 +183,8 @@ def generate(
                 if not isinstance(relative, str):
                     raise InventoryError("invalid Conda file ownership")
                 if relative.endswith(".dist-info/METADATA"):
-                    conda_metadata.add((prefix / relative).resolve())
-                add(package, prefix, relative)
+                    conda_metadata.add((root / relative).resolve())
+                add(package, root, relative)
         for site in sorted(set(sites)):
             for info in sorted(site.glob("*.dist-info")):
                 metadata_bytes = scoped_read(info / "METADATA", site)
@@ -182,13 +209,12 @@ def generate(
                 for row in csv.reader(scoped_read(info / "RECORD", site).decode().splitlines()):
                     if row:
                         candidate = Path(os.path.abspath(site / row[0]))
-                        try:
-                            relative = str(candidate.relative_to(prefix))
-                        except ValueError:
+                        found = within(candidate)
+                        if found is None:
                             # A user-site installation is scanned within that site only.
                             add(package, site, row[0])
                         else:
-                            add(package, prefix, relative)
+                            add(package, *found)
         for site in sorted(set(sites)):
             for info in sorted(site.glob("*.egg-info")):
                 metadata_path = info / "PKG-INFO" if info.is_dir() else info
@@ -210,13 +236,10 @@ def generate(
                 if info.is_dir() and installed.exists():
                     for relative in scoped_read(installed, site).decode().splitlines():
                         candidate = Path(os.path.abspath(info / relative))
-                        try:
-                            relative = str(candidate.relative_to(prefix))
-                        except ValueError:
-                            raise InventoryError(
-                                "egg ownership escapes installation prefix"
-                            ) from None
-                        add(package, prefix, relative)
+                        found = within(candidate)
+                        if found is None:
+                            raise InventoryError("egg ownership escapes installation prefix")
+                        add(package, *found)
                 else:
                     notes.add(
                         f"{package}: egg metadata lacks installed ownership; fallback rules apply"
@@ -369,11 +392,25 @@ def forbidden(inventory: dict[str, Any], variable: str) -> bool:
     return any(entry["variable"] == variable for entry in inventory["entries"])
 
 
+def layered_base() -> Path | None:
+    """The base environment under this interpreter's layer: a virtual environment over a
+    Conda environment's interpreter (docs/IMAGES.md); None for any other interpreter."""
+    if sys.prefix == sys.base_prefix or not os.path.isdir(
+        os.path.join(sys.base_prefix, "conda-meta")
+    ):
+        return None
+    return Path(sys.base_prefix)
+
+
 if __name__ == "__main__":
-    import sys
     import sysconfig
 
-    result = generate(Path(sys.prefix), (Path(sysconfig.get_path("purelib")),))
+    layered = layered_base()
+    sites = (Path(sysconfig.get_path("purelib")),)
+    if layered is not None:
+        variables = {"base": sys.base_prefix, "platbase": sys.base_exec_prefix}
+        sites += (Path(sysconfig.get_path("purelib", vars=variables)),)
+    result = generate(Path(sys.prefix), sites, base=layered)
     Path(sys.argv[1]).write_bytes(canonical(result) + b"\n")
 
 
@@ -402,13 +439,14 @@ class Inventory:
         sites: tuple[Path, ...],
         fingerprint: Callable[[], str],
         destination: Path,
+        base: Path | None = None,
     ) -> dict[str, Any]:
         """Publish only a stable scan; a failed replacement invalidates the old cache."""
         before = fingerprint()
         if self.manifest is not None and before == self.fingerprint:
             return self.manifest
         self.manifest, self.variables, self.fingerprint, self.families = None, set(), "", ()
-        manifest = generate(prefix, sites)
+        manifest = generate(prefix, sites) if base is None else generate(prefix, sites, base=base)
         # Even an unsupported metadata layout must invalidate cached namespace grants.
         # Bind the observed metadata identity, not just extracted names, into the token.
         manifest.pop("digest")

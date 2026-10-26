@@ -114,12 +114,14 @@ code needs: pseudo-terminals for pexpect-driven tools such as Sage's GAP, gp and
 interfaces, and ``/dev/shm`` for Python's multiprocessing (lab 5). Without them, Landlock
 refuses every open."""
 
-RESEARCH_IMAGE_READ_ONLY: Final = ("/opt/sandbox-science-frozen",)
-"""The research images' frozen trees (docs/IMAGES.md, "Prefix layout"): GAP's, Giac's and
-Maxima's data, ECL's library and the compiler toolchain, which the image keeps out of the
-workspace it seeds each environment with, and which the prefix there links to. Every research
-sandbox may read them, and none may write them: no filesystem section may name the path, or a
-directory above it, writable. OpenShell skips it in an image without it, such as minimal."""
+RESEARCH_IMAGE_READ_ONLY: Final = ("/opt/sandbox-science-frozen", "/opt/sandbox-science-base")
+"""What the research images keep out of the workspace they seed each environment with:
+the frozen trees (docs/IMAGES.md, "Prefix layout"), GAP's, Giac's and Maxima's data, ECL's
+library and the compiler toolchain, and the base environment under the workspace's layer
+("The environment outside the workspace"), which the layer links to. Every research sandbox
+may read them, and none may write them: no filesystem section may name a path, or a directory
+above or below it, writable. OpenShell skips a path an image lacks, such as an earlier
+image's base."""
 
 BASELINE_READ_ONLY: Final = ("/usr", "/lib", "/etc", "/proc", "/var/log", "/dev/urandom")
 BASELINE_READ_WRITE: Final = ("/tmp", "/dev/null")  # noqa: S108 - a Landlock path, not a temporary file
@@ -465,8 +467,8 @@ def _writable_path(value: str) -> str:
     if value == "/":
         raise ValueError("the root cannot be writable")
     for frozen in RESEARCH_IMAGE_READ_ONLY:
-        if value == frozen or frozen.startswith(f"{value}/"):
-            raise ValueError(f"{frozen} holds the images' frozen trees and stays read-only")
+        if value == frozen or frozen.startswith(f"{value}/") or value.startswith(f"{frozen}/"):
+            raise ValueError(f"{frozen} holds the research images' packages and stays read-only")
     return value
 
 

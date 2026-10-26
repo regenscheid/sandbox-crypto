@@ -44,7 +44,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 
 def _sibling(name: str) -> ModuleType:
@@ -704,6 +704,12 @@ class Executor:
         # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
         self.packages = provisioning.State(root / ".executor" / "provisioning")
         self.places = provisioning.Places.here()
+        self.rebased: Message | None = None
+        """How this executor moved its workspace layer onto a new image's base, if it did."""
+        if (below := self.places.base_prefix) is not None:
+            # This process finds the kernelspecs, which are the base's, as its kernels do.
+            os.environ["JUPYTER_PATH"] = jupyter_path(os.environ, below)
+            self.rebased = rebase(self.places, below)
         self.provisioning: provisioning.Config | None = None
         """None when the wrappers could not be written: package commands then run as they are."""
         self.wrapped: list[str] = []
@@ -878,9 +884,9 @@ class Executor:
 
     async def current_binding_inventory(self) -> None:
         """Refresh static restrictions from this guest, never the worker host."""
-        sites = tuple(
-            Path(p) for p in (*self.places.site, *([self.places.user] if self.places.user else []))
-        )
+        user = [self.places.user] if self.places.user else []
+        sites = tuple(Path(p) for p in (*self.places.site, *user, *self.places.base_site))
+        below = self.places.base_prefix
         try:
             cancelled = asyncio.Event()
             async with self.binding_inventory_lock:
@@ -894,6 +900,7 @@ class Executor:
                             + binding_inventory.system_fingerprint()
                         ),
                         self.root / ".executor" / "binding-inventory.json",
+                        None if below is None else Path(below),
                     ),
                     cancelled.set,
                 )
@@ -989,10 +996,11 @@ class Executor:
 
     def tool_path(self) -> str:
         """``PATH`` for commands and kernels, before the wrappers join it."""
-        return tool_environment(os.environ, sys.executable, sys.prefix)["PATH"]
+        below = self.places.base_prefix
+        return tool_environment(os.environ, sys.executable, sys.prefix, below)["PATH"]
 
     def environment(self, session: str) -> dict[str, str]:
-        env = tool_environment(os.environ, sys.executable, sys.prefix)
+        env = tool_environment(os.environ, sys.executable, sys.prefix, self.places.base_prefix)
         env.update(self.configured)
         if self.provisioning is not None:
             env.update(provisioning.variables(self.packages, env, self.wrapped))
@@ -1161,10 +1169,16 @@ class Executor:
             conditional_kernel_restart=1,
             environment=await self.baseline(),
             package_epoch=self.admission.epoch,
+            **({"layer_rebase": self.rebased} if self.rebased is not None else {}),
             **(
                 {
                     "workspace_prefix": {
                         **workspace_prefix.report(sys.prefix),
+                        **(
+                            {"base": provisioning.base_identity(self.places)}
+                            if self.places.base_prefix is not None
+                            else {}
+                        ),
                         "fingerprint": await asyncio.to_thread(
                             provisioning.fingerprint, self.places
                         ),
@@ -2120,20 +2134,67 @@ class Executor:
         await self.reply(request, fingerprint=fingerprint, lockfile=lockfile)
 
 
-def tool_environment(base: Mapping[str, str], python: str, prefix: str) -> dict[str, str]:
+def tool_environment(
+    base: Mapping[str, str], python: str, prefix: str, below: str | None = None
+) -> dict[str, str]:
     """``base`` with the environment's tools first on PATH, as the tools spec requires.
 
     The executor runs with the environment's interpreter, so its directory holds the
     environment's commands; without it, Sage's interfaces could not find ``gp`` or ``gap``
-    (lab 5). A Conda environment is also named in ``CONDA_PREFIX``.
+    (lab 5). A Conda environment is also named in ``CONDA_PREFIX``. Under a workspace layer
+    the layer is that environment, and ``below``, the read-only base (docs/IMAGES.md), has
+    its programs next on PATH and its Jupyter data, the kernelspecs, on ``JUPYTER_PATH``;
+    the layer's ``share`` comes first on ``XDG_DATA_DIRS``.
     """
     env = dict(base)
-    tools = os.path.dirname(python)
-    rest = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry and entry != tools]
-    env["PATH"] = os.pathsep.join([tools, *rest])
+    tools = [os.path.dirname(python)]
+    if below is not None:
+        tools.append(os.path.join(below, "bin"))
+    rest = [
+        entry for entry in env.get("PATH", "").split(os.pathsep) if entry and entry not in tools
+    ]
+    env["PATH"] = os.pathsep.join([*tools, *rest])
     if os.path.isdir(os.path.join(prefix, "conda-meta")):
         env["CONDA_PREFIX"] = prefix
+    if below is not None:
+        env["JUPYTER_PATH"] = jupyter_path(env, below)
+        # Data that packages installed at runtime bring, such as Sage's databases, which
+        # Sage looks for on XDG_DATA_DIRS beside its own (the base's) share directory.
+        data = os.path.join(prefix, "share")
+        dirs = env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+        rest = [entry for entry in dirs.split(os.pathsep) if entry and entry != data]
+        env["XDG_DATA_DIRS"] = os.pathsep.join([data, *rest])
     return env
+
+
+IMAGE_RECORD: Final = Path("/usr/share/sandbox-science/image.json")
+
+
+def rebase(places: provisioning.Places, below: str) -> Message | None:
+    """Move a workspace layer onto the image's base when the image changed under it, before
+    anything reads its packages (provisioning.rebase_layer); None otherwise. A failure is
+    reported and leaves the layer as it was found, for the layout check to judge."""
+    layer = Path(sys.prefix)
+    if not os.path.lexists(layer / provisioning.LAYER_MARKER):
+        return None
+    revision = "unknown"
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        revision = str(json.loads(IMAGE_RECORD.read_text()).get("revision", "unknown"))[:128]
+    try:
+        return provisioning.rebase_layer(
+            layer, Path(below), provisioning.base_identity(places), revision
+        )
+    except (OSError, ValueError) as exc:
+        print(f"executor: the layer stays over its old base: {exc}", file=sys.stderr)
+        return None
+
+
+def jupyter_path(env: Mapping[str, str], below: str) -> str:
+    """``JUPYTER_PATH`` with the base's Jupyter data last: the layer's interpreter looks in
+    its own prefix, not the base's, and the kernelspecs are the base's."""
+    data = os.path.join(below, "share", "jupyter")
+    paths = [entry for entry in env.get("JUPYTER_PATH", "").split(os.pathsep) if entry]
+    return os.pathsep.join([*(entry for entry in paths if entry != data), data])
 
 
 def available_features() -> list[str]:

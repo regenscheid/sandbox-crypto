@@ -43,8 +43,11 @@ and no tool calls. A child environment is the same shape carrying one delegated 
 Two costs frame the design. Every new sandbox seeds its workspace from the image: with
 the slim research images the copy took 69 s on the cluster's single-replica class, 111 s
 before, and the gateway's fixed 5-minute grace ends a slower one ([images](../IMAGES.md),
-[Kubernetes](../KUBERNETES.md#placement)); most of what remains is Python's
-`site-packages`, whose move out of the workspace ("option C") is deferred. And artifact
+[Kubernetes](../KUBERNETES.md#placement)). Since B11 ("option C", built 2026-10-26) the
+research images keep their Python environment in the image and seed only a small layer,
+about 1,700 entries in crypto-base, which a local copy writes in seconds
+([the environment outside the workspace](../IMAGES.md#the-environment-outside-the-workspace-b11)).
+And artifact
 content leaves a sandbox only through the recorder's capture, bounded per file and per
 call ([artifacts](../ARTIFACTS.md)); larger files keep a hash and a size, and their bytes
 stay where the file is.
@@ -182,8 +185,8 @@ platform places a child by the project's settings. No change to checks' evidence
   says: delegate into an own environment for work that is heavy in compute, memory or
   disk, or that must not disturb the session's environment; keep short tasks shared.
   The project's cost view counts child environments' seeding as the worker reports it.
-  Many short children in own environments are a cost the owner has named; option C (the
-  Python prefix out of the workspace) would cut each seed to seconds and is this design's
+  Many short children in own environments are a cost the owner has named; B11 (option C,
+  the Python environment out of the workspace) cuts each seed to seconds, this design's
   natural prerequisite for `all`.
 
   *Amended 2026-10-26 by the owner, replacing the as-built reading above (PD-46):* a

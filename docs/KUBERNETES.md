@@ -172,11 +172,14 @@ level (`deny_unknown_fields`), which `test_kubernetes.py` checks for the emitted
 
 ### Persistent research prefix increment
 
-The shared `minimal` and `crypto-base` image layout places real package bytes
-under `/sandbox/.sandbox-science-prefix`, retaining `/opt/sandbox-science` as a
-compatibility symlink. The same image is used locally, on Mac and in Kubernetes;
-trusted service images keep their separate layout. Build cleanup must preserve
-the real prefix. OpenShell's (v0.1.3; its mount path is unchanged in v0.1.5) init container copies the image's `/sandbox`
+The shared `minimal` and `crypto-base` images keep their package bytes in the
+image, read-only at `/opt/sandbox-science-base`, and place a small writable layer
+over it at `/sandbox/.sandbox-science-prefix`, which runtime installs go into, with
+`/opt/sandbox-science` as the stable link to it ([the environment outside the
+workspace](IMAGES.md#the-environment-outside-the-workspace-b11)). A workspace
+seeded from an earlier image holds that image's whole prefix at the same path and
+keeps it. The same image is used locally, on Mac and in Kubernetes; trusted service
+images keep their separate layout. Build cleanup must preserve the layer. OpenShell's (v0.1.3; its mount path is unchanged in v0.1.5) init container copies the image's `/sandbox`
 tree into its workspace PVC before the agent mounts it at `/sandbox`.
 
 Trusted Kubernetes profiles require this layout through `require_workspace_prefix`
@@ -198,13 +201,14 @@ Ordinary surviving-daemon reconnect and journal reconciliation retain their
 existing semantics. This is continuity detection, not a snapshot of live kernels
 or independent integrity verification of every installed file.
 
-In crypto-base, some of the prefix's trees are links to the image's read-only
-`/opt/sandbox-science-frozen` ([prefix layout](IMAGES.md#prefix-layout)). The layout
-check requires each to be the image's exact link, or a directory of the prefix's own
-in a prefix seeded before the change; research code can rewrite links in the
-workspace, and one pointing anywhere else fails the layout like a missing prefix.
-The split leaves the package fingerprint unchanged, and checkpoints keep the links
-as links.
+The layout check chooses by the layer's marker. A layer must name the image's base,
+keep its virtual environment's settings and interpreter link, and run under that
+base. In a whole prefix seeded from an earlier crypto-base, some trees are links to
+the image's read-only `/opt/sandbox-science-frozen` ([prefix layout](IMAGES.md#prefix-layout)),
+which newer images keep; the check requires each to be the image's exact link, or a
+directory of the prefix's own in a prefix seeded before the change. Research code can
+rewrite the workspace, and a layer or link pointing anywhere else fails the layout
+like a missing prefix. Checkpoints keep links as links.
 
 Restoring the original prefix and known package fingerprint can release that
 specific hold. A durable pending acknowledgement survives a worker restart; the
@@ -214,11 +218,12 @@ new package changes. Unfinished package journals and unrelated recovery holds
 remain intact. Neither restoring a prefix nor its identity marker restores live
 interpreter memory.
 
-An active workspace PVC must fit its full native base prefix, installed packages
-and research data. Upstream's 2 GiB workspace default is too small for `crypto-base`
-(5.3 GB in about 101,000 entries before the 2026-10-24 layout change, 2.65 GB in
-about 61,000 since, before headroom). Storage size,
-class and retention are private operator choices. The initial copy must finish within
+An active workspace PVC must fit the layer, installed packages and research data; the
+base's package bytes stay in the image. `crypto-base` seeds 3.3 MB in about 1,700
+entries since the B11 layout (5.3 GB in about 101,000 entries before the 2026-10-24
+layout change, 2.65 GB in about 61,000 between them), and `minimal` 0.2 MB in about
+280. A workspace seeded from an earlier image keeps its whole prefix and needs its
+earlier size. Storage size, class and retention are private operator choices. The initial copy must finish within
 OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,
 not configurable), or the gateway rolls the sandbox back. A rolled-back creation
 whose response the worker lost never appears, and the worker marks it deleted
@@ -229,13 +234,17 @@ seeding `crypto-base`'s prefix (about 100k files) into a 2-replica Longhorn volu
 over 4 minutes, and a single-replica `strict-local` class about 2.5 minutes in all,
 of which the copy (`workspace-init`) was 111 s; with the slimmed image below the copy took 69 s
 ([preparation step 2.1](KUBERNETES-PREP.md#21-a-retain-class-for-research-volumes)).
-The owner's decision of 2026-10-24 shrinks what is copied: the research images drop
-documentation, static libraries beside shared ones and Jmol with its Java runtime, and
-keep GAP, Giac, Maxima's data, ECL and the compiler toolchain in the read-only image
-path behind links, pinned in Conda ([prefix layout](IMAGES.md#prefix-layout)). A local
+The owner's decisions of 2026-10-24 and 2026-10-26 (B11) shrink what is copied to
+the layer: the research images keep their whole environment in the image
+([the environment outside the workspace](IMAGES.md#the-environment-outside-the-workspace-b11)),
+after dropping documentation, static libraries beside shared ones and Jmol with its
+Java runtime and moving GAP, Giac, Maxima's data, ECL and the compiler toolchain to a
+read-only path of their own ([prefix layout](IMAGES.md#prefix-layout)). A local
 imitation of the seed (every file written and synced, on babbage's NVMe disk) took
-about 290 s instead of about 500 s (two runs each); the cluster's time is not measured yet. Moving
-the Python prefix itself out of `/sandbox` (option C) is deferred. The arm64
+about 290 s instead of about 500 s after the 2026-10-24 change, and the layer takes
+about 7 s for crypto-base's 1,690 entries (and 1 s for minimal's 283) where the
+environment took 795 s in the same conditions, a busier machine than before; the
+cluster's time is not measured yet, but the layer is well inside the fixed grace. The arm64
 architecture needs live qualification. Upstream interrupted seeding
 does not currently resume a partial copy: preserve that PVC and report the exact
 initialization failure, never delete/reseed it to manufacture successful recovery.

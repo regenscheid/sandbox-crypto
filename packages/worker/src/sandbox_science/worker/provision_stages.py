@@ -510,6 +510,22 @@ class ProvisionStages:
                         message="the dry run printed more than the worker reads",
                     ),
                 )
+            if label == "resolve-conda":
+                try:
+                    removed = await asyncio.to_thread(resolution.conda_removals, stdout.text)
+                except ResolveError:
+                    removed = []  # the parse below refuses the same document, with its reason
+                if removed:
+                    raise Stop(
+                        ProvisionOutcome.FAILED,
+                        "resolve_failed",
+                        "resolve",
+                        ErrorInfo(
+                            kind=ErrorKind.INVALID_REQUEST,
+                            message=resolution.removal_refusal(removed, specs),
+                        ),
+                        next_step=resolution.REMOVAL_NEXT_STEP,
+                    )
             try:
                 # Up to 16 MiB of untrusted JSON: read in a thread, off the event loop.
                 resolved += await asyncio.to_thread(parse, stdout.text, self.cache)

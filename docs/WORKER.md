@@ -710,7 +710,10 @@ Required executors report prefix protocol 1, canonical path
 that real prefix, its current metadata fingerprint and a pending-journal boolean.
 Marker creation is opt-in and follows fixed-layout validation; ordinary/local
 executors never write a marker into the developer's Python prefix. Images never
-ship a marker. The provisioning mirror under `.executor/provisioning/prefix` is a
+ship a marker. In images of the B11 layout the prefix is a layer over the image's
+read-only base environment; the layout check then requires the layer's marker to name
+that base and the interpreter to run over it, and in a whole prefix seeded from an
+earlier image it checks the frozen links ([images](IMAGES.md#the-environment-outside-the-workspace-b11)). The provisioning mirror under `.executor/provisioning/prefix` is a
 collection of symlinks/wrappers, not retained package bytes.
 
 Before the ready package gate is acknowledged, a replacement daemon must match

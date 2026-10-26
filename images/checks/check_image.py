@@ -40,6 +40,7 @@ import os
 import pwd
 import queue
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -58,7 +59,13 @@ SERVICES = ("orchestrator", "mcp-proxy")
 """The platform services' images: no executor or kernels, and a read-only prefix."""
 PREFIX = "/opt/sandbox-science"
 FROZEN = Path("/opt/sandbox-science-frozen")
-"""The research images' frozen trees, which the prefix links to (common/prefix_layout.py)."""
+"""The research images' frozen trees, which the base links to (common/prefix_layout.py)."""
+BASE = Path("/opt/sandbox-science-base")
+"""The research images' read-only environment, under the workspace's layer, which ``PREFIX``
+links to (docs/IMAGES.md, "The environment outside the workspace")."""
+LAYER = Path("/sandbox/.sandbox-science-prefix")
+MAX_LAYER_ENTRIES = 5000
+"""Entries the image may seed into each workspace: the layer, not the environment."""
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = (
     "executor.py",
@@ -539,16 +546,53 @@ class Checks:
             expect(bool(records), f"nothing readable in {PREFIX}/conda-meta")
             json.loads(records[0].read_text())
         else:
-            # Runtime installs go into the prefix (D48); multiprocessing needs /dev/shm. Its
-            # frozen trees are the image's, read-only (an image without them has none to write).
+            # Runtime installs go into the workspace's layer, which the prefix links to (D48);
+            # multiprocessing needs /dev/shm. The base and the frozen trees are the image's,
+            # read-only (an image without them has none to write).
             allowed += ["/dev/shm", PREFIX]  # noqa: S108
-            refused.append(str(FROZEN))
+            refused += [str(BASE), f"{BASE}/bin", f"{BASE}/conda-meta", str(FROZEN)]
         wrongly = [path for path in refused if writable(path)]
         missing = [path for path in allowed if not writable(path)]
         expect(not wrongly, f"writable but should not be: {wrongly}")
         expect(not missing, f"not writable: {missing}")
         detail = f"writable: {', '.join(allowed)}; read-only: {', '.join(refused)}"
         return detail + (f"; {PREFIX} readable" if self.service else "")
+
+    def layer(self) -> str:
+        """The workspace holds only the layer over the read-only base: few entries, the
+        base's records without their files, and an interpreter whose prefix is the layer."""
+        entries = sum(len(dirs) + len(names) for _, dirs, names in os.walk(LAYER))
+        expect(entries <= MAX_LAYER_ENTRIES, f"{entries} entries in {LAYER}")
+        expect(Path(PREFIX).resolve() == LAYER, f"{PREFIX} -> {Path(PREFIX).resolve()}")
+        marker = json.loads((LAYER / ".sandbox-science-layer").read_text())
+        expect(
+            (marker["version"], marker["base"]) == (1, str(BASE))
+            and re.fullmatch(r"[0-9a-f]{64}", marker["identity"]) is not None,
+            f"marker {marker}",
+        )
+        records = sorted(path.name for path in (BASE / "conda-meta").glob("*.json"))
+        slim = sorted(path.name for path in (LAYER / "conda-meta").glob("*.json"))
+        expect(records == slim and bool(records), "the layer's records differ from the base's")
+        # A base record in the layer owns only the layer's own entries: programs, whose
+        # scripts are copies, and shared libraries.
+        for name in slim:
+            for relative in json.loads((LAYER / "conda-meta" / name).read_text())["files"]:
+                path = LAYER / relative
+                expect(relative.split("/")[0] in ("bin", "lib"), f"{name} owns {relative}")
+                expect(path.is_symlink() or path.is_file(), f"{name}'s {relative} is missing")
+                if not path.is_symlink():
+                    expect(path.read_bytes()[:2] == b"#!", f"{relative} is copied, not a script")
+        code = "import sys; print(sys.prefix, sys.base_prefix)"
+        found = subprocess.run(  # noqa: S603 - the image's interpreter, fixed arguments
+            [f"{PREFIX}/bin/python", "-I", "-c", code], capture_output=True, text=True, check=True
+        ).stdout.split()
+        expect(Path(found[0]).resolve() == LAYER and found[1] == str(BASE), f"prefixes {found}")
+        size = sum(
+            (Path(directory) / name).lstat().st_size
+            for directory, _, names in os.walk(LAYER)
+            for name in names
+        )
+        return f"{entries} entries ({size} bytes) in {LAYER}, over {len(records)} base packages"
 
     def landlock(self) -> str:
         """The ruleset is in effect: a system file outside OpenShell's baseline is unreadable."""
@@ -666,13 +710,18 @@ class Checks:
         interfaces run them, and the compilers build a program against the prefix's shared
         libraries."""
         manifest = json.loads((FROZEN / "manifest.json").read_text())
-        prefix = Path(PREFIX).resolve()
+        prefix = BASE
         for tree in manifest["trees"]:
             link = prefix / tree
             expect(link.is_symlink(), f"{link} is not a link")
             expect(os.readlink(link) == str(FROZEN / tree), f"{link} -> {os.readlink(link)}")
             expect(not os.access(FROZEN / tree, os.W_OK), f"{FROZEN / tree} is writable")
         pinned = (prefix / "conda-meta" / "pinned").read_text().splitlines()
+        layer = (LAYER / "conda-meta" / "pinned").read_text().splitlines()
+        expect(
+            layer[:-1] == pinned and layer[-1].startswith("python=="),
+            "the layer's pins are not the base's and Python's",
+        )
         for package in manifest["packages"]:
             line = f"{package['name']}=={package['version']}={package['build']}"
             expect(line in pinned, f"{package['name']} is not pinned")
@@ -804,20 +853,90 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         return f"{parser}: page facts, line anchors, {len(hits)} search hits and a {size} render"
 
     def runtime_install(self) -> str:
-        # Neither package is in either image.
+        # None of these packages is in either image. xz-tools is a program that needs the
+        # base's liblzma, which it finds through the layer's links.
         out = self.ex().shell(
-            "micromamba install -y -q -c conda-forge --override-channels toolz >/dev/null"
-            " && python -m pip install -q --no-deps --no-cache-dir tomli-w"
-            " && python -c 'import toolz, tomli_w; print(toolz.__file__, tomli_w.__file__)'",
+            "micromamba install -y -q -c conda-forge --override-channels toolz xz-tools"
+            " >/dev/null && python -m pip install -q --no-deps --no-cache-dir tomli-w"
+            " && python -c 'import toolz, tomli_w; print(toolz.__file__, tomli_w.__file__)'"
+            ' && command -v xz && xz --version | head -1 && ! ldd "$(command -v xz)" | grep -q'
+            " 'not found'",
             limit=600,
         )
-        paths = out.split()
+        lines = out.splitlines()
+        paths = [*lines[0].split(), lines[1]] if len(lines) >= 3 else []
         expect(
-            len(paths) == 2
-            and all(Path(path).resolve().is_relative_to(Path(PREFIX).resolve()) for path in paths),
+            len(paths) == 3 and all(Path(path).resolve().is_relative_to(LAYER) for path in paths),
             f"{out!r}",
         )
-        return "micromamba and pip installed into the Conda prefix"
+        cell, _ = self.ex().cell("import toolz, tomli_w\nprint(toolz.__name__, tomli_w.__name__)")
+        expect(cell.split() == ["toolz", "tomli_w"], f"a new kernel imports {cell!r}")
+        installed = [*BASE.glob("lib/python3*/site-packages/toolz"), *BASE.glob("bin/xz")]
+        expect(not installed, f"installed into the base: {installed}")
+        return f"micromamba and pip installed into the layer; {lines[2]} runs"
+
+    def runtime_upgrade(self) -> str:
+        """Replacing base packages at runtime: one with a command (pygments), and in
+        crypto-base one that Sage depends on (networkx). The replacement goes into the layer,
+        what imports and runs is the replacement, the layer keeps a record of every package
+        (Sage's too), and the lockfile says what conda-meta and importlib.metadata say. In
+        crypto-base, the dry run of ``sympy<1.14`` unlinks Sage without linking it, which is
+        what the provisioning tool refuses (resolution.conda_removals reads the same JSON)."""
+        names = ["pygments", *(["networkx"] if self.crypto else [])]
+        specs = ['"pygments<2.19"', *(['"networkx<3.6.1"'] if self.crypto else [])]
+        if self.crypto:
+            dry = json.loads(
+                self.ex().shell(
+                    "micromamba install --dry-run --json -y -q -c conda-forge "
+                    '--override-channels "sympy<1.14"',
+                    limit=600,
+                )
+            )
+            actions = dry.get("actions", {})
+            linked = {entry["name"] for entry in actions.get("LINK", [])}
+            unlinked = {entry["name"] for entry in actions.get("UNLINK", [])}
+            expect("sagelib" in unlinked - linked, f"sympy<1.14 removes {unlinked - linked}")
+        self.ex().shell(
+            "micromamba install -y -q -c conda-forge --override-channels "
+            f"{' '.join(specs)} >/dev/null",
+            limit=1200,
+        )
+        probe = (
+            "import importlib.metadata as metadata, json, pathlib, sys\n"
+            f"sys.path.insert(0, {str(EXECUTOR_DIR)!r})\n"
+            "import provisioning\n"
+            "places = provisioning.Places.here()\n"
+            "lock = provisioning.lockfile(places)\n"
+            "records = {}\n"
+            "for path in pathlib.Path(places.conda_meta).glob('*.json'):\n"
+            "    data = json.loads(path.read_text())\n"
+            "    records[data['name']] = data['version']\n"
+            "print(json.dumps({'conda': {x['name']: x['version'] for x in lock['conda']},"
+            " 'pip': sorted(x['name'].lower() for x in lock['pip']), 'records': records,"
+            f" 'imports': {{n: metadata.version(n) for n in {names!r}}}}}))"
+        )
+        found = json.loads(self.ex().shell(f"python -I -c {shlex.quote(probe)}"))
+        conda, records = found["conda"], found["records"]
+        wrong = {n: (v, conda.get(n)) for n, v in records.items() if conda.get(n) != v}
+        expect(not wrong, f"the lockfile differs from the layer's records: {wrong}")
+        for name in names:
+            seen = (found["imports"][name], records.get(name), conda.get(name))
+            expect(len(set(seen)) == 1, f"{name}: imports, record, lockfile {seen}")
+            expect(name not in found["pip"], f"{name} is listed as pip's too")
+            base = [path.name for path in (BASE / "conda-meta").glob(f"{name}-[0-9]*.json")]
+            expect(
+                len(base) == 1 and not base[0].startswith(f"{name}-{records[name]}-"),
+                f"the base's {name} changed: {base}",
+            )
+        if self.crypto:
+            expect("sagelib" in records, "the layer lost Sage's record")
+        version = self.ex().shell("pygmentize -V")
+        expect(records["pygments"] in version, f"pygmentize says {version!r}")
+        cell, _ = self.ex().cell(
+            f"import importlib.metadata as m\nprint(*(m.version(n) for n in {names!r}))"
+        )
+        expect(cell.split() == [records[name] for name in names], f"a kernel imports {cell!r}")
+        return ", ".join(f"{name} {records[name]}" for name in names) + " from the layer"
 
     # The services' images (orchestrator, mcp-proxy).
 
@@ -1068,6 +1187,8 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
 def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
     """The checks for a profile, in order; each is the ``Checks`` method of the same name."""
     names = ["identity", "filesystem", *(["landlock"] if landlock else []), "record"]
+    if profile in ("minimal", "crypto-base"):
+        names.append("layer")
     if profile == "orchestrator":
         # The harness's image: no executor or kernels, and nothing installed at runtime.
         harness = ["harness-cli", "harness-imports", "no-kernels", "harness-state", "harness-run"]
@@ -1083,7 +1204,7 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         names += ["lattice-estimator"]
         names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
     if network:
-        names.append("runtime-install")
+        names += ["runtime-install", "runtime-upgrade"]
     return names
 
 

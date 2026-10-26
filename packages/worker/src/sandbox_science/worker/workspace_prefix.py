@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""The opt-in research prefix identity, using only the sandbox's standard library."""
+"""The opt-in research prefix identity, using only the sandbox's standard library.
+
+The workspace prefix is either a layer over the image's read-only base environment, which
+images of the B11 layout seed (docs/IMAGES.md, "The environment outside the workspace"), or,
+in a workspace seeded from an earlier image, that image's whole environment. The layer's
+marker tells them apart; each keeps its layout until the environment is recreated.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -19,7 +26,16 @@ MARKER = ".sandbox-science-prefix-id"
 FROZEN = Path("/opt/sandbox-science-frozen")
 """The image's read-only copy of the prefix's frozen trees (images/common/prefix_layout.py)."""
 FROZEN_MANIFEST = "manifest.json"
+MANIFEST_VERSIONS = (1, 2)
+"""1 in images before the layer, 2 since: a worker that knows only 1 refuses the newer images
+(docs/COMPATIBILITY.md)."""
 MAX_MANIFEST = 64 * 1024
+_IDENTITY = re.compile(r"[0-9a-f]{64}")
+BASE = Path("/opt/sandbox-science-base")
+"""The image's read-only base environment under the layer (images/common/prefix_layout.py)."""
+LAYER_MARKER = ".sandbox-science-layer"
+LAYER_VERSION = 1
+MAX_LAYER_FILE = 4096
 _TREE = re.compile(
     r"[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}(?:/[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}){0,3}"
 )
@@ -46,7 +62,7 @@ def _frozen_trees() -> list[str]:
     entries = cast(list[object], trees) if isinstance(trees, list) else []
     found = [entry for entry in entries if isinstance(entry, str) and _TREE.fullmatch(entry)]
     if (
-        fields.get("version") != 1
+        fields.get("version") not in MANIFEST_VERSIONS
         or not isinstance(trees, list)
         or len(found) != len(entries)
         or len(found) > 64
@@ -80,12 +96,70 @@ def check_frozen_links() -> None:
             raise OSError(f"frozen tree {tree} links elsewhere than {expected}")
 
 
-def describe(python_prefix: str) -> dict[str, str | int]:
+def _small(path: Path) -> str:
+    """A small regular file's text, never through a link."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"{path.name} is not a regular file")
+        data = os.read(fd, MAX_LAYER_FILE + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_LAYER_FILE:
+        raise OSError(f"{path.name} is too large")
+    return data.decode("utf-8")
+
+
+def check_layer(base_prefix: str) -> str:
+    """The prefix is the image's layer over its base: the marker names the base, the
+    virtual environment's interpreter is the base's and sees the base's packages, and the
+    running interpreter's base is that one.
+
+    The layer lives in the workspace, where research code can rewrite it; one pointing at
+    another base would put other packages behind a lockfile that names them unchanged.
+    Returns the identity of the base the layer was seeded over, from its marker. Raises
+    OSError otherwise.
+    """
+    try:
+        marker: object = json.loads(_small(PREFIX / LAYER_MARKER))
+    except ValueError:
+        marker = None
+    fields = cast(dict[str, object], marker) if isinstance(marker, dict) else {}
+    seeded = fields.get("identity")
+    if (
+        fields.get("version") != LAYER_VERSION
+        or fields.get("base") != str(BASE)
+        or not isinstance(seeded, str)
+        or _IDENTITY.fullmatch(seeded) is None
+    ):
+        raise OSError("workspace layer marker does not name the image's base")
+    config: dict[str, str] = {}
+    for line in _small(PREFIX / "pyvenv.cfg").splitlines():
+        key, equals, value = line.partition("=")
+        if equals:
+            config[key.strip()] = value.strip()
+    python = PREFIX / "bin/python"
+    if (
+        config.get("home") != f"{BASE}/bin"
+        or config.get("include-system-site-packages") != "true"
+        or BASE.is_symlink()
+        or not (BASE / "conda-meta").is_dir()
+        or Path(base_prefix).resolve() != BASE
+        or not python.is_symlink()
+        or not os.readlink(python).startswith(f"{BASE}/bin/python")
+    ):
+        raise OSError("workspace layer is not over the image's base")
+    return seeded
+
+
+def describe(python_prefix: str, base_prefix: str | None = None) -> dict[str, str | int]:
     """Validate the fixed layout before creating its nonsecret, per-workspace identity.
 
     Never call this for ordinary/local executors: their Python prefix belongs to the
     operator. The image contains no marker, so first workspace seeding copies only
     packages, and each independent retained workspace receives its own identity.
+    ``base_prefix`` is the running interpreter's base, ``sys.base_prefix`` unless given; a
+    layer's must be the image's base.
     """
     if (
         PREFIX.is_symlink()
@@ -98,7 +172,13 @@ def describe(python_prefix: str) -> dict[str, str | int]:
         or not (PREFIX / "bin/python").is_file()
     ):
         raise OSError("required workspace prefix layout is missing or incompatible")
-    check_frozen_links()
+    seeded: str | None = None
+    if os.path.lexists(PREFIX / LAYER_MARKER):
+        seeded = check_layer(sys.base_prefix if base_prefix is None else base_prefix)
+    elif os.path.lexists(PREFIX / "pyvenv.cfg"):
+        raise OSError("workspace prefix is a virtual environment without the layer's marker")
+    else:
+        check_frozen_links()
     marker = PREFIX / MARKER
     if not marker.exists() and not marker.is_symlink():
         # Link a complete, synced identity atomically. Concurrent bridge startups
@@ -127,12 +207,15 @@ def describe(python_prefix: str) -> dict[str, str | int]:
         os.close(fd)
     if re.fullmatch(r"prefix-[0-9a-f]{32}", identity) is None:
         raise OSError("workspace prefix identity is malformed")
-    return {"protocol": 1, "path": str(PREFIX), "identity": identity}
+    found: dict[str, str | int] = {"protocol": 1, "path": str(PREFIX), "identity": identity}
+    if seeded is not None:
+        found["seeded"] = seeded
+    return found
 
 
-def report(python_prefix: str) -> dict[str, str | int]:
+def report(python_prefix: str, base_prefix: str | None = None) -> dict[str, str | int]:
     """Report a bounded failure through hello so the worker can retain a recovery hold."""
     try:
-        return describe(python_prefix)
+        return describe(python_prefix, base_prefix)
     except (OSError, UnicodeError):
         return {"protocol": 1, "error": "required workspace prefix identity/layout unavailable"}

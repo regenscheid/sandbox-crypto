@@ -60,8 +60,9 @@ LEGACY_BOOTSTRAP_IMAGE = "nvcr.io/nvidia/base/ubuntu:24.04"
 GATEWAY_NAME = "ss-mac-crypto-test"
 # OpenShell's supervisor adds its baseline paths only to a sandbox with network rules,
 # which the smoke sandbox lacks, so this repeats OpenShell's default policy (as
-# `policy get --full` reports it), adds the image's Conda prefix read-only and requires
-# Landlock, as compiled policies do.
+# `policy get --full` reports it), adds the image's Conda prefix, its read-only base
+# environment and frozen trees read-only (docs/IMAGES.md) and requires Landlock, as compiled
+# policies do.
 SMOKE_POLICY = """version: 1
 filesystem_policy:
   include_workdir: true
@@ -74,6 +75,8 @@ filesystem_policy:
   - /etc
   - /var/log
   - /opt/sandbox-science
+  - /opt/sandbox-science-base
+  - /opt/sandbox-science-frozen
   read_write:
   - /tmp
   - /dev/null

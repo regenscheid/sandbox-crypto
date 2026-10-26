@@ -499,6 +499,10 @@ def test_smoke_sandbox_policy_adds_the_image_prefix_to_the_default(
     assert policies == [mac.SMOKE_POLICY]
     filesystem = yaml.safe_load(mac.SMOKE_POLICY)["filesystem_policy"]
     assert {"/usr", "/lib", "/etc", "/opt/sandbox-science"} <= set(filesystem["read_only"])
+    # The research images' base environment and frozen trees, outside the workspace.
+    assert {"/opt/sandbox-science-base", "/opt/sandbox-science-frozen"} <= set(
+        filesystem["read_only"]
+    )
     assert "/opt/sandbox-science" not in filesystem["read_write"]
 
 

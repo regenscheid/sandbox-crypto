@@ -338,7 +338,7 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
 
     assert array("devices_ro") == SANDBOX_DEVICES_READ_ONLY
     assert array("devices_rw") == SANDBOX_DEVICES_READ_WRITE
-    assert array("frozen_ro") == RESEARCH_IMAGE_READ_ONLY == (str(layout.FROZEN),)
+    assert array("frozen_ro") == RESEARCH_IMAGE_READ_ONLY == (str(layout.FROZEN), str(layout.BASE))
     # compile_orchestrator() and compile_mcp_proxy() add none to the services' sandboxes.
     branch = re.search(
         r"^  orchestrator \| mcp-proxy\)$(.*?)^    ;;$",
@@ -550,15 +550,31 @@ def test_research_images_ship_a_target_native_versioned_scheduler_shim() -> None
         assert "COPY --from=scheduler-shim" not in stages[profile]
 
 
-def test_shared_research_prefix_is_seeded_into_workspace_without_changing_services() -> None:
+def test_only_the_research_layer_is_seeded_into_workspace_without_changing_services() -> None:
     stages = _stages()
-    assert "mv /opt/sandbox-science /sandbox/.sandbox-science-prefix" in stages["research-base"]
-    assert "ln -s /sandbox/.sandbox-science-prefix /opt/sandbox-science" in stages["research-base"]
+    research = stages["research-base"]
+    assert "ln -s /sandbox/.sandbox-science-prefix /opt/sandbox-science" in research
+    assert "install -d -o 0 -g 0 -m 0755 /opt/sandbox-science-base" in research
+    assert "mv /opt/sandbox-science /sandbox" not in research
+    path = re.search(r"ENV PATH=(\S+)", research)
+    assert path is not None
+    assert path.group(1).split(":")[:2] == [
+        "/opt/sandbox-science/bin",
+        "/opt/sandbox-science-base/bin",
+    ]
+    assert "JUPYTER_PATH=/opt/sandbox-science-base/share/jupyter" in research
     recipe = (IMAGES / "Containerfile").read_text()
     for profile in RESEARCH_PROFILES:
+        stage = stages[profile]
         assert f"FROM research-base AS {profile}" in recipe
-        assert "! -name .sandbox-science-prefix -exec rm -rf -- {} +" in stages[profile]
-        assert "find /sandbox -mindepth 1 -delete" not in stages[profile]
+        assert "! -name .sandbox-science-prefix -exec rm -rf -- {} +" in stage
+        assert "find /sandbox -mindepth 1 -delete" not in stage
+        # The base is installed as root, never as the sandbox account, and the layer last.
+        assert "setpriv" not in stage
+        assert "-p /opt/sandbox-science-base" in stage
+        layer = stage.index("prefix_layout.py layer")
+        assert "pip install" not in stage[layer:]
+        assert "chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix" in stage[layer:]
     for profile in SERVICE_PROFILES:
         assert f"FROM base AS {profile}" in recipe
     script = (IMAGES / "test.sh").read_text()

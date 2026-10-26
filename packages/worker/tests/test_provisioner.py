@@ -711,6 +711,51 @@ async def test_a_solve_that_would_change_a_frozen_package_is_refused_as_such(
 
 
 @pytest.mark.asyncio
+async def test_a_solve_that_would_remove_an_installed_package_is_refused(
+    make_world: Factory,
+) -> None:
+    """``sympy<1.14`` makes micromamba remove Sage, which requires sympy 1.14: a solve that
+    unlinks a package without linking another of its name. The provisioning tool installs
+    and upgrades; it refuses the request at its dry run, naming the package and the request,
+    and the environment is left as it was (in a research image's layer the package is the
+    base's, docs/IMAGES.md)."""
+    world = await make_world()
+    index_path = Path(os.environ["FAKEPM_INDEX"])
+    index = json.loads(index_path.read_text())
+    index["conda"]["sympy"] = {
+        "version": "1.13.3",
+        "build": "pyh0_0",
+        "subdir": "noarch",
+        "license": "BSD-3-Clause",
+        "depends": [],
+        "removes": ["sagelib"],
+    }
+    index_path.write_text(json.dumps(index))
+    meta = world.prefix.root / "conda-meta"
+    sagelib = {"name": "sagelib", "version": "10.9", "build": "py313h0_0", "files": []}
+    (meta / "sagelib-10.9-py313h0_0.json").write_text(json.dumps(sagelib))
+    before = sorted(path.name for path in meta.iterdir())
+    done = await world.finished(
+        (await world.provision("op-1", conda=["sympy<1.14"]))["provision_id"]
+    )
+    assert (done.outcome, done.reason, done.stage) == ("failed", "resolve_failed", "resolve")
+    assert done.error is not None
+    assert done.error.kind == "invalid_request"
+    assert "would remove sagelib without replacing it" in done.error.message
+    assert "sympy<1.14" in done.error.message
+    assert done.next_step == resolution.REMOVAL_NEXT_STEP
+    assert world.cache.artifacts() == []
+    assert sorted(path.name for path in meta.iterdir()) == before
+    # Without the removal, the same request installs.
+    del index["conda"]["sympy"]["removes"]
+    index_path.write_text(json.dumps(index))
+    again = await world.finished(
+        (await world.provision("op-2", conda=["sympy<1.14"]))["provision_id"]
+    )
+    assert again.outcome == "completed", again
+
+
+@pytest.mark.asyncio
 async def test_cp_f5_a_failed_post_link_script_leaves_the_environment_needing_recovery(
     make_world: Factory,
 ) -> None:
