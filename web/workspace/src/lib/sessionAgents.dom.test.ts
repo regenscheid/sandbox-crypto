@@ -44,6 +44,7 @@ it('offers each agent its context management, read for that run', async () => {
           runs: [run('run-1', 'ended'), run('run-2', 'running')],
           delegations: [],
           delegations_total: 0,
+          earlier: [],
         },
       },
     }),
@@ -75,7 +76,12 @@ it('puts the research agent first in the Context tab, one click from its context
       props: {
         projectId: 'p1',
         sessionId: 's1',
-        tree: { runs: [run('run-1', 'ended'), sub], delegations: [], delegations_total: 0 },
+        tree: {
+          runs: [run('run-1', 'ended'), sub],
+          delegations: [],
+          delegations_total: 0,
+          earlier: [],
+        },
       },
     }),
   );

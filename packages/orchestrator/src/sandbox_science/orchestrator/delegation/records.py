@@ -11,6 +11,14 @@ record is saved (PD-35); until then, the outcome waits for the session's next ma
 A delegation still running when its session's next main run starts has lost its
 process: it ends ``interrupted`` (PD-40).
 
+A task that returns stays open for its parent's review (PD-46): its ``review`` is
+``awaiting`` until its parent accepts it or cancels it, or the platform accepts it for
+the parent, which closes it for good. A message to it reopens it: the same delegation runs
+again in a new run, and its row's outcome is cleared until that run ends. Each outcome is
+kept, numbered, in ``delegation_results``; ``results`` counts them, and the row's outcome is
+the latest. The latest outcome's notice is keyed by ``notice_key``, so that an outcome a
+parent received does not stand for the next one.
+
 Each project's setting (``DelegationSettings``) says how deep its runs may delegate (0,
 the default, offers no delegation; 1 lets main runs delegate), how many delegated runs
 a session's tree runs at once, and a check's and a task's tokens and turns: a limit it
@@ -61,7 +69,12 @@ TREE: Final = 500
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
     "ended_at, refused, acknowledged, result, errors, alias, models, read_entry, "
-    "read_proofs, files, environment_id, environment"
+    "read_proofs, files, environment_id, environment, results, review, reviewed_at, "
+    "reviewed_by, review_reason, review_note"
+)
+_RESULT_COLUMNS: Final = (
+    "delegation_id, number, run, ended, stopped, report, ended_at, refused, result, errors, "
+    "alias, models, read_entry, read_proofs, files, environment"
 )
 _JSON: Final = ("brief", "result", "errors", "models", "files", "environment")
 ENVIRONMENT_BYTES: Final = 65536
@@ -86,12 +99,22 @@ _WORK_ACKNOWLEDGED: Final = (
     "EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=d.project_id "
     "AND a.session=d.session_id AND a.run=d.acknowledged AND a.work=?)"
 )
+NOTICE_KEY: Final = (
+    "(CASE WHEN d.results > 1 THEN d.delegation_id || '.' || d.results ELSE d.delegation_id END)"
+)
+"""``notice_key`` in SQL, of a delegation row named ``d``."""
 _WORK_RECEIVED: Final = (
-    "EXISTS (SELECT 1 FROM response_receipts r JOIN research_attempts a "
+    "EXISTS (SELECT 1 FROM response_receipts r JOIN research_attempts a "  # noqa: S608 - fixed SQL
     "ON a.project=r.project AND a.session=r.session AND a.run=r.run "
     "WHERE r.project=d.project_id AND r.session=d.session_id AND r.source='delegations' "
-    "AND r.notice=d.delegation_id AND a.work=?)"
+    f"AND r.notice={NOTICE_KEY} AND a.work=?)"
 )
+_WORK_JOIN: Final = (
+    "LEFT JOIN research_attempts a ON a.project=d.project_id AND a.session=d.session_id "
+    "AND a.run=d.run LEFT JOIN research_work w ON w.project=a.project AND w.session=a.session "
+    "AND w.work=a.work "
+)
+"""A delegation's latest run's durable work, ``w``, if it has one."""
 _ON_TRACK: Final = (
     "SELECT delegation_id FROM delegations WHERE project_id = ? AND session_id = ? "
     "AND ended IS NULL AND json_extract(brief, '$.track.track_id') = ?"
@@ -122,6 +145,19 @@ set, under ``SET``."""
 SET: Final = "set"
 """The key of the limits a setting holds as set, in its JSON object."""
 MAX_MODELS: Final = 10
+REVIEW_MAX: Final = 86_400
+"""Seconds a returned task awaits its parent's review by default before the platform
+accepts it (PD-46)."""
+NOTE_BYTES: Final = 2048
+"""The most a parent's note on an acceptance takes, as UTF-8; it is at most 500
+characters."""
+EARLIER: Final = 20
+"""The most earlier results of a delegation the session's tree lists."""
+Review = Literal["awaiting", "accepted", "cancelled"]
+"""A task's review (PD-46): awaiting its parent's, or closed by its acceptance or cancel."""
+ReviewReason = Literal["parent", "parent_ended", "session_closed", "review_max"]
+"""Who closed a returned task: its parent, or the platform for it, as its parent's run
+ended, as the session closed, or past ``review_max``."""
 Alias = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$")]
 """A model alias as the gateway names it, such as ``main`` or ``anthropic/claude``."""
 
@@ -190,6 +226,9 @@ class DelegationSettings(Contract):
     child_orphan_idle: int = Field(default=86_400, ge=60, le=604_800)
     """Seconds an ended delegation's child environment is kept unused without
     ``child_idle_max``."""
+    review_max: int = Field(default=REVIEW_MAX, ge=60, le=2_592_000)
+    """Seconds a returned task awaits its parent's review, from its latest return,
+    before the platform accepts it for the parent (PD-46)."""
 
     @field_validator("models")
     @classmethod
@@ -243,6 +282,94 @@ class Delegation(Contract):
     session's."""
     environment: dict[str, JsonValue] | None = None
     """How its child environment ended, with the hand-back's account (CE-6, CE-11)."""
+    results: int = 0
+    """How many outcomes its runs have had (PD-46): the row's outcome is the latest."""
+    review: Review | None = None
+    """A returned task's review (PD-46): ``awaiting`` its parent's, or closed;
+    ``None`` for a check, a delegation that has not returned, or one from before."""
+    reviewed_at: datetime | None = None
+    reviewed_by: str | None = None
+    """The run that closed it, or ``platform``."""
+    review_reason: ReviewReason | None = None
+    review_note: str | None = None
+    """The parent's note on its acceptance, agent text."""
+
+
+class DelegationResult(Contract):
+    """One of a delegation's outcomes, as its run ended, numbered from 1 (PD-46)."""
+
+    delegation_id: Identifier
+    number: int = Field(ge=1)
+    run: str
+    ended: Ended
+    stopped: str
+    report: str | None = None
+    ended_at: datetime
+    refused: str | None = None
+    result: dict[str, JsonValue] | None = None
+    errors: tuple[str, ...] = ()
+    alias: str | None = None
+    models: tuple[str, ...] = ()
+    read_entry: bool | None = None
+    read_proofs: bool | None = None
+    files: dict[str, JsonValue] | None = None
+    environment: dict[str, JsonValue] | None = None
+
+
+@dataclass(frozen=True)
+class ReopenPlan:
+    """The run a parent would start to reopen a returned task, and its bounds (PD-46)."""
+
+    run: str
+    """The new run's name, as its record will be kept."""
+    cap: int | None
+    """The session's cap of delegated runs at once (PD-38)."""
+    work: str | None = None
+    """The parent's durable work, when it is a Resume's continuation: a task an earlier
+    attempt of it started is its child too."""
+
+
+@dataclass(frozen=True)
+class Reopened:
+    """A returned task a message reopened: its work's next attempt, ``run``, continues
+    ``previous`` in the session's ``epoch`` (PD-46)."""
+
+    delegation_id: str
+    run: str
+    previous: str
+    work: str
+    epoch: int
+    environment_id: str | None
+    number: int
+    """The number its next outcome will have."""
+
+
+@dataclass(frozen=True)
+class Closed:
+    """A returned task its parent accepted or cancelled, or the platform accepted: what
+    is left to release (PD-46)."""
+
+    delegation: Delegation
+    kernel: str | None
+    """Its work's kernels' run, which stop when it shares the session's environment."""
+    plan: tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]] | None
+    """Its child environment's hand-back, when it holds one: the paths to copy and the
+    files to name by their revisions (CE-6)."""
+
+
+def notice_key(delegation: Delegation) -> str:
+    """The key of a delegation's latest outcome in notices and their acknowledgements: its
+    ID for its first, ``<id>.<n>`` for its nth (PD-46): an identifier, as a record's
+    deliveries name them."""
+    if delegation.results <= 1:
+        return delegation.delegation_id
+    return f"{delegation.delegation_id}.{delegation.results}"
+
+
+def parse_key(key: str) -> tuple[str, int]:
+    """A notice key's delegation and outcome number."""
+    found, _, number = key.partition(".")
+    return found, int(number) if number.isdigit() else 1
 
 
 @dataclass(frozen=True)
@@ -417,13 +544,24 @@ class DelegationRecords:
             f"limit_reached: {cap} delegated runs are running in this session; wait for one to end",
         )
 
-    def end(self, project: str, session: str, delegation_id: str, ending: Ending) -> Delegation:
-        """Write a delegation's outcome; one written already stands, and is returned.
+    def end(
+        self,
+        project: str,
+        session: str,
+        delegation_id: str,
+        ending: Ending,
+        run: str | None = None,
+    ) -> Delegation:
+        """Write a delegation's outcome; one written already stands, and is returned. With
+        ``run``, only while that run is the delegation's latest: a reopened task's earlier
+        run never writes over its next (PD-46).
 
         Every value is bounded here to the table's checks, so that the write cannot be
         refused and the outcome lost: a result only for a delegation that returned, and
         only within its bound; the errors and the models, each clipped, the oldest left
-        out until they fit; the alias and the fence's refusal, clipped."""
+        out until they fit; the alias and the fence's refusal, clipped. A task that
+        returned awaits its parent's review; the outcome is kept as the delegation's next
+        result."""
         result = _json(ending.result) if ending.result is not None else None
         errors = list(ending.errors)
         if result is not None and (
@@ -432,12 +570,13 @@ class DelegationRecords:
             errors.append("the result was not kept: it ended otherwise, or was too long")
             result = None
         with self.control.write() as tx:
-            tx.sql.execute(
+            changed = tx.sql.execute(
                 "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ?, "
                 "refused = ?, result = ?, errors = ?, alias = ?, models = ?, read_entry = ?, "
-                "read_proofs = ?, files = ?, environment = ? WHERE project_id = ? "
-                "AND session_id = ? "
-                "AND delegation_id = ? AND ended IS NULL",
+                "read_proofs = ?, files = ?, environment = ?, results = results + 1, "
+                "review = CASE WHEN kind = 'task' AND ? = 'returned' THEN 'awaiting' END "
+                "WHERE project_id = ? AND session_id = ? "
+                "AND delegation_id = ? AND ended IS NULL AND (? IS NULL OR run = ?)",
                 (
                     ending.ended,
                     _clipped(ending.stopped, 64),
@@ -452,11 +591,16 @@ class DelegationRecords:
                     None if ending.read_proofs is None else int(ending.read_proofs),
                     _files(ending.files),
                     _environment(ending.environment),
+                    ending.ended,
                     project,
                     session,
                     delegation_id,
+                    run,
+                    run,
                 ),
-            )
+            ).rowcount
+            if changed:
+                _archive(tx.sql, project, session, delegation_id)
             return _one(tx.sql, project, session, delegation_id)
 
     def by_environment(
@@ -557,10 +701,12 @@ class DelegationRecords:
                     "cancelled" if cancel_requested(db, project, session, run) else "interrupted"
                 )
                 db.execute(
-                    "UPDATE delegations SET ended = ?, stopped = ?, ended_at = ? "
+                    "UPDATE delegations SET ended = ?, stopped = ?, ended_at = ?, "
+                    "results = results + 1 "
                     "WHERE project_id = ? AND session_id = ? AND delegation_id = ?",
                     (reason, reason, now.isoformat(), project, session, delegation_id),
                 )
+                _archive(db, project, session, delegation_id)
             unclosed = db.execute(
                 f"{tree}SELECT d.run FROM delegations AS d WHERE d.project_id = ? "  # noqa: S608
                 "AND d.session_id = ? AND (? IS NULL OR d.parent IN (SELECT run FROM tree)) "
@@ -665,22 +811,416 @@ class DelegationRecords:
         only those ``handbacks`` offers it, ``parent``'s or without it a main run's, so
         that a run that read another's outcome does not take it from that run (PD-35).
         A continuation acknowledges only children of its stable ``work``; receipt
-        rows remain authoritative even if final-save acknowledgement never executes."""
+        rows remain authoritative even if final-save acknowledgement never executes.
+        ``ids`` are notice keys (``notice_key``): a reopened task's next outcome is not
+        acknowledged by a run that saw its earlier one (PD-46)."""
+        keyed = [parse_key(key) for key in ids]
         with self.control.write() as tx:
             if work is not None:
                 tx.sql.executemany(
                     "UPDATE delegations AS d SET acknowledged=? WHERE d.project_id=? "  # noqa: S608
-                    "AND d.session_id=? AND d.delegation_id=? AND d.ended IS NOT NULL "
+                    "AND d.session_id=? AND d.delegation_id=? AND max(d.results, 1)=? "
+                    "AND d.ended IS NOT NULL "
                     f"AND d.acknowledged IS NULL AND {_WORK_OFFERED}",
-                    [(run, project, session, identity, work) for identity in ids],
+                    [(run, project, session, found, n, work) for found, n in keyed],
                 )
                 return
             tx.sql.executemany(
                 "UPDATE delegations AS d SET acknowledged = ? WHERE d.project_id = ? "  # noqa: S608
-                "AND d.session_id = ? AND d.delegation_id = ? AND d.ended IS NOT NULL "
+                "AND d.session_id = ? AND d.delegation_id = ? AND max(d.results, 1) = ? "
+                "AND d.ended IS NOT NULL "
                 f"AND d.acknowledged IS NULL AND {_OFFERED}",
-                [(run, project, session, delegation_id, parent, parent) for delegation_id in ids],
+                [(run, project, session, found, n, parent, parent) for found, n in keyed],
             )
+
+    # --- The parent's review (PD-46) -------------------------------------------------
+
+    def accept(
+        self,
+        project: str,
+        session: str,
+        delegation_id: str,
+        *,
+        by: str,
+        reason: ReviewReason,
+        note: str | None = None,
+        review: Literal["accepted", "cancelled"] = "accepted",
+        parent: str | None = None,
+        work: str | None = None,
+    ) -> Closed:
+        """Close a returned task, in one transaction that only a task still awaiting its
+        review passes, so that an acceptance and a reopening message cannot both win: as
+        ``review`` (its parent's acceptance or cancel, or the platform's acceptance for
+        it), ``by`` a run or ``platform``, for ``reason``, with the parent's ``note``. With
+        ``parent``, only the child of that run (or of an attempt of its ``work``). A child
+        environment it holds is marked ``closing`` with its hand-back's plan, which
+        ``closed_environment`` replaces once it is released."""
+        with self.control.write() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT d.parent, d.review, d.ended, d.kind, d.environment, w.kernel "  # noqa: S608
+                f"FROM delegations d {_WORK_JOIN}"
+                "WHERE d.project_id = ? AND d.session_id = ? AND d.delegation_id = ?",
+                (project, session, delegation_id),
+            ).fetchone()
+            if row is None:
+                raise ControlError(
+                    NOT_FOUND, f"session {session!r} has no delegation {delegation_id!r}"
+                )
+            if parent is not None and not _parent_of(
+                db, project, session, str(row[0]), parent, work
+            ):
+                raise ControlError(
+                    CONFLICT,
+                    f"not_your_child: delegation {delegation_id!r} is not one of this run's",
+                )
+            if row[1] != "awaiting":
+                state = _state(row[2], row[1], row[3])
+                raise ControlError(
+                    CONFLICT,
+                    f"not_returned: delegation {delegation_id!r} is {state}; only a returned "
+                    "task that awaits its parent's review is accepted",
+                )
+            loaded: object = json.loads(row[4]) if row[4] is not None else None
+            environment = cast(dict[str, JsonValue], loaded) if isinstance(loaded, dict) else None
+            plan = None
+            if environment is not None and environment.get("end") == "held":
+                # Every result's files come back, an earlier run's too (CE-6, PD-46).
+                plan = _union(db, project, session, delegation_id, _plan(environment.get("plan")))
+                marked: dict[str, JsonValue] = {
+                    "files": list[JsonValue](plan[0]),
+                    "retained": list[JsonValue](plan[1]),
+                }
+                closing: dict[str, JsonValue] = {**environment, "end": "closing"}
+                closing["plan"] = marked
+                environment = closing
+            db.execute(
+                "UPDATE delegations SET review = ?, reviewed_at = ?, reviewed_by = ?, "
+                "review_reason = ?, review_note = ?, environment = ? WHERE project_id = ? "
+                "AND session_id = ? AND delegation_id = ? AND review = 'awaiting'",
+                (
+                    review,
+                    self._now(),
+                    _clipped(by, 256),
+                    reason,
+                    _clipped(note, NOTE_BYTES) if note else None,
+                    _environment(environment),
+                    project,
+                    session,
+                    delegation_id,
+                ),
+            )
+            return Closed(_one(db, project, session, delegation_id), row[5], plan)
+
+    def closed_environment(
+        self, project: str, session: str, delegation_id: str, environment: dict[str, JsonValue]
+    ) -> Delegation:
+        """Write the account of a closed task's child environment once its hand-back and
+        release ended (CE-4, CE-6), in place of its ``closing`` mark; written once."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE delegations SET environment = ? WHERE project_id = ? AND session_id = ? "
+                "AND delegation_id = ? AND review IN ('accepted', 'cancelled') "
+                "AND json_extract(environment, '$.end') = 'closing'",
+                (_environment(environment), project, session, delegation_id),
+            )
+            return _one(tx.sql, project, session, delegation_id)
+
+    def awaiting(
+        self,
+        project: str,
+        session: str,
+        *,
+        parent: str | None = None,
+        work: str | None = None,
+        returned_before: datetime | None = None,
+    ) -> list[Delegation]:
+        """The session's returned tasks that await their parent's review, oldest return
+        first: ``parent``'s (or those of an attempt of its ``work``), or all; with
+        ``returned_before``, only those that returned before it (``review_max``)."""
+        before = None if returned_before is None else returned_before.astimezone(UTC).isoformat()
+        with self.control.read() as tx:
+            db = tx.sql
+            rows = db.execute(
+                f"SELECT {_COLUMNS} FROM delegations AS d WHERE project_id = ? "  # noqa: S608
+                "AND session_id = ? AND review = 'awaiting' AND (? IS NULL OR ended_at < ?) "
+                "ORDER BY ended_at, delegation_id LIMIT ?",
+                (project, session, before, before, TREE),
+            ).fetchall()
+            found = [_delegation(row) for row in rows]
+            if parent is None:
+                return found
+            return [d for d in found if _parent_of(db, project, session, d.parent, parent, work)]
+
+    def accepted_for(self, project: str, session: str, parent: str) -> list[Delegation]:
+        """The returned tasks of ``parent`` that the platform accepted for it as its run
+        ended, which its own parent is told of (PD-46)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM delegations WHERE project_id = ? AND session_id = ? "  # noqa: S608
+                "AND parent = ? AND review = 'accepted' AND review_reason = 'parent_ended' "
+                "ORDER BY ended_at, delegation_id LIMIT ?",
+                (project, session, parent, PAGE),
+            ).fetchall()
+        return [_delegation(row) for row in rows]
+
+    def closing(self, project: str, session: str) -> list[Delegation]:
+        """The session's closed tasks whose child environment's release did not finish:
+        the process stopped between the acceptance and its account."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM delegations WHERE project_id = ? AND session_id = ? "  # noqa: S608
+                "AND review IN ('accepted', 'cancelled') "
+                "AND json_extract(environment, '$.end') = 'closing' LIMIT ?",
+                (project, session, TREE),
+            ).fetchall()
+        return [_delegation(row) for row in rows]
+
+    def held_kernels(self, project: str, session: str) -> set[str]:
+        """The runs whose kernels the session's delegations hold: those of a running
+        delegation's work, and of a returned task's that awaits review (PD-46)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT w.kernel FROM delegations d {_WORK_JOIN}"  # noqa: S608
+                "WHERE d.project_id = ? AND d.session_id = ? AND w.kernel IS NOT NULL "
+                "AND (d.ended IS NULL OR d.review = 'awaiting')",
+                (project, session),
+            ).fetchall()
+        return {str(kernel) for (kernel,) in rows}
+
+    def earlier(
+        self, project: str, session: str, delegation_ids: Sequence[str]
+    ) -> list[DelegationResult]:
+        """The earlier results of ``delegation_ids``, every one but each delegation's
+        latest, at most ``EARLIER`` of each, the latest of them, oldest first (PD-46)."""
+        wanted = sorted(set(delegation_ids))
+        if not wanted:
+            return []
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_RESULT_COLUMNS} FROM (SELECT r.*, row_number() OVER "  # noqa: S608
+                "(PARTITION BY r.delegation_id ORDER BY r.number DESC) AS place "
+                "FROM delegation_results r JOIN delegations d "
+                "ON d.delegation_id = r.delegation_id AND r.number < d.results "
+                "WHERE r.project_id = ? AND r.session_id = ? "
+                "AND r.delegation_id IN (SELECT value FROM json_each(?))) "
+                "WHERE place <= ? ORDER BY delegation_id, number",
+                (project, session, json.dumps(wanted), EARLIER),
+            ).fetchall()
+        return [_result(row) for row in rows]
+
+    def results(self, project: str, session: str, delegation_id: str) -> list[DelegationResult]:
+        """Every result of a delegation, oldest first (PD-46)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_RESULT_COLUMNS} FROM delegation_results WHERE project_id = ? "  # noqa: S608
+                "AND session_id = ? AND delegation_id = ? ORDER BY number",
+                (project, session, delegation_id),
+            ).fetchall()
+        return [_result(row) for row in rows]
+
+
+def reopen_in(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    delegation_id: str,
+    run: str,
+    *,
+    cap: int | None,
+) -> Reopened:
+    """Reopen a returned task inside the caller's write transaction (PD-46): its row's
+    outcome cleared and ``run`` its latest, its durable work waiting for that attempt to
+    continue its last, as Resume prepares one (``WorkRecords.admit``). Refused unless it
+    awaits review, its work can continue in the session's current tree, the session runs
+    fewer than ``cap`` delegated runs (PD-38) and no other task runs on its track (PD-9).
+    The caller checks that its sender is the task's parent."""
+    row = db.execute(
+        "SELECT d.review, d.ended, d.kind, d.run, d.brief, d.environment_id, d.results, "  # noqa: S608
+        "w.work, w.state, w.current, w.root, s.root, s.epoch "
+        f"FROM delegations d {_WORK_JOIN}"
+        "LEFT JOIN research_sessions s ON s.project = d.project_id AND s.session = d.session_id "
+        "WHERE d.project_id = ? AND d.session_id = ? AND d.delegation_id = ?",
+        (project, session, delegation_id),
+    ).fetchone()
+    if row is None:
+        raise ControlError(NOT_FOUND, f"no delegation {delegation_id!r} in this session")
+    review, ended, kind, previous, brief, environment_id, results = row[:7]
+    work, state, current, root, session_root, epoch = row[7:]
+    if review != "awaiting":
+        raise ControlError(
+            CONFLICT,
+            f"not_returned: delegation {delegation_id!r} is {_state(ended, review, kind)}",
+        )
+    if work is None or state != "completed" or current != previous or root != session_root:
+        raise ControlError(
+            CONFLICT,
+            f"delegation {delegation_id!r} cannot continue: its work is not this tree's latest",
+        )
+    if cap is not None and (
+        db.execute(
+            "SELECT count(*) FROM delegations WHERE project_id = ? AND session_id = ? "
+            "AND ended IS NULL",
+            (project, session),
+        ).fetchone()[0]
+        >= cap
+    ):
+        raise ControlError(
+            UNAVAILABLE,
+            f"limit_reached: {cap} delegated runs are running in this session; wait for one to end",
+        )
+    loaded: object = json.loads(brief)
+    track = (
+        cast(dict[str, object], cast(dict[str, object], loaded).get("track") or {}).get("track_id")
+        if isinstance(loaded, dict)
+        else None
+    )
+    if track is not None and (busy := db.execute(_ON_TRACK, (project, session, track)).fetchone()):
+        raise ControlError(
+            CONFLICT,
+            f"track_busy: delegation {busy[0]} works on track {track!r}; a track has one "
+            "running task at most",
+        )
+    db.execute(
+        "UPDATE delegations SET run = ?, ended = NULL, stopped = NULL, report = NULL, "
+        "ended_at = NULL, refused = NULL, result = NULL, errors = NULL, alias = NULL, "
+        "models = NULL, read_entry = NULL, read_proofs = NULL, files = NULL, "
+        "environment = NULL, acknowledged = NULL, review = NULL WHERE project_id = ? "
+        "AND session_id = ? AND delegation_id = ? AND review = 'awaiting'",
+        (run, project, session, delegation_id),
+    )
+    db.execute(
+        "UPDATE research_work SET state = 'waiting', reason = NULL WHERE project = ? "
+        "AND session = ? AND work = ? AND state = 'completed' AND current = ?",
+        (project, session, work, previous),
+    )
+    return Reopened(
+        delegation_id, run, str(previous), str(work), int(epoch), environment_id, int(results) + 1
+    )
+
+
+def close_awaiting(
+    db: sqlite3.Connection, project: str, session: str, reason: ReviewReason, now: str
+) -> int:
+    """Accept, in the caller's transaction, every returned task of the session that awaits
+    review, as the platform: what the session's close does (PD-46). Its child environments
+    and kernels go with the session's. How many."""
+    return db.execute(
+        "UPDATE delegations SET review = 'accepted', reviewed_at = ?, reviewed_by = 'platform', "
+        "review_reason = ? WHERE project_id = ? AND session_id = ? AND review = 'awaiting'",
+        (now, reason, project, session),
+    ).rowcount
+
+
+def delegation_state(delegation: Delegation) -> str:
+    """A delegation's state in a word (PD-46): ``running``, ``returned`` (awaiting
+    review), ``accepted``, ``cancelled``, or how it ended."""
+    return _state(delegation.ended, delegation.review, delegation.kind)
+
+
+def _state(ended: object, review: object, kind: object) -> str:
+    if ended is None:
+        return "running"
+    if review == "awaiting":
+        return "returned"
+    if review in ("accepted", "cancelled"):
+        return str(review)
+    return str(ended)
+
+
+def _parent_of(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    parent_run: str,
+    caller: str,
+    work: str | None,
+) -> bool:
+    """Whether ``caller`` is ``parent_run``, or, with its ``work``, a later attempt of the
+    same durable work, as a Resume's continuation is."""
+    if parent_run == caller:
+        return True
+    if work is None:
+        return False
+    return (
+        db.execute(
+            "SELECT 1 FROM research_attempts WHERE project = ? AND session = ? AND run = ? "
+            "AND work = ? UNION SELECT 1 FROM research_continuations WHERE project = ? "
+            "AND session = ? AND run = ? AND work = ?",
+            (project, session, parent_run, work, project, session, parent_run, work),
+        ).fetchone()
+        is not None
+    )
+
+
+def _archive(db: sqlite3.Connection, project: str, session: str, delegation_id: str) -> None:
+    """Keep the delegation's outcome just written as its result of the next number."""
+    db.execute(
+        "INSERT INTO delegation_results SELECT delegation_id, results, project_id, "
+        "session_id, run, ended, stopped, report, ended_at, refused, result, errors, alias, "
+        "models, read_entry, read_proofs, files, environment FROM delegations "
+        "WHERE project_id = ? AND session_id = ? AND delegation_id = ? AND ended IS NOT NULL",
+        (project, session, delegation_id),
+    )
+
+
+def held_plan(
+    environment: dict[str, JsonValue] | None,
+) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]] | None:
+    """The hand-back plan a held or closing child environment's account keeps (PD-46);
+    ``None`` for any other account."""
+    if environment is None or environment.get("end") not in ("held", "closing"):
+        return None
+    return _plan(environment.get("plan"))
+
+
+def _union(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    delegation_id: str,
+    latest: tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]],
+) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]:
+    """The latest hand-back plan with its delegation's earlier results' plans, each path
+    once: a file the latest names by its revision is not copied."""
+    plans = [latest]
+    for (found,) in db.execute(
+        "SELECT environment FROM delegation_results WHERE project_id = ? AND session_id = ? "
+        "AND delegation_id = ? AND environment IS NOT NULL ORDER BY number DESC",
+        (project, session, delegation_id),
+    ):
+        loaded: object = json.loads(found)
+        if isinstance(loaded, dict) and (earlier := held_plan(cast(dict[str, JsonValue], loaded))):
+            plans.append(earlier)
+    files: dict[str, None] = {}
+    retained: dict[str, dict[str, JsonValue]] = {}
+    for copy, named in plans:
+        for item in named:
+            path = item.get("path")
+            if isinstance(path, str) and path not in retained and path not in files:
+                retained[path] = item
+        for path in copy:
+            if path not in retained:
+                files.setdefault(path, None)
+    return tuple(files), tuple(retained.values())
+
+
+def _plan(
+    found: object,
+) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]:
+    """A held environment's hand-back plan, as its account keeps it."""
+    plan = cast(dict[str, object], found) if isinstance(found, dict) else {}
+    files, retained = plan.get("files"), plan.get("retained")
+    return (
+        tuple(str(f) for f in cast(list[object], files)) if isinstance(files, list) else (),
+        tuple(
+            cast(dict[str, JsonValue], r)
+            for r in cast(list[object], retained)
+            if isinstance(r, dict)
+        )
+        if isinstance(retained, list)
+        else (),
+    )
 
 
 def _settings(db: sqlite3.Connection, project: str) -> DelegationSettings:
@@ -734,9 +1274,19 @@ def _environment(environment: dict[str, JsonValue] | None) -> str | None:
         return None
     found = dict(environment)
     while len(_json(found).encode()) > ENVIRONMENT_BYTES:
+        plan = found.get("plan")
+        if isinstance(plan, dict) and len(_json(plan).encode()) > ENVIRONMENT_BYTES // 2:
+            # A held environment's plan is cut first: what it leaves out stays on the
+            # environment, which a cut hand-back keeps (CE-6).
+            cut_plan = {
+                k: (v[: len(v) // 2] if isinstance(v, list) else v)
+                for k, v in cast(dict[str, JsonValue], plan).items()
+            }
+            found["plan"] = {**cut_plan, "cut": True}
+            continue
         back = found.get("hand_back")
         if not isinstance(back, dict):
-            return _json({k: v for k, v in found.items() if k != "hand_back"})
+            return _json({k: v for k, v in found.items() if k not in ("hand_back", "plan")})
         cut = dict(back)
         longest = max(
             (k for k, v in cut.items() if isinstance(v, list) and v),
@@ -790,6 +1340,15 @@ def _one(db: sqlite3.Connection, project: str, session: str, delegation_id: str)
     if found is None:
         raise ControlError(NOT_FOUND, f"session {session!r} has no delegation {delegation_id!r}")
     return _delegation(found)
+
+
+def _result(row: tuple[object, ...]) -> DelegationResult:
+    names = [name.strip() for name in _RESULT_COLUMNS.split(",")]
+    fields = dict(zip(names, row, strict=True))
+    for name in ("result", "errors", "models", "files", "environment"):
+        if fields[name] is not None:
+            fields[name] = json.loads(cast(str, fields[name]))
+    return DelegationResult.model_validate({k: v for k, v in fields.items() if v is not None})
 
 
 def _delegation(row: tuple[object, ...]) -> Delegation:

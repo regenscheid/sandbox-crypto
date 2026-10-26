@@ -70,7 +70,9 @@ def work_record(
     if not records:
         return None
     mutation: Json = {
-        "operation_id": f"work-{delegation.delegation_id}",
+        # A reopened task's later result is work of its own (PD-46).
+        "operation_id": f"work-{delegation.delegation_id}"
+        + (f"-{delegation.results}" if delegation.results > 1 else ""),
         "reason": f"The outcome of delegation {delegation.delegation_id}, as it ended.",
         "work": records,
     }

@@ -77,7 +77,8 @@ def _pending_children(db: sqlite3.Connection, project: str, session: str, work: 
             "AND NOT EXISTS (SELECT 1 FROM response_receipts r "
             "JOIN research_attempts p ON p.project=r.project AND p.session=r.session "
             "AND p.run=r.run WHERE p.project=a.project AND p.session=a.session "
-            "AND p.work=a.work AND r.source='delegations' AND r.notice=d.delegation_id))) "
+            "AND p.work=a.work AND r.source='delegations' AND r.notice=(CASE WHEN d.results > 1 "
+            "THEN d.delegation_id || '.' || d.results ELSE d.delegation_id END)))) "
             "UNION ALL "
             "SELECT 1 FROM research_child_settlements c JOIN research_attempts a "
             "ON a.project=c.project AND a.session=c.session AND a.run=c.run "
@@ -721,13 +722,34 @@ class WorkRecords:
             return _pending_children(tx.sql, project, session, work)
 
     def retains_kernel(self, project: str, session: str, kernel: str) -> bool:
-        """Check an observed kernel individually; never load an unbounded tree-wide set."""
+        """Check an observed kernel individually; never load an unbounded tree-wide set.
+        A returned task that awaits its parent's review keeps its kernels (PD-46)."""
         with self.control.read() as tx:
             return (
                 tx.sql.execute(
                     "SELECT 1 FROM research_work WHERE project=? AND session=? "
-                    "AND kernel=? AND state NOT IN ('completed','stopped') LIMIT 1",
-                    (project, session, kernel),
+                    "AND kernel=? AND state NOT IN ('completed','stopped') UNION ALL "
+                    "SELECT 1 FROM research_work w JOIN research_attempts a "
+                    "ON a.project=w.project AND a.session=w.session AND a.work=w.work "
+                    "JOIN delegations d ON d.project_id=a.project AND d.session_id=a.session "
+                    "AND d.run=a.run WHERE w.project=? AND w.session=? AND w.kernel=? "
+                    "AND d.review='awaiting' LIMIT 1",
+                    (project, session, kernel, project, session, kernel),
+                ).fetchone()
+                is not None
+            )
+
+    def awaits_review(self, project: str, session: str, work: str) -> bool:
+        """Whether the work is a returned task's that awaits its parent's review, whose
+        kernels and environment are kept (PD-46)."""
+        with self.control.read() as tx:
+            return (
+                tx.sql.execute(
+                    "SELECT 1 FROM research_attempts a JOIN delegations d "
+                    "ON d.project_id=a.project AND d.session_id=a.session AND d.run=a.run "
+                    "WHERE a.project=? AND a.session=? AND a.work=? AND d.review='awaiting' "
+                    "LIMIT 1",
+                    (project, session, work),
                 ).fetchone()
                 is not None
             )

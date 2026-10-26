@@ -42,6 +42,7 @@ const tree: RunTree = {
   runs: [run('main', { role: 'main', parent: null }), run('child')],
   delegations: [],
   delegations_total: 0,
+  earlier: [],
 };
 
 const assistant = (calls: object[]): RunEvent => ({

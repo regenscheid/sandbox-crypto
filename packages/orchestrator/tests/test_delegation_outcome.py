@@ -130,7 +130,7 @@ def test_a_result_is_kept_only_for_a_delegation_that_returned(tmp_path: Path) ->
         ):
             tx.sql.execute(
                 "UPDATE delegations SET ended = 'failed', stopped = 'error', ended_at = 'now', "
-                "result = '{}' WHERE ended IS NULL"
+                "result = '{}', results = results + 1 WHERE ended IS NULL"
             )
     finally:
         documents.close()

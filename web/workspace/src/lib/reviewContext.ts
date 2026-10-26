@@ -322,5 +322,11 @@ export function outcomeOf(text: string): Delegation | null {
     files: null,
     environment_id: null,
     environment: null,
+    results: ended === null ? 0 : 1,
+    review: null,
+    reviewed_at: null,
+    reviewed_by: null,
+    review_reason: null,
+    review_note: null,
   };
 }

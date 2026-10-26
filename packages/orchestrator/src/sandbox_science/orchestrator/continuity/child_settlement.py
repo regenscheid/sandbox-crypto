@@ -79,6 +79,17 @@ class ChildSettlement:
                 (project, session, run, delegation, payload),
             )
 
+    def earlier(self, project: str, session: str, delegation: str, run: str) -> list[ChildEnd]:
+        """The typed outcomes of a delegation's runs before ``run``, oldest first: what a
+        reopened task's earlier runs recorded and created (PD-46)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT payload FROM research_child_settlements WHERE project=? AND session=? "
+                "AND delegation=? AND run<>? ORDER BY run LIMIT 100",
+                (project, session, delegation, run),
+            ).fetchall()
+        return [_ADAPTER.validate_json(payload) for (payload,) in rows]
+
     def page(
         self, project: str, session: str, *, after: str = "", root: str | None = None
     ) -> tuple[str, ...]:
@@ -101,11 +112,14 @@ class ChildSettlement:
             )
 
     def candidate(self, project: str, session: str, delegation: str) -> str | None:
-        """A fallback cleanup must prefer a saved typed checkpoint over interruption."""
+        """A fallback cleanup must prefer a saved typed checkpoint over interruption: the
+        delegation's latest run's, never an earlier run's of a reopened task (PD-46)."""
         with self.control.read() as tx:
             row = tx.sql.execute(
                 "SELECT c.run FROM research_child_settlements c LEFT JOIN runs r "
                 "ON r.project_id=c.project AND r.session_id=c.session AND r.name=c.run "
+                "JOIN delegations d ON d.project_id=c.project AND d.session_id=c.session "
+                "AND d.delegation_id=c.delegation AND d.run=c.run "
                 "WHERE c.project=? AND c.session=? AND c.delegation=? "
                 "AND (r.name IS NOT NULL OR c.saved_status=1)",
                 (project, session, delegation),
@@ -138,6 +152,8 @@ class ChildSettlement:
                     "persistence not confirmed",
                 ),
             )
+        # Only while the run is the delegation's latest: a reopened task's earlier run
+        # never writes over its next (PD-46).
         kept = await threaded(
             DelegationRecords(self.control).end,
             project,
@@ -157,8 +173,10 @@ class ChildSettlement:
                 end.files,
                 end.environment,
             ),
+            run=run,
         )
-        await record_work(self.ledger, project, session, kept, end.created)
+        if kept.run == run:
+            await record_work(self.ledger, project, session, kept, end.created)
         await threaded(self._settled, project, session, run)
         return end
 

@@ -14,7 +14,8 @@ its state:
 
 Beside the runs come the session's delegations, each with its brief (the platform's
 task, the inputs, the parent's note, the check, the model chosen and the limits
-granted) and, once it ended, its outcome as it is kept. Nothing here writes.
+granted) and, once it ended, its outcome as it is kept, with its review (PD-46); and a
+reopened task's earlier results. Nothing here writes.
 """
 
 from __future__ import annotations
@@ -23,13 +24,13 @@ import json
 from datetime import UTC, datetime
 from typing import Final, Literal, cast
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 
 from sandbox_science.contracts import Identifier
 from sandbox_science.contracts.model import Contract
 
 from .control import ControlStore
-from .delegation.records import Delegation, DelegationRecords
+from .delegation.records import Delegation, DelegationRecords, DelegationResult
 from .documents import DocumentStore
 from .projects import ProjectStore, RunRole, run_id_of, run_started
 from .runstate import RunState
@@ -72,6 +73,9 @@ class RunTree(Contract):
     runs: list[TreeRun]
     delegations: list[Delegation]
     delegations_total: int
+    earlier: list[DelegationResult] = Field(default_factory=list[DelegationResult])
+    """The listed delegations' earlier results, before each one's latest: a reopened
+    task's (PD-46), at most ``EARLIER`` of each, oldest first."""
 
 
 class RunTrees:
@@ -92,8 +96,14 @@ class RunTrees:
             else run
             for name, run in sorted(runs.items())
         ]
-        delegations, total = DelegationRecords(self.control).listed(project, session)
-        return RunTree(runs=shown, delegations=delegations, delegations_total=total)
+        records = DelegationRecords(self.control)
+        delegations, total = records.listed(project, session)
+        earlier = records.earlier(
+            project, session, [d.delegation_id for d in delegations if d.results > 1]
+        )
+        return RunTree(
+            runs=shown, delegations=delegations, delegations_total=total, earlier=earlier
+        )
 
     def state(self, project: str, session: str, run: str) -> TreeState:
         """One run's state, as the tree gives it, read from that run and its parents

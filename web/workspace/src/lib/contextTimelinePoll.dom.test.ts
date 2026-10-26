@@ -40,6 +40,7 @@ const tree = (): RunTree => ({
   runs: [run('run-old', 'ended'), run('run-live', 'running')],
   delegations: [],
   delegations_total: 0,
+  earlier: [],
 });
 
 it('reads the timeline once across polls of the run tree', async () => {

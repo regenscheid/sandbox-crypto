@@ -3776,6 +3776,147 @@ BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
         schema.execute(statement)
 
 
+_OUTCOME_CHANGED: Final = (
+    "NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped "
+    "OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at "
+    "OR NEW.refused IS NOT OLD.refused OR NEW.result IS NOT OLD.result "
+    "OR NEW.errors IS NOT OLD.errors OR NEW.alias IS NOT OLD.alias "
+    "OR NEW.models IS NOT OLD.models OR NEW.read_entry IS NOT OLD.read_entry "
+    "OR NEW.read_proofs IS NOT OLD.read_proofs OR NEW.files IS NOT OLD.files"
+)
+"""Whether an update changed a delegation's outcome, its environment's account apart."""
+_REOPEN: Final = (
+    "(OLD.review = 'awaiting' AND NEW.review IS NULL AND NEW.ended IS NULL "
+    "AND NEW.run IS NOT OLD.run AND NEW.results = OLD.results AND NEW.acknowledged IS NULL "
+    "AND NEW.environment IS NULL AND NEW.reviewed_at IS NULL)"
+)
+"""A message reopening a returned task: a new run, its outcome cleared (PD-46)."""
+_CLOSE: Final = "(OLD.review = 'awaiting' AND NEW.review IN ('accepted', 'cancelled'))"
+"""The parent's acceptance or cancel of a returned task, or the platform's for it."""
+_CLOSED_ENVIRONMENT: Final = (
+    "(OLD.review IN ('accepted', 'cancelled') AND NEW.review IS OLD.review "
+    "AND json_extract(OLD.environment, '$.end') = 'closing')"
+)
+"""A closed task's child environment's account, once its hand-back and release ended."""
+
+
+def _parent_review(schema: Schema) -> None:
+    """Version 88: the parent reviews a task's result before the task closes
+    (plans-and-delegation spec, PD-46). A task that returns stays open, its ``review``
+    ``awaiting``, until its parent accepts it (``accepted``) or cancels it
+    (``cancelled``), or the platform accepts it for the parent, with when, by whom, why
+    and the parent's note. A message reopens it: the same delegation runs again in a new
+    run, its row's outcome cleared until that run ends. Each outcome is kept, numbered,
+    in ``delegation_results``, which ``results`` counts; the row's outcome is the latest.
+    A delegated run's typed settlement is kept per run, no longer one per delegation.
+    The new columns have no CHECK, which ``ALTER TABLE`` would have every row pass:
+    triggers check them as a row is written."""
+    checks = (
+        "(NEW.results >= 0 AND (NEW.review IS NULL OR (NEW.review IN "
+        "('awaiting', 'accepted', 'cancelled') AND NEW.kind = 'task' AND NEW.ended = 'returned')) "
+        "AND (coalesce(NEW.review, '') IN ('accepted', 'cancelled')) "
+        "= (NEW.reviewed_at IS NOT NULL) "
+        "AND (NEW.reviewed_at IS NULL) = (NEW.reviewed_by IS NULL) "
+        "AND (NEW.reviewed_at IS NULL) = (NEW.review_reason IS NULL) "
+        "AND (NEW.reviewed_at IS NULL OR length(NEW.reviewed_at) BETWEEN 1 AND 64) "
+        "AND (NEW.reviewed_by IS NULL OR length(CAST(NEW.reviewed_by AS BLOB)) BETWEEN 1 AND 256) "
+        "AND (NEW.review_reason IS NULL OR NEW.review_reason IN "
+        "('parent', 'parent_ended', 'session_closed', 'review_max')) "
+        "AND (NEW.review_note IS NULL OR (NEW.reviewed_at IS NOT NULL "
+        "AND length(CAST(NEW.review_note AS BLOB)) BETWEEN 1 AND 2048)))"
+    )
+    kept = f"""CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at
+OR (OLD.environment_id IS NOT NULL AND NEW.environment_id IS NOT OLD.environment_id)
+OR (NEW.run IS NOT OLD.run AND NOT {_REOPEN})
+OR (NEW.results IS NOT OLD.results AND NOT (OLD.ended IS NULL AND NEW.ended IS NOT NULL))
+OR (OLD.ended IS NULL AND NEW.ended IS NOT NULL AND NEW.results IS NOT OLD.results + 1)
+OR (OLD.ended IS NOT NULL AND NOT {_REOPEN} AND ({_OUTCOME_CHANGED}))
+OR (OLD.ended IS NOT NULL AND NOT {_REOPEN} AND NOT {_CLOSE} AND NOT {_CLOSED_ENVIRONMENT}
+    AND NEW.environment IS NOT OLD.environment)
+OR (OLD.acknowledged IS NOT NULL AND NOT {_REOPEN} AND NEW.acknowledged IS NOT OLD.acknowledged)
+OR (OLD.review IS NULL AND NEW.review IS NOT NULL
+    AND NOT (OLD.ended IS NULL AND NEW.review = 'awaiting'))
+OR (OLD.review = 'awaiting' AND NEW.review IS NOT 'awaiting' AND NOT {_REOPEN} AND NOT {_CLOSE})
+OR (OLD.review IN ('accepted', 'cancelled') AND NEW.review IS NOT OLD.review)
+OR (NOT {_CLOSE} AND (NEW.reviewed_at IS NOT OLD.reviewed_at
+    OR NEW.reviewed_by IS NOT OLD.reviewed_by OR NEW.review_reason IS NOT OLD.review_reason
+    OR NEW.review_note IS NOT OLD.review_note))
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END"""
+    for statement in (
+        "ALTER TABLE delegations ADD COLUMN results INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE delegations ADD COLUMN review TEXT",
+        "ALTER TABLE delegations ADD COLUMN reviewed_at TEXT",
+        "ALTER TABLE delegations ADD COLUMN reviewed_by TEXT",
+        "ALTER TABLE delegations ADD COLUMN review_reason TEXT",
+        "ALTER TABLE delegations ADD COLUMN review_note TEXT",
+        f"""CREATE TRIGGER delegations_review_insert BEFORE INSERT ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        f"""CREATE TRIGGER delegations_review_update BEFORE UPDATE ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        "CREATE INDEX delegations_review ON delegations (project_id, session_id, review)",
+        """CREATE TABLE delegation_results (
+    delegation_id TEXT NOT NULL REFERENCES delegations (delegation_id),
+    number INTEGER NOT NULL CHECK (number >= 1),
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    ended TEXT NOT NULL
+        CHECK (ended IN ('returned', 'failed', 'cancelled', 'limit_reached', 'interrupted')),
+    stopped TEXT NOT NULL CHECK (length(stopped) BETWEEN 1 AND 64),
+    report TEXT CHECK (report IS NULL OR length(CAST(report AS BLOB)) <= 65536),
+    ended_at TEXT NOT NULL CHECK (length(ended_at) BETWEEN 1 AND 64),
+    refused TEXT CHECK (refused IS NULL OR length(CAST(refused AS BLOB)) BETWEEN 1 AND 2048),
+    result TEXT CHECK (result IS NULL OR (ended = 'returned' AND json_valid(result)
+        AND json_type(result) = 'object' AND length(CAST(result AS BLOB)) <= 32768)),
+    errors TEXT CHECK (errors IS NULL OR (json_valid(errors) AND json_type(errors) = 'array'
+        AND length(CAST(errors AS BLOB)) <= 16384)),
+    alias TEXT CHECK (alias IS NULL OR length(CAST(alias AS BLOB)) BETWEEN 1 AND 256),
+    models TEXT CHECK (models IS NULL OR (json_valid(models) AND json_type(models) = 'array'
+        AND length(CAST(models AS BLOB)) <= 4096)),
+    read_entry INTEGER CHECK (read_entry IS NULL OR read_entry IN (0, 1)),
+    read_proofs INTEGER CHECK (read_proofs IS NULL OR read_proofs IN (0, 1)),
+    files TEXT CHECK (files IS NULL OR (json_valid(files) AND json_type(files) = 'object'
+        AND length(CAST(files AS BLOB)) <= 131072)),
+    environment TEXT CHECK (environment IS NULL OR (json_valid(environment)
+        AND json_type(environment) = 'object' AND length(CAST(environment AS BLOB)) <= 65536)),
+    PRIMARY KEY (delegation_id, number),
+    UNIQUE (project_id, session_id, run),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        """CREATE TRIGGER delegation_results_kept BEFORE UPDATE ON delegation_results
+BEGIN SELECT RAISE(ABORT, 'a delegation''s results are kept as written'); END""",
+        """CREATE TRIGGER delegation_results_no_delete BEFORE DELETE ON delegation_results
+BEGIN SELECT RAISE(ABORT, 'a delegation''s results are kept as written'); END""",
+        "DROP TRIGGER delegations_kept",
+        # Each outcome written so far is its delegation's first.
+        "INSERT INTO delegation_results SELECT delegation_id, 1, project_id, session_id, run, "
+        "ended, stopped, report, ended_at, refused, result, errors, alias, models, read_entry, "
+        "read_proofs, files, environment FROM delegations WHERE ended IS NOT NULL",
+        "UPDATE delegations SET results = 1 WHERE ended IS NOT NULL",
+        kept,
+    ):
+        schema.execute(statement)
+    (create,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='research_child_settlements'"
+    ).fetchone()
+    old = "PRIMARY KEY(project,session,run), UNIQUE(project,session,delegation),"
+    if old not in create:
+        raise ControlError(INTERNAL, "research_child_settlements is not as version 65 made it")
+    rebuild(
+        schema,
+        "research_child_settlements",
+        create.replace(old, "PRIMARY KEY(project,session,run),", 1),
+    )
+    schema.execute(
+        "CREATE INDEX research_child_settlement_delegation ON research_child_settlements "
+        "(project,session,delegation)"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3863,6 +4004,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _tool_purposes,
     _mcp_canaries,
     _delegation_environments,
+    _parent_review,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

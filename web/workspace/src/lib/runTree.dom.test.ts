@@ -75,6 +75,12 @@ const delegation = (id: string, child: string, fields: Partial<Delegation> = {})
   files: null,
   environment_id: null,
   environment: null,
+  results: 0,
+  review: null,
+  reviewed_at: null,
+  reviewed_by: null,
+  review_reason: null,
+  review_note: null,
   ...fields,
 });
 
@@ -111,6 +117,7 @@ const tree: RunTree = {
   ],
   delegations: [delegation('del-1', 'child'), delegation('del-0', 'gone')],
   delegations_total: 3,
+  earlier: [],
 };
 
 describe('the run tree', () => {
@@ -156,6 +163,7 @@ describe('the run tree', () => {
         }),
       ],
       delegations_total: 1,
+      earlier: [],
     };
     const urls = treeServer([tree, ended, 503]);
     const root = show(RunTreeView, { projectId: 'p1', sessionId: 's1' });
@@ -243,6 +251,7 @@ describe("a delegation's files", () => {
         }),
       ],
       delegations_total: 1,
+      earlier: [],
     };
     treeServer([withFiles]);
     const root = show(RunTreeView, { projectId: 'p1', sessionId: 's1' });

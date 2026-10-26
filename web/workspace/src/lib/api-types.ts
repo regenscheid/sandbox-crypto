@@ -681,6 +681,32 @@ export interface Delegation {
   files: Record<string, JsonValue> | null;
   environment_id: string | null;
   environment: Record<string, JsonValue> | null;
+  results: number;
+  review: "awaiting" | "accepted" | "cancelled" | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  review_reason: "parent" | "parent_ended" | "session_closed" | "review_max" | null;
+  review_note: string | null;
+}
+
+/** One of a delegation's outcomes, as its run ended, numbered from 1 (PD-46). */
+export interface DelegationResult {
+  delegation_id: string;
+  number: number;
+  run: string;
+  ended: "returned" | "failed" | "cancelled" | "limit_reached" | "interrupted";
+  stopped: string;
+  report: string | null;
+  ended_at: string;
+  refused: string | null;
+  result: Record<string, JsonValue> | null;
+  errors: string[];
+  alias: string | null;
+  models: string[];
+  read_entry: boolean | null;
+  read_proofs: boolean | null;
+  files: Record<string, JsonValue> | null;
+  environment: Record<string, JsonValue> | null;
 }
 
 /** Full provenance or the compact form stored in history and older annotations. */
@@ -2536,6 +2562,7 @@ export interface RunTree {
   runs: TreeRun[];
   delegations: Delegation[];
   delegations_total: number;
+  earlier: DelegationResult[];
 }
 
 /** One scope's recorded usage: the whole project, a session or a run. */
