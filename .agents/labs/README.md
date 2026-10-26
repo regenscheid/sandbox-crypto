@@ -98,7 +98,7 @@ exported. The personal instance is not touched.
 ```bash
 .venv/bin/python -I .agents/labs/direct_mcp.py prepare
 .venv/bin/python -I .agents/labs/direct_mcp.py up "$LAB"
-.venv/bin/python -I .agents/labs/direct_mcp.py proofs "$LAB"
+.venv/bin/python -I .agents/labs/direct_mcp.py proofs "$LAB"   # --plan rerun after a first lab
 .venv/bin/python -I .agents/labs/direct_mcp.py cleanup "$LAB"   # or abort "$LAB"
 ```
 
@@ -112,8 +112,13 @@ which binds the lab's project and asks the worker (`confinement.requests.confirm
 answer route with the operator token, as the workspace does, and the client calls again every
 3 s. Upstream calls are kept to the listings, one read each on e-print, nist-csrc, web-fetch and
 attack-catalog (the escalated tool, after approval), one firecrawl scrape of a small public page,
-and one attack-catalog call without its required argument for the error answer. Proof 5 (binary
-results) is recorded as pending. Receipts carry counts, reason codes, request numbers and tool
+and one attack-catalog call without its required argument for the error answer. A later lab runs
+`proofs --plan rerun`, which calls the portal's own `portal_list_servers` as the allowed tool and
+skips the error answer, so the earlier lab's upstream reads are not repeated. Proof 5 (binary
+results) is recorded as pending. OpenShell 0.1.5 never offers `WHOLE_BODY_BYTES` for a
+`text/event-stream` response (an open-ended response in its `permitted_body_modes`), so the
+middleware blocks the portal's event-stream listings (`tool_listing_unreadable`); the lab of
+2026-10-26 found proof 3's listing half failing for that reason. Receipts carry counts, reason codes, request numbers and tool
 names only, and are exported with a SHA-256 manifest to `/var/tmp/ss-direct-mcp-evidence-*`.
 
 Lab32's `provisioning_revision_packages.py` reads exact recorded package/license

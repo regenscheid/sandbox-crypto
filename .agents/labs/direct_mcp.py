@@ -464,9 +464,8 @@ operator = true
     async def drive(self, url: str, reads: list, *, skip_error_answer: bool) -> dict[str, Any]:
         # An attempt capability as the host issues them (wire.AttemptId).
         attempt = "cap-" + secrets.token_hex(24)
-        check = WorkerRequestCheck(
-            WorkerClient(f"http://127.0.0.1:{self.ports['worker']}", self.token("harness"))
-        )
+        worker = WorkerClient(f"http://127.0.0.1:{self.ports['worker']}", self.token("harness"))
+        check = WorkerRequestCheck(worker)
         process = await asyncio.create_subprocess_exec(
             str(OS_BIN / "openshell"),
             "sandbox", "exec", "-n", self.sandbox_name(), "--no-tty", "--no-login-shell", "--",
@@ -576,6 +575,7 @@ operator = true
             said = await process.stderr.read()
             recovery.private(self.path / "agent-stderr.txt", said.decode("utf-8", "replace"))
             await channel.close()
+            await worker.close()
         return {
             "steps": steps,
             "confirmations": confirmations,
