@@ -1,6 +1,6 @@
 # Child environments
 
-Status: Proposal for the owner's review (2026-10-25). Nothing is built. It designs
+Status: Decided by the owner (2026-10-26): all six questions as recommended. Being built, the worker and records first. It designs
 backlog item B7, raised by the owner on 2026-10-24: for some projects, each subagent's
 research environment runs in a sandbox of its own, possibly on another node, for compute
 and memory; the parent, above all the main agent, owns the durable records, and a
@@ -220,3 +220,13 @@ platform places a child by the project's settings. No change to checks' evidence
    today's 69 to 290 s seeds. *Recommended:* CE's worker and records first, since they
    are independent of the image layout and can be qualified with `tasks` on one project;
    option C in parallel, as its own increment.
+
+### Owner answers (2026-10-26)
+
+All six as recommended: child environments are off by default, a project turns on `tasks`
+or `all`; checks stay in the session's environment unless `all`; the hand-back goes both to
+control and into the parent's `work/<delegation_id>/`; a waiting child keeps its environment,
+with an optional `child_idle_max` off by default; child environments are counted apart from
+`max_environments`, under their own caps; the worker and records are built first, and the
+Python environment leaves the copied workspace (option C) as its own increment in parallel.
+
