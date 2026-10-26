@@ -16,11 +16,12 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
 from sandbox_science.contracts import Location
+from sandbox_science.contracts.revisions import MAX_REVISION_NOTE, MAX_REVISION_NOTES
 
 from . import prefix_continuity
 from .channel import ExecutorChannel, Message
@@ -41,6 +42,20 @@ MAX_EXECUTION_LOCKFILES = 4
 attempt whose package commands made a change. A revision left without one gets the
 current lockfile asked for instead, while it is current."""
 EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
+
+
+def rebase_notes(raw: object) -> tuple[str, ...]:
+    """The notes an executor reports when it moved its workspace layer onto a new image's
+    base (provisioning.rebase_layer): bounded single lines, research code's text as data."""
+    fields = cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+    notes = fields.get("notes")
+    found: list[str] = []
+    for note in cast(list[object], notes)[:MAX_REVISION_NOTES] if isinstance(notes, list) else []:
+        if isinstance(note, str):
+            text = re.sub(r"[\x00-\x1f\x7f]", "?", note)[:MAX_REVISION_NOTE]
+            if text:
+                found.append(text)
+    return tuple(found)
 
 
 class PackageChanges:
@@ -99,7 +114,12 @@ class PackageChanges:
                 "fingerprint": revision.fingerprint,
             }
             channel.hello["environment"] = revision.fingerprint
-        self.observe(environment_id, channel.hello.get("environment"), "")
+        self.observe(
+            environment_id,
+            channel.hello.get("environment"),
+            "",
+            notes=rebase_notes(channel.hello.get("layer_rebase")),
+        )
         self.store.kernel_starts.epoch(
             environment_id,
             channel.incarnation,
@@ -169,7 +189,14 @@ class PackageChanges:
         self.ask_lockfile(environment_id, live)
         return None if revision is None else str(revision)
 
-    def observe(self, environment_id: str, fingerprint: object, changed_by: str) -> int | None:
+    def observe(
+        self,
+        environment_id: str,
+        fingerprint: object,
+        changed_by: str,
+        *,
+        notes: tuple[str, ...] = (),
+    ) -> int | None:
         """The environment's revision after the executor reported ``fingerprint`` (W3).
 
         The first fingerprint is revision 0, and each different one counts one up,
@@ -178,7 +205,7 @@ class PackageChanges:
         here is one it could not account for. The executor is untrusted: research code
         can only make its own environment's revisions count up.
         """
-        return self.revisions.observe(environment_id, fingerprint, changed_by)
+        return self.revisions.observe(environment_id, fingerprint, changed_by, notes=notes)
 
     async def revised(self, environment_id: str, live: Live, message: Message) -> None:
         """A change to the environment's packages that the executor saw (CP-4, CP-16).

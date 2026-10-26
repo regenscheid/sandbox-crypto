@@ -877,12 +877,25 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
 
     def runtime_upgrade(self) -> str:
         """Replacing base packages at runtime: one with a command (pygments), and in
-        crypto-base one that others depend on (sympy, which Sage requires). The replacement
-        goes into the layer, what imports and runs is the replacement, the layer keeps a
-        record of every package (Sage's too), and the lockfile says what conda-meta and
-        importlib.metadata say."""
-        names = ["pygments", *(["sympy"] if self.crypto else [])]
-        specs = ['"pygments<2.19"', *(['"sympy<1.14"'] if self.crypto else [])]
+        crypto-base one that Sage depends on (networkx). The replacement goes into the layer,
+        what imports and runs is the replacement, the layer keeps a record of every package
+        (Sage's too), and the lockfile says what conda-meta and importlib.metadata say. In
+        crypto-base, the dry run of ``sympy<1.14`` unlinks Sage without linking it, which is
+        what the provisioning tool refuses (resolution.conda_removals reads the same JSON)."""
+        names = ["pygments", *(["networkx"] if self.crypto else [])]
+        specs = ['"pygments<2.19"', *(['"networkx<3.6.1"'] if self.crypto else [])]
+        if self.crypto:
+            dry = json.loads(
+                self.ex().shell(
+                    "micromamba install --dry-run --json -y -q -c conda-forge "
+                    '--override-channels "sympy<1.14"',
+                    limit=600,
+                )
+            )
+            actions = dry.get("actions", {})
+            linked = {entry["name"] for entry in actions.get("LINK", [])}
+            unlinked = {entry["name"] for entry in actions.get("UNLINK", [])}
+            expect("sagelib" in unlinked - linked, f"sympy<1.14 removes {unlinked - linked}")
         self.ex().shell(
             "micromamba install -y -q -c conda-forge --override-channels "
             f"{' '.join(specs)} >/dev/null",

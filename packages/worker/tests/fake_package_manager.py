@@ -430,6 +430,15 @@ def conda(tool: str, args: list[str]) -> int:
         if links:
             actions["LINK"] = links
             actions["FETCH"] = links
+        # A package whose index entry ``removes`` installed ones: the solve unlinks them.
+        unlinks = [
+            json.loads(record.read_text())
+            for _, entry in planned
+            for removed in entry.get("removes", [])
+            for record in sorted((prefix / "conda-meta").glob(f"{removed}-*.json"))
+        ]
+        if unlinks:
+            actions["UNLINK"] = unlinks
         print(
             json.dumps(
                 {"actions": actions, "dry_run": True, "prefix": str(prefix), "success": True}

@@ -44,7 +44,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 
 def _sibling(name: str) -> ModuleType:
@@ -704,9 +704,12 @@ class Executor:
         # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
         self.packages = provisioning.State(root / ".executor" / "provisioning")
         self.places = provisioning.Places.here()
+        self.rebased: Message | None = None
+        """How this executor moved its workspace layer onto a new image's base, if it did."""
         if (below := self.places.base_prefix) is not None:
             # This process finds the kernelspecs, which are the base's, as its kernels do.
             os.environ["JUPYTER_PATH"] = jupyter_path(os.environ, below)
+            self.rebased = rebase(self.places, below)
         self.provisioning: provisioning.Config | None = None
         """None when the wrappers could not be written: package commands then run as they are."""
         self.wrapped: list[str] = []
@@ -1166,6 +1169,7 @@ class Executor:
             conditional_kernel_restart=1,
             environment=await self.baseline(),
             package_epoch=self.admission.epoch,
+            **({"layer_rebase": self.rebased} if self.rebased is not None else {}),
             **(
                 {
                     "workspace_prefix": {
@@ -2161,6 +2165,28 @@ def tool_environment(
         rest = [entry for entry in dirs.split(os.pathsep) if entry and entry != data]
         env["XDG_DATA_DIRS"] = os.pathsep.join([data, *rest])
     return env
+
+
+IMAGE_RECORD: Final = Path("/usr/share/sandbox-science/image.json")
+
+
+def rebase(places: provisioning.Places, below: str) -> Message | None:
+    """Move a workspace layer onto the image's base when the image changed under it, before
+    anything reads its packages (provisioning.rebase_layer); None otherwise. A failure is
+    reported and leaves the layer as it was found, for the layout check to judge."""
+    layer = Path(sys.prefix)
+    if not os.path.lexists(layer / provisioning.LAYER_MARKER):
+        return None
+    revision = "unknown"
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        revision = str(json.loads(IMAGE_RECORD.read_text()).get("revision", "unknown"))[:128]
+    try:
+        return provisioning.rebase_layer(
+            layer, Path(below), provisioning.base_identity(places), revision
+        )
+    except (OSError, ValueError) as exc:
+        print(f"executor: the layer stays over its old base: {exc}", file=sys.stderr)
+        return None
 
 
 def jupyter_path(env: Mapping[str, str], below: str) -> str:

@@ -285,6 +285,48 @@ def frozen_refusal(output: str) -> str | None:
     )
 
 
+REMOVAL_NEXT_STEP: Final = (
+    "Ask for versions the installed packages accept, for example without the upper bound "
+    "that forces the removal; a package the image provides changes only with a new image."
+)
+
+
+def conda_removals(stdout: str) -> list[str]:
+    """The installed packages micromamba's JSON dry run would unlink without linking one of
+    the same name (``actions.UNLINK`` less ``actions.LINK``): a solve that removes them."""
+    document = _document(stdout, "the Conda dry run")
+    actions = document.get("actions")
+    fields = cast(dict[str, Any], actions) if isinstance(actions, dict) else {}
+
+    def names(key: str) -> set[str]:
+        entries = fields.get(key)
+        found: set[str] = set()
+        for entry in cast(list[object], entries) if isinstance(entries, list) else []:
+            name = (
+                _text(cast(dict[str, Any], entry).get("name")) if isinstance(entry, dict) else None
+            )
+            if name is not None:
+                found.add(name)
+        return found
+
+    return sorted(names("UNLINK") - names("LINK"))
+
+
+def removal_refusal(removed: Sequence[str], specs: Sequence[str]) -> str:
+    """Why a solve that would remove installed packages is refused (CP-1: the provisioning
+    tool installs and upgrades). In a research image's layer such a package is the base's,
+    which no install can take away (docs/IMAGES.md); elsewhere it is still in use."""
+    shown = ", ".join(removed[:10]) + (
+        f" and {len(removed) - 10} more" if len(removed) > 10 else ""
+    )
+    asked = " ".join(specs)[:300]
+    return (
+        f"the request ({asked}) would remove {shown} without replacing it: the provisioning "
+        "tool installs and upgrades packages and never removes one, and a package of the "
+        "image's base stays in the image whatever a solve says; nothing was changed"
+    )
+
+
 def parse_conda_dry_run(stdout: str, cache: str | None) -> list[Resolved]:
     """The files micromamba's JSON dry run would link (``actions.LINK``), by channel name.
 

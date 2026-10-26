@@ -5,11 +5,13 @@ and records. The images' builds run it on the real prefix and check the result."
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -315,6 +317,7 @@ def test_the_layer_is_a_small_environment_over_the_base(base: Path, tmp_path: Pa
         "version": "6.3.0",
         "build": "h1",
         "files": ["lib/libgmp.so.10.5.0", "lib/libgmp.so"],
+        "sandbox_science": "base",
     }
     python = json.loads((layer / "conda-meta/python-3.14.8-h0.json").read_text())
     assert python["files"] == ["bin/python3.14"]
@@ -437,3 +440,149 @@ def test_the_worker_restores_the_layer_as_the_build_wrote_it(base: Path, tmp_pat
         [],
         [f"{base} is writable by others than root"],
     )
+
+
+def _package(
+    base: Path, name: str, version: str, *, script: bool = False, library: bool = False
+) -> None:
+    """A Python package in the base: its distribution, maybe a script and a library."""
+    site = f"lib/python3.14/site-packages/{name}-{version}.dist-info"
+    _write(base / site / "METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+    _write(base / site / "INSTALLER", "conda\n")
+    files = [f"{site}/METADATA"]
+    if script:
+        _write(base / f"bin/{name}-tool", f"#!/opt/sandbox-science/bin/python3.14\n# {version}\n")
+        (base / f"bin/{name}-tool").chmod(0o755)
+        files.append(f"bin/{name}-tool")
+    if library:
+        _write(base / f"lib/lib{name}.so.{version}")
+        files.append(f"lib/lib{name}.so.{version}")
+    _record(base, name, version, "0", files)
+
+
+def _fingerprint(layer: Path, base: Path) -> str:
+    """The package fingerprint, in a process of its own: provisioning remembers a base's
+    identity and times for the life of a process, as the base cannot change under it."""
+    code = (
+        "import sys\n"
+        "from sandbox_science.worker import provisioning as p\n"
+        f"site = {str(base / 'lib/python3.14/site-packages')!r}\n"
+        f"places = p.Places({str(layer / 'conda-meta')!r}, "
+        f"({str(layer / 'lib/python3.14/site-packages')!r},), None, "
+        f"{str(base / 'conda-meta')!r}, (site,))\n"
+        "print(p.fingerprint(places), p.base_identity(places))\n"
+    )
+    found = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout.split()
+    return found[0] + " " + found[1]
+
+
+def test_a_new_base_under_a_kept_layer_replaces_its_copies(base: Path, tmp_path: Path) -> None:
+    """The image is rebuilt under a kept workspace: sympy goes up, oldpkg goes, newpkg comes,
+    pygments too; the layer had upgraded pygments itself and installed toolz, which needs
+    oldpkg. The layer's copies become the new base's, its own packages stay, nothing dangles,
+    and the lockfile says what conda-meta and importlib.metadata say."""
+    from sandbox_science.worker import provisioning
+
+    _package(base, "sympy", "1.14.0", script=True)
+    _package(base, "oldpkg", "1.0", script=True, library=True)
+    _package(base, "pygments", "2.21.0", script=True)
+    layer = _make(base, tmp_path)
+    assert (layer / "bin/oldpkg-tool").is_file()
+    assert (layer / "lib/liboldpkg.so.1.0").is_symlink()
+    # The layer's own upgrade of pygments, as micromamba leaves it, and its own toolz.
+    copy = json.loads((layer / "conda-meta/pygments-2.21.0-0.json").read_text())
+    for relative in copy["files"]:
+        (layer / relative).unlink()
+    (layer / "conda-meta/pygments-2.21.0-0.json").unlink()
+    _package(layer, "pygments", "2.18.0", script=True)
+    record = json.loads((layer / "conda-meta/pygments-2.18.0-0.json").read_text())
+    _package(layer, "toolz", "1.0")
+    toolz = layer / "conda-meta/toolz-1.0-0.json"
+    toolz.write_text(json.dumps({**json.loads(toolz.read_text()), "depends": ["oldpkg >=1"]}))
+    assert provisioning.BASE_RECORD not in record
+    before = _fingerprint(layer, base)
+    # The rebuilt image: another base at the same path, with new times.
+    rebuilt = tmp_path / "rebuilt"
+    shutil.copytree(base, rebuilt, symlinks=True)
+    shutil.rmtree(base)
+    rebuilt.rename(base)
+    for path in (base / "conda-meta").glob("sympy-*"):
+        path.unlink()
+    for path in (base / "conda-meta").glob("oldpkg-*"):
+        path.unlink()
+    for path in (base / "conda-meta").glob("pygments-*"):
+        path.unlink()
+    shutil.rmtree(base / "lib/python3.14/site-packages/sympy-1.14.0.dist-info")
+    shutil.rmtree(base / "lib/python3.14/site-packages/oldpkg-1.0.dist-info")
+    shutil.rmtree(base / "lib/python3.14/site-packages/pygments-2.21.0.dist-info")
+    for name in ("bin/sympy-tool", "bin/oldpkg-tool", "lib/liboldpkg.so.1.0", "bin/pygments-tool"):
+        (base / name).unlink()
+    _package(base, "sympy", "1.15.0", script=True)
+    _package(base, "newpkg", "2.0", script=True, library=True)
+    _package(base, "pygments", "2.22.0", script=True)
+    identity = layout.base_identity(base)
+    rebased = provisioning.rebase_layer(layer, base, identity, "rev-2")
+    assert rebased is not None
+    assert rebased["to"] == identity
+    assert sorted(rebased["notes"]) == [
+        "pygments 2.18.0, installed in the layer, stays over the new base's 2.22.0",
+        "toolz 1.0, installed in the layer, needs oldpkg >=1, which neither the layer nor the"
+        " new base has",
+    ]
+    assert provisioning.rebase_layer(layer, base, identity, "rev-2") is None
+    marker = json.loads((layer / layout.LAYER_MARKER).read_text())
+    assert (marker["identity"], marker["revision"]) == (identity, "rev-2")
+    # Copies follow the new base; the layer's own packages keep their records and files.
+    names = sorted(path.name for path in (layer / "conda-meta").glob("*.json"))
+    assert names == [
+        "gmp-6.3.0-h1.json",
+        "newpkg-2.0-0.json",
+        "pygments-2.18.0-0.json",
+        "python-3.14.8-h0.json",
+        "sympy-1.15.0-0.json",
+        "toolz-1.0-0.json",
+    ]
+    assert (layer / "bin/sympy-tool").read_text().endswith("# 1.15.0\n")
+    assert (layer / "bin/pygments-tool").read_text().endswith("# 2.18.0\n")
+    assert (layer / "bin/newpkg-tool").is_file()
+    assert os.readlink(layer / "lib/libnewpkg.so.2.0") == str(base / "lib/libnewpkg.so.2.0")
+    assert not (layer / "bin/oldpkg-tool").exists()
+    dangling = [
+        path
+        for folder in ("bin", "lib")
+        for path in (layer / folder).iterdir()
+        if path.is_symlink() and not path.exists()
+    ]
+    assert dangling == []
+    # The lockfile is what conda-meta and importlib.metadata say.
+    sites = [
+        str(layer / "lib/python3.14/site-packages"),
+        str(base / "lib/python3.14/site-packages"),
+    ]
+    places = provisioning.Places(
+        str(layer / "conda-meta"), (sites[0],), None, str(base / "conda-meta"), (sites[1],)
+    )
+    lockfile = provisioning.lockfile(places)
+    conda = {item["name"]: item["version"] for item in lockfile["conda"]}
+    records = {
+        json.loads(path.read_text())["name"]: json.loads(path.read_text())["version"]
+        for path in (layer / "conda-meta").glob("*.json")
+    }
+    assert conda == records
+    assert [item["name"] for item in lockfile["pip"]] == ["x"]  # the base's, by pip
+    found: dict[str, str] = {}
+    for distribution in importlib.metadata.distributions(path=sites):
+        name = distribution.metadata.get("Name")
+        if name:  # the stand-in base's x-1.0 has no real metadata
+            found.setdefault(name, str(distribution.metadata.get("Version")))
+    assert {name: found[name] for name in ("sympy", "pygments", "newpkg", "toolz")} == {
+        name: conda[name] for name in ("sympy", "pygments", "newpkg", "toolz")
+    }
+    assert "oldpkg" not in found
+    # The layer's own half of the fingerprint did not move; the base's did.
+    after = _fingerprint(layer, base)
+    assert after[:16] == before[:16]
+    assert after[16:32] != before[16:32]
+    assert after.split()[1] == identity

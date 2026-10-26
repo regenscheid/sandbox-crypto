@@ -503,9 +503,18 @@ def fingerprint(places: Places) -> str:
     only its second half, which the worker tells from a change in the layer
     (prefix_continuity.accept).
     """
+    copies: Mapping[str, int] = {}
     if places.base_conda_meta is not None:
+        copies = _base_times(places.base_conda_meta)
         layer = Places(places.conda_meta, places.site, places.user)
-        return fingerprint(layer)[:16] + base_identity(places)[:16]
+        return _digest(layer, copies)[:16] + base_identity(places)[:16]
+    return _digest(places, copies)
+
+
+def _digest(places: Places, copies: Mapping[str, int]) -> str:
+    """``fingerprint``'s digest, leaving out the layer's copies of base records: a record in
+    ``conda_meta`` with a base record's name and time (``copies``), which the base's identity
+    covers, and which a new base rewrites (``rebase_layer``)."""
     digest = hashlib.sha256()
     for place in places.all():
         try:
@@ -520,9 +529,27 @@ def fingerprint(places: Places) -> str:
                 info = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
+            if place == places.conda_meta and copies.get(name) == info.st_mtime_ns:
+                continue
             line = f"{place}\0{name}\0{info.st_size}\0{info.st_mtime_ns}\n"
             digest.update(line.encode("utf-8", "surrogateescape"))
     return digest.hexdigest()[:32]
+
+
+_BASE_TIMES: dict[str, dict[str, int]] = {}
+
+
+def _base_times(conda_meta: str) -> dict[str, int]:
+    """Each base record's time, by name, once a process: the base is read-only."""
+    if conda_meta not in _BASE_TIMES:
+        found: dict[str, int] = {}
+        with contextlib.suppress(OSError), os.scandir(conda_meta) as scan:
+            for entry in scan:
+                if entry.name.endswith(".json"):
+                    with contextlib.suppress(OSError):
+                        found[entry.name] = entry.stat(follow_symlinks=False).st_mtime_ns
+        _BASE_TIMES[conda_meta] = found
+    return _BASE_TIMES[conda_meta]
 
 
 _BASE_IDENTITIES: dict[tuple[str, tuple[str, ...]], str] = {}
@@ -1341,6 +1368,9 @@ def _mirror(state: State, prefix: Path, base: str | None = None) -> None:
 # The layer over a base (images/common/prefix_layout.py writes it; a test keeps the two in step).
 
 SLIM: Final = ("files", "paths_data")
+BASE_RECORD: Final = "sandbox_science"
+"""The key that marks a base package's record in the layer (prefix_layout.BASE_RECORD)."""
+LAYER_MARKER: Final = ".sandbox-science-layer"
 
 
 def _script(path: Path) -> bool:
@@ -1368,7 +1398,8 @@ def slim_record(base: Path, record: Mapping[str, object]) -> dict[str, object]:
     files = record.get("files")
     listed = [str(item) for item in cast(list[object], files)] if isinstance(files, list) else []
     own = [relative for relative in listed if _layer_entry(base, relative)]
-    return {key: value for key, value in record.items() if key not in SLIM} | {"files": own}
+    kept = {key: value for key, value in record.items() if key not in SLIM}
+    return kept | {"files": own, BASE_RECORD: "base"}
 
 
 def repair_layer(layer: Path, base: Path) -> list[str]:
@@ -1379,9 +1410,9 @@ def repair_layer(layer: Path, base: Path) -> list[str]:
     entries first; when it fails afterwards, micromamba cannot put the old package back,
     whose files it never had. The base still holds that package, so the record says so
     again, with the base's time, as the layer was written, and the package fingerprint
-    reads as before. A ``remove`` of a base package is undone the same way: its files stay
-    in the read-only base. A package whose distribution Conda left in the layer without
-    a record is left to the lockfile, which lists that distribution as it is.
+    reads as before. Package commands run this after a failed command only. A package whose
+    distribution Conda left in the layer without a record is left to the lockfile, which
+    lists that distribution as it is.
     """
     meta = layer / "conda-meta"
     present: set[str] = set()
@@ -1420,22 +1451,137 @@ def repair_layer(layer: Path, base: Path) -> list[str]:
         ]
         if {_project(project) for project in owns} & orphans:
             continue
-        slim = slim_record(base, fields)
-        for relative in cast(list[str], slim["files"]):
-            target = layer / relative
-            if os.path.lexists(target):
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if _script(base / relative):
-                shutil.copyfile(base / relative, target)
-                os.chmod(target, stat.S_IMODE((base / relative).stat().st_mode))
-            else:
-                target.symlink_to(base / relative)
-        _replace(meta / name, (json.dumps(slim) + "\n").encode())
-        info = source.stat()
-        os.utime(meta / name, ns=(info.st_atime_ns, info.st_mtime_ns))
+        _write_copy(base, layer, name, fields)
         restored.append(str(fields.get("name", name)))
     return restored
+
+
+def _make_entry(base: Path, layer: Path, relative: str) -> None:
+    """The layer's entry for the base's ``relative``, unless the layer has one: a copy of a
+    script, else a link."""
+    target = layer / relative
+    if os.path.lexists(target):
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _script(base / relative):
+        shutil.copyfile(base / relative, target)
+        os.chmod(target, stat.S_IMODE((base / relative).stat().st_mode))
+    else:
+        target.symlink_to(base / relative)
+
+
+def _write_copy(base: Path, layer: Path, name: str, fields: Mapping[str, object]) -> None:
+    """The layer's copy of the base record ``name``, with its entries and the base's time."""
+    slim = slim_record(base, fields)
+    for relative in cast(list[str], slim["files"]):
+        _make_entry(base, layer, relative)
+    _replace(layer / "conda-meta" / name, (json.dumps(slim) + "\n").encode())
+    info = (base / "conda-meta" / name).stat()
+    os.utime(layer / "conda-meta" / name, ns=(info.st_atime_ns, info.st_mtime_ns))
+
+
+def _record_file(path: Path) -> Message | None:
+    data = read_regular(path, MAX_META_BYTES)
+    try:
+        record: object = json.loads(data) if data is not None else None
+    except (ValueError, RecursionError):
+        return None
+    return cast(Message, record) if isinstance(record, dict) else None
+
+
+def rebase_layer(layer: Path, base: Path, identity: str, revision: str) -> Message | None:
+    """Move the layer onto a new image's base; None when it is over this base already.
+
+    A retained workspace under a rebuilt image keeps its layer, whose copies of the base's
+    records, links and copied scripts are the old base's. They are replaced by the new
+    base's, for every base package the layer has not replaced itself: a package installed in
+    the layer keeps its record and files. Entries of packages the new base dropped go, links
+    into the base that no longer resolve too; the pins become the new base's and Python's;
+    the marker names the new base. Returns the identities and notes for the revision this
+    makes: packages installed in the layer that the new base leaves without a dependency, or
+    that stay over the new base's version of the same package.
+    """
+    marker = _record_file(layer / LAYER_MARKER)
+    if marker is None or marker.get("identity") == identity:
+        return None
+    meta = layer / "conda-meta"
+    own: dict[str, Message] = {}
+    copies: list[tuple[Path, Message]] = []
+    for path in sorted(meta.glob("*.json")):
+        record = _record_file(path)
+        if record is None:
+            continue
+        if record.get(BASE_RECORD) == "base":
+            copies.append((path, record))
+        else:
+            own[str(record.get("name"))] = record
+    protected = {
+        str(item)
+        for record in own.values()
+        for item in cast(list[object], record.get("files") or [])
+    }
+    for path, record in copies:
+        for item in cast(list[object], record.get("files") or []):
+            relative = str(item)
+            target = layer / relative
+            if relative not in protected and _layer_entry(layer, relative):
+                with contextlib.suppress(FileNotFoundError):
+                    if target.is_symlink() or target.is_file():
+                        target.unlink()
+        path.unlink()
+    for folder in ("bin", "lib"):
+        with contextlib.suppress(OSError), os.scandir(layer / folder) as scan:
+            for entry in list(scan):
+                if (
+                    entry.is_symlink()
+                    and os.readlink(entry.path).startswith(f"{base}/")
+                    and not os.path.exists(entry.path)
+                ):
+                    os.unlink(entry.path)
+    names = set(own)
+    over: dict[str, str] = {}
+    pins: list[str] = []
+    for path in sorted((base / "conda-meta").glob("*.json")):
+        record = _record_file(path)
+        if record is None:
+            continue
+        name = str(record.get("name"))
+        if name == "python":
+            pins.append(f"python=={record.get('version')}={record.get('build')}")
+        if name in own:
+            if record.get("version") != own[name].get("version"):
+                over[name] = str(record.get("version"))
+            continue
+        _write_copy(base, layer, path.name, record)
+        names.add(name)
+    for folder in ("bin", "lib"):
+        with contextlib.suppress(OSError), os.scandir(base / folder) as scan:
+            for entry in list(scan):
+                relative = f"{folder}/{entry.name}"
+                if _layer_entry(base, relative):
+                    _make_entry(base, layer, relative)
+    pinned = base / "conda-meta" / "pinned"
+    lines = pinned.read_text().splitlines() if pinned.exists() else []
+    _replace(meta / "pinned", "".join(f"{line}\n" for line in [*lines, *pins]).encode())
+    notes: list[str] = []
+    for name, record in sorted(own.items()):
+        if name in over:
+            notes.append(
+                f"{name} {record.get('version')}, installed in the layer, stays over the new"
+                f" base's {over[name]}"
+            )
+        for depend in cast(list[object], record.get("depends") or []):
+            needed = str(depend).split()[0] if str(depend).split() else ""
+            if needed and not needed.startswith("__") and needed not in names:
+                notes.append(
+                    f"{name} {record.get('version')}, installed in the layer, needs {depend},"
+                    " which neither the layer nor the new base has"
+                )
+    _replace(
+        layer / LAYER_MARKER,
+        (json.dumps({**marker, "revision": revision, "identity": identity}) + "\n").encode(),
+    )
+    return {"from": marker.get("identity"), "to": identity, "notes": notes[:16]}
 
 
 def _link(link: Path, target: Path) -> None:
@@ -1767,7 +1913,8 @@ class Turn:
                 )
             cleaned = True
             base = self.config.places.base_prefix
-            if base is not None:
+            if base is not None and code != 0:
+                # A failed transaction: micromamba could not put back what it took.
                 with contextlib.suppress(OSError):
                     if restored := repair_layer(Path(self.config.prefix), Path(base)):
                         sys.stderr.write(

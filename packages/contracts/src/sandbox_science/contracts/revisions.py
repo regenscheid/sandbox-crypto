@@ -198,6 +198,15 @@ class PackageCommand(Contract):
     ended_at: datetime | None = None
 
 
+MAX_REVISION_NOTES: Final = 16
+MAX_REVISION_NOTE: Final = 500
+RevisionNote = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_REVISION_NOTE, pattern=r"^[^\x00-\x1f\x7f]+$"),
+]
+"""One line about a revision, in the worker's words."""
+
+
 class EnvironmentRevision(Contract):
     """A state of an environment's installed packages (W3; CP-16, CP-19)."""
 
@@ -222,6 +231,11 @@ class EnvironmentRevision(Contract):
     probes: tuple[ProbeResult, ...] = Field(default=(), max_length=MAX_PROBES)
     """The probes that ran at this revision, the newest of each: the status of the
     capabilities at this revision (CP-24)."""
+    notes: tuple[RevisionNote, ...] = Field(default=(), max_length=MAX_REVISION_NOTES)
+    """What the worker was told about the change beyond its packages: for a new image's
+    base under a retained workspace layer, the packages installed in the layer that the
+    new base leaves without a dependency, or that stay over a base version (docs/IMAGES.md,
+    "The environment outside the workspace")."""
     recorded_at: datetime
 
 

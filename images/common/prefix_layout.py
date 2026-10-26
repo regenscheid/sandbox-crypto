@@ -51,6 +51,10 @@ MANIFEST_VERSION = 2
 """2 since the layer: an older worker refuses the manifest, and with it these images, rather
 than taking the layer for a whole environment (docs/COMPATIBILITY.md). Every research image
 has one, minimal's with no trees."""
+BASE_RECORD = "sandbox_science"
+"""The key that marks a base package's record in the layer, which micromamba keeps as it is
+and leaves out of the records it writes; a new base replaces exactly these
+(provisioning.rebase_layer)."""
 SLIM = ("files", "paths_data")
 """What a base package's record in the layer replaces: its file list becomes the layer's own
 entries for the package (its programs and shared libraries), which micromamba removes before
@@ -372,7 +376,8 @@ def slim(base: Path, record: dict[str, object]) -> dict[str, object]:
     files = record.get("files")
     listed = [str(item) for item in files] if isinstance(files, list) else []
     own = [relative for relative in listed if _entry(base, relative)]
-    return {key: value for key, value in record.items() if key not in SLIM} | {"files": own}
+    kept = {key: value for key, value in record.items() if key not in SLIM}
+    return kept | {"files": own, BASE_RECORD: "base"}
 
 
 def make_entry(base: Path, layer: Path, relative: str) -> None:

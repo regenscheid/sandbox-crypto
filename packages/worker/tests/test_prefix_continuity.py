@@ -67,15 +67,19 @@ class Worker:
             timeouts=MANAGER_TIMEOUTS,
         )
 
-    def hello(self, raw: object, fingerprint: str = A, incarnation: str = INCARNATION) -> None:
+    def hello(
+        self,
+        raw: object,
+        fingerprint: str = A,
+        incarnation: str = INCARNATION,
+        **extra: object,
+    ) -> None:
+        hello = {"workspace_prefix": raw, "environment": fingerprint, "package_epoch": 0}
         self.packages.hello(
             "env",
             cast(
                 ExecutorChannel,
-                SimpleNamespace(
-                    incarnation=incarnation,
-                    hello={"workspace_prefix": raw, "environment": fingerprint, "package_epoch": 0},
-                ),
+                SimpleNamespace(incarnation=incarnation, hello={**hello, **extra}),
             ),
         )
 
@@ -153,9 +157,22 @@ def test_a_new_base_under_a_retained_layer_is_a_new_revision_not_a_hold(tmp_path
     try:
         worker.hello(description(LAYER_A, **layered), LAYER_A)
         rebuilt = "1" * 16 + REBUILT[:16]
-        worker.hello(description(rebuilt, seeded=SEEDED, base=REBUILT), rebuilt, NEXT)
+        notes = [
+            "toolz 1.0, installed in the layer, needs oldpkg >=1, which neither the layer"
+            " nor the new base has",
+            "a line\nwith a break",
+        ]
+        rebase = {"from": SEEDED, "to": REBUILT, "notes": [*notes, 7]}
+        worker.hello(
+            description(rebuilt, seeded=REBUILT, base=REBUILT), rebuilt, NEXT, layer_rebase=rebase
+        )
         assert worker.store.package_status("env") is None
         assert (worker.revision().revision, worker.revision().fingerprint) == (1, rebuilt)
+        # What the executor found moving the layer onto the new base is the revision's notes,
+        # as data: one line each.
+        entry = worker.store.revision_entry("env", 1)
+        assert entry is not None
+        assert entry.notes == (notes[0], "a line?with a break")
         assert worker.store.workspace_prefix("env") == (IDENTITY, NEXT)
     finally:
         worker.store.close()
