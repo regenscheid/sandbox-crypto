@@ -48,6 +48,7 @@ from sandbox_science.orchestrator.skills.store import SkillStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .canaries import RuntimeSource
+from .connector_calls import RuntimeMcpClient
 from .credentials import (
     JOURNAL,
     MAX_REQUEST_BYTES,
@@ -99,6 +100,17 @@ class ProxySettings(Contract):
     index: tuple[str, ...] | None = None
 
 
+class DirectAccessSettings(Contract):
+    """The run service's connectors on the direct MCP path (D98): the project whose runs
+    get them, its servers, and what the index says of them, as ``ProxySettings``. Each
+    request is made by the connected runtime's own client (``mcp_request``)."""
+
+    project: Identifier
+    servers: tuple[Identifier, ...] = Field(min_length=1, max_length=64)
+    about: dict[str, str] = Field(default_factory=dict[str, str])
+    index: tuple[str, ...] | None = None
+
+
 class CanarySettings(Contract):
     """MCP canaries on the direct path (D103): each server listed by the runtime's direct
     client every ``interval`` seconds, recorded in the control store's ``mcp_canaries``."""
@@ -137,6 +149,8 @@ class ControlSettings(Contract):
     agent_models: tuple[ModelAlias, ...] = Field(default_factory=tuple, max_length=64)
     settings: Settings = Field(default_factory=Settings)
     proxy: ProxySettings | None = None
+    direct: DirectAccessSettings | None = None
+    """The direct MCP path's connectors, which exclude ``proxy`` (D98)."""
     embedding: ModelAlias | None = None
     metadata: ModelAlias | None = None
     checks: CheckSettings | None = None
@@ -150,6 +164,12 @@ class ControlSettings(Contract):
     def valid_listen(cls, value: str) -> str:
         bind_address(value)
         return value
+
+    @model_validator(mode="after")
+    def one_mcp_path(self) -> ControlSettings:
+        if self.proxy is not None and self.direct is not None:
+            raise ValueError("connectors take the MCP proxy or the direct path, not both")
+        return self
 
     @model_validator(mode="after")
     def remote_tls(self) -> ControlSettings:
@@ -400,6 +420,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                     ),
                     requests=WorkerRequestCheck(worker),
                     listings=listings,
+                    mcp_servers=settings.direct.servers if settings.direct is not None else (),
                 )
                 scope = loops.model_capability
                 gateway = CallbackGateway(
@@ -418,6 +439,20 @@ def create_app(settings: ControlSettings) -> web.Application:
                         raise ValueError("proxy project is outside runtime scope")
                     proxy = ProxyClient(spec.url, private_token(spec.token_file))
                     access = McpAccess(proxy, spec.servers, spec.project, spec.about, spec.index)
+                elif settings.direct is not None:
+                    direct = settings.direct
+                    if direct.project not in settings.projects:
+                        raise ValueError("direct MCP project is outside runtime scope")
+                    # Admitted here, made by the runtime's client, which holds the
+                    # placeholders and alone may reach the servers (D98).
+                    access = McpAccess(
+                        RuntimeMcpClient(loops),
+                        direct.servers,
+                        direct.project,
+                        direct.about,
+                        direct.index,
+                        path="direct",
+                    )
                 metadata = (
                     Metadata(
                         SkillStore(documents.control),

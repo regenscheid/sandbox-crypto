@@ -341,6 +341,45 @@ class ToolsListed(Contract):
         return self
 
 
+class McpRequest(Attempt):
+    """One MCP request of an attempt's connectors on the direct path (``mcp_request``,
+    host to runtime): the server, the method and its parameters, the session and run the
+    request names, and for a ``tools/call`` the model's call ID, under which the runtime
+    hands the result's binary items to the host (``publish_mcp_binary``)."""
+
+    call: str | None = Field(default=None, min_length=1, max_length=256)
+    server: Identifier
+    method: Literal["tools/list", "tools/call"]
+    params: dict[str, JsonValue]
+    session: str = Field(min_length=1, max_length=256)
+    run: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+class McpFailure(Contract):
+    """Why an MCP request has no result, as the client's ``ConnectorError`` says it: a
+    refusal's reason, and the permission request a held call names, or the one a server
+    named that the control side did not confirm."""
+
+    kind: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    message: str = Field(max_length=4096)
+    request: int | None = Field(default=None, strict=True, ge=1, le=10**18)
+    unconfirmed_request: int | None = Field(default=None, strict=True, ge=1, le=10**18)
+
+
+class McpAnswer(Contract):
+    """The runtime's answer to ``mcp_request``: the method's result, its binary items
+    replaced by the host's notes, or the failure."""
+
+    result: dict[str, JsonValue] | None = None
+    failure: McpFailure | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> McpAnswer:
+        if (self.result is None) == (self.failure is None):
+            raise ValueError("an MCP answer has a result or a failure")
+        return self
+
+
 class ToolRequest(Attempt):
     call: ToolCall
     operation: str = Field(min_length=1, max_length=256)

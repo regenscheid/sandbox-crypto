@@ -15,6 +15,7 @@ from typing import Any, cast
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned, threaded
+from sandbox_science.orchestrator.connectors import ConnectorError
 from sandbox_science.orchestrator.context.agent import AgentContext
 from sandbox_science.orchestrator.context.folding import FoldPoint, Folds
 from sandbox_science.orchestrator.context.history.collections import Collection
@@ -53,6 +54,7 @@ from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
 from .binaries import CallBinaries
+from .connector_calls import failure
 from .listings import WorkerListings, report
 from .models import CallbackModel
 from .requests import confirm
@@ -70,9 +72,13 @@ from .wire import (
     LogAppend,
     LogTool,
     LoopState,
+    McpAnswer,
+    McpRequest,
     ModelIntent,
     ModelObserved,
     ModelTicket,
+    RequestConfirmation,
+    RequestConfirmed,
     RunGiven,
     RunReply,
     ToolboxGiven,
@@ -85,6 +91,9 @@ from .wire import (
 )
 
 _log = logging.getLogger(__name__)
+RELAY_SECONDS = 1800.0
+"""How long the host waits for the runtime's answer to one relayed MCP request: a call's
+own bound (``CALL_SECONDS``) and the publication of its binary results."""
 
 
 def remote_outcome(outcome: ToolOutcome) -> ToolOutcome:
@@ -129,6 +138,10 @@ class Prepared:
         self.pending_calls: dict[str, ToolCall] = {}
         self.intent: LogTool | None = None
         self.binaries = CallBinaries()
+        self.relaying: ToolCall | None = None
+        """The connector call whose request the host is relaying to the runtime (D98)."""
+        self.confirmed: set[int] = set()
+        """The permission requests the host confirmed for this attempt (``confirm_request``)."""
         self.observation: dict[str, Any] | None = None
         self.observed_slots: set[int] = set()
         self._memory_close: Callable[[], None] | None = None
@@ -233,8 +246,6 @@ class Prepared:
                         "conflict", "tool dispatch has no matching unexecuted intent"
                     )
                 self.tool_notices = []
-                # A call the runtime published results of is the runtime's, not the host's.
-                self.binaries.host_runs(request.call.id)
                 # Original authority, offered tools and trusted gates come from preparation.
                 outcome = await self.toolbox.call(
                     request.call, request.operation, model=request.model, gates=self.hooks
@@ -263,13 +274,6 @@ class Prepared:
                         since=run.context.since,
                     )
                 )
-            if kind is Capability.PUBLISH_MCP_BINARY:
-                # Only the logged intent the host has not executed: a direct-path call the
-                # runtime makes. The host's index names its tool's server (D98).
-                pending = (
-                    self.intent.call if self.intent is not None and self.tool is None else None
-                )
-                return await self.binaries.publish(value, pending, self.toolbox.connectors)
             if kind is Capability.TOOL_DONE:
                 typed(Attempt, value)
                 if self.observed_tool is None:
@@ -362,6 +366,19 @@ class Prepared:
             else:
                 raise TransportError("denied", "capability is not available on an attempt")
             return None
+
+    async def publish(self, value: JsonValue) -> JsonValue:
+        """``publish_mcp_binary``: one binary item of the connector call the host is relaying
+        to the runtime (D98). Outside the attempt's lock, which that call's ``tool`` holds
+        while the runtime answers it; the host's index names its tool's server."""
+        with authority(self.owner):
+            if not isinstance(self.log, RunArchive):
+                raise TransportError("internal", "missing canonical attempt archive")
+            with self.log.archive.control.read() as tx:
+                check_owner(tx.sql, self.owner)
+            if self._closing:
+                raise TransportError("denied", "attempt capability is closing")
+            return await self.binaries.publish(value, self.relaying, self.toolbox.connectors)
 
     async def append(self, request: LogAppend) -> JsonValue:
         if self.shadow is None:
@@ -561,14 +578,17 @@ class HostLoops:
         run_share: float | None = None,
         requests: RequestCheck | None = None,
         listings: WorkerListings | None = None,
+        mcp_servers: Sequence[str] = (),
     ) -> None:
         """``run_share`` is the part of a configured project cost limit one run may use;
         ``requests`` checks a refusal that names an MCP permission request for an attempt
-        (``confirm_request``, D98), for the attempt's project only."""
+        (``confirm_request``, D98), for the attempt's project only; ``mcp_servers`` are
+        the direct path's servers, whose listings an attempt being prepared may report."""
         self.channel, self.projects = channel, projects
         self.requests = requests
         self.listings = listings
         """Forwards the listings an attempt's direct client reports to the worker (D98)."""
+        self.mcp_servers = tuple(mcp_servers)
         self.control, self.model_roles = control, model_roles or {}
         self.run_share = run_share
         self.attempts: dict[str, Prepared] = {}
@@ -698,12 +718,32 @@ class HostLoops:
                     )
                 await threaded(intents.observe, owner, observed.identity, observed.usage)
                 return None
+        if prepared is None and kind is Capability.REPORT_MCP_LISTING:
+            owner = self.owners.get(identity.attempt)
+            if owner is not None:
+                # An attempt being prepared lists its connectors through the runtime before
+                # it runs (D98): its project, session and run, and the direct path's servers.
+                return payload(
+                    await report(
+                        self.listings,
+                        typed(ListingReportRequest, value),
+                        project=owner.project,
+                        servers=self.mcp_servers,
+                        session=owner.session,
+                        run=owner.run,
+                    )
+                )
         if prepared is None:
             raise TransportError("denied", "attempt capability is absent or revoked")
         if kind is Capability.CONFIRM_REQUEST:
             # The attempt's project, never one the runtime names: a yes or a no about one
             # request, read from the middleware's records through the worker.
-            return await confirm(self.requests, prepared.owner.project, value)
+            reply = await confirm(self.requests, prepared.owner.project, value)
+            if typed(RequestConfirmed, reply).confirmed:
+                prepared.confirmed.add(typed(RequestConfirmation, value).request)
+            return reply
+        if kind is Capability.PUBLISH_MCP_BINARY:
+            return await prepared.publish(value)
         if kind is Capability.REPORT_MCP_LISTING:
             # The attempt's project, session and run, never the runtime's word, and one of
             # the attempt's connector servers only.
@@ -720,6 +760,65 @@ class HostLoops:
                 )
             )
         return await prepared.call(kind, value)
+
+    async def relay_mcp(
+        self,
+        server: str,
+        method: str,
+        params: Mapping[str, object],
+        *,
+        session: str,
+        run: str | None,
+    ) -> dict[str, Any]:
+        """One MCP request of the current attempt's connectors, made by the runtime's direct
+        client (``mcp_request``, D98): its listings while the attempt is prepared, and the
+        calls its toolbox admitted. A ``tools/call`` names the model's call while it is
+        relayed, so that the runtime can publish its binary results; a held call's failure
+        is taken only for a request the host confirmed for this attempt."""
+        identity = self.model_capability()
+        prepared = self.attempts.get(identity)
+        call: ToolCall | None = None
+        if prepared is not None and method == "tools/call":
+            intent = prepared.intent
+            call = intent.call if intent is not None and prepared.tool is None else None
+        try:
+            asked = McpRequest(
+                attempt=identity,
+                call=call.id if call is not None else None,
+                server=server,
+                method=cast(Any, method),
+                params=cast(dict[str, JsonValue], dict(params)),
+                session=session,
+                run=run,
+            )
+        except ValueError:
+            raise ConnectorError("unavailable", "the MCP request cannot be relayed") from None
+        if prepared is not None:
+            prepared.relaying = call
+        try:
+            answer = typed(
+                McpAnswer,
+                await self.channel.request(
+                    Capability.MCP_REQUEST, payload(asked), timeout=RELAY_SECONDS
+                ),
+            )
+        except TransportError as error:
+            # A call may have left before the runtime's answer was lost: its effect is
+            # unknown. A listing changes nothing.
+            if method == "tools/call" and error.kind not in ("denied", "invalid_request"):
+                raise ConnectorError(
+                    "no_usable_answer", "the agent runtime's answer was lost"
+                ) from None
+            raise ConnectorError(
+                "unavailable", f"the agent runtime did not make the request ({error.kind})"
+            ) from None
+        finally:
+            if prepared is not None:
+                prepared.relaying = None
+        if answer.failure is not None:
+            confirmed = prepared is not None and answer.failure.request in prepared.confirmed
+            raise failure(answer.failure, confirmed)
+        return cast(dict[str, Any], answer.result)
 
     async def run(
         self, model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any

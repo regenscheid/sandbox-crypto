@@ -39,10 +39,12 @@ OpenShell does not offer it whole; each complete listing, as the server sent it,
 take is not shown.
 
 In the confined runtime the client runs in the agent runtime's sandbox, beside OpenShell's
-proxy and the provider's placeholders: there it lists servers for the control service's
-canaries (``confinement.canaries``), and hands binary results to the host over
-``publish_mcp_binary`` (``confinement.binaries``). The agent's connector calls do not use
-it yet: this is the prototype the D98 decision weighs.
+proxy and the provider's placeholders: there it makes the agent's connector requests when
+the deployment takes the direct path (``[mcp_direct]``): the host's toolbox admits each
+call and relays its request (``confinement.connector_calls``); it lists servers for the
+control service's canaries (``confinement.canaries``), and hands binary results to the
+host over ``publish_mcp_binary`` (``confinement.binaries``). The MCP proxy stays the
+default until the babbage lab passes (D98).
 """
 
 from __future__ import annotations

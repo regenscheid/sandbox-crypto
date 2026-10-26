@@ -14,19 +14,19 @@ the run's publisher. It answers the artifact, revision and SHA-256, and the note
 replaces the item in the result the model sees.
 
 The host takes nothing from the runtime but the call ID and the bytes. The call must be
-the attempt's pending tool intent (logged with ``log_tool``, not yet executed by the host
-and not yet answered), and a connector tool's, whose server the host's own index names.
-It refuses a digest that does not match, an item or a call over its bounds (8 MiB
-decoded, the harness's bound on a whole answer, and 100 items, the recorder's bound on one
-call's files), a media type other than ``image/*``, ``audio/*`` or ``application/*``, and
-a call ID it did not see. The same item of the same call again answers what it answered
-the first time without keeping it again. The items a call kept are recorded with its
-tool result (``mcp_binaries``), each with the source ``runtime``.
+the one the host is relaying to the runtime at that moment: a connector tool's call of the
+attempt, admitted by the host's toolbox, whose ``mcp_request`` the runtime is answering, and
+whose server the host's own index names. It refuses a digest that does not match, an item
+or a call over its bounds (8 MiB decoded, the harness's bound on a whole answer, and 100
+items, the recorder's bound on one call's files), a media type other than ``image/*``,
+``audio/*`` or ``application/*``, and any other call ID. The same item of the same call
+again answers what it answered the first time without keeping it again. The items a call
+kept are recorded with its tool result (``mcp_binaries``), each with the source
+``runtime``.
 
-The capability is off unless the run's connector calls take the direct path
-(``Connectors.path``), which nothing sets yet: today every connector call runs on the
-host, through the proxy. A call the host's ``tool`` capability runs can publish nothing,
-and a call that published something cannot then be run by the host.
+The capability is on only for a run whose connector calls take the direct path
+(``Connectors.path``): ``[mcp_direct]``, where the host's toolbox admits each call and
+relays it to the runtime's client. Through the proxy no result is the runtime's to publish.
 """
 
 from __future__ import annotations
@@ -116,21 +116,13 @@ class CallBinaries:
 
     def __init__(self) -> None:
         self._calls: dict[str, _Kept] = {}
-        self._host_run: set[str] = set()
-        """Calls the host's ``tool`` capability ran: their results are the host's own."""
-
-    def host_runs(self, call: str) -> None:
-        """Note that the host runs ``call`` (``tool``); refused when the runtime published
-        binary results of it, which would then stand beside a result it did not make."""
-        if call in self._calls:
-            raise TransportError("conflict", "the runtime published results of this call")
-        self._host_run.add(call)
 
     async def publish(
-        self, value: JsonValue, pending: ToolCall | None, connectors: Connectors | None
+        self, value: JsonValue, relaying: ToolCall | None, connectors: Connectors | None
     ) -> JsonValue:
-        """Keep one item of ``pending``'s result, the attempt's unexecuted tool intent, with
-        the attempt's ``connectors``, whose index names the tool's server."""
+        """Keep one item of ``relaying``'s result, the attempt's connector call whose
+        request the host is relaying to the runtime, with the attempt's ``connectors``,
+        whose index names the tool's server."""
         asked = typed(BinaryResult, value)
         try:
             data = base64.b64decode(asked.data_b64, validate=True)
@@ -146,9 +138,9 @@ class CallBinaries:
         if known is not None and asked.sha256 in known.items:
             # A retry: the same answer, nothing kept again.
             return payload(known.items[asked.sha256][0])
-        if pending is None or pending.id != asked.call or asked.call in self._host_run:
-            raise TransportError("denied", "no pending tool call of this attempt has this ID")
-        tool = connectors.tools.get(pending.name) if connectors is not None else None
+        if relaying is None or relaying.id != asked.call:
+            raise TransportError("denied", "no call of this attempt being relayed has this ID")
+        tool = connectors.tools.get(relaying.name) if connectors is not None else None
         if connectors is None or tool is None:
             raise TransportError("denied", "the call is not a connector tool's")
         if connectors.path != "direct":
@@ -162,7 +154,7 @@ class CallBinaries:
         if len(known.items) >= MAX_BINARY_ITEMS or known.size + len(data) > MAX_BINARY_BYTES:
             raise TransportError("invalid_request", "the call's binary results exceed their bound")
         kept = await sink.keep_bytes(
-            tool.server, pending.name, data, asked.mime, origin="runtime-mcp"
+            tool.server, relaying.name, data, asked.mime, origin="runtime-mcp"
         )
         reply = BinaryKept(
             sha256=kept.sha256,

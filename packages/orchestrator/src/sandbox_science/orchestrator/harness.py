@@ -48,7 +48,7 @@ from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .chat import EventLog, RunChat, SessionHeld, UserMessages
 from .connector_settings import ProjectConnectors
-from .connectors import Connectors, ProxyClient
+from .connectors import Connectors, McpClient
 from .consistency.controller import ReviewController
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .consistency.store import ReviewStore
@@ -364,13 +364,16 @@ class RunRequest:
 
 @dataclass(frozen=True)
 class McpAccess:
-    """The MCP proxy the harness calls, and the servers whose tools a run gets (D-08).
+    """The MCP client the harness calls, and the servers whose tools a run gets (D-08).
 
-    The proxy knows the harness's token as one project's caller, and applies that
-    project's policy and approvals to every call, so only runs of ``project`` get the
-    servers' tools."""
+    Through the MCP proxy (``path`` ``proxy``), the proxy knows the harness's token as one
+    project's caller, and applies that project's policy and approvals to every call. On
+    the direct path (D98), the confined runtime's own client makes each request the
+    host's toolbox admitted (``confinement.connector_calls``), and OpenShell's native
+    rules and the policy middleware decide it for the project. Either way only runs of
+    ``project`` get the servers' tools."""
 
-    client: ProxyClient
+    client: McpClient
     servers: tuple[str, ...]
     project: str
     about: Mapping[str, str] = field(default_factory=dict[str, str])
@@ -378,6 +381,8 @@ class McpAccess:
     configured server, or one behind a portal (``e-print-mcp``)."""
     shown: tuple[str, ...] | None = None
     """The servers whose tools the index lists one by one; ``None`` lists every one."""
+    path: Literal["proxy", "direct"] = "proxy"
+    """Which path the run's connector calls take (``Connectors.path``)."""
 
 
 class RunSink(Protocol):
@@ -1814,6 +1819,7 @@ class Harness:
                 # Binary results a direct client gets become artifacts (D98); the proxy's
                 # answers carry none.
                 binaries=ArtifactBinaries(self.client, context),
+                path=self.mcp.path,
             )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:

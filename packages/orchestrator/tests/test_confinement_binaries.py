@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Binary results of the runtime's direct-path connector calls, kept by the host over the
-attempt's ``publish_mcp_binary`` (D98): the call must be the attempt's pending connector
-call, the bytes must match their digest and bounds, and a retry is answered, not kept
-again."""
+attempt's ``publish_mcp_binary`` (D98): the call must be the connector call whose request
+the host is relaying to the runtime, the bytes must match their digest and bounds, and a
+retry is answered, not kept again."""
 
 from __future__ import annotations
 
@@ -231,7 +231,7 @@ async def test_a_calls_items_are_bounded_in_bytes_and_count(linked: Host) -> Non
 @pytest.mark.parametrize(
     ("pending", "call"),
     [
-        (None, "call-1"),  # no pending intent: the host executed it, or none was logged
+        (None, "call-1"),  # no call being relayed: none, or one the runtime did not make
         (CALL, "call-9"),  # a call ID the run did not make
         (ToolCall("call-1", "shell", "{}"), "call-1"),  # not a connector tool's call
     ],
@@ -302,20 +302,3 @@ async def test_nothing_is_published_while_the_runs_calls_take_the_proxy_path(
         "this run's connector calls are not on the direct path",
     )
     assert linked.worker.writes == []
-
-
-async def test_a_call_the_host_ran_publishes_nothing(linked: Host) -> None:
-    linked.binaries.host_runs("call-1")
-    with pytest.raises(TransportError) as error:
-        await send(linked, asked(PNG))
-    assert error.value.kind == "denied"
-    assert linked.worker.writes == []
-
-
-async def test_a_call_the_runtime_published_results_of_is_not_run_by_the_host(
-    linked: Host,
-) -> None:
-    await send(linked, asked(PNG))
-    with pytest.raises(TransportError) as error:
-        linked.binaries.host_runs("call-1")
-    assert error.value.kind == "conflict"
