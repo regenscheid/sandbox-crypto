@@ -204,6 +204,7 @@ Background shell jobs (D83) have limits separate from a call's `wall_time`:
 | `jobs_per_environment` | 8 | Active accepted jobs in an environment, across sessions |
 | `job_profiles` | none | The worker's job profiles a job may name for a sandbox of its own (D93); the list is the grant, and the ceiling's list, if any, the profiles it permits |
 | `job_sandboxes` | 0 | Job sandboxes of the project creating, preparing, running or collecting at once; 0 keeps the feature off |
+| `child_profiles` | the project's own | The worker's child profiles a project's child environments may have; the list is the grant, and the ceiling's list, if any, the profiles it permits. Unset, only the project's delegation setting's `child_profile` (or the pool's default) |
 | `child_environments_max` | 2 | Child environments of the project at once, delegated runs' own environments ([child environments](specs/child-environments.md), CE-9); 0 turns them off whatever the project's delegation setting says |
 
 The pool ceiling clamps each project value; an omitted project value takes the pool's
