@@ -81,6 +81,20 @@ The operation catalog is explicit:
 - Confirm whether one MCP permission request is a refused call's, for the attempt's
   project, which the host binds: yes or no from the policy middleware's records through
   the worker (`confirm_request`, D98), never the request's record.
+- Keep one binary item of a direct-path connector call's result as an artifact revision
+  of the attempt's run (`publish_mcp_binary`, runtime to host, D98): the model's call ID,
+  media type, SHA-256 and bytes. The call must be the attempt's logged, unexecuted tool
+  intent and a connector tool's; the host takes its tool and server from its own index.
+  At most 8 MiB decoded per item and per call and 100 items per call; a digest mismatch,
+  a non-binary media type (other than `image/*`, `audio/*`, `application/*`) and any other
+  call ID are refused. A retry of the same item answers the recorded reply; the kept items
+  are recorded in the call's tool record. The runtime's direct MCP client runs in its own
+  sandbox; the host holds no MCP credential or placeholder.
+- In the other direction, list one MCP server's tools through the runtime's direct client
+  for the control service's canaries (`list_mcp_tools`, host to runtime, D103): `tools/list`
+  only, at most 32 pages within 15 s, answering the outcome (status, count, digest, error
+  kind), never the tools and never a tool call. Like `model` and `embedding`, it asks the
+  runtime for what only the runtime's sandbox can reach; it carries no attempt.
 - Evaluate closing/finishing guards and atomically finalize the attempt with its
   archive/checkpoint references and delivery receipts.
 
