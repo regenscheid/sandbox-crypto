@@ -48,7 +48,9 @@ import secrets
 import sys
 import time
 import tomllib
+import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -65,13 +67,21 @@ from sandbox_science.launcher.orchestrator import endpoint
 from sandbox_science.launcher.runtime_binding import WorkerBinding
 from sandbox_science.launcher.sandboxes import WorkerApi
 from sandbox_science.orchestrator.confinement.binaries import CallBinaries
+from sandbox_science.orchestrator.confinement.listings import WorkerListings
+from sandbox_science.orchestrator.confinement.listings import report as report_listing
 from sandbox_science.orchestrator.confinement.requests import confirm
 from sandbox_science.orchestrator.confinement.transport import (
     Capability,
     Channel,
     TransportError,
 )
-from sandbox_science.orchestrator.confinement.wire import McpAnswer, McpRequest, payload, typed
+from sandbox_science.orchestrator.confinement.wire import (
+    ListingReportRequest,
+    McpAnswer,
+    McpRequest,
+    payload,
+    typed,
+)
 from sandbox_science.orchestrator.mcp_binaries import ArtifactBinaries, Kept
 from sandbox_science.orchestrator.mcp_direct import WorkerRequestCheck
 from sandbox_science.orchestrator.model import ToolCall
@@ -83,6 +93,7 @@ from sandbox_science.policy.openshell import (
     SandboxFilesystem,
     compile_orchestrator,
 )
+from sandbox_science.policy.store import Acceptance, PolicyStore
 
 _spec = importlib.util.spec_from_file_location(
     "recovery_acceptance", Path(__file__).with_name("recovery_acceptance.py")
@@ -106,6 +117,9 @@ PERSONAL = CONFIG / "personal.toml"
 CREDENTIALS = CONFIG / "secrets/cloudflare.env"
 """The owner's Cloudflare Access file: passed by path to access_provider, never opened here."""
 PROFILE = REPO / "examples/openshell/profiles/cloudflare-access.yaml"
+CATALOG_DIR = (
+    REPO / "packages/policy/src/sandbox_science/policy/classifications" / "crypto-research-mcp"
+)
 PYTHON = "/opt/sandbox-science/bin/python"
 REMOTE = "/sandbox/lab"
 ESCALATED = "attack-catalog-mcp_get_catalog_info"
@@ -120,7 +134,7 @@ READS = [
     ["firecrawl-mcp_firecrawl_scrape", {"url": PAGE, "formats": ["markdown"]}],
 ]
 """One read each on e-print, nist-csrc and web-fetch, and one small firecrawl scrape."""
-CREDENTIALS = {
+CREDENTIAL_HEADERS = {
     "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
     "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",
 }
@@ -128,6 +142,13 @@ CREDENTIALS = {
 BINARY_TOOL = "web-fetch-mcp_web_capture"
 """Proof 5: a read that answers with a PNG of the page, the cheapest of the portal's."""
 BINARY_CALL = "lab-call-binary"
+DRIFT_TOOL = "firecrawl-mcp_firecrawl_search_feedback"
+"""Proof 3's hold: a non-read (write) tool the lab policy allows by name, so that only a
+drift holds it. It is called without its required arguments: once the drift is re-accepted
+the server refuses the arguments, and nothing is written."""
+MISPINNED = "attack-catalog-mcp_get_filter_contract"
+"""Proof 3's drift: the lab project's classification revision pins this tool's digest
+wrong, so every listing the runtime reports differs from the pin in force."""
 RERUN_READS = [["portal_list_servers", {}]]
 """A later lab's allowed call: the portal's own listing of its servers, so that the reads
 an earlier lab made upstream are not made again (``proofs --plan rerun``)."""
@@ -145,6 +166,9 @@ _RECORD_FIELDS = (
     "request",
     "scope",
     "source",
+    "rule",
+    "finding",
+    "drifted",
 )
 
 
@@ -168,11 +192,30 @@ def lab_policy(url: str) -> str:
     server = policy["mcp"]["servers"][SERVER]
     server["url"] = url
     server["tools"] = {
-        "allow": ["portal_list_servers"],
+        "allow": ["portal_list_servers", DRIFT_TOOL],
         "escalate": [ESCALATED],
         "deny": [DENIED, "portal_*"],
     }
     return yaml.safe_dump(policy, sort_keys=False)
+
+
+def mispinned_revision() -> bytes:
+    """The checked-in classification of the portal's server as one project revision, every
+    class unchanged and ``MISPINNED``'s digest wrong (proof 3's drift)."""
+    tools: dict[str, Any] = {}
+    for path in sorted(CATALOG_DIR.glob("*.yaml")):
+        found = yaml.safe_load(path.read_text())
+        assert found["server"] == SERVER
+        tools.update(found["tools"])
+    assert tools[MISPINNED].get("sha256"), "the mis-pinned tool must have a pin"
+    tools[MISPINNED]["sha256"] = hashlib.sha256(b"direct MCP lab: a wrong pin").hexdigest()
+    revision = {
+        "apiVersion": "sandbox-science/v0alpha1",
+        "kind": "ToolClassification",
+        "server": SERVER,
+        "tools": tools,
+    }
+    return yaml.safe_dump(revision, sort_keys=True, width=1_000_000).encode()
 
 
 def prepare() -> Path:
@@ -285,6 +328,14 @@ class DirectLab(recovery.OwnedRoot):
                 str(self.path / "policy.yaml"),
             ]
         )
+        # Proof 3's drift: the project's classification in force pins one tool wrong, as an
+        # accepted revision in the policy store the middleware and the worker both read.
+        revision = PolicyStore(self.path / "middleware/state").accept_classification(
+            PROJECT,
+            SERVER,
+            mispinned_revision(),
+            Acceptance("direct-mcp-lab", datetime.now(UTC), "lab: one pin wrong"),
+        )
         self.start_worker()
         compiled = self.compile()
         self.create_sandbox()
@@ -297,6 +348,7 @@ class DirectLab(recovery.OwnedRoot):
                 "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
                 "compiled": compiled,
                 "sandbox": self.sandbox_name(),
+                "mispinned": {"tool": MISPINNED, "revision": revision.revision},
             },
         )
         print("up", self.path, flush=True)
@@ -384,7 +436,7 @@ operator = true
             ceiling=self.path / "middleware/pool-ceiling.yaml",
             targets=self.path / "targets.yaml",
             project=PROJECT,
-            servers={SERVER: McpDirectServer(credentials=CREDENTIALS)},
+            servers={SERVER: McpDirectServer(credentials=CREDENTIAL_HEADERS)},
             python=PYTHON,
         )
         base = compile_orchestrator(
@@ -420,6 +472,7 @@ operator = true
             "denied_admitted": DENIED in admitted,
             "allowed_reads_admitted": all(tool in admitted for tool, _ in READS),
             "rerun_reads_admitted": all(tool in admitted for tool, _ in RERUN_READS),
+            "drift_tool_admitted": DRIFT_TOOL in admitted,
             "binary_tool_admitted": BINARY_TOOL in admitted,
             "deny_rules": len(endpoint_.deny_rules or ()),
             "middleware_config_mcp": config.get("mcp"),
@@ -501,6 +554,7 @@ operator = true
             "--project", PROJECT, "--session", SESSION, "--run", RUN,
             "--attempt", attempt, "--escalated", ESCALATED, "--denied", DENIED,
             "--invalid-tool", INVALID, "--reads", json.dumps(reads),
+            "--drift-tool", DRIFT_TOOL,
             *(["--skip-error-answer"] if skip_error_answer else []),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env=self.env, limit=32 * 1024 * 1024,
@@ -513,6 +567,9 @@ operator = true
         steps: list[dict[str, Any]] = []
         held: list[dict[str, Any]] = []
         tasks: list[asyncio.Task[None]] = []
+        reports: list[dict[str, Any]] = []
+        acceptances: list[dict[str, Any]] = []
+        listings = WorkerListings(worker)
 
         async def send(text: str) -> None:
             stdin.write((json.dumps({"t": "frame", "text": text}) + "\n").encode())
@@ -521,6 +578,28 @@ operator = true
         async def handle(kind: Capability, value: Any) -> Any:
             if value.get("attempt") != attempt:
                 raise TransportError("denied", "not this attempt's capability")
+            if kind is Capability.REPORT_MCP_LISTING:
+                # The host side of report_mcp_listing, as HostLoops serves it: the lab's
+                # project, session and run, never the runtime's word, and its one server.
+                asked = typed(ListingReportRequest, value)
+                entry: dict[str, Any] = {
+                    "server": asked.server,
+                    "tools": len(asked.tools),
+                    "denied_reported": DENIED in {tool.name for tool in asked.tools},
+                    "at": time.time(),
+                }
+                try:
+                    reply = await report_listing(
+                        listings, asked, project=PROJECT, servers=(SERVER,),
+                        session=SESSION, run=RUN,
+                    )  # fmt: skip
+                except TransportError as error:
+                    entry.update(taken=False, error=error.kind)
+                    reports.append(entry)
+                    raise
+                entry.update(taken=True, drifted=reply.drifted)
+                reports.append(entry)
+                return payload(reply)
             if kind is Capability.PUBLISH_MCP_BINARY:
                 # The host side of publish_mcp_binary: only the call the lab is relaying.
                 return await binaries.publish(
@@ -580,6 +659,55 @@ operator = true
                 )
                 card.update(answer_kind=answered["kind"], answered_at=time.time())
             cards.append(card)
+
+        async def accept_drift(request: int) -> None:
+            # As the workspace's classification review: read the server's drift, then
+            # re-accept exactly the listings it shows. The held call's own request is never
+            # answered: only the re-acceptance may let the call through.
+            def view() -> dict[str, Any] | None:
+                found = self.worker("GET", f"/v1/classifications?project={PROJECT}", operator=True)
+                for item in found:
+                    if item["server"] == SERVER:
+                        return item.get("drift")
+                return None
+
+            before = await asyncio.to_thread(view)
+            shown = [d["listing"] for d in (before or {}).get("drifts", []) if d.get("listing")]
+            entry: dict[str, Any] = {
+                "request": request,
+                "held_before": (before or {}).get("held"),
+                "listings": len(shown),
+                "sources": sorted({d.get("source") for d in (before or {}).get("drifts", [])}),
+                "changed": sorted(
+                    t["name"] for t in (before or {}).get("changed", []) if isinstance(t, dict)
+                ),
+                "added": len((before or {}).get("added", [])),
+                "removed": len((before or {}).get("removed", [])),
+            }
+            try:
+                await asyncio.to_thread(
+                    self.worker,
+                    "POST",
+                    f"/v1/classifications/{SERVER}/drift/accept",
+                    {
+                        "project": PROJECT,
+                        "operation_id": "lab-accept-" + secrets.token_hex(8),
+                        "reason": "direct MCP lab: re-accept the drifted listing",
+                        "listings": shown,
+                    },
+                    operator=True,
+                )
+                entry["accepted"] = True
+            except urllib.error.HTTPError as error:
+                entry.update(accepted=False, status=error.code)
+            except OSError as error:
+                entry.update(accepted=False, error=type(error).__name__)
+            entry["accepted_at"] = time.time()
+            after = await asyncio.to_thread(view)
+            entry["held_after"] = (after or {}).get("held")
+            acceptances.append(entry)
+            stdin.write((json.dumps({"t": "accepted"}) + "\n").encode())
+            await stdin.drain()
 
         binary: dict[str, Any] = {}
 
@@ -643,6 +771,9 @@ operator = true
                 elif message["t"] == "held":
                     held.append(message)
                     tasks.append(asyncio.ensure_future(answer(int(message["request"]))))
+                elif message["t"] == "drift_held":
+                    held.append(message)
+                    tasks.append(asyncio.ensure_future(accept_drift(int(message["request"]))))
                 elif message["t"] == "step":
                     steps.append(message)
                 elif message["t"] == "plan_done":
@@ -672,6 +803,8 @@ operator = true
             "cards": cards,
             "held": held,
             "binary": binary,
+            "reports": reports,
+            "acceptances": acceptances,
             "exit_code": process.returncode,
         }
 
@@ -681,7 +814,11 @@ operator = true
         with StoreReader(self.path / "middleware/state/events.db") as reader:
             for record in reader.records():
                 data = record.data()
-                kept: dict[str, Any] = {"seq": record.seq, "kind": record.kind}
+                kept: dict[str, Any] = {
+                    "seq": record.seq,
+                    "kind": record.kind,
+                    "record_source": record.source,
+                }
                 for key in _RECORD_FIELDS:
                     value = data.get(key)
                     if key in data and (isinstance(value, str | int | bool) or value is None):
@@ -784,15 +921,51 @@ operator = true
             and escalated.get("ok") is True
         )
         listing_answers = [a for a in answers if a.get("method") == "tools/list"]
-        identity = steps.get("listing_identity")
+        json_listing = steps.get("listing_json")
+        drift_hold = steps.get("drift_hold", {})
+        hold_first = drift_hold.get("first") or {}
+        hold_request = hold_first.get("request")
+        hold_calls = tool_calls(DRIFT_TOOL)
+        acceptance = (driven.get("acceptances") or [{}])[0]
+        reports = driven.get("reports", [])
+        runtime_drifts = [
+            r
+            for r in records
+            if r["kind"] == "mcp-tools-drift" and r.get("record_source") == "runtime"
+        ]
+        unread = [r for r in records if r["kind"] == "mcp-tools-listing-unread"]
         proof3 = {
             "listing_media": sorted({a["media"] for a in listing_answers}),
             "listing_answers": listing_answers,
             "listing": {k: v for k, v in listing.items() if k not in ("t", "step")},
-            "listing_identity": (
-                {k: v for k, v in identity.items() if k not in ("t", "step")}
-                if identity is not None
+            "listing_json": (
+                {k: v for k, v in json_listing.items() if k not in ("t", "step")}
+                if json_listing is not None
                 else None
+            ),
+            "unread_records": len(unread),
+            "reports": [{k: v for k, v in r.items() if k != "at"} for r in reports],
+            "reported_records": len(
+                [r for r in records if r["kind"] == "mcp-tools-listing-reported"]
+            ),
+            "drift_records": [r for r in records if r["kind"] == "mcp-tools-drift"],
+            "acceptance": {k: v for k, v in acceptance.items() if not k.endswith("_at")},
+            "accepted_records": [r for r in records if r["kind"] == "mcp-tools-accepted"],
+            "drift_hold": {k: v for k, v in drift_hold.items() if k not in ("t", "step")},
+            "drift_hold_middleware": [
+                {
+                    k: r.get(k)
+                    for k in ("outcome", "reason_code", "permission_request", "rule", "decision")
+                }
+                for r in hold_calls
+            ],
+            "drift_request_records": sorted(
+                {
+                    r["kind"]
+                    for r in records
+                    if hold_request is not None
+                    and hold_request in (r.get("request"), r.get("permission_request"))
+                }
             ),
             "other_answer_heads": sorted(
                 {
@@ -812,24 +985,56 @@ operator = true
                     if a.get("method") != "tools/list"
                 }
             ),
-            "drift_records": [r for r in records if r["kind"] == "mcp-tools-drift"],
             "error_answer": {k: v for k, v in error_answer.items() if k not in ("t", "step")},
             "answer_media": sorted({a["media"] for a in answers}),
         }
-        proof3["pass"] = bool(
+        unread_half = bool(
             listing.get("ok")
             and "text/event-stream" in proof3["listing_media"]
             and listing.get("denied_listed") is False
-            and listing.get("escalated_marked") is True
-            and listing.get("marked_with_effect") == listing.get("tools")
-            and (error_answer.get("ok") is True or error_answer.get("skipped") is True)
+            and unread
+            and any(r.get("taken") and r.get("drifted") for r in reports)
+            and runtime_drifts
         )
-        found = identity or {}
-        proof3["pass_with_identity_encoding"] = bool(
-            found.get("ok")
-            and found.get("denied_listed") is False
-            and found.get("escalated_marked") is True
-            and found.get("marked_with_effect") == found.get("tools")
+        outcome = drift_hold.get("outcome") or {}
+        hold_half = bool(
+            hold_first.get("error") == "approval_required"
+            and isinstance(hold_request, int)
+            and any(
+                r.get("permission_request") == hold_request
+                and "tool-list-drift" in str(r.get("rule"))
+                for r in hold_calls
+            )
+            and acceptance.get("held_before") is True
+            and acceptance.get("accepted") is True
+            and acceptance.get("held_after") is False
+            and MISPINNED in acceptance.get("changed", [])
+            and drift_hold.get("refusals_after_acceptance", 99) <= 1
+            and outcome.get("error") != "approval_required"
+            and outcome != {}
+            and not ({"approved", "approval"} & set(proof3["drift_request_records"]))
+        )
+        found_json = json_listing or {}
+        json_media = "application/json" in {
+            a["media"] for a in listing_answers if a.get("json_only_asked")
+        }
+        json_half: bool | None = (
+            bool(
+                found_json.get("ok")
+                and found_json.get("denied_listed") is False
+                and found_json.get("escalated_marked") is True
+            )
+            if json_media
+            else None
+        )
+        proof3["unread_half"] = unread_half
+        proof3["hold_half"] = hold_half
+        proof3["json_half"] = json_half
+        proof3["pass"] = bool(
+            unread_half
+            and hold_half
+            and json_half is not False
+            and (error_answer.get("ok") is True or error_answer.get("skipped") is True)
         )
         binary = driven.get("binary", {})
         proof5: dict[str, Any] = {"tool": BINARY_TOOL, **binary}
@@ -844,7 +1049,7 @@ operator = true
         variables = environment.get("variables", {})
         upstream = bool(
             listing.get("ok")
-            or (identity or {}).get("ok")
+            or (json_listing or {}).get("ok")
             or proof1["allowed_reads_passed"] > 0
             or escalated.get("ok")
         )

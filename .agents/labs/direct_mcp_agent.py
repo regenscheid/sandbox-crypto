@@ -33,6 +33,7 @@ import aiohttp
 
 from sandbox_science.orchestrator.confinement.canaries import DirectSettings
 from sandbox_science.orchestrator.confinement.connector_calls import RuntimeConnectorCalls
+from sandbox_science.orchestrator.confinement.listings import ControlListingReports
 from sandbox_science.orchestrator.confinement.requests import ControlRequestCheck
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
 from sandbox_science.orchestrator.connectors import ConnectorError
@@ -58,6 +59,8 @@ class RecordingClient(DirectClient):
         self.answers: list[dict[str, Any]] = []
         self.heads: list[dict[str, Any]] = []
         self.identity = False
+        self.json_only = False
+        """A lab diagnosis: ask for a JSON answer alone, which the middleware reads whole."""
 
     def _client(self) -> aiohttp.ClientSession:
         if self._http is None:
@@ -84,6 +87,8 @@ class RecordingClient(DirectClient):
         headers = super()._headers(server, session, mcp_session, run)
         if self.identity:
             headers["Accept-Encoding"] = "identity"
+        if self.json_only:
+            headers["Accept"] = "application/json"
         return headers
 
     async def _post(self, server, message, session, mcp_session, run):  # type: ignore[no-untyped-def]
@@ -98,6 +103,7 @@ class RecordingClient(DirectClient):
                 "media": kind,
                 "bytes": len(body),
                 "identity_asked": self.identity,
+                "json_only_asked": self.json_only,
                 **{key: value for key, value in head.items() if isinstance(value, str | bool)},
             }
         )
@@ -228,6 +234,12 @@ async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
         client.identity = True
         await listing(client, args, "listing_identity")
         client.identity = False
+    if args.json_listing:
+        # Proof 3's JSON half: the same listing, asking for a JSON answer, which the
+        # middleware reads whole and rewrites (a server may answer an event stream anyway).
+        client.json_only = True
+        await listing(client, args, "listing_json")
+        client.json_only = False
     # Proof 1: a denied tool, refused by OpenShell's native rules.
     try:
         await call(client, args, args.denied, {})
@@ -288,6 +300,48 @@ async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
             "last_refusal": last if passed is None else None,
         }
     )
+    # Proof 3: a non-read call held by the reported listing's drift until the user re-accepts
+    # the listing (the host does, as the workspace's review would); its own request is never
+    # answered. Called without its required arguments, so nothing is written upstream.
+    started = time.monotonic()
+    first = None
+    attempts = 0
+    refusals_after_acceptance = 0
+    outcome: dict[str, Any] | None = None
+    while time.monotonic() - started < args.hold_seconds:
+        attempts += 1
+        accepted_before = args.accepted.is_set()
+        try:
+            result = await call(client, args, args.drift_tool, {})
+            outcome = {"form": "tool_result", **content_summary(result)}
+            break
+        except Exception as error:
+            last = failure(error)
+            if last.get("error") != "approval_required":
+                outcome = {"form": "refused", **last}
+                break
+            if accepted_before:
+                refusals_after_acceptance += 1
+            if first is None:
+                first = {**last, "at": time.time()}
+                if "request" in last:
+                    emit({"t": "drift_held", "request": last["request"], "at": time.time()})
+                else:
+                    break
+            await asyncio.sleep(3)
+    emit(
+        {
+            "t": "step",
+            "step": "drift_hold",
+            "tool": args.drift_tool,
+            "first": first,
+            "attempts": attempts,
+            "refusals_after_acceptance": refusals_after_acceptance,
+            "accepted": args.accepted.is_set(),
+            "outcome": outcome,
+            "seconds": round(time.monotonic() - started, 3),
+        }
+    )
     # Proof 3: an error answer passes back to the client.
     if args.skip_error_answer:
         emit({"t": "step", "step": "error_answer", "skipped": True})
@@ -340,6 +394,8 @@ async def main() -> None:
     parser.add_argument("--hold-seconds", type=float, default=150.0)
     parser.add_argument("--skip-error-answer", action="store_true")
     parser.add_argument("--no-identity-fallback", dest="identity_fallback", action="store_false")
+    parser.add_argument("--drift-tool", required=True)
+    parser.add_argument("--no-json-listing", dest="json_listing", action="store_false")
     args = parser.parse_args()
 
     async def send(text: str) -> None:
@@ -348,6 +404,7 @@ async def main() -> None:
     settings = DirectSettings.model_validate_json(args.mcp)
     args.credentials = sorted(set(settings.servers[SERVER].credentials.values()))
     finished = asyncio.Event()
+    args.accepted = asyncio.Event()
 
     async def handle(kind: Capability, value: Any) -> Any:
         # The runtime's side of mcp_request, as the confined runtime serves it (proof 5).
@@ -366,6 +423,8 @@ async def main() -> None:
                 await channel.receive(message["text"])
             elif message.get("t") == "finish":
                 finished.set()
+            elif message.get("t") == "accepted":
+                args.accepted.set()
 
     reader = asyncio.ensure_future(read())
     client = RecordingClient(
@@ -373,6 +432,7 @@ async def main() -> None:
         project=args.project,
         check=ControlRequestCheck(channel, args.attempt),
         run=args.run,
+        reporter=ControlListingReports(channel, args.attempt),
     )
     try:
         await run_plan(client, args)

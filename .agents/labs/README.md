@@ -139,7 +139,17 @@ holds no binary item, proof 5 says `NO BINARY` (`pass: null`) and the lab says w
 types came back; firecrawl's `screenshot` format answers a URL in its text as well. OpenShell 0.1.5 never offers `WHOLE_BODY_BYTES` for a
 `text/event-stream` response (an open-ended response in its `permitted_body_modes`), so the
 middleware blocks the portal's event-stream listings (`tool_listing_unreadable`); the lab of
-2026-10-26 found proof 3's listing half failing for that reason. Receipts carry counts, reason codes, request numbers and tool
+2026-10-26 found proof 3's listing half failing for that reason. Such a listing now passes unread
+(`mcp-tools-listing-unread`): the agent's client, with the production `ControlListingReports`,
+filters it and reports it over `report_mcp_listing`, which the lab host forwards to the worker
+as `HostLoops` does (`WorkerListings`). Proof 3 then shows a hold: `up` puts a project
+classification revision in force whose pin of `attack-catalog-mcp_get_filter_contract` is wrong,
+so the reported listing drifts (source `runtime`); a call of
+`firecrawl-mcp_firecrawl_search_feedback`, a write the lab policy allows by name, is held as a
+`tool-list-drift` request that nobody answers, until the lab host re-accepts the drifted listings
+through the worker as the workspace's review does; the retry, without the tool's required
+arguments, then reaches the server, which refuses them. The lab also asks once for a JSON-only
+listing, which the middleware reads and rewrites if the portal answers JSON. Receipts carry counts, reason codes, request numbers and tool
 names only, and are exported with a SHA-256 manifest to `/var/tmp/ss-direct-mcp-evidence-*`.
 
 Lab32's `provisioning_revision_packages.py` reads exact recorded package/license
