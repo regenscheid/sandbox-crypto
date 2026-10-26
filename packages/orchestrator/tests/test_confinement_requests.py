@@ -52,7 +52,7 @@ async def linked() -> AsyncIterator[tuple[HostLoops, Channel, Recorded]]:
     vm_channel = Channel(lambda text: host_channel.receive(text), vm_handle)
     host = HostLoops(host_channel, frozenset({"crypto"}), requests=recorded)
     host.attempts[ATTEMPT] = cast(
-        Any, SimpleNamespace(owner=SimpleNamespace(project="crypto"), confirmed=set[int]())
+        Any, SimpleNamespace(owner=SimpleNamespace(project="crypto"), confirmed={})
     )
     try:
         yield host, vm_channel, recorded
@@ -76,7 +76,10 @@ async def test_the_host_answers_for_the_attempts_project_only(
     ]
     # The host remembers what it confirmed: only those requests' holds are taken from the
     # runtime's relayed answers (connector_calls).
-    assert host.attempts[ATTEMPT].confirmed == {12}
+    # Each with the call it was confirmed for, under the attempt's project.
+    assert host.attempts[ATTEMPT].confirmed == {
+        12: HeldCall("crypto", "papers", "tools/call", "send", DIGEST)
+    }
 
 
 async def test_a_malformed_call_is_not_confirmed_and_never_asked(

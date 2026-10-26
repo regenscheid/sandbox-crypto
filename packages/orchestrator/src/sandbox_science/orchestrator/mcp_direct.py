@@ -304,7 +304,7 @@ class DirectClient:
                 server,
                 method,
                 tool if isinstance(tool, str) else "",
-                _digest(params),
+                parameters_digest(params),
             )
         except (TypeError, ValueError, RecursionError):
             raise _unconfirmed(error.kind, request) from None
@@ -422,7 +422,7 @@ class DirectClient:
         return headers
 
 
-def _digest(params: Mapping[str, object]) -> str:
+def parameters_digest(params: Mapping[str, object]) -> str:
     """The digest the middleware's key holds for a request's parameters: those MCP defines,
     which are every one but ``_meta`` this client sends, as ``policy.mcp_wire`` encodes them
     (compact, and in the client's sorted order). Raises ValueError for what JSON cannot

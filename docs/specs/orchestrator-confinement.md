@@ -87,7 +87,8 @@ The operation catalog is explicit:
   call ID. The runtime's direct client makes it from its sandbox, through OpenShell's
   native rules and the policy middleware, and answers the result (binary items replaced by
   the host's notes) or the failure; the host takes a held call's failure only for a
-  request it confirmed for the attempt, and a lost answer to a call is an unknown effect.
+  request it confirmed for that very call (its server, method, tool and parameters'
+  digest), and a lost answer to a call is an unknown effect.
 - Keep one binary item of a direct-path connector call's result as an artifact revision
   of the attempt's run (`publish_mcp_binary`, runtime to host, D98): the model's call ID,
   media type, SHA-256 and bytes. The call must be the connector call whose `mcp_request`

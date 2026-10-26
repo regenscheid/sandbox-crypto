@@ -45,7 +45,7 @@ from sandbox_science.orchestrator.loop import (
     not_run,
     notice_message,
 )
-from sandbox_science.orchestrator.mcp_direct import RequestCheck
+from sandbox_science.orchestrator.mcp_direct import HeldCall, RequestCheck, parameters_digest
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
 from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
@@ -140,8 +140,10 @@ class Prepared:
         self.binaries = CallBinaries()
         self.relaying: ToolCall | None = None
         """The connector call whose request the host is relaying to the runtime (D98)."""
-        self.confirmed: set[int] = set()
-        """The permission requests the host confirmed for this attempt (``confirm_request``)."""
+        self.confirmed: dict[int, HeldCall] = {}
+        """The permission requests the host confirmed for this attempt (``confirm_request``),
+        each with the call it was confirmed for: its server, method, tool and the digest of
+        its parameters."""
         self.observation: dict[str, Any] | None = None
         self.observed_slots: set[int] = set()
         self._memory_close: Callable[[], None] | None = None
@@ -554,6 +556,19 @@ class Prepared:
                     exits.push_async_exit(self.leases.pop(slot))
 
 
+def _relayed(
+    project: str, server: str, method: str, params: Mapping[str, object]
+) -> HeldCall | None:
+    """The held call a relayed request is, as the middleware keys it; None for parameters
+    that cannot be digested."""
+    tool = params.get("name") if method == "tools/call" else None
+    try:
+        digest = parameters_digest(params)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return HeldCall(project, server, method, tool if isinstance(tool, str) else "", digest)
+
+
 def toolbox_given(toolbox: Toolbox) -> ToolboxGiven:
     return ToolboxGiven(
         specs=toolbox.specs,
@@ -740,7 +755,10 @@ class HostLoops:
             # request, read from the middleware's records through the worker.
             reply = await confirm(self.requests, prepared.owner.project, value)
             if typed(RequestConfirmed, reply).confirmed:
-                prepared.confirmed.add(typed(RequestConfirmation, value).request)
+                asked = typed(RequestConfirmation, value)
+                prepared.confirmed[asked.request] = HeldCall(
+                    prepared.owner.project, asked.server, asked.method, asked.tool, asked.arguments
+                )
             return reply
         if kind is Capability.PUBLISH_MCP_BINARY:
             return await prepared.publish(value)
@@ -816,7 +834,15 @@ class HostLoops:
             if prepared is not None:
                 prepared.relaying = None
         if answer.failure is not None:
-            confirmed = prepared is not None and answer.failure.request in prepared.confirmed
+            # A hold is this call's only if the host confirmed its request for this very
+            # call: the server, method, tool and parameters the host relayed, not the ones
+            # the runtime named when it asked.
+            held = (
+                prepared.confirmed.get(answer.failure.request)
+                if prepared is not None and answer.failure.request is not None
+                else None
+            )
+            confirmed = held is not None and held == _relayed(held.project, server, method, params)
             raise failure(answer.failure, confirmed)
         return cast(dict[str, Any], answer.result)
 

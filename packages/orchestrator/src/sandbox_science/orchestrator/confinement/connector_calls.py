@@ -19,8 +19,8 @@ The runtime (``RuntimeConnectorCalls``) makes it with a ``DirectClient`` of the 
   check;
 - a refusal that names a permission request is trusted only once the host confirms it over
   the attempt's ``confirm_request`` (which asks the worker), and the host takes a held
-  call's failure only for a request it confirmed for this attempt: the runtime's word alone
-  starts no wait and no card;
+  call's failure only for a request it confirmed for the very call it relayed (server,
+  method, tool and parameters' digest): the runtime's word alone starts no wait and no card;
 - a ``tools/call`` result's images, audio and blobs go to the host over the attempt's
   ``publish_mcp_binary`` under the model's call ID, while the host relays that call, and
   the host's note replaces each item.

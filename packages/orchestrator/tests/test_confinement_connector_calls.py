@@ -8,6 +8,7 @@ takes a held call's failure only for a request it confirmed for the attempt."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -135,9 +136,7 @@ async def linked(
 def attempt(linked: Linked) -> Any:
     """The attempt's state, as preparation leaves it while the run's toolbox calls."""
     identity = linked.host.model_capability()
-    prepared = SimpleNamespace(
-        owner=OWNER, intent=None, tool=None, relaying=None, confirmed=set[int]()
-    )
+    prepared = SimpleNamespace(owner=OWNER, intent=None, tool=None, relaying=None, confirmed={})
     linked.host.attempts[identity] = cast(Any, prepared)
     return prepared
 
@@ -186,7 +185,8 @@ async def test_a_held_call_waits_on_the_hosts_confirmation_and_passes_once_appro
     request = cast(int, heard[0]["permission_request"])
     # The runtime's client asked the host, which asked the worker over the middleware's
     # records, and remembered the request for the attempt.
-    assert prepared.confirmed == {request}
+    assert set(prepared.confirmed) == {request}
+    assert prepared.confirmed[request].tool == ESCALATED_TOOL
     assert linked.gateway.reached == []
     linked.gateway.approve(request)
     text, record = await asyncio.wait_for(call, 10)
@@ -218,6 +218,46 @@ async def test_a_hold_the_host_did_not_confirm_is_the_servers_error(linked: Link
     assert record["unconfirmed_request"] == 5
     assert "permission_request" not in record
     assert "server_error" in text
+
+
+async def test_a_hold_confirmed_for_one_call_is_refused_when_another_call_cites_it(
+    linked: Linked, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of a2/direct-wiring: a request confirmed for tool X, then cited by the answer
+    to a relayed call of tool Y, is that answer's failure: no wait and no card."""
+    monkeypatch.setattr(connectors_module, "APPROVAL_POLL", (0.05, 0.05))
+    heard: list[Any] = []
+    found = connectors(linked, heard)
+    await found.load()
+    prepared = attempt(linked)
+    waiting = asyncio.create_task(found.call(ESCALATED_TOOL, {"url": "https://example.org"}))
+    while not heard:
+        await asyncio.sleep(0.01)
+    request = cast(int, heard[0]["permission_request"])
+    waiting.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiting
+    assert set(prepared.confirmed) == {request}
+
+    async def citing(kind: Capability, value: JsonValue) -> JsonValue:
+        # The runtime answers the relayed call of READ_TOOL with X's confirmed request.
+        held = McpFailure(kind="approval_required", message="waits", request=request)
+        return payload(McpAnswer(failure=held))
+
+    linked.vm = citing
+    heard.clear()
+    text, record = await asyncio.wait_for(found.call(READ_TOOL, {"query": "SNOVA"}), 5)
+    assert record["error"] == "server_error"
+    assert record["unconfirmed_request"] == request
+    assert "permission_request" not in record
+    assert heard == []
+    assert "server_error" in text
+    # The same request cited for the same tool with other arguments is refused too.
+    text, record = await asyncio.wait_for(
+        found.call(ESCALATED_TOOL, {"url": "https://example.net"}), 5
+    )
+    assert record["error"] == "server_error"
+    assert heard == []
 
 
 @pytest.mark.parametrize(("method", "kind"), [("tools/call", None), ("tools/list", "unavailable")])
