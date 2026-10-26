@@ -206,6 +206,49 @@ def test_values_already_in_the_environment_reach_no_other_command(
     only_the_registration_had_them(openshell.called(), "create")
 
 
+def test_in_the_cluster_the_values_come_from_the_environment_and_reach_one_command(
+    openshell: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # As the manager Pod's init container gets them from the provider's Secret (envFrom).
+    for key, value in BOTH.items():
+        monkeypatch.setenv(key, value)
+    openshell.has([], ["cloudflare-access"])
+    argv = ["--from-environment", "--openshell", str(openshell.cli())]
+    assert access_provider.main(argv) == 0
+    assert openshell.steps() == [
+        "openshell provider create cloudflare-access crypto-research-mcp "
+        "CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET"
+    ]
+    only_the_registration_had_them(openshell.called(), "create")
+    said = capsys.readouterr()
+    assert said.out == "created the OpenShell provider crypto-research-mcp from the environment\n"
+    assert not leaked(said.out + said.err)
+
+
+def test_in_the_cluster_a_missing_value_or_profile_is_refused(
+    openshell: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CF_ACCESS_CLIENT_ID", ID)
+    monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
+    argv = ["--from-environment", "--openshell", str(openshell.cli())]
+    assert access_provider.main(argv) == 1
+    assert "no CF_ACCESS_CLIENT_SECRET" in capsys.readouterr().err
+    monkeypatch.setenv("CF_ACCESS_CLIENT_SECRET", SECRET)
+    openshell.has([], [])  # the gateway has no profile, and none is given
+    assert access_provider.main(argv) == 1
+    said = capsys.readouterr().err
+    assert "has no cloudflare-access provider profile" in said
+    assert not leaked(said)
+    assert not any(step.startswith("openshell provider create") for step in openshell.steps())
+    # A file and the environment at once, or a file without its profile, is refused.
+    for wrong in (
+        [str(PROFILE), *argv],
+        [str(PROFILE), "--openshell", str(openshell.cli())],
+    ):
+        with pytest.raises(SystemExit):
+            access_provider.main(wrong)
+
+
 def test_a_failed_registration_shows_nothing_and_dumps_no_core(
     openshell: Any, tmp_path: Path
 ) -> None:

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""MCP connectors for the agent: the harness as a caller of the MCP proxy (D67, D-08).
+"""MCP connectors for the agent: the harness as a caller of the MCP proxy (D67, D-08), or on
+the direct path of the confined runtime (D98, ``confinement.connector_calls``).
 
 The orchestrator reaches MCP servers only through the MCP proxy
 (docs/MCP-CONNECTORS.md), which authenticates it by its bearer token, applies the
@@ -521,6 +522,7 @@ class Connectors:
         disabled: Callable[[], frozenset[str]] | None = None,
         on_approval: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
         binaries: BinarySink | None = None,
+        path: Literal["proxy", "direct"] = "proxy",
     ) -> None:
         self.client, self.servers, self.session = client, tuple(dict.fromkeys(servers)), session
         self.run = run
@@ -529,11 +531,11 @@ class Connectors:
         """Offer only the tools the proxy classes ``read``: a delegated check's (DA-1)."""
         self.disabled = disabled
         self.on_approval = on_approval
-        self.path: Literal["proxy", "direct"] = "proxy"
+        self.path = path
         """The path the run's connector calls take: through the MCP proxy, from the host's
-        harness, or ``direct``, made by the agent runtime's own client (D98), which hands
-        binary results to the host over ``publish_mcp_binary``. Nothing sets ``direct`` yet:
-        the runtime's client does not make the agent's calls, so that capability is off."""
+        harness, or ``direct`` (``[mcp_direct]``, D98), admitted here and made by the agent
+        runtime's own client (``confinement.connector_calls``), which hands binary results
+        to the host over ``publish_mcp_binary``: that capability is on only on this path."""
         self.binaries = binaries
         """Keeps a result's binary items (as artifacts) and words the note that replaces
         each; without it, they are not shown and not kept."""

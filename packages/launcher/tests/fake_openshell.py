@@ -29,7 +29,8 @@ SIGTERM (noting so), so only SIGKILL ends it. ``gateway-refuses`` fails every
 ``create-silent`` fails ``sandbox create`` without a word on stderr; and
 ``create-rolls-back`` makes the sandbox Provisioning with a ``message``, answers one
 ``sandbox get`` with it and then forgets it, as a gateway that rolled it back. ``sandbox create``
-keeps its ``--driver-config-json``; with the state's ``record`` naming a file, it notes
+keeps its ``--driver-config-json``, its ``--label`` pairs, and its ``--provider`` names and
+policy (refusing a provider the state lacks); with the state's ``record`` naming a file, it notes
 that file's content as it was when create ran. ``sandbox upload`` copies each file to
 ``uploads/<sandbox>/`` beside the state file.
 
@@ -302,14 +303,29 @@ match args:
             print(f"error: sandbox {name} already exists", file=sys.stderr)
             sys.exit(1)
         state = load()
-        state["sandboxes"][name] = {"id": uuid.uuid4().hex, "phase": "Ready", "image": image}
+        state["sandboxes"][name] = {
+            "id": uuid.uuid4().hex,
+            "phase": "Ready",
+            "image": image,
+            "providers": [provider],
+            "policy": Path(policy).read_text(),
+        }
         save(state)
         note(f"sandbox create {name} {image} provider {provider} {' '.join(command)}")
     case ["sandbox", "create", "--name", name, "--from", image, "--policy", policy, *rest] if (
-        rest and rest[0] in ("--no-auto-providers", "--driver-config-json")
+        rest and rest[0] in ("--no-auto-providers", "--driver-config-json", "--provider", "--label")
     ):
         placement = rest[:2] if rest[:1] == ["--driver-config-json"] else []
         tail = rest[len(placement) :]
+        attached: list[str] = []
+        while tail[:1] == ["--provider"] and len(tail) > 1:
+            attached.append(tail[1])
+            tail = tail[2:]
+        labels: dict[str, str] = {}
+        while tail[:1] == ["--label"] and len(tail) > 1:
+            key, _, value = tail[1].partition("=")
+            labels[key] = value
+            tail = tail[2:]
         if tail[:3] != ["--no-auto-providers", "--detach", "--"]:
             print(f"openshell: unexpected arguments {args}", file=sys.stderr)
             sys.exit(64)
@@ -324,7 +340,7 @@ match args:
             seen = Path(record).read_text() if Path(record).exists() else "none"
             note(f"record at create {seen.strip()}")
         phase = "Provisioning" if "create-provisioning" in behaviours() else "Ready"
-        made = {"id": uuid.uuid4().hex, "phase": phase, "image": image}
+        made: dict[str, Any] = {"id": uuid.uuid4().hex, "phase": phase, "image": image}
         if "create-rolls-back" in behaviours():
             made |= {
                 "phase": "Provisioning",
@@ -334,9 +350,19 @@ match args:
         if placement:
             made["driver_config"] = placement[-1]
             made["policy"] = Path(policy).read_text()
+        if labels:
+            made["labels"] = labels
+        if attached:
+            missing = [provider for provider in attached if provider not in state["providers"]]
+            if missing:
+                print(f"error: provider '{missing[0]}' not found", file=sys.stderr)
+                sys.exit(1)
+            made["providers"] = attached
+            made["policy"] = Path(policy).read_text()
         state["sandboxes"][name] = made
         save(state)
-        note(f"sandbox create {name} {image} {' '.join(command)}")
+        with_providers = "".join(f" provider {provider}" for provider in attached)
+        note(f"sandbox create {name} {image}{with_providers} {' '.join(command)}")
         if "create-pending" in behaviours():
             print("error: timed out waiting for the gateway", file=sys.stderr)
             sys.exit(1)

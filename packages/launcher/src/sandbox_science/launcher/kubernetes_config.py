@@ -68,7 +68,17 @@ GATEWAY_PROFILE: dict[str, str] = {
     "gateway-tls.key": "mtls/tls.key",
 }
 """The manager Secret's OpenShell CLI profile keys and their places in the CLI's tree."""
-MANAGER_ONLY = frozenset((*GATEWAY_PROFILE, "manager-control.token", "model.key"))
+DIRECT_MANAGER_FILES: tuple[str, ...] = (
+    "manager-worker.token",
+    "agent-mcp-policy.yaml",
+    "runtime-mcp.json",
+)
+"""The runtime manager's further keys with ``[mcp_direct]``: its binding-only token for the
+worker (never its control token), which binds the runtime's sandbox (``WorkerLink``), the
+runtime sandbox's compiled MCP egress and the runtime client's servers (``ManagerMcp``)."""
+MANAGER_ONLY = frozenset(
+    (*GATEWAY_PROFILE, "manager-control.token", "model.key", *DIRECT_MANAGER_FILES)
+)
 """Keys no other service's projection may name: the gateway credential stays in the
 manager's Pod (KRB-1)."""
 _AWS_FILES = frozenset(("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_CA_BUNDLE"))
@@ -432,6 +442,59 @@ class Maintenance(Model):
     one resumes from the cursor."""
 
 
+_HEADER = r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$"
+_VARIABLE = r"^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+_SERVER = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_PROJECT = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+
+
+class McpDirectServer(Model):
+    """A server the agent runtime's direct client reaches: its credential headers, each the
+    variable in the runtime's sandbox that holds its provider's placeholder. Its URL is the
+    project policy's."""
+
+    credentials: dict[
+        Annotated[str, StringConstraints(pattern=_HEADER)],
+        Annotated[str, StringConstraints(pattern=_VARIABLE)],
+    ] = Field(default_factory=dict, max_length=16)
+
+
+class McpDirect(Model):
+    """The direct MCP path in the cluster (D98, docs/MCP-CONNECTORS.md): the agent's
+    connector calls made by the runtime's own client in its sandbox, through OpenShell's
+    native rules and the policy middleware. The runtime manager compiles nothing: the site
+    generator compiles the runtime sandbox's egress from the site's policy into the
+    manager's Secret, with a binding-only token for the worker that binds the sandbox. The
+    manager Pod registers ``provider`` with the gateway from the Secret
+    ``provider_secret`` (made by the operator with ``kubectl create secret generic …
+    --from-env-file=<path>``, docs/KUBERNETES-PREP.md) in an init container of its own,
+    and attaches it to the runtime's sandbox."""
+
+    project: Annotated[str, StringConstraints(pattern=_PROJECT)]
+    servers: dict[Annotated[str, StringConstraints(pattern=_PROJECT)], McpDirectServer] = Field(
+        min_length=1, max_length=64
+    )
+    about: dict[
+        Annotated[str, StringConstraints(pattern=rf"^{_SERVER}(?:/{_SERVER})?$")],
+        Annotated[str, StringConstraints(max_length=200)],
+    ] = Field(default_factory=dict)
+    index: (
+        tuple[Annotated[str, StringConstraints(pattern=rf"^{_SERVER}(?:/{_SERVER})?$")], ...] | None
+    ) = None
+    provider: Name = "crypto-research-mcp"
+    """The OpenShell provider with the servers' credentials."""
+    provider_secret: Name
+    """The Secret with the provider's ``CF_ACCESS_CLIENT_ID`` and ``CF_ACCESS_CLIENT_SECRET``,
+    which only the manager Pod's registering init container reads, as its environment."""
+
+    @model_validator(mode="after")
+    def indexed(self) -> Self:
+        for key in (*self.about, *(self.index or ())):
+            if key.partition("/")[0] not in self.servers:
+                raise ValueError("mcp_direct.about and index name one of mcp_direct.servers")
+        return self
+
+
 class BundleConfig(Model):
     name: Annotated[Name, StringConstraints(max_length=40)]
     namespace: Name
@@ -454,6 +517,8 @@ class BundleConfig(Model):
     """Absent, no cache trimming is scheduled."""
     alerts: Alerts | None = None
     """Absent, no alert rules are rendered."""
+    mcp_direct: McpDirect | None = None
+    """Absent, the agent runtime makes no MCP request (no MCP proxy runs in the cluster)."""
 
     @model_validator(mode="after")
     def remote_workspace(self) -> Self:
@@ -481,7 +546,7 @@ class BundleConfig(Model):
                     raise ValueError("environment requires an enabled service")
                 continue
             projected = {
-                f"/private/{name}" for name in (*REQUIRED_FILES[role], *secret.extra_files)
+                f"/private/{name}" for name in (*projected_files(self, role), *secret.extra_files)
             }
             for name, value in service.environment.items():
                 if name in _AWS_FILES and value not in projected:
@@ -493,6 +558,15 @@ class BundleConfig(Model):
                 ):
                     raise ValueError("service directories must use the role's managed PVC path")
         return self
+
+
+def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
+    """The keys ``role``'s Secret must hold: ``REQUIRED_FILES``'s, and the runtime
+    manager's direct MCP ones with ``[mcp_direct]``."""
+    files = REQUIRED_FILES[role]
+    if role == "runtime-manager" and config.mcp_direct is not None:
+        files = (*files, *DIRECT_MANAGER_FILES)
+    return files
 
 
 def load(path: Path) -> BundleConfig:

@@ -51,7 +51,9 @@ async def linked() -> AsyncIterator[tuple[HostLoops, Channel, Recorded]]:
     host_channel = Channel(lambda text: vm_channel.receive(text), host_handle)
     vm_channel = Channel(lambda text: host_channel.receive(text), vm_handle)
     host = HostLoops(host_channel, frozenset({"crypto"}), requests=recorded)
-    host.attempts[ATTEMPT] = cast(Any, SimpleNamespace(owner=SimpleNamespace(project="crypto")))
+    host.attempts[ATTEMPT] = cast(
+        Any, SimpleNamespace(owner=SimpleNamespace(project="crypto"), confirmed={})
+    )
     try:
         yield host, vm_channel, recorded
     finally:
@@ -62,7 +64,7 @@ async def linked() -> AsyncIterator[tuple[HostLoops, Channel, Recorded]]:
 async def test_the_host_answers_for_the_attempts_project_only(
     linked: tuple[HostLoops, Channel, Recorded],
 ) -> None:
-    _, vm, recorded = linked
+    host, vm, recorded = linked
     check = ControlRequestCheck(vm, ATTEMPT)
     # The runtime's word on the project is not sent: the attempt's is used.
     call = HeldCall("another-project", "papers", "tools/call", "send", DIGEST)
@@ -72,6 +74,12 @@ async def test_the_host_answers_for_the_attempts_project_only(
         (12, "crypto"),
         (13, "crypto"),
     ]
+    # The host remembers what it confirmed: only those requests' holds are taken from the
+    # runtime's relayed answers (connector_calls).
+    # Each with the call it was confirmed for, under the attempt's project.
+    assert host.attempts[ATTEMPT].confirmed == {
+        12: HeldCall("crypto", "papers", "tools/call", "send", DIGEST)
+    }
 
 
 async def test_a_malformed_call_is_not_confirmed_and_never_asked(

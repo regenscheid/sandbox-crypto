@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
 from sandbox_science.orchestrator.skills.embeddings import Embedder
 
 from .canaries import DirectSettings, RuntimeListings
+from .connector_calls import RuntimeConnectorCalls
 from .embeddings import RuntimeEmbeddings
 from .endpoints import client_tls, control_endpoint, control_trace
 from .listings import ControlListingReports
@@ -59,7 +60,8 @@ class RuntimeSettings(Contract):
     generation: Identifier
     mcp: DirectSettings | None = None
     """The direct MCP client, which runs here, beside OpenShell's proxy and the provider's
-    placeholders (D98); today it serves the control service's canary listings."""
+    placeholders (D98): it makes the attempts' connector requests the host relays
+    (``mcp_request``) and the control service's canary listings."""
 
     @field_validator("control_url")
     @classmethod
@@ -111,6 +113,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
     )
     loops: RuntimeLoops | None = None
     direct: DirectClient | None = None
+    calls: RuntimeConnectorCalls | None = None
     listings = RuntimeListings(
         None, frozenset(settings.mcp.servers) if settings.mcp is not None else frozenset()
     )
@@ -138,6 +141,10 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                     return await models.info(value)
                 if kind is Capability.LIST_MCP_TOOLS:
                     return await listings.list(value)
+                if kind is Capability.MCP_REQUEST:
+                    if calls is None:
+                        raise TransportError("denied", "this runtime has no direct MCP client")
+                    return await calls.request(value)
                 if loops is None:
                     raise TransportError("unavailable", "runtime is not initialized")
                 if kind is Capability.RUN:
@@ -150,9 +157,16 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
             if settings.mcp is not None:
                 # Its complete listings go to the host for the drift check (D98).
                 direct = listings.client = settings.mcp.client(ControlListingReports(channel, None))
+                # The attempts' connector requests, each with a client of its attempt's.
+                calls = RuntimeConnectorCalls(settings.mcp, channel)
             models = RuntimeModels(gateway, frozenset(settings.models), channel)
             embedding = RuntimeEmbeddings(embedder, channel)
-            loops = RuntimeLoops(channel, gateway, settings.scratch)
+            loops = RuntimeLoops(
+                channel,
+                gateway,
+                settings.scratch,
+                released=calls.release if calls is not None else None,
+            )
 
             async def read() -> None:
                 try:
@@ -202,6 +216,8 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         await gateway.close()
         if direct is not None:
             await direct.close()
+        if calls is not None:
+            await calls.close()
         if embedder is not None:
             await embedder.close()
 

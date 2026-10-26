@@ -10,6 +10,9 @@ that exec session's standard streams, one JSON object per line:
 - ``{"t": "held", "request": N}`` out: a confirmed hold, which the host answers as the
   workspace would; the client calls again every 3 s, as ``Connectors`` does;
 - ``{"t": "step", ...}`` out: one sanitized result per step (counts, kinds, names);
+- ``{"t": "plan_done"}`` out, after proofs 1 to 4: the host then relays proof 5's
+  ``mcp_request`` over the Channel, which the production ``RuntimeConnectorCalls`` answers
+  (its binary items over ``publish_mcp_binary``), and sends ``{"t": "finish"}`` in;
 - ``{"t": "done"}`` out, last.
 
 It never prints a credential, a placeholder's value, a URL or a response body: only
@@ -28,17 +31,14 @@ from typing import Any
 
 import aiohttp
 
+from sandbox_science.orchestrator.confinement.canaries import DirectSettings
+from sandbox_science.orchestrator.confinement.connector_calls import RuntimeConnectorCalls
 from sandbox_science.orchestrator.confinement.requests import ControlRequestCheck
-from sandbox_science.orchestrator.confinement.transport import Channel, TransportError
+from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
 from sandbox_science.orchestrator.connectors import ConnectorError
-from sandbox_science.orchestrator.mcp_direct import _PLACEHOLDER, DirectClient, DirectServer
-from sandbox_science.policy.openshell import ToolAdmission
+from sandbox_science.orchestrator.mcp_direct import _PLACEHOLDER, DirectClient
 
 SERVER = "crypto-research-mcp"
-CREDENTIALS = {
-    "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
-    "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",
-}
 EXCERPT = 160
 """The most characters of a server's error message a step reports (under the lab's 200)."""
 
@@ -216,7 +216,7 @@ async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
                     "present": variable in os.environ,
                     "placeholder": bool(_PLACEHOLDER.fullmatch(os.environ.get(variable, ""))),
                 }
-                for variable in CREDENTIALS.values()
+                for variable in args.credentials
             },
             "proxy_set": bool(os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")),
         }
@@ -326,7 +326,9 @@ async def run_plan(client: RecordingClient, args: argparse.Namespace) -> None:
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", required=True)
+    parser.add_argument(
+        "--mcp", required=True, help="runtime.json's mcp, as the launcher compiles it"
+    )
     parser.add_argument("--project", required=True)
     parser.add_argument("--session", required=True)
     parser.add_argument("--run", required=True)
@@ -335,9 +337,6 @@ async def main() -> None:
     parser.add_argument("--denied", required=True)
     parser.add_argument("--invalid-tool", required=True)
     parser.add_argument("--reads", required=True, help="JSON list of [tool, arguments]")
-    parser.add_argument(
-        "--tools", required=True, help="the compiled endpoint's ToolAdmission, as JSON"
-    )
     parser.add_argument("--hold-seconds", type=float, default=150.0)
     parser.add_argument("--skip-error-answer", action="store_true")
     parser.add_argument("--no-identity-fallback", dest="identity_fallback", action="store_false")
@@ -346,10 +345,18 @@ async def main() -> None:
     async def send(text: str) -> None:
         emit({"t": "frame", "text": text})
 
-    async def refuse(kind: object, value: object) -> object:
-        raise TransportError("denied", "the lab's agent offers no capability")
+    settings = DirectSettings.model_validate_json(args.mcp)
+    args.credentials = sorted(set(settings.servers[SERVER].credentials.values()))
+    finished = asyncio.Event()
 
-    channel = Channel(send, refuse)
+    async def handle(kind: Capability, value: Any) -> Any:
+        # The runtime's side of mcp_request, as the confined runtime serves it (proof 5).
+        if kind is Capability.MCP_REQUEST:
+            return await calls.request(value)
+        raise TransportError("denied", "the lab's agent offers no other capability")
+
+    channel = Channel(send, handle)
+    calls = RuntimeConnectorCalls(settings, channel)
     loop = asyncio.get_running_loop()
 
     async def read() -> None:
@@ -357,21 +364,22 @@ async def main() -> None:
             message = json.loads(line)
             if message.get("t") == "frame":
                 await channel.receive(message["text"])
+            elif message.get("t") == "finish":
+                finished.set()
 
     reader = asyncio.ensure_future(read())
     client = RecordingClient(
-        {
-            SERVER: DirectServer(
-                args.url, CREDENTIALS, ToolAdmission.model_validate_json(args.tools)
-            )
-        },
+        {SERVER: settings.servers[SERVER].server()},
         project=args.project,
         check=ControlRequestCheck(channel, args.attempt),
         run=args.run,
     )
     try:
         await run_plan(client, args)
+        emit({"t": "plan_done"})
+        await asyncio.wait_for(finished.wait(), timeout=660)
     finally:
+        await calls.close()
         await client.close()
         emit({"t": "done"})
         reader.cancel()

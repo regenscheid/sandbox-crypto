@@ -57,6 +57,9 @@ MAX_LISTED_NAMES: Final = 32
 MAX_OBSERVATIONS: Final = 16
 """Observations kept per environment and sandbox name; the newest are kept."""
 ENVIRONMENT_LABEL: Final = "sandbox-science.io/environment"
+PROJECT_LABEL: Final = "sandbox-science.io/project"
+"""The label the launcher and the Kubernetes runtime manager give the agent runtime's
+sandbox: its project, which the worker checks before a project-scoped client binds it."""
 """The label ``Environments.create`` gives a sandbox: the environment's ID."""
 _LABEL_VALUE: Final = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$")
 MAX_LIST_PAGES: Final = 32
@@ -136,6 +139,11 @@ def label_value(environment_id: str) -> str | None:
     """The value of ``ENVIRONMENT_LABEL`` for an environment, or None when its ID is no
     valid Kubernetes label value (over 63 characters, or not ending alphanumerically)."""
     return environment_id if _LABEL_VALUE.fullmatch(environment_id) else None
+
+
+def labels(entry: dict[str, object]) -> dict[str, object]:
+    """A sandbox's labels, as ``sandbox get`` or ``sandbox list`` gives them."""
+    return _labels(entry)
 
 
 def _labels(entry: dict[str, object]) -> dict[str, object]:

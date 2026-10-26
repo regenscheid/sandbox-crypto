@@ -1687,3 +1687,110 @@ def test_cli_writes_the_release_job_without_overwriting(tmp_path, capsys):
     arguments = ["release-job", "--config", str(config), "--output", str(bad), "--after", "x"]
     assert main(arguments) == 1
     assert not bad.exists()
+
+
+DIRECT = {
+    "project": "crypto",
+    "servers": {
+        "crypto-research-mcp": {"credentials": {"CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID"}}
+    },
+    "provider_secret": "research-mcp-provider",
+}
+
+
+def test_the_direct_path_links_the_manager_to_the_worker_and_registers_its_provider():
+    data = values() | {"mcp_direct": DIRECT}
+    config = configured(data)
+    items = objects(config)
+    manager_labels = {
+        "app.kubernetes.io/part-of": "research",
+        "app.kubernetes.io/component": "runtime-manager",
+    }
+    pool_labels = {"app.kubernetes.io/part-of": "research", "app.kubernetes.io/component": "pool"}
+    worker = {"protocol": "TCP", "port": 8100}
+    # The manager reaches the worker, which binds the runtime's sandbox, and nothing else new.
+    manager = _policy("research-runtime-manager", config)
+    assert manager["egress"][-1] == {
+        "to": [{"podSelector": {"matchLabels": pool_labels}}],
+        "ports": [worker],
+    }
+    assert manager["egress"][:-1] == _policy("research-runtime-manager")["egress"]
+    assert manager["ingress"] == []
+    pool = _policy("research-pool", config)
+    assert {"from": [{"podSelector": {"matchLabels": manager_labels}}], "ports": [worker]} in (
+        pool["ingress"]
+    )
+    spec = pod(items, "runtime-manager")
+    # Its Secret projects the worker token and the compiled direct path beside its keys.
+    copy = next(init for init in spec["initContainers"] if init["name"] == "copy-runtime-manager")
+    projected = {pair[0] for pair in json.loads(copy["args"][-1])}
+    assert {"manager-worker.token", "agent-mcp-policy.yaml", "runtime-mcp.json"} <= projected
+    # The provider's Secret reaches one init container, as its environment, after the copy.
+    names = [init["name"] for init in spec["initContainers"]]
+    assert names[-1] == "register-mcp-provider"
+    assert names.index("copy-runtime-manager") < names.index("register-mcp-provider")
+    register = spec["initContainers"][-1]
+    # Only the provider's two keys, by name: never every key of the Secret.
+    assert "envFrom" not in register
+    secret_keys = [
+        (item["name"], item["valueFrom"]["secretKeyRef"])
+        for item in register["env"]
+        if "valueFrom" in item
+    ]
+    assert secret_keys == [
+        (key, {"name": "research-mcp-provider", "key": key})
+        for key in ("CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET")
+    ]
+    assert register["command"] == [
+        "python3",
+        "-I",
+        "-m",
+        "sandbox_science.launcher.access_provider",
+    ]
+    assert register["args"] == [
+        "--from-environment",
+        "--openshell",
+        "/usr/local/bin/openshell",
+        "--provider",
+        "crypto-research-mcp",
+    ]
+    environment = {item["name"]: item["value"] for item in register["env"] if "value" in item}
+    assert environment["XDG_CONFIG_HOME"] == "/private/xdg"
+    assert {mount["mountPath"]: mount.get("readOnly") for mount in register["volumeMounts"]} == {
+        "/private": True,
+        "/tmp": None,
+    }
+    referenced = [
+        (container["name"], variable["valueFrom"]["secretKeyRef"]["name"])
+        for item in items
+        if item["kind"] == "Deployment"
+        for container in [
+            *item["spec"]["template"]["spec"]["containers"],
+            *item["spec"]["template"]["spec"]["initContainers"],
+        ]
+        for variable in container.get("env", [])
+        if "valueFrom" in variable
+    ]
+    assert referenced == [("register-mcp-provider", "research-mcp-provider")] * 2
+    assert not any(
+        "envFrom" in container
+        for item in items
+        if item["kind"] == "Deployment"
+        for container in [
+            *item["spec"]["template"]["spec"]["containers"],
+            *item["spec"]["template"]["spec"]["initContainers"],
+        ]
+    )
+    # Without it, nothing of the direct path is rendered.
+    plain = pod(objects(), "runtime-manager")
+    assert "register-mcp-provider" not in [init["name"] for init in plain["initContainers"]]
+
+
+def test_the_direct_path_is_bounded_and_names_its_servers():
+    for change, message in (
+        ({"servers": {}}, "servers"),
+        ({"about": {"other": "x"}}, "mcp_direct.about and index"),
+        ({"provider_secret": "Not_A_Name"}, "provider_secret"),
+    ):
+        with pytest.raises(Exception, match=message):
+            configured(values() | {"mcp_direct": DIRECT | change})

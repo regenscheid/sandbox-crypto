@@ -188,6 +188,8 @@ class Client:
     recovery_control: bool = False
     operator: bool = False
     artifact_retention: bool = False
+    binding_only: bool = False
+    """Only the runtime sandbox's bind and unbind routes (``ClientSettings.binding_only``)."""
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -257,6 +259,7 @@ def create_app(
             c.recovery_control,
             c.operator,
             c.artifact_retention,
+            c.binding_only,
         )
         for c in clients
     }
@@ -300,6 +303,12 @@ def create_app(
                 response.headers["Cache-Control"] = "no-store"
             return response
         request[_CLIENT] = client
+        if client.binding_only and not _binding_route(request):
+            response = _error(
+                ErrorKind.POLICY_DENIED, "this client may only bind the runtime's sandbox", 403
+            )
+            _audit(request, client, response.status)
+            return response
         try:
             _check_protocol(request)
             with operator_scope(client.operator):
@@ -604,6 +613,17 @@ def _client(request: web.Request) -> Client:
     return cast(Client, request[_CLIENT])
 
 
+_BINDING_ROUTES = frozenset(
+    {("POST", "/v1/runtime-sandboxes"), ("DELETE", "/v1/runtime-sandboxes/{sandbox_id}")}
+)
+"""The only routes a ``binding_only`` client reaches."""
+
+
+def _binding_route(request: web.Request) -> bool:
+    resource = request.match_info.route.resource
+    return resource is not None and (request.method, resource.canonical) in _BINDING_ROUTES
+
+
 def _visible(request: web.Request, project_id: str, what: str) -> None:
     """Hide what belongs to a project the client may not act for, as if it did not exist."""
     if not _client(request).allows(project_id):
@@ -814,9 +834,10 @@ async def revise_environment(request: web.Request) -> web.Response:
 
 
 def _runtime_sandbox(request: web.Request) -> Environments:
-    """Only an operator client (the launcher) binds the agent runtime's sandbox, which no
-    environment record names."""
-    if not _client(request).operator:
+    """Only an operator client (the launcher) or a binding-only one (the Kubernetes runtime
+    manager) binds the agent runtime's sandbox, which no environment record names."""
+    client = _client(request)
+    if not (client.operator or client.binding_only):
         raise WorkerError(
             ErrorKind.POLICY_DENIED, "binding the runtime's sandbox needs an operator client"
         )
@@ -829,7 +850,14 @@ async def bind_runtime_sandbox(request: web.Request) -> web.Response:
     body = RuntimeSandboxRequest.model_validate_json(await _body(request))
     environments = _runtime_sandbox(request)
     _allowed(request, body.project_id)
-    revision = await asyncio.to_thread(environments.bind_runtime, body.project_id, body.sandbox_id)
+    projects = _client(request).projects
+    if projects is not None:
+        # A project-scoped client binds only its own project's runtime sandbox, as the
+        # gateway shows it (its project label); the pool's own token binds any.
+        await environments.runtime_sandbox_of(body.project_id, body.sandbox_id)
+    revision = await asyncio.to_thread(
+        environments.bind_runtime, body.project_id, body.sandbox_id, _client(request).projects
+    )
     return _json(
         RuntimeSandboxBinding(
             sandbox_id=body.sandbox_id, project_id=body.project_id, policy=revision
@@ -841,7 +869,8 @@ async def unbind_runtime_sandbox(request: web.Request) -> web.Response:
     """Remove the binding of a runtime sandbox that was deleted."""
     environments = _runtime_sandbox(request)
     sandbox_id = _identifier(request.match_info["sandbox_id"], "sandbox_id")
-    removed = await asyncio.to_thread(environments.unbind_runtime, sandbox_id)
+    projects = _client(request).projects
+    removed = await asyncio.to_thread(environments.unbind_runtime, sandbox_id, projects)
     return _json(RuntimeSandboxUnbound(sandbox_id=sandbox_id, unbound=removed))
 
 

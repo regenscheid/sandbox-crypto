@@ -119,6 +119,19 @@ ceiling = "~/.local/state/openshell-lab/middleware/pool-ceiling.yaml"
 minimal = "sandbox-science/minimal:02f85b3"
 crypto-base = "sandbox-science/crypto-base:02f85b3"
 
+# Instead of [mcp_proxy] below (never both), the direct path (D98, docs/MCP-CONNECTORS.md#the-direct-path):
+# the agent runtime's own client makes the connector calls from its sandbox, through
+# OpenShell's native rules and the policy middleware (whose settings need mcp_listings = true).
+# The proxy stays the default until the babbage lab passes.
+# [mcp_direct]
+# providers = ["crypto-research-mcp"]
+# provider_env_file = "/path/to/the/owners/cloudflare.env"
+# provider_profile = "openshell/profiles/cloudflare-access.yaml"
+# index = ["crypto-research-mcp/e-print-mcp", "crypto-research-mcp/nist-csrc-mcp"]
+#
+# [mcp_direct.servers.crypto-research-mcp]   # its URL is the project policy's
+# credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
+
 # The MCP proxy, in an OpenShell sandbox of its own (docs/QUICKSTART.md): uncomment once
 # images/build.sh mcp-proxy has built its image. With provider_env_file, up registers the
 # provider from the owner's file when the gateway has none, as on each new lab gateway:

@@ -81,6 +81,10 @@ class Capability(StrEnum):
     LIST_MCP_TOOLS = "list_mcp_tools"
     """Host to runtime: one bounded canary listing of a server's tools through the runtime's
     direct MCP client, never a tool call (D98, D103)."""
+    MCP_REQUEST = "mcp_request"
+    """Host to runtime: one MCP request (``tools/list`` or ``tools/call``) of an attempt's
+    connector tools, made by the runtime's direct MCP client on the direct path, after the
+    host's toolbox admitted the call (D98)."""
 
 
 class Request(Contract):

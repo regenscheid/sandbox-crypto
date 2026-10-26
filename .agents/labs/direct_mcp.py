@@ -11,18 +11,25 @@ teardown machinery (``make_root``, ``OwnedRoot``, recovery_acceptance_up.sh).
 ``mcp_listings``, a worker with a run-service client and an operator (workspace) client,
 registers the MCP provider from the owner's Cloudflare Access file by its path alone
 (``sandbox_science.launcher.access_provider``, as the launcher's ``provider_env_file``
-does: only that helper and the one OpenShell command it hands the values to open it),
-compiles the agent MCP endpoint for a lab policy over the portal's server
-(``compile_agent_mcp``; classification from the checked-in crypto-research-mcp files, one
-attack-catalog tool escalated and one denied), and creates an agent runtime sandbox from
-the orchestrator image with the provider attached.
+does: only that helper and the one OpenShell command it hands the values to open it), and
+then uses the product's direct-path wiring (``[mcp_direct]``): the launcher's
+``direct_mcp.compile_direct`` compiles the runtime sandbox's egress for a lab policy over
+the portal's server (classification from the checked-in crypto-research-mcp files, one
+attack-catalog tool escalated and one denied) and ``merged`` adds it to the runtime's
+``compile_orchestrator`` policy; ``runtime_owner.create_owned`` creates the agent runtime
+sandbox from the orchestrator image with the provider attached and binds it through the
+worker (``WorkerBinding``), as ``up`` and the Kubernetes runtime manager do.
 
 ``proofs`` runs DirectClient in that sandbox (direct_mcp_agent.py) over one exec session,
 whose standard streams carry the confinement Channel: the client's ControlRequestCheck asks
 the lab host's ``confirm_request``, which binds the lab's project and asks the worker
 (``confinement.requests.confirm`` with ``WorkerRequestCheck``, as the host's HostLoops
 does). The lab answers a confirmed hold through the worker's answer route with the
-operator token, as the workspace does. Proof 5 (binary results) is recorded as pending.
+operator token, as the workspace does. Proof 5 relays one ``mcp_request`` of a tool that
+answers with an image (web-fetch's ``web_capture`` of a small public page) to the agent's
+production ``RuntimeConnectorCalls``, which withholds each binary item and sends it over
+``publish_mcp_binary``; the lab host keeps it with the production ``CallBinaries`` (the
+lab's sink writes the bytes into the lab root instead of a session's workspace).
 
 The portal's URL is read at run time from the personal instance's policy (named by
 ``~/.config/sandbox-science/personal.toml``), never written to the repository, and never
@@ -33,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import json
 import re
@@ -42,29 +50,38 @@ import time
 import tomllib
 import urllib.request
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import yaml
 
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.event_store import StoreReader
+from sandbox_science.launcher import direct_mcp, runtime_owner
+from sandbox_science.launcher.config import McpDirectServer
+from sandbox_science.launcher.mcp import OpenShell
+from sandbox_science.launcher.orchestrator import endpoint
+from sandbox_science.launcher.runtime_binding import WorkerBinding
+from sandbox_science.launcher.sandboxes import WorkerApi
+from sandbox_science.orchestrator.confinement.binaries import CallBinaries
 from sandbox_science.orchestrator.confinement.requests import confirm
 from sandbox_science.orchestrator.confinement.transport import (
     Capability,
     Channel,
     TransportError,
 )
+from sandbox_science.orchestrator.confinement.wire import McpAnswer, McpRequest, payload, typed
+from sandbox_science.orchestrator.mcp_binaries import ArtifactBinaries, Kept
 from sandbox_science.orchestrator.mcp_direct import WorkerRequestCheck
+from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.policy import load_policy
-from sandbox_science.policy.loader import load_ceiling
 from sandbox_science.policy.openshell import (
-    AgentMcpTarget,
     AnyOf,
+    OrchestratorTarget,
     SandboxFilesystem,
-    compile_agent_mcp,
-    tool_admission,
+    compile_orchestrator,
 )
 
 _spec = importlib.util.spec_from_file_location(
@@ -103,6 +120,14 @@ READS = [
     ["firecrawl-mcp_firecrawl_scrape", {"url": PAGE, "formats": ["markdown"]}],
 ]
 """One read each on e-print, nist-csrc and web-fetch, and one small firecrawl scrape."""
+CREDENTIALS = {
+    "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
+    "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",
+}
+"""The portal's credential headers and their placeholders' variables, as ``[mcp_direct]``."""
+BINARY_TOOL = "web-fetch-mcp_web_capture"
+"""Proof 5: a read that answers with a PNG of the page, the cheapest of the portal's."""
+BINARY_CALL = "lab-call-binary"
 RERUN_READS = [["portal_list_servers", {}]]
 """A later lab's allowed call: the portal's own listing of its servers, so that the reads
 an earlier lab made upstream are not made again (``proofs --plan rerun``)."""
@@ -161,6 +186,23 @@ def prepare() -> Path:
     )
     recovery.private(lab / "owned-sandboxes.json", "{}\n")
     return lab
+
+
+class LabBinaries(ArtifactBinaries):
+    """Proof 5's sink: the production ``CallBinaries`` keeps each item through it, and it
+    writes the bytes into the lab root (no session workspace or artifact store runs here)."""
+
+    def __init__(self, directory: Path) -> None:  # no worker or publisher here
+        self.directory = directory
+
+    async def keep_bytes(
+        self, server: str, tool: str, data: bytes, mime: str | None, *, origin: str = "mcp"
+    ) -> Kept:
+        digest = hashlib.sha256(data).hexdigest()
+        self.directory.mkdir(mode=0o700, exist_ok=True)
+        (self.directory / digest).write_bytes(data)
+        note = f"[{mime} from {server}, {len(data)} bytes: kept in the lab as {digest[:12]}]"
+        return Kept(digest, len(data), note, f"kept/{digest}", f"lab-{digest[:12]}")
 
 
 class DirectLab(recovery.OwnedRoot):
@@ -244,7 +286,7 @@ class DirectLab(recovery.OwnedRoot):
             ]
         )
         self.start_worker()
-        compiled = self.compile(loaded)
+        compiled = self.compile()
         self.create_sandbox()
         self.evidence(
             "ready",
@@ -333,92 +375,88 @@ operator = true
 
         recovery.wait(listening, seconds=60)
 
-    def compile(self, loaded) -> dict[str, Any]:
-        target = AgentMcpTarget(
-            middleware="sandbox-science-policy",
+    def compile(self) -> dict[str, Any]:
+        """The runtime sandbox's policy as the product compiles it for ``[mcp_direct]``: its
+        platform service (the lab's worker) and, merged beside it, the direct path's egress
+        to the portal (``direct_mcp``)."""
+        egress = direct_mcp.compile_direct(
+            policy=self.path / "policy.yaml",
+            ceiling=self.path / "middleware/pool-ceiling.yaml",
+            targets=self.path / "targets.yaml",
             project=PROJECT,
-            caller=CALLER,
-            binaries=(PYTHON + "*",),
-            filesystem=SandboxFilesystem(read_only=("/opt/sandbox-science",)),
+            servers={SERVER: McpDirectServer(credentials=CREDENTIALS)},
+            python=PYTHON,
         )
-        compiled = compile_agent_mcp(
-            loaded, target, ceiling=load_ceiling(self.path / "middleware/pool-ceiling.yaml")
+        base = compile_orchestrator(
+            OrchestratorTarget(
+                worker_api=endpoint(f"http://127.0.0.1:{self.ports['worker']}"),
+                binaries=(PYTHON + "*",),
+                filesystem=SandboxFilesystem(
+                    read_only=("/opt/sandbox-science", "/usr/share/sandbox-science")
+                ),
+            )
         )
-        recovery.private(self.path / "agent-policy.yaml", compiled.policy.to_yaml())
-        (entry,) = compiled.policy.network_policies.values()
-        (endpoint,) = entry.endpoints
-        # The tools the native rules admit: the only ones the runtime's client shows.
-        recovery.private(self.path / "agent-tools.json", tool_admission(endpoint).model_dump_json())
+        policy = direct_mcp.merged(base, egress.fragment)
+        recovery.private(self.path / "agent-policy.yaml", policy.to_yaml())
+        # The runtime client's servers, with the tools the native rules admit: the only
+        # ones it shows (``runtime.json``'s ``mcp``).
+        recovery.private(self.path / "agent-mcp.json", json.dumps(egress.runtime()))
+        (endpoint_,) = egress.fragment.network_policies[f"mcp-{SERVER}"].endpoints
         admitted = {
             name
-            for rule in endpoint.rules or ()
+            for rule in endpoint_.rules or ()
             if rule.allow.method == "tools/call" and isinstance(rule.allow.tool, AnyOf)
             for name in rule.allow.tool.any
         }
-        methods = sorted({rule.allow.method for rule in endpoint.rules or ()})
-        assert compiled.policy.network_middlewares is not None
-        config = dict(compiled.policy.network_middlewares["sandbox-science-policy"].config)
+        methods = sorted({rule.allow.method for rule in endpoint_.rules or ()})
+        assert egress.fragment.network_middlewares is not None
+        config = dict(egress.fragment.network_middlewares["sandbox-science-policy"].config)
         return {
-            "endpoint_protocol": endpoint.protocol,
-            "credential_bound": endpoint.credential_binding is not None,
+            "endpoint_protocol": endpoint_.protocol,
+            "credential_bound": endpoint_.credential_binding is not None,
             "methods": methods,
             "admitted_tools": len(admitted),
             "escalated_admitted": ESCALATED in admitted,
             "denied_admitted": DENIED in admitted,
             "allowed_reads_admitted": all(tool in admitted for tool, _ in READS),
             "rerun_reads_admitted": all(tool in admitted for tool, _ in RERUN_READS),
-            "deny_rules": len(endpoint.deny_rules or ()),
+            "binary_tool_admitted": BINARY_TOOL in admitted,
+            "deny_rules": len(endpoint_.deny_rules or ()),
             "middleware_config_mcp": config.get("mcp"),
+            "platform_services": sorted(name for name in base.network_policies),
             "findings": [
                 {"severity": str(finding.severity), "subject": finding.subject}
-                for finding in compiled.findings
+                for finding in egress.findings
                 if not finding.subject.startswith("hosts.")
             ],
         }
 
     def create_sandbox(self):
-        name = "ss-dmcp-" + secrets.token_hex(3)
-        recovery.private(self.path / "agent-sandbox.json", json.dumps({"name": name}) + "\n")
+        """The runtime sandbox, made, attached and bound as ``up`` makes the product's."""
         image = self.identity["images"]["orchestrator"]["tag"]
+        cli = OpenShell.at(str(OS_BIN / "openshell"), self.openshell_env())
+        binding = WorkerBinding(
+            WorkerApi(
+                f"http://127.0.0.1:{self.ports['worker']}",
+                self.path / "worker" / "workspace.token",
+            ),
+            PROJECT,
+        )
         try:
-            self.cli(
-                "sandbox",
-                "create",
-                "--name",
-                name,
-                "--from",
-                image,
-                "--policy",
-                self.path / "agent-policy.yaml",
-                "--provider",
-                SERVER,
-                "--no-auto-providers",
-                "--detach",
-                "--",
-                "sleep",
-                "infinity",
-                timeout=600,
+            asyncio.run(
+                runtime_owner.create_owned(
+                    runtime_owner.FileOwnership(self.path / "agent-sandbox.json"),
+                    cli,
+                    image=image,
+                    policy=self.path / "agent-policy.yaml",
+                    timeout=600,
+                    binding=binding,
+                    providers=(SERVER,),
+                )
             )
         finally:
             self.remember_sandboxes()
-
-        def ready():
-            found = json.loads(self.cli("sandbox", "get", name, "-o", "json").stdout)
-            return found if found.get("phase") == "Ready" else None
-
-        found = recovery.wait(ready, seconds=600)
-        self.remember_sandboxes()
-        # The middleware decides only sandboxes bound to a stored revision. The launcher's
-        # runtime owner binds the agent's sandbox through this worker route, as the lab's
-        # worker binds a research sandbox; the lab creates its sandbox by hand, so it asks
-        # the same route with the operator token.
-        bound = self.worker(
-            "POST",
-            "/v1/runtime-sandboxes",
-            {"project_id": PROJECT, "sandbox_id": found["id"]},
-            operator=True,
-        )
-        assert bound["sandbox_id"] == found["id"]
+        name = self.sandbox_name()
         shell = ["sandbox", "exec", "-n", name, "--no-tty", "--no-login-shell", "--"]
         self.cli(*shell, "mkdir", "-p", REMOTE)
         self.cli(
@@ -433,29 +471,36 @@ operator = true
     # proofs
 
     def proofs(self, plan: str):
-        url = json.loads((self.path / "portal.json").read_text())["url"]
         number = len(list((self.path / "evidence").glob("proofs-*.json"))) + 1
         reads = READS if plan == "full" else RERUN_READS
         before = self.records()
-        driven = asyncio.run(self.drive(url, reads, skip_error_answer=plan != "full"))
+        driven = asyncio.run(self.drive(reads, skip_error_answer=plan != "full"))
         records = self.records()[len(before) :]
         self.evidence(f"agent-steps-{number}", driven["steps"])
         self.evidence(f"records-{number}", records)
         self.judge(driven, records, reads, number, plan)
 
-    async def drive(self, url: str, reads: list, *, skip_error_answer: bool) -> dict[str, Any]:
+    async def drive(self, reads: list, *, skip_error_answer: bool) -> dict[str, Any]:
         # An attempt capability as the host issues them (wire.AttemptId).
         attempt = "cap-" + secrets.token_hex(24)
         worker = WorkerClient(f"http://127.0.0.1:{self.ports['worker']}", self.token("harness"))
         check = WorkerRequestCheck(worker)
+        # Proof 5's host side: the production CallBinaries, for the one call the lab relays.
+        binaries = CallBinaries()
+        connectors = SimpleNamespace(
+            tools={BINARY_TOOL: SimpleNamespace(server=SERVER)},
+            binaries=LabBinaries(self.path / "kept"),
+            path="direct",
+        )
+        relaying: list[ToolCall] = []
         process = await asyncio.create_subprocess_exec(
             str(OS_BIN / "openshell"),
             "sandbox", "exec", "-n", self.sandbox_name(), "--no-tty", "--no-login-shell", "--",
             PYTHON, "-I", REMOTE + "/direct_mcp_agent.py",
-            "--url", url, "--project", PROJECT, "--session", SESSION, "--run", RUN,
+            "--mcp", (self.path / "agent-mcp.json").read_text(),
+            "--project", PROJECT, "--session", SESSION, "--run", RUN,
             "--attempt", attempt, "--escalated", ESCALATED, "--denied", DENIED,
             "--invalid-tool", INVALID, "--reads", json.dumps(reads),
-            "--tools", (self.path / "agent-tools.json").read_text(),
             *(["--skip-error-answer"] if skip_error_answer else []),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env=self.env, limit=32 * 1024 * 1024,
@@ -474,9 +519,16 @@ operator = true
             await stdin.drain()
 
         async def handle(kind: Capability, value: Any) -> Any:
+            if value.get("attempt") != attempt:
+                raise TransportError("denied", "not this attempt's capability")
+            if kind is Capability.PUBLISH_MCP_BINARY:
+                # The host side of publish_mcp_binary: only the call the lab is relaying.
+                return await binaries.publish(
+                    value, relaying[0] if relaying else None, cast(Any, connectors)
+                )
             # The host side of the runtime's confirm_request: the lab's one attempt, its
             # project bound here, never one the runtime names.
-            if kind is not Capability.CONFIRM_REQUEST or value.get("attempt") != attempt:
+            if kind is not Capability.CONFIRM_REQUEST:
                 raise TransportError("denied", "not this attempt's capability")
             asked_at = time.time()
             reply = await confirm(check, PROJECT, value)
@@ -529,6 +581,59 @@ operator = true
                 card.update(answer_kind=answered["kind"], answered_at=time.time())
             cards.append(card)
 
+        binary: dict[str, Any] = {}
+
+        async def proof_five() -> None:
+            # As the host relays an admitted connector call (HostLoops.relay_mcp): one
+            # mcp_request, its call named while it is relayed, answered by the agent's
+            # production RuntimeConnectorCalls.
+            arguments = {"url": PAGE}
+            relaying.append(ToolCall(BINARY_CALL, BINARY_TOOL, json.dumps(arguments)))
+            asked = McpRequest(
+                attempt=attempt,
+                call=BINARY_CALL,
+                server=SERVER,
+                method="tools/call",
+                params={"name": BINARY_TOOL, "arguments": arguments},
+                session=SESSION,
+                run=RUN,
+            )
+            started = time.monotonic()
+            try:
+                reply = typed(
+                    McpAnswer,
+                    await channel.request(Capability.MCP_REQUEST, payload(asked), timeout=600),
+                )
+            except TransportError as error:
+                binary.update(ok=False, error=f"transport_{error.kind}")
+                reply = None
+            finally:
+                relaying.clear()
+            kept = binaries.recorded(BINARY_CALL)
+            if reply is not None and reply.failure is not None:
+                binary.update(ok=False, error=reply.failure.kind)
+            elif reply is not None and reply.result is not None:
+                content = reply.result.get("content")
+                items = content if isinstance(content, list) else []
+                binary.update(
+                    ok=True,
+                    content_types=sorted(
+                        {str(item.get("type")) for item in items if isinstance(item, dict)}
+                    ),
+                    base64_in_answer=any(
+                        isinstance(item, dict) and "data" in item for item in items
+                    ),
+                )
+            binary.update(
+                seconds=round(time.monotonic() - started, 3),
+                kept=[
+                    {k: item[k] for k in ("sha256", "size", "media_type", "artifact", "source")}
+                    for item in kept
+                ],
+            )
+            stdin.write((json.dumps({"t": "finish"}) + "\n").encode())
+            await stdin.drain()
+
         async def pump() -> None:
             assert process.stdout is not None
             while line := await process.stdout.readline():
@@ -540,6 +645,8 @@ operator = true
                     tasks.append(asyncio.ensure_future(answer(int(message["request"]))))
                 elif message["t"] == "step":
                     steps.append(message)
+                elif message["t"] == "plan_done":
+                    tasks.append(asyncio.ensure_future(proof_five()))
                 elif message["t"] == "done":
                     break
 
@@ -564,6 +671,7 @@ operator = true
             "confirmations": confirmations,
             "cards": cards,
             "held": held,
+            "binary": binary,
             "exit_code": process.returncode,
         }
 
@@ -723,6 +831,16 @@ operator = true
             and found.get("escalated_marked") is True
             and found.get("marked_with_effect") == found.get("tools")
         )
+        binary = driven.get("binary", {})
+        proof5: dict[str, Any] = {"tool": BINARY_TOOL, **binary}
+        if binary.get("ok") and binary.get("kept") and not binary.get("base64_in_answer"):
+            proof5["pass"] = True
+        elif binary.get("ok") and not binary.get("kept"):
+            # The answer passed, but held no image, audio or blob to keep (a link only).
+            proof5["pass"] = None
+            proof5["status"] = "the tool answered no binary content"
+        else:
+            proof5["pass"] = False
         variables = environment.get("variables", {})
         upstream = bool(
             listing.get("ok")
@@ -745,10 +863,7 @@ operator = true
             "proof_2_middleware_hold": proof2,
             "proof_3_response_binding": proof3,
             "proof_4_placeholders": proof4,
-            "proof_5_binary_results": {
-                "pass": None,
-                "status": "pending: the runtime-to-host binary capability is another lane's",
-            },
+            "proof_5_binary_results": proof5,
             "agent_exit_code": driven["exit_code"],
             "held_reports": len(driven["held"]),
             "run": number,
@@ -761,9 +876,10 @@ operator = true
             "proof_2_middleware_hold",
             "proof_3_response_binding",
             "proof_4_placeholders",
+            "proof_5_binary_results",
         ):
-            print(("PASS " if result[name]["pass"] else "FAIL ") + name, flush=True)
-        print("PENDING proof_5_binary_results", flush=True)
+            verdict = result[name]["pass"]
+            print({True: "PASS ", False: "FAIL ", None: "NO BINARY "}[verdict] + name, flush=True)
         print(json.dumps(result, indent=2, sort_keys=True), flush=True)
 
     def before_export(self):

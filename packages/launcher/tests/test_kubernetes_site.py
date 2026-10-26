@@ -52,7 +52,18 @@ def _resources(cpu: int, memory: int) -> dict[str, int]:
     return {"cpu_millicores": cpu, "memory_mib": memory, "ephemeral_storage_mib": 1024}
 
 
-def bundle_values(*, cache: bool = False) -> dict[str, Any]:
+DIRECT: dict[str, Any] = {
+    "project": "crypto",
+    "servers": {
+        "crypto-research-mcp": {"credentials": {"CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID"}}
+    },
+    "about": {"crypto-research-mcp": "Cryptography research servers"},
+    "provider_secret": "test-mcp-provider",
+}
+"""The bundle's ``[mcp_direct]``: the example policy's server, on the direct path (D98)."""
+
+
+def bundle_values(*, cache: bool = False, direct: bool = False) -> dict[str, Any]:
     secrets: dict[str, Any] = {
         "control": {"name": "test-control", "extra_files": ["s3-credentials"]},
         "workspace": {"name": "test-workspace"},
@@ -101,6 +112,7 @@ def bundle_values(*, cache: bool = False) -> dict[str, Any]:
         },
         "secrets": secrets,
         "network": network,
+        **({"mcp_direct": DIRECT} if direct else {}),
     }
 
 
@@ -153,14 +165,14 @@ def _private(path: Path, text: str) -> str:
 
 
 def site_values(
-    tmp_path: Path, *, cache: bool = False, domain: str | None = None
+    tmp_path: Path, *, cache: bool = False, domain: str | None = None, direct: bool = False
 ) -> dict[str, Any]:
     """A site file's values and every file it names, all synthetic; ``domain`` is the
     cluster's DNS domain, the default when None."""
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     bundle = inputs / "bundle.toml"
-    bundle.write_text(toml.dumps(bundle_values(cache=cache)))
+    bundle.write_text(toml.dumps(bundle_values(cache=cache, direct=direct)))
     targets = (ROOT / "examples/openshell/targets.yaml").read_text()
     if cache:
         targets = targets.replace(
@@ -329,6 +341,90 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     )
     runtime = json.loads(manager.runtime_json(models, "runtime-test"))
     assert runtime["control_url"] == f"https://{control_host}:8443/control"
+
+
+def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp_path):
+    output = generate(tmp_path, direct=True)
+    secrets = output / "secrets"
+    server = "crypto-research-mcp"
+    # Control's run service takes the direct path, with no proxy.
+    control = ControlSettings.model_validate_json((secrets / "control/control.json").read_text())
+    assert control.proxy is None
+    assert control.direct is not None
+    assert (control.direct.project, control.direct.servers) == ("crypto", (server,))
+    assert control.direct.about == {server: "Cryptography research servers"}
+    # The worker knows the manager as an operator of the direct path's project alone.
+    worker = load_worker(secrets / "worker/worker.toml")
+    (client,) = [client for client in worker.clients if client.name == "manager"]
+    assert client.binding_only
+    assert not client.operator
+    assert client.projects == ("crypto",)
+    assert not client.recovery_control
+    token = (secrets / "runtime-manager/manager-worker.token").read_text()
+    assert client.token_sha256 == token_digest(token)
+    # The middleware reads whole listings for the direct path.
+    assert load_middleware(secrets / "middleware/middleware.toml").mcp_listings
+    # The manager binds through the worker, with the CA that signs the worker's certificate.
+    manager = manager_settings.load(secrets / "runtime-manager/runtime-manager.json")
+    assert manager.worker is not None
+    assert manager.worker.url == f"https://{NAME}-worker.{NAMESPACE}.svc:8100"
+    assert manager.worker.project == "crypto"
+    assert str(manager.worker.token_file) == "/private/manager-worker.token"
+    ca = x509.load_pem_x509_certificate((secrets / "runtime-manager/control-ca.crt").read_bytes())
+    issued = x509.load_pem_x509_certificate((secrets / "worker/worker.crt").read_bytes())
+    assert issued.issuer == ca.subject
+    assert manager.mcp is not None
+    assert manager.mcp.providers == ("crypto-research-mcp",)
+    # The runtime's sandbox gets the server's endpoint and the middleware beside its services,
+    # and its client the server's tool admission, both compiled from the site's policy.
+    local = manager.model_copy(
+        update={
+            "mcp": manager.mcp.model_copy(
+                update={
+                    "policy_file": secrets / "runtime-manager/agent-mcp-policy.yaml",
+                    "runtime_file": secrets / "runtime-manager/runtime-mcp.json",
+                }
+            ),
+            "control_models_file": secrets / "runtime-manager/control-models.json",
+        }
+    )
+    fragment = yaml.safe_load(local.direct_policy() or "")
+    assert list(fragment["network_policies"]) == [f"mcp-{server}"]
+    (middleware,) = fragment["network_middlewares"].values()
+    assert middleware["config"]["mcp"] == {"project": "crypto", "caller": "agent-runtime"}
+    runtime = json.loads(local.runtime_json(local.models(), "runtime-test"))
+    assert runtime["mcp"]["project"] == "crypto"
+    assert runtime["mcp"]["servers"][server]["tools"]["allow"]
+    # The README says what the operator creates: the provider's Secret, by its file.
+    readme = (output / "README.md").read_text()
+    assert "kubectl -n research-test create secret generic test-mcp-provider" in readme
+    assert "--from-env-file=<path>" in readme
+
+
+def test_the_managers_worker_token_is_not_its_control_token(tmp_path):
+    """Review of a2/direct-wiring (HIGH): control sees the manager's bearer token on every
+    manager request, so the manager's worker token must be another value, and control's
+    stored digest must not be the worker token's."""
+    output = generate(tmp_path, direct=True)
+    manager = output / "secrets/runtime-manager"
+    control = (manager / "manager-control.token").read_text()
+    worker = (manager / "manager-worker.token").read_text()
+    assert control != worker
+    stored = (output / "secrets/control/runtime-manager-token.sha256").read_text()
+    assert stored == _digest(control)
+    assert stored != _digest(worker)
+    clients = load_worker(output / "secrets/worker/worker.toml").clients
+    assert {client.token_sha256 for client in clients}.isdisjoint({_digest(control)})
+
+
+def test_a_direct_path_for_another_project_is_refused(tmp_path):
+    values = site_values(tmp_path, direct=True)
+    bundle = tmp_path / "inputs/bundle.toml"
+    document = tomllib.loads(bundle.read_text())
+    document["mcp_direct"]["project"] = "elsewhere"
+    bundle.write_text(toml.dumps(document))
+    with pytest.raises(BundleError, match="not a site project"):
+        plan(*load(site_file(tmp_path, values)))
 
 
 def test_secrets_hold_exactly_the_projected_keys_and_everything_is_private(tmp_path):

@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, cast
@@ -294,9 +294,18 @@ class RemoteFolds(Folds):
 class RuntimeLoops:
     """VM-local registry owns every actual root/child model loop's task and cancellation."""
 
-    def __init__(self, channel: Channel, gateway: ModelGateway, scratch: Path) -> None:
+    def __init__(
+        self,
+        channel: Channel,
+        gateway: ModelGateway,
+        scratch: Path,
+        *,
+        released: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self.channel, self.gateway, self.scratch = channel, gateway, scratch
         self.active: dict[str, tuple[asyncio.Task[Transcript], asyncio.Event]] = {}
+        self.released = released
+        """Told each ended attempt, so its per-attempt resources go (its MCP client)."""
 
     async def run(self, value: JsonValue) -> JsonValue:
         given = typed(RunGiven, value)
@@ -375,6 +384,8 @@ class RuntimeLoops:
                 memory.control.close()
                 for suffix in ("", "-wal", "-shm"):
                     scratch.with_name(scratch.name + suffix).unlink(missing_ok=True)
+                if self.released is not None:
+                    await owned(self.released(given.attempt))
 
     async def cancel(self, value: JsonValue) -> JsonValue:
         request = typed(CancelRequest, value)

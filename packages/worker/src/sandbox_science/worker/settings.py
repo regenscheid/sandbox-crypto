@@ -328,6 +328,19 @@ class ClientSettings(_Model):
     """Authenticated maintenance may mutate fenced sessions without agent authority."""
     artifact_retention: bool = Field(default=False, strict=True)
     """Control service may acknowledge durable artifact retention for its projects."""
+    binding_only: bool = Field(default=False, strict=True)
+    """The client may only bind and unbind the agent runtime's sandbox for its projects
+    (``POST /v1/runtime-sandboxes``, ``DELETE /v1/runtime-sandboxes/{id}``): the Kubernetes
+    runtime manager's on the direct MCP path (D98). Every other route refuses it."""
+
+    @model_validator(mode="after")
+    def _binding_alone(self) -> Self:
+        if self.binding_only and (
+            self.operator or self.recovery_control or self.artifact_retention
+            or self.document_catalog
+        ):  # fmt: skip
+            raise ValueError("a binding_only client has no other permission")
+        return self
 
 
 class Settings(_Model):

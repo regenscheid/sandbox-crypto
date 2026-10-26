@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
@@ -145,6 +146,16 @@ async def worker_check(tmp_path: Path, events: EventStore) -> AsyncIterator[Requ
 async def gateway(
     tmp_path: Path, events: EventStore, worker_check: RequestCheck
 ) -> AsyncIterator[Gateway]:
+    async with fake_openshell(tmp_path, events, worker_check) as found:
+        yield found
+
+
+@asynccontextmanager
+async def fake_openshell(
+    tmp_path: Path, events: EventStore, worker_check: RequestCheck
+) -> AsyncIterator[Gateway]:
+    """A fake OpenShell gateway in front of the fake server: the compiled endpoint's native
+    rules, then the real policy middleware over ``events``, bound to the example policy."""
     store = PolicyStore(tmp_path / "state")
     loaded: LoadedPolicy = store.add_policy((ROOT / "examples" / "policy.yaml").read_bytes())
     store.bind("sbx-agent", loaded.digest)

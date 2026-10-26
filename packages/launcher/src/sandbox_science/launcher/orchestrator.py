@@ -16,7 +16,7 @@ from sandbox_science.policy.openshell import (
     compile_orchestrator,
 )
 
-from . import mcp, parts, runtime_owner, sandboxes
+from . import direct_mcp, mcp, parts, runtime_owner, sandboxes
 from .config import (
     LauncherConfig,
     LauncherError,
@@ -166,6 +166,21 @@ def checks(node: str, build: Path) -> dict[str, str]:
     }
 
 
+def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
+    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers, if any."""
+    if config.mcp_direct is None:
+        return None
+    environments = config.openshell.environments
+    return direct_mcp.compile_direct(
+        policy=config.worker.policy,
+        ceiling=environments.ceiling,
+        targets=environments.targets,
+        project=config.mcp_project(),
+        servers=config.mcp_direct.servers,
+        python=configured(config).python,
+    )
+
+
 def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
     """Write scoped configuration and generated capability tokens, never read model keys."""
     runtime, directory = configured(config), _directory(layout)
@@ -181,7 +196,15 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         proxy=f"http://{config.mcp_proxy.listen}" if config.mcp_proxy else None,
         python=runtime.python,
     )
-    write_private(directory / "policy.yaml", compile_orchestrator(target).to_yaml())
+    policy = compile_orchestrator(target)
+    egress = direct_egress(config)
+    if egress is not None:
+        # The direct path's servers, decided by OpenShell's native rules and the policy
+        # middleware, beside the platform services (D98).
+        policy = direct_mcp.merged(policy, egress.fragment)
+        for warning in egress.warnings():
+            print(f"the agent runtime's MCP egress: {warning}", flush=True)
+    write_private(directory / "policy.yaml", policy.to_yaml())
     write_private(directory / "generation", generation + "\n")
     model, service = config.model, config.run_service
     host: dict[str, Any] = {
@@ -209,16 +232,20 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
             "index": spec.index,
         }
     direct = None
-    if config.mcp_direct is not None:
+    if config.mcp_direct is not None and egress is not None:
         spec = config.mcp_direct
-        direct = {
-            "project": spec.project or config.projects[0].id,
-            "servers": {name: server.model_dump() for name, server in spec.servers.items()},
+        direct = egress.runtime()
+        # The run service's connector calls go to the runtime's client (D98).
+        host["direct"] = {
+            "project": egress.project,
+            "servers": list(spec.servers),
+            "about": spec.about,
+            "index": spec.index,
         }
-        if config.canaries.enabled and config.mcp_proxy is None:
+        if config.canaries.enabled:
             # The direct path's canaries: control asks the runtime to list (list_mcp_tools).
             host["canaries"] = {
-                "project": direct["project"],
+                "project": egress.project,
                 "servers": list(spec.servers),
                 "interval": config.canaries.interval,
             }
@@ -302,6 +329,8 @@ async def _agent(
         policy=directory / "policy.yaml",
         timeout=config.start_timeout,
         binding=_binding(config, layout),
+        providers=config.mcp_direct.providers if config.mcp_direct is not None else (),
+        project=config.mcp_project(),
     )
     await runtime_owner.install(
         cli,

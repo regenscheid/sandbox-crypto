@@ -93,6 +93,7 @@ from .unknown_creations import (
     LIST_PAGE_SIZE,
     MAX_LIST_PAGES,
     MAX_OBSERVATIONS,
+    PROJECT_LABEL,
     UNKNOWN_OUTCOME,
     Observation,
     Outcome,
@@ -100,6 +101,7 @@ from .unknown_creations import (
     confirms,
     examine,
     label_value,
+    labels,
     observation,
     page,
     refusal,
@@ -1218,7 +1220,30 @@ class Environments:
             return False
         return document.get("phase") not in _DEAD_PHASES
 
-    def bind_runtime(self, project_id: str, sandbox_id: str) -> str:
+    async def runtime_sandbox_of(self, project_id: str, sandbox_id: str) -> None:
+        """Refuse unless the gateway shows ``sandbox_id`` as ``project_id``'s agent runtime
+        sandbox: the sandbox the listing names by that ID, read with ``sandbox get``, labelled
+        ``PROJECT_LABEL`` with the project, as the launcher and the runtime manager create
+        it. A project-scoped client binds only such a sandbox; the refusal names only its
+        own project."""
+        self._not_an_environment(sandbox_id)  # a research environment's: a conflict
+        refused = WorkerError(
+            ErrorKind.POLICY_DENIED,
+            f"sandbox {sandbox_id!r} is not a runtime sandbox labelled for {project_id}",
+        )
+        entries, _ = await self.cli.sandboxes()
+        names = [entry.get("name") for entry in entries if entry.get("id") == sandbox_id]
+        if len(names) != 1 or not isinstance(names[0], str):
+            raise refused
+        document = await self.cli.sandbox(names[0])
+        if document is None or document.get("id") != sandbox_id:
+            raise refused
+        if labels(document).get(PROJECT_LABEL) != project_id:
+            raise refused
+
+    def bind_runtime(
+        self, project_id: str, sandbox_id: str, projects: frozenset[str] | None = None
+    ) -> str:
         """Bind the agent runtime's sandbox to the project's policy revision: the one the
         policy store binds to the project (the MCP proxy's binding), else the one granted to
         it last. The policy middleware decides only sandboxes bound to a stored revision.
@@ -1228,6 +1253,15 @@ class Environments:
         """
         self._not_an_environment(sandbox_id)
         try:
+            entry = self.store.binding_entry(sandbox_id)
+            if projects is not None and entry is not None and entry[1] != project_id:
+                # Another project's runtime sandbox (or a binding of no recorded project) is
+                # never taken over by a client limited to some projects; its own may move to
+                # a new revision.
+                raise WorkerError(
+                    ErrorKind.POLICY_DENIED,
+                    f"sandbox {sandbox_id!r} is bound, and not for {project_id}",
+                )
             revision = PolicyStore(self.settings.policy_store, "projects").binding(project_id)
             revision = revision or self.records.latest_grant(project_id)
             if revision is None:
@@ -1236,15 +1270,30 @@ class Environments:
                     f"project {project_id!r} has no policy revision; an operator grants one"
                     " with `sandbox-science-worker policy add --project`",
                 )
-            self.store.bind(sandbox_id, revision)
+            self.store.bind(sandbox_id, revision, project=project_id)
         except StoreError as error:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None
         return revision
 
-    def unbind_runtime(self, sandbox_id: str) -> bool:
-        """Remove the runtime sandbox's binding, if it has one; never an environment's."""
+    def unbind_runtime(self, sandbox_id: str, projects: frozenset[str] | None = None) -> bool:
+        """Remove the runtime sandbox's binding, if it has one; never an environment's.
+
+        A client limited to ``projects`` may unbind only a runtime sandbox bound for one of
+        them: a sandbox with no runtime binding is ``not_found`` to it, and one bound for
+        another project ``policy_denied``, naming none but its own. The pool's own token
+        (``projects`` None) may unbind any, and none is no error for it."""
         self._not_an_environment(sandbox_id)
         try:
+            entry = self.store.binding_entry(sandbox_id)
+            if projects is not None:
+                if entry is None or entry[1] is None:
+                    raise WorkerError(ErrorKind.NOT_FOUND, f"no runtime sandbox {sandbox_id!r}")
+                if entry[1] not in projects:
+                    raise WorkerError(
+                        ErrorKind.POLICY_DENIED,
+                        f"runtime sandbox {sandbox_id!r} is not bound for "
+                        f"{', '.join(sorted(projects))}",
+                    )
             return self.store.unbind(sandbox_id)
         except StoreError as error:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None

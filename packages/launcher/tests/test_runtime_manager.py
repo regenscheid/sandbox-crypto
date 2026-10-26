@@ -20,9 +20,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
+from pydantic import ValidationError
 
 from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
-from sandbox_science.launcher import openshell_version, runtime_owner
+from sandbox_science.launcher import direct_mcp, openshell_version, runtime_owner
+from sandbox_science.launcher.config import McpDirectServer
 from sandbox_science.launcher.runtime_manager import (
     RuntimeManager,
     RuntimeManagerSettings,
@@ -241,6 +244,67 @@ async def test_the_runtime_sandbox_is_bound_when_created_and_unbound_when_delete
         assert await site.ask(manager, "stop") is None
     assert site.record() is None
     assert bindings.calls[3:] == [("unbind", replaced["id"])]
+
+
+def direct_files(site: Site) -> dict[str, Any]:
+    """The direct MCP path's settings, with its files as the site generator writes them
+    (``direct_mcp`` over the example policy)."""
+    root = Path(__file__).parents[3]
+    ceiling = site.tmp_path / "ceiling.yaml"
+    ceiling.write_text("apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n")
+    egress = direct_mcp.compile_direct(
+        policy=root / "examples/policy.yaml",
+        ceiling=ceiling,
+        targets=root / "examples/openshell/targets.yaml",
+        project="crypto",
+        servers={"crypto-research-mcp": McpDirectServer()},
+        python="/opt/sandbox-science/bin/python",
+    )
+    policy = site.tmp_path / "agent-mcp-policy.yaml"
+    policy.write_text(direct_mcp.fragment_yaml(egress))
+    runtime = site.tmp_path / "runtime-mcp.json"
+    runtime.write_text(json.dumps(egress.runtime()))
+    token = site.tmp_path / "secret" / "manager-worker.token"
+    token.write_text("test-secret-manager-worker")
+    return {
+        "worker": {
+            "url": "https://worker.example.test:8100",
+            "ca_file": str(site.tls.certificate),
+            "token_file": str(token),
+            "project": "crypto",
+        },
+        "mcp": {
+            "policy_file": str(policy),
+            "runtime_file": str(runtime),
+            "providers": ["crypto-research-mcp"],
+        },
+    }
+
+
+async def test_the_direct_path_attaches_its_provider_and_merges_its_egress(site: Site) -> None:
+    site.set_fake(providers=["crypto-research-mcp"])
+    bindings = Bindings()
+    async with serving(site.manager(bindings, **direct_files(site))) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        record = site.record()
+        assert record is not None
+        sandbox = site.fake()["sandboxes"][record["name"]]
+        assert sandbox["providers"] == ["crypto-research-mcp"]
+        assert sandbox["labels"] == {"sandbox-science.io/project": "crypto"}
+        policy = yaml.safe_load(sandbox["policy"])
+        assert "sandbox-science-state-service" in policy["network_policies"]
+        assert "mcp-crypto-research-mcp" in policy["network_policies"]
+        (middleware,) = policy["network_middlewares"].values()
+        assert middleware["config"]["mcp"]["project"] == "crypto"
+        runtime = json.loads(site.uploaded(record["name"], "runtime.json"))
+        assert runtime["mcp"]["servers"]["crypto-research-mcp"]["tools"]["allow"]
+        assert bindings.calls == [("bind", record["id"])]
+
+
+def test_the_direct_path_needs_the_worker_link_that_binds_the_sandbox(site: Site) -> None:
+    direct = direct_files(site)
+    with pytest.raises(ValidationError, match="worker link"):
+        site.settings(mcp=direct["mcp"])
 
 
 async def test_sigterm_keeps_the_sandbox_and_reconnects_at_start_and_new_control_only(
