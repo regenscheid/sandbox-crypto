@@ -49,6 +49,7 @@ from sandbox_science.policy.detection import (
     ACCEPTED_RECORD,
     CLASSIFICATION_ACCEPTED,
     DRIFT_KINDS,
+    DRIFT_RECORD,
     DriftLedger,
 )
 
@@ -60,6 +61,8 @@ SOURCE: Final = "worker"
 """The source of the records the worker writes."""
 ANSWERS: Final = "workspace"
 """The source of the user's answers the workspace relays (D97)."""
+RUNTIME: Final = "runtime"
+"""The source of drifts of listings the agent runtime's direct client reported (D98)."""
 STORE_TIMEOUT: Final = 5.0
 
 
@@ -263,6 +266,14 @@ class Permissions:
             return self._store().append(kind, ANSWERS, payload)
         except EventStoreError as exc:
             raise PermissionStoreError(f"the acceptance could not be recorded: {exc}") from exc
+
+    def record_drift(self, payload: Mapping[str, object]) -> int:
+        """Record a drift of a listing the agent runtime's client read and reported (source
+        ``runtime``, D98): the middleware's ``DriftLedger`` reads it as its own. Blocking."""
+        try:
+            return self._store().append(DRIFT_RECORD, RUNTIME, payload).seq
+        except EventStoreError as exc:
+            raise PermissionStoreError(f"the drift could not be recorded: {exc}") from exc
 
     def close(self) -> None:
         with self._lock:

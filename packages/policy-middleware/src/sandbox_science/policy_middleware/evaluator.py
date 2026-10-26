@@ -956,8 +956,9 @@ class PolicyMiddleware:
             return decision
         pin = self.listings.pin(server, loaded.policy.mcp.servers[server], revision)
         digest = pin_digest(pin) if pin is not None else None
-        if self._drifts.drifted(server, digest, project) is not None:
-            self._reread()  # an acceptance ends it at once
+        # At most once a second: an acceptance ends a drift, and a drift the worker recorded
+        # from the agent runtime's report of a listing this service did not read starts one.
+        self._reread()
         seq = self._drifts.drifted(server, digest, project)
         if seq is None:
             return decision

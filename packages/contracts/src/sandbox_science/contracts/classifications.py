@@ -196,3 +196,42 @@ class DriftAcceptance(Contract):
 
 class DriftAccepted(Contract):
     accepted_at: AwareDatetime
+
+
+MAX_REPORTED_TOOLS: Final = 2048
+"""Tools one reported listing carries."""
+
+
+class ReportedTool(Contract):
+    """One tool of a listing the agent runtime's client read: its name, its digest
+    (``mcp_wire.tool_digest``) and the class its hints give it."""
+
+    name: ToolName
+    digest: Sha256
+    hint: EffectName
+
+
+class ListingReport(Contract):
+    """A complete ``tools/list`` listing of a server the agent runtime's direct client read,
+    for the worker to compare with the project's pin (D98, D103): the server's own tools,
+    before the client removed the denied ones, and the listing's digest (``pin_digest`` of
+    every tool's digest by name). The control service names the project, session and run of
+    the attempt that listed, or of its canaries; the runtime names none."""
+
+    project_id: Identifier
+    server: Identifier
+    session: Identifier | None = None
+    run: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")] | None = (
+        None
+    )
+    tools: tuple[ReportedTool, ...] = Field(max_length=MAX_REPORTED_TOOLS)
+    listing: Sha256
+
+
+class ListingReported(Contract):
+    """The worker's answer: whether the listing drifted from the project's pin, and the
+    ``mcp-tools-drift`` record it appended (none for a listing whose drift is the one in
+    force already, or that matches its pin)."""
+
+    drifted: bool
+    record: int | None = Field(default=None, ge=1)

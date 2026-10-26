@@ -12,9 +12,11 @@ from sandbox_science.policy.openshell import (
     AgentMcpTarget,
     AnyOf,
     Endpoint,
+    ToolAdmission,
     compile_agent_mcp,
     compile_mcp_proxy,
     load_targets,
+    tool_admission,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -69,6 +71,22 @@ def test_native_rules_admit_reads_and_escalations_and_never_a_denied_tool() -> N
     proxy = compile_mcp_proxy(EXAMPLE, TARGETS.mcp_proxy, ceiling=OPEN)
     (proxy_entry,) = proxy.policy.network_policies.values()
     assert "firecrawl-mcp_firecrawl_monitor_create" not in called(proxy_entry.endpoints[0])
+
+
+def test_the_runtimes_client_shows_what_the_native_rules_admit_and_nothing_else() -> None:
+    point = endpoint()
+    admission = tool_admission(point)
+    for name in called(point):
+        if "*" not in name:
+            assert admission.admits(name)
+    assert admission.admits("firecrawl-mcp_firecrawl_monitor_create")  # escalated, admitted
+    assert not admission.admits("portal_toggle_servers")  # denied by the policy
+    assert not admission.admits("never-declared")
+    # A deny entry wins, as at OpenShell; no rules admit nothing.
+    assert not ToolAdmission(allow=("a_*",), deny=("a_b",)).admits("a_b")
+    assert ToolAdmission(allow=("a_*",), deny=("a_b",)).admits("a_c")
+    assert not ToolAdmission(allow=("a_*",)).admits("a_c.d")  # '*' stops at '.'
+    assert not ToolAdmission().admits("a")
 
 
 def test_the_middleware_decides_every_request_to_the_servers() -> None:

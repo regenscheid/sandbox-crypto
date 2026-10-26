@@ -165,7 +165,7 @@ def test_the_direct_client_and_the_canaries_are_trusted_settings() -> None:
             )
         },
     )
-    assert settings.client() is not None
+    assert settings.client(None) is not None
     for credentials in ({"Bad Header": "X"}, {"X-Key": "not a variable"}):
         with pytest.raises(ValidationError):
             DirectServerSettings(url="https://mcp.example.test/mcp", credentials=credentials)
@@ -203,8 +203,17 @@ async def test_the_control_service_runs_them_over_the_runtimes_connection(
             headers={PROTOCOL_HEADER: str(PROTOCOL_VERSION)},
         )
 
+    forwarded: list[dict[str, Any]] = []
+
+    async def listings(request: web.Request) -> web.Response:
+        forwarded.append(await request.json())
+        return web.json_response(
+            {"drifted": True, "record": 7}, headers={PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
+        )
+
     worker = web.Application()
     worker.router.add_get("/v1/ready", ready)
+    worker.router.add_post("/v1/mcp-listings", listings)
     async with TestServer(worker) as backend:
         settings = ControlSettings(
             state_dir=tmp_path / "state",
@@ -215,7 +224,7 @@ async def test_the_control_service_runs_them_over_the_runtimes_connection(
             projects=("p",),
             main="main",
             image_revision="a" * 40,
-            canaries=CanarySettings(servers=("papers",), interval=60),
+            canaries=CanarySettings(project="p", servers=("papers",), interval=60),
         )
         async with TestClient(TestServer(create_app(settings))) as client:
             headers = {"Authorization": "Bearer " + TOKEN, CONTROL_HEADER: str(CONTROL_PROTOCOL)}
@@ -233,6 +242,29 @@ async def test_the_control_service_runs_them_over_the_runtimes_connection(
                 (request,) = asked
                 assert request.capability is Capability.LIST_MCP_TOOLS
                 assert request.payload == {"server": "papers"}
+
+                async def ask(identity: int, server: str) -> Reply:
+                    tool = {"name": "search", "digest": "e" * 64, "hint": "read"}
+                    value = {"server": server, "tools": [tool], "listing": "f" * 64}
+                    sent = Request(
+                        id=identity, capability=Capability.REPORT_MCP_LISTING, payload=value
+                    )
+                    await socket.send_str(sent.model_dump_json())
+                    return Reply.model_validate_json((await socket.receive(timeout=5)).data)
+
+                # The runtime's canary client reports the listing it read: control names the
+                # canaries' project, and forwards only their servers' listings to the worker.
+                answered = await ask(2, "papers")
+                assert (answered.error, answered.payload) == (None, {"drifted": True})
+                (body,) = forwarded
+                assert (body["project_id"], body["server"], body["listing"]) == (
+                    "p",
+                    "papers",
+                    "f" * 64,
+                )
+                refused = await ask(3, "elsewhere")
+                assert refused.error == "denied"
+                assert len(forwarded) == 1
                 listed = ToolsListed(status="listed", tool_count=3, digest="d" * 64)
                 reply = Reply(id=request.id, payload=listed.model_dump(mode="json"))
                 await socket.send_str(reply.model_dump_json())

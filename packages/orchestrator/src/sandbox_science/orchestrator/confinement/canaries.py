@@ -34,7 +34,8 @@ from sandbox_science.orchestrator.mcp_canaries import (
     ListingClient,
     list_tools,
 )
-from sandbox_science.orchestrator.mcp_direct import DirectClient, DirectServer
+from sandbox_science.orchestrator.mcp_direct import DirectClient, DirectServer, ListingReporter
+from sandbox_science.policy.openshell import ToolAdmission
 
 from .transport import Capability, Channel, TransportError
 from .wire import ToolListing, ToolsListed, payload, typed
@@ -51,6 +52,9 @@ class DirectServerSettings(Contract):
 
     url: str = Field(pattern=r"^https?://[\x21-\x7e]{1,2040}$")
     credentials: dict[str, str] = Field(default_factory=dict[str, str], max_length=16)
+    tools: ToolAdmission = Field(default_factory=ToolAdmission)
+    """The tool names the server's compiled endpoint admits (``tool_admission``): the only
+    tools a listing shows. None by default: a server whose rules are not given shows none."""
 
     @field_validator("credentials")
     @classmethod
@@ -61,7 +65,7 @@ class DirectServerSettings(Contract):
         return value
 
     def server(self) -> DirectServer:
-        return DirectServer(self.url, dict(self.credentials))
+        return DirectServer(self.url, dict(self.credentials), self.tools)
 
 
 class DirectSettings(Contract):
@@ -70,13 +74,15 @@ class DirectSettings(Contract):
     project: Identifier
     servers: dict[Identifier, DirectServerSettings] = Field(min_length=1, max_length=64)
 
-    def client(self) -> DirectClient:
+    def client(self, reporter: ListingReporter | None) -> DirectClient:
         """A client for canary listings only: no request check, since a listing is never
-        held, and the canary's request bound."""
+        held, the canary's request bound, and its complete listings reported for the drift
+        check (``report_mcp_listing``), as an attempt's are."""
         return DirectClient(
             {name: spec.server() for name, spec in self.servers.items()},
             project=self.project,
             timeout=REQUEST_SECONDS,
+            reporter=reporter,
         )
 
 

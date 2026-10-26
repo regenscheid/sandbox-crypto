@@ -21,6 +21,7 @@ from sandbox_science.event_store import EventStore, StoreReader
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling, reasons
 from sandbox_science.policy.approvals import Approvals
 from sandbox_science.policy.approvals.commands import prepare_answer
+from sandbox_science.policy.detection import pin_digest
 from sandbox_science.policy.store import Acceptance
 from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
@@ -409,6 +410,26 @@ def test_a_drifted_server_asks_for_its_non_read_calls_until_re_accepted(
     for running in (middleware, restarted):
         again = call(WRITE_TOOL, request_id="w2", on=running, url="https://e.org", interval=3)
         assert again.allowed, again.reason
+
+
+def test_a_drift_the_worker_recorded_from_a_runtime_report_holds_as_a_read_one(
+    mcp: Any, events: EventStore, clock: Clock
+) -> None:
+    # An event-stream listing passed unread; the runtime reported it and the worker wrote
+    # the drift (source runtime). The middleware holds the server's writes all the same.
+    middleware, call, store = mcp
+    assert call(WRITE_TOOL, request_id="w0", url="https://example.org", interval=1).allowed
+    digest = store.binding("sbx-agent")
+    assert digest is not None
+    loaded = store.policy(digest)
+    pin = middleware.listings.pin(SERVER, loaded.policy.mcp.servers[SERVER])
+    assert pin is not None
+    payload = {"project": "crypto", "server": SERVER, "pin": pin_digest(pin), "listing": "a" * 64}
+    events.append("mcp-tools-drift", "runtime", payload)
+    clock.advance(2)  # read at most once a second
+    held = call(WRITE_TOOL, request_id="w1", url="https://example.org", interval=2)
+    assert held.reason_code.startswith("approval_required_r")
+    assert call(READ_TOOL, request_id="r1").allowed  # reads stay free
 
 
 def test_the_command_line_lists_and_clears_a_hold(

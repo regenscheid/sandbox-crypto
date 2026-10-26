@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal, cast
 
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
+from sandbox_science.contracts.classifications import MAX_REPORTED_TOOLS, ReportedTool
 from sandbox_science.contracts.model import Contract, Counter, Identifier, Revision, Sha256
 from sandbox_science.contracts.worker import MediaType
 from sandbox_science.orchestrator.connectors import MAX_ANSWER_BYTES
@@ -298,6 +299,22 @@ class BinaryKept(Contract):
     revision: Revision | None = None
     path: str | None = Field(default=None, max_length=512)
     note: str = Field(min_length=1, max_length=2048)
+
+
+class ListingReportRequest(Contract):
+    """A complete listing of ``server`` (``report_mcp_listing``), as the server sent it:
+    each tool's name, digest and hint, and the listing's digest. ``attempt`` names the
+    attempt whose client listed, or none for the canaries' client; the host names the
+    project, session and run."""
+
+    attempt: AttemptId | None = None
+    server: Identifier
+    tools: tuple[ReportedTool, ...] = Field(max_length=MAX_REPORTED_TOOLS)
+    listing: Sha256
+
+
+class ListingReportReply(Contract):
+    drifted: bool
 
 
 class ToolListing(Contract):

@@ -445,7 +445,7 @@ def test_without_the_proxy_the_canaries_ask_the_runtimes_direct_client(make_conf
     assert parts.canaries_argv(config, layout) is None
     directory, upload = orchestrator.prepare(config, layout)
     host = json.loads((directory / "control.json").read_text())
-    assert host["canaries"] == {"servers": ["papers"], "interval": 900.0}
+    assert host["canaries"] == {"project": "crypto", "servers": ["papers"], "interval": 900.0}
     assert "proxy" not in host
     runtime = json.loads((upload / "runtime.json").read_text())
     assert runtime["mcp"] == {"project": "crypto", **DIRECT}

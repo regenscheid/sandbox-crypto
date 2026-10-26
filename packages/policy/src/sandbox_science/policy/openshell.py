@@ -1770,6 +1770,53 @@ def _openshell_matches(pattern: str, name: str) -> bool:
     return re.fullmatch(regex, name) is not None
 
 
+class ToolAdmission(StrictModel):
+    """The ``tools/call`` names a compiled MCP endpoint's native rules admit, as OpenShell
+    matches them: a name some ``allow`` pattern matches and no ``deny`` pattern does (D98).
+
+    The agent runtime's direct client shows the model only these tools, so that it never
+    offers a tool OpenShell refuses by name. Empty, it admits nothing: a server whose
+    compiled rules are not known offers no tool.
+    """
+
+    allow: tuple[Annotated[str, Field(min_length=1, max_length=256)], ...] = Field(
+        default=(), max_length=4096
+    )
+    deny: tuple[Annotated[str, Field(min_length=1, max_length=256)], ...] = Field(
+        default=(), max_length=4096
+    )
+
+    def admits(self, name: str) -> bool:
+        """Whether OpenShell's native rules would let a call of tool ``name`` through."""
+        return any(_openshell_matches(p, name) for p in self.allow) and not any(
+            _openshell_matches(p, name) for p in self.deny
+        )
+
+
+def tool_admission(endpoint: Endpoint) -> ToolAdmission:
+    """The tool names a compiled ``protocol: mcp`` endpoint admits (``compile_agent_mcp``):
+    its ``tools/call`` allow entries and deny entries, a missing tool matching every name."""
+
+    def patterns(tool: str | AnyOf | None) -> tuple[str, ...]:
+        if tool is None:
+            return ("**",)
+        return tool.any if isinstance(tool, AnyOf) else (tool,)
+
+    allow = [
+        pattern
+        for rule in endpoint.rules or ()
+        if rule.allow.method == "tools/call"
+        for pattern in patterns(rule.allow.tool)
+    ]
+    deny = [
+        pattern
+        for entry in endpoint.deny_rules or ()
+        if entry.method == "tools/call"
+        for pattern in patterns(entry.tool)
+    ]
+    return ToolAdmission(allow=tuple(allow), deny=tuple(deny))
+
+
 def _effective_tools(
     project: ProjectPolicy,
     name: str,

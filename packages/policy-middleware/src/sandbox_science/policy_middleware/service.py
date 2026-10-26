@@ -12,9 +12,11 @@ With ``mcp_listings`` (or pinned tool lists, ``mcp_tool_pins``), or ``response_s
 ``HTTP_RESPONSE`` before return (``HttpResponsePreReturn``): it reads each answer to a
 ``tools/list`` request of a sandbox that calls MCP servers directly whole, JSON or an
 event stream, passes it on without the tools the policy denies (the others marked, as the
-MCP proxy does), and records a drift from the pinned list as a finding. A listing it
-cannot read is blocked. Every other response is skipped at preflight and passes unchanged
-as it arrives.
+MCP proxy does), and records a drift from the pinned list as a finding. An event-stream
+listing OpenShell does not offer whole passes unread, with an ``mcp-tools-listing-unread``
+record: the agent runtime's client filters it and reports it for drift. Any other listing
+it cannot read is blocked. Every other response is skipped at preflight and passes
+unchanged as it arrives.
 """
 
 from __future__ import annotations
@@ -272,7 +274,13 @@ class MiddlewareService:
         if check is None or preflight.status_code != 200:
             # Not a listing's answer, or no result: a client reads no tools from an error.
             return None, pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
-        if media not in _LISTING_MEDIA or pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES not in modes:
+        whole = pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES in modes
+        if media == "text/event-stream" and not whole:
+            # OpenShell 0.1.5 never offers an event stream whole: it passes unread, recorded,
+            # and the agent runtime's client filters it and reports it for drift (D98).
+            check.unread()
+            return None, pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
+        if media not in _LISTING_MEDIA or not whole:
             return None, pb.HttpResponsePreflightResult(
                 block_delivery=pb.HttpResponseBlockDelivery(), reason_code=LISTING_BLOCKED
             )

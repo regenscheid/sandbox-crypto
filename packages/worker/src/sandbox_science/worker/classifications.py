@@ -15,6 +15,13 @@ and relays the user's two acceptances:
 - **a drifted tool list**: an ``mcp-tools-accepted`` event naming the project, which ends
   the middleware's hold of the server's non-read calls for it (D103).
 
+It also takes, from any client for its own projects, the listings the agent runtime's
+direct client read and the middleware could not (event streams, D98): it compares each
+with the pin of the project's classification in force, with the library's code
+(``mcp_listings``), and appends the same ``mcp-tools-drift`` record the middleware would,
+with source ``runtime``, unless that listing is the drift in force already. The
+middleware's ``DriftLedger`` then holds the server's non-read calls as for its own reads.
+
 The project's policy is the revision the policy store binds the project to, else the one
 granted to it last (``policy add --project``). The single workspace user holds the operator
 token, so the user is the actor (``user``); the workspace has no roles.
@@ -25,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from typing import Final, cast
@@ -42,6 +50,8 @@ from sandbox_science.contracts.classifications import (
     DriftSummary,
     DriftTool,
     EffectName,
+    ListingReport,
+    ListingReported,
     PinState,
     ToolRule,
 )
@@ -64,6 +74,8 @@ from sandbox_science.policy.detection import (
     pin_digest,
 )
 from sandbox_science.policy.effects import EffectClass, ToolEntry
+from sandbox_science.policy.mcp_listings import drift_record, listing_digest, listing_drift
+from sandbox_science.policy.mcp_wire import ListedTool
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.store import Acceptance, Draft, PolicyStore, StoreError
 
@@ -73,6 +85,8 @@ from .permissions import Permissions, PermissionStoreError
 
 _log = logging.getLogger(__name__)
 
+RUNTIME_CALLER: Final = "agent-runtime"
+"""The caller a reported listing's record names: the agent runtime's direct client."""
 ACTOR: Final = "user"
 """Who accepts: the workspace's one user, who holds the worker's operator token."""
 _EFFECTS: Final = frozenset(effect.value for effect in EffectClass)
@@ -103,6 +117,8 @@ class ClassificationDesk:
         self.policies = policies
         self.receipts = receipts
         self.clock = clock
+        self._reports = threading.Lock()
+        """One report's check of the drift in force and its record at a time."""
 
     # Reads.
 
@@ -272,6 +288,44 @@ class ClassificationDesk:
         }
         self.permissions.record_acceptance(ACCEPTED_RECORD, payload)
         return DriftAccepted(accepted_at=now)
+
+    # Listings the agent runtime's direct client read (D98).
+
+    def report_listing(self, report: ListingReport) -> ListingReported:
+        """Compare a reported listing with the pin of the project's classification in force
+        and record its drift once (see the module). The caller checked the project is its
+        own; the server must be one of the project's policy. Blocking."""
+        _, entry = self._server(report.project_id, report.server)
+        seen = {
+            tool.name: ListedTool(tool.name, tool.digest, EffectClass(tool.hint))
+            for tool in report.tools
+        }
+        if len(seen) != len(report.tools):
+            raise ClassificationReviewError("a reported listing names a tool twice", "invalid")
+        if listing_digest(seen) != report.listing:
+            raise ClassificationReviewError("the listing's digest is not its tools'", "invalid")
+        current = self._current(report.project_id, report.server, entry)
+        if current is None:
+            return ListingReported(drifted=False)  # no pin: nothing to compare
+        drift = listing_drift(report.server, current.pins, seen)
+        if drift is None:
+            return ListingReported(drifted=False)
+        pin = pin_digest(current.pins)
+        subject = {
+            "project": report.project_id,
+            "caller": RUNTIME_CALLER,
+            "sandbox_id": None,
+            "session": report.session,
+            "run": report.run,
+            "server": report.server,
+            "method": "tools/list",
+            "tool": None,
+        }
+        with self._reports:
+            if self._drifts().known(report.server, pin, report.listing):
+                return ListingReported(drifted=True)  # the drift in force already
+            seq = self.permissions.record_drift(drift_record(drift, pin, subject, None))
+        return ListingReported(drifted=True, record=seq)
 
     # Parts.
 

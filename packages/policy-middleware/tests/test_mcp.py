@@ -644,6 +644,33 @@ def test_a_listing_that_cannot_be_read_whole_is_blocked(
     )
 
 
+def test_an_event_stream_listing_not_offered_whole_passes_unread_and_recorded(
+    channel: grpc.Channel,
+    middleware: PolicyMiddleware,
+    facts: Callable[..., HttpRequestFacts],
+    events: EventStore,
+) -> None:
+    # OpenShell 0.1.5 never offers an event stream whole: the runtime's client reads it.
+    assert middleware.evaluate_http(facts(message("tools/list", {}), request_id="list-5")).allowed
+    head = preflight("list-5", "text/event-stream")
+    del head.preflight.permitted_body_modes[:]
+    head.preflight.permitted_body_modes.extend(
+        [pb.HTTP_RESPONSE_BODY_MODE_HEADERS_ONLY, pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES]
+    )
+    (result,) = respond(channel, [head])
+    assert result.preflight_result.WhichOneof("action") == "skip"
+    (unread,) = records(events, "mcp-tools-listing-unread")
+    assert (unread["server"], unread["request_id"], unread["method"]) == (
+        SERVER,
+        "list-5",
+        "tools/list",
+    )
+    assert "pin" in unread
+    # Nothing was read, so nothing drifted; and calls stay gated as before.
+    assert records(events, "mcp-tools-drift") == []
+    assert not middleware.evaluate_http(facts(tool_call(ESCALATED_TOOL))).allowed
+
+
 def test_an_error_answer_to_a_listing_passes(
     channel: grpc.Channel, middleware: PolicyMiddleware, facts: Callable[..., HttpRequestFacts]
 ) -> None:

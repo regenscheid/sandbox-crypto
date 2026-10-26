@@ -462,3 +462,86 @@ def test_the_projects_policy_is_the_one_bound_to_it(tmp_path: Path) -> None:
     found = project_policy(environments, "p1")
     assert found is not None
     assert found.digest == bound.digest
+
+
+# Listings the agent runtime's direct client read and reported (D98).
+
+
+def reported(extra: dict[str, str] | None = None, *, project: str = "p1", server: str = SERVER):
+    """A report of the catalog's pinned listing of ``SERVER``, with ``extra`` tools added."""
+    pins = catalog(SERVER).pins
+    tools = [
+        {"name": name, "digest": digest or "0" * 64, "hint": "read"}
+        for name, digest in pins.items()
+    ]
+    tools += [
+        {"name": name, "digest": digest, "hint": "write"} for name, digest in (extra or {}).items()
+    ]
+    listing = pin_digest({tool["name"]: tool["digest"] for tool in tools})
+    return {
+        "project_id": project, "server": server, "session": "s1",
+        "run": "20261026T120000000000Z-main-1", "tools": tools, "listing": listing,
+    }  # fmt: skip
+
+
+async def report(api: Api, body: Mapping[str, object], who: str = "harness") -> Any:
+    response = await api.client.post(
+        "/v1/mcp-listings", data=json.dumps(body), headers=headers(who)
+    )
+    return response.status, await response.json()
+
+
+async def test_a_reported_drift_is_recorded_once_as_the_middlewares_and_holds(api: Api) -> None:
+    from sandbox_science.policy.detection import DRIFT_KINDS, DriftLedger
+
+    # The pinned listing itself is no drift.
+    status, found = await report(api, reported())
+    assert (status, found) == (200, {"drifted": False, "record": None})
+    body = reported({"brand_new": "1" * 64})
+    status, found = await report(api, body)
+    assert status == 200, found
+    assert found["drifted"] is True
+    assert isinstance(found["record"], int)
+    [(source, drift)] = api.records("mcp-tools-drift")
+    pin = pin_digest(catalog(SERVER).pins)
+    assert source == "runtime"
+    assert (drift["project"], drift["server"], drift["pin"], drift["listing"]) == (
+        "p1", SERVER, pin, body["listing"],
+    )  # fmt: skip
+    assert (drift["added"], drift["hints"], drift["digests"]) == (
+        ["brand_new"], {"brand_new": "write"}, {"brand_new": "1" * 64},
+    )  # fmt: skip
+    assert (drift["caller"], drift["session"], drift["finding"]) == (
+        "agent-runtime", "s1", "tool_list_drift",
+    )  # fmt: skip
+    # The middleware's ledger reads it as its own: the server's non-read calls ask.
+    ledger = DriftLedger()
+    with StoreReader(api.events.path) as reader:
+        ledger.load(list(reader.records(kinds=DRIFT_KINDS)))
+    assert ledger.drifted(SERVER, pin, "p1") == found["record"]
+    # The same listing again records nothing new.
+    status, again = await report(api, body)
+    assert (status, again) == (200, {"drifted": True, "record": None})
+    assert len(api.records("mcp-tools-drift")) == 1
+    # The review shows it, and the user's re-acceptance ends it as for the middleware's.
+    status, shown = await api.get("/v1/classifications?project=p1")
+    assert status == 200
+    assert shown[0]["drift"] is not None
+
+
+@pytest.mark.parametrize(
+    ("body", "who", "status"),
+    [
+        (reported(project="p2"), "harness", 403),  # a project the caller is not bound to
+        (reported(server="other-server"), "harness", 404),  # not a server of the project's
+        ({**reported(), "listing": "f" * 64}, "harness", 400),  # not its tools' digest
+        ({**reported(), "tools": [*reported()["tools"], reported()["tools"][0]]}, "harness", 400),
+        ({**reported(), "extra": 1}, "harness", 400),
+    ],
+)
+async def test_a_report_the_caller_is_not_bound_to_is_refused(
+    api: Api, body: dict[str, Any], who: str, status: int
+) -> None:
+    found = await report(api, body, who)
+    assert found[0] == status, found
+    assert api.records("mcp-tools-drift") == []

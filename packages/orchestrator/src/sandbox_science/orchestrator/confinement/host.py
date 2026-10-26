@@ -53,6 +53,7 @@ from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
 from .binaries import CallBinaries
+from .listings import WorkerListings, report
 from .models import CallbackModel
 from .requests import confirm
 from .transport import Capability, Channel, TransportError
@@ -65,6 +66,7 @@ from .wire import (
     FoldRequest,
     HookGiven,
     HookRequest,
+    ListingReportRequest,
     LogAppend,
     LogTool,
     LoopState,
@@ -556,12 +558,15 @@ class HostLoops:
         model_roles: Mapping[str, frozenset[str]] | None = None,
         run_share: float | None = None,
         requests: RequestCheck | None = None,
+        listings: WorkerListings | None = None,
     ) -> None:
         """``run_share`` is the part of a configured project cost limit one run may use;
         ``requests`` checks a refusal that names an MCP permission request for an attempt
         (``confirm_request``, D98), for the attempt's project only."""
         self.channel, self.projects = channel, projects
         self.requests = requests
+        self.listings = listings
+        """Forwards the listings an attempt's direct client reports to the worker (D98)."""
         self.control, self.model_roles = control, model_roles or {}
         self.run_share = run_share
         self.attempts: dict[str, Prepared] = {}
@@ -697,6 +702,21 @@ class HostLoops:
             # The attempt's project, never one the runtime names: a yes or a no about one
             # request, read from the middleware's records through the worker.
             return await confirm(self.requests, prepared.owner.project, value)
+        if kind is Capability.REPORT_MCP_LISTING:
+            # The attempt's project, session and run, never the runtime's word, and one of
+            # the attempt's connector servers only.
+            connectors = prepared.toolbox.connectors
+            owner = prepared.owner
+            return payload(
+                await report(
+                    self.listings,
+                    typed(ListingReportRequest, value),
+                    project=owner.project,
+                    servers=connectors.servers if connectors is not None else (),
+                    session=owner.session,
+                    run=owner.run,
+                )
+            )
         return await prepared.call(kind, value)
 
     async def run(

@@ -32,6 +32,12 @@ token, the check is the attempt's ``confirm_request`` capability
 (``confinement.requests.ControlRequestCheck``), bound to the attempt's project, which the
 host answers with the same worker check.
 
+Every ``tools/list`` page it returns shows only the tools its server's compiled native rules
+admit (``DirectServer.tools``), since the middleware cannot rewrite an event-stream listing
+OpenShell does not offer it whole; each complete listing, as the server sent it, goes to its
+``ListingReporter`` for the trusted side's drift check, and one the control side does not
+take is not shown.
+
 In the confined runtime the client runs in the agent runtime's sandbox, beside OpenShell's
 proxy and the provider's placeholders: there it lists servers for the control service's
 canaries (``confinement.canaries``), and hands binary results to the host over
@@ -46,7 +52,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol, cast
 
@@ -54,6 +60,10 @@ import aiohttp
 from pydantic import ValidationError
 
 from sandbox_science.contracts.permission_requests import PermissionConfirmation
+from sandbox_science.policy import mcp_wire
+from sandbox_science.policy.mcp_listings import listing_digest
+from sandbox_science.policy.mcp_wire import ListedTool, McpWireError
+from sandbox_science.policy.openshell import ToolAdmission
 
 from .connectors import (
     CALL_SECONDS,
@@ -77,11 +87,27 @@ _PLACEHOLDER: Final = re.compile(r"openshell:resolve:env:[\x21-\x7e]{1,512}")
 
 @dataclass(frozen=True)
 class DirectServer:
-    """A declared server: its URL, as the project policy names it, and its credential
-    headers, each the environment variable that holds an OpenShell placeholder."""
+    """A declared server: its URL, as the project policy names it, its credential headers,
+    each the environment variable that holds an OpenShell placeholder, and the tool names
+    its compiled endpoint's native rules admit (``tools``): the only tools a listing shows.
+    Without them, a listing shows none."""
 
     url: str
     credentials: Mapping[str, str] = field(default_factory=dict[str, str])
+    tools: ToolAdmission = field(default_factory=ToolAdmission)
+
+
+MAX_REPORTED_TOOLS: Final = 2048
+"""Tools one complete listing may have to be reported; a larger one is refused."""
+
+
+class ListingReporter(Protocol):
+    """Takes a server's complete listing, as the server sent it: each tool's name, digest
+    and hint, and the listing's digest. In the confined runtime, the attempt's (or the
+    canaries') ``report_mcp_listing`` (``confinement.listings``); it raises when the
+    control side does not take the report."""
+
+    async def __call__(self, server: str, tools: Sequence[ListedTool], listing: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -161,6 +187,7 @@ class DirectClient:
         run: str | None = None,
         timeout: float = CALL_SECONDS,
         environ: Mapping[str, str] | None = None,
+        reporter: ListingReporter | None = None,
     ) -> None:
         self._servers = dict(servers)
         self._project, self._check = project, check
@@ -172,6 +199,9 @@ class DirectClient:
         self._http: aiohttp.ClientSession | None = None
         self._sessions: dict[str, asyncio.Task[str | None]] = {}
         self._ids = 0
+        self.reporter = reporter
+        """Where each complete listing goes for the drift check; none in a lab or test."""
+        self._pages: dict[tuple[str, str], list[ListedTool]] = {}
 
     async def close(self) -> None:
         for task in self._sessions.values():
@@ -215,12 +245,49 @@ class DirectClient:
                     del self._sessions[server]  # the server forgot it: start again, once
                 continue
             try:
-                return _result(status, kind, body, request_id)
+                result = _result(status, kind, body, request_id)
             except ConnectorError as error:
                 if error.kind in _HELD_KINDS:
                     await self._confirm(error, server, method, params)
                 raise
+            if method == "tools/list":
+                return await self._listed(server, session, "cursor" in params, result)
+            return result
         raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _listed(
+        self, server: str, session: str, following: bool, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """A ``tools/list`` page as the caller sees it: without the tools the compiled native
+        rules deny (by name, as OpenShell matches them), so no denied tool reaches the
+        model. Once a listing is complete (a first page, then pages to one without a
+        cursor), the server's own listing goes to ``reporter`` for the drift check; a
+        listing the control side does not take is refused, never passed unchecked."""
+        try:
+            listed = mcp_wire.listed_tools(result)
+            _, cursor = mcp_wire.tool_names(result)
+        except McpWireError:
+            raise ConnectorError("unavailable", f"{server}'s tools/list is malformed") from None
+        key = (server, session)
+        earlier = self._pages.pop(key, None)
+        pages = earlier if following else []
+        if pages is not None:
+            pages += listed
+            if len(pages) > MAX_REPORTED_TOOLS:
+                raise ConnectorError("unavailable", f"{server} lists too many tools to check")
+            if cursor is not None:
+                self._pages[key] = pages
+            elif self.reporter is not None:
+                seen = {tool.name: tool for tool in pages}
+                try:
+                    await self.reporter(server, list(seen.values()), listing_digest(seen))
+                except Exception as exc:
+                    raise ConnectorError(
+                        "unavailable", f"{server}'s listing was not checked ({type(exc).__name__})"
+                    ) from None
+        admission = self._servers[server].tools
+        tools = cast(list[dict[str, Any]], result["tools"])
+        return {**result, "tools": [tool for tool in tools if admission.admits(tool["name"])]}
 
     async def _confirm(
         self, error: ConnectorError, server: str, method: str, params: Mapping[str, object]

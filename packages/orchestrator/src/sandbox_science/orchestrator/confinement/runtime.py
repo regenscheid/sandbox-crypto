@@ -15,6 +15,7 @@ from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.control.migrations import VERSION
+from sandbox_science.orchestrator.mcp_direct import DirectClient
 from sandbox_science.orchestrator.messages import ThinkingReplay
 from sandbox_science.orchestrator.model import ModelGateway
 from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
@@ -23,6 +24,7 @@ from sandbox_science.orchestrator.skills.embeddings import Embedder
 from .canaries import DirectSettings, RuntimeListings
 from .embeddings import RuntimeEmbeddings
 from .endpoints import client_tls, control_endpoint, control_trace
+from .listings import ControlListingReports
 from .models import RuntimeModels
 from .runtime_loop import RuntimeLoops
 from .scheduling import Scheduling
@@ -108,9 +110,9 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         timeout=aiohttp.ClientTimeout(sock_connect=10), trace_configs=[control_trace()]
     )
     loops: RuntimeLoops | None = None
-    direct = settings.mcp.client() if settings.mcp is not None else None
+    direct: DirectClient | None = None
     listings = RuntimeListings(
-        direct, frozenset(settings.mcp.servers) if settings.mcp is not None else frozenset()
+        None, frozenset(settings.mcp.servers) if settings.mcp is not None else frozenset()
     )
     try:
         # The endpoint and egress are fixed by trusted launcher configuration;
@@ -145,6 +147,9 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 raise TransportError("denied", "host requested an unavailable runtime capability")
 
             channel = Channel(socket.send_str, handle)
+            if settings.mcp is not None:
+                # Its complete listings go to the host for the drift check (D98).
+                direct = listings.client = settings.mcp.client(ControlListingReports(channel, None))
             models = RuntimeModels(gateway, frozenset(settings.models), channel)
             embedding = RuntimeEmbeddings(embedder, channel)
             loops = RuntimeLoops(channel, gateway, settings.scratch)

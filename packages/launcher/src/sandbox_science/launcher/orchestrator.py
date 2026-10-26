@@ -206,7 +206,11 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         }
         if config.canaries.enabled and config.mcp_proxy is None:
             # The direct path's canaries: control asks the runtime to list (list_mcp_tools).
-            host["canaries"] = {"servers": list(spec.servers), "interval": config.canaries.interval}
+            host["canaries"] = {
+                "project": direct["project"],
+                "servers": list(spec.servers),
+                "interval": config.canaries.interval,
+            }
     aliases = tuple(
         dict.fromkeys(
             alias

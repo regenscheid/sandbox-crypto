@@ -61,6 +61,7 @@ from .embeddings import CallbackEmbedder
 from .endpoints import ServerTLS, bind_address, loopback
 from .host import HostLoops
 from .lifecycle import ControlLifecycle
+from .listings import WorkerListings, report
 from .metadata import Metadata
 from .models import CallbackGateway, CallbackModel
 from .transport import (
@@ -74,6 +75,7 @@ from .transport import (
 )
 from .wire import (
     Hello,
+    ListingReportRequest,
     ModelAlias,
     Queue,
     Ready,
@@ -101,6 +103,8 @@ class CanarySettings(Contract):
     """MCP canaries on the direct path (D103): each server listed by the runtime's direct
     client every ``interval`` seconds, recorded in the control store's ``mcp_canaries``."""
 
+    project: Identifier
+    """The project whose pins the canaries' listings are checked against (D98)."""
     servers: tuple[Identifier, ...] = Field(min_length=1, max_length=256)
     interval: float = Field(default=INTERVAL, ge=60, le=86400)
 
@@ -349,9 +353,27 @@ def create_app(settings: ControlSettings) -> web.Application:
                         return await service.resume_branch(
                             branch.project, branch.session, branch.request, branch.work
                         )
+                    if (
+                        kind is Capability.REPORT_MCP_LISTING
+                        and isinstance(value, dict)
+                        and value.get("attempt") is None
+                    ):
+                        # The canaries' client: their project and servers only.
+                        canaries = settings.canaries
+                        if canaries is None or canaries.project not in settings.projects:
+                            raise TransportError("denied", "this host runs no canaries")
+                        return payload(
+                            await report(
+                                listings,
+                                typed(ListingReportRequest, value),
+                                project=canaries.project,
+                                servers=canaries.servers,
+                            )
+                        )
                     return await loops.capability(kind, value)
 
                 channel = Channel(socket.send_str, handle)
+                listings = WorkerListings(worker)
                 agent_models = frozenset(settings.agent_models)
                 fold_models = agent_models or frozenset(
                     alias for alias in (settings.main, settings.delegated) if alias
@@ -377,6 +399,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                         settings.settings.run_share if settings.settings.cost_limits else None
                     ),
                     requests=WorkerRequestCheck(worker),
+                    listings=listings,
                 )
                 scope = loops.model_capability
                 gateway = CallbackGateway(
