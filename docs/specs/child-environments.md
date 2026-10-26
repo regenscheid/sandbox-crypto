@@ -1,6 +1,14 @@
 # Child environments
 
-Status: Decided by the owner (2026-10-26): all six questions as recommended. Being built, the worker and records first. It designs
+Status: Decided by the owner (2026-10-26): all six questions as recommended. First
+increment built 2026-10-26, fake CLI only; not qualified on a cluster: the worker's kind,
+admission, preparation, hand-back, retention, release and restart rules
+([worker](../WORKER.md#child-environments)), the delegation's setting, placement, records
+and outcome, the run in its own environment, and a Resume's choice of environment. Open:
+the Compute tab's children's kernels (CE-8), the workspace's environment views (CE-11's
+GUI part), the prompts' guidance (CE-13), `child_idle_max` (question 4), inputs from
+control's retained content (CE-7), and files over 100 MiB in a hand-back (as JS's
+delivery step 4: CE-F1's 1.5 GiB file is left out and the environment retained). It designs
 backlog item B7, raised by the owner on 2026-10-24: for some projects, each subagent's
 research environment runs in a sandbox of its own, possibly on another node, for compute
 and memory; the parent, above all the main agent, owns the durable records, and a
