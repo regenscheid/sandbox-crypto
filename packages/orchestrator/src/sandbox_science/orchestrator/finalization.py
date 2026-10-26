@@ -154,6 +154,15 @@ class AttemptFinalizer:
         """A worker error defers cleanup without undoing its durable result."""
         if work.parent is None or work.kernel is None or work.state not in ("completed", "stopped"):
             return "retained"
+        if await threaded(
+            WorkRecords(self.projects.control).awaits_review,
+            work.project,
+            work.session,
+            work.work,
+        ):
+            # A returned task keeps its kernels while its parent reviews it; they stop as
+            # it is accepted or cancelled (PD-46).
+            return "retained"
         try:
             async with asyncio.timeout(self.close_timeout):
                 await self.worker.close_session(context, run=work.kernel)

@@ -331,7 +331,8 @@ SPECS: Final = (
     ToolSpec(
         "cancel_delegation",
         "Cancel a delegated run you started. It ends cancelled with its record kept; its "
-        "executions are asked to stop. Returns its outcome.",
+        "executions are asked to stop. A returned task that awaits your review is closed "
+        "as cancelled instead of accepted. Returns its outcome.",
         {
             "type": "object",
             "properties": {"delegation_id": {"type": "string"}},
@@ -339,8 +340,35 @@ SPECS: Final = (
             "additionalProperties": False,
         },
     ),
+    ToolSpec(
+        "accept_delegation",
+        "Accept a returned task you delegated, once you have reviewed its outcome: it "
+        "closes, its own environment hands its files back and is released, and its kernels "
+        "stop. To have it continue instead, send it feedback with message_child. A task "
+        "you leave unreviewed is accepted when your run ends. Returns its outcome.",
+        {
+            "type": "object",
+            "properties": {
+                "delegation_id": {"type": "string"},
+                "note": {
+                    "type": "string",
+                    "maxLength": MAX_NOTE,
+                    "description": "Optional: why you accept it, one line, kept with it",
+                },
+            },
+            "required": ["delegation_id"],
+            "additionalProperties": False,
+        },
+    ),
 )
 NAMES: Final = frozenset(spec.name for spec in SPECS)
+
+
+class Accepting(Contract):
+    """``accept_delegation``'s arguments: a returned task, and the parent's note on it."""
+
+    delegation_id: str = Field(min_length=1, max_length=128)
+    note: Annotated[str, BeforeValidator(_note), Field(max_length=MAX_NOTE)] = ""
 
 
 def offered(models: Sequence[str]) -> tuple[ToolSpec, ...]:
@@ -364,5 +392,6 @@ EFFECTS: Final[dict[str, Effect]] = {
     "wait_delegations": "read",
     "delegation_status": "read",
     "cancel_delegation": "cancel",
+    "accept_delegation": "cancel",
 }
 """``delegate`` is an effect, which the plan fence and the session's lease gate."""

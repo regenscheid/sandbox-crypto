@@ -272,8 +272,20 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
         project_id=args.project, session_id=args.session, environment_id=session.environment_id
     )
     async with WorkerClient(args.worker, read_secret(args.token_file)) as client:
+        # Returned tasks that await review are accepted first, their environments handed
+        # back and released as an acceptance releases them (PD-46, CE-4); what is left
+        # goes with the session's.
+        from .delegation.environments import ChildPlacement
+        from .delegation.records import DelegationRecords
+        from .delegation.review import Closer
+
+        accepted = await Closer(
+            DelegationRecords(store.control), ChildPlacement(client, context)
+        ).close_all(args.project, args.session, reason="session_closed")
         closed = await client.close_session(context)
     store.close_session(args.project, args.session)
+    if accepted:
+        print(f"accepted {len(accepted)} returned task(s) that awaited review")
     # At the close, a finding whose reviewed work has a newer revision and of which no
     # re-check ran becomes stale (consistency review, CR-44).
     from .consistency.findings import Findings

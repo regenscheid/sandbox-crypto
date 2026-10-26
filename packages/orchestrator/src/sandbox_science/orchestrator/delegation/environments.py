@@ -384,6 +384,10 @@ async def reconcile(
             environment.delegation_id,
         )
         reason: ChildEndReason | None = None
+        if any(d.review == "awaiting" or d.ended is None for d in holders):
+            # A running task's, or a returned one's that awaits its parent's review, which
+            # holds it until it is closed (PD-46).
+            continue
         if not holders:
             if now - environment.created_at > timedelta(seconds=settings.child_orphan_grace):
                 reason = "abandoned"

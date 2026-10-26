@@ -127,9 +127,13 @@ def test_unseen_message_to_ended_child_returns_to_root(
     sent = mailbox.send_child(
         PROJECT, SESSION, "root", None, child_id, "Correct the proof.", "op-1"
     )
-    DelegationRecords(control).end(
-        PROJECT, SESSION, child_id, Ending(ended="returned", stopped="answered")
-    )
+    records = DelegationRecords(control)
+    records.end(PROJECT, SESSION, child_id, Ending(ended="returned", stopped="answered"))
+    # A returned task awaits its parent's review (PD-46): the message waits for it, as a
+    # reopened run would receive it, and is no failure yet.
+    assert not mailbox.target_ended(PROJECT, SESSION, child_id)
+    assert mailbox.pending(PROJECT, SESSION, None) == []
+    records.accept(PROJECT, SESSION, child_id, by="root", reason="parent")
     assert mailbox.target_ended(PROJECT, SESSION, child_id)
     assert mailbox.pending(PROJECT, SESSION, None) == [sent]
     mailbox.acknowledge(PROJECT, SESSION, None, "root", [sent.message_id])
@@ -138,8 +142,9 @@ def test_unseen_message_to_ended_child_returns_to_root(
     assert mailbox.send_child(
         PROJECT, SESSION, "root", None, child_id, "Correct the proof.", "op-1"
     ) == mailbox.status(PROJECT, SESSION, "root", sent.message_id)
-    with pytest.raises(ControlError, match="running direct child"):
-        mailbox.send_child(PROJECT, SESSION, "root", None, child_id, "Another.", "op-2")
+    # A later message to the accepted task goes to the root as a delivery failure.
+    later = mailbox.send_child(PROJECT, SESSION, "root", None, child_id, "Another.", "op-2")
+    assert mailbox.pending(PROJECT, SESSION, None) == [later]
 
 
 async def test_status_distinguishes_root_fallback_from_child_delivery(
@@ -149,7 +154,7 @@ async def test_status_distinguishes_root_fallback_from_child_delivery(
     store = AgentMessageStore(control)
     sent = store.send_child(PROJECT, SESSION, "root", None, child_id, "Check again.", "op")
     DelegationRecords(control).end(
-        PROJECT, SESSION, child_id, Ending(ended="returned", stopped="answered")
+        PROJECT, SESSION, child_id, Ending(ended="failed", stopped="error")
     )
     mailbox = AgentMailbox(
         store,

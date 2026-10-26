@@ -53,7 +53,10 @@ async def test_long_child_loop_retrieval_receipts_and_finalization(tmp_path: Pat
             assert len(json.dumps(summary)) < 12_000
             assert len(hook.started) == len(hook.received) == 240
             assert peaks[-1] - peaks[0] < 2 * 1024 * 1024
-            # Completed handles have gone, but durable read/cancel behavior remains.
+            # Completed handles have gone, but durable read/cancel behavior remains: a
+            # returned task that awaits review is closed as cancelled, once (PD-46).
+            text, _ = await hook.call("cancel_delegation", {"delegation_id": first})
+            assert json.loads(text)["cancelled"] is True
             text, _ = await hook.call("cancel_delegation", {"delegation_id": first})
             assert json.loads(text)["cancelled"] is False
             now = datetime.now(UTC)

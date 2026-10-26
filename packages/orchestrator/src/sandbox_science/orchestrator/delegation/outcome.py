@@ -472,6 +472,27 @@ class Outcome(TurnHook):
         self.work: set[str] = set()
         """The work records the run's ledger changes appended, by ID."""
 
+    def carry(
+        self, files: Sequence[Mapping[str, JsonValue] | None], made: Sequence[str] = ()
+    ) -> None:
+        """What a reopened task's earlier runs recorded (``files``, as their outcomes keep
+        them, with their pinned result files) and the entries their changes made, by ID
+        and handle (``made``), which its next result may name as its own calls' (PD-46):
+        the same task's work, carried over before its next run's calls."""
+        for kept in files:
+            if kept is None:
+                continue
+            for key in ("files", "results"):
+                listed = kept.get(key)
+                for entry in cast(list[object], listed) if isinstance(listed, list) else []:
+                    if not isinstance(entry, dict):
+                        continue
+                    found = cast(dict[str, JsonValue], entry)
+                    if isinstance(path := found.get("path"), str):
+                        self.recorded.setdefault(path, found)
+                        self._revision(path, found)
+        self.revised.update(made)
+
     @property
     def read_proofs(self) -> bool | None:
         """Whether the run's reads of the entry showed each of its proofs, and read the

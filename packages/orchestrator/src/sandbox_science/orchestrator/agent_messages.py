@@ -16,7 +16,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 from pydantic import Field
 
@@ -27,6 +27,7 @@ from .agent_message_routes import received_by, recipient_state, recipient_target
 from .aio import threaded
 from .control import ControlError, ControlStore
 from .control.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED
+from .delegation.records import Reopened, ReopenPlan, reopen_in
 from .delegation.references import (
     MAX_REFERENCES,
     ReferenceInput,
@@ -93,6 +94,26 @@ _COLUMNS: Final = (
     "message_id, sender_run, sender_delegation, recipient_delegation, body, "
     "created_at, delivered_run, refs"
 )
+
+
+@dataclass(frozen=True)
+class Sent:
+    """A message to a child, and the returned task it reopened, if it did (PD-46)."""
+
+    message: AgentMessage
+    reopened: Reopened | None = None
+
+
+class Reopener(Protocol):
+    """The parent's delegations, which run a returned task a message reopens (PD-46)."""
+
+    def plan_reopen(self) -> ReopenPlan:
+        """The run a reopening would start, and the bounds it is admitted under."""
+        ...
+
+    async def reopened(self, reopened: Reopened) -> None:
+        """Run the reopened task's next run, as the parent's child."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -257,18 +278,45 @@ class AgentMessageStore:
         operation: str,
         references: tuple[dict[str, Any], ...] = (),
     ) -> AgentMessage:
-        """A message to the running direct child ``target``, with the sender's records it
-        references, as ``resolve`` checked them; a check takes none (CM-37a)."""
+        """A message to the direct child ``target`` (``deliver_child``)."""
+        return self.deliver_child(
+            project, session, sender, sender_delegation, target, body, operation, references
+        ).message
+
+    def deliver_child(
+        self,
+        project: str,
+        session: str,
+        sender: str,
+        sender_delegation: str | None,
+        target: str,
+        body: str,
+        operation: str,
+        references: tuple[dict[str, Any], ...] = (),
+        *,
+        reopen: ReopenPlan | None = None,
+    ) -> Sent:
+        """A message to the direct child ``target``, with the sender's records it
+        references, as ``resolve`` checked them; a check takes none (CM-37a). A running
+        child sees it at its next safe point. A returned task that awaits review is
+        reopened by it, in the same transaction, which an acceptance cannot pass at the
+        same time (PD-46): only with ``reopen``, the run its parent would start. One that
+        is closed (accepted, cancelled, failed or ended otherwise) keeps it for the root,
+        as a delivery failure (PD-44)."""
         body = _body(body)
         with self.control.write() as tx:
             db = tx.sql
             if found := self._existing(
                 db, project, session, operation, sender, target, body, references
             ):
-                return found
+                return Sent(found)
             parent, _, ended = self._delegation(db, project, session, target)
-            if parent != sender or ended is not None:
-                raise ControlError(CONFLICT, "only a running direct child may receive a message")
+            reviewing = _review(db, project, session, target) == "awaiting"
+            work = reopen.work if reopen is not None else None
+            if parent != sender and not (
+                reviewing and _same_work(db, project, session, parent, work)
+            ):
+                raise ControlError(CONFLICT, "only a direct child may receive a message")
             if references and _kind(db, project, session, target) != "task":
                 raise ControlError(
                     POLICY_DENIED,
@@ -284,7 +332,12 @@ class AgentMessageStore:
                     raise ControlError(CONFLICT, "the sender is not this delegation's live run")
                 root, _ = self._ancestor(db, project, session, ancestor)
             self._live(db, project, session, root)
-            return self._insert(
+            reopened = None
+            if ended is not None and reviewing:
+                if reopen is None:
+                    raise ControlError(CONFLICT, "this run cannot reopen a returned task")
+                reopened = reopen_in(db, project, session, target, reopen.run, cap=reopen.cap)
+            message = self._insert(
                 db,
                 project,
                 session,
@@ -295,6 +348,7 @@ class AgentMessageStore:
                 body,
                 references,
             )
+            return Sent(message, reopened)
 
     def send_parent(
         self,
@@ -394,6 +448,22 @@ class AgentMessageStore:
         return state is not None and state[1]
 
 
+def _review(db: sqlite3.Connection, project: str, session: str, delegation: str) -> str | None:
+    row = db.execute(
+        "SELECT review FROM delegations WHERE project_id=? AND session_id=? AND delegation_id=?",
+        (project, session, delegation),
+    ).fetchone()
+    return None if row is None or row[0] is None else str(row[0])
+
+
+def _same_work(
+    db: sqlite3.Connection, project: str, session: str, run: str, work: str | None
+) -> bool:
+    """Whether ``run`` is an attempt of ``work``, as a Resume's continuation of a parent
+    is of its earlier attempt."""
+    return work is not None and work_for_run(db, project, session, run) == work
+
+
 def _kind(db: sqlite3.Connection, project: str, session: str, delegation: str) -> str:
     row = db.execute(
         "SELECT kind FROM delegations WHERE project_id=? AND session_id=? AND delegation_id=?",
@@ -434,8 +504,11 @@ class Withdrawal(Contract):
 
 CHILD_SPEC: Final = ToolSpec(
     "message_child",
-    "Send a correction, instruction or answer to one running direct child. It is saved "
-    "once and shown at that child's next model-call safe point. Name the user message "
+    "Send a correction, instruction or answer to one direct child. It is saved once and "
+    "shown at a running child's next model-call safe point. To a returned task that awaits "
+    "your review, it is feedback: the task reopens and continues from its own history, "
+    "kernels and environment with your message, and returns its next result for your "
+    "review. Name the user message "
     "or pinned record behind a changed instruction; the child has not seen your chat. "
     "To give a task context it lacks, reference your records (references) instead of "
     "retelling them. A queued receipt is not proof the child saw it; check "
@@ -531,6 +604,9 @@ class AgentMailbox(TurnHook):
         self.store, self.context, self.run = store, context, run
         self.delegation, self.clock = delegation, clock
         self.user_arrived = user_arrived
+        self.reopener: Reopener | None = None
+        """The run's delegations, which run a returned task its message reopens (PD-46);
+        without them, a message to a returned task is refused."""
         self.requests = requests if may_message_child else None
         self.seen: frozenset[str] = frozenset()
         self.specs = (
@@ -544,6 +620,7 @@ class AgentMailbox(TurnHook):
         self, name: str, args: dict[str, Any], operation: str
     ) -> tuple[str, dict[str, Any]]:
         project, session = self.context.project_id, self.context.session_id
+        reopened: dict[str, Any] | None = None
         if name == WITHDRAW_SPEC.name:
             return await self._withdraw(args)
         if name == "message_child":
@@ -553,8 +630,9 @@ class AgentMailbox(TurnHook):
             references = (
                 await threaded(self._references, request.references) if request.references else ()
             )
-            message = await threaded(
-                self.store.send_child,
+            reopener = self.reopener
+            sent = await threaded(
+                self.store.deliver_child,
                 project,
                 session,
                 self.run,
@@ -563,7 +641,17 @@ class AgentMailbox(TurnHook):
                 request.text,
                 operation,
                 references,
+                reopen=reopener.plan_reopen() if reopener is not None else None,
             )
+            message = sent.message
+            if sent.reopened is not None and reopener is not None:
+                # Committed with the message: the task runs again, as this run's child.
+                await reopener.reopened(sent.reopened)
+                reopened = {
+                    "delegation_id": sent.reopened.delegation_id,
+                    "run": sent.reopened.run,
+                    "result": sent.reopened.number,
+                }
         elif name == "message_parent":
             if self.delegation is None:
                 raise ControlError(CONFLICT, "the root has no parent agent")
@@ -617,7 +705,7 @@ class AgentMailbox(TurnHook):
                 message.delivered_run,
             )
         )
-        result = {
+        result: dict[str, Any] = {
             "message_id": message.message_id,
             "state": (
                 "delivery_failed"
@@ -631,6 +719,9 @@ class AgentMailbox(TurnHook):
             "recipient": message.recipient_delegation or "root",
             "delivered_run": message.delivered_run,
         }
+        if reopened is not None:
+            # The returned task continues from its own history with this message (PD-46).
+            result["reopened"] = reopened
         return dump(result), {"agent_message": result}
 
     def _references(self, items: tuple[ReferenceInput, ...]) -> tuple[dict[str, Any], ...]:

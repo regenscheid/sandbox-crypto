@@ -476,9 +476,7 @@ async def test_a_task_is_shown_a_messages_references_with_it(world: World) -> No
     assert f"Record {answer}" in shown
     assert "1000003" in shown
     # A child that ended unseen hands it to the root, which sees the items as resolved.
-    DelegationRecords(world.control).end(
-        PROJECT, SESSION, child, Ending(ended="returned", stopped="answered")
-    )
+    DelegationRecords(world.control).end(PROJECT, SESSION, child, Ending("failed", "error"))
     root = AgentMailbox(store, CONTEXT, run=ROOT, delegation=None, may_message_child=True)
     (failed,) = await root.notices("turn", run)
     assert cast(dict[str, object], failed.payload)["references"] == [{"message": answer}]

@@ -558,6 +558,11 @@ class ProjectStore:
                 state="cancelled",
                 reason=SESSION_CLOSED,
             )
+            # Its returned tasks that await review are accepted for their parents; their
+            # environments and kernels go with the session's (PD-46).
+            from .delegation.records import close_awaiting
+
+            close_awaiting(tx.sql, project_id, session_id, "session_closed", now.isoformat())
             return closed
 
     def project_ids(self) -> list[str]:

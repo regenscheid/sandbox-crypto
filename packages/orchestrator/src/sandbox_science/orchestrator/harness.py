@@ -18,7 +18,7 @@ import dataclasses
 import functools
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, Literal, Protocol, cast
@@ -344,6 +344,10 @@ class RunRequest:
     """Trusted provenance for a continuation created by Recovery. It distinguishes an
     operator-requested Resume from bounded automatic recovery; ordinary runs leave it unset."""
     epoch: int | None = None
+    opening: str | None = None
+    """For a reopened task (PD-46), its run's first message in place of its brief: it
+    continues its work (``work``, ``predecessor``) from its own history, and its state
+    block keeps the brief, ``task``, pinned."""
     stop_by: Deadline | None = None
     """For a delegated run, when its end must have stopped its own children, which its
     parent sets as it cancels it (PD-39)."""
@@ -930,7 +934,8 @@ class Harness:
                     work=WorkHook(
                         records,
                         owner,
-                        predecessor=request.predecessor,
+                        # A reopened task is not a recovery: its opening says what it is.
+                        predecessor=request.predecessor if request.opening is None else None,
                         resume_source=request.resume_source,
                         wait_children=wait_children,
                     ),
@@ -1014,6 +1019,9 @@ class Harness:
                         )
                         if delegations is not None:
                             delegations.wake = child_wake
+                            # A message to a returned task reopens it, as this run's child
+                            # (PD-46).
+                            toolbox.mailbox.reopener = delegations
                         if work is not None:
                             work.wake = child_wake
                     hooks = toolbox.turn_hooks()
@@ -1098,7 +1106,10 @@ class Harness:
                                     TypeAdapter(Settings).dump_python(self.settings, mode="json"),
                                 ),
                                 predecessor=request.predecessor,
-                                accept_changes=request.resume_source == "operator",
+                                # A parent reopening its returned task chose to go on, as
+                                # the user's Resume does (PD-46).
+                                accept_changes=request.resume_source == "operator"
+                                or request.opening is not None,
                                 changed=sink.note,
                             ),
                             *hooks,
@@ -1106,7 +1117,7 @@ class Harness:
                     transcript = await self.loop_runner(
                         self._model(admitted),
                         toolbox,
-                        None if request.queued else request.task,
+                        None if request.queued else request.opening or request.task,
                         run_id=admitted.run_id,
                         history=request.history,
                         stop=stop,
@@ -1314,6 +1325,16 @@ class Harness:
                     _entry_made, Ledger(self.stores.documents), admitted.context.project_id
                 ),
             )
+            if request.opening is not None and request.delegation is not None:
+                # A reopened task's result may name what its earlier runs made (PD-46).
+                files, made = await threaded(
+                    _earlier,
+                    self.stores,
+                    admitted.context,
+                    request.delegation,
+                    run_name(admitted.started_at, admitted.run_id),
+                )
+                outcome.carry(files, made)
             return (SessionHeld(chat), fence, outcome, EventLog(chat))
         discover = discovery.about if discovery is not None else None
         return (UserMessages(chat, discover), EventLog(chat))
@@ -1342,6 +1363,19 @@ class Harness:
         async def waiting(ids: Sequence[str] | None) -> None:
             if chat is not None:
                 await chat.write("waiting", {"delegation_ids": ids, "mode": "all" if ids else None})
+
+        async def accepted(notice: dict[str, object]) -> None:
+            # The root's user is told of the tasks the platform accepted for it (PD-46).
+            if chat is not None:
+                await chat.write("notice", notice)
+
+        # A closed task's kernels in the session's environment stop by its work's run.
+        session_context = context.model_copy(
+            update={"environment_id": admitted.session_environment or context.environment_id}
+        )
+
+        async def release_kernel(kernel: str) -> None:
+            await self.client.close_session(session_context, run=kernel)
 
         # Every run of the tree is given the memory its root was (PM-8).
         version = memory[0] if memory is not None else None
@@ -1383,6 +1417,8 @@ class Harness:
             recovering=recovering,
             clock=clock,
             placement=self.placement(admitted),
+            release_kernel=release_kernel,
+            notify=accepted if depth == 0 else None,
         )
 
     async def child_tier_refusal(self, environment_id: str) -> str | None:
@@ -1452,6 +1488,10 @@ class Harness:
             may_delegate=child.delegate,
             stop_by=child.deadline,
             model_profiles=dict(parent.request.model_profiles or {}),
+            work=child.work,
+            predecessor=child.predecessor,
+            epoch=child.epoch,
+            opening=child.opening,
         )
         profiles_for_child = dict(request.model_profiles or {})
         if child.alias is not None:
@@ -1615,7 +1655,21 @@ class Harness:
             found.published if found is not None else (),
             end.files,
         )
-        kept = await placement.close(environment_id, finished.delegation, plan)
+        if found is not None and found.task and not end.failed and end.stopped == "answered":
+            # A returned task keeps its environment while its parent reviews it; its
+            # hand-back is made, and it is released, when the task closes (PD-46).
+            files, retained = plan
+            kept: dict[str, JsonValue] = {
+                "environment_id": environment_id,
+                "end": "held",
+                "message": "kept while the parent reviews the task",
+                "plan": {
+                    "files": list(files),
+                    "retained": [r.model_dump(mode="json") for r in retained],
+                },
+            }
+        else:
+            kept = await placement.close(environment_id, finished.delegation, plan)
         if (previous := self.restarted.pop(environment_id, None)) is not None:
             kept["restarted"] = {
                 "replaced": previous,
@@ -1701,7 +1755,7 @@ class Harness:
             admitted.context,
             run=run_name(admitted.started_at, admitted.run_id),
             run_id=admitted.run_id,
-            task=None if request.queued else request.task,
+            task=None if request.queued else request.opening or request.task,
             message_ids=request.message_ids,
             prefix=1 + len(request.history) + (0 if request.queued else 1),
             parent=request.parent,
@@ -2095,6 +2149,24 @@ def _deliverables(
             raise
         return ()
     return asked_of(found.brief) if found.kind == "task" else ()
+
+
+def _earlier(
+    stores: Stores, context: ExecutionContext, delegation: str, run: str
+) -> tuple[list[Mapping[str, JsonValue] | None], list[str]]:
+    """What a reopened task's earlier runs recorded, and the entries they created by ID
+    and handle (PD-46)."""
+    ledger = Ledger(stores.documents)
+    ends = ChildSettlement(stores.projects.control, ledger).earlier(
+        context.project_id, context.session_id, delegation, run
+    )
+    made: list[str] = []
+    for end in ends:
+        for entry in end.created:
+            made.append(entry)
+            with suppress(Exception):
+                made.append(ledger.entry(context.project_id, entry).handle)
+    return [end.files for end in ends], made
 
 
 async def _entry_made(ledger: Ledger, project: str, reference: str, work: frozenset[str]) -> bool:

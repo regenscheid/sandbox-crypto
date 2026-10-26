@@ -178,6 +178,14 @@ TASK_PROMPT: Final = (
 )
 TASK: Final = Section("delegated-task", TASK_VERSION, TASK_PROMPT)
 
+REOPENED_TASK: Final = (
+    "Your parent reviewed the result you returned and reopened this task with feedback, "
+    "which follows as a message from your parent. Continue from your own history above, "
+    "in the same kernels and files, and return your whole result again."
+)
+"""A reopened task's first message, in place of its brief, which its state block keeps
+(PD-46): the platform's words; the parent's message comes as an agent message."""
+
 
 def check_task(handle: str, revision: int) -> str:
     """A check's task, as the platform writes it."""
