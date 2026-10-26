@@ -82,7 +82,7 @@ for baseline failures, the narrow host fix and the exact revisions qualified.
 
 ## Direct MCP path against the owner's portal (D98, A2)
 
-`direct_mcp.py` runs proofs 1 to 4 of the [prototype](../../docs/specs/mcp-middleware-prototype.md#recommendation)
+`direct_mcp.py` runs proofs 1 to 5 of the [prototype](../../docs/specs/mcp-middleware-prototype.md#recommendation)
 against the owner's real MCP portal, with the owner's approval (2026-10-26) to reuse the
 personal instance's Cloudflare Access file by path. It reuses this file's machinery
 (`make_root`, `OwnedRoot`, `recovery_acceptance_up.sh` with `MIDDLEWARE_EXTRA="mcp_listings = true"`):
@@ -101,8 +101,11 @@ personal instance is not touched.
 
 The lab registers the provider with the product's helper and the installed CLI as they are
 (the helper no longer takes an empty `.git` directory in babbage's home for a checkout), and
-binds its hand-made agent sandbox through the worker's `POST /v1/runtime-sandboxes`, the route
-the runtime owner and the runtime manager use for the product's own.
+then wires the agent sandbox as `sandbox-science up` does with `[mcp_direct]`: the launcher's
+`direct_mcp.compile_direct` compiles the egress, `merged` puts it beside the runtime's
+`compile_orchestrator` policy (here with the lab worker as its one platform service), and
+`runtime_owner.create_owned` makes the sandbox with the provider attached and binds it
+through the worker (`WorkerBinding`, the route the runtime manager uses too).
 
 ```bash
 .venv/bin/python -I .agents/labs/direct_mcp.py prepare
@@ -124,7 +127,16 @@ attack-catalog (the escalated tool, after approval), one firecrawl scrape of a s
 and one attack-catalog call without its required argument for the error answer. A later lab runs
 `proofs --plan rerun`, which calls the portal's own `portal_list_servers` as the allowed tool and
 skips the error answer, so the earlier lab's upstream reads are not repeated. Proof 5 (binary
-results) is recorded as pending. OpenShell 0.1.5 never offers `WHOLE_BODY_BYTES` for a
+results): after proofs 1 to 4 the lab host relays one `mcp_request` of web-fetch's
+`web_capture` of the same small page, the cheapest of the portal's tools that captures an image,
+to the agent's production `RuntimeConnectorCalls`, which withholds each image, audio or blob
+item and sends it over `publish_mcp_binary`; the host keeps it with the production
+`CallBinaries` (only while it relays that call), through a lab sink that writes the bytes under
+`kept/` in the root instead of a session's workspace. The receipt has each kept item's SHA-256,
+size and media type. A probe through the owner's client on 2026-10-26 showed `web_capture`
+answering a `resource_link` beside its text rather than inline image content: if the live answer
+holds no binary item, proof 5 says `NO BINARY` (`pass: null`) and the lab says which content
+types came back; firecrawl's `screenshot` format answers a URL in its text as well. OpenShell 0.1.5 never offers `WHOLE_BODY_BYTES` for a
 `text/event-stream` response (an open-ended response in its `permitted_body_modes`), so the
 middleware blocks the portal's event-stream listings (`tool_listing_unreadable`); the lab of
 2026-10-26 found proof 3's listing half failing for that reason. Receipts carry counts, reason codes, request numbers and tool
