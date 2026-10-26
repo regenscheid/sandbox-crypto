@@ -1236,15 +1236,30 @@ class Environments:
                     f"project {project_id!r} has no policy revision; an operator grants one"
                     " with `sandbox-science-worker policy add --project`",
                 )
-            self.store.bind(sandbox_id, revision)
+            self.store.bind(sandbox_id, revision, project=project_id)
         except StoreError as error:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None
         return revision
 
-    def unbind_runtime(self, sandbox_id: str) -> bool:
-        """Remove the runtime sandbox's binding, if it has one; never an environment's."""
+    def unbind_runtime(self, sandbox_id: str, projects: frozenset[str] | None = None) -> bool:
+        """Remove the runtime sandbox's binding, if it has one; never an environment's.
+
+        A client limited to ``projects`` may unbind only a runtime sandbox bound for one of
+        them: a sandbox with no runtime binding is ``not_found`` to it, and one bound for
+        another project ``policy_denied``, naming none but its own. The pool's own token
+        (``projects`` None) may unbind any, and none is no error for it."""
         self._not_an_environment(sandbox_id)
         try:
+            entry = self.store.binding_entry(sandbox_id)
+            if projects is not None:
+                if entry is None or entry[1] is None:
+                    raise WorkerError(ErrorKind.NOT_FOUND, f"no runtime sandbox {sandbox_id!r}")
+                if entry[1] not in projects:
+                    raise WorkerError(
+                        ErrorKind.POLICY_DENIED,
+                        f"runtime sandbox {sandbox_id!r} is not bound for "
+                        f"{', '.join(sorted(projects))}",
+                    )
             return self.store.unbind(sandbox_id)
         except StoreError as error:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None

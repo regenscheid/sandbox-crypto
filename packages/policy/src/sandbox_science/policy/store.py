@@ -178,6 +178,13 @@ class PolicyStore:
 
     def binding(self, name: str) -> str | None:
         """Return the revision a sandbox or project is bound to, or None if it is not bound."""
+        entry = self.binding_entry(name)
+        return entry[0] if entry is not None else None
+
+    def binding_entry(self, name: str) -> tuple[str, str | None] | None:
+        """The revision a sandbox or project is bound to and the project it was bound for
+        (an agent runtime's sandbox, bound with ``project``; None otherwise), or None if it
+        is not bound."""
         what = f"binding for {self._subject} {name}"
         path = self._binding_path(name)
         try:
@@ -197,9 +204,16 @@ class PolicyStore:
             raise StoreError(f"{what} must be a JSON object")
         fields = cast("dict[str, object]", document)
         digest = fields.get("policy")
-        if set(fields) != {"policy"} or not isinstance(digest, str):
-            raise StoreError(f'{what} must be {{"policy": "<revision>"}}')
-        return check_digest(digest)
+        project = fields.get("project")
+        if (
+            set(fields) not in ({"policy"}, {"policy", "project"})
+            or not isinstance(digest, str)
+            or ("project" in fields and not isinstance(project, str))
+        ):
+            raise StoreError(f'{what} must be {{"policy": "<revision>"}}, with an optional project')
+        if isinstance(project, str):
+            check_name(project, "project")
+        return check_digest(digest), project if isinstance(project, str) else None
 
     def add_policy(self, data: bytes) -> LoadedPolicy:
         """Validate a policy file's bytes and store them under their revision."""
@@ -210,11 +224,16 @@ class PolicyStore:
         _write_atomic(self._policy_path(loaded.digest), data)
         return loaded
 
-    def bind(self, name: str, digest: str) -> None:
-        """Bind a sandbox or project to a stored revision, replacing any earlier binding."""
+    def bind(self, name: str, digest: str, *, project: str | None = None) -> None:
+        """Bind a sandbox or project to a stored revision, replacing any earlier binding;
+        ``project`` records the project an agent runtime's sandbox is bound for, so that
+        only that project's clients may unbind it."""
         path = self._binding_path(name)
         self.policy(digest)
-        document = json.dumps({"policy": digest}, sort_keys=True) + "\n"
+        fields = {"policy": digest}
+        if project is not None:
+            fields["project"] = check_name(project, "project")
+        document = json.dumps(fields, sort_keys=True) + "\n"
         _write_atomic(path, document.encode())
 
     def unbind(self, name: str) -> bool:

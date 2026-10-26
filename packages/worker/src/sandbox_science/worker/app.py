@@ -862,7 +862,8 @@ async def unbind_runtime_sandbox(request: web.Request) -> web.Response:
     """Remove the binding of a runtime sandbox that was deleted."""
     environments = _runtime_sandbox(request)
     sandbox_id = _identifier(request.match_info["sandbox_id"], "sandbox_id")
-    removed = await asyncio.to_thread(environments.unbind_runtime, sandbox_id)
+    projects = _client(request).projects
+    removed = await asyncio.to_thread(environments.unbind_runtime, sandbox_id, projects)
     return _json(RuntimeSandboxUnbound(sandbox_id=sandbox_id, unbound=removed))
 
 

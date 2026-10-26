@@ -1954,7 +1954,10 @@ async def test_the_runtime_sandbox_is_bound_to_the_projects_revision_for_an_oper
         {"sandbox_id": "sbx-agent", "unbound": True},
     )
     assert store.binding("sbx-agent") is None
-    assert (await api.call("DELETE", path, LAUNCHER_TOKEN))[1]["unbound"] is False
+    # A second unbind finds no runtime sandbox for the client: not found, as an unknown ID.
+    assert await api.refused("DELETE", path, LAUNCHER_TOKEN) == (404, "not_found")
+    # The pool's own token may unbind any, and nothing to unbind is no error for it.
+    assert (await api.call("DELETE", path, TOKEN))[1]["unbound"] is False
 
 
 BINDER_TOKEN = "test-secret-binder-" + "0" * 24
@@ -2012,6 +2015,58 @@ async def test_a_binding_only_client_reaches_the_runtime_binding_routes_alone(
         )
         status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-agent", BINDER_TOKEN)
         assert (status, reply["unbound"]) == (200, True)
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_project_scoped_client_unbinds_only_its_own_projects_runtime_sandbox(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    """A manager of project p1 cannot unbind p2's runtime sandbox, can unbind its own, and
+    learns nothing of another project's from an unknown sandbox ID."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    clients = [
+        ClientSettings(
+            name=f"manager-{project}",
+            token_sha256=token_digest(f"{BINDER_TOKEN}-{project}"),
+            projects=(project,),
+            binding_only=True,
+        )
+        for project in ("p1", "p2")
+    ]
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, *clients))
+    )
+    api = Api(client, setup)
+    one, two = f"{BINDER_TOKEN}-p1", f"{BINDER_TOKEN}-p2"
+    store = setup.environments.store
+    try:
+        for project, token in (("p1", one), ("p2", two)):
+            setup.environments.records.grant(project, setup.policy)
+            body = {"project_id": project, "sandbox_id": f"sbx-{project}"}
+            assert (await api.call("POST", "/v1/runtime-sandboxes", token, body))[0] == 200
+        assert store.binding_entry("sbx-p2") == (setup.policy, "p2")
+        # p2's runtime sandbox: refused to p1's manager, naming only p1.
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-p2", one)
+        assert (status, reply["error"]["kind"]) == (403, "policy_denied")
+        assert "p1" in reply["error"]["message"]
+        assert "p2" not in reply["error"]["message"].replace("sbx-p2", "")
+        assert store.binding("sbx-p2") == setup.policy
+        # An unknown ID is not found, as a sandbox it may not see would not be.
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-nowhere", one)
+        assert (status, reply["error"]["kind"]) == (404, "not_found")
+        assert "p2" not in reply["error"]["message"]
+        # Its own: unbound.
+        status, reply = await api.call("DELETE", "/v1/runtime-sandboxes/sbx-p1", one)
+        assert (status, reply["unbound"]) == (200, True)
+        assert store.binding("sbx-p1") is None
+        # A research environment's sandbox stays refused as before.
+        info, _ = await setup.environments.create(setup.request())
+        assert info.sandbox_id is not None
+        path = f"/v1/runtime-sandboxes/{info.sandbox_id}"
+        assert (await api.refused("DELETE", path, one))[0] == 409
     finally:
         await manager.close()
         manager.store.close()
