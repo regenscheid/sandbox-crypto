@@ -953,6 +953,11 @@ operator = true
             "acceptance": {k: v for k, v in acceptance.items() if not k.endswith("_at")},
             "accepted_records": [r for r in records if r["kind"] == "mcp-tools-accepted"],
             "drift_hold": {k: v for k, v in drift_hold.items() if k not in ("t", "step")},
+            "drift_hold_request": [
+                {k: r.get(k) for k in ("kind", "rule", "effect", "max_grant")}
+                for r in records
+                if r["seq"] == hold_request
+            ],
             "drift_hold_middleware": [
                 {
                     k: r.get(k)
@@ -1001,10 +1006,12 @@ operator = true
         hold_half = bool(
             hold_first.get("error") == "approval_required"
             and isinstance(hold_request, int)
+            and any(r.get("permission_request") == hold_request for r in hold_calls)
             and any(
-                r.get("permission_request") == hold_request
+                r["seq"] == hold_request
+                and r["kind"] == "escalation"
                 and "tool-list-drift" in str(r.get("rule"))
-                for r in hold_calls
+                for r in records
             )
             and acceptance.get("held_before") is True
             and acceptance.get("accepted") is True
@@ -1016,8 +1023,11 @@ operator = true
             and not ({"approved", "approval"} & set(proof3["drift_request_records"]))
         )
         found_json = json_listing or {}
+        # A server may refuse a JSON-only listing (406): then the JSON half is not shown live.
         json_media = "application/json" in {
-            a["media"] for a in listing_answers if a.get("json_only_asked")
+            a["media"]
+            for a in listing_answers
+            if a.get("json_only_asked") and a.get("status") == 200
         }
         json_half: bool | None = (
             bool(
