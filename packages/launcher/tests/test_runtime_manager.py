@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
-from sandbox_science.launcher import openshell_version
+from sandbox_science.launcher import openshell_version, runtime_owner
 from sandbox_science.launcher.runtime_manager import (
     RuntimeManager,
     RuntimeManagerSettings,
@@ -67,9 +67,12 @@ class Site:
     def settings(self, **changes: Any) -> RuntimeManagerSettings:
         return RuntimeManagerSettings.model_validate(self.document | changes)
 
-    def manager(self, **changes: Any) -> RuntimeManager:
+    def manager(
+        self, binding: runtime_owner.Binding | None = None, **changes: Any
+    ) -> RuntimeManager:
         return RuntimeManager(
             self.settings(**changes),
+            binding=binding,
             poll=0.02,
             health_interval=0.05,
             delays=(0.02,) * 6,
@@ -202,6 +205,42 @@ async def test_bootstrap_only_on_request_records_before_create_and_attaches(site
         assert error is not None
         assert "already recorded" in error
     assert site.count("openshell sandbox create") == 1
+
+
+class Bindings:
+    """What binds the runtime's sandbox in the policy store, recording its calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def bind(self, sandbox_id: str) -> None:
+        self.calls.append(("bind", sandbox_id))
+
+    async def unbind(self, sandbox_id: str) -> None:
+        self.calls.append(("unbind", sandbox_id))
+
+
+async def test_the_runtime_sandbox_is_bound_when_created_and_unbound_when_deleted(
+    site: Site,
+) -> None:
+    bindings = Bindings()
+    async with serving(site.manager(bindings)) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        record = site.record()
+        assert record is not None
+        assert bindings.calls == [("bind", record["id"])]
+        assert await site.ask(manager, "replace") is None
+        replaced = site.record()
+        assert replaced is not None
+        assert replaced["id"] != record["id"]
+        assert bindings.calls == [
+            ("bind", record["id"]),
+            ("unbind", record["id"]),
+            ("bind", replaced["id"]),
+        ]
+        assert await site.ask(manager, "stop") is None
+    assert site.record() is None
+    assert bindings.calls[3:] == [("unbind", replaced["id"])]
 
 
 async def test_sigterm_keeps_the_sandbox_and_reconnects_at_start_and_new_control_only(

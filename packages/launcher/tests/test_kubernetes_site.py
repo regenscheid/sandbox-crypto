@@ -281,6 +281,7 @@ def test_each_settings_file_loads_through_the_model_its_service_starts_with(tmp_
     }
     assert openshell.environments.profiles["minimal"] == _image("minimal")
     assert (openshell.package_cache is not None) == cache
+    assert not openshell.environments.label_environments
 
     middleware = load_middleware(secrets / "middleware/middleware.toml")
     assert middleware.listen == "0.0.0.0:50051"
@@ -637,6 +638,25 @@ def test_the_bundle_must_project_what_the_worker_and_middleware_need(tmp_path):
     bundle["secrets"]["control"]["extra_files"] = ["pool-token"]
     (tmp_path / "inputs/bundle.toml").write_text(toml.dumps(bundle))
     _refused(tmp_path, values, "only the worker")
+
+
+@pytest.mark.parametrize("label", [True, False])
+def test_the_sites_worker_section_sets_label_environments(tmp_path, label):
+    values = site_values(tmp_path)
+    values["worker"] = {"label_environments": label}
+    path = site_file(tmp_path, values)
+    output = tmp_path / "out"
+    write(output, plan(*load(path)))
+    worker = load_worker(output / "secrets/worker/worker.toml")
+    assert worker.openshell is not None
+    assert worker.openshell.environments is not None
+    assert worker.openshell.environments.label_environments is label
+
+
+def test_the_worker_section_refuses_unknown_options(tmp_path):
+    values = site_values(tmp_path)
+    values["worker"] = {"label_environment": True}
+    _refused(tmp_path, values, "worker")
 
 
 def test_the_example_site_file_loads_once_its_placeholders_are_filled(tmp_path):

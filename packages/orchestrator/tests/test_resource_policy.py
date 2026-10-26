@@ -75,10 +75,10 @@ async def test_active_time_checks_in_without_a_call_then_the_parent_extends_it(p
     await eventually(lambda: bool(store.pending(parent)))
     (request,) = store.pending(parent)
     assert (request.resource, request.used, request.total) == ("elapsed_seconds", 10, 10)
+    await eventually(lambda: clock.sleepers > 0)  # the child waits, between two polls
     assert not waiting.done()
     assert decide(store, parent, request, action="extend_time").total == 30
-    await eventually(lambda: clock.sleepers > 0)
-    clock.advance(1)
+    clock.advance(1)  # the next poll finds the decision
     assert await asyncio.wait_for(waiting, 2) is None
     assert store.pending(parent) == []
     third = store.observe(child, "elapsed_seconds", used=30, total=30, revision=30, force=True)

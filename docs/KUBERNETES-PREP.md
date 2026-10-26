@@ -63,7 +63,7 @@ done
 kubectl -n research patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-pull"}]}'
 ```
 
-The sandbox images (`minimal`, `crypto-base`, `orchestrator`, `mcp-proxy`) are pulled in `research-runtimes`; the gateway's `server.sandboxImagePullSecrets` (step 5) names the same secret. The OpenShell gateway and supervisor images are public and need no secret.
+The sandbox images (`minimal`, `crypto-base`, `orchestrator`, `mcp-proxy`) are pulled in `research-runtimes`; the gateway's `server.sandboxImagePullSecrets` (step 5) names the same secret. The OpenShell gateway and supervisor images are public and need no secret. The `trusted-app` and `trusted-worker` images are pulled in `research` with the same secret. Every sandbox-science package on ghcr must be private (the publication workflow refuses to push to a public one, [IMAGES.md](IMAGES.md#arm64)), and a private package cannot be pulled without the `ghcr-pull` Secret, so a Pod that cannot pull with `ErrImagePull` or `ImagePullBackOff` usually lacks the Secret in its namespace, or its token lacks `read:packages`.
 
 Verify: `kubectl -n research get sa default -o jsonpath='{.imagePullSecrets}'`; a throwaway pod from the `trusted-app` digest in `research` pulls (delete it afterwards).
 
