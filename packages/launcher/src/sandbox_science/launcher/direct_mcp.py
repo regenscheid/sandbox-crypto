@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from sandbox_science.policy import load_ceiling, load_policy
 from sandbox_science.policy.errors import PolicyLoadError
 from sandbox_science.policy.openshell import (
@@ -136,18 +138,35 @@ def compile_direct(
     return DirectEgress(project, fragment, runtime, compiled.findings)
 
 
-def merged(base: OpenShellPolicy, egress: DirectEgress) -> OpenShellPolicy:
-    """``base``, the runtime sandbox's platform services, with ``egress`` added; a name the
-    two share is refused, never replaced."""
-    shared = base.network_policies.keys() & egress.fragment.network_policies.keys()
+def merged(base: OpenShellPolicy, fragment: OpenShellPolicy) -> OpenShellPolicy:
+    """``base``, the runtime sandbox's platform services, with the egress ``fragment``
+    (``DirectEgress.fragment``) added; a name the two share is refused, never replaced."""
+    shared = base.network_policies.keys() & fragment.network_policies.keys()
     middlewares = {**(base.network_middlewares or {})}
-    shared |= middlewares.keys() & (egress.fragment.network_middlewares or {}).keys()
+    shared |= middlewares.keys() & (fragment.network_middlewares or {}).keys()
     if shared:
         raise LauncherError(f"the runtime's policy already has {', '.join(sorted(shared))}")
-    middlewares.update(egress.fragment.network_middlewares or {})
+    middlewares.update(fragment.network_middlewares or {})
     return base.model_copy(
         update={
-            "network_policies": {**base.network_policies, **egress.fragment.network_policies},
+            "network_policies": {**base.network_policies, **fragment.network_policies},
             "network_middlewares": middlewares or None,
         }
     )
+
+
+def fragment_yaml(egress: DirectEgress) -> str:
+    """The fragment as the Kubernetes runtime manager reads it back (``load_fragment``)."""
+    return egress.fragment.to_yaml()
+
+
+def load_fragment(text: str) -> OpenShellPolicy:
+    """A fragment ``fragment_yaml`` wrote: network policies and middlewares only."""
+    try:
+        document = yaml.safe_load(text)
+        policy = OpenShellPolicy.model_validate(document)
+    except (yaml.YAMLError, ValueError) as exc:
+        raise LauncherError(f"the runtime's MCP egress is not a policy fragment: {exc}") from None
+    if policy.filesystem_policy is not None or policy.landlock is not None:
+        raise LauncherError("the runtime's MCP egress may carry network sections only")
+    return policy

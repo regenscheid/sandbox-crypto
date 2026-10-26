@@ -52,6 +52,7 @@ from sandbox_science.contracts.clock import wait_or_sleep
 from sandbox_science.contracts.logs import json_line, log_format, relayed_line
 from sandbox_science.launcher import runtime_owner
 from sandbox_science.launcher.config import LauncherError, error_text
+from sandbox_science.launcher.direct_mcp import load_fragment, merged
 from sandbox_science.launcher.infrastructure import InfrastructureRecovery, RecoveryState
 from sandbox_science.launcher.mcp import DEAD_PHASES, OpenShell, SandboxMissingError
 from sandbox_science.launcher.runtime_binding import WorkerBinding
@@ -569,7 +570,12 @@ class RuntimeManager:
 
     async def _create_and_attach(self, driver_config: str) -> None:
         policy = self.root / "policy.yaml"
-        write_private(policy, compile_orchestrator(self.settings.policy).to_yaml())
+        compiled = compile_orchestrator(self.settings.policy)
+        egress = self.settings.direct_policy()
+        if egress is not None:
+            # The direct MCP path's servers beside the platform services (D98).
+            compiled = merged(compiled, load_fragment(egress))
+        write_private(policy, compiled.to_yaml())
         self.ownership.creating = Placement.of(
             self.settings.image, self.settings.revision, driver_config
         )
@@ -583,6 +589,7 @@ class RuntimeManager:
                 driver_config=driver_config,
                 clock=self.clock,
                 binding=self.binding,
+                providers=self.settings.mcp.providers if self.settings.mcp is not None else (),
             )
         except CreateRolledBackError as exc:
             self.ownership.mark_rolled_back(exc.reason, self.clock.now())

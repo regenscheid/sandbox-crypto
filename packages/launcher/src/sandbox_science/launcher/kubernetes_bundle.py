@@ -13,7 +13,6 @@ import yaml
 from . import toml
 from .kubernetes_config import (
     GATEWAY_PROFILE,
-    REQUIRED_FILES,
     Alerts,
     BundleConfig,
     Capacity,
@@ -23,6 +22,7 @@ from .kubernetes_config import (
     Placement,
     Secret,
     Service,
+    projected_files,
 )
 
 COPY_HELPER = "/usr/local/libexec/sandbox-science/copy-credentials.py"
@@ -54,6 +54,10 @@ UNIT_DIR = "/etc/sandbox-science"
 """Where the pool Pod's containers read the unit config (a ConfigMap, never a credential)."""
 UNIT_VOLUME = "unit-config"
 POOL_SERVICES = ("worker", "middleware", "cache")
+OPENSHELL_CLI = "/usr/local/bin/openshell"
+"""The OpenShell CLI in the ``trusted-app`` image (images/Containerfile)."""
+REGISTER_PROVIDER = "register-mcp-provider"
+"""The manager Pod's init container that registers the direct path's provider (D98)."""
 _INIT = Capacity(
     cpu_request_millis=50, cpu_limit_millis=100, memory_request_mib=32, memory_limit_mib=128
 )
@@ -218,6 +222,14 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
                 },
                 {"from": [_peer(peer) for peer in middleware], "ports": _ports(50051)},
             ]
+            if config.mcp_direct is not None:
+                # The manager binds the runtime's sandbox through the worker (D98).
+                ingress.append(
+                    {
+                        "from": [{"podSelector": {"matchLabels": _labels(config, MANAGER)}}],
+                        "ports": _ports(8100),
+                    }
+                )
             # The worker drives the gateway with its own client identity to create every
             # research sandbox.
             egress.append(_gateway(config))
@@ -239,7 +251,26 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
             )
         )
     # The manager accepts nothing and reaches only DNS, control's manager port and the
-    # OpenShell gateway (KRB-4).
+    # OpenShell gateway (KRB-4), and with the direct MCP path the worker, which binds the
+    # runtime's sandbox to the project's policy revision (D98).
+    manager_egress: list[dict[str, object]] = [
+        {
+            "to": [_peer(network.dns)],
+            "ports": [{"protocol": protocol, "port": 53} for protocol in ("TCP", "UDP")],
+        },
+        {
+            "to": [{"podSelector": {"matchLabels": _labels(config, "app")}}],
+            "ports": _ports(MANAGER_PORT),
+        },
+        _gateway(config),
+    ]
+    if config.mcp_direct is not None:
+        manager_egress.append(
+            {
+                "to": [{"podSelector": {"matchLabels": _labels(config, "pool")}}],
+                "ports": _ports(8100),
+            }
+        )
     policies.append(
         _object(
             config,
@@ -249,19 +280,7 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
                 "podSelector": {"matchLabels": _labels(config, MANAGER)},
                 "policyTypes": ["Ingress", "Egress"],
                 "ingress": [],
-                "egress": [
-                    {
-                        "to": [_peer(network.dns)],
-                        "ports": [
-                            {"protocol": protocol, "port": 53} for protocol in ("TCP", "UDP")
-                        ],
-                    },
-                    {
-                        "to": [{"podSelector": {"matchLabels": _labels(config, "app")}}],
-                        "ports": _ports(MANAGER_PORT),
-                    },
-                    _gateway(config),
-                ],
+                "egress": manager_egress,
             },
         )
     )
@@ -393,7 +412,7 @@ def _destination(config: BundleConfig, name: str, file: str) -> str:
 def _credentials(
     config: BundleConfig, name: str, secret: Secret, image: str
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
-    files = sorted({*REQUIRED_FILES[name], *secret.extra_files})
+    files = sorted({*projected_files(config, name), *secret.extra_files})
     source = f"{name}-source"
     destination = f"{name}-credentials"
     init: dict[str, object] = {
@@ -430,6 +449,37 @@ def _credentials(
         },
         {"name": destination, "emptyDir": {"medium": "Memory", "sizeLimit": "4Mi"}},
     ]
+
+
+def _register_provider(config: BundleConfig, image: str) -> dict[str, object]:
+    """The manager Pod's init container that registers the direct path's provider with the
+    gateway from the operator's Secret, before the manager creates a sandbox it attaches
+    to (D98). The Secret's values are this container's environment alone
+    (``access_provider --from-environment``); the manager never sees them."""
+    direct = config.mcp_direct
+    assert direct is not None  # noqa: S101 - rendered only with [mcp_direct]
+    environment = {"HOME": "/tmp", "XDG_CONFIG_HOME": XDG, **LOG_FORMAT}  # noqa: S108
+    return {
+        "name": REGISTER_PROVIDER,
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["python3", "-I", "-m", "sandbox_science.launcher.access_provider"],
+        "args": [
+            "--from-environment",
+            "--openshell",
+            OPENSHELL_CLI,
+            "--provider",
+            direct.provider,
+        ],
+        "envFrom": [{"secretRef": {"name": direct.provider_secret}}],
+        "env": [{"name": key, "value": environment[key]} for key in sorted(environment)],
+        "securityContext": _security(),
+        "resources": _resources(_INIT),
+        "volumeMounts": [
+            {"name": f"{MANAGER}-credentials", "mountPath": PRIVATE, "readOnly": True},
+            {"name": f"{MANAGER}-scratch", "mountPath": "/tmp"},  # noqa: S108
+        ],
+    }
 
 
 def _command(config: BundleConfig, name: str) -> list[str]:
@@ -640,6 +690,8 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
             scratch = {"medium": "Memory", **scratch}
         volumes.append({"name": f"{name}-scratch", "emptyDir": scratch})
         containers.append(_container(config, name, image, capacity))
+        if name == MANAGER and config.mcp_direct is not None:
+            inits.append(_register_provider(config, image))
     if component == "app":
         volumes.append(
             {"name": "runtime-credentials", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}}

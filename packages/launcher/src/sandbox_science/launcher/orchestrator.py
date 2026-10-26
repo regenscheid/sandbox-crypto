@@ -201,7 +201,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
     if egress is not None:
         # The direct path's servers, decided by OpenShell's native rules and the policy
         # middleware, beside the platform services (D98).
-        policy = direct_mcp.merged(policy, egress)
+        policy = direct_mcp.merged(policy, egress.fragment)
         for warning in egress.warnings():
             print(f"the agent runtime's MCP egress: {warning}", flush=True)
     write_private(directory / "policy.yaml", policy.to_yaml())

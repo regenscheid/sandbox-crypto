@@ -189,14 +189,16 @@ def worker_settings(
 
 def worker_client(name: str, digest: str, projects: list[str]) -> dict[str, Any]:
     """One of ``CLIENTS`` in the worker's settings: the run service (``harness``) alone
-    installs recovery epochs and acknowledges retention; the others are operators."""
+    installs recovery epochs and acknowledges retention; the others are operators: the
+    workspace, the launcher and the Kubernetes runtime manager (``manager``, which binds the
+    runtime's sandbox on the direct MCP path)."""
     return {
         "name": name,
         "token_sha256": digest,
         "projects": projects,
         "recovery_control": name == "harness",
         "artifact_retention": name == "harness",
-        "operator": name in {"workspace", "launcher"},
+        "operator": name in {"workspace", "launcher", "manager"},
     }
 
 

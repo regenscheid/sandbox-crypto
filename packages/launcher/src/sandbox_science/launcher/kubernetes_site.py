@@ -43,8 +43,8 @@ from sandbox_science.policy import load_ceiling, load_policy
 from sandbox_science.policy.errors import PolicyLoadError
 from sandbox_science.policy.openshell import load_targets
 
-from . import toml
-from .config import RunServiceConfig
+from . import direct_mcp, toml
+from .config import LauncherError, McpDirectServer, RunServiceConfig
 from .kubernetes_bundle import (
     CONTROL_PORT,
     DATA,
@@ -54,11 +54,17 @@ from .kubernetes_bundle import (
     PRIVATE,
     RUNTIME_CREDENTIALS,
 )
-from .kubernetes_config import GATEWAY_PROFILE, REQUIRED_FILES, BundleConfig, BundleError, Secret
+from .kubernetes_config import (
+    GATEWAY_PROFILE,
+    BundleConfig,
+    BundleError,
+    Secret,
+    projected_files,
+)
 from .kubernetes_site_config import Identity, Site
 from .orchestrator import checks, control_models, run_settings, runtime_target
 from .parts import worker_client
-from .runtime_manager.settings import RuntimeManagerSettings
+from .runtime_manager.settings import ManagerMcp, RuntimeManagerSettings, WorkerLink
 
 WORKER_PORT = 8100
 MIDDLEWARE_PORT = 50051
@@ -75,6 +81,8 @@ WORKER_CONFIG = f"{DATA}/worker-config"
 SHARED = ("ceiling.yaml", "targets.yaml", "gateway-public.pem")
 """Nonsecret site files any service's ``extra_files`` may name."""
 POOL_TOKEN = "pool-token"  # noqa: S105 - a Secret key's name, not a token
+MANAGER_CLIENT = "manager"
+"""The runtime manager's worker client on the direct MCP path: an operator of one project."""
 GATEWAY_VALUES = "gateway/openshell-values-middleware.yaml"
 """The OpenShell chart's values that register the middleware (``_gateway_values``)."""
 _INPUT_BYTES = 64 * 1024
@@ -230,8 +238,23 @@ def _tls(role: str) -> dict[str, str]:
 
 
 def control_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
-    """``control.json`` with the bundle's cluster bindings."""
+    """``control.json`` with the bundle's cluster bindings, and with ``[mcp_direct]`` the
+    run service's connectors on the direct path (D98)."""
+    direct = bundle.mcp_direct
+    connectors = (
+        {
+            "direct": {
+                "project": direct.project,
+                "servers": list(direct.servers),
+                "about": dict(direct.about),
+                "index": list(direct.index) if direct.index is not None else None,
+            }
+        }
+        if direct is not None
+        else {}
+    )
     return {
+        **connectors,
         "state_dir": f"{DATA}/control",
         "listen": f"{POD_NETWORK}:{CONTROL_PORT}",
         "tls": _tls("control"),
@@ -263,7 +286,9 @@ def _admin_hosts(site: Site) -> list[str]:
 
 def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -> dict[str, Any]:
     """``worker.toml``: tier 3 under Kata on amd64, the clients of control and the
-    workspace, and the CLI tree on the pool PVC."""
+    workspace, and the CLI tree on the pool PVC; with ``[mcp_direct]`` also the runtime
+    manager's, an operator client of the direct path's project alone, which binds the
+    runtime's sandbox (D98)."""
     projects = [project.id for project in site.projects]
     openshell: dict[str, Any] = {
         "isolation_tier": 3,
@@ -291,7 +316,16 @@ def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -
         "state_dir": f"{DATA}/worker",
         "pool_id": site.pool_id or bundle.name,
         "openshell": openshell,
-        "clients": [worker_client(name, digests[name], projects) for name in digests],
+        "clients": [
+            worker_client(
+                name,
+                digests[name],
+                [bundle.mcp_direct.project]
+                if name == MANAGER_CLIENT and bundle.mcp_direct is not None
+                else projects,
+            )
+            for name in digests
+        ],
     }
 
 
@@ -314,6 +348,9 @@ def middleware_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
     }
     if bundle.secrets.cache is not None:
         settings["package_cache_url"] = f"http://127.0.0.1:{CACHE_PORT}"  # the same Pod
+    if bundle.mcp_direct is not None:
+        # The direct path's listings: read whole when OpenShell offers them (D98).
+        settings["mcp_listings"] = True
     return settings
 
 
@@ -330,13 +367,60 @@ def cache_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
     }
 
 
+def direct_egress(site: Site, bundle: BundleConfig) -> direct_mcp.DirectEgress | None:
+    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers (D98), from the
+    site's policy, ceiling and targets, as ``sandbox-science up`` compiles it."""
+    direct = bundle.mcp_direct
+    if direct is None:
+        return None
+    if direct.project not in {project.id for project in site.projects}:
+        raise BundleError(f"mcp_direct.project {direct.project!r} is not a site project")
+    try:
+        return direct_mcp.compile_direct(
+            policy=site.worker_policy,
+            ceiling=site.ceiling,
+            targets=site.targets,
+            project=direct.project,
+            servers={
+                name: McpDirectServer(credentials=dict(server.credentials))
+                for name, server in direct.servers.items()
+            },
+            python=RuntimeManagerSettings.model_fields["python"].default,
+        )
+    except LauncherError as exc:
+        raise BundleError(str(exc)) from None
+
+
 def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings:
     """``runtime-manager.json``, through the manager's own model. The agent runtime runs
     in an OpenShell sandbox, so its control URL and its policy's hosts are fully
     qualified; the manager's own URL names the same host, which the model requires and
-    which resolves from the manager's Pod as well."""
+    which resolves from the manager's Pod as well. With ``[mcp_direct]``, the manager gets
+    its worker link, which binds the runtime's sandbox, and the direct path's files."""
     control = f"https://{_qualified(site, bundle, 'control')}"
+    direct = bundle.mcp_direct
+    link = (
+        WorkerLink(
+            url=f"https://{_host(bundle, 'worker')}:{WORKER_PORT}",
+            ca_file=Path(PRIVATE, "control-ca.crt"),  # the private CA signs both
+            token_file=Path(PRIVATE, "manager-worker.token"),
+            project=direct.project,
+        )
+        if direct is not None
+        else None
+    )
+    mcp = (
+        ManagerMcp(
+            policy_file=Path(PRIVATE, "agent-mcp-policy.yaml"),
+            runtime_file=Path(PRIVATE, "runtime-mcp.json"),
+            providers=(direct.provider,),
+        )
+        if direct is not None
+        else None
+    )
     return RuntimeManagerSettings(
+        worker=link,
+        mcp=mcp,
         control_url=f"{control}:{CONTROL_PORT}",
         manager_url=f"{control}:{MANAGER_PORT}",
         control_ca_file=Path(PRIVATE, "control-ca.crt"),
@@ -401,6 +485,10 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     }
     tokens = {name: _token() for name in ("harness", "workspace", "pool", "manager")}
     digests = {name: _digest(tokens[name]) for name in ("harness", "workspace")}
+    egress = direct_egress(site, bundle)
+    if egress is not None:
+        tokens[MANAGER_CLIENT] = _token()
+        digests[MANAGER_CLIENT] = _digest(tokens[MANAGER_CLIENT])
     models = control_models(site.model, site.skills, site.runtime.revision)
     gateway = bundle.runtime_manager.openshell_gateway
     profile = _cli_tree(gateway, site.openshell.endpoint, manager_identity)
@@ -432,6 +520,15 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
             "model.key": _read(site.model.api_key_file, private=True),
             "control-ca.crt": authority.pem,
             **{key: profile[place] for key, place in GATEWAY_PROFILE.items()},
+            **(
+                {
+                    "manager-worker.token": tokens[MANAGER_CLIENT].encode(),
+                    "agent-mcp-policy.yaml": direct_mcp.fragment_yaml(egress).encode(),
+                    "runtime-mcp.json": _json(egress.runtime()),
+                }
+                if egress is not None
+                else {}
+            ),
         },
     }
     if bundle.secrets.cache is not None:
@@ -442,7 +539,7 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     for role, keys in content.items():
         names = _secret(bundle, role).extra_files
         keys.update(_extras(site, role, names, keys, shared))
-        if keys.keys() != {*REQUIRED_FILES[role], *names}:
+        if keys.keys() != {*projected_files(bundle, role), *names}:
             raise BundleError(f"secrets.{role}: the generated keys differ from the projected ones")
         files.update({f"secrets/{role}/{key}": value for key, value in keys.items()})
     worker_tree = _cli_tree(gateway, site.openshell.endpoint, worker_identity)
@@ -601,6 +698,25 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
         if site.model.url.startswith("http:")
         else ""
     )
+    direct = bundle.mcp_direct
+    mcp = (
+        "No MCP proxy is configured (`control.json` has no `proxy`); the agent's connector\n"
+        f"  calls take the direct path (`[mcp_direct]`, D98) for project `{direct.project}`:\n"
+        f"  before the bundle's manager starts, create the Secret `{direct.provider_secret}`\n"
+        "  from the provider's env file (`CF_ACCESS_CLIENT_ID=` and\n"
+        "  `CF_ACCESS_CLIENT_SECRET=` lines), which its init container registers as the\n"
+        f"  provider `{direct.provider}`, and import the `cloudflare-access` provider\n"
+        "  profile once (docs/KUBERNETES-PREP.md):\n\n"
+        f"  {fence}sh\n"
+        f"  kubectl -n {ns} create secret generic {direct.provider_secret} \\\n"
+        "    --from-env-file=<path>\n"
+        f"  {fence}\n\n"
+        "  The middleware's `mcp_listings` is on. The site's policy was compiled into the\n"
+        "  manager's Secret: after a new policy revision, generate the Secrets anew.\n"
+        if direct is not None
+        else "No MCP proxy is configured (`control.json` has no `proxy`) and no direct path\n"
+        "  (`[mcp_direct]`): the agent has no connectors.\n"
+    )
     return f"""# Secrets for {name} in {ns}
 
 Generated by `sandbox-science-kubernetes site`. Every file here is private (mode 600,
@@ -656,9 +772,8 @@ kubectl -n {ns} exec -i deploy/{name}-pool -c worker -- sandbox-science-worker p
   the target requires one; the runtime never calls it and the pool's NetworkPolicy
   refuses the supervisors there.
 {plain}- Step 2 assumes `tar` in the `trusted-worker` image, and step 3 that `policy add` reads
-  `/dev/stdin`; neither is verified. Skill packs are not imported and no MCP proxy is
-  configured (`control.json` has no `proxy`).
-- The gateway `{gateway}`'s CLI profiles use `{site.openshell.endpoint}`; the gateway's
+  `/dev/stdin`; neither is verified. Skill packs are not imported.
+- {mcp}- The gateway `{gateway}`'s CLI profiles use `{site.openshell.endpoint}`; the gateway's
   certificate must cover that host.
 """  # noqa: S608 - Markdown whose "replace ... values" reads to ruff as SQL
 

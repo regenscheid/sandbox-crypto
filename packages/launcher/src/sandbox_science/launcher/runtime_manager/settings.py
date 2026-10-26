@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Self, cast
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -42,6 +42,8 @@ DEFAULT_STATE = Path("/var/lib/sandbox-science/runtime")
 DEFAULT_XDG_CONFIG_HOME = "/private/xdg"
 """Where the bundle mounts the CLI's gateway profile (``kubernetes_bundle.XDG``)."""
 _SETTINGS_BYTES = 64 * 1024
+_MCP_BYTES = 1024 * 1024
+"""The direct MCP path's compiled egress and runtime settings: each server's tool rules."""
 _KATA = re.compile(r"kata(?:-[a-z0-9]+)*")
 """Kata Containers' RuntimeClass names: ``kata``, ``kata-qemu``, ``kata-clh`` and so on."""
 Alias = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")]
@@ -80,6 +82,26 @@ class WorkerLink(Contract):
     @classmethod
     def _origin(cls, value: str) -> str:
         return _origin(value)
+
+
+class ManagerMcp(Contract):
+    """The direct MCP path's part of the runtime's sandbox (D98), which the site generator
+    compiled from the site's policy (``direct_mcp``): the egress fragment merged into the
+    sandbox's policy beside its platform services, the runtime client's servers
+    (``runtime.json``'s ``mcp``, with each server's tool admission) and the providers
+    attached to the sandbox. The manager reads the files and compiles nothing."""
+
+    policy_file: Path
+    runtime_file: Path
+    providers: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @field_validator("providers")
+    @classmethod
+    def _named(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for name in value:
+            if re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", name) is None:
+                raise ValueError("a provider is an OpenShell provider's name")
+        return value
 
 
 class ControlModels(BaseModel):
@@ -160,6 +182,8 @@ class RuntimeManagerSettings(Contract):
     """When given, the runtime's sandbox is bound to the project's policy revision through
     the worker when it is Ready, and unbound when it is deleted. Without it nothing binds
     the sandbox, and the policy middleware refuses its MCP requests (``sandbox_unbound``)."""
+    mcp: ManagerMcp | None = None
+    """The direct MCP path (D98): needs ``worker``, which binds the sandbox."""
     start_timeout: float = Field(default=300.0, gt=0, le=3600)
     stop_timeout: float = Field(default=30.0, gt=0, le=600)
     recover_infrastructure: bool = False
@@ -179,6 +203,12 @@ class RuntimeManagerSettings(Contract):
         if profile.node_selector.get("kubernetes.io/arch") != "amd64":
             raise ValueError("the agent runtime's Kata placement must pin amd64 nodes")
         return profile
+
+    @model_validator(mode="after")
+    def _bound(self) -> Self:
+        if self.mcp is not None and self.worker is None:
+            raise ValueError("the direct MCP path needs the worker link that binds the sandbox")
+        return self
 
     @model_validator(mode="after")
     def _one_service(self) -> Self:
@@ -215,17 +245,36 @@ class RuntimeManagerSettings(Contract):
             else None,
             generation=generation,
             control_ca=True,
+            mcp=self.direct_runtime(),
         )
         return json.dumps(settings) + "\n"
 
+    def direct_runtime(self) -> dict[str, object] | None:
+        """``runtime.json``'s ``mcp``, from ``mcp.runtime_file``."""
+        if self.mcp is None:
+            return None
+        try:
+            found = json.loads(_bounded(self.mcp.runtime_file, _MCP_BYTES))
+        except ValueError:
+            raise LauncherError("the runtime's MCP settings are not JSON") from None
+        if not isinstance(found, dict):
+            raise LauncherError("the runtime's MCP settings are not an object")
+        return cast(dict[str, object], found)
 
-def _bounded(path: Path) -> bytes:
+    def direct_policy(self) -> str | None:
+        """The runtime sandbox's compiled MCP egress, from ``mcp.policy_file``."""
+        if self.mcp is None:
+            return None
+        return _bounded(self.mcp.policy_file, _MCP_BYTES).decode("utf-8", errors="strict")
+
+
+def _bounded(path: Path, limit: int = _SETTINGS_BYTES) -> bytes:
     try:
         with path.open("rb") as handle:
-            data = handle.read(_SETTINGS_BYTES + 1)
+            data = handle.read(limit + 1)
     except OSError as exc:
         raise LauncherError(f"cannot read {path}: {exc.strerror}") from None
-    if len(data) > _SETTINGS_BYTES:
+    if len(data) > limit:
         raise LauncherError(f"{path} exceeds its byte bound")
     return data
 
