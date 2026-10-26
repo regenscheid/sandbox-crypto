@@ -405,20 +405,17 @@ operator = true
 
         found = recovery.wait(ready, seconds=600)
         self.remember_sandboxes()
-        # The middleware decides only sandboxes bound to a stored revision (as the worker
-        # binds the research sandboxes it creates); nothing binds the agent's yet.
-        recovery.run(
-            [
-                str(REPO / ".venv/bin/sandbox-science-policy-middleware"),
-                "bind",
-                "--state-dir",
-                str(self.path / "middleware/state"),
-                "--sandbox",
-                found["id"],
-                "--policy",
-                str(self.path / "policy.yaml"),
-            ]
+        # The middleware decides only sandboxes bound to a stored revision. The launcher's
+        # runtime owner binds the agent's sandbox through this worker route, as the lab's
+        # worker binds a research sandbox; the lab creates its sandbox by hand, so it asks
+        # the same route with the operator token.
+        bound = self.worker(
+            "POST",
+            "/v1/runtime-sandboxes",
+            {"project_id": PROJECT, "sandbox_id": found["id"]},
+            operator=True,
         )
+        assert bound["sandbox_id"] == found["id"]
         shell = ["sandbox", "exec", "-n", name, "--no-tty", "--no-login-shell", "--"]
         self.cli(*shell, "mkdir", "-p", REMOTE)
         self.cli(
