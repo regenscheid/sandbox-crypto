@@ -126,6 +126,8 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
             for name in ("child_idle_max", "child_orphan_grace", "child_orphan_idle"):
                 if (value := getattr(args, name)) is not None:
                     changes[name] = value or None if name == "child_idle_max" else value
+            if args.review_max is not None:
+                changes["review_max"] = args.review_max
             found = (
                 delegations.configure(args.project, **changes)
                 if changes
@@ -151,7 +153,9 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 f"(ceiling {found.time_ceiling_seconds}); retained artifact bytes: "
                 f"{found.storage_bytes or 'off'} (ceiling {found.storage_ceiling_bytes}); "
                 f"root resource renewal: {found.root_resource_renewal}; child environments: "
-                f"{found.child_environments} (profile {found.child_profile or 'the pool default'})"
+                f"{found.child_environments} (profile "
+                f"{found.child_profile or 'the pool default'}); a returned task awaits review "
+                f"{found.review_max} s"
             )
         case "macros":
             from .documents import USER, DocumentStore, store_path
@@ -674,6 +678,12 @@ def add_parsers(commands: Any) -> None:
         "--child-profile",
         help="delegation: the worker's child profile for those environments; empty for the "
         "pool's default",
+    )
+    projects.add_argument(
+        "--review-max",
+        type=int,
+        help="delegation: seconds a returned task awaits its parent's review, from its latest "
+        "return, before the platform accepts it (86400)",
     )
     sessions = commands.add_parser(
         "session",

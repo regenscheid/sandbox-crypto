@@ -192,7 +192,7 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
         "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False; child environments: off "
-        "(profile the pool default)\n"
+        "(profile the pool default); a returned task awaits review 86400 s\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
@@ -203,7 +203,7 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
         "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False; child environments: off "
-        "(profile the pool default)\n"
+        "(profile the pool default); a returned task awaits review 86400 s\n"
     )
     assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0
     assert capsys.readouterr().out.endswith(
@@ -212,7 +212,7 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
         "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False; child environments: off "
-        "(profile the pool default)\n"
+        "(profile the pool default); a returned task awaits review 86400 s\n"
     )
     assert cli.main([*argv, "--check-tokens", "10"]) == 1
     assert capsys.readouterr().err.startswith("error: check_tokens: ")
@@ -233,7 +233,7 @@ def test_the_cli_shows_and_changes_the_whole_setting(
         "root soft tokens: 100000000; soft cost per work: 25.0; extensions without progress: 3; "
         "active seconds: 14400 (ceiling 604800); retained artifact bytes: off "
         "(ceiling 68719476736); root resource renewal: False; child environments: off "
-        "(profile the pool default)\n"
+        "(profile the pool default); a returned task awaits review 86400 s\n"
     )
 
 
