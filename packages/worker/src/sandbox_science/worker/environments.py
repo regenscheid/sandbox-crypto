@@ -93,6 +93,7 @@ from .unknown_creations import (
     LIST_PAGE_SIZE,
     MAX_LIST_PAGES,
     MAX_OBSERVATIONS,
+    PROJECT_LABEL,
     UNKNOWN_OUTCOME,
     Observation,
     Outcome,
@@ -100,6 +101,7 @@ from .unknown_creations import (
     confirms,
     examine,
     label_value,
+    labels,
     observation,
     page,
     refusal,
@@ -1217,6 +1219,27 @@ class Environments:
         if document is None or document.get("id") != info.sandbox_id:
             return False
         return document.get("phase") not in _DEAD_PHASES
+
+    async def runtime_sandbox_of(self, project_id: str, sandbox_id: str) -> None:
+        """Refuse unless the gateway shows ``sandbox_id`` as ``project_id``'s agent runtime
+        sandbox: the sandbox the listing names by that ID, read with ``sandbox get``, labelled
+        ``PROJECT_LABEL`` with the project, as the launcher and the runtime manager create
+        it. A project-scoped client binds only such a sandbox; the refusal names only its
+        own project."""
+        self._not_an_environment(sandbox_id)  # a research environment's: a conflict
+        refused = WorkerError(
+            ErrorKind.POLICY_DENIED,
+            f"sandbox {sandbox_id!r} is not a runtime sandbox labelled for {project_id}",
+        )
+        entries, _ = await self.cli.sandboxes()
+        names = [entry.get("name") for entry in entries if entry.get("id") == sandbox_id]
+        if len(names) != 1 or not isinstance(names[0], str):
+            raise refused
+        document = await self.cli.sandbox(names[0])
+        if document is None or document.get("id") != sandbox_id:
+            raise refused
+        if labels(document).get(PROJECT_LABEL) != project_id:
+            raise refused
 
     def bind_runtime(
         self, project_id: str, sandbox_id: str, projects: frozenset[str] | None = None

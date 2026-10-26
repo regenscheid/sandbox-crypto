@@ -166,6 +166,8 @@ def test_up_registers_attaches_and_binds_the_runtimes_provider(
     runtime = made[name]
     # Attached to the runtime's sandbox, whose policy has the server's endpoint.
     assert runtime["providers"] == [SERVER]
+    # Labelled with its project, which the worker reads before a scoped client binds it.
+    assert runtime["labels"] == {"sandbox-science.io/project": "crypto"}
     assert f"mcp-{SERVER}" in yaml.safe_load(runtime["policy"])["network_policies"]
     assert any(f"sandbox create {name}" in step and f"provider {SERVER}" in step for step in steps)
     # Bound to the direct path's project's revision once Ready.

@@ -29,8 +29,8 @@ SIGTERM (noting so), so only SIGKILL ends it. ``gateway-refuses`` fails every
 ``create-silent`` fails ``sandbox create`` without a word on stderr; and
 ``create-rolls-back`` makes the sandbox Provisioning with a ``message``, answers one
 ``sandbox get`` with it and then forgets it, as a gateway that rolled it back. ``sandbox create``
-keeps its ``--driver-config-json``, and its ``--provider`` names and policy (refusing a
-provider the state lacks); with the state's ``record`` naming a file, it notes
+keeps its ``--driver-config-json``, its ``--label`` pairs, and its ``--provider`` names and
+policy (refusing a provider the state lacks); with the state's ``record`` naming a file, it notes
 that file's content as it was when create ran. ``sandbox upload`` copies each file to
 ``uploads/<sandbox>/`` beside the state file.
 
@@ -313,13 +313,18 @@ match args:
         save(state)
         note(f"sandbox create {name} {image} provider {provider} {' '.join(command)}")
     case ["sandbox", "create", "--name", name, "--from", image, "--policy", policy, *rest] if (
-        rest and rest[0] in ("--no-auto-providers", "--driver-config-json")
+        rest and rest[0] in ("--no-auto-providers", "--driver-config-json", "--provider", "--label")
     ):
         placement = rest[:2] if rest[:1] == ["--driver-config-json"] else []
         tail = rest[len(placement) :]
         attached: list[str] = []
         while tail[:1] == ["--provider"] and len(tail) > 1:
             attached.append(tail[1])
+            tail = tail[2:]
+        labels: dict[str, str] = {}
+        while tail[:1] == ["--label"] and len(tail) > 1:
+            key, _, value = tail[1].partition("=")
+            labels[key] = value
             tail = tail[2:]
         if tail[:3] != ["--no-auto-providers", "--detach", "--"]:
             print(f"openshell: unexpected arguments {args}", file=sys.stderr)
@@ -345,6 +350,8 @@ match args:
         if placement:
             made["driver_config"] = placement[-1]
             made["policy"] = Path(policy).read_text()
+        if labels:
+            made["labels"] = labels
         if attached:
             missing = [provider for provider in attached if provider not in state["providers"]]
             if missing:

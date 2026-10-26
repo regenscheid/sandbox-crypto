@@ -590,6 +590,7 @@ class RuntimeManager:
                 clock=self.clock,
                 binding=self.binding,
                 providers=self.settings.mcp.providers if self.settings.mcp is not None else (),
+                project=self.settings.worker.project if self.settings.worker else None,
             )
         except CreateRolledBackError as exc:
             self.ownership.mark_rolled_back(exc.reason, self.clock.now())

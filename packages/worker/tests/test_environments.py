@@ -174,7 +174,8 @@ elif command == ["sandbox", "get"]:
         fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
     box = sandboxes[name]
     out = json.dumps({"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
-                      "configuration_admission": {"state": "accepted", "error": ""}})
+                      "configuration_admission": {"state": "accepted", "error": ""},
+                      **({"labels": box["labels"]} if "labels" in box else {})})
 elif command == ["sandbox", "list"]:
     if state.get("fail_list"):
         fail("synthetic gateway unavailable")
@@ -1895,6 +1896,18 @@ class Api:
         return self.setup.request(environment_id, project_id=project_id).model_dump(mode="json")
 
 
+def runtime_sandbox(setup: Setup, sandbox_id: str, project: str | None) -> None:
+    """A sandbox in the fake gateway as the launcher or the runtime manager makes the agent
+    runtime's: named ``ss-orch-…``, labelled with its project (none with ``project`` None)."""
+    state = setup.fake.read()
+    labels = {"sandbox-science.io/project": project} if project is not None else None
+    state["sandboxes"][f"ss-orch-{sandbox_id}"] = {
+        "id": sandbox_id, "name": f"ss-orch-{sandbox_id}", "phase": "Ready",
+        **({"labels": labels} if labels is not None else {}),
+    }  # fmt: skip
+    setup.fake.write(state)
+
+
 async def test_the_runtime_sandbox_is_bound_to_the_projects_revision_for_an_operator(
     setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
 ) -> None:
@@ -1908,6 +1921,7 @@ async def test_the_runtime_sandbox_is_bound_to_the_projects_revision_for_an_oper
     )
     api = Api(client, setup)
     store = setup.environments.store
+    runtime_sandbox(setup, "sbx-agent", "p1")
     body = {"project_id": "p1", "sandbox_id": "sbx-agent"}
     # Neither a client that is no operator, nor an operator for another project.
     assert await api.refused("POST", "/v1/runtime-sandboxes", A_TOKEN, body) == (
@@ -2005,6 +2019,7 @@ async def test_a_binding_only_client_reaches_the_runtime_binding_routes_alone(
     try:
         assert await api.refused(method, path, BINDER_TOKEN, body) == (403, "policy_denied")
         setup.environments.records.grant("p1", setup.policy)
+        runtime_sandbox(setup, "sbx-agent", "p1")
         bound = {"project_id": "p1", "sandbox_id": "sbx-agent"}
         status, reply = await api.call("POST", "/v1/runtime-sandboxes", BINDER_TOKEN, bound)
         assert (status, reply["policy"]) == (200, setup.policy)
@@ -2044,6 +2059,7 @@ async def test_a_project_scoped_client_unbinds_only_its_own_projects_runtime_san
     store = setup.environments.store
     try:
         for project, token in (("p1", one), ("p2", two)):
+            runtime_sandbox(setup, f"sbx-{project}", project)
             setup.environments.records.grant(project, setup.policy)
             body = {"project_id": project, "sandbox_id": f"sbx-{project}"}
             assert (await api.call("POST", "/v1/runtime-sandboxes", token, body))[0] == 200
@@ -2080,6 +2096,53 @@ async def test_a_project_scoped_client_unbinds_only_its_own_projects_runtime_san
         assert info.sandbox_id is not None
         path = f"/v1/runtime-sandboxes/{info.sandbox_id}"
         assert (await api.refused("DELETE", path, one))[0] == 409
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+@pytest.mark.parametrize(
+    ("label", "known"), [("p1", True), ("p2", True), (None, True), ("p1", False)]
+)
+async def test_a_scoped_client_binds_only_a_sandbox_the_gateway_labels_for_its_project(
+    setup: Setup,
+    aiohttp_client: ClientFactory,
+    tmp_path: Path,
+    label: str | None,
+    known: bool,
+) -> None:
+    """The gateway's own word: a sandbox labelled for the caller's project is bound; one
+    labelled for another project, an unlabelled one and one the gateway does not list are
+    refused, naming only the caller's project. The pool's own token binds any."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    binder = ClientSettings(
+        name="manager", token_sha256=token_digest(BINDER_TOKEN), projects=("p1",),
+        binding_only=True,
+    )  # fmt: skip
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, binder))
+    )
+    api = Api(client, setup)
+    try:
+        setup.environments.records.grant("p1", setup.policy)
+        if known:
+            runtime_sandbox(setup, "sbx-runtime", label)
+        body = {"project_id": "p1", "sandbox_id": "sbx-runtime"}
+        status, reply = await api.call("POST", "/v1/runtime-sandboxes", BINDER_TOKEN, body)
+        store = setup.environments.store
+        if label == "p1" and known:
+            assert (status, reply["policy"]) == (200, setup.policy)
+            assert store.binding_entry("sbx-runtime") == (setup.policy, "p1")
+            assert setup.fake.calls("sandbox", "get")[-1][2] == "ss-orch-sbx-runtime"
+            return
+        assert (status, reply["error"]["kind"]) == (403, "policy_denied")
+        assert "p1" in reply["error"]["message"]
+        assert "p2" not in reply["error"]["message"]
+        assert store.binding("sbx-runtime") is None
+        # The pool's own token keeps binding any sandbox it names.
+        status, _ = await api.call("POST", "/v1/runtime-sandboxes", TOKEN, body)
+        assert status == 200
     finally:
         await manager.close()
         manager.store.close()

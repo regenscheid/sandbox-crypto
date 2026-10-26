@@ -32,6 +32,9 @@ from .state import private_dir, write_private
 REMOTE = "/sandbox/runtime"
 """Where the runtime's settings and credentials go in its sandbox."""
 RUNTIME = "sandbox_science.orchestrator.confinement.runtime"
+PROJECT_LABEL = "sandbox-science.io/project"
+"""The label naming the project the runtime's sandbox is for, which the worker reads
+through the gateway before a project-scoped client binds the sandbox."""
 _HEALTH_BYTES = 4096
 
 
@@ -217,12 +220,14 @@ async def create_owned(
     poll: float = 0.5,
     binding: Binding | None = None,
     providers: Sequence[str] = (),
+    project: str | None = None,
 ) -> Owned:
     """Create a fresh ``ss-orch-<10 hex>`` sandbox running ``sleep infinity``, and wait
     until it is Ready; ``driver_config`` is OpenShell's ``--driver-config-json``, and
     ``providers`` the OpenShell providers attached to it (the direct MCP path's, D98),
-    whose placeholders alone its processes see. Once it is Ready, ``binding`` binds its
-    ID to the project's policy revision.
+    whose placeholders alone its processes see, and ``project`` the project it is labelled
+    for (``PROJECT_LABEL``). Once it is Ready, ``binding`` binds its ID to the project's
+    policy revision.
 
     Every failure leaves the record for ``delete_recorded`` to reconcile. A sandbox the
     gateway reports absent after the create returned raises ``CreateRolledBackError``.
@@ -233,10 +238,11 @@ async def create_owned(
     store.write(Owned(name, None))
     placement = ("--driver-config-json", driver_config) if driver_config is not None else ()
     attached = [option for provider in providers for option in ("--provider", provider)]
+    labelled = ("--label", f"{PROJECT_LABEL}={project}") if project is not None else ()
     await cli.run(
         "sandbox", "create", "--name", name, "--from", image, "--policy", str(policy),
-        *placement, *attached, "--no-auto-providers", "--detach", "--", "sleep", "infinity",
-        timeout=timeout,
+        *placement, *attached, *labelled, "--no-auto-providers", "--detach", "--",
+        "sleep", "infinity", timeout=timeout,
     )  # fmt: skip
     deadline = clock.monotonic() + timeout
     seen: dict[str, Any] | None = None

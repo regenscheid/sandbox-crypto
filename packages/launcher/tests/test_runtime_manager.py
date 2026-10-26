@@ -290,6 +290,7 @@ async def test_the_direct_path_attaches_its_provider_and_merges_its_egress(site:
         assert record is not None
         sandbox = site.fake()["sandboxes"][record["name"]]
         assert sandbox["providers"] == ["crypto-research-mcp"]
+        assert sandbox["labels"] == {"sandbox-science.io/project": "crypto"}
         policy = yaml.safe_load(sandbox["policy"])
         assert "sandbox-science-state-service" in policy["network_policies"]
         assert "mcp-crypto-research-mcp" in policy["network_policies"]

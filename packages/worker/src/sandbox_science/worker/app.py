@@ -850,6 +850,11 @@ async def bind_runtime_sandbox(request: web.Request) -> web.Response:
     body = RuntimeSandboxRequest.model_validate_json(await _body(request))
     environments = _runtime_sandbox(request)
     _allowed(request, body.project_id)
+    projects = _client(request).projects
+    if projects is not None:
+        # A project-scoped client binds only its own project's runtime sandbox, as the
+        # gateway shows it (its project label); the pool's own token binds any.
+        await environments.runtime_sandbox_of(body.project_id, body.sandbox_id)
     revision = await asyncio.to_thread(
         environments.bind_runtime, body.project_id, body.sandbox_id, _client(request).projects
     )

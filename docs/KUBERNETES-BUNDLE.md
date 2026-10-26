@@ -446,7 +446,8 @@ pool ceiling admit. With it:
   `control.json` gets `direct` (the run service's servers, `about` and `index`); and
   `middleware.toml` gets `mcp_listings = true`.
 - **The runtime manager** merges the egress into the runtime sandbox's policy beside its
-  platform services, attaches the provider to the sandbox (`--provider`), binds the sandbox
+  platform services, attaches the provider to the sandbox (`--provider`), labels it with its
+  project (`sandbox-science.io/project`, which the worker checks before binding), binds the sandbox
   to the project's revision through the worker once it is Ready, and gives the runtime its
   servers in `runtime.json`. It compiles nothing and never reads the provider's values.
 

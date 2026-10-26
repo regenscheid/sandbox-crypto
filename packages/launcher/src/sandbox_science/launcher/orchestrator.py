@@ -330,6 +330,7 @@ async def _agent(
         timeout=config.start_timeout,
         binding=_binding(config, layout),
         providers=config.mcp_direct.providers if config.mcp_direct is not None else (),
+        project=config.mcp_project(),
     )
     await runtime_owner.install(
         cli,
