@@ -79,6 +79,7 @@ class WorkerListings:
                 ErrorKind.POLICY_DENIED,
                 ErrorKind.NOT_FOUND,
                 ErrorKind.INVALID_REQUEST,
+                ErrorKind.CONFLICT,  # a replay of an accepted listing, or past the rate
             )
             raise TransportError(
                 "denied" if refused else "unavailable", f"the listing was not checked: {exc}"

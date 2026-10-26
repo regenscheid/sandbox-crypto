@@ -68,6 +68,14 @@ project)."""
 CLASSIFICATION_ACCEPTED: Final = "mcp-classification-accepted"
 """A project's acceptance of a new revision of a server's classification (CL-3), which ends
 a drift's hold for that project as a re-acceptance does."""
+LISTING_UNREAD_RECORD: Final = "mcp-tools-listing-unread"
+"""A ``tools/list`` answer the middleware let pass unread: an event stream OpenShell would
+not offer it whole. The runtime's client filters it and reports it instead (D98)."""
+LISTING_REPORTED_RECORD: Final = "mcp-tools-listing-reported"
+"""The worker took the agent runtime's report of a listing (source ``runtime``): what pairs
+with an unread listing, drifted or not (D98)."""
+RUNTIME_SOURCE: Final = "runtime"
+"""The source of records the worker writes from the agent runtime's listing reports."""
 RECORD_KINDS: Final = (
     ESCALATION,
     APPROVAL,
@@ -75,6 +83,8 @@ RECORD_KINDS: Final = (
     DRIFT_RECORD,
     ACCEPTED_RECORD,
     CLASSIFICATION_ACCEPTED,
+    LISTING_UNREAD_RECORD,
+    LISTING_REPORTED_RECORD,
 )
 DRIFT_KINDS: Final = (DRIFT_RECORD, ACCEPTED_RECORD, CLASSIFICATION_ACCEPTED)
 
@@ -472,41 +482,57 @@ class DriftSeen:
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceSeen:
-    """A project's acceptance of a server's drift from one pin: the listing it accepted."""
+    """A project's newest acceptance of a server's drift from one pin: the listing it named
+    (else the newest drift's) and that drift's record."""
 
     seq: int
     time: str
     listing: str | None
-    """The digest of the listing accepted; None for a drift recorded without one, which an
-    acceptance then ends by coming after it (``drift_seq``)."""
     drift_seq: int
     data: Mapping[str, object]
+
+
+@dataclass
+class _Accepted:
+    listings: set[str] = field(default_factory=set[str])
+    """The listings the project accepted from this pin."""
+    legacy_seq: int = 0
+    """The newest drift without a listing digest that an acceptance came after."""
+    latest: AcceptanceSeen | None = None
 
 
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _texts(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in cast("list[object]", value) if isinstance(item, str)]
+
+
 class DriftLedger:
     """Which servers' tool listings drifted from their pins and were not re-accepted since
     (D96, D103), by server and pin.
 
-    Pins differ by project once a project has its own classification revision, so a drift
-    is kept per server and pin: it holds every project whose classification in force has
-    that pin, and a listing seen under another pin is another drift. An acceptance that
-    names a project (``mcp-tools-accepted`` from the workspace, or
-    ``mcp-classification-accepted``) ends the hold for that project and pin, for the listing
-    it accepted (its ``listing``, else the drift's in force when it was recorded): a later
-    listing with the same digest is no new drift, one with another digest holds again. The
-    operator's ``mcp-tools-accepted``, which names no project, ends a server's drifts for
-    every project; a project whose pin changes (a new revision in force) is no longer held
-    by a drift from its old pin."""
+    Pins differ by project once a project has its own classification revision, so drifts
+    are kept per server and pin: they hold every project whose classification in force has
+    that pin. Every drift record is kept, by the digest of the listing it saw, so a later
+    record never displaces an earlier one: a record can only add or keep a hold, never end
+    one, whoever wrote it (the middleware, or the worker from the agent runtime's report).
+    Only an acceptance ends a hold, for the project it names (``mcp-tools-accepted`` from the
+    workspace, or ``mcp-classification-accepted``) and only for the listings it names
+    (``listing`` and ``listings``; one that names none accepts the drifts recorded before
+    it). A project's server is held while any drift from its pin is not accepted for it.
+    The operator's ``mcp-tools-accepted``, which names no project, ends a server's drifts
+    for every project; a project whose pin changes (a new revision in force) is no longer
+    held by a drift from its old pin."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._last_seq = 0
-        self._drifts: dict[tuple[str, str | None], DriftSeen] = {}
-        self._accepted: dict[tuple[str, str, str | None], AcceptanceSeen] = {}
+        self._drifts: dict[tuple[str, str | None], dict[str | None, DriftSeen]] = {}
+        self._accepted: dict[tuple[str, str, str | None], _Accepted] = {}
 
     def load(self, records: Iterable[RecordLike]) -> None:
         with self._lock:
@@ -525,9 +551,8 @@ class DriftLedger:
                     continue
                 if record.kind == DRIFT_RECORD:
                     pin, listing = _text(data.get("pin")), _text(data.get("listing"))
-                    self._drifts[(server, pin)] = DriftSeen(
-                        record.seq, record.time, pin, listing, data
-                    )
+                    seen = DriftSeen(record.seq, record.time, pin, listing, data)
+                    self._drifts.setdefault((server, pin), {})[listing] = seen
                 elif isinstance(project, str):
                     self._accept(project, server, record, data)
                 elif record.kind == ACCEPTED_RECORD:
@@ -537,59 +562,169 @@ class DriftLedger:
     def _accept(
         self, project: str, server: str, record: RecordLike, data: Mapping[str, object]
     ) -> None:
-        """A project's acceptance: of the drift from its ``pin`` if it names one, else of
-        each drift of the server in force, for its ``listing`` if it names one, else that
-        drift's."""
-        pin, listing = _text(data.get("pin")), _text(data.get("listing"))
-        targets = [
-            seen
-            for (name, from_pin), seen in self._drifts.items()
-            if name == server and ("pin" not in data or from_pin == pin)
-        ]
-        for seen in targets:
-            self._accepted[(project, server, seen.pin)] = AcceptanceSeen(
-                record.seq, record.time, listing or seen.listing, seen.seq, data
-            )
+        """A project's acceptance: of the drifts from its ``pin`` if it names one, else of
+        the server's from every pin, for the listings it names, else for those recorded
+        before it."""
+        pin = _text(data.get("pin"))
+        named = {
+            listing
+            for listing in (_text(data.get("listing")), *_texts(data.get("listings")))
+            if listing is not None
+        }
+        for (name, from_pin), seen in self._drifts.items():
+            if name != server or ("pin" in data and from_pin != pin) or not seen:
+                continue
+            accepted = self._accepted.setdefault((project, server, from_pin), _Accepted())
+            accepted.listings |= named or {key for key in seen if key is not None}
+            legacy = seen.get(None)
+            if legacy is not None and legacy.seq < record.seq:
+                accepted.legacy_seq = max(accepted.legacy_seq, legacy.seq)
+            newest = max(seen.values(), key=lambda drift: drift.seq)
+            listing = _text(data.get("listing")) or newest.listing
+            accepted.latest = AcceptanceSeen(record.seq, record.time, listing, newest.seq, data)
 
     def note(
         self, server: str, pin: str | None, seq: int | None, listing: str | None = None
     ) -> None:
         """A drift this component just recorded, known before the next read."""
         with self._lock:
-            self._drifts[(server, pin)] = DriftSeen(seq or 0, "", pin, listing, {})
+            found = self._drifts.setdefault((server, pin), {})
+            if listing not in found:
+                found[listing] = DriftSeen(seq or 0, "", pin, listing, {})
 
     def known(self, server: str, pin: str | None, listing: str) -> bool:
-        """Whether the server's drift from ``pin`` is already of this listing: a listing
-        seen again is no new drift, and keeps the acceptances of it."""
+        """Whether a drift of this listing from ``pin`` was recorded already: a listing
+        seen again is no new drift, accepted or not."""
         with self._lock:
-            found = self._drifts.get((server, pin))
-        return found is not None and found.listing == listing
+            return listing in self._drifts.get((server, pin), {})
+
+    def _held(self, server: str, pin: str | None, project: str | None) -> list[DriftSeen]:
+        found = [
+            seen
+            for key in dict.fromkeys(((server, pin), (server, None)))
+            for seen in self._drifts.get(key, {}).values()
+        ]
+        if project is None:
+            return found
+        held: list[DriftSeen] = []
+        for seen in found:
+            accepted = self._accepted.get((project, server, seen.pin))
+            if accepted is None or not (
+                seen.listing in accepted.listings
+                if seen.listing is not None
+                else accepted.legacy_seq >= seen.seq
+            ):
+                held.append(seen)
+        return held
 
     def drifted(self, server: str, pin: str | None, project: str | None = None) -> int | None:
-        """The drift record that still makes ``server``'s non-read calls ask, if one does:
-        one from the pin in force now (``pin``), not accepted for ``project`` since."""
+        """The newest drift record that still makes ``server``'s non-read calls ask, if one
+        does: one from the pin in force now (``pin``) not accepted for ``project``."""
         with self._lock:
-            found = self._drifts.get((server, pin)) or self._drifts.get((server, None))
-            if found is None:
-                return None
-            accepted = (
-                self._accepted.get((project, server, found.pin)) if project is not None else None
-            )
-        if accepted is not None and (
-            accepted.listing == found.listing
-            if found.listing is not None
-            else accepted.drift_seq >= found.seq
-        ):
-            return None
-        return found.seq
+            held = self._held(server, pin, project)
+        return max(seen.seq for seen in held) if held else None
+
+    def unaccepted(self, server: str, pin: str | None, project: str) -> list[DriftSeen]:
+        """The drifts from ``pin`` the project has not accepted, newest first."""
+        with self._lock:
+            held = self._held(server, pin, project)
+        return sorted(held, key=lambda seen: seen.seq, reverse=True)
+
+    def accepted_listing(self, server: str, pin: str | None, project: str, listing: str) -> bool:
+        """Whether the project accepted this listing's drift from ``pin``."""
+        with self._lock:
+            accepted = self._accepted.get((project, server, pin))
+        return accepted is not None and listing in accepted.listings
 
     def latest(self, server: str, pin: str | None) -> DriftSeen | None:
         """The server's newest drift record from ``pin``, ended or not, unless the operator
         accepted it for every project."""
         with self._lock:
-            return self._drifts.get((server, pin)) or self._drifts.get((server, None))
+            for key in ((server, pin), (server, None)):
+                found = self._drifts.get(key)
+                if found:
+                    return max(found.values(), key=lambda seen: seen.seq)
+        return None
 
     def accepted(self, project: str, server: str, pin: str | None) -> AcceptanceSeen | None:
         """The project's newest acceptance of the server's drift from ``pin``."""
         with self._lock:
-            return self._accepted.get((project, server, pin))
+            found = self._accepted.get((project, server, pin))
+        return found.latest if found is not None else None
+
+
+LISTING_REPORT_GRACE: Final = timedelta(seconds=30)
+"""How long after the middleware let a listing pass unread the runtime has to report it."""
+LISTING_KINDS: Final = (
+    LISTING_UNREAD_RECORD,
+    LISTING_REPORTED_RECORD,
+    ACCEPTED_RECORD,
+    CLASSIFICATION_ACCEPTED,
+)
+
+
+def _record_time(text: str) -> datetime:
+    """A record's time; one that does not read as a time counts as long past."""
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+class UnreadListings:
+    """Listings the middleware let pass unread (an event stream OpenShell would not offer it
+    whole, D98) that the agent runtime has not reported since, by project and server.
+
+    The runtime's client must report every complete listing; the worker records each report
+    it takes (``mcp-tools-listing-reported``), drifted or not. An unread listing with no
+    report for its project and server within ``grace`` is an unknown listing: the server's
+    non-read calls ask, as for a drift, until a report arrives (which then starts a drift
+    or not) or the project's user, or the operator, accepts the server's tools. A runtime
+    that never reports is caught here, on the trusted side."""
+
+    def __init__(self, grace: timedelta = LISTING_REPORT_GRACE) -> None:
+        self.grace = grace
+        self._lock = threading.Lock()
+        self._last_seq = 0
+        self._unread: dict[tuple[str, str], tuple[int, datetime]] = {}
+
+    def load(self, records: Iterable[RecordLike]) -> None:
+        with self._lock:
+            for record in records:
+                if record.seq <= self._last_seq:
+                    continue
+                self._last_seq = record.seq
+                if record.kind not in LISTING_KINDS:
+                    continue
+                try:
+                    data = record.data()
+                except ValueError:
+                    continue
+                server, project = data.get("server"), data.get("project")
+                if not isinstance(server, str):
+                    continue
+                if not isinstance(project, str):
+                    if record.kind == ACCEPTED_RECORD:  # the operator's, for every project
+                        for key in [key for key in self._unread if key[1] == server]:
+                            del self._unread[key]
+                    continue
+                key = (project, server)
+                if record.kind == LISTING_UNREAD_RECORD:
+                    # The first unanswered one: its grace is not restarted by later ones.
+                    self._unread.setdefault(key, (record.seq, _record_time(record.time)))
+                else:
+                    self._unread.pop(key, None)
+
+    def note(self, project: str, server: str, seq: int | None, at: datetime) -> None:
+        """An unread listing this component just recorded, known before the next read."""
+        with self._lock:
+            self._unread.setdefault((project, server), (seq or 0, at))
+
+    def pending(self, project: str, server: str, now: datetime) -> int | None:
+        """The unread listing record whose report is overdue, if one is."""
+        with self._lock:
+            found = self._unread.get((project, server))
+        if found is None or now - found[1] < self.grace:
+            return None
+        return found[0]

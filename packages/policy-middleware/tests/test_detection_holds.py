@@ -426,10 +426,42 @@ def test_a_drift_the_worker_recorded_from_a_runtime_report_holds_as_a_read_one(
     assert pin is not None
     payload = {"project": "crypto", "server": SERVER, "pin": pin_digest(pin), "listing": "a" * 64}
     events.append("mcp-tools-drift", "runtime", payload)
-    clock.advance(2)  # read at most once a second
+    # At once: every non-read call reads the store's new records first.
     held = call(WRITE_TOOL, request_id="w1", url="https://example.org", interval=2)
     assert held.reason_code.startswith("approval_required_r")
     assert call(READ_TOOL, request_id="r1").allowed  # reads stay free
+
+
+def test_an_unread_listing_the_runtime_does_not_report_in_time_holds_the_server(
+    mcp: Any, events: EventStore, clock: Any
+) -> None:
+    middleware, call, _ = mcp
+    assert call("tools/list", request_id="list-1").allowed
+    check = middleware.check_listing("list-1", "sbx-agent", stream=True)
+    assert check is not None
+    check.unread()  # an event stream OpenShell would not offer whole
+    [(_, unread)] = records(events, "mcp-tools-listing-unread")
+    assert (unread["project"], unread["server"]) == ("crypto", SERVER)
+    # Within the grace the runtime may still report it.
+    assert call(WRITE_TOOL, request_id="w0", url="https://example.org", interval=1).allowed
+    clock.advance(31)
+    held = call(WRITE_TOOL, request_id="w1", url="https://example.org", interval=2)
+    assert held.reason_code.startswith("approval_required_r")
+    assert "has not reported it" in held.reason
+    assert call(READ_TOOL, request_id="r1").allowed  # reads stay free
+    # The worker takes the runtime's report (a listing as pinned): the hold ends at once.
+    taken = {"project": "crypto", "server": SERVER, "listing": "a" * 64, "drifted": False}
+    events.append("mcp-tools-listing-reported", "runtime", taken)
+    assert call(WRITE_TOOL, request_id="w2", url="https://example.org", interval=3).allowed
+    # A second unread listing, never reported: the user's acceptance ends its hold too.
+    assert call("tools/list", request_id="list-2").allowed
+    second = middleware.check_listing("list-2", "sbx-agent", stream=True)
+    assert second is not None
+    second.unread()
+    clock.advance(31)
+    assert not call(WRITE_TOOL, request_id="w3", url="https://example.org", interval=4).allowed
+    events.append("mcp-tools-accepted", "workspace", {"project": "crypto", "server": SERVER})
+    assert call(WRITE_TOOL, request_id="w4", url="https://example.org", interval=5).allowed
 
 
 def test_the_command_line_lists_and_clears_a_hold(

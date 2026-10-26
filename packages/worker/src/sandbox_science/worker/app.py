@@ -1225,7 +1225,8 @@ async def report_mcp_listing(request: web.Request) -> web.Response:
     report = ListingReport.model_validate_json(await _body(request))
     _allowed(request, report.project_id)
     desk = request.app[CLASSIFICATION_DESK]
-    return _json(await _reviewed(lambda: desk.report_listing(report)))
+    caller = _client(request).name
+    return _json(await _reviewed(lambda: desk.report_listing(report, caller)))
 
 
 async def export_classification(request: web.Request) -> web.Response:

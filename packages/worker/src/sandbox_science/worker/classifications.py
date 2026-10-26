@@ -33,8 +33,9 @@ import hashlib
 import json
 import logging
 import threading
+from collections import deque
 from collections.abc import Callable, Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
@@ -69,6 +70,7 @@ from sandbox_science.policy.classification import (
 from sandbox_science.policy.detection import (
     ACCEPTED_RECORD,
     CLASSIFICATION_ACCEPTED,
+    LISTING_REPORTED_RECORD,
     DriftLedger,
     DriftSeen,
     pin_digest,
@@ -85,6 +87,11 @@ from .permissions import Permissions, PermissionStoreError
 
 _log = logging.getLogger(__name__)
 
+MAX_REPORTS: Final = 10
+"""Listing reports one caller may make of one project's server a minute."""
+REPORT_WINDOW: Final = timedelta(minutes=1)
+MAX_REPORTERS: Final = 4096
+"""Callers, projects and servers whose recent reports are counted, the oldest forgotten."""
 RUNTIME_CALLER: Final = "agent-runtime"
 """The caller a reported listing's record names: the agent runtime's direct client."""
 ACTOR: Final = "user"
@@ -117,8 +124,10 @@ class ClassificationDesk:
         self.policies = policies
         self.receipts = receipts
         self.clock = clock
-        self._reports = threading.Lock()
-        """One report's check of the drift in force and its record at a time."""
+        self._reports = threading.RLock()
+        """One report's check of the drifts and its records at a time."""
+        self._recent: dict[tuple[str, str, str], deque[datetime]] = {}
+        """Each caller's recent reports by project and server, for the rate."""
 
     # Reads.
 
@@ -141,7 +150,7 @@ class ClassificationDesk:
         force. Blocking."""
         loaded, entry = self._server(project, server)
         current = self._current(project, server, entry)
-        hints = _hints(self._drift(self._drifts(), server, current))
+        hints = _hints(self._drift(self._drifts(), server, current, project))
         try:
             stored = self.store.classification_drafts(project, server)
         except StoreError as exc:
@@ -226,7 +235,7 @@ class ClassificationDesk:
             raise ClassificationReviewError(str(exc), "invalid") from exc
         drifts = self._drifts()
         current = self._current(project, server, entry)
-        seen = self._drift(drifts, server, current)
+        seen = self._drift(drifts, server, current, project)
         _check_tools(proposed, stored.classification, current, seen)
         reasons = widening_reasons(loaded.policy, server, current, proposed, _hints(seen))
         widened = sorted(reasons)
@@ -271,17 +280,21 @@ class ClassificationDesk:
     ) -> DriftAccepted:
         _, entry = self._server(project, server)
         current = self._current(project, server, entry)
-        seen = self._drift(self._drifts(), server, current)
+        drifts = self._drifts()
+        seen = self._drift(drifts, server, current, project)
         if seen is None:
             raise ClassificationReviewError(f"{server}'s tool list has no drift to accept")
         now = self.clock.now()
-        # The acceptance names the pin and the listing it accepts: a later listing that
-        # differs is a new drift, held again (D103).
+        # The acceptance names the pin and every listing it accepts, those the project has
+        # not accepted from that pin: a later listing that differs is a new drift, held
+        # again (D103), and a record never ends a hold by itself.
+        held = drifts.unaccepted(server, seen.pin, project)
         payload = {
             "project": project,
             "server": server,
             "pin": seen.pin,
             "listing": seen.listing,
+            "listings": [drift.listing for drift in held if drift.listing is not None],
             "reason": reason,
             "actor": ACTOR,
             "operation_id": operation_id,
@@ -291,10 +304,13 @@ class ClassificationDesk:
 
     # Listings the agent runtime's direct client read (D98).
 
-    def report_listing(self, report: ListingReport) -> ListingReported:
+    def report_listing(self, report: ListingReport, caller: str) -> ListingReported:
         """Compare a reported listing with the pin of the project's classification in force
         and record its drift once (see the module). The caller checked the project is its
-        own; the server must be one of the project's policy. Blocking."""
+        own; the server must be one of the project's policy. A report may start or keep a
+        hold, never end one: one whose listing the project accepted while another drift of
+        the server holds it is refused. At most ``MAX_REPORTS`` a minute per caller, project
+        and server. Blocking."""
         _, entry = self._server(report.project_id, report.server)
         seen = {
             tool.name: ListedTool(tool.name, tool.digest, EffectClass(tool.hint))
@@ -304,13 +320,10 @@ class ClassificationDesk:
             raise ClassificationReviewError("a reported listing names a tool twice", "invalid")
         if listing_digest(seen) != report.listing:
             raise ClassificationReviewError("the listing's digest is not its tools'", "invalid")
+        self._admit(caller, report.project_id, report.server)
         current = self._current(report.project_id, report.server, entry)
-        if current is None:
-            return ListingReported(drifted=False)  # no pin: nothing to compare
-        drift = listing_drift(report.server, current.pins, seen)
-        if drift is None:
-            return ListingReported(drifted=False)
-        pin = pin_digest(current.pins)
+        pin = pin_digest(current.pins) if current is not None else None
+        drift = listing_drift(report.server, current.pins, seen) if current is not None else None
         subject = {
             "project": report.project_id,
             "caller": RUNTIME_CALLER,
@@ -321,11 +334,41 @@ class ClassificationDesk:
             "method": "tools/list",
             "tool": None,
         }
+        seq: int | None = None
         with self._reports:
-            if self._drifts().known(report.server, pin, report.listing):
-                return ListingReported(drifted=True)  # the drift in force already
-            seq = self.permissions.record_drift(drift_record(drift, pin, subject, None))
-        return ListingReported(drifted=True, record=seq)
+            drifts = self._drifts()
+            if drift is not None and drifts.known(report.server, pin, report.listing):
+                held = drifts.drifted(report.server, pin, report.project_id)
+                if held is not None and drifts.accepted_listing(
+                    report.server, pin, report.project_id, report.listing
+                ):
+                    # A replay of an accepted listing while another drift holds: refused.
+                    raise ClassificationReviewError(
+                        "this listing was accepted, and another drift of the server holds it"
+                    )
+            elif drift is not None:
+                seq = self.permissions.record_drift(drift_record(drift, pin, subject, None))
+            # Every report taken is recorded, drifted or not: it answers an unread listing.
+            self.permissions.record_drift(
+                {**subject, "pin": pin, "listing": report.listing, "drifted": drift is not None},
+                kind=LISTING_REPORTED_RECORD,
+            )
+        return ListingReported(drifted=drift is not None, record=seq)
+
+    def _admit(self, caller: str, project: str, server: str) -> None:
+        """Count one report of the caller's for the project's server; refuse past the rate."""
+        now = self.clock.now()
+        with self._reports:
+            recent = self._recent.setdefault((caller, project, server), deque())
+            while recent and now - recent[0] >= REPORT_WINDOW:
+                recent.popleft()
+            if len(recent) >= MAX_REPORTS:
+                raise ClassificationReviewError(
+                    f"more than {MAX_REPORTS} listing reports of {server} a minute"
+                )
+            recent.append(now)
+            if len(self._recent) > MAX_REPORTERS:
+                self._recent.pop(next(iter(self._recent)))
 
     # Parts.
 
@@ -357,12 +400,18 @@ class ClassificationDesk:
 
     @staticmethod
     def _drift(
-        drifts: DriftLedger, server: str, current: ServerClassification | None
+        drifts: DriftLedger,
+        server: str,
+        current: ServerClassification | None,
+        project: str | None = None,
     ) -> DriftSeen | None:
-        """The server's latest drift from the pin in force, if any."""
+        """The server's newest drift from the pin in force that holds ``project``, else its
+        newest drift from that pin, if any."""
         if current is None:
             return None
-        return drifts.latest(server, pin_digest(current.pins))
+        pin = pin_digest(current.pins)
+        held = drifts.unaccepted(server, pin, project) if project is not None else []
+        return held[0] if held else drifts.latest(server, pin)
 
     def _view(
         self,
@@ -373,7 +422,7 @@ class ClassificationDesk:
         current: ServerClassification,
         drifts: DriftLedger,
     ) -> ClassificationInForce:
-        seen = self._drift(drifts, server, current)
+        seen = self._drift(drifts, server, current, project)
         summary = _summary(seen, drifts, project, server, current) if seen is not None else None
         tools = [
             _tool(loaded, server, entry, current, name, tool, _pin_state(tool, name, seen))

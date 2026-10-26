@@ -233,6 +233,8 @@ class Prepared:
                         "conflict", "tool dispatch has no matching unexecuted intent"
                     )
                 self.tool_notices = []
+                # A call the runtime published results of is the runtime's, not the host's.
+                self.binaries.host_runs(request.call.id)
                 # Original authority, offered tools and trusted gates come from preparation.
                 outcome = await self.toolbox.call(
                     request.call, request.operation, model=request.model, gates=self.hooks

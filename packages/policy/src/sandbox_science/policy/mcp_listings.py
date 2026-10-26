@@ -18,16 +18,23 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Final
 
-from .detection import pin_digest
+from .detection import LISTING_UNREAD_RECORD, pin_digest
 from .mcp_wire import ListedTool
+
+__all__ = [
+    "DRIFT_FINDING",
+    "LISTING_UNREAD_RECORD",
+    "MAX_DRIFT_NAMES",
+    "Drift",
+    "drift_record",
+    "listing_digest",
+    "listing_drift",
+]
 
 MAX_DRIFT_NAMES: Final = 100
 """Tool names a drift record lists of those added, removed and changed."""
 DRIFT_FINDING: Final = "tool_list_drift"
 """The finding a listing that differs from its pin raises (D96)."""
-LISTING_UNREAD_RECORD: Final = "mcp-tools-listing-unread"
-"""A ``tools/list`` answer the middleware let pass unread: an event stream OpenShell would
-not offer it whole. The runtime's client filters and reports that listing instead."""
 
 
 @dataclass(frozen=True, slots=True)

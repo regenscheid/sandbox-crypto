@@ -103,10 +103,13 @@ class ArtifactBinaries:
             return withheld(item, f"larger than the {MAX_KEPT_BYTES} bytes kept")
         return (await self.keep_bytes(server, tool, data, item.mime)).note
 
-    async def keep_bytes(self, server: str, tool: str, data: bytes, mime: str | None) -> Kept:
+    async def keep_bytes(
+        self, server: str, tool: str, data: bytes, mime: str | None, *, origin: str = "mcp"
+    ) -> Kept:
         """Keep ``data``, a binary item of ``tool``'s result from ``server``, decoded: the
         proxy path's items through ``keep``, and the confined runtime's direct-path items,
-        which it sends over ``publish_mcp_binary`` (``confinement.binaries``)."""
+        which it sends over ``publish_mcp_binary`` (``confinement.binaries``) and whose
+        publication names them as the runtime's (``origin`` ``runtime-mcp``)."""
         digest = hashlib.sha256(data).hexdigest()
         name = server if _SAFE.fullmatch(server) else "server"
         path = f"{RESULTS_DIR}/{name}/{digest[:24]}{_EXTENSIONS.get(mime or '', '.bin')}"
@@ -127,7 +130,7 @@ class ArtifactBinaries:
                     + hashlib.sha256(f"{self.publisher.run_id}:{digest}".encode()).hexdigest()[:40]
                 )
                 outcome = await self.publisher.publish(
-                    request, operation, tool_call=f"mcp:{tool}"[:128]
+                    request, operation, tool_call=f"{origin}:{tool}"[:128]
                 )
                 revision = outcome.receipt.revision
                 artifact = outcome.worker.artifact_id if outcome.worker is not None else None

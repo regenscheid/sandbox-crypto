@@ -217,6 +217,7 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
     assert record == {
         "project": "p1", "server": SERVER, "reason": "reviewed", "actor": "user",
         "operation_id": "op-1", "pin": pin_digest(pins), "listing": "e" * 64,
+        "listings": ["e" * 64],
     }  # fmt: skip
     _, [again] = await api.get("/v1/classifications?project=p1")
     assert again["drift"]["held"] is False
@@ -545,3 +546,59 @@ async def test_a_report_the_caller_is_not_bound_to_is_refused(
     found = await report(api, body, who)
     assert found[0] == status, found
     assert api.records("mcp-tools-drift") == []
+
+
+def ledger_for(api: Api) -> Any:
+    from sandbox_science.policy.detection import DRIFT_KINDS, DriftLedger
+
+    ledger = DriftLedger()
+    with StoreReader(api.events.path) as reader:
+        ledger.load(list(reader.records(kinds=DRIFT_KINDS)))
+    return ledger
+
+
+async def test_replaying_an_accepted_listing_never_ends_a_newer_hold(api: Api) -> None:
+    # The review's probe (2026-10-26): a runtime report may start or keep a hold, never end
+    # one. A is accepted, the server serves B (held), and a replay of A is refused.
+    pin = pin_digest(catalog(SERVER).pins)
+    a = reported({"benign": "1" * 64})
+    status, found = await report(api, a)
+    assert status == 200
+    assert found["drifted"]
+    status, accepted = await api.post(
+        f"/v1/classifications/{SERVER}/drift/accept", {"project": "p1", "reason": "fine"}
+    )
+    assert status == 201, accepted
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is None
+    b = reported({"benign": "1" * 64, "evil_write": "2" * 64})
+    status, found = await report(api, b)
+    assert status == 200
+    assert found["record"] is not None
+    held = ledger_for(api).drifted(SERVER, pin, "p1")
+    assert held == found["record"]
+    status, refused = await report(api, a)
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
+    assert ledger_for(api).drifted(SERVER, pin, "p1") == held
+    # The user's acceptance names every listing it accepts: it ends the hold.
+    status, _ = await api.post(
+        f"/v1/classifications/{SERVER}/drift/accept", {"project": "p1", "reason": "seen"}
+    )
+    assert status == 201
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is None
+
+
+async def test_every_report_taken_is_recorded_and_reports_are_rate_limited(api: Api) -> None:
+    for _ in range(10):
+        status, _ = await report(api, reported())
+        assert status == 200
+    status, refused = await report(api, reported())
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
+    taken = api.records("mcp-tools-listing-reported")
+    assert len(taken) == 10
+    source, first = taken[0]
+    assert (source, first["project"], first["server"], first["drifted"]) == (
+        "runtime", "p1", SERVER, False,
+    )  # fmt: skip
+    # The rate is per caller: another client of the project still reports.
+    status, _ = await report(api, reported(), who="workspace")
+    assert status == 200

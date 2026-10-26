@@ -30,12 +30,18 @@ import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Final, cast
 
 from sandbox_science.policy import LoadedPolicy, mcp_wire
 from sandbox_science.policy.classification import ServerClassification, server_classification
-from sandbox_science.policy.detection import DRIFT_RECORD, DriftLedger, pin_digest
+from sandbox_science.policy.detection import (
+    DRIFT_RECORD,
+    DriftLedger,
+    UnreadListings,
+    pin_digest,
+)
 from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.mcp_answers import Rewrite, rewrite_answer
 from sandbox_science.policy.mcp_listings import (
@@ -389,11 +395,15 @@ class ListingCheck:
         events: EventSink,
         request_id: str,
         drifts: DriftLedger | None = None,
+        unread: UnreadListings | None = None,
+        now: datetime | None = None,
     ) -> None:
         """``drifts``, when given, learns of a drift at once: until its server's
-        classification is accepted again, its non-read calls ask (D103)."""
+        classification is accepted again, its non-read calls ask (D103). ``unread`` learns
+        of a listing passed unread at ``now``: the runtime must report it in time (D98)."""
         self._listings, self._listing, self._events = listings, listing, events
         self._drifts = drifts
+        self._unread, self._now = unread, now
         self._request_id = request_id
         self._stream = stream
         self._body = bytearray()
@@ -435,8 +445,9 @@ class ListingCheck:
         """Record that this listing passes unread: an event stream OpenShell would not
         offer whole. The agent runtime's client filters it and reports it (D98)."""
         pinned = self._listing.pin
+        seq: int | None = None
         try:
-            self._events.record(
+            seq = self._events.record(
                 LISTING_UNREAD_RECORD,
                 {
                     **self._listing.subject,
@@ -446,6 +457,10 @@ class ListingCheck:
             )
         except Exception:
             _log.exception("could not record the unread listing of %s", self._listing.server)
+        project = self._listing.subject.get("project")
+        if self._unread is not None and self._now is not None and isinstance(project, str):
+            # Known even when unrecorded: the runtime's report is due all the same.
+            self._unread.note(project, self._listing.server, seq, self._now)
 
     def _record(self, drift: Drift) -> None:
         pinned = self._listing.pin

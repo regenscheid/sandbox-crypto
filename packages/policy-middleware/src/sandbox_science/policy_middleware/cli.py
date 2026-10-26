@@ -198,6 +198,7 @@ def _serve(settings: Settings) -> int:
                 else None
             ),
             response_statuses=settings.response_statuses,
+            listing_report_grace=timedelta(seconds=settings.listing_report_grace),
         )
         middleware.prime_approvals()
         return _run(settings, middleware)

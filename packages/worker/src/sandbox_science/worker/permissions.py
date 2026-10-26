@@ -50,6 +50,8 @@ from sandbox_science.policy.detection import (
     CLASSIFICATION_ACCEPTED,
     DRIFT_KINDS,
     DRIFT_RECORD,
+    LISTING_REPORTED_RECORD,
+    RUNTIME_SOURCE,
     DriftLedger,
 )
 
@@ -61,7 +63,7 @@ SOURCE: Final = "worker"
 """The source of the records the worker writes."""
 ANSWERS: Final = "workspace"
 """The source of the user's answers the workspace relays (D97)."""
-RUNTIME: Final = "runtime"
+RUNTIME: Final = RUNTIME_SOURCE
 """The source of drifts of listings the agent runtime's direct client reported (D98)."""
 STORE_TIMEOUT: Final = 5.0
 
@@ -267,11 +269,14 @@ class Permissions:
         except EventStoreError as exc:
             raise PermissionStoreError(f"the acceptance could not be recorded: {exc}") from exc
 
-    def record_drift(self, payload: Mapping[str, object]) -> int:
-        """Record a drift of a listing the agent runtime's client read and reported (source
-        ``runtime``, D98): the middleware's ``DriftLedger`` reads it as its own. Blocking."""
+    def record_drift(self, payload: Mapping[str, object], *, kind: str = DRIFT_RECORD) -> int:
+        """Record, from a listing the agent runtime's client read and reported (source
+        ``runtime``, D98), its drift, which the middleware's ``DriftLedger`` reads as its
+        own, or (``mcp-tools-listing-reported``) that the report was taken. Blocking."""
+        if kind not in (DRIFT_RECORD, LISTING_REPORTED_RECORD):
+            raise ValueError(f"{kind!r} is not a listing record")
         try:
-            return self._store().append(DRIFT_RECORD, RUNTIME, payload).seq
+            return self._store().append(kind, RUNTIME, payload).seq
         except EventStoreError as exc:
             raise PermissionStoreError(f"the drift could not be recorded: {exc}") from exc
 
