@@ -95,7 +95,10 @@ class PoolCeiling(StrictModel):
 
 
 def _granted(
-    requested: tuple[str, ...] | None, cap: tuple[str, ...] | None, notices: list[str]
+    requested: tuple[str, ...] | None,
+    cap: tuple[str, ...] | None,
+    notices: list[str],
+    name: str = "job_profiles",
 ) -> tuple[str, ...] | None:
     """The job profiles a project names that the ceiling permits; a ceiling that names
     none permits each. Unlike a size, the project's list is the grant: a project that
@@ -104,9 +107,7 @@ def _granted(
         return requested
     removed = [name for name in requested if name not in cap]
     if removed:
-        notices.append(
-            f"resources.job_profiles: the pool ceiling does not permit {', '.join(removed)}"
-        )
+        notices.append(f"resources.{name}: the pool ceiling does not permit {', '.join(removed)}")
     return tuple(name for name in requested if name in cap)
 
 
@@ -164,6 +165,15 @@ def effective_resources(
         job_sandboxes=_clamp("job_sandboxes", requested.job_sandboxes, caps.job_sandboxes, notices)
         if requested.job_sandboxes is not None
         else None,
+        child_profiles=_granted(
+            requested.child_profiles, caps.child_profiles, notices, "child_profiles"
+        ),
+        child_environments_max=_clamp(
+            "child_environments_max",
+            requested.child_environments_max,
+            caps.child_environments_max,
+            notices,
+        ),
         model_budget_usd_per_day=_clamp(
             "model_budget_usd_per_day",
             requested.model_budget_usd_per_day,

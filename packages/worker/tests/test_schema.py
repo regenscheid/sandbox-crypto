@@ -241,11 +241,16 @@ def test_a_rebuild_keeps_the_tables_triggers_and_the_views_and_triggers_that_nam
             str(row[0])
             for row in db.execute("SELECT name FROM sqlite_master WHERE type IN ('trigger','view')")
         }
-        # The store's own triggers (immutable job manifests and progress) are other tables'.
+        # The store's own triggers (immutable job and child environment records) are other
+        # tables'.
         own = {
             "job_manifests_immutable_update",
             "job_manifests_immutable_delete",
             "job_progress_immutable",
+            "child_progress_immutable",
+            "child_progress_kept",
+            "child_hand_backs_immutable_update",
+            "child_hand_backs_immutable_delete",
         }
         assert names - own == {"status_audit", "audit_status", "marked"}
         db.execute("INSERT INTO package_status VALUES ('env1','needs_recovery','prv-first',1)")

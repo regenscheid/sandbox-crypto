@@ -1,6 +1,17 @@
 # Child environments
 
-Status: Decided by the owner (2026-10-26): all six questions as recommended. Being built, the worker and records first. It designs
+Status: Decided by the owner (2026-10-26): all six questions as recommended. First
+increment built 2026-10-26, fake CLI only; not qualified on a cluster: the worker's kind,
+admission, preparation, hand-back, retention, release and restart rules
+([worker](../WORKER.md#child-environments)), the delegation's setting, placement, records
+and outcome, the run in its own environment, and a Resume's choice of environment. Open:
+the Compute tab's children's kernels (CE-8), the workspace's environment views (CE-11's
+GUI part), the prompts' guidance (CE-13), inputs from control's retained content
+(CE-7), files over 100 MiB in a hand-back (as JS's delivery step 4: CE-F1's 1.5 GiB
+file is left out and the environment retained), and read-only `inputs/` and
+`work/<id>/`: the worker's file calls set no file mode, and a sandbox's agent code runs
+as the user who owns its files and could change one back, so it needs per-run mounts
+(DA-20's open question 1). Reviewed 2026-10-26; the review's fixes are built. It designs
 backlog item B7, raised by the owner on 2026-10-24: for some projects, each subagent's
 research environment runs in a sandbox of its own, possibly on another node, for compute
 and memory; the parent, above all the main agent, owns the durable records, and a
@@ -88,6 +99,19 @@ platform places a child by the project's settings. No change to checks' evidence
   session closes (JS-25's rule). An incomplete hand-back retains the stopped environment
   for the pool's `child_retention` (3 days unless set, at most 2 per project), as a job
   sandbox is retained, so an operator can recover what it holds.
+
+  *Amended 2026-10-26 (as built):* "waits for more work from its parent" means a child
+  whose run is still running and waits in `wait_agent_message` for a `message_child`.
+  A delegation that returned (`partial` included) has ended, and a message to an ended
+  delegation goes back to the root as a delivery failure (PD-44); so an ended child's
+  environment is handed back and released (or retained) at once, and more work for it is
+  a new delegation. An interrupted run that is never resumed keeps its environment until
+  the session closes, or until it has been idle past `child_idle_max` (the project's
+  setting, off by default) or else `child_orphan_idle` (24 hours) from its end, when the
+  session's next main run releases it; one admitted for a delegation that was never
+  written (the orchestrator stopped in between) is released past `child_orphan_grace`
+  (15 minutes). A pool without child profiles, or a policy whose `child_environments_max`
+  is 0, gives no environments: tasks run in the session's, with a notice.
 - CE-5. **Working memory, durable records.** Nothing on a child environment's disk
   survives its release. The durable records are the ones the platform already keeps,
   owned by control and visible to the parent: the child's archive (its messages, tool
@@ -190,6 +214,12 @@ platform places a child by the project's settings. No change to checks' evidence
   and returns `complete`, and the parent's run ends.
 - *Then* the environment stayed through the wait, and was released after the second
   hand-back; the session's close finds nothing to release.
+
+*Amended 2026-10-26 (as built):* a child that returned `partial` has ended, and takes no
+`message_child` (PD-44). As built, the fixture is: a child sends its partial finding with
+`message_parent` and waits in `wait_agent_message`; while it waits, its environment
+stays; the parent answers, the child continues and returns `complete`; the environment
+is released after its one hand-back, and the session's close finds nothing to release.
 
 **CE-F4 Not ready in time** (CE-4):
 - *Given* a profile with `schedule_timeout: 60`.

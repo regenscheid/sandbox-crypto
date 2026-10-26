@@ -702,6 +702,20 @@ class WorkRecords:
                 (project, session, work, project, session, project, session),
             )
 
+    def never_started(self, project: str, session: str, run: str, reason: str) -> None:
+        """End a delegated run's reserved work that never started, such as one whose own
+        environment never became ready (CE-4): stopped, with nothing to resume. Work that
+        started is left as its own record leaves it."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET state='stopped',reason=? WHERE project=? "
+                "AND session=? AND state='waiting' AND parent IS NOT NULL AND work=("
+                "SELECT a.work FROM research_attempts a WHERE a.project=? AND a.session=? "
+                "AND a.run=? AND a.outcome IS NULL) AND NOT EXISTS (SELECT 1 FROM runs r "
+                "WHERE r.project_id=? AND r.session_id=? AND r.name=?)",
+                (reason[:1000], project, session, project, session, run, project, session, run),
+            )
+
     def unfinished(self, project: str, session: str, work: str) -> bool:
         with self.control.read() as tx:
             return _pending_children(tx.sql, project, session, work)

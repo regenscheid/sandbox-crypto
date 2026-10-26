@@ -137,25 +137,13 @@ _PIP_REASON: Final = (
 )
 
 
-class JobPort(Protocol):
-    """What a job sandbox needs of executors: the worker's own, for its own steps."""
+class EnvironmentPort(Protocol):
+    """What an environment made from a session's needs of executors, for the worker's own
+    steps in it: its tier, files and packages (job sandboxes, child environments)."""
 
     async def location(self, environment_id: str) -> Location:
         """Where the environment's executor runs, with its probed isolation tier."""
         ...
-
-    async def submit(self, request: JobRequest) -> Execution: ...
-
-    async def find(self, context: ExecutionContext, operation_id: str) -> Execution | None:
-        """The execution of an operation in ``context``'s project and environment, if one
-        was submitted; never submits one."""
-        ...
-
-    async def wait(self, execution_id: str) -> Execution:
-        """The execution once it has ended."""
-        ...
-
-    async def cancel(self, execution_id: str) -> None: ...
 
     async def read_file(self, request: ReadFileRequest) -> FileContent: ...
 
@@ -177,6 +165,23 @@ class JobPort(Protocol):
         """A revision's lockfile and its SHA-256 (the current revision's for ``None``);
         None when the worker has none."""
         ...
+
+
+class JobPort(EnvironmentPort, Protocol):
+    """What a job sandbox needs of executors: the worker's own, for its own steps."""
+
+    async def submit(self, request: JobRequest) -> Execution: ...
+
+    async def find(self, context: ExecutionContext, operation_id: str) -> Execution | None:
+        """The execution of an operation in ``context``'s project and environment, if one
+        was submitted; never submits one."""
+        ...
+
+    async def wait(self, execution_id: str) -> Execution:
+        """The execution once it has ended."""
+        ...
+
+    async def cancel(self, execution_id: str) -> None: ...
 
 
 class JobFailureError(Exception):
@@ -661,68 +666,7 @@ class JobSandboxes:
     async def _replay(
         self, execution_id: str, session: ExecutionContext, job: ExecutionContext
     ) -> ReplayedPackages:
-        port = self._port()
-        revision = await port.revision(session.environment_id)
-        if not revision:
-            return ReplayedPackages(session_revision=revision)
-        current = await port.lockfile(session.environment_id, revision)
-        base = await port.lockfile(job.environment_id, None) or await port.lockfile(
-            session.environment_id, 0
-        )
-        if current is None or base is None:
-            raise JobFailureError(
-                "package_replay_failed",
-                f"the session's lockfile of revision {revision}, or of the image's packages,"
-                " is not available, so its packages cannot be replayed",
-            )
-        conda, pip = replay_specs(current[0], base[0])
-        operations: list[str] = []
-        prefix = _operation(execution_id)
-        batches = [
-            ("conda", conda[start : start + MAX_SPECS]) for start in range(0, len(conda), MAX_SPECS)
-        ] + [("pip", pip[start : start + MAX_SPECS]) for start in range(0, len(pip), MAX_SPECS)]
-        for index, (kind, specs) in enumerate(batches):
-            request = ProvisionRequest(
-                operation_id=f"{prefix}.replay-{index}",
-                context=job,
-                purpose=_REPLAY_PURPOSE,
-                conda=tuple(specs) if kind == "conda" else (),
-                pip=tuple(specs) if kind == "pip" else (),
-                pip_reason=_PIP_REASON if kind == "pip" else None,
-            )
-            operation = await port.provision(request)
-            operations.append(operation.provision_id)
-            if operation.outcome not in (
-                ProvisionOutcome.COMPLETED,
-                ProvisionOutcome.ALREADY_SATISFIED,
-            ):
-                detail = operation.error.message if operation.error else operation.reason
-                raise JobFailureError(
-                    "package_replay_failed",
-                    f"replaying the session's packages failed in {operation.provision_id}"
-                    f" ({operation.outcome}: {detail})",
-                )
-        after = await port.lockfile(job.environment_id, None) if batches else base
-        if after is None:
-            raise JobFailureError(
-                "environment_mismatch", "the job sandbox reported no lockfile after the replay"
-            )
-        missing = missing_packages(current[0], base[0], after[0])
-        if missing:
-            raise JobFailureError(
-                "environment_mismatch",
-                "after the replay the job sandbox lacks the session's "
-                + ", ".join(missing[:10])
-                + (f" and {len(missing) - 10} more" if len(missing) > 10 else ""),
-            )
-        return ReplayedPackages(
-            conda=tuple(conda),
-            pip=tuple(pip),
-            operations=tuple(operations),
-            session_revision=revision,
-            session_lockfile=current[1],
-            job_lockfile=after[1],
-        )
+        return await replay(self._port(), _operation(execution_id), session, job)
 
     # Files.
 
@@ -743,7 +687,7 @@ class JobSandboxes:
         for path in paths:
             try:
                 data, digest = await self._read_whole(session, path, budget)
-            except _TooLargeError as error:
+            except TooLargeError as error:
                 raise JobFailureError("staging_failed", f"input {path}: {error}") from error
             except WorkerError as error:
                 raise JobFailureError("staging_failed", f"input {path}: {error.message}") from error
@@ -808,26 +752,7 @@ class JobSandboxes:
     async def _read_whole(
         self, context: ExecutionContext, path: str, budget: int
     ) -> tuple[bytes, str]:
-        """A whole file in ranges, checked against the size and digest its first range
-        reported: at most 100 MiB (one write) and ``budget`` bytes."""
-        port = self._port()
-        first = await port.read_file(ReadFileRequest(context=context, path=path))
-        if first.size > MAX_FILE_WRITE_BYTES:
-            raise _TooLargeError(f"{first.size} bytes is over the 100 MiB a file copy takes")
-        if first.size > budget:
-            raise _TooLargeError(f"{first.size} bytes is over the remaining byte limit")
-        data = bytearray(base64.b64decode(first.content_b64))
-        while len(data) < first.size:
-            part = await port.read_file(
-                ReadFileRequest(context=context, path=path, offset=len(data), length=MAX_READ_BYTES)
-            )
-            chunk = base64.b64decode(part.content_b64)
-            if part.sha256 != first.sha256 or not chunk:
-                raise WorkerError(ErrorKind.CONFLICT, f"{path} changed while it was read")
-            data += chunk
-        if len(data) != first.size or hashlib.sha256(data).hexdigest() != first.sha256:
-            raise WorkerError(ErrorKind.CONFLICT, f"{path} changed while it was read")
-        return bytes(data), first.sha256
+        return await read_whole(self._port(), context, path, budget)
 
     async def _collect(
         self,
@@ -917,7 +842,7 @@ class JobSandboxes:
             return leave("its path in the session would be too long")
         try:
             data, digest = await self._read_whole(job, source, budget)
-        except _TooLargeError as error:
+        except TooLargeError as error:
             return leave(str(error))
         except WorkerError as error:
             return leave(error.message)
@@ -1313,8 +1238,102 @@ class JobSandboxes:
             journal.save(live, job=job.model_copy(update={"sandbox": sandbox}))
 
 
-class _TooLargeError(Exception):
+class TooLargeError(Exception):
     """A file over the bytes a copy may take."""
+
+
+async def replay(
+    port: EnvironmentPort, prefix: str, session: ExecutionContext, job: ExecutionContext
+) -> ReplayedPackages:
+    """Replay the session's recorded package changes in ``job``'s environment at their
+    recorded versions, as provisioning operations ``<prefix>.replay-<n>``, and check the
+    result against the session's lockfile (owner's decision, 2026-10-22). Raises
+    ``JobFailureError``."""
+    revision = await port.revision(session.environment_id)
+    if not revision:
+        return ReplayedPackages(session_revision=revision)
+    current = await port.lockfile(session.environment_id, revision)
+    base = await port.lockfile(job.environment_id, None) or await port.lockfile(
+        session.environment_id, 0
+    )
+    if current is None or base is None:
+        raise JobFailureError(
+            "package_replay_failed",
+            f"the session's lockfile of revision {revision}, or of the image's packages,"
+            " is not available, so its packages cannot be replayed",
+        )
+    conda, pip = replay_specs(current[0], base[0])
+    operations: list[str] = []
+    batches = [
+        ("conda", conda[start : start + MAX_SPECS]) for start in range(0, len(conda), MAX_SPECS)
+    ] + [("pip", pip[start : start + MAX_SPECS]) for start in range(0, len(pip), MAX_SPECS)]
+    for index, (kind, specs) in enumerate(batches):
+        request = ProvisionRequest(
+            operation_id=f"{prefix}.replay-{index}",
+            context=job,
+            purpose=_REPLAY_PURPOSE,
+            conda=tuple(specs) if kind == "conda" else (),
+            pip=tuple(specs) if kind == "pip" else (),
+            pip_reason=_PIP_REASON if kind == "pip" else None,
+        )
+        operation = await port.provision(request)
+        operations.append(operation.provision_id)
+        if operation.outcome not in (
+            ProvisionOutcome.COMPLETED,
+            ProvisionOutcome.ALREADY_SATISFIED,
+        ):
+            detail = operation.error.message if operation.error else operation.reason
+            raise JobFailureError(
+                "package_replay_failed",
+                f"replaying the session's packages failed in {operation.provision_id}"
+                f" ({operation.outcome}: {detail})",
+            )
+    after = await port.lockfile(job.environment_id, None) if batches else base
+    if after is None:
+        raise JobFailureError(
+            "environment_mismatch", "the job sandbox reported no lockfile after the replay"
+        )
+    missing = missing_packages(current[0], base[0], after[0])
+    if missing:
+        raise JobFailureError(
+            "environment_mismatch",
+            "after the replay the job sandbox lacks the session's "
+            + ", ".join(missing[:10])
+            + (f" and {len(missing) - 10} more" if len(missing) > 10 else ""),
+        )
+    return ReplayedPackages(
+        conda=tuple(conda),
+        pip=tuple(pip),
+        operations=tuple(operations),
+        session_revision=revision,
+        session_lockfile=current[1],
+        job_lockfile=after[1],
+    )
+
+
+async def read_whole(
+    port: EnvironmentPort, context: ExecutionContext, path: str, budget: int
+) -> tuple[bytes, str]:
+    """A whole file in ranges, checked against the size and digest its first range
+    reported: at most 100 MiB (one write) and ``budget`` bytes. Raises ``TooLargeError``
+    for a file over either."""
+    first = await port.read_file(ReadFileRequest(context=context, path=path))
+    if first.size > MAX_FILE_WRITE_BYTES:
+        raise TooLargeError(f"{first.size} bytes is over the 100 MiB a file copy takes")
+    if first.size > budget:
+        raise TooLargeError(f"{first.size} bytes is over the remaining byte limit")
+    data = bytearray(base64.b64decode(first.content_b64))
+    while len(data) < first.size:
+        part = await port.read_file(
+            ReadFileRequest(context=context, path=path, offset=len(data), length=MAX_READ_BYTES)
+        )
+        chunk = base64.b64decode(part.content_b64)
+        if part.sha256 != first.sha256 or not chunk:
+            raise WorkerError(ErrorKind.CONFLICT, f"{path} changed while it was read")
+        data += chunk
+    if len(data) != first.size or hashlib.sha256(data).hexdigest() != first.sha256:
+        raise WorkerError(ErrorKind.CONFLICT, f"{path} changed while it was read")
+    return bytes(data), first.sha256
 
 
 _RELEASE_NOW: Final = "release-now"
@@ -1487,15 +1506,19 @@ class ManagerPort:
 __all__ = [
     "OPERATION_PREFIX",
     "RESERVED_OPERATION",
+    "EnvironmentPort",
     "JobFailureError",
     "JobPort",
     "JobSandboxes",
     "ManagerPort",
     "Plan",
+    "TooLargeError",
     "granted",
     "launch_settings",
     "manifest_digest",
     "missing_packages",
     "offers",
+    "read_whole",
+    "replay",
     "replay_specs",
 ]

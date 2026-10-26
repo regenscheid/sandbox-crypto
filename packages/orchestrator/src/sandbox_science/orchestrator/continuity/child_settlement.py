@@ -155,6 +155,7 @@ class ChildSettlement:
                 end.read_entry,
                 end.read_proofs,
                 end.files,
+                end.environment,
             ),
         )
         await record_work(self.ledger, project, session, kept, end.created)

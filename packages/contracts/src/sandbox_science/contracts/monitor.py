@@ -120,7 +120,7 @@ class EnvironmentTier(Contract):
     """One of the project's environments with its isolation tier (D43)."""
 
     environment_id: Identifier
-    kind: Literal["session", "job"]
+    kind: Literal["session", "job", "child"]
     profile: Identifier
     state: EnvironmentState
     declared_tier: IsolationTier | None = None

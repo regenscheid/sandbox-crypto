@@ -3736,6 +3736,46 @@ def _mcp_canaries(schema: Schema) -> None:
     schema.execute("CREATE INDEX mcp_canaries_at ON mcp_canaries (at)")
 
 
+def _delegation_environments(schema: Schema) -> None:
+    """Version 87: a delegation names the child environment its run works in
+    (docs/specs/child-environments.md, CE-11), written as it starts, or once while it runs
+    for a continuation a Resume reserved; and its outcome gains how that environment
+    ended, with the hand-back's account, written once with the rest. The columns have no
+    CHECK, which ``ALTER TABLE`` would have every row pass: triggers check them."""
+    checks = (
+        "(NEW.environment_id IS NULL OR length(CAST(NEW.environment_id AS BLOB)) "
+        "BETWEEN 1 AND 128) AND (NEW.environment IS NULL OR (NEW.ended IS NOT NULL "
+        "AND json_valid(NEW.environment) AND json_type(NEW.environment) = 'object' "
+        "AND length(CAST(NEW.environment AS BLOB)) <= 65536))"
+    )
+    for statement in (
+        "ALTER TABLE delegations ADD COLUMN environment_id TEXT",
+        "ALTER TABLE delegations ADD COLUMN environment TEXT",
+        f"""CREATE TRIGGER delegations_environment_insert BEFORE INSERT ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        f"""CREATE TRIGGER delegations_environment_update BEFORE UPDATE ON delegations
+WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        "DROP TRIGGER delegations_kept",
+        """CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.run IS NOT OLD.run OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at
+OR (OLD.environment_id IS NOT NULL AND NEW.environment_id IS NOT OLD.environment_id)
+OR (OLD.ended IS NOT NULL AND (
+NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped
+OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at
+OR NEW.refused IS NOT OLD.refused OR NEW.result IS NOT OLD.result
+OR NEW.errors IS NOT OLD.errors OR NEW.alias IS NOT OLD.alias
+OR NEW.models IS NOT OLD.models OR NEW.read_entry IS NOT OLD.read_entry
+OR NEW.read_proofs IS NOT OLD.read_proofs OR NEW.files IS NOT OLD.files
+OR NEW.environment_id IS NOT OLD.environment_id OR NEW.environment IS NOT OLD.environment))
+OR (OLD.acknowledged IS NOT NULL AND NEW.acknowledged IS NOT OLD.acknowledged)
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3822,6 +3862,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _finding_lifecycle,
     _tool_purposes,
     _mcp_canaries,
+    _delegation_environments,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

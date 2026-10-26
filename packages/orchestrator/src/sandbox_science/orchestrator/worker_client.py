@@ -82,6 +82,14 @@ from sandbox_science.contracts.artifact_retention import (
     MAX_RETENTION_ACK_BYTES,
     ArtifactRetentionAcknowledgement,
 )
+from sandbox_science.contracts.child_environments import (
+    ChildEnvironment,
+    ChildEnvironmentEnd,
+    ChildEnvironmentList,
+    ChildEnvironmentRequest,
+    ChildHandBack,
+    HandBackRequest,
+)
 from sandbox_science.contracts.classifications import (
     MAX_DRAFTS,
     MAX_YAML_CHARS,
@@ -836,6 +844,57 @@ class WorkerClient:
             JobSandboxRelease(context=context, operation_id=operation_id),
         )
 
+    # Child environments (docs/specs/child-environments.md).
+
+    async def create_child_environment(self, request: ChildEnvironmentRequest) -> ChildEnvironment:
+        """Admit a delegation's own environment, made from the session's in the
+        background; refused at once, with the reason, when it may not have one (CE-9)."""
+        return await self._call("POST", "/v1/child-environments", ChildEnvironment, request)
+
+    async def child_environment(
+        self, environment_id: str, context: ExecutionContext
+    ) -> ChildEnvironment:
+        """A child environment of the session ``context`` names."""
+        return await self._call(
+            "GET",
+            f"/v1/child-environments/{environment_id}",
+            ChildEnvironment,
+            params=_session(context),
+            max_bytes=8 * 1024 * 1024,
+        )
+
+    async def child_environments(self, context: ExecutionContext) -> ChildEnvironmentList:
+        """The session's child environments, ended ones included."""
+        return await self._call(
+            "GET",
+            "/v1/child-environments",
+            ChildEnvironmentList,
+            params=_session(context),
+            max_bytes=32 * 1024 * 1024,
+        )
+
+    async def hand_back(self, environment_id: str, request: HandBackRequest) -> ChildHandBack:
+        """Copy a delegation's files into the session's ``work/<delegation_id>/`` (CE-6)."""
+        return await self._call(
+            "POST",
+            f"/v1/child-environments/{environment_id}/hand-back",
+            ChildHandBack,
+            request,
+            max_bytes=8 * 1024 * 1024,
+        )
+
+    async def end_child_environment(
+        self, environment_id: str, request: ChildEnvironmentEnd
+    ) -> ChildEnvironment:
+        """Release a child environment, or keep it after an incomplete hand-back (CE-4)."""
+        return await self._call(
+            "POST",
+            f"/v1/child-environments/{environment_id}/end",
+            ChildEnvironment,
+            request,
+            max_bytes=8 * 1024 * 1024,
+        )
+
     # Kernels, files and artifacts.
 
     async def capabilities(self, environment_id: str) -> Capabilities:
@@ -1154,6 +1213,14 @@ async def check_protocol(response: aiohttp.ClientResponse) -> None:
         f"{PROTOCOL_VERSION}; upgrade the orchestrator, workspace and worker together",
         response.status,
     )
+
+
+def _session(context: ExecutionContext) -> dict[str, str]:
+    return {
+        "project_id": context.project_id,
+        "session_id": context.session_id,
+        "environment_id": context.environment_id,
+    }
 
 
 def _project(project_id: str | None) -> dict[str, str]:

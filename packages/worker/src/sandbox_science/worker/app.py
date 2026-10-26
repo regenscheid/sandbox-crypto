@@ -70,6 +70,12 @@ from sandbox_science.contracts.artifact_retention import (
     MAX_RETENTION_ACK_BYTES,
     ArtifactRetentionAcknowledgement,
 )
+from sandbox_science.contracts.child_environments import (
+    ChildEnvironmentEnd,
+    ChildEnvironmentList,
+    ChildEnvironmentRequest,
+    HandBackRequest,
+)
 from sandbox_science.contracts.classifications import (
     ClassificationAcceptance,
     ClassificationDrafts,
@@ -110,6 +116,8 @@ from sandbox_science.contracts.worker import (
 )
 from sandbox_science.policy import effective_resources
 
+from .child_environments import RESERVED_OPERATION as RESERVED_CHILD_OPERATION
+from .child_environments import ChildEnvironments
 from .classifications import ClassificationDesk, ClassificationReviewError
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments
@@ -133,6 +141,7 @@ _log = logging.getLogger(__name__)
 
 MANAGER: Final = web.AppKey("manager", ExecutionManager)
 ENVIRONMENTS: Final = web.AppKey("environments", Environments)
+CHILDREN: Final = web.AppKey("child_environments", ChildEnvironments)
 PROVISIONER: Final = web.AppKey("provisioner", Provisioner)
 PERMISSION_DESK: Final = web.AppKey("permission_desk", PermissionDesk)
 CLASSIFICATION_DESK: Final = web.AppKey("classification_desk", ClassificationDesk)
@@ -220,6 +229,7 @@ def create_app(
     permission_desk: PermissionDesk | None = None,
     classification_desk: ClassificationDesk | None = None,
     monitor_desk: MonitorDesk | None = None,
+    children: ChildEnvironments | None = None,
     heartbeat: float = EVENT_HEARTBEAT_SECONDS,
     file_write_timeout: float = 300.0,
 ) -> web.Application:
@@ -365,6 +375,11 @@ def create_app(
         # The classification review: in force, drafts and the user's acceptances (CL-6).
         app[CLASSIFICATION_DESK] = classification_desk
         app.add_routes(CLASSIFICATION_ROUTES)
+    if children is not None:
+        # Delegated runs' own environments (docs/specs/child-environments.md); without
+        # them, their routes answer ``unsupported``.
+        app[CHILDREN] = children
+    app.add_routes(CHILD_ROUTES)
     if monitor_desk is not None:
         # A project's monitor figures, counted from the records (D103).
         app[MONITOR_DESK] = monitor_desk
@@ -622,6 +637,10 @@ def _context(request: web.Request, context: ExecutionContext, *, hide: bool = Fa
     if info is not None and info.kind == "job":
         # A job sandbox runs its job only; no client names it (D93, JS-1).
         raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+    if info is not None and info.kind == "child" and info.session_id != context.session_id:
+        # A child environment is its session's delegated run's (CE-1): no other
+        # session's context names it.
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     if info is None:
         if not limited and environments.handmade(environment_id):
             return
@@ -726,7 +745,8 @@ def _environment(request: web.Request, environments: Environments) -> str:
     environment_id = request.match_info["environment_id"]
     info = environments.get(environment_id)
     _visible(request, info.project_id, f"environment {environment_id!r}")
-    if info.kind == "job":
+    if info.kind != "session":
+        # Job sandboxes and child environments are the worker's to delete (JS-1, CE-4).
         raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     return environment_id
 
@@ -955,11 +975,15 @@ async def capabilities(request: web.Request) -> web.Response:
     manager = request.app[MANAGER]
     offered = await manager.capabilities(environment_id)
     sandboxes = manager.job_sandboxes
-    if sandboxes is not None and environments is not None:
+    if (sandboxes is not None or CHILDREN in request.app) and environments is not None:
         governing = environments.governing(environment_id)
         if governing is not None:
             resources = effective_resources(governing.policy.policy, governing.ceiling)[0]
             profiles = offers(environments.settings, resources)
+            children = request.app.get(CHILDREN)
+            if children is not None and children.offered(resources):
+                features = tuple(dict.fromkeys([*offered.features, "child_environments"]))
+                offered = offered.model_copy(update={"features": features})
             if profiles:
                 features = tuple(dict.fromkeys([*offered.features, "job_sandboxes"]))
                 offered = offered.model_copy(
@@ -996,11 +1020,14 @@ async def lookup_operation(request: web.Request) -> web.Response:
 async def submit(request: web.Request) -> web.Response:
     execution_request = _REQUEST.validate_json(await _body(request))
     _context(request, execution_request.context)
-    if RESERVED_JOB_OPERATION.fullmatch(execution_request.operation_id):
+    if RESERVED_JOB_OPERATION.fullmatch(
+        execution_request.operation_id
+    ) or RESERVED_CHILD_OPERATION.fullmatch(execution_request.operation_id):
         raise WorkerError(
             ErrorKind.INVALID_REQUEST,
-            "operation IDs of the form jsb-<24 hex digits>.<step> are the worker's own, for"
-            " job sandboxes' steps",
+            "operation IDs of the form jsb-<24 hex digits>.<step> or chd-<12 hex"
+            " digits>.<step> are the worker's own, for job sandboxes' and child environments'"
+            " steps",
         )
     if RESERVED_OPERATION.fullmatch(execution_request.operation_id):
         raise WorkerError(
@@ -1248,6 +1275,77 @@ async def export_classification(request: web.Request) -> web.Response:
     return web.Response(body=data, content_type="application/yaml", headers=headers)
 
 
+# Child environments (docs/specs/child-environments.md): the orchestrator's, for its
+# delegations. Each request names the session's context, whose environment the child
+# environment was made from; another session's child environment is not found.
+
+
+def _children(request: web.Request) -> ChildEnvironments:
+    children = request.app.get(CHILDREN)
+    if children is None:
+        raise WorkerError(ErrorKind.UNSUPPORTED, "this worker offers no child environments")
+    return children
+
+
+def _child_id(request: web.Request) -> str:
+    return _identifier(request.match_info["environment_id"], "environment_id")
+
+
+async def create_child_environment(request: web.Request) -> web.Response:
+    body = ChildEnvironmentRequest.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    found, created = await _children(request).admit(body)
+    return _json(found, 201 if created else 200)
+
+
+def _session_context(request: web.Request) -> ExecutionContext:
+    """The session's context a read names in its query."""
+    query = request.query
+    context = ExecutionContext(
+        project_id=_identifier(query.get("project_id", ""), "project_id"),
+        session_id=_identifier(query.get("session_id", ""), "session_id"),
+        environment_id=_identifier(query.get("environment_id", ""), "environment_id"),
+    )
+    _context(request, context, hide=True)
+    return context
+
+
+async def list_child_environments(request: web.Request) -> web.Response:
+    context = _session_context(request)
+    found = [
+        child
+        for child in _children(request).listed(context.project_id, context.session_id)
+        if child.session_environment == context.environment_id
+    ]
+    return _json(ChildEnvironmentList(environments=tuple(found)))
+
+
+async def get_child_environment(request: web.Request) -> web.Response:
+    context = _session_context(request)
+    return _json(_children(request).get(_child_id(request), context))
+
+
+async def hand_back_child_environment(request: web.Request) -> web.Response:
+    body = HandBackRequest.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await _children(request).hand_back(_child_id(request), body))
+
+
+async def end_child_environment(request: web.Request) -> web.Response:
+    body = ChildEnvironmentEnd.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await _children(request).end(_child_id(request), body))
+
+
+CHILD_ROUTES: Final = (
+    web.post("/v1/child-environments", create_child_environment),
+    web.get("/v1/child-environments", list_child_environments),
+    web.get("/v1/child-environments/{environment_id}", get_child_environment),
+    web.post("/v1/child-environments/{environment_id}/hand-back", hand_back_child_environment),
+    web.post("/v1/child-environments/{environment_id}/end", end_child_environment),
+)
+
+
 CLASSIFICATION_ROUTES: Final = (
     web.get("/v1/classifications", classifications_in_force),
     web.get("/v1/classifications/{server}/drafts", classification_drafts),
@@ -1286,10 +1384,13 @@ async def submit_provision(request: web.Request) -> web.Response:
     """Ask for a capability or packages in an environment: one operation, queued."""
     body = ProvisionRequest.model_validate_json(await _body(request))
     _context(request, body.context, hide=True)  # the agent may name the environment
-    if RESERVED_JOB_OPERATION.fullmatch(body.operation_id):
+    if RESERVED_JOB_OPERATION.fullmatch(body.operation_id) or RESERVED_CHILD_OPERATION.fullmatch(
+        body.operation_id
+    ):
         raise WorkerError(
             ErrorKind.INVALID_REQUEST,
-            "operation IDs of the form jsb-<24 hex digits>.<step> are the worker's own",
+            "operation IDs of the form jsb-<24 hex digits>.<step> or chd-<12 hex"
+            " digits>.<step> are the worker's own",
         )
     operation, created = await _provisioner(request).submit(body)
     return _json(operation, 201 if created else 200)
@@ -1604,7 +1705,12 @@ async def close_session(request: web.Request) -> web.Response:
             raise
         # No environment, so no kernels to stop: the session is closed as it is.
         return _json(SessionClosed())
-    return _json(await request.app[MANAGER].close_session(body))
+    closed = await request.app[MANAGER].close_session(body)
+    children = request.app.get(CHILDREN)
+    if children is not None and body.run is None:
+        # The whole session closes: its child environments go without retention (CE-4).
+        await children.close_session(body.context)
+    return _json(closed)
 
 
 async def restart_kernel(request: web.Request) -> web.Response:
