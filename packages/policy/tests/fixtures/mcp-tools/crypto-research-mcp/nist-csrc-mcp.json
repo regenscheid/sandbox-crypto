@@ -1,10 +1,10 @@
 {
- "captured": "2026-10-24",
+ "captured": "2026-10-26",
  "group": "nist-csrc-mcp",
  "server": "crypto-research-mcp",
  "tools": [
   {
-   "description": "Browse the structured catalogs. Without dataset: list them (SP 800-53, 53A, 53B, CSF, Privacy Framework, SP 800-171/172, SSDF, NICE, ...) with versions and the publications that print them. With dataset: its top level (families, functions). With parent_id: that item's children (controls of 'AC', subcategories of 'GV.OC').",
+   "description": "Browse the structured catalogs. Without dataset: list them (SP 800-53, 53A, 53B,\nCSF, Privacy Framework, SP 800-171/172, SSDF, NICE, ...) with versions and the\npublications that print them. With dataset: its top level (families, functions).\nWith parent_id: that item's children (controls of 'AC', subcategories of 'GV.OC').",
    "inputSchema": {
     "properties": {
      "dataset": {
@@ -53,7 +53,7 @@
    "name": "nist-csrc-mcp_nist_browse_catalogs"
   },
   {
-   "description": "Get one catalog item: an SP 800-53 control ('AC-2', 'AC-2(1)'), an SP 800-53A assessment procedure (dataset='SP 800-53A'), SP 800-53B baselines (dataset='SP 800-53B'), a CSF function, category or subcategory ('PR.AA-01'), an SP 800-171 requirement ('03.01.01'), and so on. Identifiers ignore case, zero padding and punctuation. dataset takes a name ('SP 800-53', 'CSF 1.1', '800-53r4') or a CPRT id; a name selects the current version, and without dataset the current publication is used. Returns the text, parent and children, related items, cross-framework mappings (filter with relation_framework, e.g. 'SP 800-53'), topic tags and the page that prints it. include_structured adds parameters, statement parts and baselines as JSON.",
+   "description": "Get one catalog item: an SP 800-53 control ('AC-2', 'AC-2(1)'), an SP 800-53A\nassessment procedure (dataset='SP 800-53A'), SP 800-53B baselines (dataset='SP\n800-53B'), a CSF function, category or subcategory ('PR.AA-01'), an SP 800-171\nrequirement ('03.01.01'), and so on. Identifiers ignore case, zero padding and\npunctuation. dataset takes a name ('SP 800-53', 'CSF 1.1', '800-53r4') or a CPRT id;\na name selects the current version, and without dataset the current publication is\nused. Returns the text, parent and children, related items, cross-framework\nmappings (filter with relation_framework, e.g. 'SP 800-53'), topic tags and the\npage that prints it. include_structured adds parameters, statement parts and\nbaselines as JSON.",
    "inputSchema": {
     "properties": {
      "dataset": {
@@ -110,7 +110,7 @@
    "name": "nist-csrc-mcp_nist_get_catalog_item"
   },
   {
-   "description": "Report corpus coverage: editions and pages archived, pages converted and how, catalog data loaded, and the nightly refresh (`refresh`): when it last ran, the editions it added or whose status changed, what it converted, and what failed.",
+   "description": "Report corpus coverage: editions and pages archived, pages converted and how,\ncatalog data loaded, and the nightly refresh (`refresh`): when it last ran, the\neditions it added or whose status changed, what it converted, and what failed.",
    "inputSchema": {
     "properties": {},
     "title": "nist_get_corpus_statusArguments",
@@ -119,7 +119,7 @@
    "name": "nist-csrc-mcp_nist_get_corpus_status"
   },
   {
-   "description": "Get the original PDF of an edition to check a conversion against the source: a temporary signed URL to the archived copy (fetch it directly, no authentication) plus the official NIST URL and the file's SHA-256.",
+   "description": "Get the original PDF of an edition to check a conversion against the source: a\ntemporary signed URL to the archived copy (fetch it directly, no authentication)\nplus the official NIST URL and the file's SHA-256.",
    "inputSchema": {
     "properties": {
      "edition_id": {
@@ -148,7 +148,7 @@
    "name": "nist-csrc-mcp_nist_get_pdf"
   },
   {
-   "description": "Describe one publication edition: title, status, abstract, topics, versions and links (supersedes, superseded by, drafts, parts), catalog datasets and PDF. Pass edition_id, or query with a designation, DOI or URL ('SP 800-53', 'FIPS 203', 'SP 800-63B-4'). A query for a publication resolves to its current final edition; name a revision or draft ('SP 800-53 Rev. 4', 'FIPS 140-3 IPD') to get that one. Other matching editions are listed under resolution.",
+   "description": "Describe one publication edition: title, status, abstract, topics, versions and\nlinks (supersedes, superseded by, drafts, parts), catalog datasets and PDF.\n\nPass edition_id, or query with a designation, DOI or URL ('SP 800-53', 'FIPS 203',\n'SP 800-63B-4'). A query for a publication resolves to its current final edition;\nname a revision or draft ('SP 800-53 Rev. 4', 'FIPS 140-3 IPD') to get that one.\nOther matching editions are listed under resolution.",
    "inputSchema": {
     "properties": {
      "edition_id": {
@@ -195,7 +195,7 @@
    "name": "nist-csrc-mcp_nist_get_publication"
   },
   {
-   "description": "List CSRC topics (for example 'access control', 'cryptography', 'FISMA') with counts of publications and catalog items. Use a topic name with nist_search.",
+   "description": "List CSRC topics (for example 'access control', 'cryptography', 'FISMA') with\ncounts of publications and catalog items. Use a topic name with nist_search.",
    "inputSchema": {
     "properties": {},
     "title": "nist_list_topicsArguments",
@@ -204,7 +204,7 @@
    "name": "nist-csrc-mcp_nist_list_topics"
   },
   {
-   "description": "Read 1-10 pages as Markdown: tables as Markdown or HTML, math in LaTeX. Start at page_index (zero-based physical page) or at printed_page, the number printed on the page ('24', 'vi'); each page's location gives both. Each page reports how it was converted and lists the catalog items it prints; use nist_get_catalog_item for those. representation='library_text' or 'both' returns the PDF's raw text layer; start_char/end_char slice one page's raw text for exact quotation. Ranges stop at 40,000 characters (see next_page_index).",
+   "description": "Read 1-10 pages as Markdown: tables as Markdown or HTML, math in LaTeX. Start at\npage_index (zero-based physical page) or at printed_page, the number printed on the\npage ('24', 'vi'); each page's location gives both. Each page reports how it was\nconverted and lists the catalog items it prints; use nist_get_catalog_item for those.\nrepresentation='library_text' or 'both' returns the PDF's raw text layer;\nstart_char/end_char slice one page's raw text for exact quotation. Ranges stop at\n40,000 characters (see next_page_index).",
    "inputSchema": {
     "properties": {
      "edition_id": {
@@ -303,7 +303,7 @@
    "name": "nist-csrc-mcp_nist_read"
   },
   {
-   "description": "Search NIST publications and catalogs. Start here. Returns, in order: - catalog_items: structured SP 800-53 controls, SP 800-53A procedures, CSF subcategories, SP 800-171 requirements and similar, from the newest release of each catalog. An exact identifier ('AC-2', 'PR.AA-01') includes the item's text. An item's assessment procedure and baseline entries (SP 800-53A/B, SP 800-171A) are listed under it in also_in. Prefer these to reading PDF pages. - publications: matching publications with status (current, superseded, withdrawn, draft), ranked by their metadata, their best-matching pages and the catalog items they print; each lists that evidence (pages, items). - passages: page excerpts to read with nist_read. Keep kind='all' (the default) unless you need only one group: requirements, controls and practices are best answered by catalog items, alongside the publications that state them. A narrower search still lists the top matching items under catalog_items_also_matching. Catalog items and passages match by meaning as well as by words, so a question or description works as a query; exact identifiers still rank first. versions='current' (default) covers the current final edition of each publication. 'drafts' covers drafts; 'all' adds superseded and withdrawn editions. A query that names a revision or draft includes all versions automatically. kind limits results to one group. topic filters by CSRC topic (see nist_list_topics). dataset limits catalog items to one catalog ('SP 800-53', 'CSF').",
+   "description": "Search NIST publications and catalogs. Start here.\n\nReturns, in order:\n- catalog_items: structured SP 800-53 controls, SP 800-53A procedures, CSF\n  subcategories, SP 800-171 requirements and similar, from the newest release of\n  each catalog. An exact identifier ('AC-2', 'PR.AA-01') includes the item's text.\n  An item's assessment procedure and baseline entries (SP 800-53A/B, SP 800-171A)\n  are listed under it in also_in. Prefer these to reading PDF pages.\n- publications: matching publications with status (current, superseded, withdrawn,\n  draft), ranked by their metadata, their best-matching pages and the catalog items\n  they print; each lists that evidence (pages, items).\n- passages: page excerpts to read with nist_read.\n\nKeep kind='all' (the default) unless you need only one group: requirements,\ncontrols and practices are best answered by catalog items, alongside the\npublications that state them. A narrower search still lists the top matching items\nunder catalog_items_also_matching.\n\nCatalog items and passages match by meaning as well as by words, so a question or\ndescription works as a query; exact identifiers still rank first.\n\nversions='current' (default) covers the current final edition of each publication.\n'drafts' covers drafts; 'all' adds superseded and withdrawn editions. A query that\nnames a revision or draft includes all versions automatically.\nkind limits results to one group. topic filters by CSRC topic (see\nnist_list_topics). dataset limits catalog items to one catalog ('SP 800-53', 'CSF').\n",
    "inputSchema": {
     "properties": {
      "dataset": {

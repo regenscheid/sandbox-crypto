@@ -141,7 +141,7 @@ async def test_the_catalogs_classification_is_in_force_tool_by_tool(api: Api) ->
     [shown] = found
     assert shown["server"] == SERVER
     assert shown["source"] == {
-        "kind": "catalog", "name": SERVER, "revision": None, "pinned": "2026-10-24",
+        "kind": "catalog", "name": SERVER, "revision": None, "pinned": "2026-10-26",
         "accepted_at": None, "accepted_by": None, "reason": None,
     }  # fmt: skip
     assert shown["digest"] == catalog(SERVER).digest

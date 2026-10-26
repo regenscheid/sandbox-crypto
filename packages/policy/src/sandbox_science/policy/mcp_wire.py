@@ -150,8 +150,19 @@ def tool_names(result: Mapping[str, object]) -> tuple[list[str], str | None]:
 
 def tool_digest(tool: Mapping[str, object]) -> str:
     """The hex SHA-256 of a listed tool's name, description and input schema, as sorted
-    compact JSON: what a classification file pins of each tool (D96)."""
+    compact JSON: what a classification file pins of each tool (D96).
+
+    The description is taken with its whitespace collapsed: every run of whitespace is one
+    space, and none leads or trails. Clients present the same server text differently (a
+    claude.ai connector shows a docstring's newlines and indentation as single spaces, the
+    raw ``tools/list`` keeps them), so a pin made from one form would otherwise drift
+    against the other with no word changed (the 2026-10-26 lab: 58 of 71 portal tools).
+    Any change to the description's words or punctuation, the name or the input schema
+    still changes the digest."""
     spec = {key: tool.get(key) for key in ("name", "description", "inputSchema")}
+    description = spec["description"]
+    if isinstance(description, str):
+        spec["description"] = " ".join(description.split())
     text = json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

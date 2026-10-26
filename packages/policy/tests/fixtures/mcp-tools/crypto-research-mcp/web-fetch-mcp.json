@@ -1,5 +1,5 @@
 {
- "captured": "2026-10-24",
+ "captured": "2026-10-26",
  "group": "web-fetch-mcp",
  "server": "crypto-research-mcp",
  "tools": [
@@ -53,7 +53,7 @@
    "name": "web-fetch-mcp_fetch_links"
   },
   {
-   "description": "Fetch a page and return its content (alias of web_fetch). Accepts the same arguments as web_fetch: `url`, `format` (markdown/text/html), `max_chars`. Provided because some MCP hosts call the tool fetch_page.",
+   "description": "Fetch a page and return its content (alias of web_fetch).\n\nAccepts the same arguments as web_fetch: `url`, `format` (markdown/text/html),\n`max_chars`.  Provided because some MCP hosts call the tool fetch_page.\n",
    "inputSchema": {
     "properties": {
      "extractor": {
@@ -90,7 +90,7 @@
    "name": "web-fetch-mcp_fetch_page"
   },
   {
-   "description": "Capture a webpage screenshot, automatically paging oversized pages. One MCP call returns either one full-page PNG or multiple numbered PNG sections with signed download/resource links. Firefox scrolls down the page and divides oversized pages vertically (and horizontally if needed) instead of making one huge image. Each section reports its page position; adjacent sections overlap, and vertical cuts favor gaps between text lines. The response explicitly says whether coverage is complete or partial and reports page dimensions and any stopping limit. Infinite-scroll sites may be partial. Uses the same public-URL checks as web_fetch. This is a visual capture, not extracted text or print-to-PDF.",
+   "description": "Capture a webpage screenshot, automatically paging oversized pages.\n\nOne MCP call returns either one full-page PNG or multiple numbered PNG\nsections with signed download/resource links. Firefox scrolls down the\npage and divides oversized pages vertically (and horizontally if needed)\ninstead of making one huge image. Each section reports its page position;\nadjacent sections overlap, and vertical cuts favor gaps between text lines.\nThe response explicitly says whether coverage is complete or partial and\nreports page dimensions and any stopping limit. Infinite-scroll sites may\nbe partial. Uses the same public-URL checks as web_fetch. This is a visual\ncapture, not extracted text or print-to-PDF.\n",
    "inputSchema": {
     "properties": {
      "url": {
@@ -107,7 +107,7 @@
    "name": "web-fetch-mcp_web_capture"
   },
   {
-   "description": "Fetch a page as Markdown/text/HTML, or return an intact file download. Local-first fallback: direct HTTP, Obscura, Firefox, then Bright Data. Paper landing pages prominently identify advertised full-text, errata, and supplemental links. Attachments are not automatically fetched. `format`: \"markdown\" (default), \"text\", or \"html\". `max_chars`: cap on the returned content; 0 uses the server default. Long pages include a continuation token. `extractor`: auto, trafilatura, or conservative. `refresh` bypasses the short-lived result cache.",
+   "description": "Fetch a page as Markdown/text/HTML, or return an intact file download.\n\nLocal-first fallback: direct HTTP, Obscura, Firefox, then Bright Data.\nPaper landing pages prominently identify advertised full-text, errata,\nand supplemental links. Attachments are not automatically fetched.\n\n`format`: \"markdown\" (default), \"text\", or \"html\".\n`max_chars`: cap on the returned content; 0 uses the server default.\nLong pages include a continuation token. `extractor`: auto, trafilatura,\nor conservative. `refresh` bypasses the short-lived result cache.\n",
    "inputSchema": {
     "properties": {
      "extractor": {

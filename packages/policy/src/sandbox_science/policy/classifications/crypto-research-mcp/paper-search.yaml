@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: paper-search-mcp_
-pinned: "2026-10-24"
+pinned: "2026-10-26"
 tools:
   paper-search-mcp_arxiv_search:
     class: read

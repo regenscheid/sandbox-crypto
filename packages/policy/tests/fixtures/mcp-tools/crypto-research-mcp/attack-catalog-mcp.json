@@ -1,10 +1,10 @@
 {
- "captured": "2026-10-24",
+ "captured": "2026-10-26",
  "group": "attack-catalog-mcp",
  "server": "crypto-research-mcp",
  "tools": [
   {
-   "description": "Retrieve reference leads using lexical overlap with authored applicability text. This existing heuristic does not decide whether a target satisfies preconditions. It does not reason about negation, quantifiers, conjunctions, or capability access. Even a high score is text relevance only. Inspect source scope and limitations; defeated_by commentary is not a general immunity theorem. The historical capability_gates_met field means lexical overlap, not established capability. Only records with reviewed applicability text are searched. Empty results do not establish that no relevant result exists.",
+   "description": "Retrieve reference leads using lexical overlap with authored applicability text.\n\nThis existing heuristic does not decide whether a target satisfies preconditions.\nIt does not reason about negation, quantifiers, conjunctions, or capability access.\nEven a high score is text relevance only. Inspect source scope and limitations;\ndefeated_by commentary is not a general immunity theorem. The historical\ncapability_gates_met field means lexical overlap, not established capability.\nOnly records with reviewed applicability text are searched. Empty results do\nnot establish that no relevant result exists.\n",
    "inputSchema": {
     "properties": {
      "min_matches": {
@@ -29,7 +29,7 @@
    "name": "attack-catalog-mcp_find_applicable_attacks"
   },
   {
-   "description": "Return one attack by its stable catalog ID, with both layers. `normalized` carries the classification and review states; `legacy` preserves the published record's preserved non-identity fields. Historical aliases are returned as references but do not resolve as lookup IDs. Both are returned so any classification can be audited against the value it came from.",
+   "description": "Return one attack by its stable catalog ID, with both layers.\n\n`normalized` carries the classification and review states; `legacy` preserves\nthe published record's preserved non-identity fields. Historical aliases are returned\nas references but do not resolve as lookup IDs. Both\nare returned so any classification can be audited against the value it came from.\n",
    "inputSchema": {
     "properties": {
      "attack_id": {
@@ -81,7 +81,7 @@
    "name": "attack-catalog-mcp_get_source"
   },
   {
-   "description": "List subject references for an exact runtime skill ID, in canonical ID order. Links are reading relevance only, never mandatory invocations or applicability evidence. Editorial additions carry their authorship and limited evidence scope. Pagination uses offsets within the returned snapshot digest; stop or restart if that digest changes.",
+   "description": "List subject references for an exact runtime skill ID, in canonical ID order.\n\nLinks are reading relevance only, never mandatory invocations or applicability evidence.\nEditorial additions carry their authorship and limited evidence scope. Pagination uses\noffsets within the returned snapshot digest; stop or restart if that digest changes.\n",
    "inputSchema": {
     "properties": {
      "limit": {
@@ -108,7 +108,7 @@
    "name": "attack-catalog-mcp_list_attacks_for_skill"
   },
   {
-   "description": "List dimensions, or the terms and hierarchy of one dimension. Call this before guessing a filter value. Terms are data and may grow between releases.",
+   "description": "List dimensions, or the terms and hierarchy of one dimension.\n\nCall this before guessing a filter value. Terms are data and may grow between releases.\n",
    "inputSchema": {
     "properties": {
      "dimension": {
@@ -130,7 +130,7 @@
    "name": "attack-catalog-mcp_list_taxonomy"
   },
   {
-   "description": "Search the loaded promoted catalog snapshot using NORMALIZED filters. Hierarchical dimensions roll up: outcome=key_recovery returns private-key, symmetric-key, session-key, shared-secret and partial recoveries. Every result reports matched_by, naming the dimension and the exact term that produced the match, and for result-level dimensions which result variant matched. Two distinctions that change answers: * outcome is what a record DEMONSTRATES. An attack on a hardness assumption carries outcome=assumption_solver and is NOT returned by outcome=key_recovery; ask potential_scheme_impact=key_recovery for what it would yield once instantiated. * shared_secret_recovery is not session_key_recovery. A derivation step may stand between the raw shared secret and the session key. Use list_taxonomy first if unsure which terms exist; unknown terms are rejected rather than silently ignored.",
+   "description": "Search the loaded promoted catalog snapshot using NORMALIZED filters.\n\nHierarchical dimensions roll up: outcome=key_recovery returns private-key, symmetric-key,\nsession-key, shared-secret and partial recoveries. Every result reports matched_by, naming\nthe dimension and the exact term that produced the match, and for result-level dimensions\nwhich result variant matched.\n\nTwo distinctions that change answers:\n  * outcome is what a record DEMONSTRATES. An attack on a hardness assumption carries\n    outcome=assumption_solver and is NOT returned by outcome=key_recovery; ask\n    potential_scheme_impact=key_recovery for what it would yield once instantiated.\n  * shared_secret_recovery is not session_key_recovery. A derivation step may stand\n    between the raw shared secret and the session key.\n\nUse list_taxonomy first if unsure which terms exist; unknown terms are rejected rather\nthan silently ignored.\n",
    "inputSchema": {
     "properties": {
      "adversary_capability": {
@@ -307,7 +307,7 @@
    "name": "attack-catalog-mcp_search_attacks"
   },
   {
-   "description": "NON-SEMANTIC. Match one literal legacy string exactly. This exists for debugging and export parity ONLY. It matches a single string and makes no completeness claim: legacy `result_type` has 65 distinct free-text values, so field='result_type', value='key recovery' returns 36 records while the semantic filter outcome=key_recovery returns 116. If you are answering a question about attacks, use search_attacks instead. Reaching for this tool for a semantic question produces a wrong answer that looks right.",
+   "description": "NON-SEMANTIC. Match one literal legacy string exactly.\n\nThis exists for debugging and export parity ONLY. It matches a single string and makes no\ncompleteness claim: legacy `result_type` has 65 distinct free-text values, so\nfield='result_type', value='key recovery' returns 36 records while the semantic filter\noutcome=key_recovery returns 116.\n\nIf you are answering a question about attacks, use search_attacks instead. Reaching for\nthis tool for a semantic question produces a wrong answer that looks right.\n",
    "inputSchema": {
     "properties": {
      "field": {

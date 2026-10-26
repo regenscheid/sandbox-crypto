@@ -1,10 +1,10 @@
 {
- "captured": "2026-10-24",
+ "captured": "2026-10-26",
  "group": "paper-search-mcp",
  "server": "crypto-research-mcp",
  "tools": [
   {
-   "description": "Search arXiv preprints directly (freshest source for new preprints). Free text becomes an all-fields AND query; arXiv field syntax passes through unchanged (ti:, au:, abs:, cat:, e.g. `ti:lattice AND au:Peikert`). `category` limits results to one arXiv category such as cs.CR or quant-ph. Year filters use the submission date. `sort`: relevance or newest.",
+   "description": "Search arXiv preprints directly (freshest source for new preprints).\n\nFree text becomes an all-fields AND query; arXiv field syntax passes\nthrough unchanged (ti:, au:, abs:, cat:, e.g. `ti:lattice AND au:Peikert`).\n`category` limits results to one arXiv category such as cs.CR or quant-ph.\nYear filters use the submission date. `sort`: relevance or newest.\n",
    "inputSchema": {
     "properties": {
      "category": {
@@ -65,7 +65,7 @@
    "name": "paper-search-mcp_arxiv_search"
   },
   {
-   "description": "Search Crossref, the registry of DOIs for journals, proceedings, and books. Useful for resolving a half-remembered citation to its DOI and publisher record. Filters: publication year range and author. `sort`: relevance, cited, or newest.",
+   "description": "Search Crossref, the registry of DOIs for journals, proceedings, and books.\n\nUseful for resolving a half-remembered citation to its DOI and publisher\nrecord. Filters: publication year range and author.\n`sort`: relevance, cited, or newest.\n",
    "inputSchema": {
     "properties": {
      "author": {
@@ -126,7 +126,7 @@
    "name": "paper-search-mcp_crossref_search"
   },
   {
-   "description": "Search DBLP, the curated computer-science bibliography, newest first. Every keyword must appear in the title (\"quoted phrases\" stay together). `author` is a case-insensitive substring of the DBLP author name. `venue` accepts CRYPTO, EUROCRYPT, ASIACRYPT, CHES/TCHES, FSE/ToSC, JoC, PKC, TCC, CT-RSA, PQCrypto, SAC, COSADE, CARDIS, DCC, CiC, ePrint, CCS, S&P, USENIX Security, NDSS, EuroS&P, ACNS, ESORICS, CSF, TIFS, TDSC, CoRR, or a DBLP stream key such as conf/crypto or journals/tches; other text matches a substring of DBLP's venue label. At least one of keywords, author, or venue is required. `peer_reviewed_only` drops arXiv/ePrint preprint records. Queries take a few seconds.",
+   "description": "Search DBLP, the curated computer-science bibliography, newest first.\n\nEvery keyword must appear in the title (\"quoted phrases\" stay together).\n`author` is a case-insensitive substring of the DBLP author name.\n`venue` accepts CRYPTO, EUROCRYPT, ASIACRYPT, CHES/TCHES, FSE/ToSC, JoC,\nPKC, TCC, CT-RSA, PQCrypto, SAC, COSADE, CARDIS, DCC, CiC, ePrint, CCS, S&P,\nUSENIX Security, NDSS, EuroS&P, ACNS, ESORICS, CSF, TIFS, TDSC, CoRR, or a\nDBLP stream key such as conf/crypto or journals/tches; other text\nmatches a substring of DBLP's venue label. At least one of keywords,\nauthor, or venue is required. `peer_reviewed_only` drops arXiv/ePrint\npreprint records. Queries take a few seconds.\n",
    "inputSchema": {
     "properties": {
      "author": {
@@ -190,7 +190,7 @@
    "name": "paper-search-mcp_dblp_search"
   },
   {
-   "description": "Search OpenAlex, an open index of ~250M works with abstracts and citations. Filters: publication year range, author name, and open access only. `sort`: relevance (default), cited (most cited first), or newest. Results carry OpenAlex IDs (W...) for paper_details and paper_citations, and link a legal open-access PDF when one is known.",
+   "description": "Search OpenAlex, an open index of ~250M works with abstracts and citations.\n\nFilters: publication year range, author name, and open access only.\n`sort`: relevance (default), cited (most cited first), or newest.\nResults carry OpenAlex IDs (W...) for paper_details and paper_citations,\nand link a legal open-access PDF when one is known.\n",
    "inputSchema": {
     "properties": {
      "author": {
@@ -256,7 +256,7 @@
    "name": "paper-search-mcp_openalex_search"
   },
   {
-   "description": "List papers that cite a paper, or the papers it references (OpenAlex). `direction`: cited_by (later work citing it) or references (work it cites). `identifier`: DOI, arXiv ID, OpenAlex work ID, or Semantic Scholar ID. `sort`: cited (most cited first), newest, or relevance.",
+   "description": "List papers that cite a paper, or the papers it references (OpenAlex).\n\n`direction`: cited_by (later work citing it) or references (work it\ncites). `identifier`: DOI, arXiv ID, OpenAlex work ID, or Semantic\nScholar ID. `sort`: cited (most cited first), newest, or relevance.\n",
    "inputSchema": {
     "properties": {
      "direction": {
@@ -293,7 +293,7 @@
    "name": "paper-search-mcp_paper_citations"
   },
   {
-   "description": "Full metadata for one paper: abstract, authors, venue, citations, PDFs. `identifier`: a DOI (10.xxxx/..., doi.org URL), an arXiv ID or URL, an OpenAlex work ID (W...), a Semantic Scholar paper ID (40 hex characters or URL), or CorpusId:<n>. Combines OpenAlex with Semantic Scholar (TL;DR, influential citations) and falls back to Crossref or arXiv.",
+   "description": "Full metadata for one paper: abstract, authors, venue, citations, PDFs.\n\n`identifier`: a DOI (10.xxxx/..., doi.org URL), an arXiv ID or URL, an\nOpenAlex work ID (W...), a Semantic Scholar paper ID (40 hex characters\nor URL), or CorpusId:<n>. Combines OpenAlex with Semantic Scholar (TL;DR,\ninfluential citations) and falls back to Crossref or arXiv.\n",
    "inputSchema": {
     "properties": {
      "identifier": {
@@ -319,7 +319,7 @@
    "name": "paper-search-mcp_paper_search_health"
   },
   {
-   "description": "Search Google Scholar (via Serper) for papers, with citation counts. Broadest coverage, including books, theses, and publisher pages that other indexes miss. Results include a publication line (authors, venue, year), a snippet, \"cited by\" counts, and a PDF link when Scholar shows one. Supports Google Scholar operators in `query`, e.g. author:\"Last Name\", intitle:word, or \"exact phrase\". Each page holds up to ten results (`num` trims the page); `page` continues. Each call is billed by Serper; repeated identical calls within an hour are cached.",
+   "description": "Search Google Scholar (via Serper) for papers, with citation counts.\n\nBroadest coverage, including books, theses, and publisher pages that\nother indexes miss. Results include a publication line (authors, venue,\nyear), a snippet, \"cited by\" counts, and a PDF link when Scholar shows\none. Supports Google Scholar operators in `query`, e.g.\nauthor:\"Last Name\", intitle:word, or \"exact phrase\". Each page holds up\nto ten results (`num` trims the page); `page` continues. Each call is\nbilled by Serper; repeated identical calls within an hour are cached.\n",
    "inputSchema": {
     "properties": {
      "num": {
@@ -346,7 +346,7 @@
    "name": "paper-search-mcp_scholar_search"
   },
   {
-   "description": "Search several scholarly sources at once and merge the results. Queries the sources in parallel, merges duplicates by DOI, arXiv ID, or title, and ranks papers found by more sources and ranked higher first. Each merged record lists the sources that returned it. `sources`: any of google_scholar, openalex, semantic_scholar, crossref, dblp, arxiv. Default: all of them (google_scholar only when Serper is configured). DBLP matches every query word against titles, so short keyword queries suit it best. Google Scholar year filters apply to the returned page only. Per-source failures are reported in Notes rather than failing the whole call. Cryptology ePrint papers are covered by the ePrint tools as well as by DBLP, OpenAlex, and Semantic Scholar.",
+   "description": "Search several scholarly sources at once and merge the results.\n\nQueries the sources in parallel, merges duplicates by DOI, arXiv ID, or\ntitle, and ranks papers found by more sources and ranked higher first.\nEach merged record lists the sources that returned it.\n\n`sources`: any of google_scholar, openalex, semantic_scholar, crossref,\ndblp, arxiv. Default: all of them (google_scholar only when Serper is\nconfigured). DBLP matches every query word against titles, so short\nkeyword queries suit it best. Google Scholar year filters apply to the\nreturned page only. Per-source failures are reported in Notes rather\nthan failing the whole call. Cryptology ePrint papers are covered by\nthe ePrint tools as well as by DBLP, OpenAlex, and Semantic Scholar.\n",
    "inputSchema": {
     "properties": {
      "limit": {
@@ -412,7 +412,7 @@
    "name": "paper-search-mcp_search_papers"
   },
   {
-   "description": "Search Semantic Scholar (strong computer-science relevance ranking). Filters: year range, venue (comma-separated names such as \"CRYPTO,EUROCRYPT\"), and papers with an open-access PDF. Use paper_details on a result for its TL;DR summary and reference counts.",
+   "description": "Search Semantic Scholar (strong computer-science relevance ranking).\n\nFilters: year range, venue (comma-separated names such as\n\"CRYPTO,EUROCRYPT\"), and papers with an open-access PDF. Use\npaper_details on a result for its TL;DR summary and reference counts.\n",
    "inputSchema": {
     "properties": {
      "limit": {

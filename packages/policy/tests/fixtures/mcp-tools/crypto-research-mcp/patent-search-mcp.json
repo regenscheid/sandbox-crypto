@@ -1,10 +1,10 @@
 {
- "captured": "2026-10-24",
+ "captured": "2026-10-26",
  "group": "patent-search-mcp",
  "server": "crypto-research-mcp",
  "tools": [
   {
-   "description": "Search Google Patents for patents and published applications worldwide. Returns publication numbers, assignees, first inventors, priority, filing, publication, and grant dates, a snippet, and Google Patents / PDF links. Google Patents matches keywords loosely, so quote technical phrases and combine them with AND/OR and parentheses, e.g. `(\"key encapsulation\" OR KEM) AND (masking OR \"side-channel\")`. `assignee:Name` restricts results to one assignee. Each page holds up to ten results (`num` trims the page); `page` continues. Use web_fetch on a result's Google Patents link to read the claims and full description. Each call is billed by Serper; identical calls within an hour are cached.",
+   "description": "Search Google Patents for patents and published applications worldwide.\n\nReturns publication numbers, assignees, first inventors, priority,\nfiling, publication, and grant dates, a snippet, and Google Patents / PDF\nlinks. Google Patents matches keywords loosely, so quote technical\nphrases and combine them with AND/OR and parentheses, e.g.\n`(\"key encapsulation\" OR KEM) AND (masking OR \"side-channel\")`.\n`assignee:Name` restricts results to one assignee. Each page holds up to\nten results (`num` trims the page); `page` continues. Use web_fetch on a\nresult's Google Patents link to read the claims and full description.\nEach call is billed by Serper; identical calls within an hour are cached.\n",
    "inputSchema": {
     "properties": {
      "num": {

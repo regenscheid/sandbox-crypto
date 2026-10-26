@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: firecrawl-mcp_
-pinned: "2026-10-24"
+pinned: "2026-10-26"
 tools:
   firecrawl-mcp_firecrawl_agent:
     class: browse
@@ -80,7 +80,8 @@ tools:
     significant: {recipient: email, url: page, title: name}
   firecrawl-mcp_firecrawl_monitor_delete:
     class: write
-    reason: "Deletes a monitor (in lab 39's listing, not the pinned one)."
+    reason: "Permanently deletes a monitor and its schedule."
+    sha256: dc0b2e818d610222da20094700ff9ff4856547a677644d9b3388fa365fb2219e
     significant: {title: id}
   firecrawl-mcp_firecrawl_monitor_get:
     class: read

@@ -6,7 +6,7 @@ apiVersion: sandbox-science/v0alpha1
 kind: ToolClassification
 server: crypto-research-mcp
 prefix: patent-search-mcp_
-pinned: "2026-10-24"
+pinned: "2026-10-26"
 tools:
   patent-search-mcp_patent_search:
     class: read

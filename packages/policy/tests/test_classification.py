@@ -377,12 +377,42 @@ def test_every_pinned_tool_is_classified_with_its_digest() -> None:
 def test_only_tools_missing_from_the_pinned_listings_go_unpinned() -> None:
     unpinned = sorted(name for name, entry in catalog(SERVER).tools.items() if entry.sha256 is None)
     assert unpinned == [
-        "firecrawl-mcp_firecrawl_monitor_delete",  # in lab 39's listing, not the 2026-10-24 one
         *sorted(f"nist-mcp_{name}" for name in (
             "csrc_currency", "csrc_file", "csrc_fulltext", "csrc_stats", "get_csrc",
             "refresh_csrc", "search_csrc",
-        )),  # the 2026-10-10 notes; nist-mcp was not listed on 2026-10-15 or 2026-10-24
+        )),  # the 2026-10-10 notes; nist-mcp was not listed on 2026-10-15, -24 or -26
     ]  # fmt: skip
+
+
+def test_a_pin_holds_for_every_client_form_of_the_same_tool() -> None:
+    """The 2026-10-26 lab's drift of 58 tools: the pins were made from a claude.ai
+    connector's listing, which shows a description's newlines and indentation as single
+    spaces, and the raw ``tools/list`` keeps them. The pinned listings are now the raw form;
+    the spaced form of each must have the same pin, and a real change must not."""
+    pinned = catalog(SERVER).pins
+    spaced = 0
+    for tool in (tool for tools in pinned_listings().values() for tool in tools):
+        flat = {**tool, "description": " ".join(tool["description"].split())}
+        spaced += flat["description"] != tool["description"]
+        assert tool_digest(flat) == tool_digest(tool) == pinned[tool["name"]], tool["name"]
+    assert spaced >= 50  # the raw listing's form, as the lab read it
+
+    tool = {
+        "name": "s_t",
+        "description": "\nRead one page.\n\n  Fetches  nothing else.\n",
+        "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}},
+    }
+    digest = tool_digest(tool)
+    assert tool_digest({**tool, "description": "Read one page. Fetches nothing else."}) == digest
+    for changed in (
+        {"description": "Read one page. Fetches everything else."},
+        {"description": "Read one page; fetches nothing else."},
+        {"description": "ReadOne page. Fetches nothing else."},
+        {"name": "s_u"},
+        {"inputSchema": {"type": "object", "properties": {"url": {"type": "integer"}}}},
+        {"inputSchema": {"type": "object", "properties": {"url ": {"type": "string"}}}},
+    ):
+        assert tool_digest({**tool, **changed}) != digest, changed
 
 
 def _schema_paths(schema: Any, prefix: str = "") -> set[str]:
