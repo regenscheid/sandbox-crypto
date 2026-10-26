@@ -43,6 +43,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
+from sandbox_science.policy.store import PolicyStore
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker import environments as environments_module
 from sandbox_science.worker import suspend as suspend_module
@@ -1855,6 +1856,9 @@ CLIENTS = (
 )
 
 
+LAUNCHER_TOKEN = "test-secret-launcher-" + "0" * 24
+
+
 def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -1889,6 +1893,68 @@ class Api:
 
     def environment(self, environment_id: str, project_id: str = "p1") -> dict[str, Any]:
         return self.setup.request(environment_id, project_id=project_id).model_dump(mode="json")
+
+
+async def test_the_runtime_sandbox_is_bound_to_the_projects_revision_for_an_operator(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    launcher = ClientSettings(
+        name="launcher", token_sha256=token_digest(LAUNCHER_TOKEN), projects=("p1",), operator=True
+    )
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, launcher))
+    )
+    api = Api(client, setup)
+    store = setup.environments.store
+    body = {"project_id": "p1", "sandbox_id": "sbx-agent"}
+    # Neither a client that is no operator, nor an operator for another project.
+    assert await api.refused("POST", "/v1/runtime-sandboxes", A_TOKEN, body) == (
+        403,
+        "policy_denied",
+    )
+    other = {"project_id": "p2", "sandbox_id": "sbx-agent"}
+    assert await api.refused("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, other) == (
+        403,
+        "policy_denied",
+    )
+    # A project with no revision has nothing to bind to.
+    assert await api.refused("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, body) == (
+        404,
+        "not_found",
+    )
+    assert store.binding("sbx-agent") is None
+    # The revision granted to it last, until the store binds the project to another.
+    setup.environments.records.grant("p1", setup.policy)
+    status, bound = await api.call("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, body)
+    assert (status, bound["policy"]) == (200, setup.policy)
+    assert store.binding("sbx-agent") == setup.policy
+    newer = setup.add(variant(setup.tmp, "no-providers.yaml", providers=False))
+    PolicyStore(setup.environments.settings.policy_store, "projects").bind("p1", newer)
+    status, bound = await api.call("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, body)
+    assert (status, bound["policy"]) == (200, newer)
+    assert store.binding("sbx-agent") == newer
+    # A research environment's sandbox is bound by its own steps: never by this route.
+    info, _ = await setup.environments.create(setup.request())
+    assert info.sandbox_id is not None
+    taken = {"project_id": "p1", "sandbox_id": info.sandbox_id}
+    assert await api.refused("POST", "/v1/runtime-sandboxes", LAUNCHER_TOKEN, taken) == (
+        409,
+        "conflict",
+    )
+    path = f"/v1/runtime-sandboxes/{info.sandbox_id}"
+    assert (await api.refused("DELETE", path, LAUNCHER_TOKEN))[0] == 409
+    assert store.binding(info.sandbox_id) == setup.policy
+    # Unbinding is the operator's too, and unbinding twice is no error.
+    path = "/v1/runtime-sandboxes/sbx-agent"
+    assert (await api.refused("DELETE", path, A_TOKEN))[0] == 403
+    assert await api.call("DELETE", path, LAUNCHER_TOKEN) == (
+        200,
+        {"sandbox_id": "sbx-agent", "unbound": True},
+    )
+    assert store.binding("sbx-agent") is None
+    assert (await api.call("DELETE", path, LAUNCHER_TOKEN))[1]["unbound"] is False
 
 
 async def start_api(

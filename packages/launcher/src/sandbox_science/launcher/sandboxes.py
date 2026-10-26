@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field, replace
@@ -42,6 +43,7 @@ from .state import Layout, write_private
 SUSPEND_TIMEOUT = 180.0
 """Seconds one sandbox's suspension may take before it counts as failed."""
 LIST_TIMEOUT = 30.0
+BIND_TIMEOUT = 30.0
 REFRESH = 30.0
 """Seconds between the lists ``up`` keeps while it runs."""
 SHOWN = {"ready": "running", "stopped": "suspended", "creating": "being created"}
@@ -60,23 +62,32 @@ class Sandbox:
 class WorkerApi:
     """The worker's environment routes, with the launcher's own client token."""
 
-    def __init__(self, url: str, token_file: Path) -> None:
+    def __init__(self, url: str, token_file: Path, ca_file: Path | None = None) -> None:
         self.url = url
         self.token_file = token_file
-        # The worker is on loopback: never through a proxy the environment names.
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # The worker is on loopback, or a cluster Service: never through a proxy the
+        # environment names. Over TLS it is verified against the deployment's own CA.
+        handlers: list[urllib.request.BaseHandler] = [urllib.request.ProxyHandler({})]
+        if ca_file is not None:
+            context = ssl.create_default_context(cafile=str(ca_file))
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+        self._opener = urllib.request.build_opener(*handlers)
 
-    def _call(self, method: str, path: str, timeout: float) -> dict[str, Any]:
+    def _call(
+        self, method: str, path: str, timeout: float, body: dict[str, str] | None = None
+    ) -> dict[str, Any]:
         try:
             token = self.token_file.read_text(encoding="utf-8").strip()
-            request = urllib.request.Request(  # noqa: S310 - the worker's own http URL
+            headers = {"Authorization": f"Bearer {token}", PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
+            if body is not None:
+                headers["Content-Type"] = "application/json"
+            request = urllib.request.Request(  # noqa: S310 - the worker's own http(s) URL
                 self.url + path,
                 method=method,
-                data=b"" if method == "POST" else None,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    PROTOCOL_HEADER: str(PROTOCOL_VERSION),
-                },
+                data=json.dumps(body).encode()
+                if body is not None
+                else (b"" if method == "POST" else None),
+                headers=headers,
             )
             with self._opener.open(request, timeout=timeout) as response:
                 spoken = response.headers.get(PROTOCOL_HEADER)
@@ -105,6 +116,23 @@ class WorkerApi:
         path = f"/v1/environments/{environment}/suspend"
         result = await asyncio.to_thread(self._call, "POST", path, SUSPEND_TIMEOUT)
         return result["suspended"] is True, _sandbox(cast(dict[str, Any], result["environment"]))
+
+    async def bind_runtime(self, project: str, sandbox_id: str) -> str:
+        """Bind the agent runtime's sandbox to the project's policy revision; the revision."""
+        bound = await asyncio.to_thread(
+            self._call,
+            "POST",
+            "/v1/runtime-sandboxes",
+            BIND_TIMEOUT,
+            {"project_id": project, "sandbox_id": sandbox_id},
+        )
+        return str(bound["policy"])
+
+    async def unbind_runtime(self, sandbox_id: str) -> bool:
+        """Remove a deleted runtime sandbox's binding; whether it had one."""
+        path = f"/v1/runtime-sandboxes/{sandbox_id}"
+        result = await asyncio.to_thread(self._call, "DELETE", path, BIND_TIMEOUT)
+        return result["unbound"] is True
 
 
 def _sandbox(info: dict[str, Any]) -> Sandbox:

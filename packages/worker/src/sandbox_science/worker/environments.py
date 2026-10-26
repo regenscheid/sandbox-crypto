@@ -1218,6 +1218,41 @@ class Environments:
             return False
         return document.get("phase") not in _DEAD_PHASES
 
+    def bind_runtime(self, project_id: str, sandbox_id: str) -> str:
+        """Bind the agent runtime's sandbox to the project's policy revision: the one the
+        policy store binds to the project (the MCP proxy's binding), else the one granted to
+        it last. The policy middleware decides only sandboxes bound to a stored revision.
+
+        A research environment's sandbox is bound by its own creation and revision, so
+        this refuses one of those.
+        """
+        self._not_an_environment(sandbox_id)
+        try:
+            revision = PolicyStore(self.settings.policy_store, "projects").binding(project_id)
+            revision = revision or self.records.latest_grant(project_id)
+            if revision is None:
+                raise WorkerError(
+                    ErrorKind.NOT_FOUND,
+                    f"project {project_id!r} has no policy revision; an operator grants one"
+                    " with `sandbox-science-worker policy add --project`",
+                )
+            self.store.bind(sandbox_id, revision)
+        except StoreError as error:
+            raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None
+        return revision
+
+    def unbind_runtime(self, sandbox_id: str) -> bool:
+        """Remove the runtime sandbox's binding, if it has one; never an environment's."""
+        self._not_an_environment(sandbox_id)
+        try:
+            return self.store.unbind(sandbox_id)
+        except StoreError as error:
+            raise WorkerError(ErrorKind.UNAVAILABLE, f"policy store: {error}") from None
+
+    def _not_an_environment(self, sandbox_id: str) -> None:
+        if any(info.sandbox_id == sandbox_id for info in self.records.listed(None)):
+            raise WorkerError(ErrorKind.CONFLICT, "that sandbox belongs to a research environment")
+
     async def revise(self, environment_id: str, revision: str) -> EnvironmentInfo:
         """Move a ready environment to another policy revision."""
         async with self._lock(environment_id):

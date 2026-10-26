@@ -93,6 +93,24 @@ def check_environment(environment: Mapping[str, str]) -> None:
             raise RegistrationError(f"refusing to run with {name} set")
 
 
+def _is_repository(folder: Path) -> bool:
+    """Whether ``folder/.git`` is a repository's own: a ``.git`` directory that holds
+    ``HEAD``, or a worktree's or submodule's ``.git`` file, which begins ``gitdir:``.
+
+    An empty ``.git`` directory (babbage's home has one) is not a checkout.
+    """
+    git = folder / ".git"
+    try:
+        if git.is_dir():
+            return (git / "HEAD").is_file()
+        if git.is_file():
+            with git.open("rb") as handle:
+                return handle.read(len(b"gitdir:")) == b"gitdir:"
+    except OSError:
+        return False
+    return False
+
+
 def _in_checkout(path: Path) -> Path | None:
     """The git checkout that holds ``path``, if one does.
 
@@ -101,7 +119,7 @@ def _in_checkout(path: Path) -> Path | None:
     ignores: a program there is installed, not checked out.
     """
     for folder in path.parents:
-        if (folder / ".git").exists():
+        if _is_repository(folder):
             homebrew = (folder / "Library/Homebrew/brew.sh").is_file()
             return None if homebrew and path.is_relative_to(folder / "Cellar") else folder
     return None

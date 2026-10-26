@@ -16,7 +16,7 @@ from sandbox_science.policy.openshell import (
     compile_orchestrator,
 )
 
-from . import mcp, parts, runtime_owner
+from . import mcp, parts, runtime_owner, sandboxes
 from .config import (
     LauncherConfig,
     LauncherError,
@@ -25,6 +25,7 @@ from .config import (
     RunServiceConfig,
     SkillsConfig,
 )
+from .runtime_binding import WorkerBinding
 from .state import Layout, private_dir, write_private
 from .supervise import Part, Supervisor, passed
 
@@ -50,10 +51,20 @@ def recorded(layout: Layout) -> runtime_owner.Owned | None:
     return _ownership(layout).read()
 
 
+def _binding(config: LauncherConfig, layout: Layout) -> runtime_owner.Binding:
+    """The runtime sandbox's binding to the project's policy revision, through the worker."""
+    api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
+    return WorkerBinding(api, config.mcp_project())
+
+
 async def delete_recorded(config: LauncherConfig, layout: Layout) -> bool:
-    """Retain uncertain ownership; only confirmed original-identity deletion permits replacement."""
+    """Retain uncertain ownership; only confirmed original-identity deletion permits
+    replacement. The deleted sandbox's binding goes with it."""
     return await runtime_owner.delete_recorded(
-        _ownership(layout), mcp.OpenShell(config), timeout=config.stop_timeout
+        _ownership(layout),
+        mcp.OpenShell(config),
+        timeout=config.stop_timeout,
+        binding=_binding(config, layout),
     )
 
 
@@ -275,6 +286,7 @@ async def _agent(
         image=runtime.image,
         policy=directory / "policy.yaml",
         timeout=config.start_timeout,
+        binding=_binding(config, layout),
     )
     await runtime_owner.install(
         cli,

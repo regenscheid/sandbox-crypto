@@ -13,7 +13,9 @@ import pytest
 from aiohttp import web
 from pydantic import ValidationError
 
+from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.launcher.config import LauncherError
+from sandbox_science.launcher.runtime_binding import WorkerBinding
 from sandbox_science.launcher.runtime_manager import RuntimeManagerSettings, load
 from sandbox_science.launcher.runtime_manager.control import (
     ControlClient,
@@ -21,6 +23,7 @@ from sandbox_science.launcher.runtime_manager.control import (
     OccupiedError,
     SupersededError,
 )
+from sandbox_science.launcher.sandboxes import WorkerApi
 
 from .manager_support import (
     MANAGER_TOKEN,
@@ -33,6 +36,7 @@ from .manager_support import (
 )
 
 MANAGER_URL = "https://control.example.test:8444"
+PROTOCOL = {PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
 
 
 def document(tmp_path: Path, **changes: Any) -> dict[str, Any]:
@@ -203,3 +207,67 @@ def test_the_cli_finds_its_gateway_profile_where_the_bundle_mounts_it(tmp_path: 
     given = {"env": {"XDG_CONFIG_HOME": "/elsewhere"}}
     settings = RuntimeManagerSettings.model_validate(document(tmp_path, openshell=given))
     assert settings.openshell.env == {"XDG_CONFIG_HOME": "/elsewhere"}  # explicit wins
+
+
+def test_the_worker_link_is_optional_and_a_verified_origin(tmp_path: Path) -> None:
+    assert RuntimeManagerSettings.model_validate(document(tmp_path)).worker is None
+    link = {
+        "url": "https://worker.example.test:8100",
+        "ca_file": str(tmp_path / "ca.pem"),
+        "token_file": str(tmp_path / "worker.token"),
+        "project": "crypto",
+    }
+    settings = RuntimeManagerSettings.model_validate(document(tmp_path, worker=link))
+    assert settings.worker is not None
+    assert settings.worker.project == "crypto"
+    for bad in ({"url": "http://worker.example.test:8100"}, {"project": "../x"}, {"extra": 1}):
+        with pytest.raises(ValidationError):
+            RuntimeManagerSettings.model_validate(document(tmp_path, worker={**link, **bad}))
+
+
+async def test_the_runtime_sandbox_is_bound_and_unbound_through_the_worker(
+    tmp_path: Path, tls: LocalTls
+) -> None:
+    seen: list[tuple[str, str, str | None, dict[str, Any] | None]] = []
+
+    async def bind(request: web.Request) -> web.Response:
+        body = await request.json()
+        seen.append((request.method, request.path, request.headers.get("Authorization"), body))
+        return web.json_response({**body, "policy": "sha256:" + "e" * 64}, headers=PROTOCOL)
+
+    async def unbind(request: web.Request) -> web.Response:
+        seen.append((request.method, request.path, request.headers.get("Authorization"), None))
+        found = {"sandbox_id": request.match_info["id"], "unbound": True}
+        return web.json_response(found, headers=PROTOCOL)
+
+    app = web.Application()
+    app.router.add_post("/v1/runtime-sandboxes", bind)
+    app.router.add_delete("/v1/runtime-sandboxes/{id}", unbind)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "127.0.0.1", 0, ssl_context=tls.server()).start()
+    try:
+        token = private(tmp_path / "worker.token", "test-secret-worker-launcher-token-0123\n")
+        api = WorkerApi(f"https://localhost:{runner.addresses[0][1]}", token, tls.certificate)
+        said: list[str] = []
+        binding = WorkerBinding(api, "crypto", said.append)
+        await binding.bind("sbx-1")
+        await binding.unbind("sbx-1")
+        bearer = "Bearer test-secret-worker-launcher-token-0123"
+        assert seen == [
+            (
+                "POST",
+                "/v1/runtime-sandboxes",
+                bearer,
+                {"project_id": "crypto", "sandbox_id": "sbx-1"},
+            ),
+            ("DELETE", "/v1/runtime-sandboxes/sbx-1", bearer, None),
+        ]
+        assert said == ["bound runtime sandbox sbx-1 to sha256:" + "e" * 64]
+    finally:
+        await runner.cleanup()
+    # With the worker gone, a bind is an error that names the consequence, an unbind a note.
+    with pytest.raises(LauncherError, match=r"not bound in the policy store.*sandbox_unbound"):
+        await binding.bind("sbx-2")
+    await binding.unbind("sbx-2")
+    assert said[-1].startswith("the binding of runtime sandbox sbx-2 remains:")

@@ -88,8 +88,25 @@ async def create(store: FileOwnership, cli: FakeCli, **options: Any) -> Owned:
     )  # fmt: skip
 
 
-async def delete(store: FileOwnership, cli: FakeCli, timeout: float = 5) -> bool:
-    return await runtime_owner.delete_recorded(store, cli, timeout=timeout, poll=0)
+async def delete(store: FileOwnership, cli: FakeCli, timeout: float = 5, **options: Any) -> bool:
+    return await runtime_owner.delete_recorded(store, cli, timeout=timeout, poll=0, **options)
+
+
+class Bindings:
+    """What binds the sandbox's ID to the project's revision, recording its calls."""
+
+    def __init__(self, store: FileOwnership, *, fails: bool = False) -> None:
+        self.store, self.fails = store, fails
+        self.calls: list[tuple[str, str, Owned | None]] = []
+        """Each call, with the ownership record as it stood."""
+
+    async def bind(self, sandbox_id: str) -> None:
+        self.calls.append(("bind", sandbox_id, self.store.read()))
+        if self.fails:
+            raise LauncherError("the worker refused")
+
+    async def unbind(self, sandbox_id: str) -> None:
+        self.calls.append(("unbind", sandbox_id, self.store.read()))
 
 
 def test_the_file_record_is_todays_sandbox_json(store: FileOwnership) -> None:
@@ -171,6 +188,42 @@ async def test_an_id_change_during_startup_aborts_and_keeps_the_first(
     record = store.read()
     assert record is not None
     assert record.id == "id-first"
+
+
+async def test_a_ready_sandbox_is_bound_by_its_id_and_unbound_once_gone(
+    store: FileOwnership, cli: FakeCli
+) -> None:
+    binding = Bindings(store)
+    cli.phases = iter(("Provisioning", "Ready"))
+    owned = await create(store, cli, binding=binding)
+    # Bound by the gateway's ID, once Ready, with the record already naming the ID.
+    assert binding.calls == [("bind", "id-first", owned)]
+    assert await delete(store, cli, binding=binding)
+    assert binding.calls[1:] == [("unbind", "id-first", owned)]
+    assert store.read() is None
+
+
+async def test_a_sandbox_that_is_not_ready_is_not_bound(store: FileOwnership, cli: FakeCli) -> None:
+    binding = Bindings(store)
+    cli.phases = iter(("Error",))
+    with pytest.raises(LauncherError, match="did not become ready"):
+        await create(store, cli, binding=binding)
+    assert binding.calls == []
+
+
+async def test_a_binding_that_fails_keeps_the_record_for_the_owner(
+    store: FileOwnership, cli: FakeCli
+) -> None:
+    cli.phases = iter(("Ready",))
+    with pytest.raises(LauncherError, match="the worker refused"):
+        await create(store, cli, binding=Bindings(store, fails=True))
+    record = store.read()
+    assert record is not None
+    assert record.id == "id-first"
+    # The record deletes what exists, and nothing is unbound that was never bound.
+    unbinding = Bindings(store)
+    assert await delete(store, cli, binding=unbinding)
+    assert [call[:2] for call in unbinding.calls] == [("unbind", "id-first")]
 
 
 async def test_driver_config_reaches_create(store: FileOwnership, cli: FakeCli) -> None:

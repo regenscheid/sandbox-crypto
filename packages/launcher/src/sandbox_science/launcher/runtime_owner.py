@@ -118,6 +118,20 @@ class SandboxCli(Protocol):
         ...
 
 
+class Binding(Protocol):
+    """What binds the runtime's sandbox to the project's policy revision in the policy
+    middleware's store, which decides only bound sandboxes (``runtime_binding``)."""
+
+    async def bind(self, sandbox_id: str) -> None:
+        """Bind a Ready sandbox's ID; any failure raises."""
+        ...
+
+    async def unbind(self, sandbox_id: str) -> None:
+        """Unbind a deleted sandbox's ID; never raises, since an ID is never reused and a
+        binding left behind decides nothing."""
+        ...
+
+
 async def delete_recorded(
     store: OwnershipStore,
     cli: SandboxCli,
@@ -125,13 +139,14 @@ async def delete_recorded(
     timeout: float,
     clock: Clock = SYSTEM_CLOCK,
     poll: float = 0.5,
+    binding: Binding | None = None,
 ) -> bool:
     """Retain uncertain ownership; only confirmed original-identity deletion permits replacement.
 
     A cancellation waits for the deletion to finish, so the record never outlives or
     predeceases what the gateway did.
     """
-    task = asyncio.create_task(_delete_recorded(store, cli, timeout, clock, poll))
+    task = asyncio.create_task(_delete_recorded(store, cli, timeout, clock, poll, binding))
     cancelled = False
     while True:
         try:
@@ -148,7 +163,12 @@ async def delete_recorded(
 
 
 async def _delete_recorded(
-    store: OwnershipStore, cli: SandboxCli, timeout: float, clock: Clock, poll: float
+    store: OwnershipStore,
+    cli: SandboxCli,
+    timeout: float,
+    clock: Clock,
+    poll: float,
+    binding: Binding | None,
 ) -> bool:
     prior = store.read()
     if prior is None:
@@ -179,6 +199,8 @@ async def _delete_recorded(
                 "orchestrator deletion was not confirmed; ownership record retained"
             )
         await clock.sleep(poll)
+    if binding is not None:
+        await binding.unbind(identity)
     store.remove()
     return True
 
@@ -193,9 +215,11 @@ async def create_owned(
     driver_config: str | None = None,
     clock: Clock = SYSTEM_CLOCK,
     poll: float = 0.5,
+    binding: Binding | None = None,
 ) -> Owned:
     """Create a fresh ``ss-orch-<10 hex>`` sandbox running ``sleep infinity``, and wait
-    until it is Ready; ``driver_config`` is OpenShell's ``--driver-config-json``.
+    until it is Ready; ``driver_config`` is OpenShell's ``--driver-config-json``. Once
+    it is Ready, ``binding`` binds its ID to the project's policy revision.
 
     Every failure leaves the record for ``delete_recorded`` to reconcile. A sandbox the
     gateway reports absent after the create returned raises ``CreateRolledBackError``.
@@ -227,6 +251,8 @@ async def create_owned(
                 store.write(Owned(name, identity))
         phase = found.get("phase")
         if phase == "Ready" and isinstance(identity, str) and identity:
+            if binding is not None:
+                await binding.bind(identity)
             return Owned(name, identity)
         if phase in DEAD_PHASES or clock.monotonic() >= deadline:
             raise LauncherError("orchestrator sandbox did not become ready; ownership retained")
