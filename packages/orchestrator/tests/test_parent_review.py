@@ -39,6 +39,7 @@ from sandbox_science.orchestrator.delegation.records import (
 from sandbox_science.orchestrator.delegation.review import Closer
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.runtree import RunTrees
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import FakeClock
 
@@ -490,6 +491,10 @@ def test_a_later_result_is_a_new_notice_and_acknowledged_alone(tmp_path: Path) -
         assert [d.delegation_id for d in records.handbacks(PROJECT, SESSION)] == [identity]
         records.acknowledge(PROJECT, SESSION, [f"{identity}.2"], ROOT)
         assert records.get(PROJECT, SESSION, identity).acknowledged == ROOT
+        # The session's tree lists the earlier result beside the latest.
+        tree = RunTrees(store.control).session(PROJECT, SESSION)
+        assert [(r.delegation_id, r.number) for r in tree.earlier] == [(identity, 1)]
+        assert [d.results for d in tree.delegations] == [2]
         # An earlier run's late outcome never writes over the latest.
         kept = records.end(PROJECT, SESSION, identity, Ending("failed", "error"), _task(0).run)
         assert (kept.ended, kept.results) == ("returned", 2)
