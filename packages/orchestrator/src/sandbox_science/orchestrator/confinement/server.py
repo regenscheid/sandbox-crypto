@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import secrets
@@ -20,6 +21,8 @@ from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.connectors import ProxyClient
 from sandbox_science.orchestrator.consistency.models import REVIEWER_MAX_RESPONSE_BYTES
+from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.control import store_path as control_path
 from sandbox_science.orchestrator.control.migrations import VERSION
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.figurecheck import FigureChecker
@@ -33,6 +36,7 @@ from sandbox_science.orchestrator.harness import (
 )
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathcheck import MathChecker
+from sandbox_science.orchestrator.mcp_canaries import INTERVAL, CanaryRunner, CanaryStore
 from sandbox_science.orchestrator.mcp_direct import WorkerRequestCheck
 from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -43,6 +47,7 @@ from sandbox_science.orchestrator.skills.embeddings import SkillVectors
 from sandbox_science.orchestrator.skills.store import SkillStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .canaries import RuntimeSource
 from .credentials import (
     JOURNAL,
     MAX_REQUEST_BYTES,
@@ -92,6 +97,14 @@ class ProxySettings(Contract):
     index: tuple[str, ...] | None = None
 
 
+class CanarySettings(Contract):
+    """MCP canaries on the direct path (D103): each server listed by the runtime's direct
+    client every ``interval`` seconds, recorded in the control store's ``mcp_canaries``."""
+
+    servers: tuple[Identifier, ...] = Field(min_length=1, max_length=256)
+    interval: float = Field(default=INTERVAL, ge=60, le=86400)
+
+
 class CheckSettings(Contract):
     node: Path
     math_launcher: Path
@@ -126,6 +139,7 @@ class ControlSettings(Contract):
     image_revision: str = Field(min_length=1, max_length=128)
     manager_listen: str = "127.0.0.1:8444"
     manager_token_sha256_file: Path | None = None
+    canaries: CanarySettings | None = None
 
     @field_validator("listen", "manager_listen")
     @classmethod
@@ -218,6 +232,7 @@ def create_app(settings: ControlSettings) -> web.Application:
     lifecycle = ControlLifecycle()
     # A new value per process lets the manager see a control restart in /health.
     instance = secrets.token_hex(16) if settings.manager_token_sha256_file else None
+    runtime_seen = asyncio.Event()
 
     async def health(request: web.Request) -> web.Response:
         status: dict[str, bool | int | str] = dict(lifecycle.health())
@@ -281,6 +296,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                         await worker.readiness()
                         hello = True
                         lifecycle.handshaken = True
+                        runtime_seen.set()
                         return payload(
                             Ready(
                                 generation=private_credential(settings.generation_file, maximum=128)
@@ -508,6 +524,8 @@ def create_app(settings: ControlSettings) -> web.Application:
     app.router.add_get("/live", live)
     app.router.add_get("/ready", ready)
     app.router.add_get("/control", control)
+    if settings.canaries is not None:
+        _canaries(app, settings, settings.canaries, lifecycle, runtime_seen)
     app.on_shutdown.append(lifecycle.shutdown)
     digest_file, generation_file = settings.manager_token_sha256_file, settings.generation_file
     if digest_file is not None and generation_file is not None:
@@ -534,6 +552,44 @@ def create_app(settings: ControlSettings) -> web.Application:
         app.on_startup.append(start_manager)
         app.on_cleanup.append(stop_manager)
     return app
+
+
+def _canaries(
+    app: web.Application,
+    settings: ControlSettings,
+    canaries: CanarySettings,
+    lifecycle: ControlLifecycle,
+    runtime_seen: asyncio.Event,
+) -> None:
+    """Run the direct path's MCP canaries in this service, which holds the runtime's
+    connection: from the runtime's first handshake, every ``interval``, until shutdown."""
+    stop = asyncio.Event()
+    task: asyncio.Task[None] | None = None
+    control = ControlStore(control_path(settings.state_dir))
+    source = RuntimeSource(lambda: lifecycle.channel if lifecycle.handshaken else None)
+
+    async def run() -> None:
+        await runtime_seen.wait()
+        runner = CanaryRunner(
+            CanaryStore(control), source, canaries.servers, interval=canaries.interval
+        )
+        await runner.run(stop)
+
+    async def start(app: web.Application) -> None:
+        nonlocal task
+        await asyncio.to_thread(control.initialize)
+        task = asyncio.create_task(run())
+
+    async def halt(app: web.Application) -> None:
+        stop.set()
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        control.close()
+
+    app.on_startup.append(start)
+    app.on_shutdown.append(halt)
 
 
 def _ready(message: str) -> None:

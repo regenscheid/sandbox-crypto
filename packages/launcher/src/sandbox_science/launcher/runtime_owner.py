@@ -270,15 +270,19 @@ def agent_settings(
     thinking_replay: Mapping[str, object] | None,
     generation: str,
     control_ca: bool = False,
+    mcp: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """The runtime's ``runtime.json``, for credentials ``install`` puts in ``REMOTE``.
 
     ``control_url`` is control's base URL as the sandbox reaches it; ``control_ca`` says
-    a ``control-ca.crt`` is uploaded beside the token to verify it.
+    a ``control-ca.crt`` is uploaded beside the token to verify it; ``mcp`` configures the
+    runtime's direct MCP client (D98).
     """
     settings: dict[str, Any] = {"control_url": control_url + "/control"}
     if control_ca:
         settings["control_ca_file"] = REMOTE + "/control-ca.crt"
+    if mcp is not None:
+        settings["mcp"] = dict(mcp)
     return settings | {
         "token_file": REMOTE + "/runtime.token",
         "model_url": model_url,

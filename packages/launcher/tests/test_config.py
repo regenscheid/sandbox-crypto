@@ -424,6 +424,67 @@ def test_canaries_are_off_by_default_and_list_the_proxys_servers_when_on(
     assert "canary" not in {caller["name"] for caller in proxy["callers"]}
 
 
+DIRECT = {
+    "servers": {
+        "papers": {
+            "url": "https://mcp.example.test/mcp",
+            "credentials": {"CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID"},
+        }
+    }
+}
+
+
+def test_without_the_proxy_the_canaries_ask_the_runtimes_direct_client(make_config: Any) -> None:
+    import json
+
+    from sandbox_science.launcher import orchestrator, parts
+
+    config = load_config(make_config({"mcp_direct": DIRECT, "canaries": {"enabled": True}}))
+    layout = parts.prepare(config)
+    # No canary part: the control service runs them over the runtime's connection.
+    assert parts.canaries_argv(config, layout) is None
+    directory, upload = orchestrator.prepare(config, layout)
+    host = json.loads((directory / "control.json").read_text())
+    assert host["canaries"] == {"servers": ["papers"], "interval": 900.0}
+    assert "proxy" not in host
+    runtime = json.loads((upload / "runtime.json").read_text())
+    assert runtime["mcp"] == {"project": "crypto", **DIRECT}
+    # Off, control runs none; the runtime keeps its client.
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    directory, upload = orchestrator.prepare(config, parts.prepare(config))
+    assert "canaries" not in json.loads((directory / "control.json").read_text())
+    assert "mcp" in json.loads((upload / "runtime.json").read_text())
+    # With the proxy too, the canaries list through the proxy, as before.
+    config = load_config(
+        make_config({"mcp_proxy": MCP, "mcp_direct": DIRECT, "canaries": {"enabled": True}})
+    )
+    layout = parts.prepare(config)
+    assert parts.canaries_argv(config, layout) is not None
+    directory, _ = orchestrator.prepare(config, layout)
+    assert "canaries" not in json.loads((directory / "control.json").read_text())
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"mcp_direct": DIRECT, "orchestrator": None}, "mcp_direct's client runs in the agent"),
+        ({"mcp_direct": {**DIRECT, "project": "other"}}, "is not a project"),
+        ({"mcp_direct": {"servers": {}}}, "mcp_direct.servers"),
+        ({"mcp_direct": {"servers": {"p": {"url": "ftp://x"}}}}, "mcp_direct.servers"),
+        (
+            {"mcp_direct": {"servers": {"p": {"url": "https://x", "credentials": {"A": "b c"}}}}},
+            "mcp_direct.servers",
+        ),
+    ],
+)
+def test_a_direct_path_that_cannot_work_is_refused(
+    make_config: Any, changes: dict[str, Any], message: str
+) -> None:
+    with pytest.raises(LauncherError) as error:
+        load_config(make_config(changes))
+    assert message in str(error.value)
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [

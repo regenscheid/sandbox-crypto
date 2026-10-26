@@ -9,6 +9,7 @@ import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
@@ -51,6 +52,7 @@ from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
+from .binaries import CallBinaries
 from .models import CallbackModel
 from .requests import confirm
 from .transport import Capability, Channel, TransportError
@@ -124,6 +126,7 @@ class Prepared:
         self.observed_tool: tuple[ToolCall, ToolOutcome] | None = None
         self.pending_calls: dict[str, ToolCall] = {}
         self.intent: LogTool | None = None
+        self.binaries = CallBinaries()
         self.observation: dict[str, Any] | None = None
         self.observed_slots: set[int] = set()
         self._memory_close: Callable[[], None] | None = None
@@ -256,6 +259,13 @@ class Prepared:
                         since=run.context.since,
                     )
                 )
+            if kind is Capability.PUBLISH_MCP_BINARY:
+                # Only the logged intent the host has not executed: a direct-path call the
+                # runtime makes. The host's index names its tool's server (D98).
+                pending = (
+                    self.intent.call if self.intent is not None and self.tool is None else None
+                )
+                return await self.binaries.publish(value, pending, self.toolbox.connectors)
             if kind is Capability.TOOL_DONE:
                 typed(Attempt, value)
                 if self.observed_tool is None:
@@ -406,6 +416,10 @@ class Prepared:
                     self.tool_call.operation,
                 )
                 attach_notices(self.shadow, outcome, self.toolbox.output_chars, self.tool_notices)
+            if kept := self.binaries.recorded(call.id):
+                # The items the runtime kept over publish_mcp_binary, with the call.
+                merged = {**outcome.record, "mcp_binaries": kept, "binary_results": len(kept)}
+                outcome = replace(outcome, record=merged)
             source = {"role": "tool", "tool_call_id": call.id, "content": outcome.text}
         consumed = (
             {key: set(ids) for key, ids in request.consumed.items()}

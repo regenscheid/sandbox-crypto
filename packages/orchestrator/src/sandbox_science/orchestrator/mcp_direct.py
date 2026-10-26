@@ -32,7 +32,11 @@ token, the check is the attempt's ``confirm_request`` capability
 (``confinement.requests.ControlRequestCheck``), bound to the attempt's project, which the
 host answers with the same worker check.
 
-Not wired into the harness's command line: this is the prototype the D98 decision weighs.
+In the confined runtime the client runs in the agent runtime's sandbox, beside OpenShell's
+proxy and the provider's placeholders: there it lists servers for the control service's
+canaries (``confinement.canaries``), and hands binary results to the host over
+``publish_mcp_binary`` (``confinement.binaries``). The agent's connector calls do not use
+it yet: this is the prototype the D98 decision weighs.
 """
 
 from __future__ import annotations

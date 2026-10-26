@@ -551,6 +551,31 @@ class McpProxyConfig(_Strict):
         return self
 
 
+class McpDirectServer(_Strict):
+    """A server the agent runtime's direct MCP client reaches (D98)."""
+
+    url: str = Field(pattern=r"^https?://[\x21-\x7e]{1,2040}$")
+    """Its URL, as the project policy names it."""
+    credentials: dict[
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$")],
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")],
+    ] = Field(default_factory=dict[str, str], max_length=16)
+    """Each credential header, and the environment variable in the runtime's sandbox that
+    holds its OpenShell placeholder: the provider's, never a value."""
+
+
+class McpDirectConfig(_Strict):
+    """The direct MCP path's client in the agent runtime's sandbox (D98 prototype,
+    docs/specs/mcp-middleware-prototype.md): today it serves the canaries' listings when
+    there is no ``[mcp_proxy]``. Needs ``[orchestrator]``. The launcher does not yet compile
+    the runtime sandbox's egress to these servers (``compile_agent_mcp``) or attach their
+    provider; until a deployment does, the canaries report them unavailable."""
+
+    servers: dict[Identifier, McpDirectServer] = Field(min_length=1, max_length=64)
+    project: Identifier | None = None
+    """The project whose policy the policy middleware applies; by default the only one."""
+
+
 class OrchestratorConfig(_Strict):
     """The required separate runtime for normal launcher agent loops."""
 
@@ -564,12 +589,14 @@ class OrchestratorConfig(_Strict):
 
 class CanariesConfig(_Strict):
     """Scheduled MCP canaries (D103, docs/MCP-CONNECTORS.md, "Canaries"): every ``interval``
-    seconds, one bounded ``tools/list`` per ``[mcp_proxy]`` server through the proxy, from
-    the trusted side, never a tool call. Off by default; on, it needs ``[mcp_proxy]``. The
-    canaries call the proxy with a token of their own, ``tokens/mcp-canary``, which ``up``
-    gives the proxy as the caller ``canary``, so their sessions never take the run
-    service's places. A canary part that fails to start, or keeps stopping, is reported
-    and left out: research does not depend on it."""
+    seconds, one bounded ``tools/list`` per server from the trusted side, never a tool call.
+    Off by default; on, it needs ``[mcp_proxy]`` or ``[mcp_direct]``. With ``[mcp_proxy]``,
+    each of its servers is listed through the proxy with a token of the canaries' own,
+    ``tokens/mcp-canary``, which ``up`` gives the proxy as the caller ``canary``, so their
+    sessions never take the run service's places; a canary part that fails to start, or
+    keeps stopping, is reported and left out: research does not depend on it. Without it,
+    the control service asks the agent runtime to list each ``[mcp_direct]`` server through
+    its direct client (``list_mcp_tools``)."""
 
     enabled: bool = False
     interval: float = Field(default=900.0, ge=60, le=86400)
@@ -593,6 +620,7 @@ class LauncherConfig(_Strict):
     workspace: WorkspaceConfig
     openshell: OpenShellConfig
     mcp_proxy: McpProxyConfig | None = None
+    mcp_direct: McpDirectConfig | None = None
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     orchestrator: OrchestratorConfig | None = None
     canaries: CanariesConfig = Field(default_factory=CanariesConfig)
@@ -602,11 +630,18 @@ class LauncherConfig(_Strict):
         ids = [project.id for project in self.projects]
         if len(set(ids)) != len(ids):
             raise ValueError("each project is listed once")
-        if self.canaries.enabled and self.mcp_proxy is None:
+        if self.canaries.enabled and self.mcp_proxy is None and self.mcp_direct is None:
             raise ValueError(
-                "canaries list the servers through the MCP proxy: configure [mcp_proxy], or "
-                "leave canaries.enabled off (the direct path has no trusted-side listing)"
+                "canaries list the servers through the MCP proxy or the agent runtime's direct "
+                "client: configure [mcp_proxy] or [mcp_direct], or leave canaries.enabled off"
             )
+        if self.mcp_direct is not None:
+            if self.orchestrator is None:
+                raise ValueError("mcp_direct's client runs in the agent runtime: [orchestrator]")
+            if self.mcp_direct.project is None and len(ids) != 1:
+                raise ValueError("mcp_direct.project names the project whose policy applies")
+            if (self.mcp_direct.project or ids[0]) not in ids:
+                raise ValueError(f"mcp_direct.project {self.mcp_direct.project!r} is not a project")
         if self.mcp_proxy is not None:
             if self.mcp_proxy.project is None and len(ids) != 1:
                 raise ValueError("mcp_proxy.project names the project whose runs use it")

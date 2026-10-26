@@ -197,6 +197,16 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
             "about": spec.about,
             "index": spec.index,
         }
+    direct = None
+    if config.mcp_direct is not None:
+        spec = config.mcp_direct
+        direct = {
+            "project": spec.project or config.projects[0].id,
+            "servers": {name: server.model_dump() for name, server in spec.servers.items()},
+        }
+        if config.canaries.enabled and config.mcp_proxy is None:
+            # The direct path's canaries: control asks the runtime to list (list_mcp_tools).
+            host["canaries"] = {"servers": list(spec.servers), "interval": config.canaries.interval}
     aliases = tuple(
         dict.fromkeys(
             alias
@@ -222,6 +232,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         if model.thinking_replay
         else None,
         generation=generation,
+        mcp=direct,
     )
     write_private(directory / "control.json", json.dumps(host) + "\n")
     write_private(upload / "runtime.json", json.dumps(agent) + "\n")
