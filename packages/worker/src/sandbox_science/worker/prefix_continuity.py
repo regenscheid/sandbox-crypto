@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .store import Store
+
+_log = logging.getLogger(__name__)
+_IDENTITY = r"^[0-9a-f]{64}$"
 
 
 class PrefixDescription(BaseModel):
@@ -19,6 +23,22 @@ class PrefixDescription(BaseModel):
     identity: Annotated[str, Field(pattern=r"^prefix-[0-9a-f]{32}$", max_length=39)]
     fingerprint: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$", max_length=32)]
     journal_pending: bool
+    seeded: Annotated[str, Field(pattern=_IDENTITY, max_length=64)] | None = None
+    """A layer's: the identity of the base it was seeded over (docs/IMAGES.md)."""
+    base: Annotated[str, Field(pattern=_IDENTITY, max_length=64)] | None = None
+    """A layer's: the identity of the base it runs over now. A layer's fingerprint is its own
+    digest's first half and this identity's first 16 characters (provisioning.fingerprint)."""
+
+
+def base_changed(prefix: PrefixDescription, fingerprint: str) -> bool:
+    """Whether a layer's packages differ from ``fingerprint`` only by the base under it, as
+    when the image is rebuilt with other packages under a retained workspace."""
+    return (
+        prefix.base is not None
+        and prefix.fingerprint[16:] == prefix.base[:16]
+        and prefix.fingerprint[:16] == fingerprint[:16]
+        and prefix.fingerprint[16:] != fingerprint[16:]
+    )
 
 
 def hold(store: Store, environment_id: str) -> None:
@@ -61,15 +81,26 @@ def accept(
         # Pending journals and already-buffered revision events belong to this daemon.
         # Do not turn its ahead/behind hello into an unmanaged revision before replay.
         return revision is None
+    rebased = revision is not None and base_changed(prefix, revision.fingerprint)
     if (
         prefix.journal_pending
         or (prefix.fingerprint != reported and not prefix_hold)
         or (previous is None and revision is not None)
         or (previous is not None and prefix.identity != previous[0])
-        or (revision is not None and prefix.fingerprint != revision.fingerprint)
+        or (revision is not None and prefix.fingerprint != revision.fingerprint and not rebased)
     ):
         hold(store, environment_id)
         return False
+    if rebased:
+        # Not drift in the workspace: a new image's base. Hello's fingerprint becomes a new
+        # revision, as any change of packages found at an executor's start does.
+        _log.info(
+            "environment %s: the image's base changed under its retained layer (%s, seeded"
+            " over %s)",
+            environment_id,
+            prefix.base,
+            prefix.seeded,
+        )
     if prefix_hold:
         return store.restore_workspace_prefix(environment_id, prefix.identity, prefix.fingerprint)
     store.remember_workspace_prefix(environment_id, prefix.identity, incarnation)

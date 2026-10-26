@@ -140,6 +140,48 @@ def test_replacement_loss_or_unresolved_journal_holds_original_revision(
         worker.store.close()
 
 
+SEEDED, REBUILT = "c" * 64, "d" * 64
+LAYER_A = "1" * 16 + SEEDED[:16]
+
+
+def test_a_new_base_under_a_retained_layer_is_a_new_revision_not_a_hold(tmp_path: Path):
+    """A layer's fingerprint is its own digest's half and its base's (provisioning.py): an
+    image rebuilt with other packages under a retained workspace changes only the second
+    half, which is a recognised change of packages, recorded as a new revision."""
+    worker = Worker(tmp_path)
+    layered = {"seeded": SEEDED, "base": SEEDED}
+    try:
+        worker.hello(description(LAYER_A, **layered), LAYER_A)
+        rebuilt = "1" * 16 + REBUILT[:16]
+        worker.hello(description(rebuilt, seeded=SEEDED, base=REBUILT), rebuilt, NEXT)
+        assert worker.store.package_status("env") is None
+        assert (worker.revision().revision, worker.revision().fingerprint) == (1, rebuilt)
+        assert worker.store.workspace_prefix("env") == (IDENTITY, NEXT)
+    finally:
+        worker.store.close()
+
+
+@pytest.mark.parametrize("change", ["layer-too", "base-unreported", "base-mismatch", "whole"])
+def test_a_layer_change_beside_or_without_a_new_base_still_holds(tmp_path: Path, change: str):
+    worker = Worker(tmp_path)
+    try:
+        worker.hello(description(LAYER_A, seeded=SEEDED, base=SEEDED), LAYER_A)
+        fingerprint, raw = {
+            # The layer's own half moved too: unexplained drift in the workspace.
+            "layer-too": ("2" * 16 + REBUILT[:16], {"seeded": SEEDED, "base": REBUILT}),
+            # A second half that no reported base explains.
+            "base-unreported": ("1" * 16 + REBUILT[:16], {"seeded": SEEDED}),
+            "base-mismatch": ("1" * 16 + REBUILT[:16], {"seeded": SEEDED, "base": "e" * 64}),
+            # A whole prefix reports no base at all.
+            "whole": ("1" * 16 + REBUILT[:16], {}),
+        }[change]
+        worker.hello(description(fingerprint, **raw), fingerprint, NEXT)
+        assert worker.revision().fingerprint == LAYER_A
+        assert worker.store.package_status("env") == ("needs_recovery", "workspace-prefix", 0)
+    finally:
+        worker.store.close()
+
+
 def test_surviving_daemon_hello_never_races_ahead_of_or_rewinds_revision_replay(tmp_path: Path):
     worker = Worker(tmp_path)
     try:

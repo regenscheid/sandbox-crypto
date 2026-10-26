@@ -13,8 +13,8 @@
 version: 1
 metadata:
   content_hash:
-    linux-64: 7f3bca141a7a9cf4ad59d9dc9e74024cade60742bb2008175ba02c7a352e565e
-    linux-aarch64: ffa6f2a10a841638f105e37813b331a141ebe3e6912202890f67bc736bb657e1
+    linux-64: eb51c9ffde2c56b11962f75d03fbaad734c09b6d593712c3e560bef3dbcbbdc1
+    linux-aarch64: 277d2659179cabf4e71b5c2b958684db7971881bf2ff76866a006095dd5ef72e
   channels:
   - url: conda-forge
     used_env_vars: []
@@ -7616,6 +7616,28 @@ package:
   hash:
     md5: 87b17dfb142878237cde03b502a9f589
     sha256: 30a51729c82366d70e57422f90aed65fa303a0d25c59d374bf9944b5a43dda23
+  category: main
+  optional: false
+- name: pari-elldata
+  version: 0.0.20161017
+  manager: conda
+  platform: linux-64
+  dependencies: {}
+  url: https://conda.anaconda.org/conda-forge/noarch/pari-elldata-0.0.20161017-0.tar.bz2
+  hash:
+    md5: 6032ba00332af5a4ca0a08db6f9982cd
+    sha256: 7f9323f462fd2468742aa99258cd7fdcfa63334dc36cd6d9aec3a29f5469a042
+  category: main
+  optional: false
+- name: pari-elldata
+  version: 0.0.20161017
+  manager: conda
+  platform: linux-aarch64
+  dependencies: {}
+  url: https://conda.anaconda.org/conda-forge/noarch/pari-elldata-0.0.20161017-0.tar.bz2
+  hash:
+    md5: 6032ba00332af5a4ca0a08db6f9982cd
+    sha256: 7f9323f462fd2468742aa99258cd7fdcfa63334dc36cd6d9aec3a29f5469a042
   category: main
   optional: false
 - name: pari-galdata

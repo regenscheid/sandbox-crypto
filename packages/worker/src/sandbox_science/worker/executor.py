@@ -1170,6 +1170,11 @@ class Executor:
                 {
                     "workspace_prefix": {
                         **workspace_prefix.report(sys.prefix),
+                        **(
+                            {"base": provisioning.base_identity(self.places)}
+                            if self.places.base_prefix is not None
+                            else {}
+                        ),
                         "fingerprint": await asyncio.to_thread(
                             provisioning.fingerprint, self.places
                         ),
@@ -2134,7 +2139,8 @@ def tool_environment(
     environment's commands; without it, Sage's interfaces could not find ``gp`` or ``gap``
     (lab 5). A Conda environment is also named in ``CONDA_PREFIX``. Under a workspace layer
     the layer is that environment, and ``below``, the read-only base (docs/IMAGES.md), has
-    its programs next on PATH and its Jupyter data, the kernelspecs, on ``JUPYTER_PATH``.
+    its programs next on PATH and its Jupyter data, the kernelspecs, on ``JUPYTER_PATH``;
+    the layer's ``share`` comes first on ``XDG_DATA_DIRS``.
     """
     env = dict(base)
     tools = [os.path.dirname(python)]
@@ -2148,6 +2154,12 @@ def tool_environment(
         env["CONDA_PREFIX"] = prefix
     if below is not None:
         env["JUPYTER_PATH"] = jupyter_path(env, below)
+        # Data that packages installed at runtime bring, such as Sage's databases, which
+        # Sage looks for on XDG_DATA_DIRS beside its own (the base's) share directory.
+        data = os.path.join(prefix, "share")
+        dirs = env.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+        rest = [entry for entry in dirs.split(os.pathsep) if entry and entry != data]
+        env["XDG_DATA_DIRS"] = os.pathsep.join([data, *rest])
     return env
 
 

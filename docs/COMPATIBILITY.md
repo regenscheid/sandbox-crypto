@@ -17,6 +17,14 @@ The executor ships inside the worker package, so its protocol with the worker is
 
 Worker protocol 8 also carries optional host-built execution authority, scoped operation lookup, and recovery epoch installation ([worker recovery authority](specs/worker-recovery-authority.md)). Missing authority preserves legacy context serialization; once a session is fenced, unowned agent mutations are denied. Authenticated operator permission is independent of the context's actor name.
 
+## Research images and the worker
+
+The research images (`minimal`, `crypto-base`) and the worker's in-sandbox files are released together too. Images since B11 keep their Python environment in the image and seed a layer over it ([images](IMAGES.md#the-environment-outside-the-workspace-b11)); only a worker of the same release reads that layout: its executor puts the base's programs on `PATH`, lists the base's packages in the lockfile and the binding inventory, gives the layer back a base package's record after a failed package command, and fingerprints the layer and the base apart.
+
+- **An older worker refuses the newer images.** The images write the frozen trees' manifest (`/opt/sandbox-science-frozen/manifest.json`, in `minimal` too, with no trees) at version 2. The layout check of a worker before B11 reads it first, takes only version 1, and puts the environment on a `workspace-prefix` recovery hold ("required workspace prefix identity/layout unavailable") before any revision is admitted, rather than taking the layer for a whole environment. That check runs where the workspace prefix is required, the Kubernetes default; elsewhere, as with OpenShell's VM driver on one host, an older worker would run the layer unchecked, with a lockfile and a binding inventory that miss the base, so upgrade the worker before or with the images.
+- **A newer worker serves older images.** A workspace seeded from an earlier image keeps its whole prefix, without the layer's marker; the worker checks it as before, and reads manifests of version 1 or 2.
+- **A rebuilt image under a retained workspace.** A layer's package fingerprint is its own digest's first half and the base's identity's (its packages' names, versions and builds, not its files' times). The same packages rebuilt change nothing; other packages in the base change only the second half, which the worker records as a new revision, as a change of packages found when an executor starts, instead of a recovery hold. Any change in the layer's own half that no package command explains still holds.
+
 ## Request identity
 
 A client names each operation with an ID of its own. The worker stores the request's digest with the operation; the same ID sent again with the same request returns the same execution or provisioning operation, and with a different request it is a `conflict` ([tools spec](specs/tools.md#lifecycle-idempotency-and-reconnection)).

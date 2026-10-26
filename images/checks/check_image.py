@@ -40,6 +40,7 @@ import os
 import pwd
 import queue
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -564,12 +565,23 @@ class Checks:
         expect(entries <= MAX_LAYER_ENTRIES, f"{entries} entries in {LAYER}")
         expect(Path(PREFIX).resolve() == LAYER, f"{PREFIX} -> {Path(PREFIX).resolve()}")
         marker = json.loads((LAYER / ".sandbox-science-layer").read_text())
-        expect(marker == {"version": 1, "base": str(BASE)}, f"marker {marker}")
+        expect(
+            (marker["version"], marker["base"]) == (1, str(BASE))
+            and re.fullmatch(r"[0-9a-f]{64}", marker["identity"]) is not None,
+            f"marker {marker}",
+        )
         records = sorted(path.name for path in (BASE / "conda-meta").glob("*.json"))
         slim = sorted(path.name for path in (LAYER / "conda-meta").glob("*.json"))
         expect(records == slim and bool(records), "the layer's records differ from the base's")
-        files = json.loads((LAYER / "conda-meta" / slim[0]).read_text())["files"]
-        expect(files == [], f"{slim[0]} in the layer owns files")
+        # A base record in the layer owns only the layer's own entries: programs, whose
+        # scripts are copies, and shared libraries.
+        for name in slim:
+            for relative in json.loads((LAYER / "conda-meta" / name).read_text())["files"]:
+                path = LAYER / relative
+                expect(relative.split("/")[0] in ("bin", "lib"), f"{name} owns {relative}")
+                expect(path.is_symlink() or path.is_file(), f"{name}'s {relative} is missing")
+                if not path.is_symlink():
+                    expect(path.read_bytes()[:2] == b"#!", f"{relative} is copied, not a script")
         code = "import sys; print(sys.prefix, sys.base_prefix)"
         found = subprocess.run(  # noqa: S603 - the image's interpreter, fixed arguments
             [f"{PREFIX}/bin/python", "-I", "-c", code], capture_output=True, text=True, check=True
@@ -706,7 +718,10 @@ class Checks:
             expect(not os.access(FROZEN / tree, os.W_OK), f"{FROZEN / tree} is writable")
         pinned = (prefix / "conda-meta" / "pinned").read_text().splitlines()
         layer = (LAYER / "conda-meta" / "pinned").read_text().splitlines()
-        expect(layer == pinned, "the layer's pins differ from the base's")
+        expect(
+            layer[:-1] == pinned and layer[-1].startswith("python=="),
+            "the layer's pins are not the base's and Python's",
+        )
         for package in manifest["packages"]:
             line = f"{package['name']}=={package['version']}={package['build']}"
             expect(line in pinned, f"{package['name']} is not pinned")
@@ -859,6 +874,56 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         installed = [*BASE.glob("lib/python3*/site-packages/toolz"), *BASE.glob("bin/xz")]
         expect(not installed, f"installed into the base: {installed}")
         return f"micromamba and pip installed into the layer; {lines[2]} runs"
+
+    def runtime_upgrade(self) -> str:
+        """Replacing base packages at runtime: one with a command (pygments), and in
+        crypto-base one that others depend on (sympy, which Sage requires). The replacement
+        goes into the layer, what imports and runs is the replacement, the layer keeps a
+        record of every package (Sage's too), and the lockfile says what conda-meta and
+        importlib.metadata say."""
+        names = ["pygments", *(["sympy"] if self.crypto else [])]
+        specs = ['"pygments<2.19"', *(['"sympy<1.14"'] if self.crypto else [])]
+        self.ex().shell(
+            "micromamba install -y -q -c conda-forge --override-channels "
+            f"{' '.join(specs)} >/dev/null",
+            limit=1200,
+        )
+        probe = (
+            "import importlib.metadata as metadata, json, pathlib, sys\n"
+            f"sys.path.insert(0, {str(EXECUTOR_DIR)!r})\n"
+            "import provisioning\n"
+            "places = provisioning.Places.here()\n"
+            "lock = provisioning.lockfile(places)\n"
+            "records = {}\n"
+            "for path in pathlib.Path(places.conda_meta).glob('*.json'):\n"
+            "    data = json.loads(path.read_text())\n"
+            "    records[data['name']] = data['version']\n"
+            "print(json.dumps({'conda': {x['name']: x['version'] for x in lock['conda']},"
+            " 'pip': sorted(x['name'].lower() for x in lock['pip']), 'records': records,"
+            f" 'imports': {{n: metadata.version(n) for n in {names!r}}}}}))"
+        )
+        found = json.loads(self.ex().shell(f"python -I -c {shlex.quote(probe)}"))
+        conda, records = found["conda"], found["records"]
+        wrong = {n: (v, conda.get(n)) for n, v in records.items() if conda.get(n) != v}
+        expect(not wrong, f"the lockfile differs from the layer's records: {wrong}")
+        for name in names:
+            seen = (found["imports"][name], records.get(name), conda.get(name))
+            expect(len(set(seen)) == 1, f"{name}: imports, record, lockfile {seen}")
+            expect(name not in found["pip"], f"{name} is listed as pip's too")
+            base = [path.name for path in (BASE / "conda-meta").glob(f"{name}-[0-9]*.json")]
+            expect(
+                len(base) == 1 and not base[0].startswith(f"{name}-{records[name]}-"),
+                f"the base's {name} changed: {base}",
+            )
+        if self.crypto:
+            expect("sagelib" in records, "the layer lost Sage's record")
+        version = self.ex().shell("pygmentize -V")
+        expect(records["pygments"] in version, f"pygmentize says {version!r}")
+        cell, _ = self.ex().cell(
+            f"import importlib.metadata as m\nprint(*(m.version(n) for n in {names!r}))"
+        )
+        expect(cell.split() == [records[name] for name in names], f"a kernel imports {cell!r}")
+        return ", ".join(f"{name} {records[name]}" for name in names) + " from the layer"
 
     # The services' images (orchestrator, mcp-proxy).
 
@@ -1126,7 +1191,7 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         names += ["lattice-estimator"]
         names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
     if network:
-        names.append("runtime-install")
+        names += ["runtime-install", "runtime-upgrade"]
     return names
 
 

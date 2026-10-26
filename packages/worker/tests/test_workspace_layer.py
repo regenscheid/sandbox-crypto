@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -83,11 +84,69 @@ def test_the_lockfile_lists_what_the_layers_interpreter_finds(
     assert lockfile.skipped == 0
 
 
-def test_the_fingerprint_reads_the_base_too(places: provisioning.Places, tmp_path: Path) -> None:
+def test_the_fingerprint_is_the_layers_half_and_the_bases(
+    places: provisioning.Places, tmp_path: Path
+) -> None:
     before = provisioning.fingerprint(places)
-    _dist(Path(places.base_site[0]), "late", "1.0", "pip")
-    assert provisioning.fingerprint(places) != before
+    assert before[16:] == provisioning.base_identity(places)[:16]
     assert places.base_prefix == str(tmp_path / "base")
+    # A change in the layer moves the first half only.
+    _dist(Path(places.site[0]), "late", "1.0", "pip")
+    after = provisioning.fingerprint(places)
+    assert after[:16] != before[:16]
+    assert after[16:] == before[16:]
+
+    def rebuilt(name: str, extra: bool) -> provisioning.Places:
+        """The same base built again elsewhere, with new file times, and maybe a package
+        more."""
+        copy = tmp_path / name
+        shutil.copytree(tmp_path / "base", copy, copy_function=shutil.copy)
+        if extra:
+            _record(copy / "conda-meta", "mpfr", "4.2.1", [])
+        below = str(copy / "lib" / PY / "site-packages")
+        return provisioning.Places(
+            places.conda_meta, places.site, None, str(copy / "conda-meta"), (below,)
+        )
+
+    # The same packages rebuilt: the same fingerprint, whatever their files' times.
+    assert provisioning.fingerprint(rebuilt("again", False)) == after
+    # Another package in the base moves the second half only.
+    other = provisioning.fingerprint(rebuilt("other", True))
+    assert other[:16] == after[:16]
+    assert other[16:] != after[16:]
+
+
+def test_a_failed_upgrade_lists_what_imports(places: provisioning.Places) -> None:
+    """A transaction that removed the layer's record of a base package and linked the new
+    version's distribution, then failed, leaves that distribution without a record: the
+    lockfile lists it as it is, not the base's record."""
+    site = Path(places.site[0])
+    (Path(places.conda_meta) / "numpy-2.1.0-0.json").unlink()
+    _dist(site, "numpy", "1.26.4", "conda")
+    lockfile = Lockfile.model_validate(provisioning.lockfile(places))
+    assert "numpy" not in [package.name for package in lockfile.conda]
+    pip = {(item.name, item.version, item.installer) for item in lockfile.pip}
+    assert ("numpy", "1.26.4", "conda") in pip
+    # Nor does the layer get the base's record back while that distribution is there.
+    layer = Path(places.conda_meta).parent
+    assert provisioning.repair_layer(layer, Path(places.base_prefix or "")) == ["removed"]
+    assert not (layer / "conda-meta" / "numpy-2.1.0-0.json").exists()
+
+
+def test_a_removed_base_package_comes_back_to_the_layer(places: provisioning.Places) -> None:
+    """Its files stay in the read-only base, importable, so its record comes back with them,
+    and the package fingerprint reads as before."""
+    layer, base = Path(places.conda_meta).parent, Path(places.base_prefix or "")
+    (layer / "conda-meta" / "numpy-2.1.0-0.json").unlink()
+    assert provisioning.repair_layer(layer, base) == ["numpy", "removed"]
+    before = provisioning.fingerprint(places)
+    (layer / "conda-meta" / "numpy-2.1.0-0.json").unlink()
+    assert provisioning.repair_layer(layer, base) == ["numpy"]
+    restored = json.loads((layer / "conda-meta" / "numpy-2.1.0-0.json").read_text())
+    assert restored["files"] == []  # numpy has no program or library at the layer's top
+    assert restored["version"] == "2.1.0"
+    assert provisioning.fingerprint(places) == before
+    assert provisioning.repair_layer(layer, base) == []
 
 
 def test_places_travel_to_the_wrappers_and_an_earlier_configuration_still_reads(
@@ -135,9 +194,15 @@ def test_tools_find_the_layer_then_the_base(tmp_path: Path) -> None:
     assert found["CONDA_PREFIX"] == str(layer)
     assert found["JUPYTER_PATH"].split(os.pathsep) == ["/mine", str(base / "share/jupyter")]
     assert jupyter_path({}, str(base)) == str(base / "share" / "jupyter")
+    # Data that runtime installs bring, before the system's, which stay when it is unset.
+    data = [str(layer / "share"), "/usr/local/share", "/usr/share"]
+    assert found["XDG_DATA_DIRS"].split(os.pathsep) == data
+    mine = tool_environment({"XDG_DATA_DIRS": "/x"}, str(layer / "python"), str(layer), str(base))
+    assert mine["XDG_DATA_DIRS"].split(os.pathsep) == [str(layer / "share"), "/x"]
     whole = tool_environment({"PATH": "/usr/bin"}, str(layer / "bin" / "python"), str(layer))
     assert whole["PATH"].split(os.pathsep) == [str(layer / "bin"), "/usr/bin"]
     assert "JUPYTER_PATH" not in whole
+    assert "XDG_DATA_DIRS" not in whole
 
 
 def test_the_wrappers_mirror_lays_the_base_out_under_the_layer(tmp_path: Path) -> None:
@@ -193,7 +258,7 @@ def layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, 
     (prefix / "pyvenv.cfg").write_text(
         f"home = {base}/bin\ninclude-system-site-packages = true\nversion = 3.14.8\n"
     )
-    marker = {"version": 1, "base": str(base)}
+    marker = {"version": 1, "base": str(base), "revision": "abc1234", "identity": "a" * 64}
     (prefix / workspace_prefix.LAYER_MARKER).write_text(json.dumps(marker) + "\n")
     alias = tmp_path / "compatibility-prefix"
     alias.symlink_to(prefix, target_is_directory=True)
@@ -207,6 +272,7 @@ def layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path, 
 def test_a_layer_over_the_images_base_gets_its_identity(layer: tuple[Path, Path, Path]) -> None:
     prefix, alias, base = layer
     found = workspace_prefix.report(str(alias), str(base))
+    assert found["seeded"] == "a" * 64
     assert found["path"] == str(prefix)
     assert "identity" in found
     assert (prefix / workspace_prefix.MARKER).read_text() == found["identity"]
@@ -214,7 +280,16 @@ def test_a_layer_over_the_images_base_gets_its_identity(layer: tuple[Path, Path,
 
 @pytest.mark.parametrize(
     "failure",
-    ["marker-base", "marker-link", "home", "system-site", "python", "running-base", "no-marker"],
+    [
+        "marker-base",
+        "marker-identity",
+        "marker-link",
+        "home",
+        "system-site",
+        "python",
+        "running-base",
+        "no-marker",
+    ],
 )
 def test_a_layer_pointed_elsewhere_fails_the_layout(
     layer: tuple[Path, Path, Path], tmp_path: Path, failure: str
@@ -228,8 +303,11 @@ def test_a_layer_pointed_elsewhere_fails_the_layout(
     running = str(base)
     config = prefix / "pyvenv.cfg"
     marker = prefix / workspace_prefix.LAYER_MARKER
+    seeded = {"revision": "abc1234", "identity": "a" * 64}
     if failure == "marker-base":
-        marker.write_text(json.dumps({"version": 1, "base": str(other)}))
+        marker.write_text(json.dumps({"version": 1, "base": str(other), **seeded}))
+    elif failure == "marker-identity":
+        marker.write_text(json.dumps({"version": 1, "base": str(base), "identity": "A" * 64}))
     elif failure == "marker-link":
         (other / "marker").write_text(marker.read_text())
         marker.unlink()
@@ -247,3 +325,22 @@ def test_a_layer_pointed_elsewhere_fails_the_layout(
         marker.unlink()
     assert "error" in workspace_prefix.report(str(alias), running)
     assert not (prefix / workspace_prefix.MARKER).exists()
+
+
+@pytest.mark.parametrize(("version", "accepted"), [(1, True), (2, True), (3, False)])
+def test_the_frozen_manifest_of_either_layout_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int, accepted: bool
+) -> None:
+    """Images since the layer write version 2, which a worker before it refuses
+    (docs/COMPATIBILITY.md); this worker reads both."""
+    frozen = tmp_path / "frozen"
+    frozen.mkdir()
+    manifest = {"version": version, "trees": []}
+    (frozen / workspace_prefix.FROZEN_MANIFEST).write_text(json.dumps(manifest))
+    monkeypatch.setattr(workspace_prefix, "FROZEN", frozen)
+    monkeypatch.setattr(workspace_prefix, "PREFIX", tmp_path / "prefix")
+    if accepted:
+        workspace_prefix.check_frozen_links()
+    else:
+        with pytest.raises(OSError, match="malformed"):
+            workspace_prefix.check_frozen_links()

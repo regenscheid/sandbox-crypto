@@ -47,10 +47,14 @@ LAYER_MARKER = ".sandbox-science-layer"
 """The layer's marker, which tells it from a whole prefix (workspace_prefix.LAYER_MARKER)."""
 LAYER_VERSION = 1
 MANIFEST = "manifest.json"
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
+"""2 since the layer: an older worker refuses the manifest, and with it these images, rather
+than taking the layer for a whole environment (docs/COMPATIBILITY.md). Every research image
+has one, minimal's with no trees."""
 SLIM = ("files", "paths_data")
-"""What a base package's record in the layer leaves out: micromamba solves with the rest, and
-unlinking a record without files removes nothing from the read-only base."""
+"""What a base package's record in the layer replaces: its file list becomes the layer's own
+entries for the package (its programs and shared libraries), which micromamba removes before
+it links a replacement, and the rest is what it solves with."""
 
 DOCUMENTATION = ("share/doc", "share/man", "share/gtk-doc", "etc/conda/test-files")
 """Read by people, never by a program in the sandbox. conda's test files are its packages'
@@ -341,52 +345,146 @@ def launchers(base: Path, alias: Path = ALIAS) -> int:
     return changed
 
 
-def _slim(record: dict[str, object]) -> dict[str, object]:
-    return {key: value for key, value in record.items() if key not in SLIM} | {"files": []}
+def _script(path: Path) -> bool:
+    """A text file with a shebang: the layer copies it, so that an upgrade that rewrites it
+    writes the layer's copy, never through a link into the read-only base."""
+    if path.is_symlink() or not path.is_file():
+        return False
+    with path.open("rb") as stream:
+        return stream.read(2) == b"#!"
 
 
-def _shared_library(entry: os.DirEntry[str]) -> bool:
-    return ".so" in entry.name and (entry.is_symlink() or not entry.is_dir())
+def _entry(base: Path, relative: str) -> bool:
+    """Whether the layer has its own entry for the base's file ``relative``: each program in
+    ``bin``, and each shared library at the top of ``lib``."""
+    folder, _, name = relative.partition("/")
+    if not name or "/" in name:
+        return False
+    if folder == "bin":
+        return True
+    path = base / relative
+    return folder == "lib" and ".so" in name and (path.is_symlink() or not path.is_dir())
 
 
-def layer(base: Path, layer: Path, alias: Path = ALIAS) -> dict[str, object]:
+def slim(base: Path, record: dict[str, object]) -> dict[str, object]:
+    """A base package's record in the layer: its file list names only the layer's entries for
+    it (provisioning.slim_record says the same, a test keeps them in step)."""
+    files = record.get("files")
+    listed = [str(item) for item in files] if isinstance(files, list) else []
+    own = [relative for relative in listed if _entry(base, relative)]
+    return {key: value for key, value in record.items() if key not in SLIM} | {"files": own}
+
+
+def make_entry(base: Path, layer: Path, relative: str) -> None:
+    """The layer's entry for the base's ``relative``: a copy of a script, else a link."""
+    source, target = base / relative, layer / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _script(source):
+        shutil.copyfile(source, target)
+        os.chmod(target, stat.S_IMODE(source.stat().st_mode))
+    else:
+        target.symlink_to(source)
+
+
+def base_identity(base: Path) -> str:
+    """What the base holds, by its Conda records' and distributions' names, which carry their
+    versions and builds, and not by their files' times, so that an image rebuilt with the same
+    packages has the same identity (provisioning.base_identity)."""
+    import hashlib
+
+    records = sorted(path.name for path in (base / "conda-meta").glob("*.json"))
+    distributions = sorted(
+        {
+            path.name
+            for site in base.glob("lib/python3*/site-packages")
+            for path in site.iterdir()
+            if path.name.endswith((".dist-info", ".egg-info"))
+        }
+    )
+    text = "\n".join(records) + "\0" + "\n".join(distributions)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _python_pin(base: Path) -> str:
+    for record in sorted((base / "conda-meta").glob("python-[0-9]*.json")):
+        data = json.loads(record.read_text())
+        return pin({"name": "python", "version": data["version"], "build": data["build"]})
+    raise SystemExit(f"no python record in {base / 'conda-meta'}")
+
+
+def layer(
+    base: Path,
+    layer: Path,
+    alias: Path = ALIAS,
+    *,
+    frozen: Path = FROZEN,
+    revision: str = "unknown",
+) -> dict[str, object]:
     """Write the workspace's layer over ``base`` at ``layer``, which must not exist.
 
     A virtual environment of the base's interpreter, so that its Python's ``sys.prefix`` is
     the layer, which pip, ``python -m pip``, uv and Jupyter install into unconfigured, and the
     layer's ``site-packages`` comes before the base's. It is a Conda prefix too: ``conda-meta``
-    holds each base package's record without its files, so micromamba solves against the base
-    and links only new packages here. ``bin`` and ``lib`` hold a link to each base program and
-    shared library: ``/opt/sandbox-science/bin/<program>`` keeps working, and a package
-    installed here finds the base's libraries through its ``$ORIGIN/../lib``. A package
-    installed here replaces the links it overlaps.
+    holds each base package's record with only the layer's entries for it as its files, so
+    micromamba solves against the base, links only new packages here, and removes the layer's
+    entries of a package it replaces before linking the new one. ``bin`` holds a copy of each
+    base script and a link to each other program, ``lib`` a link to each shared library:
+    ``/opt/sandbox-science/bin/<program>`` keeps working, and a package installed here finds
+    the base's libraries through its ``$ORIGIN/../lib``. Each record keeps the time of the
+    base's, so that one restored after a failed transaction reads as before. The layer pins
+    Python at the base's build, since the layer's interpreter is the base's. The marker names
+    the base, the image's revision and the base's identity; the frozen trees' manifest is
+    written too, with no trees where nothing is frozen.
     """
     version = _python_version(base)
     layer.mkdir()
     (layer / "pyvenv.cfg").write_text(
         f"home = {base}/bin\ninclude-system-site-packages = true\nversion = {version}\n"
     )
-    marker = {"version": LAYER_VERSION, "base": str(base)}
+    marker = {
+        "version": LAYER_VERSION,
+        "base": str(base),
+        "revision": revision,
+        "identity": base_identity(base),
+    }
     (layer / LAYER_MARKER).write_text(json.dumps(marker) + "\n")
-    counts = {"programs": 0, "libraries": 0, "records": 0}
+    counts = {"scripts": 0, "programs": 0, "libraries": 0, "records": 0}
     (layer / "bin").mkdir()
     for entry in sorted(os.scandir(base / "bin"), key=lambda e: e.name):
-        (layer / "bin" / entry.name).symlink_to(base / "bin" / entry.name)
-        counts["programs"] += 1
+        make_entry(base, layer, f"bin/{entry.name}")
+        counts["scripts" if _script(Path(entry.path)) else "programs"] += 1
     minor = ".".join(version.split(".")[:2])
     (layer / "lib" / f"python{minor}" / "site-packages").mkdir(parents=True)
     for entry in sorted(os.scandir(base / "lib"), key=lambda e: e.name):
-        if _shared_library(entry):
-            (layer / "lib" / entry.name).symlink_to(base / "lib" / entry.name)
+        if _entry(base, f"lib/{entry.name}"):
+            make_entry(base, layer, f"lib/{entry.name}")
             counts["libraries"] += 1
     (layer / "conda-meta").mkdir()
     for record in sorted((base / "conda-meta").iterdir()):
         if record.name.endswith(".json"):
-            slim = _slim(json.loads(record.read_text()))
-            (layer / "conda-meta" / record.name).write_text(json.dumps(slim, indent=1) + "\n")
+            target = layer / "conda-meta" / record.name
+            target.write_text(json.dumps(slim(base, json.loads(record.read_text()))) + "\n")
+            info = record.stat()
+            os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
             counts["records"] += 1
-        elif record.name in ("history", "pinned"):
+        elif record.name == "history":
             shutil.copyfile(record, layer / "conda-meta" / record.name)
+    pinned = base / "conda-meta" / "pinned"
+    lines = pinned.read_text().splitlines() if pinned.exists() else []
+    (layer / "conda-meta" / "pinned").write_text(
+        "".join(f"{line}\n" for line in [*lines, _python_pin(base)])
+    )
+    if not (frozen / MANIFEST).exists():
+        frozen.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "version": MANIFEST_VERSION,
+            "prefix": str(base),
+            "frozen": str(frozen),
+            "trees": [],
+            "packages": [],
+        }
+        (frozen / MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n")
+        _read_only(frozen)
     entries = sum(len(dirs) + len(names) for _, dirs, names in _walk(layer))
     return {"base": str(base), "layer": str(layer), "python": version, **counts, "entries": entries}
 
@@ -399,36 +497,49 @@ def check_layer(base: Path, layer: Path, alias: Path = ALIAS) -> list[str]:
     try:
         marker = json.loads((layer / LAYER_MARKER).read_text())
     except (OSError, ValueError):
-        marker = None
-    if marker != {"version": LAYER_VERSION, "base": str(base)}:
-        problems.append(f"{layer / LAYER_MARKER} does not name {base}")
+        marker = {}
+    if (
+        not isinstance(marker, dict)
+        or marker.get("version") != LAYER_VERSION
+        or marker.get("base") != str(base)
+        or marker.get("identity") != base_identity(base)
+        or not isinstance(marker.get("revision"), str)
+    ):
+        problems.append(f"{layer / LAYER_MARKER} does not name {base} and its identity")
     config = (layer / "pyvenv.cfg").read_text() if (layer / "pyvenv.cfg").is_file() else ""
     for line in (f"home = {base}/bin", "include-system-site-packages = true"):
         if line not in config.splitlines():
             problems.append(f"{layer / 'pyvenv.cfg'} lacks {line!r}")
-    for entry in os.scandir(base / "bin"):
-        link = layer / "bin" / entry.name
-        if not link.is_symlink() or os.readlink(link) != str(base / "bin" / entry.name):
-            problems.append(f"{link} is not a link to the base's program")
-    for entry in os.scandir(base / "lib"):
-        link = layer / "lib" / entry.name
-        if _shared_library(entry) and (
-            not link.is_symlink() or os.readlink(link) != str(base / "lib" / entry.name)
-        ):
-            problems.append(f"{link} is not a link to the base's library")
+    for folder in ("bin", "lib"):
+        for entry in os.scandir(base / folder):
+            relative = f"{folder}/{entry.name}"
+            if not _entry(base, relative):
+                continue
+            path = layer / relative
+            if _script(Path(entry.path)):
+                good = _script(path) and path.read_bytes() == Path(entry.path).read_bytes()
+            else:
+                good = path.is_symlink() and os.readlink(path) == entry.path
+            if not good:
+                kind = "copy of the base's script" if _script(Path(entry.path)) else "link"
+                problems.append(f"{path} is not a {kind} to the base's {folder} entry")
     records = {record.name for record in (base / "conda-meta").glob("*.json")}
-    slim = {record.name for record in (layer / "conda-meta").glob("*.json")}
-    if records != slim:
+    slims = {record.name for record in (layer / "conda-meta").glob("*.json")}
+    if records != slims:
         problems.append(f"{layer / 'conda-meta'} differs from the base's records")
-    for name in sorted(records & slim):
-        expected = _slim(json.loads((base / "conda-meta" / name).read_text()))
-        if json.loads((layer / "conda-meta" / name).read_text()) != expected:
-            problems.append(f"{layer / 'conda-meta' / name} is not the base's record")
-    for name in ("pinned",):
-        if (base / "conda-meta" / name).exists() and (
-            (layer / "conda-meta" / name).read_bytes() != (base / "conda-meta" / name).read_bytes()
+    for name in sorted(records & slims):
+        expected = slim(base, json.loads((base / "conda-meta" / name).read_text()))
+        found = layer / "conda-meta" / name
+        if json.loads(found.read_text()) != expected or (
+            found.stat().st_mtime_ns != (base / "conda-meta" / name).stat().st_mtime_ns
         ):
-            problems.append(f"{layer / 'conda-meta' / name} differs from the base's")
+            problems.append(f"{found} is not the base's record")
+    pinned = base / "conda-meta" / "pinned"
+    expected_pins = [*(pinned.read_text().splitlines() if pinned.exists() else [])]
+    expected_pins.append(_python_pin(base))
+    layer_pins = layer / "conda-meta" / "pinned"
+    if not layer_pins.exists() or layer_pins.read_text().splitlines() != expected_pins:
+        problems.append(f"{layer_pins} differs from the base's pins and Python's")
     if any(layer.glob("lib/python3*/site-packages/*")):
         problems.append(f"{layer} has packages of its own")
     old = f"{base}/bin/python".encode()
@@ -499,7 +610,8 @@ def check(prefix: Path, frozen: Path, owner: int = 0) -> list[str]:
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("version") != MANIFEST_VERSION or manifest.get("prefix") != str(prefix):
         problems.append(f"{manifest_path} is for another layout")
-    pinned = (prefix / "conda-meta" / "pinned").read_text().splitlines()
+    pinned_path = prefix / "conda-meta" / "pinned"
+    pinned = pinned_path.read_text().splitlines() if pinned_path.exists() else []
     for tree in manifest["trees"]:
         link = prefix / tree
         if not link.is_symlink() or os.readlink(link) != str(frozen / tree):
@@ -533,6 +645,7 @@ def main(argv: list[str]) -> int:
     command = sub.add_parser("layer")
     command.add_argument("base", type=Path)
     command.add_argument("layer", type=Path)
+    command.add_argument("--revision", default="unknown", help="the image's recipe revision")
     args = parser.parse_args(argv)
     if args.command == "trim":
         print(json.dumps({"trimmed": trim(args.prefix)}))
@@ -542,7 +655,8 @@ def main(argv: list[str]) -> int:
         return 0
     if args.command == "layer":
         rewritten = launchers(args.base)
-        print(json.dumps({"layer": layer(args.base, args.layer), "launchers": rewritten}))
+        made = layer(args.base, args.layer, revision=args.revision)
+        print(json.dumps({"layer": made, "launchers": rewritten}))
         return 0
     problems = check(args.prefix, args.frozen)
     if args.layer is not None:

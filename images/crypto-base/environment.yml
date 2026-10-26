@@ -61,6 +61,9 @@ dependencies:
   - fpylll
   - fplll
   - pari
+  # PARI's elliptic curve data (Cremona's tables), which ellinit("11a1") reads; a base
+  # program does not see data installed at runtime (docs/IMAGES.md).
+  - pari-elldata
   - libflint
   # G6K has no conda-forge package; the image builds it from source with these. They stay
   # in the image, since research code builds C and C++ too.

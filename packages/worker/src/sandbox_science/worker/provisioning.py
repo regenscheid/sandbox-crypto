@@ -32,6 +32,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import signal
 import socket
 import stat
@@ -495,7 +496,16 @@ def fingerprint(places: Places) -> str:
     upgrading one changes the digest. The files the packages own do not count, which
     keeps the scan cheap, and nor do ``conda-meta``'s ``history`` and ``pinned``, which
     record requests: an install that links nothing changes nothing (CP-16).
+
+    Over a base environment the first half is the layer's digest and the second the
+    base's identity, by its packages' names, never their files' times: an image rebuilt
+    with the same packages leaves the fingerprint as it was, and one with others changes
+    only its second half, which the worker tells from a change in the layer
+    (prefix_continuity.accept).
     """
+    if places.base_conda_meta is not None:
+        layer = Places(places.conda_meta, places.site, places.user)
+        return fingerprint(layer)[:16] + base_identity(places)[:16]
     digest = hashlib.sha256()
     for place in places.all():
         try:
@@ -513,6 +523,31 @@ def fingerprint(places: Places) -> str:
             line = f"{place}\0{name}\0{info.st_size}\0{info.st_mtime_ns}\n"
             digest.update(line.encode("utf-8", "surrogateescape"))
     return digest.hexdigest()[:32]
+
+
+_BASE_IDENTITIES: dict[tuple[str, tuple[str, ...]], str] = {}
+"""Each base's identity, once a process: the base is read-only."""
+
+
+def base_identity(places: Places) -> str:
+    """The base's packages, by its Conda records' and distributions' names, which carry their
+    versions and builds (images/common/prefix_layout.py, base_identity, says the same)."""
+    key = (places.base_conda_meta or "", places.base_site)
+    if key in _BASE_IDENTITIES:
+        return _BASE_IDENTITIES[key]
+    records: list[str] = []
+    with contextlib.suppress(OSError), os.scandir(key[0]) as scan:
+        records = sorted(entry.name for entry in scan if entry.name.endswith(".json"))
+    distributions: set[str] = set()
+    for site in places.base_site:
+        with contextlib.suppress(OSError), os.scandir(site) as scan:
+            distributions |= {
+                entry.name for entry in scan if entry.name.endswith((".dist-info", ".egg-info"))
+            }
+    text = "\n".join(records) + "\0" + "\n".join(sorted(distributions))
+    found = hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+    _BASE_IDENTITIES[key] = found
+    return found
 
 
 def lockfile(places: Places) -> Message:
@@ -534,15 +569,28 @@ def lockfile(places: Places) -> Message:
     added is the difference, as for a whole environment.
     """
     conda, owned, skipped = _conda_packages(places.conda_meta)
+    layered = places.base_conda_meta is not None
     if places.base_conda_meta is not None:
+        # Distributions Conda linked into the layer that no record of the layer owns, left
+        # by a transaction that failed or bypassed its turn: they are what imports, so they
+        # are listed as they are, and a base record of the same distribution is not.
+        orphans = {
+            _project(name.rsplit("-", 1)[0])
+            for directory in places.site
+            for name in _conda_installed(directory)
+            if name not in owned
+        }
         # A malformed base record is malformed in the layer too, and counted there.
-        below, below_owned, _ = _conda_packages(places.base_conda_meta)
+        below, below_owned, _ = _conda_records(places.base_conda_meta)
         names = {item["name"] for item in conda}
-        conda += [item for item in below if item["name"] not in names]
+        for item, distributions in below:
+            if item["name"] in names or {_project(d) for d in distributions} & orphans:
+                continue
+            conda.append(item)
         owned |= below_owned
     pip: list[Message] = []
     for directory in places.site:
-        found, left = _distributions(directory, "prefix", owned)
+        found, left = _distributions(directory, "prefix", owned, keep_conda=layered)
         pip += found
         skipped += left
     shadowing = {_project(item["name"]) for item in pip}
@@ -574,15 +622,33 @@ def _project(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def _conda_installed(directory: str) -> list[str]:
+    """The distribution directories in ``directory`` whose installer is Conda, by name."""
+    found: list[str] = []
+    with contextlib.suppress(OSError), os.scandir(directory) as scan:
+        for entry in scan:
+            if entry.name.endswith(".dist-info") and entry.is_dir(follow_symlinks=False):
+                installer = _first_line(os.path.join(entry.path, "INSTALLER"))
+                if installer is not None and installer.lower() == "conda":
+                    found.append(entry.name.removesuffix(".dist-info"))
+    return found
+
+
 def _conda_packages(directory: str) -> tuple[list[Message], set[str], int]:
     """The lockfile's Conda entries, the pip metadata directories their packages own, and
     how many records were skipped."""
+    records, owned, skipped = _conda_records(directory)
+    return [package for package, _ in records], owned, skipped
+
+
+def _conda_records(directory: str) -> tuple[list[tuple[Message, list[str]]], set[str], int]:
+    """As ``_conda_packages``, with each entry the projects of the distributions it owns."""
     try:
         with os.scandir(directory) as scan:
             names = sorted(entry.name for entry in scan if entry.name.endswith(".json"))
     except OSError:
         return [], set(), 0
-    packages: list[Message] = []
+    packages: list[tuple[Message, list[str]]] = []
     owned: set[str] = set()
     skipped = 0
     for name in names[:MAX_PACKAGES]:
@@ -596,14 +662,17 @@ def _conda_packages(directory: str) -> tuple[list[Message], set[str], int]:
             continue
         fields = cast(Message, record)
         package = conda_package(fields)
-        if package is None:
-            skipped += 1
-        else:
-            packages.append(package)
+        mine: list[str] = []
         files = fields.get("files")
         for path in cast(list[object], files) if isinstance(files, list) else []:
             if isinstance(path, str) and (entry := _site_entry(path)) is not None:
                 owned.add(entry)
+                if entry.endswith(".dist-info"):
+                    mine.append(entry.removesuffix(".dist-info").rsplit("-", 1)[0])
+        if package is None:
+            skipped += 1
+        else:
+            packages.append((package, mine))
     return packages, owned, skipped
 
 
@@ -783,9 +852,12 @@ def _url_text(value: str) -> str | None:
     return value if len(value) <= 2048 and _URL_TEXT.fullmatch(value) else None
 
 
-def _distributions(directory: str, location: str, owned: set[str]) -> tuple[list[Message], int]:
+def _distributions(
+    directory: str, location: str, owned: set[str], *, keep_conda: bool = False
+) -> tuple[list[Message], int]:
     """The lockfile's pip entries for one site-packages directory, and how many were
-    skipped."""
+    skipped. ``keep_conda`` lists a distribution Conda installed that no record owns, as a
+    layer's orphans are (``lockfile``)."""
     try:
         with os.scandir(directory) as scan:
             names = sorted(
@@ -801,7 +873,7 @@ def _distributions(directory: str, location: str, owned: set[str]) -> tuple[list
         path = os.path.join(directory, name)
         directory_entry = os.path.isdir(path) and not os.path.islink(path)
         installer = _first_line(os.path.join(path, "INSTALLER")) if directory_entry else None
-        if installer is not None and installer.lower() == "conda":
+        if installer is not None and installer.lower() == "conda" and not keep_conda:
             continue
         described = _metadata(path, name, directory_entry)
         if described is None:
@@ -1266,6 +1338,106 @@ def _mirror(state: State, prefix: Path, base: str | None = None) -> None:
                 (state.bin / name).unlink()
 
 
+# The layer over a base (images/common/prefix_layout.py writes it; a test keeps the two in step).
+
+SLIM: Final = ("files", "paths_data")
+
+
+def _script(path: Path) -> bool:
+    """A text file with a shebang, which the layer holds a copy of."""
+    if path.is_symlink() or not path.is_file():
+        return False
+    with path.open("rb") as stream:
+        return stream.read(2) == b"#!"
+
+
+def _layer_entry(base: Path, relative: str) -> bool:
+    """Whether the layer has its own entry for the base's file ``relative``: each program in
+    ``bin``, and each shared library at the top of ``lib``."""
+    folder, _, name = relative.partition("/")
+    if not name or "/" in name:
+        return False
+    if folder == "bin":
+        return True
+    path = base / relative
+    return folder == "lib" and ".so" in name and (path.is_symlink() or not path.is_dir())
+
+
+def slim_record(base: Path, record: Mapping[str, object]) -> dict[str, object]:
+    """A base package's record in the layer: its files are the layer's entries for it."""
+    files = record.get("files")
+    listed = [str(item) for item in cast(list[object], files)] if isinstance(files, list) else []
+    own = [relative for relative in listed if _layer_entry(base, relative)]
+    return {key: value for key, value in record.items() if key not in SLIM} | {"files": own}
+
+
+def repair_layer(layer: Path, base: Path) -> list[str]:
+    """Give the layer back the record, and the entries, of each base package it has no
+    record of; return their names.
+
+    A Conda transaction that replaces a base package removes the layer's record and
+    entries first; when it fails afterwards, micromamba cannot put the old package back,
+    whose files it never had. The base still holds that package, so the record says so
+    again, with the base's time, as the layer was written, and the package fingerprint
+    reads as before. A ``remove`` of a base package is undone the same way: its files stay
+    in the read-only base. A package whose distribution Conda left in the layer without
+    a record is left to the lockfile, which lists that distribution as it is.
+    """
+    meta = layer / "conda-meta"
+    present: set[str] = set()
+    with os.scandir(meta) as scan:
+        for entry in scan:
+            if entry.name.endswith(".json"):
+                present.add(entry.name.removesuffix(".json").rsplit("-", 2)[0])
+    orphans = {
+        _project(name.rsplit("-", 1)[0])
+        for site in layer.glob("lib/python3*/site-packages")
+        for name in _conda_installed(str(site))
+    }
+    restored: list[str] = []
+    with os.scandir(base / "conda-meta") as scan:
+        missing = sorted(
+            entry.name
+            for entry in scan
+            if entry.name.endswith(".json")
+            and entry.name.removesuffix(".json").rsplit("-", 2)[0] not in present
+        )
+    for name in missing:
+        source = base / "conda-meta" / name
+        data = read_regular(source, MAX_META_BYTES)
+        record: object = json.loads(data) if data is not None else None
+        if not isinstance(record, dict):
+            continue
+        fields = cast(Message, record)
+        owns = [
+            entry.removesuffix(".dist-info").rsplit("-", 1)[0]
+            for entry in (
+                _site_entry(path)
+                for path in cast(list[object], fields.get("files") or [])
+                if isinstance(path, str)
+            )
+            if entry is not None and entry.endswith(".dist-info")
+        ]
+        if {_project(project) for project in owns} & orphans:
+            continue
+        slim = slim_record(base, fields)
+        for relative in cast(list[str], slim["files"]):
+            target = layer / relative
+            if os.path.lexists(target):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if _script(base / relative):
+                shutil.copyfile(base / relative, target)
+                os.chmod(target, stat.S_IMODE((base / relative).stat().st_mode))
+            else:
+                target.symlink_to(base / relative)
+        _replace(meta / name, (json.dumps(slim) + "\n").encode())
+        info = source.stat()
+        os.utime(meta / name, ns=(info.st_atime_ns, info.st_mtime_ns))
+        restored.append(str(fields.get("name", name)))
+    return restored
+
+
 def _link(link: Path, target: Path) -> None:
     """Make ``link`` a symlink to ``target``, unless it is one already."""
     with contextlib.suppress(OSError):
@@ -1594,8 +1766,16 @@ class Turn:
                     f"sandbox-science: ended {ended} processes the package command left running\n"
                 )
             cleaned = True
+            base = self.config.places.base_prefix
+            if base is not None:
+                with contextlib.suppress(OSError):
+                    if restored := repair_layer(Path(self.config.prefix), Path(base)):
+                        sys.stderr.write(
+                            "sandbox-science: the base keeps these packages, whose layer"
+                            f" records were gone: {', '.join(restored[:20])}\n"
+                        )
             with contextlib.suppress(OSError):
-                _mirror(self.state, Path(self.config.prefix), self.config.places.base_prefix)
+                _mirror(self.state, Path(self.config.prefix), base)
             after = fingerprint(self.config.places)
             entry: Message = {
                 "version": RECORD_VERSION,

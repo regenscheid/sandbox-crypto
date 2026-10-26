@@ -115,7 +115,7 @@ parameters:
 
 Use it for the gateway's `server.workspaceStorageClass` (step 5). The trade-off: a workspace has no second replica, so losing its node's disk loses the workspace back to its last backup; the recurring snapshots and backups of 2.2 still apply. The research images keep their Python environment out of `/sandbox` (B11, decided by the owner on 2026-10-26): a new workspace receives only a small layer over the image's read-only base, so nothing large is seeded ([the environment outside the workspace](IMAGES.md#the-environment-outside-the-workspace-b11)).
 
-Size: about 100 GiB for the app and 200 GiB for the pool ([D92](KUBERNETES.md#first-deployment-scope-and-proofs)), 1 GiB for the manager, and the workspace default for the research data and runtime installs: the base's 2.65 GB stay in the image and the layer is 0.5 MB, so the default no longer carries the environment (a workspace seeded from an earlier image keeps its whole prefix, about 5.2 GB before headroom, and its own claim size).
+Size: about 100 GiB for the app and 200 GiB for the pool ([D92](KUBERNETES.md#first-deployment-scope-and-proofs)), 1 GiB for the manager, and the workspace default for the research data and runtime installs: the base's 2.65 GB stay in the image and the layer is 3.3 MB, so the default no longer carries the environment (a workspace seeded from an earlier image keeps its whole prefix, about 5.2 GB before headroom, and its own claim size).
 
 Verify: a 1 Gi test PVC reaches `Bound`; `kubectl get pv -o custom-columns=NAME:.metadata.name,RECLAIM:.spec.persistentVolumeReclaimPolicy` shows `Retain` for it. Delete the PVC, confirm the PV stays `Released`, then remove the PV and the Longhorn volume by hand.
 

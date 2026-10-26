@@ -26,7 +26,11 @@ MARKER = ".sandbox-science-prefix-id"
 FROZEN = Path("/opt/sandbox-science-frozen")
 """The image's read-only copy of the prefix's frozen trees (images/common/prefix_layout.py)."""
 FROZEN_MANIFEST = "manifest.json"
+MANIFEST_VERSIONS = (1, 2)
+"""1 in images before the layer, 2 since: a worker that knows only 1 refuses the newer images
+(docs/COMPATIBILITY.md)."""
 MAX_MANIFEST = 64 * 1024
+_IDENTITY = re.compile(r"[0-9a-f]{64}")
 BASE = Path("/opt/sandbox-science-base")
 """The image's read-only base environment under the layer (images/common/prefix_layout.py)."""
 LAYER_MARKER = ".sandbox-science-layer"
@@ -58,7 +62,7 @@ def _frozen_trees() -> list[str]:
     entries = cast(list[object], trees) if isinstance(trees, list) else []
     found = [entry for entry in entries if isinstance(entry, str) and _TREE.fullmatch(entry)]
     if (
-        fields.get("version") != 1
+        fields.get("version") not in MANIFEST_VERSIONS
         or not isinstance(trees, list)
         or len(found) != len(entries)
         or len(found) > 64
@@ -106,20 +110,28 @@ def _small(path: Path) -> str:
     return data.decode("utf-8")
 
 
-def check_layer(base_prefix: str) -> None:
+def check_layer(base_prefix: str) -> str:
     """The prefix is the image's layer over its base: the marker names the base, the
     virtual environment's interpreter is the base's and sees the base's packages, and the
     running interpreter's base is that one.
 
     The layer lives in the workspace, where research code can rewrite it; one pointing at
     another base would put other packages behind a lockfile that names them unchanged.
-    Raises OSError otherwise.
+    Returns the identity of the base the layer was seeded over, from its marker. Raises
+    OSError otherwise.
     """
     try:
         marker: object = json.loads(_small(PREFIX / LAYER_MARKER))
     except ValueError:
         marker = None
-    if marker != {"version": LAYER_VERSION, "base": str(BASE)}:
+    fields = cast(dict[str, object], marker) if isinstance(marker, dict) else {}
+    seeded = fields.get("identity")
+    if (
+        fields.get("version") != LAYER_VERSION
+        or fields.get("base") != str(BASE)
+        or not isinstance(seeded, str)
+        or _IDENTITY.fullmatch(seeded) is None
+    ):
         raise OSError("workspace layer marker does not name the image's base")
     config: dict[str, str] = {}
     for line in _small(PREFIX / "pyvenv.cfg").splitlines():
@@ -137,6 +149,7 @@ def check_layer(base_prefix: str) -> None:
         or not os.readlink(python).startswith(f"{BASE}/bin/python")
     ):
         raise OSError("workspace layer is not over the image's base")
+    return seeded
 
 
 def describe(python_prefix: str, base_prefix: str | None = None) -> dict[str, str | int]:
@@ -159,8 +172,9 @@ def describe(python_prefix: str, base_prefix: str | None = None) -> dict[str, st
         or not (PREFIX / "bin/python").is_file()
     ):
         raise OSError("required workspace prefix layout is missing or incompatible")
+    seeded: str | None = None
     if os.path.lexists(PREFIX / LAYER_MARKER):
-        check_layer(sys.base_prefix if base_prefix is None else base_prefix)
+        seeded = check_layer(sys.base_prefix if base_prefix is None else base_prefix)
     elif os.path.lexists(PREFIX / "pyvenv.cfg"):
         raise OSError("workspace prefix is a virtual environment without the layer's marker")
     else:
@@ -193,7 +207,10 @@ def describe(python_prefix: str, base_prefix: str | None = None) -> dict[str, st
         os.close(fd)
     if re.fullmatch(r"prefix-[0-9a-f]{32}", identity) is None:
         raise OSError("workspace prefix identity is malformed")
-    return {"protocol": 1, "path": str(PREFIX), "identity": identity}
+    found: dict[str, str | int] = {"protocol": 1, "path": str(PREFIX), "identity": identity}
+    if seeded is not None:
+        found["seeded"] = seeded
+    return found
 
 
 def report(python_prefix: str, base_prefix: str | None = None) -> dict[str, str | int]:

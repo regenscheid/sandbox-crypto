@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -235,6 +236,8 @@ def base(tmp_path: Path) -> Path:
     _write(root / "bin/sage", f"#!/bin/sh\n'''exec' {root}/bin/python \"$0\" \"$@\"\n'''\n")
     _write(root / "bin/tool.pl", f"#!{root}/bin/perl\nprint 1;\n")
     _write(root / "bin/elf", "\x7fELF python")
+    for name in ("pip", "sage", "tool.pl", "elf"):
+        (root / "bin" / name).chmod(0o755)
     _write(root / "lib/libgmp.so.10.5.0")
     (root / "lib/libgmp.so.10").symlink_to("libgmp.so.10.5.0")
     (root / "lib/libgmp.so").symlink_to("libgmp.so.10.5.0")
@@ -252,12 +255,19 @@ def base(tmp_path: Path) -> Path:
     return root
 
 
+def _make(base: Path, tmp_path: Path) -> Path:
+    layer, alias, frozen = tmp_path / "layer", tmp_path / "alias", tmp_path / "frozen"
+    layout.launchers(base, alias)
+    layout.layer(base, layer, alias, frozen=frozen, revision="abc1234")
+    return layer
+
+
 def test_the_layer_is_a_small_environment_over_the_base(base: Path, tmp_path: Path) -> None:
-    layer = tmp_path / "layer"
-    alias = tmp_path / "alias"
+    layer, alias, frozen = tmp_path / "layer", tmp_path / "alias", tmp_path / "frozen"
     assert layout.launchers(base, alias) == 3
-    made = layout.layer(base, layer, alias)
-    assert (made["programs"], made["libraries"], made["records"]) == (6, 3, 2)
+    made = layout.layer(base, layer, alias, frozen=frozen, revision="abc1234")
+    counts = (made["scripts"], made["programs"], made["libraries"], made["records"])
+    assert counts == (3, 3, 3, 2)
     assert made["entries"] == sum(len(d) + len(n) for _, d, n in os.walk(layer))
     # Python scripts and kernelspecs start the layer's interpreter; other interpreters and
     # programs keep theirs.
@@ -267,10 +277,8 @@ def test_the_layer_is_a_small_environment_over_the_base(base: Path, tmp_path: Pa
     assert (base / "bin/elf").read_text() == "\x7fELF python"
     spec = json.loads((base / "share/jupyter/kernels/python3/kernel.json").read_text())
     assert spec["argv"][0] == f"{alias}/bin/python"
-    assert (
-        json.loads((base / "share/jupyter/kernels/sagemath/kernel.json").read_text())["argv"][0]
-        == "python"
-    )
+    sage = json.loads((base / "share/jupyter/kernels/sagemath/kernel.json").read_text())
+    assert sage["argv"][0] == "python"
     # A virtual environment of the base's interpreter that sees the base's packages.
     config = (layer / "pyvenv.cfg").read_text().splitlines()
     assert config == [
@@ -279,9 +287,18 @@ def test_the_layer_is_a_small_environment_over_the_base(base: Path, tmp_path: Pa
         "version = 3.14.8",
     ]
     marker = json.loads((layer / layout.LAYER_MARKER).read_text())
-    assert marker == {"version": 1, "base": str(base)}
+    assert marker == {
+        "version": 1,
+        "base": str(base),
+        "revision": "abc1234",
+        "identity": layout.base_identity(base),
+    }
+    # Scripts are copies, so that an upgrade rewrites the layer's; the rest are links.
+    assert not (layer / "bin/pip").is_symlink()
+    assert (layer / "bin/pip").read_bytes() == (base / "bin/pip").read_bytes()
+    assert os.access(layer / "bin/pip", os.X_OK)
     assert os.readlink(layer / "bin/python") == str(base / "bin/python")
-    assert os.readlink(layer / "bin/pip") == str(base / "bin/pip")
+    assert os.readlink(layer / "bin/elf") == str(base / "bin/elf")
     assert sorted(path.name for path in (layer / "lib").iterdir()) == [
         "libgmp.so",
         "libgmp.so.10",
@@ -290,51 +307,133 @@ def test_the_layer_is_a_small_environment_over_the_base(base: Path, tmp_path: Pa
     ]
     assert os.readlink(layer / "lib/libgmp.so.10") == str(base / "lib/libgmp.so.10")
     assert list((layer / "lib/python3.14/site-packages").iterdir()) == []
-    # The base's records without their files, its history and pins.
+    # Each base record names the layer's entries for its package as its files, and keeps
+    # the base's time; the layer pins Python at the base's build.
     gmp = json.loads((layer / "conda-meta/gmp-6.3.0-h1.json").read_text())
-    assert gmp == {"name": "gmp", "version": "6.3.0", "build": "h1", "files": []}
-    assert (layer / "conda-meta/pinned").read_text() == "gmp==6.3.0=h1\n"
+    assert gmp == {
+        "name": "gmp",
+        "version": "6.3.0",
+        "build": "h1",
+        "files": ["lib/libgmp.so.10.5.0", "lib/libgmp.so"],
+    }
+    python = json.loads((layer / "conda-meta/python-3.14.8-h0.json").read_text())
+    assert python["files"] == ["bin/python3.14"]
+    for name in ("gmp-6.3.0-h1.json", "python-3.14.8-h0.json"):
+        base_time = (base / "conda-meta" / name).stat().st_mtime_ns
+        assert (layer / "conda-meta" / name).stat().st_mtime_ns == base_time
+    pins = (layer / "conda-meta/pinned").read_text()
+    assert pins == "gmp==6.3.0=h1\npython==3.14.8=h0\n"
     assert (layer / "conda-meta/history").exists()
+    # The frozen trees' manifest, at the version an older worker refuses, with no trees.
+    manifest = json.loads((frozen / layout.MANIFEST).read_text())
+    assert (manifest["version"], manifest["trees"]) == (2, [])
     owner = os.getuid()
     problems = layout.check_layer(base, layer, alias)
     # Run as another user than root, the base's ownership is all the check refuses.
     assert problems == ([] if owner == 0 else [f"{base} is writable by others than root"])
 
 
+def test_the_base_identity_follows_its_packages_not_their_times(base: Path) -> None:
+    before = layout.base_identity(base)
+    os.utime(base / "conda-meta/gmp-6.3.0-h1.json", ns=(1, 1))
+    assert layout.base_identity(base) == before
+    _record(base, "mpfr", "4.2.1", "h2", [])
+    assert layout.base_identity(base) != before
+
+
 @pytest.mark.parametrize(
-    "damage", ["marker", "home", "program", "library", "record", "packages", "launcher", "pkgs"]
+    "damage",
+    [
+        "marker",
+        "home",
+        "program",
+        "script",
+        "library",
+        "record",
+        "time",
+        "pins",
+        "packages",
+        "launcher",
+        "pkgs",
+    ],
 )
 def test_the_layer_check_finds_what_is_wrong(base: Path, tmp_path: Path, damage: str) -> None:
-    layer, alias = tmp_path / "layer", tmp_path / "alias"
-    layout.launchers(base, alias)
-    layout.layer(base, layer, alias)
+    layer = _make(base, tmp_path)
+    alias = tmp_path / "alias"
     expected = {
         "marker": "does not name",
         "home": "lacks 'home",
-        "program": "is not a link to the base's program",
-        "library": "is not a link to the base's library",
+        "program": "is not a link to the base's bin entry",
+        "script": "is not a copy of the base's script",
+        "library": "is not a link to the base's lib entry",
         "record": "is not the base's record",
+        "time": "is not the base's record",
+        "pins": "differs from the base's pins",
         "packages": "has packages of its own",
         "launcher": "starts the base's interpreter",
         "pkgs": "is not empty",
     }[damage]
     if damage == "marker":
-        (layer / layout.LAYER_MARKER).write_text("{}")
+        marker = json.loads((layer / layout.LAYER_MARKER).read_text())
+        (layer / layout.LAYER_MARKER).write_text(json.dumps({**marker, "identity": "0" * 64}))
     elif damage == "home":
         (layer / "pyvenv.cfg").write_text("home = /elsewhere/bin\n")
     elif damage == "program":
+        (layer / "bin/elf").unlink()
+    elif damage == "script":
         (layer / "bin/pip").unlink()
+        (layer / "bin/pip").symlink_to(base / "bin/pip")
     elif damage == "library":
         (layer / "lib/libgmp.so.10").unlink()
         (layer / "lib/libgmp.so.10").symlink_to("/elsewhere/libgmp.so.10")
     elif damage == "record":
         (layer / "conda-meta/gmp-6.3.0-h1.json").write_text('{"name": "gmp"}')
+    elif damage == "time":
+        os.utime(layer / "conda-meta/gmp-6.3.0-h1.json", ns=(1, 1))
+    elif damage == "pins":
+        (layer / "conda-meta/pinned").write_text("gmp==6.3.0=h1\n")
     elif damage == "packages":
         _write(layer / "lib/python3.14/site-packages/y.py")
     elif damage == "launcher":
         _write(base / "bin/late", f"#!{base}/bin/python3.14\n")
-        (layer / "bin/late").symlink_to(base / "bin/late")
+        shutil.copyfile(base / "bin/late", layer / "bin/late")
     else:
         _write(base / "pkgs/x.conda")
     problems = layout.check_layer(base, layer, alias)
     assert any(expected in problem for problem in problems), problems
+
+
+def test_the_worker_restores_the_layer_as_the_build_wrote_it(base: Path, tmp_path: Path) -> None:
+    """provisioning.py's slim records, layer entries, repair and base identity are the
+    build's: a record and entries the worker writes back read as the build wrote them, so
+    the package fingerprint does not move."""
+    from sandbox_science.worker import provisioning
+
+    layer = _make(base, tmp_path)
+    for name in ("python-3.14.8-h0.json", "gmp-6.3.0-h1.json"):
+        record = json.loads((base / "conda-meta" / name).read_text())
+        assert provisioning.slim_record(base, record) == layout.slim(base, record)
+    site = str(base / "lib/python3.14/site-packages")
+    places = provisioning.Places(
+        str(layer / "conda-meta"), (), None, str(base / "conda-meta"), (site,)
+    )
+    assert provisioning.base_identity(places) == layout.base_identity(base)
+    before = provisioning.fingerprint(places)
+
+    def records() -> dict[str, tuple[bytes, int]]:
+        found = (layer / "conda-meta").glob("*.json")
+        return {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in found}
+
+    written = records()
+    # A failed transaction took gmp's record and its entries.
+    (layer / "conda-meta/gmp-6.3.0-h1.json").unlink()
+    for name in ("libgmp.so", "libgmp.so.10.5.0"):
+        (layer / "lib" / name).unlink()
+    assert provisioning.repair_layer(layer, base) == ["gmp"]
+    assert records() == written
+    assert os.readlink(layer / "lib/libgmp.so") == str(base / "lib/libgmp.so")
+    assert provisioning.fingerprint(places) == before
+    assert layout.check_layer(base, layer, tmp_path / "alias") in (
+        [],
+        [f"{base} is writable by others than root"],
+    )

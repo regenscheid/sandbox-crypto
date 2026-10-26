@@ -1682,10 +1682,13 @@ def test_a_research_sandbox_reads_the_images_packages_and_never_writes_them(
     assert not any(
         path == image_path or image_path.startswith(path) for path in filesystem.read_write
     )
-    # The image's own section cannot make them, or a directory above them, writable.
-    for path in (image_path, "/opt"):
+    # The image's own section cannot make them, a directory above them or one inside them
+    # writable.
+    for path in (image_path, "/opt", f"{image_path}/lib", f"{image_path}/share/gap"):
         with pytest.raises(ValidationError, match="stays read-only"):
             SandboxFilesystem(read_write=(path,))
+    # A path that only starts with the same characters is neither.
+    assert SandboxFilesystem(read_write=(f"{image_path}2",)).read_write == (f"{image_path}2",)
     # The workspace prefix's link beside them is no parent of them and stays writable.
     target = TARGETS.sandbox.model_copy(
         update={"filesystem": SandboxFilesystem(read_write=("/opt/sandbox-science",))}

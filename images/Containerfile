@@ -140,10 +140,12 @@ RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
     find /opt/sandbox-science-base/pkgs -mindepth 1 -delete && \
     chmod -R go-w /opt/sandbox-science-base && \
     /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py trim /opt/sandbox-science-base
-# The workspace's layer over the base, and the base's Python launchers pointed at it.
+# The workspace's layer over the base, its marker naming the image's revision, and the base's
+# Python launchers pointed at it.
+ARG REVISION=unknown
 RUN --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
     /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py layer \
-        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix && \
+        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix --revision "${REVISION}" && \
     chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix
 USER 1000:1000
 RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
@@ -228,10 +230,12 @@ RUN --mount=type=bind,from=lattice-estimator-src,target=/tmp/lattice-estimator-s
 RUN --mount=type=bind,source=crypto-base/requirements.txt,target=/tmp/requirements.txt \
     /opt/sandbox-science-base/bin/python -m pip install --root-user-action=ignore --no-deps \
         --only-binary=:all: --require-hashes --no-cache-dir -r /tmp/requirements.txt
-# The workspace's layer over the complete base, and the base's Python launchers pointed at it.
+# The workspace's layer over the complete base, its marker naming the image's revision, and the
+# base's Python launchers pointed at it.
+ARG REVISION=unknown
 RUN --mount=type=bind,source=common/prefix_layout.py,target=/tmp/prefix_layout.py \
     /opt/sandbox-science-base/bin/python -I -B /tmp/prefix_layout.py layer \
-        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix && \
+        /opt/sandbox-science-base /sandbox/.sandbox-science-prefix --revision "${REVISION}" && \
     chown -R -h 1000:1000 /sandbox/.sandbox-science-prefix
 USER 1000:1000
 RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \

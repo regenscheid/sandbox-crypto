@@ -153,6 +153,8 @@ def generate(
             resolved = candidate.resolve()
             resolved.relative_to(resolved_roots[root])
         except (ValueError, OSError, RuntimeError):
+            if base is not None and root == prefix and within(candidate.resolve()) is not None:
+                return  # the layer's link to the base's file, which the base's record owns
             notes.add(f"{package}: external/symlink target outside package root")
             return
         owned[(package, relative)] = (resolved, relative)

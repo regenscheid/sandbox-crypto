@@ -219,9 +219,9 @@ remain intact. Neither restoring a prefix nor its identity marker restores live
 interpreter memory.
 
 An active workspace PVC must fit the layer, installed packages and research data; the
-base's package bytes stay in the image. `crypto-base` seeds 0.5 MB in about 1,700
+base's package bytes stay in the image. `crypto-base` seeds 3.3 MB in about 1,700
 entries since the B11 layout (5.3 GB in about 101,000 entries before the 2026-10-24
-layout change, 2.65 GB in about 61,000 between them), and `minimal` 0.1 MB in about
+layout change, 2.65 GB in about 61,000 between them), and `minimal` 0.2 MB in about
 280. A workspace seeded from an earlier image keeps its whole prefix and needs its
 earlier size. Storage size, class and retention are private operator choices. The initial copy must finish within
 OpenShell 0.1.5's fixed 5-minute bootstrap grace (`SANDBOX_RUNTIME_BOOTSTRAP_GRACE`,

@@ -120,7 +120,8 @@ the frozen trees (docs/IMAGES.md, "Prefix layout"), GAP's, Giac's and Maxima's d
 library and the compiler toolchain, and the base environment under the workspace's layer
 ("The environment outside the workspace"), which the layer links to. Every research sandbox
 may read them, and none may write them: no filesystem section may name a path, or a directory
-above it, writable. OpenShell skips a path an image lacks, such as an earlier image's base."""
+above or below it, writable. OpenShell skips a path an image lacks, such as an earlier
+image's base."""
 
 BASELINE_READ_ONLY: Final = ("/usr", "/lib", "/etc", "/proc", "/var/log", "/dev/urandom")
 BASELINE_READ_WRITE: Final = ("/tmp", "/dev/null")  # noqa: S108 - a Landlock path, not a temporary file
@@ -466,7 +467,7 @@ def _writable_path(value: str) -> str:
     if value == "/":
         raise ValueError("the root cannot be writable")
     for frozen in RESEARCH_IMAGE_READ_ONLY:
-        if value == frozen or frozen.startswith(f"{value}/"):
+        if value == frozen or frozen.startswith(f"{value}/") or value.startswith(f"{frozen}/"):
             raise ValueError(f"{frozen} holds the research images' packages and stays read-only")
     return value
 
