@@ -32,6 +32,7 @@ from sandbox_science.orchestrator.confinement.requests import ControlRequestChec
 from sandbox_science.orchestrator.confinement.transport import Channel, TransportError
 from sandbox_science.orchestrator.connectors import ConnectorError
 from sandbox_science.orchestrator.mcp_direct import _PLACEHOLDER, DirectClient, DirectServer
+from sandbox_science.policy.openshell import ToolAdmission
 
 SERVER = "crypto-research-mcp"
 CREDENTIALS = {
@@ -334,6 +335,9 @@ async def main() -> None:
     parser.add_argument("--denied", required=True)
     parser.add_argument("--invalid-tool", required=True)
     parser.add_argument("--reads", required=True, help="JSON list of [tool, arguments]")
+    parser.add_argument(
+        "--tools", required=True, help="the compiled endpoint's ToolAdmission, as JSON"
+    )
     parser.add_argument("--hold-seconds", type=float, default=150.0)
     parser.add_argument("--skip-error-answer", action="store_true")
     parser.add_argument("--no-identity-fallback", dest="identity_fallback", action="store_false")
@@ -356,7 +360,11 @@ async def main() -> None:
 
     reader = asyncio.ensure_future(read())
     client = RecordingClient(
-        {SERVER: DirectServer(args.url, CREDENTIALS)},
+        {
+            SERVER: DirectServer(
+                args.url, CREDENTIALS, ToolAdmission.model_validate_json(args.tools)
+            )
+        },
         project=args.project,
         check=ControlRequestCheck(channel, args.attempt),
         run=args.run,

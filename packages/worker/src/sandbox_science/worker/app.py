@@ -81,6 +81,7 @@ from sandbox_science.contracts.classifications import (
     ClassificationDrafts,
     ClassificationsInForce,
     DriftAcceptance,
+    ListingReport,
 )
 from sandbox_science.contracts.documents import (
     MAX_CATALOG_PAGE_BYTES,
@@ -1239,9 +1240,22 @@ async def accept_classification_drift(request: web.Request) -> web.Response:
     desk = _classifications(request, body.project)
     server = _server_name(request)
     accepted = await _reviewed(
-        lambda: desk.accept_drift(body.project, server, body.reason, body.operation_id)
+        lambda: desk.accept_drift(
+            body.project, server, body.reason, body.operation_id, body.listings
+        )
     )
     return _json(accepted, status=201)
+
+
+async def report_mcp_listing(request: web.Request) -> web.Response:
+    """A listing the agent runtime's direct client read (D98): any client, for its own
+    projects; the server must be the project's. A drift from the project's pin is recorded
+    as the middleware records one, once per listing."""
+    report = ListingReport.model_validate_json(await _body(request))
+    _allowed(request, report.project_id)
+    desk = request.app[CLASSIFICATION_DESK]
+    caller = _client(request).name
+    return _json(await _reviewed(lambda: desk.report_listing(report, caller)))
 
 
 async def export_classification(request: web.Request) -> web.Response:
@@ -1339,6 +1353,7 @@ CLASSIFICATION_ROUTES: Final = (
     web.get("/v1/classifications/{server}/drafts", classification_drafts),
     web.post("/v1/classifications/{server}/drafts/{draft}/accept", accept_classification_draft),
     web.post("/v1/classifications/{server}/drift/accept", accept_classification_drift),
+    web.post("/v1/mcp-listings", report_mcp_listing),
     web.get("/v1/classifications/{server}/revisions/{revision}/export", export_classification),
 )
 _SERVER_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")

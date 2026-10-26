@@ -402,7 +402,8 @@ def canaries_argv(config: LauncherConfig, layout: Layout) -> list[str] | None:
     """The scheduled MCP canaries (docs/MCP-CONNECTORS.md, "Canaries"), when ``[canaries]``
     is enabled: each ``[mcp_proxy]`` server listed through the proxy with the canaries' own
     caller token (``mcp-canary``, which ``mcp.prepare`` gives the proxy), the results
-    recorded in the control store. None when they are off."""
+    recorded in the control store. None when they are off, or on the direct path, whose
+    canaries the control service runs (``orchestrator.prepare``)."""
     if not config.canaries.enabled or config.mcp_proxy is None:
         return None
     proxy = config.mcp_proxy

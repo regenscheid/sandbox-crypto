@@ -343,6 +343,34 @@ def test_an_acceptance_of_an_older_listing_does_not_end_a_newer_drift() -> None:
     assert ledger.drifted("papers", pin, "p1") == 1
 
 
+def test_a_later_record_of_an_accepted_listing_never_ends_a_hold() -> None:
+    # Review of 2026-10-26: listing A accepted, the server changes to B (held), and a record
+    # of A again (a runtime's replay) must not end B's hold. Only an acceptance ends one.
+    pin = pin_digest({"search": "a" * 64})
+    drift: dict[str, object] = {"server": "papers", "pin": pin}
+    ledger = DriftLedger()
+    ledger.load([Rec(1, "mcp-tools-drift", {**drift, "listing": "A"})])
+    accepted = {"server": "papers", "project": "p1", "pin": pin, "listing": "A"}
+    ledger.load([Rec(2, "mcp-tools-accepted", accepted)])
+    assert ledger.drifted("papers", pin, "p1") is None
+    ledger.load([Rec(3, "mcp-tools-drift", {**drift, "listing": "B"})])
+    assert ledger.drifted("papers", pin, "p1") == 3
+    ledger.load([Rec(4, "mcp-tools-drift", {**drift, "listing": "A"})])
+    assert ledger.drifted("papers", pin, "p1") == 3
+    # A record for another project under the same pin does not end p1's hold either.
+    ledger.load([Rec(5, "mcp-tools-drift", {**drift, "listing": "A", "project": "p2"})])
+    assert ledger.drifted("papers", pin, "p1") == 3
+    # Both unaccepted drifts are kept: accepting B leaves C, recorded between, holding.
+    ledger.load([Rec(6, "mcp-tools-drift", {**drift, "listing": "C"})])
+    ledger.load([Rec(7, "mcp-tools-accepted", {**accepted, "listing": "B"})])
+    assert ledger.drifted("papers", pin, "p1") == 6
+    assert [seen.listing for seen in ledger.unaccepted("papers", pin, "p1")] == ["C"]
+    both = {**accepted, "listing": "C", "listings": ["C", "B"]}
+    ledger.load([Rec(8, "mcp-tools-accepted", both)])
+    assert ledger.drifted("papers", pin, "p1") is None
+    assert ledger.drifted("papers", pin, "p2") == 6  # p2 accepted nothing
+
+
 def test_widenings_take_an_unmentioned_tool_at_its_decision_time_class() -> None:
     loaded = policy()
     current = catalog(SERVER)

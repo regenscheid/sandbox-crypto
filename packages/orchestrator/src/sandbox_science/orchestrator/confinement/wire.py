@@ -13,9 +13,12 @@ import base64
 from dataclasses import asdict
 from typing import Annotated, Any, Literal, cast
 
-from pydantic import Field, JsonValue, StringConstraints, TypeAdapter
+from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
-from sandbox_science.contracts.model import Contract, Counter, Identifier
+from sandbox_science.contracts.classifications import MAX_REPORTED_TOOLS, ReportedTool
+from sandbox_science.contracts.model import Contract, Counter, Identifier, Revision, Sha256
+from sandbox_science.contracts.worker import MediaType
+from sandbox_science.orchestrator.connectors import MAX_ANSWER_BYTES
 from sandbox_science.orchestrator.context.history.capture import (
     CapturedRequest,
     ContextMessage,
@@ -34,6 +37,7 @@ from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
 from sandbox_science.orchestrator.pricing import CostSource
 from sandbox_science.orchestrator.projects import FailurePhase, ModelUsage, RunName
 from sandbox_science.orchestrator.prompts import PromptPins, Section
+from sandbox_science.orchestrator.recording import MAX_FILES
 from sandbox_science.orchestrator.skills.index import SkillsGiven
 from sandbox_science.orchestrator.tools import ToolOutcome
 
@@ -45,6 +49,12 @@ ModelAlias = Annotated[
 AttemptId = Annotated[str, Field(pattern=r"^cap-[0-9a-f]{48}$")]
 MAX_VIEW_BYTES = 8 * 1024 * 1024
 MAX_MODEL_RESPONSE_BYTES = 6 * 1024 * 1024
+MAX_BINARY_BYTES = MAX_ANSWER_BYTES
+"""The decoded bytes of one binary item, and of all one call's items: the harness's bound
+on a whole MCP answer (8 MiB), which holds them as base64."""
+MAX_BINARY_ITEMS = MAX_FILES
+"""Binary items one call keeps: the recorder's bound on the files one call records."""
+_MAX_BINARY_B64 = 4 * -(-MAX_BINARY_BYTES // 3)
 
 
 class Hello(Contract):
@@ -266,6 +276,69 @@ class RequestConfirmation(Attempt):
 
 class RequestConfirmed(Contract):
     confirmed: bool
+
+
+class BinaryResult(Attempt):
+    """One binary item of a direct-path connector call's result (``publish_mcp_binary``):
+    the model's call ID, which the host resolves to its tool and server, the item's media
+    type, the SHA-256 of its decoded bytes, and the bytes as base64."""
+
+    call: str = Field(min_length=1, max_length=256)
+    mime: MediaType
+    sha256: Sha256
+    data_b64: str = Field(min_length=1, max_length=_MAX_BINARY_B64)
+
+
+class BinaryKept(Contract):
+    """What the host kept: the artifact revision (none when its publication is held) and
+    the note that replaces the item in the result the model sees."""
+
+    sha256: Sha256
+    size: Counter
+    artifact: Identifier | None = None
+    revision: Revision | None = None
+    path: str | None = Field(default=None, max_length=512)
+    note: str = Field(min_length=1, max_length=2048)
+
+
+class ListingReportRequest(Contract):
+    """A complete listing of ``server`` (``report_mcp_listing``), as the server sent it:
+    each tool's name, digest and hint, and the listing's digest. ``attempt`` names the
+    attempt whose client listed, or none for the canaries' client; the host names the
+    project, session and run."""
+
+    attempt: AttemptId | None = None
+    server: Identifier
+    tools: tuple[ReportedTool, ...] = Field(max_length=MAX_REPORTED_TOOLS)
+    listing: Sha256
+
+
+class ListingReportReply(Contract):
+    drifted: bool
+
+
+class ToolListing(Contract):
+    """A canary's request to the runtime (``list_mcp_tools``): list one server's tools."""
+
+    server: Identifier
+
+
+class ToolsListed(Contract):
+    """One bounded listing's outcome, as ``mcp_canaries.Listing`` says it."""
+
+    status: Literal["listed", "unavailable", "denied", "timeout"]
+    tool_count: int | None = Field(default=None, strict=True, ge=0, le=1_000_000)
+    digest: Sha256 | None = None
+    error_kind: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+
+    @model_validator(mode="after")
+    def _consistent(self) -> ToolsListed:
+        listed = self.status == "listed"
+        if listed != (self.tool_count is not None and self.digest is not None) or listed == (
+            self.error_kind is not None
+        ):
+            raise ValueError("a listed outcome has a count and digest, any other an error kind")
+        return self
 
 
 class ToolRequest(Attempt):

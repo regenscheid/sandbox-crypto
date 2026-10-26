@@ -64,6 +64,7 @@ from sandbox_science.policy.openshell import (
     AnyOf,
     SandboxFilesystem,
     compile_agent_mcp,
+    tool_admission,
 )
 
 _spec = importlib.util.spec_from_file_location(
@@ -346,6 +347,8 @@ operator = true
         recovery.private(self.path / "agent-policy.yaml", compiled.policy.to_yaml())
         (entry,) = compiled.policy.network_policies.values()
         (endpoint,) = entry.endpoints
+        # The tools the native rules admit: the only ones the runtime's client shows.
+        recovery.private(self.path / "agent-tools.json", tool_admission(endpoint).model_dump_json())
         admitted = {
             name
             for rule in endpoint.rules or ()
@@ -452,6 +455,7 @@ operator = true
             "--url", url, "--project", PROJECT, "--session", SESSION, "--run", RUN,
             "--attempt", attempt, "--escalated", ESCALATED, "--denied", DENIED,
             "--invalid-tool", INVALID, "--reads", json.dumps(reads),
+            "--tools", (self.path / "agent-tools.json").read_text(),
             *(["--skip-error-answer"] if skip_error_answer else []),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env=self.env, limit=32 * 1024 * 1024,

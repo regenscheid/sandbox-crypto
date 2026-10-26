@@ -68,7 +68,9 @@ async def test_the_runs_publisher_keeps_it_in_the_inventory() -> None:
 
     async def publish(request: PublishRequest, operation: str, *, tool_call: str) -> Any:
         calls.append((request, operation, tool_call))
-        return SimpleNamespace(worker=SimpleNamespace(artifact_id="art2"))
+        return SimpleNamespace(
+            worker=SimpleNamespace(artifact_id="art2"), receipt=SimpleNamespace(revision=None)
+        )
 
     publisher = cast(ArtifactPublisher, SimpleNamespace(run_id="main-1", publish=publish))
     sink = ArtifactBinaries(cast(WorkerClient, worker), CONTEXT, publisher)

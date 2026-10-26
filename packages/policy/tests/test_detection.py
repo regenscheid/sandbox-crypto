@@ -28,6 +28,7 @@ from sandbox_science.policy.detection import (
     Finding,
     Holds,
     Subject,
+    UnreadListings,
     action_like,
     pin_digest,
 )
@@ -317,3 +318,21 @@ def test_a_drift_lasts_until_accepted_or_pinned_anew() -> None:
     assert ledger.drifted("papers", pin) is None
     ledger.note("papers", pin, 3)
     assert ledger.drifted("papers", pin) == 3
+
+
+def test_an_unread_listing_waits_for_its_projects_report_and_any_report_answers_it() -> None:
+    at = datetime(2026, 10, 24, 12, 0, tzinfo=UTC)
+    later = at + timedelta(seconds=31)
+    unread = UnreadListings()
+    one: dict[str, object] = {"project": "p1", "server": "s"}
+    unread.load([Rec(1, "mcp-tools-listing-unread", one)])
+    assert unread.pending("p1", "s", at + timedelta(seconds=29)) is None  # within the grace
+    assert unread.pending("p1", "s", later) == 1
+    # A report for another project does not answer it.
+    unread.load([Rec(2, "mcp-tools-listing-reported", {"project": "p2", "server": "s"})])
+    assert unread.pending("p1", "s", later) == 1
+    # The accepted residual: any report of the project's server answers every unread
+    # listing outstanding, since the runtime's word is trusted for what it listed.
+    unread.load([Rec(3, "mcp-tools-listing-unread", one)])
+    unread.load([Rec(4, "mcp-tools-listing-reported", one)])
+    assert unread.pending("p1", "s", later) is None

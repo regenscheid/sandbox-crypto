@@ -177,7 +177,8 @@ async def test_only_an_operator_client_reads_or_accepts_for_its_own_projects(api
     assert (await api.post(path, body, who="harness"))[0] == 403
     assert (await api.post(path, {**body, "project": "p2"}))[0] == 403
     drift = f"/v1/classifications/{SERVER}/drift/accept"
-    assert (await api.post(drift, {"project": "p1", "reason": "r"}, who="harness"))[0] == 403
+    body = {"project": "p1", "reason": "r", "listings": []}
+    assert (await api.post(drift, body, who="harness"))[0] == 403
     assert api.store.classification("p1", SERVER) is None
     assert api.records("mcp-tools-accepted") == []
 
@@ -200,6 +201,9 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
     assert drift["held"] is True
     assert drift["added"] == [{"name": "brand_new", "sha256": "c" * 64}]
     assert drift["changed"] == [{"name": SCRAPE, "sha256": "d" * 64}]
+    [listing] = drift["drifts"]
+    assert (listing["listing"], listing["source"]) == ("e" * 64, "middleware")
+    assert listing["added"] == drift["added"]
     tools = {tool["name"]: tool for tool in shown["tools"]}
     assert tools[SCRAPE]["pin_state"] == "changed"
     new = tools["brand_new"]
@@ -209,7 +213,8 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
         "added",
         False,
     )  # fmt: skip  (its read-only hint makes it a read, which the policy allows)
-    status, accepted = await api.post(drift_path, {"project": "p1", "reason": "reviewed"})
+    accept = {"project": "p1", "reason": "reviewed", "listings": ["e" * 64]}
+    status, accepted = await api.post(drift_path, accept)
     assert status == 201, accepted
     assert accepted == {"accepted_at": NOW.isoformat().replace("+00:00", "Z")}
     [(source, record)] = api.records("mcp-tools-accepted")
@@ -217,13 +222,14 @@ async def test_a_drift_shows_its_tools_and_is_re_accepted_with_a_reason(api: Api
     assert record == {
         "project": "p1", "server": SERVER, "reason": "reviewed", "actor": "user",
         "operation_id": "op-1", "pin": pin_digest(pins), "listing": "e" * 64,
+        "listings": ["e" * 64],
     }  # fmt: skip
     _, [again] = await api.get("/v1/classifications?project=p1")
     assert again["drift"]["held"] is False
 
 
 async def test_re_accepting_needs_a_drift_and_a_known_server(api: Api) -> None:
-    body = {"project": "p1", "reason": "r"}
+    body = {"project": "p1", "reason": "r", "listings": []}
     status, _ = await api.post(f"/v1/classifications/{SERVER}/drift/accept", body)
     assert status == 409
     status, _ = await api.post("/v1/classifications/other/drift/accept", body)
@@ -344,14 +350,14 @@ async def test_a_retried_acceptance_gets_its_first_answer_and_a_reused_id_confli
     # Another project's operation IDs are its own; the other route's reuse conflicts.
     drift = f"/v1/classifications/{SERVER}/drift/accept"
     status, refused = await api.post(drift, {"operation_id": "accept-1", "project": "p1",
-                                             "reason": "r"})  # fmt: skip
+                                             "reason": "r", "listings": []})  # fmt: skip
     assert status == 409
     api.events.append(
         "mcp-tools-drift", "policy-middleware",
         {"project": "p1", "server": SERVER, "pin": None, "added": ["x"], "removed": [],
          "changed": []},
     )  # fmt: skip
-    body = {"operation_id": "drift-1", "project": "p1", "reason": "seen"}
+    body = {"operation_id": "drift-1", "project": "p1", "reason": "seen", "listings": []}
     status, first = await api.post(drift, body)
     assert status == 201, first
     api.desk.clock.advance(60)
@@ -462,3 +468,176 @@ def test_the_projects_policy_is_the_one_bound_to_it(tmp_path: Path) -> None:
     found = project_policy(environments, "p1")
     assert found is not None
     assert found.digest == bound.digest
+
+
+# Listings the agent runtime's direct client read and reported (D98).
+
+
+def reported(extra: dict[str, str] | None = None, *, project: str = "p1", server: str = SERVER):
+    """A report of the catalog's pinned listing of ``SERVER``, with ``extra`` tools added."""
+    pins = catalog(SERVER).pins
+    tools = [
+        {"name": name, "digest": digest or "0" * 64, "hint": "read"}
+        for name, digest in pins.items()
+    ]
+    tools += [
+        {"name": name, "digest": digest, "hint": "write"} for name, digest in (extra or {}).items()
+    ]
+    listing = pin_digest({tool["name"]: tool["digest"] for tool in tools})
+    return {
+        "project_id": project, "server": server, "session": "s1",
+        "run": "20261026T120000000000Z-main-1", "tools": tools, "listing": listing,
+    }  # fmt: skip
+
+
+async def report(api: Api, body: Mapping[str, object], who: str = "harness") -> Any:
+    response = await api.client.post(
+        "/v1/mcp-listings", data=json.dumps(body), headers=headers(who)
+    )
+    return response.status, await response.json()
+
+
+async def test_a_reported_drift_is_recorded_once_as_the_middlewares_and_holds(api: Api) -> None:
+    from sandbox_science.policy.detection import DRIFT_KINDS, DriftLedger
+
+    # The pinned listing itself is no drift.
+    status, found = await report(api, reported())
+    assert (status, found) == (200, {"drifted": False, "record": None})
+    body = reported({"brand_new": "1" * 64})
+    status, found = await report(api, body)
+    assert status == 200, found
+    assert found["drifted"] is True
+    assert isinstance(found["record"], int)
+    [(source, drift)] = api.records("mcp-tools-drift")
+    pin = pin_digest(catalog(SERVER).pins)
+    assert source == "runtime"
+    assert (drift["project"], drift["server"], drift["pin"], drift["listing"]) == (
+        "p1", SERVER, pin, body["listing"],
+    )  # fmt: skip
+    assert (drift["added"], drift["hints"], drift["digests"]) == (
+        ["brand_new"], {"brand_new": "write"}, {"brand_new": "1" * 64},
+    )  # fmt: skip
+    assert (drift["caller"], drift["session"], drift["finding"]) == (
+        "agent-runtime", "s1", "tool_list_drift",
+    )  # fmt: skip
+    # The middleware's ledger reads it as its own: the server's non-read calls ask.
+    ledger = DriftLedger()
+    with StoreReader(api.events.path) as reader:
+        ledger.load(list(reader.records(kinds=DRIFT_KINDS)))
+    assert ledger.drifted(SERVER, pin, "p1") == found["record"]
+    # The same listing again records nothing new.
+    status, again = await report(api, body)
+    assert (status, again) == (200, {"drifted": True, "record": None})
+    assert len(api.records("mcp-tools-drift")) == 1
+    # The review shows it, and the user's re-acceptance ends it as for the middleware's.
+    status, shown = await api.get("/v1/classifications?project=p1")
+    assert status == 200
+    assert shown[0]["drift"] is not None
+
+
+@pytest.mark.parametrize(
+    ("body", "who", "status"),
+    [
+        (reported(project="p2"), "harness", 403),  # a project the caller is not bound to
+        (reported(server="other-server"), "harness", 404),  # not a server of the project's
+        ({**reported(), "listing": "f" * 64}, "harness", 400),  # not its tools' digest
+        ({**reported(), "tools": [*reported()["tools"], reported()["tools"][0]]}, "harness", 400),
+        ({**reported(), "extra": 1}, "harness", 400),
+    ],
+)
+async def test_a_report_the_caller_is_not_bound_to_is_refused(
+    api: Api, body: dict[str, Any], who: str, status: int
+) -> None:
+    found = await report(api, body, who)
+    assert found[0] == status, found
+    assert api.records("mcp-tools-drift") == []
+
+
+def ledger_for(api: Api) -> Any:
+    from sandbox_science.policy.detection import DRIFT_KINDS, DriftLedger
+
+    ledger = DriftLedger()
+    with StoreReader(api.events.path) as reader:
+        ledger.load(list(reader.records(kinds=DRIFT_KINDS)))
+    return ledger
+
+
+async def test_replaying_an_accepted_listing_never_ends_a_newer_hold(api: Api) -> None:
+    # The review's probe (2026-10-26): a runtime report may start or keep a hold, never end
+    # one. A is accepted, the server serves B (held), and a replay of A is refused.
+    pin = pin_digest(catalog(SERVER).pins)
+    a = reported({"benign": "1" * 64})
+    status, found = await report(api, a)
+    assert status == 200
+    assert found["drifted"]
+    status, accepted = await api.post(
+        f"/v1/classifications/{SERVER}/drift/accept",
+        {"project": "p1", "reason": "fine", "listings": [a["listing"]]},
+    )
+    assert status == 201, accepted
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is None
+    b = reported({"benign": "1" * 64, "evil_write": "2" * 64})
+    status, found = await report(api, b)
+    assert status == 200
+    assert found["record"] is not None
+    held = ledger_for(api).drifted(SERVER, pin, "p1")
+    assert held == found["record"]
+    status, refused = await report(api, a)
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
+    assert ledger_for(api).drifted(SERVER, pin, "p1") == held
+    # The user's acceptance names every listing it accepts: it ends the hold.
+    status, _ = await api.post(
+        f"/v1/classifications/{SERVER}/drift/accept",
+        {"project": "p1", "reason": "seen", "listings": [b["listing"]]},
+    )
+    assert status == 201
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is None
+
+
+async def test_every_report_taken_is_recorded_and_reports_are_rate_limited(api: Api) -> None:
+    for _ in range(10):
+        status, _ = await report(api, reported())
+        assert status == 200
+    status, refused = await report(api, reported())
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
+    taken = api.records("mcp-tools-listing-reported")
+    assert len(taken) == 10
+    source, first = taken[0]
+    assert (source, first["project"], first["server"], first["drifted"]) == (
+        "runtime", "p1", SERVER, False,
+    )  # fmt: skip
+    # The rate is per caller: another client of the project still reports.
+    status, _ = await report(api, reported(), who="workspace")
+    assert status == 200
+
+
+async def test_a_newer_drift_never_hides_an_older_one_from_review_or_acceptance(api: Api) -> None:
+    # The review's second probe (2026-10-26): a real drift B adds evil_write; a runtime's
+    # newer report C adds harmless. The review shows both, and an acceptance that does not
+    # name exactly what it showed is refused.
+    pin = pin_digest(catalog(SERVER).pins)
+    b = reported({"evil_write": "2" * 64})
+    assert (await report(api, b))[0] == 200
+    c = reported({"harmless": "3" * 64})
+    assert (await report(api, c))[0] == 200
+    status, shown = await api.get("/v1/classifications?project=p1")
+    assert status == 200
+    drift = shown[0]["drift"]
+    listings = drift["drifts"]
+    assert [item["listing"] for item in listings] == [c["listing"], b["listing"]]
+    assert [[tool["name"] for tool in item["added"]] for item in listings] == [
+        ["harmless"],
+        ["evil_write"],
+    ]
+    assert {item["source"] for item in listings} == {"runtime"}
+    path = f"/v1/classifications/{SERVER}/drift/accept"
+    status, refused = await api.post(
+        path, {"project": "p1", "reason": "looks fine", "listings": [c["listing"]]}
+    )
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
+    assert "review again" in refused["error"]["message"]
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is not None
+    both = [c["listing"], b["listing"]]
+    status, _ = await api.post(path, {"project": "p1", "reason": "both seen", "listings": both})
+    assert status == 201
+    assert ledger_for(api).drifted(SERVER, pin, "p1") is None

@@ -15,13 +15,16 @@ from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.control.migrations import VERSION
+from sandbox_science.orchestrator.mcp_direct import DirectClient
 from sandbox_science.orchestrator.messages import ThinkingReplay
 from sandbox_science.orchestrator.model import ModelGateway
 from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
 from sandbox_science.orchestrator.skills.embeddings import Embedder
 
+from .canaries import DirectSettings, RuntimeListings
 from .embeddings import RuntimeEmbeddings
 from .endpoints import client_tls, control_endpoint, control_trace
+from .listings import ControlListingReports
 from .models import RuntimeModels
 from .runtime_loop import RuntimeLoops
 from .scheduling import Scheduling
@@ -54,6 +57,9 @@ class RuntimeSettings(Contract):
     embedding: ModelAlias | None = None
     thinking_replay: ThinkingReplay | None = None
     generation: Identifier
+    mcp: DirectSettings | None = None
+    """The direct MCP client, which runs here, beside OpenShell's proxy and the provider's
+    placeholders (D98); today it serves the control service's canary listings."""
 
     @field_validator("control_url")
     @classmethod
@@ -104,6 +110,10 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         timeout=aiohttp.ClientTimeout(sock_connect=10), trace_configs=[control_trace()]
     )
     loops: RuntimeLoops | None = None
+    direct: DirectClient | None = None
+    listings = RuntimeListings(
+        None, frozenset(settings.mcp.servers) if settings.mcp is not None else frozenset()
+    )
     try:
         # The endpoint and egress are fixed by trusted launcher configuration;
         # no caller or agent tool supplies a connection URL.
@@ -126,6 +136,8 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                     return await embedding.embed(value)
                 if kind is Capability.MODEL_INFO:
                     return await models.info(value)
+                if kind is Capability.LIST_MCP_TOOLS:
+                    return await listings.list(value)
                 if loops is None:
                     raise TransportError("unavailable", "runtime is not initialized")
                 if kind is Capability.RUN:
@@ -135,6 +147,9 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 raise TransportError("denied", "host requested an unavailable runtime capability")
 
             channel = Channel(socket.send_str, handle)
+            if settings.mcp is not None:
+                # Its complete listings go to the host for the drift check (D98).
+                direct = listings.client = settings.mcp.client(ControlListingReports(channel, None))
             models = RuntimeModels(gateway, frozenset(settings.models), channel)
             embedding = RuntimeEmbeddings(embedder, channel)
             loops = RuntimeLoops(channel, gateway, settings.scratch)
@@ -185,6 +200,8 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
     finally:
         await session.close()
         await gateway.close()
+        if direct is not None:
+            await direct.close()
         if embedder is not None:
             await embedder.close()
 

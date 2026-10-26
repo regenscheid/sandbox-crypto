@@ -62,6 +62,7 @@ from sandbox_science.policy.detection import (
     ACTION_URL,
     DAILY_CEILING,
     HOLD_TIMEOUT,
+    LISTING_REPORT_GRACE,
     RULE_PREFIX,
     TOOL_LIST_DRIFT,
     Call,
@@ -69,6 +70,7 @@ from sandbox_science.policy.detection import (
     DriftLedger,
     Holds,
     Subject,
+    UnreadListings,
     action_like,
     pin_digest,
 )
@@ -360,6 +362,7 @@ class PolicyMiddleware:
         requests: Callable[[int], Iterable[Record]] | None = None,
         listings: ToolListings | None = None,
         response_statuses: bool = False,
+        listing_report_grace: timedelta = LISTING_REPORT_GRACE,
     ) -> None:
         """``archives``, when given, names the opam packages of escalated opam archives.
 
@@ -370,7 +373,9 @@ class PolicyMiddleware:
         ``listings`` holds pinned tool lists, against which the tool listings that
         sandboxes calling MCP servers directly receive are compared. With
         ``response_statuses``, the service reads every response's status, and failures
-        count towards the detection rules (``host-failures``).
+        count towards the detection rules (``host-failures``). ``listing_report_grace`` is
+        how long the agent runtime has to report a listing this service let pass unread
+        before the server's non-read calls ask (D98).
         """
         self.listings = listings
         self._store = store
@@ -391,6 +396,7 @@ class PolicyMiddleware:
         self._detector = Detector()
         self._holds = Holds()
         self._drifts = DriftLedger()
+        self._unread = UnreadListings(listing_report_grace)
         self._hold_lock = threading.Lock()
         self._held_read = datetime.min.replace(tzinfo=UTC)
         self._hold_projects: dict[str, str] = {}
@@ -416,6 +422,7 @@ class PolicyMiddleware:
             return
         self._approvals.load(records)
         self._drifts.load(records)
+        self._unread.load(records)
         for answered in self._holds.load(records):
             project = self._hold_projects.pop(answered.subject.key, None)
             if answered.cleared:
@@ -762,6 +769,8 @@ class PolicyMiddleware:
             events=self._events,
             request_id=request_id,
             drifts=self._drifts,
+            unread=self._unread,
+            now=self._now(),
         )
 
     def _evaluate_mcp(self, facts: HttpRequestFacts, ref: McpRef, loaded: LoadedPolicy) -> Verdict:
@@ -956,14 +965,25 @@ class PolicyMiddleware:
             return decision
         pin = self.listings.pin(server, loaded.policy.mcp.servers[server], revision)
         digest = pin_digest(pin) if pin is not None else None
-        if self._drifts.drifted(server, digest, project) is not None:
-            self._reread()  # an acceptance ends it at once
+        # Every non-read call reads the store's new records first: an acceptance ends a drift,
+        # and a drift the worker recorded from the agent runtime's report, or an unread
+        # listing the runtime has not reported in time, starts one, with no window between.
+        self._refresh_approvals()
         seq = self._drifts.drifted(server, digest, project)
-        if seq is None:
+        if seq is not None:
+            reason = (
+                f"MCP server {server!r}'s tool list drifted from its pinned list (record "
+                f"{seq}): its {decision.effect} calls ask until its classification is accepted "
+                "again"
+            )
+            return _detected(decision, loaded, TOOL_LIST_DRIFT, reason)
+        unread = self._unread.pending(project, server, self._now())
+        if unread is None:
             return decision
         reason = (
-            f"MCP server {server!r}'s tool list drifted from its pinned list (record {seq}): "
-            f"its {decision.effect} calls ask until its classification is accepted again"
+            f"MCP server {server!r}'s tool list passed unread (record {unread}) and the agent "
+            f"runtime has not reported it: its {decision.effect} calls ask until it does, or "
+            "its tools are accepted again"
         )
         return _detected(decision, loaded, TOOL_LIST_DRIFT, reason)
 

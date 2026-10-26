@@ -40,7 +40,13 @@ from sandbox_science.orchestrator.mcp_direct import (
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.mcp_answers import Withheld
-from sandbox_science.policy.openshell import AgentMcpTarget, AnyOf, compile_agent_mcp
+from sandbox_science.policy.openshell import (
+    AgentMcpTarget,
+    AnyOf,
+    ToolAdmission,
+    compile_agent_mcp,
+    tool_admission,
+)
 from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import StoreSink
@@ -78,6 +84,8 @@ class Gateway:
     settings: Path
     check: RequestCheck
     """The production check, over the worker's confirmation route."""
+    tools: ToolAdmission = field(default_factory=ToolAdmission)
+    """The tool names the compiled endpoint admits, which the client shows."""
     reached: list[str] = field(default_factory=list[str])
     server_error: bool = False
     spoof: str | None = None
@@ -214,7 +222,11 @@ async def gateway(
     server = TestServer(app)
     await server.start_server()
     state["gateway"] = Gateway(
-        str(server.make_url("/crypto-research")), events, settings, worker_check
+        str(server.make_url("/crypto-research")),
+        events,
+        settings,
+        worker_check,
+        tool_admission(endpoint),
     )
     try:
         yield state["gateway"]
@@ -269,7 +281,11 @@ def mcp_server(
 
 
 def client(gateway: Gateway, *, checked: bool = True) -> DirectClient:
-    servers = {SERVER: DirectServer(gateway.url, {"CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID"})}
+    servers = {
+        SERVER: DirectServer(
+            gateway.url, {"CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID"}, gateway.tools
+        )
+    }
     return DirectClient(
         servers,
         project="crypto",

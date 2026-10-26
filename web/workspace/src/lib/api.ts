@@ -714,11 +714,14 @@ export const api = {
       `/projects/${part(project)}/mcp-services/${part(server)}/classification/drafts/${part(draft)}/accept`,
       change,
     ),
-  /** Re-accept the service's tool list after drift, with the user's reason (CL-4). */
+  /**
+   * Re-accept the service's tool list after drift, with the user's reason (CL-4): exactly
+   * the drifted listings the review showed, by digest; the worker refuses any other set.
+   */
   acceptDrift: (
     project: string,
     server: string,
-    change: { reason: string; operation_id: string },
+    change: { reason: string; operation_id: string; listings: string[] },
   ) =>
     post<DriftAccepted>(
       `/projects/${part(project)}/mcp-services/${part(server)}/drift/accept`,

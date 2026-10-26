@@ -25,6 +25,9 @@ MAX_TOOLS: Final = 1024
 MAX_DRIFT_TOOLS: Final = 100
 """Tools a drift summary lists of those added, removed and changed (the middleware's
 record lists as many)."""
+MAX_DRIFT_LISTINGS: Final = 64
+"""Unaccepted drifted listings a review shows and a re-acceptance names; past them, the
+operator's ``accept-tools`` ends the drifts."""
 MAX_DRAFTS: Final = 64
 """Drafts one listing carries, newest first."""
 MAX_SERVERS: Final = 256
@@ -95,8 +98,24 @@ class DriftTool(Contract):
     """The digest the listing gave it; None in a record from before digests were kept."""
 
 
+class DriftListing(Contract):
+    """One listing a server's tools drifted to from the pin in force: its digest (None in a
+    record from before listings were digested), when and by whom it was recorded (the
+    middleware, which read it, or ``runtime``, from the agent runtime's report), and how it
+    differs from the pin."""
+
+    listing: Sha256 | None
+    at: AwareDatetime
+    source: Literal["middleware", "runtime"]
+    added: list[DriftTool] = Field(max_length=MAX_DRIFT_TOOLS)
+    removed: list[ToolName] = Field(max_length=MAX_DRIFT_TOOLS)
+    changed: list[DriftTool] = Field(max_length=MAX_DRIFT_TOOLS)
+
+
 class DriftSummary(Contract):
-    """The middleware's latest ``mcp-tools-drift`` record of a server from the pin in force."""
+    """A server's drift from the pin in force: its newest unaccepted ``mcp-tools-drift``
+    record (else its newest), in the top fields, and in ``drifts`` every listing the project
+    has not accepted, newest first, each of which a re-acceptance must name."""
 
     at: AwareDatetime
     pin: Text
@@ -106,6 +125,9 @@ class DriftSummary(Contract):
     changed: list[DriftTool] = Field(max_length=MAX_DRIFT_TOOLS)
     held: bool
     """Whether the server's non-read calls still ask (D103): not re-accepted since."""
+    drifts: list[DriftListing] = Field(max_length=MAX_DRIFT_LISTINGS)
+    """Every listing the project has not accepted from this pin, newest first; the newest
+    drift alone when none is unaccepted."""
 
 
 class ClassificationInForce(Contract):
@@ -187,12 +209,54 @@ class ClassificationAccepted(Contract):
 
 class DriftAcceptance(Contract):
     """The user's re-acceptance of a drifted server's tool list for a project, kept by
-    ``operation_id`` as a draft's acceptance is."""
+    ``operation_id`` as a draft's acceptance is. ``listings`` are the digests of the drifted
+    listings the review showed; the worker refuses them unless they are exactly those the
+    project has not accepted, so nothing the user did not see is accepted."""
 
     project: Identifier
     operation_id: OperationId
     reason: Annotated[str, StringConstraints(min_length=1, max_length=MAX_REASON_CHARS)]
+    listings: list[Sha256] = Field(max_length=MAX_DRIFT_LISTINGS)
 
 
 class DriftAccepted(Contract):
     accepted_at: AwareDatetime
+
+
+MAX_REPORTED_TOOLS: Final = 2048
+"""Tools one reported listing carries."""
+
+
+class ReportedTool(Contract):
+    """One tool of a listing the agent runtime's client read: its name, its digest
+    (``mcp_wire.tool_digest``) and the class its hints give it."""
+
+    name: ToolName
+    digest: Sha256
+    hint: EffectName
+
+
+class ListingReport(Contract):
+    """A complete ``tools/list`` listing of a server the agent runtime's direct client read,
+    for the worker to compare with the project's pin (D98, D103): the server's own tools,
+    before the client removed the denied ones, and the listing's digest (``pin_digest`` of
+    every tool's digest by name). The control service names the project, session and run of
+    the attempt that listed, or of its canaries; the runtime names none."""
+
+    project_id: Identifier
+    server: Identifier
+    session: Identifier | None = None
+    run: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$")] | None = (
+        None
+    )
+    tools: tuple[ReportedTool, ...] = Field(max_length=MAX_REPORTED_TOOLS)
+    listing: Sha256
+
+
+class ListingReported(Contract):
+    """The worker's answer: whether the listing drifted from the project's pin, and the
+    ``mcp-tools-drift`` record it appended (none for a listing whose drift is the one in
+    force already, or that matches its pin)."""
+
+    drifted: bool
+    record: int | None = Field(default=None, ge=1)

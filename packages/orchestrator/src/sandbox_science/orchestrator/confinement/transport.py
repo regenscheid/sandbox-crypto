@@ -72,6 +72,15 @@ class Capability(StrEnum):
     FINALIZE = "finalize"
     CONFIRM_REQUEST = "confirm_request"
     """Whether one MCP permission request is a call's, for the attempt's project (D98)."""
+    PUBLISH_MCP_BINARY = "publish_mcp_binary"
+    """Runtime to host: keep one binary item of a direct-path connector call's result as an
+    artifact revision of the attempt's run (D98)."""
+    REPORT_MCP_LISTING = "report_mcp_listing"
+    """Runtime to host: a complete listing the runtime's direct MCP client read, for the
+    worker's drift check against the project's pin (D98, D103)."""
+    LIST_MCP_TOOLS = "list_mcp_tools"
+    """Host to runtime: one bounded canary listing of a server's tools through the runtime's
+    direct MCP client, never a tool call (D98, D103)."""
 
 
 class Request(Contract):

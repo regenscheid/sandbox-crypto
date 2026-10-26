@@ -101,6 +101,8 @@ from sandbox_science.contracts.classifications import (
     ClassificationsInForce,
     DriftAcceptance,
     DriftAccepted,
+    ListingReport,
+    ListingReported,
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.monitor import MonitorWindow, WorkerMonitor
@@ -567,6 +569,11 @@ class WorkerClient:
         return await self._call(
             "POST", f"/v1/permission-requests/{seq}/confirm", PermissionConfirmed, asked
         )
+
+    async def report_mcp_listing(self, report: ListingReport) -> ListingReported:
+        """Report a listing the agent runtime's direct client read, for the worker to compare
+        with the project's pin and record a drift (D98): any client, for its own projects."""
+        return await self._call("POST", "/v1/mcp-listings", ListingReported, report)
 
     # Monitor figures, for the workspace's Monitor view (D103).
 

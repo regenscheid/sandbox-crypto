@@ -11,7 +11,10 @@ rules and records it.
 The answers to its ``tools/list`` requests are read whole before the sandbox gets them
 (``ListingCheck``): the tools the policy denies are dropped and the rest marked with their
 class and whether they escalate, as the MCP proxy does (``sandbox_science.policy.
-mcp_answers``), and a drift from the server's pinned list is a finding.
+mcp_answers``), and a drift from the server's pinned list is a finding. An event stream
+OpenShell does not offer whole passes unread, recorded (``ListingCheck.unread``): the agent
+runtime's client filters it and reports it, and the worker records its drift with the
+same code (``sandbox_science.policy.mcp_listings``).
 
 The ``Sandbox-Science-Session`` and ``Sandbox-Science-Run`` headers come from the agent's
 sandbox, so they are attribution, never authorization: they are recorded with the call and
@@ -27,14 +30,28 @@ import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Final, cast
 
 from sandbox_science.policy import LoadedPolicy, mcp_wire
 from sandbox_science.policy.classification import ServerClassification, server_classification
-from sandbox_science.policy.detection import DRIFT_RECORD, DriftLedger, pin_digest
+from sandbox_science.policy.detection import (
+    DRIFT_RECORD,
+    DriftLedger,
+    UnreadListings,
+    pin_digest,
+)
 from sandbox_science.policy.effects import EffectClass
 from sandbox_science.policy.mcp_answers import Rewrite, rewrite_answer
+from sandbox_science.policy.mcp_listings import (
+    DRIFT_FINDING,
+    LISTING_UNREAD_RECORD,
+    MAX_DRIFT_NAMES,
+    Drift,
+    drift_record,
+    listing_drift,
+)
 from sandbox_science.policy.mcp_wire import ListedTool, McpWireError
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import mcp_server_endpoint
@@ -69,10 +86,7 @@ could not inspect: blocked, since passing it would offer the agent tools it cann
 LISTINGS_OFF: Final = "mcp_listings_off"
 """A sandbox that calls MCP servers directly, served by a middleware that does not inspect
 their answers (``mcp_listings``): its listings would keep denied tools, so it is refused."""
-MAX_DRIFT_NAMES: Final = 100
-"""Tool names a drift record lists of those added, removed and changed."""
-DRIFT_FINDING: Final = "tool_list_drift"
-"""The finding a listing that differs from its pin raises (D96)."""
+__all__ = ["DRIFT_FINDING", "LISTING_UNREAD_RECORD", "MAX_DRIFT_NAMES", "Drift"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,24 +277,6 @@ class _Pages:
     tools: list[ListedTool] = field(default_factory=list[ListedTool])
 
 
-@dataclass(frozen=True, slots=True)
-class Drift:
-    """How a server's complete tool listing differs from its pinned list."""
-
-    server: str
-    added: tuple[str, ...]
-    removed: tuple[str, ...]
-    changed: tuple[str, ...] = ()
-    """Pinned tools whose name, description or input schema changed."""
-    digests: Mapping[str, str] = field(default_factory=dict[str, str])
-    """The listing's digest of each added and changed tool (``mcp_wire.tool_digest``)."""
-    hints: Mapping[str, str] = field(default_factory=dict[str, str])
-    """The class each added tool's hints give it (D96)."""
-    listing: str | None = None
-    """The digest of the whole listing (``pin_digest`` of every tool's digest by name),
-    which an acceptance accepts: the same listing seen again is no new drift."""
-
-
 class ToolListings:
     """Reads the tool listings sandboxes receive: their tools' hints, which later calls are
     decided with, and drift from the pinned lists (D96's drift test).
@@ -353,21 +349,7 @@ class ToolListings:
         pinned = listing.pin
         if pinned is None:
             return None
-        changed = tuple(
-            sorted(
-                name
-                for name, digest in pinned.items()
-                if digest is not None and name in seen and seen[name].digest != digest
-            )
-        )
-        added = tuple(sorted(set(seen) - set(pinned)))
-        removed = tuple(sorted(set(pinned) - set(seen)))
-        if not (added or removed or changed):
-            return None
-        digests = {name: seen[name].digest for name in (*added, *changed)}
-        hints = {name: seen[name].hint.value for name in added}
-        whole = pin_digest({name: tool.digest for name, tool in seen.items()})
-        return Drift(listing.server, added, removed, changed, digests, hints, whole)
+        return listing_drift(listing.server, pinned, seen)
 
 
 def load_tool_pins(path: Path) -> ToolListings:
@@ -413,11 +395,15 @@ class ListingCheck:
         events: EventSink,
         request_id: str,
         drifts: DriftLedger | None = None,
+        unread: UnreadListings | None = None,
+        now: datetime | None = None,
     ) -> None:
         """``drifts``, when given, learns of a drift at once: until its server's
-        classification is accepted again, its non-read calls ask (D103)."""
+        classification is accepted again, its non-read calls ask (D103). ``unread`` learns
+        of a listing passed unread at ``now``: the runtime must report it in time (D98)."""
         self._listings, self._listing, self._events = listings, listing, events
         self._drifts = drifts
+        self._unread, self._now = unread, now
         self._request_id = request_id
         self._stream = stream
         self._body = bytearray()
@@ -455,10 +441,30 @@ class ListingCheck:
             self._record(drift)
         return ListingOutcome(rewritten if self._listing.rewrite is not None else body, drift)
 
+    def unread(self) -> None:
+        """Record that this listing passes unread: an event stream OpenShell would not
+        offer whole. The agent runtime's client filters it and reports it (D98)."""
+        pinned = self._listing.pin
+        seq: int | None = None
+        try:
+            seq = self._events.record(
+                LISTING_UNREAD_RECORD,
+                {
+                    **self._listing.subject,
+                    "request_id": self._request_id,
+                    "pin": pin_digest(pinned) if pinned is not None else None,
+                },
+            )
+        except Exception:
+            _log.exception("could not record the unread listing of %s", self._listing.server)
+        project = self._listing.subject.get("project")
+        if self._unread is not None and self._now is not None and isinstance(project, str):
+            # Known even when unrecorded: the runtime's report is due all the same.
+            self._unread.note(project, self._listing.server, seq, self._now)
+
     def _record(self, drift: Drift) -> None:
         pinned = self._listing.pin
         pin = pin_digest(pinned) if pinned is not None else None
-        added, changed = drift.added[:MAX_DRIFT_NAMES], drift.changed[:MAX_DRIFT_NAMES]
         if (
             self._drifts is not None
             and drift.listing is not None
@@ -467,24 +473,7 @@ class ListingCheck:
             return  # the drift in force already, accepted for some projects or not
         try:
             seq = self._events.record(
-                DRIFT_RECORD,
-                {
-                    **self._listing.subject,
-                    "request_id": self._request_id,
-                    "finding": DRIFT_FINDING,
-                    "pin": pin,
-                    "listing": drift.listing,
-                    "added": list(added),
-                    "removed": list(drift.removed[:MAX_DRIFT_NAMES]),
-                    "changed": list(changed),
-                    "digests": {name: drift.digests[name] for name in (*added, *changed)},
-                    "hints": {name: drift.hints[name] for name in added},
-                    "counts": {
-                        "added": len(drift.added),
-                        "removed": len(drift.removed),
-                        "changed": len(drift.changed),
-                    },
-                },
+                DRIFT_RECORD, drift_record(drift, pin, self._listing.subject, self._request_id)
             )
         except Exception:
             _log.exception("could not record the tool list drift of %s", drift.server)

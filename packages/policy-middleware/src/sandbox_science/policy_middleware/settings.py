@@ -11,6 +11,7 @@ ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal", "10.0.0.2"]
 package_cache_url = "http://127.0.0.1:8090"   # optional: names opam packages in escalations
 mcp_listings = true                           # for direct MCP: filter tool listings (D98)
+# listing_report_grace = 30                    # seconds the runtime has to report an unread listing
 mcp_tool_pins = "mcp-tools.json"              # optional: {"<server>": ["<tool>", ...]}
 response_statuses = true                      # optional: count 4xx/5xx for detection (D103)
 
@@ -101,6 +102,10 @@ class Settings(_Model):
     mcp_tool_pins: Path | None = None
     """A JSON file of each MCP server's pinned tool names, over its classification's pins;
     it implies ``mcp_listings``."""
+    listing_report_grace: Annotated[float, Field(ge=1, le=3600)] = 30.0
+    """Seconds the agent runtime has to report a listing this service let pass unread (an
+    event stream OpenShell would not offer whole, D98) before the server's non-read calls
+    ask, as for an unknown listing."""
     response_statuses: bool = False
     """Read every response's status (``HttpResponsePreReturn`` preflight, which costs one
     exchange per response), so that 4xx and 5xx answers count towards the ``host-failures``

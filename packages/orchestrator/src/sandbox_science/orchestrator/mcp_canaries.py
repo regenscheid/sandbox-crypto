@@ -16,9 +16,10 @@ result that is not ``listed`` counts as a change too, from no earlier result, so
 down from the start is noticed. The runner prunes each server's rows to
 ``RETENTION_DAYS`` and ``RETENTION_ROWS`` after each run, every server's.
 
-The direct path (D98 prototype) has no trusted-side listing: the policy middleware
-reads listings only as they pass from a server to a sandbox. A deployment without the
-proxy runs no canaries.
+On the direct path (D98 prototype) no trusted service reaches a server: the control
+service's runner asks the agent runtime to list through its own direct client instead
+(``confinement.canaries.RuntimeSource``, the ``list_mcp_tools`` request), with the same
+``list_tools`` and bounds.
 """
 
 from __future__ import annotations

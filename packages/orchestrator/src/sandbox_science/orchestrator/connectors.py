@@ -65,7 +65,7 @@ import re
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -529,6 +529,11 @@ class Connectors:
         """Offer only the tools the proxy classes ``read``: a delegated check's (DA-1)."""
         self.disabled = disabled
         self.on_approval = on_approval
+        self.path: Literal["proxy", "direct"] = "proxy"
+        """The path the run's connector calls take: through the MCP proxy, from the host's
+        harness, or ``direct``, made by the agent runtime's own client (D98), which hands
+        binary results to the host over ``publish_mcp_binary``. Nothing sets ``direct`` yet:
+        the runtime's client does not make the agent's calls, so that capability is off."""
         self.binaries = binaries
         """Keeps a result's binary items (as artifacts) and words the note that replaces
         each; without it, they are not shown and not kept."""

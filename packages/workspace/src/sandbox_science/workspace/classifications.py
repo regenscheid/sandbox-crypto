@@ -15,7 +15,8 @@ Routes (``…`` is ``/api/v0/projects/{project}``):
 - ``GET …/mcp-services/{server}/classification/drafts``: its drafts.
 - ``POST …/mcp-services/{server}/classification/drafts/{draft}/accept`` with
   ``{"yaml", "reason", "operation_id"}``: accept the (edited) draft.
-- ``POST …/mcp-services/{server}/drift/accept`` with ``{"reason", "operation_id"}``:
+- ``POST …/mcp-services/{server}/drift/accept`` with ``{"reason", "operation_id",
+  "listings"}`` (the drifted listings' digests the review showed):
   re-accept the server's tool list, as ``accept-tools`` does.
 - ``GET …/mcp-services/{server}/classification/revisions/{revision}/export``: the
   project's accepted revision, its YAML exactly as the worker stored it, with the
@@ -38,11 +39,13 @@ from pydantic import BaseModel, Field, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind
 from sandbox_science.contracts.classifications import (
+    MAX_DRIFT_LISTINGS,
     ClassificationAcceptance,
     ClassificationDraft,
     ClassificationInForce,
     DriftAcceptance,
 )
+from sandbox_science.contracts.model import Sha256
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.worker_client import ClassificationExport, WorkerClient
 
@@ -144,6 +147,8 @@ class _DraftAcceptance(Contract):
 class _DriftAcceptance(Contract):
     reason: str = Field(min_length=1, max_length=MAX_REASON)
     operation_id: str = Field(pattern=_OPERATION)
+    listings: list[Sha256] = Field(max_length=MAX_DRIFT_LISTINGS)
+    """The digests of the drifted listings the review showed (``DriftSummary.drifts``)."""
 
 
 def _source(request: web.Request) -> ClassificationSource:
@@ -280,12 +285,16 @@ async def accept_drift(request: web.Request) -> web.Response:
     except ValidationError:
         raise ProjectError(
             ErrorKind.INVALID_REQUEST,
-            f"a re-acceptance is a reason of 1 to {MAX_REASON} characters",
+            f"a re-acceptance is a reason of 1 to {MAX_REASON} characters and the digests "
+            "of the drifted listings it accepts",
         ) from None
     if not body.reason.strip():
         raise ProjectError(ErrorKind.INVALID_REQUEST, "a re-acceptance needs a reason")
     acceptance = DriftAcceptance(
-        project=project, operation_id=body.operation_id, reason=body.reason
+        project=project,
+        operation_id=body.operation_id,
+        reason=body.reason,
+        listings=body.listings,
     )
     answer = await _source(request).accept_classification_drift(server, acceptance)
     return json_answer(dumps(_record(answer, "re-acceptance")))

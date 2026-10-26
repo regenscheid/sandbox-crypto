@@ -9,6 +9,7 @@ import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from dataclasses import replace
 from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
@@ -51,6 +52,8 @@ from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.purpose import without
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
+from .binaries import CallBinaries
+from .listings import WorkerListings, report
 from .models import CallbackModel
 from .requests import confirm
 from .transport import Capability, Channel, TransportError
@@ -63,6 +66,7 @@ from .wire import (
     FoldRequest,
     HookGiven,
     HookRequest,
+    ListingReportRequest,
     LogAppend,
     LogTool,
     LoopState,
@@ -124,6 +128,7 @@ class Prepared:
         self.observed_tool: tuple[ToolCall, ToolOutcome] | None = None
         self.pending_calls: dict[str, ToolCall] = {}
         self.intent: LogTool | None = None
+        self.binaries = CallBinaries()
         self.observation: dict[str, Any] | None = None
         self.observed_slots: set[int] = set()
         self._memory_close: Callable[[], None] | None = None
@@ -228,6 +233,8 @@ class Prepared:
                         "conflict", "tool dispatch has no matching unexecuted intent"
                     )
                 self.tool_notices = []
+                # A call the runtime published results of is the runtime's, not the host's.
+                self.binaries.host_runs(request.call.id)
                 # Original authority, offered tools and trusted gates come from preparation.
                 outcome = await self.toolbox.call(
                     request.call, request.operation, model=request.model, gates=self.hooks
@@ -256,6 +263,13 @@ class Prepared:
                         since=run.context.since,
                     )
                 )
+            if kind is Capability.PUBLISH_MCP_BINARY:
+                # Only the logged intent the host has not executed: a direct-path call the
+                # runtime makes. The host's index names its tool's server (D98).
+                pending = (
+                    self.intent.call if self.intent is not None and self.tool is None else None
+                )
+                return await self.binaries.publish(value, pending, self.toolbox.connectors)
             if kind is Capability.TOOL_DONE:
                 typed(Attempt, value)
                 if self.observed_tool is None:
@@ -406,6 +420,10 @@ class Prepared:
                     self.tool_call.operation,
                 )
                 attach_notices(self.shadow, outcome, self.toolbox.output_chars, self.tool_notices)
+            if kept := self.binaries.recorded(call.id):
+                # The items the runtime kept over publish_mcp_binary, with the call.
+                merged = {**outcome.record, "mcp_binaries": kept, "binary_results": len(kept)}
+                outcome = replace(outcome, record=merged)
             source = {"role": "tool", "tool_call_id": call.id, "content": outcome.text}
         consumed = (
             {key: set(ids) for key, ids in request.consumed.items()}
@@ -542,12 +560,15 @@ class HostLoops:
         model_roles: Mapping[str, frozenset[str]] | None = None,
         run_share: float | None = None,
         requests: RequestCheck | None = None,
+        listings: WorkerListings | None = None,
     ) -> None:
         """``run_share`` is the part of a configured project cost limit one run may use;
         ``requests`` checks a refusal that names an MCP permission request for an attempt
         (``confirm_request``, D98), for the attempt's project only."""
         self.channel, self.projects = channel, projects
         self.requests = requests
+        self.listings = listings
+        """Forwards the listings an attempt's direct client reports to the worker (D98)."""
         self.control, self.model_roles = control, model_roles or {}
         self.run_share = run_share
         self.attempts: dict[str, Prepared] = {}
@@ -683,6 +704,21 @@ class HostLoops:
             # The attempt's project, never one the runtime names: a yes or a no about one
             # request, read from the middleware's records through the worker.
             return await confirm(self.requests, prepared.owner.project, value)
+        if kind is Capability.REPORT_MCP_LISTING:
+            # The attempt's project, session and run, never the runtime's word, and one of
+            # the attempt's connector servers only.
+            connectors = prepared.toolbox.connectors
+            owner = prepared.owner
+            return payload(
+                await report(
+                    self.listings,
+                    typed(ListingReportRequest, value),
+                    project=owner.project,
+                    servers=connectors.servers if connectors is not None else (),
+                    session=owner.session,
+                    run=owner.run,
+                )
+            )
         return await prepared.call(kind, value)
 
     async def run(
