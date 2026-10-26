@@ -679,6 +679,8 @@ export interface Delegation {
   read_entry: boolean | null;
   read_proofs: boolean | null;
   files: Record<string, JsonValue> | null;
+  environment_id: string | null;
+  environment: Record<string, JsonValue> | null;
 }
 
 /** Full provenance or the compact form stored in history and older annotations. */
@@ -1101,7 +1103,7 @@ export type EnvironmentState = "creating" | "ready" | "stopped" | "deleted";
 /** One of the project's environments with its isolation tier (D43). */
 export interface EnvironmentTier {
   environment_id: string;
-  kind: "session" | "job";
+  kind: "session" | "job" | "child";
   profile: string;
   state: EnvironmentState;
   declared_tier: number | null;

@@ -73,6 +73,8 @@ const delegation = (id: string, child: string, fields: Partial<Delegation> = {})
   read_entry: null,
   read_proofs: null,
   files: null,
+  environment_id: null,
+  environment: null,
   ...fields,
 });
 

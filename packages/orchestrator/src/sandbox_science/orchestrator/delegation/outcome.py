@@ -460,6 +460,9 @@ class Outcome(TurnHook):
         self.recorded: dict[str, dict[str, JsonValue]] = {}
         """The latest revision each path got from the run's calls, recorded or published,
         by the path as the run named it (RA-36, RA-38)."""
+        self.published: set[str] = set()
+        """The paths the run published, whose content control retains: a child
+        environment's hand-back names them by revision instead of copying them (CE-6)."""
         self.pinned: list[dict[str, JsonValue]] = []
         """The result files a task declared, pinned to the revisions its calls made."""
         self.revisions: dict[str, set[int]] = {}
@@ -569,6 +572,7 @@ class Outcome(TurnHook):
             path = cast(dict[str, Any], snapshot).get("source_path")
             recorded = published.get("state") == "recorded"
             if recorded and isinstance(ref, dict) and isinstance(path, str):
+                self.published.add(path)
                 pinned = cast(dict[str, Any], ref)
                 self.recorded[path] = {
                     "path": path,

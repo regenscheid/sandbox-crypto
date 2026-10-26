@@ -138,6 +138,35 @@ class JobProfile(KubernetesProfile):
         return self
 
 
+class ChildProfile(KubernetesProfile):
+    """A size and placement a child environment may have (docs/specs/child-environments.md,
+    CE-3): trusted worker configuration, never an agent's. A brief may name one by name;
+    the policy's CPU and memory caps narrow it as they narrow a session's."""
+
+    description: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    isolation_tier: Annotated[int, Field(ge=1, le=3)]
+    """The tier its placement gives (D43): with the pool's declared tier, the lower is the
+    one a request's minimum is checked against; the probe in the sandbox can lower it."""
+    wall_time_max: Annotated[float, Field(gt=0, le=JOB_WALL_TIME_MAX)] = JOB_WALL_TIME_MAX
+    """Seconds a child environment of this profile is kept for its run at most (CE-9)."""
+    schedule_timeout: Annotated[float, Field(gt=0, le=24 * 3600)] = 1800.0
+    """Seconds it may take to be ready, placement and preparation, before the delegation
+    fails with ``environment_unavailable`` (CE-4)."""
+    max_concurrent: Annotated[int, Field(ge=1, le=64)] | None = None
+    """Child environments of this profile at once across the pool."""
+    stage_max_bytes: Annotated[int, Field(ge=0, le=64 * 1024**3)] = DEFAULT_STAGE_MAX_BYTES
+    """Bytes of inputs copied in (CE-7)."""
+    collect_max_bytes: Annotated[int, Field(ge=0, le=256 * 1024**3)] = DEFAULT_COLLECT_MAX_BYTES
+    """Bytes a hand-back copies back (CE-6)."""
+
+    @model_validator(mode="after")
+    def _runtime_for_tier(self) -> Self:
+        # As for a pool (JS-8): a tier above 1 is a VM's, which only a runtime class gives.
+        if self.isolation_tier >= 2 and self.runtime_class_name is None:
+            raise ValueError("a child profile of isolation tier 2 or 3 names a runtime_class_name")
+        return self
+
+
 class EnvironmentSettings(_Model):
     """How the worker creates research sandboxes: policies, targets and images (D73)."""
 
@@ -195,10 +224,36 @@ class EnvironmentSettings(_Model):
     """Seconds a failed job's stopped sandbox is kept, its disk only (JS-25)."""
     job_retention_per_project: Annotated[int, Field(ge=0, le=16)] = 2
     """Retained job sandboxes per project; one more releases the oldest early."""
+    child_profiles: dict[JobProfileName, ChildProfile] = Field(default_factory=dict, max_length=32)
+    """The sizes a child environment may have (CE-3); none, the default, offers none."""
+    default_child_profile: JobProfileName | None = None
+    """The child profile a request that names none gets; without it, the only one."""
+    max_child_environments: Annotated[int, Field(ge=0, le=64)] = 2
+    """Child environments not released or retained at once across the pool (CE-9)."""
+    child_retention: Annotated[float, Field(ge=0, le=30 * 24 * 3600)] = 3 * 24 * 3600.0
+    """Seconds a child environment whose hand-back was incomplete is kept stopped (CE-4)."""
+    child_retention_per_project: Annotated[int, Field(ge=0, le=16)] = 2
+    """Retained child environments per project; one more releases the oldest early."""
+
+    @property
+    def child_default(self) -> str | None:
+        """The child profile a request that names none gets."""
+        if self.default_child_profile is not None:
+            return self.default_child_profile
+        return next(iter(self.child_profiles)) if len(self.child_profiles) == 1 else None
 
     @property
     def event_store_path(self) -> Path:
         return self.event_store if self.event_store is not None else self.policy_store / "events.db"
+
+    @model_validator(mode="after")
+    def _default_child(self) -> Self:
+        if (
+            self.default_child_profile is not None
+            and self.default_child_profile not in self.child_profiles
+        ):
+            raise ValueError("default_child_profile names no child profile")
+        return self
 
     @model_validator(mode="after")
     def _placement_profiles(self) -> Self:

@@ -70,6 +70,7 @@ from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
+from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, waiting_notice
 from .models import Choice, ModelChoice
 from .outcome import Asked, Target, asked_of, proof_reads
 from .prompt import brief_text, check_task, evidence_line, task_text
@@ -126,6 +127,8 @@ class Child:
     """Whether it may delegate tasks of its own, once more (PD-15)."""
     deadline: Deadline = field(default_factory=Deadline)
     """When its end must have stopped its own children, once its parent cancels it."""
+    environment_id: str | None = None
+    """Its own environment, when it has one (CE-1); ``None`` to share the session's."""
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,8 @@ class ChildEnd:
     """The files its calls recorded, as its record keeps them (RA-36)."""
     created: tuple[str, ...] = ()
     """The ledger entries its changes created, by ID (LG-6's ``produced``)."""
+    environment: dict[str, JsonValue] | None = None
+    """How its own environment ended, with the hand-back's account (CE-6, CE-11)."""
 
 
 class ChildRunner(Protocol):
@@ -200,6 +205,7 @@ def observed(end: ChildEnd) -> Ended:
             | "resource_time"
             | "resource_storage"
             | "resource_retention"
+            | "environment_time"
         ):
             # A limit, or the runaway guard: the answer of its report round, if it took
             # one, is the delegation's report (RS-6f).
@@ -252,6 +258,7 @@ class Delegations(TurnHook):
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
+        placement: ChildPlacement | None = None,
     ) -> None:
         """``offer`` says whether the run gets the tools; ``max_turns`` initializes the
         parent's remaining calls; children get their role's configured turn allowance.
@@ -292,6 +299,9 @@ class Delegations(TurnHook):
         self.turns_left = max_turns
         """The run's turns left at its last safe point; zero prevents a new delegation."""
         self.max_chars, self.output_chars = max_chars, output_chars
+        self.placement = placement
+        """The worker's child environments for the session (CE-1); without it, every
+        child shares the session's environment."""
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
         """Outcomes a wait returned that no model call has seen yet."""
@@ -359,11 +369,34 @@ class Delegations(TurnHook):
         planned = await (self._check(brief) if isinstance(brief, CheckBrief) else self._task(brief))
         tokens = planned.tokens  # a soft cap: the child checks in when it reaches it
         delegation_id, run_id = new_id("dlg"), new_id("run")
+        asked = brief.environment if isinstance(brief, TaskBrief) else None
+        where, placed_notice = placement(self.limits.child_environments, planned.kind, asked)
+        environment = None
+        if where == "own" and (self.placement is None or not await self.placement.offered()):
+            # Off at the worker (CE-9): the delegation shares, and says so.
+            where, placed_notice = "shared", NOT_OFFERED
+        if where == "own" and self.placement is not None:
+            # Admitted before the delegation is written: a refusal leaves no delegation,
+            # and nothing is queued or silently shared (CE-9).
+            inputs = planned.brief.get("inputs")
+            # A brief's profile is the worker's to grant: the policy's list, or the
+            # project's own only (CE-3).
+            environment = await self.placement.admit(
+                delegation_id,
+                [str(i) for i in inputs] if isinstance(inputs, list) else [],
+                brief.profile if isinstance(brief, TaskBrief) else None,
+                self.limits.child_profile,
+            )
         started = self.clock.now().astimezone(UTC)
         limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": tokens}
         written: dict[str, JsonValue] = {**planned.brief, "limits": limits}  # for the tree
         if choice is not None:
             written["model"] = choice.recorded()
+        if environment is not None:
+            written["environment"] = "own"
+            written["profile"] = environment.profile
+        elif asked is not None:
+            written["environment"] = "shared"
         delegation = Delegation(
             delegation_id=delegation_id,
             parent=self.parent,
@@ -371,6 +404,7 @@ class Delegations(TurnHook):
             kind=planned.kind,
             brief=written,
             started_at=started,
+            environment_id=environment.environment_id if environment is not None else None,
         )
         child = Child(
             delegation_id,
@@ -383,6 +417,7 @@ class Delegations(TurnHook):
             alias=None if choice is None else choice.alias,
             track=planned.track,
             delegate=planned.delegate,
+            environment_id=delegation.environment_id,
         )
         try:
             # The cap is the session's tree's, counted over every level, and checked as
@@ -396,8 +431,14 @@ class Delegations(TurnHook):
                 blueprint=self.blueprint(child) if self.blueprint is not None else None,
                 operation=operation,
             )
-        except ControlError as error:
-            raise WorkerAPIError(ErrorKind(error.kind), error.message) from None
+        except BaseException as error:
+            # Refused or failed as it was written: its environment goes too.
+            if environment is not None and self.placement is not None:
+                with contextlib.suppress(Exception):
+                    await self.placement.end(environment.environment_id, "delegation_ended")
+            if isinstance(error, ControlError):
+                raise WorkerAPIError(ErrorKind(error.kind), error.message) from None
+            raise
         stop, entered = asyncio.Event(), asyncio.Event()
         task = asyncio.create_task(
             self._run(child, stop, entered), name=f"delegation {delegation_id}"
@@ -420,6 +461,15 @@ class Delegations(TurnHook):
         }
         if choice is not None:
             started_with["model"] = choice.recorded()
+        if environment is not None:
+            started_with["environment"] = {
+                "environment_id": environment.environment_id,
+                "profile": environment.profile,
+                "state": environment.phase,
+                "notice": waiting_notice(delegation_id),
+            }
+        elif placed_notice is not None:
+            started_with["environment"] = {"placement": "shared", "notice": placed_notice}
         return dump(started_with), {"delegation": started_with}
 
     async def _check(self, brief: CheckBrief) -> _Planned:
@@ -582,6 +632,7 @@ class Delegations(TurnHook):
                 end.read_entry,
                 end.read_proofs,
                 end.files,
+                end.environment,
             )
             created = end.created
         except asyncio.CancelledError:
@@ -594,6 +645,19 @@ class Delegations(TurnHook):
             ending = Ending(reason, reason)
         except Exception:
             _log.exception("delegated run %s failed", child.run_id)
+        if (
+            child.environment_id is not None
+            and ending.environment is None
+            and self.placement is not None
+        ):
+            # The run never reached its hand-back: the environment ends without one, and
+            # is kept when it was ready (CE-4).
+            try:
+                found = await self.placement.close(child.environment_id, child.delegation_id, None)
+            except Exception:
+                _log.exception("child environment %s was not ended", child.environment_id)
+            else:
+                ending = replace(ending, environment=found)
         await self._end(child.delegation_id, ending, created)
 
     async def _end(self, delegation_id: str, ending: Ending, created: tuple[str, ...] = ()) -> None:
@@ -808,6 +872,11 @@ class Delegations(TurnHook):
                 )
                 for delegation_id, _ in abandoned:
                     _log.warning("delegation %s lost its process: interrupted", delegation_id)
+            if self.placement is not None and not self.recovering:
+                # Child environments nothing will use: never written, or left idle (CE-4).
+                # Also under "off": a project switched off may still hold children. A
+                # recovering run's Resume decides its children's environments itself.
+                await reconcile(self.placement, self.records, self.limits)
         try:
             yield
         finally:
@@ -1100,6 +1169,10 @@ def _ending(delegation: Delegation) -> dict[str, object]:
     }
     if delegation.refused is not None:
         found["refused"] = delegation.refused
+    if delegation.environment is not None:
+        found["environment"] = delegation.environment
+    elif delegation.environment_id is not None:
+        found["environment"] = {"environment_id": delegation.environment_id}
     return found
 
 

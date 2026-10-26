@@ -77,6 +77,8 @@ const delegation = (fields: Partial<Delegation> = {}): Delegation => ({
   read_entry: true,
   read_proofs: false,
   files: null,
+  environment_id: null,
+  environment: null,
   ...fields,
 });
 

@@ -72,6 +72,9 @@ async def serve(settings: Settings) -> None:
                 _log.info("deleted %d blobs no shared file uses", removed)
         await manager.start()
         await parts.provisioner.start()
+        if parts.children is not None:
+            # Child environments a previous worker was making fail; the rest stay (CE-12).
+            await parts.children.start()
         if environments is not None:
             # Before serving: creations an operator rolled back with the worker stopped
             # still owe the deletion hooks this worker registered (B3).

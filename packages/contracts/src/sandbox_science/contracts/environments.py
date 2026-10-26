@@ -96,11 +96,18 @@ class EnvironmentInfo(Contract):
     port of a host that a rule for any port reaches (D95)."""
     created_at: datetime
     updated_at: datetime
-    kind: Literal["session", "job"] = "session"
+    kind: Literal["session", "job", "child"] = "session"
     """``job`` for a job sandbox (D93): made by the worker for one job, from a session
-    environment's image and policy, and named by no agent tool (JS-1)."""
+    environment's image and policy, and named by no agent tool (JS-1). ``child`` for a
+    child environment (CE-1): made the same way for one delegated run, which works in it
+    as in a session environment."""
     job_id: Identifier | None = None
     """For a job sandbox: the job's execution ID."""
+    delegation_id: Identifier | None = None
+    """For a child environment: the delegation it was made for (CE-1, CE-11)."""
+    session_id: Identifier | None = None
+    """For a child environment: the session whose delegated run works in it; only that
+    session's contexts may name it."""
 
 
 class HostPort(Contract):

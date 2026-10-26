@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.contracts.child_environments import is_child_environment
 
 from .aio import threaded
 from .context.history.receipts import Receipts
@@ -124,7 +125,10 @@ class AttemptFinalizer:
         return settlement
 
     async def release(self, finished: Finished) -> Cleanup:
-        """Keep resumable child kernels; release only completed or stopped work."""
+        """Keep resumable child kernels; release only completed or stopped work. A child
+        in its own environment had its kernels released with it (CE-4)."""
+        if is_child_environment(finished.context.environment_id):
+            return "released"
         work = await threaded(
             WorkRecords(self.projects.control).for_run,
             finished.context.project_id,

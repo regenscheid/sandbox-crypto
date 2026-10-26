@@ -119,6 +119,13 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 changes["models"] = tuple(m.strip() for m in args.models.split(",") if m.strip())
             if args.fallback is not None:  # empty: none
                 changes["fallback"] = args.fallback.strip() or None
+            if args.child_environments is not None:
+                changes["child_environments"] = args.child_environments
+            if args.child_profile is not None:  # empty: the pool's default
+                changes["child_profile"] = args.child_profile.strip() or None
+            for name in ("child_idle_max", "child_orphan_grace", "child_orphan_idle"):
+                if (value := getattr(args, name)) is not None:
+                    changes[name] = value or None if name == "child_idle_max" else value
             found = (
                 delegations.configure(args.project, **changes)
                 if changes
@@ -143,7 +150,8 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 f"active seconds: {found.research_seconds or 'off'} "
                 f"(ceiling {found.time_ceiling_seconds}); retained artifact bytes: "
                 f"{found.storage_bytes or 'off'} (ceiling {found.storage_ceiling_bytes}); "
-                f"root resource renewal: {found.root_resource_renewal}"
+                f"root resource renewal: {found.root_resource_renewal}; child environments: "
+                f"{found.child_environments} (profile {found.child_profile or 'the pool default'})"
             )
         case "macros":
             from .documents import USER, DocumentStore, store_path
@@ -626,6 +634,34 @@ def add_parsers(commands: Any) -> None:
         "--fallback",
         help="delegation: the alias a delegated run calls when the gateway lists none of "
         "its own; empty for none (the default)",
+    )
+    projects.add_argument(
+        "--child-environments",
+        choices=("off", "tasks", "all"),
+        help="delegation: which delegated runs work in an environment of their own, made "
+        "from the session's: none (off, the default), tasks, or all, checks included",
+    )
+    projects.add_argument(
+        "--child-idle-max",
+        type=int,
+        help="delegation: seconds an ended delegation's child environment may sit unused "
+        "before it is released; 0 for --child-orphan-idle's (the default)",
+    )
+    projects.add_argument(
+        "--child-orphan-grace",
+        type=int,
+        help="delegation: seconds a child environment no delegation names is kept (900)",
+    )
+    projects.add_argument(
+        "--child-orphan-idle",
+        type=int,
+        help="delegation: seconds an ended delegation's child environment is kept unused "
+        "without --child-idle-max (86400)",
+    )
+    projects.add_argument(
+        "--child-profile",
+        help="delegation: the worker's child profile for those environments; empty for the "
+        "pool's default",
     )
     sessions = commands.add_parser(
         "session",
