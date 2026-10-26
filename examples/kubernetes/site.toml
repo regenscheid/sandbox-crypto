@@ -46,6 +46,12 @@ node_selector = { "example.org/kata-capable" = "true" }
 requests = { cpu_millicores = 1000, memory_mib = 2048, ephemeral_storage_mib = 1024 }
 limits = { cpu_millicores = 2000, memory_mib = 4096, ephemeral_storage_mib = 2048 }
 
+# The worker's options. label_environments gives each sandbox the label
+# sandbox-science.io/environment=<ID> on the OpenShell sandbox (not on the Kubernetes
+# Sandbox object or Pod); confirmed on an OpenShell 0.1.5 gateway.
+# [worker]
+# label_environments = false
+
 # Research base profiles: image by digest and Kata placement (examples/kubernetes/worker-placement.toml).
 [profiles.minimal]
 image = "YOUR_REGISTRY/minimal@sha256:YOUR_VERIFIED_DIGEST"

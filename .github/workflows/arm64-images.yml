@@ -92,9 +92,32 @@ jobs:
           esac
           echo "profiles=$profiles" >> "$GITHUB_OUTPUT"
 
-  publish-platform:
+  check-visibility:
+    # Every image package stays private. This runs before any build pushes; a package GitHub
+    # has not created yet passes, and each publish job checks it again after its push.
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
     needs: publish-inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse to push to a public package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PROFILES: ${{ needs.publish-inputs.outputs.profiles }}
+        run: |
+          mapfile -t profiles < <(python3 -c 'import json, os; print(*json.loads(os.environ["PROFILES"]), sep="\n")')
+          images/check_package_visibility.sh before "${profiles[@]}"
+
+  publish-platform:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+    needs: [publish-inputs, check-visibility]
     runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     timeout-minutes: 120
     strategy:
@@ -130,10 +153,11 @@ jobs:
           ACTOR: ${{ github.actor }}
           PROFILE: ${{ matrix.profile }}
         run: |
+          # check-visibility ran before any build; a package created by this push is
+          # checked below, and the other architecture's job may be pushing it as well.
           if [ "$PROFILE" = crypto-base ]; then
-            package="${REPOSITORY#*/}%2Fcrypto-base"
-            visibility=$(gh api "/users/${REPOSITORY%%/*}/packages/container/$package" --jq .visibility)
-            test "$visibility" = private || { echo 'crypto-base package is not private' >&2; exit 1; }
+            # GPL tools: its private package must exist already, so it is never created here.
+            images/check_package_visibility.sh after "$PROFILE"
             export PRIVATE_REGISTRY_CONFIRMED=1
           fi
           config=$(mktemp -d)
@@ -143,6 +167,7 @@ jobs:
           docker buildx create --name "$BUILDER" --driver docker-container --use
           docker buildx inspect "$BUILDER" --bootstrap
           images/publish_arch.sh "$PROFILE" "ghcr.io/$REPOSITORY/$PROFILE" "$GITHUB_RUN_ID"
+          images/check_package_visibility.sh after "$PROFILE"
 
   merge-platforms:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
@@ -172,10 +197,8 @@ jobs:
           recipe_revision "$PROFILE"
           case "$revision" in *-dirty) echo 'refusing a dirty recipe' >&2; exit 1;; esac
           private=()
+          images/check_package_visibility.sh after "$PROFILE"
           if [ "$PROFILE" = crypto-base ]; then
-            package="${REPOSITORY#*/}%2Fcrypto-base"
-            visibility=$(gh api "/users/${REPOSITORY%%/*}/packages/container/$package" --jq .visibility)
-            test "$visibility" = private || { echo 'crypto-base package is not private' >&2; exit 1; }
             private=(--private-registry-confirmed)
           fi
           config=$(mktemp -d)

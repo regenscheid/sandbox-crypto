@@ -95,6 +95,16 @@ class Runtime(Placement):
     recover_infrastructure: bool = False
 
 
+class Worker(Model):
+    """The worker's own options, ``[worker]`` in the site file."""
+
+    label_environments: bool = False
+    """Give each sandbox the worker creates the label ``sandbox-science.io/environment``
+    (``worker.toml``'s ``openshell.environments.label_environments``). The key was
+    confirmed on the test instance's OpenShell 0.1.5 gateway on 2026-10-26; the label
+    appears on the OpenShell sandbox, not on the Kubernetes Sandbox object or its Pod."""
+
+
 class Identity(Model):
     """An OpenShell CLI client identity issued by the gateway's client CA (PEM files)."""
 
@@ -158,6 +168,7 @@ class Site(Model):
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     model: ModelConfig
     runtime: Runtime
+    worker: Worker = Field(default_factory=Worker)
     profiles: dict[Identifier, Profile] = Field(min_length=1, max_length=32)
     openshell: OpenShell
     cache: dict[str, JsonValue] | None = None

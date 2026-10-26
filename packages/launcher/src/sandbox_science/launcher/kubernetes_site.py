@@ -274,6 +274,7 @@ def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -
             "targets": f"{PRIVATE}/targets.yaml",
             "ceiling": f"{PRIVATE}/ceiling.yaml",
             "admin_hosts": _admin_hosts(site),
+            "label_environments": site.worker.label_environments,
             "profiles": {name: profile.image for name, profile in site.profiles.items()},
             "kubernetes": {
                 name: profile.profile().model_dump(mode="json")
