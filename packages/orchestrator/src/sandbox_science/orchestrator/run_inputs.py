@@ -178,11 +178,15 @@ class RecordInputs(TurnHook):
         predecessor: str | None = None,
         accept_changes: bool = False,
         changed: Callable[[str], None] | None = None,
+        accepted_by: str = "the user's Resume",
     ) -> None:
         self.store, self.context, self.run = store, context, run
         self.request, self.configuration = request, configuration
         self.predecessor = predecessor
         self.accept_changes, self.changed = accept_changes, changed
+        self.accepted_by = accepted_by
+        """Who went on past the change: the user's Resume, or a parent reopening its
+        returned task (PD-46)."""
         """A continuation whose prompt, tools or skills changed since the attempt it
         continues stops, unless the user's own Resume started it (``accept_changes``): it
         then goes on, and the change is recorded with the run's starting inputs and said
@@ -207,8 +211,8 @@ class RecordInputs(TurnHook):
                     if self.changed is not None:
                         self.changed(
                             "this continuation runs with other prompt, tool or skill pins than "
-                            f"the attempt it continues, {self.predecessor}; the user's Resume "
-                            "accepted the change"
+                            f"the attempt it continues, {self.predecessor}; "
+                            f"{self.accepted_by} accepted the change"
                         )
             await threaded(
                 self.store.save,

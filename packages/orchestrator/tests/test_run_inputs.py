@@ -385,7 +385,36 @@ async def test_the_users_resume_goes_on_with_changed_pins_and_says_so(
     )
     assert result.stopped == "answered"
     assert len(said) == 1
-    assert "accepted the change" in said[0]
+    assert "the user's Resume accepted the change" in said[0]
     saved = store.get("p", "s", continued)
     original = store.get("p", "s", RUN)
     assert saved.pins != original.pins  # the change is on record, not hidden
+    # A parent reopening its returned task goes on past a change as its own (PD-46).
+    reopened = "20261017T030004000000Z-reopened"
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)",
+            ("p", "s", reopened, RUN, continued),
+        )
+    await run_task(
+        ScriptedModel([ModelTurn("Reopened")]),
+        toolbox(never),
+        "Compute",
+        run_id=reopened,
+        system="Reopened system",
+        hooks=(
+            RecordInputs(
+                store,
+                CONTEXT,
+                reopened,
+                request,
+                {},
+                predecessor=continued,
+                accept_changes=True,
+                changed=said.append,
+                accepted_by="the parent's reopening of its returned task",
+            ),
+        ),
+    )
+    assert "the parent's reopening of its returned task accepted the change" in said[1]
+    assert "Resume" not in said[1]

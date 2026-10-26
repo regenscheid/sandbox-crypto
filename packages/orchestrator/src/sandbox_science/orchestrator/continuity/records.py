@@ -717,6 +717,20 @@ class WorkRecords:
                 (reason[:1000], project, session, project, session, run, project, session, run),
             )
 
+    def end_unstarted(
+        self, project: str, session: str, work: str, runs: tuple[str, ...], reason: str
+    ) -> None:
+        """Stop a delegated work whose run ended before its loop began, such as at its
+        environment's wall time (CE-9), so that it holds its parent's completion no
+        longer: its delegation's outcome says how it ended."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_work SET state='stopped',reason=? WHERE project=? AND session=? "
+                "AND work=? AND parent IS NOT NULL AND state NOT IN ('completed','stopped') "
+                "AND current IN (SELECT value FROM json_each(?))",
+                (reason[:1000], project, session, work, json.dumps(list(runs))),
+            )
+
     def unfinished(self, project: str, session: str, work: str) -> bool:
         with self.control.read() as tx:
             return _pending_children(tx.sql, project, session, work)

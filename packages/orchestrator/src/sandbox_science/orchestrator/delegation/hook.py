@@ -59,11 +59,12 @@ from typing import Any, Final, Literal, Protocol, cast
 from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, new_id
+from sandbox_science.contracts.child_environments import RetainedFile
 from sandbox_science.orchestrator.aio import held, threaded
 from sandbox_science.orchestrator.context.history.collections import Collection, Members
 from sandbox_science.orchestrator.continuity.blueprints import Blueprint
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
+from sandbox_science.orchestrator.hooks import Closing, Notice, Point, Refusal, RunView, TurnHook
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.notices import (
@@ -332,6 +333,9 @@ class Delegations(TurnHook):
         child shares the session's environment."""
         self.release_kernel = release_kernel
         self.notify = notify
+        self.fence: Callable[[str], Awaitable[Refusal | None]] | None = None
+        """The run's gates, asked of a reopening as of a ``delegate`` call (PD-46): the
+        harness sets it once the run's hooks are assembled."""
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
         """Outcomes a wait returned that no model call has seen yet."""
@@ -690,10 +694,12 @@ class Delegations(TurnHook):
             and ending.environment is None
             and self.placement is not None
         ):
-            # The run never reached its hand-back: the environment ends without one, and
-            # is kept when it was ready (CE-4).
+            # The run never reached its hand-back: the environment ends without one of its
+            # own, and is kept when it was ready (CE-4); a reopened task's earlier results'
+            # files still come back (CE-6, PD-46).
             try:
-                found = await self.placement.close(child.environment_id, child.delegation_id, None)
+                plan = await self._earlier_plan(child.delegation_id)
+                found = await self.placement.close(child.environment_id, child.delegation_id, plan)
             except Exception:
                 _log.exception("child environment %s was not ended", child.environment_id)
             else:
@@ -701,6 +707,19 @@ class Delegations(TurnHook):
         await self._end(
             child.delegation_id, ending, created, run=run_name(child.started_at, child.run_id)
         )
+
+    async def _earlier_plan(
+        self, delegation_id: str
+    ) -> tuple[tuple[str, ...], tuple[RetainedFile, ...]] | None:
+        """The hand-back of a delegation's earlier results, a reopened task's; ``None``
+        when it has none."""
+        context = self.context
+        files, named = await threaded(
+            self.records.union_plan, context.project_id, context.session_id, delegation_id, ((), ())
+        )
+        if not files and not named:
+            return None
+        return files, tuple(RetainedFile.model_validate(item) for item in named)
 
     async def _end(
         self,
@@ -811,7 +830,9 @@ class Delegations(TurnHook):
         child = self.children.get(delegation_id)
         if child is None or child.task.done():
             found = await self._read(delegation_id)
-            if found.review == "awaiting" and found.parent == self.parent:
+            # Its parent, or a Resume's continuation of it, as for an acceptance: the
+            # records check which.
+            if found.review == "awaiting":
                 # A returned task its parent cancels instead of accepting closes as
                 # cancelled, and what it held is released (PD-46, CE-4).
                 closed = await self._close(delegation_id, review="cancelled")
@@ -872,11 +893,24 @@ class Delegations(TurnHook):
         except ControlError as error:
             raise WorkerAPIError(ErrorKind(error.kind), error.message) from None
 
-    def plan_reopen(self) -> ReopenPlan:
+    async def plan_reopen(self, delegation_id: str) -> ReopenPlan:
         """The run a message reopening a returned task would start (PD-46): a new run of
-        the same delegation, admitted under the session's cap (PD-38)."""
+        the same delegation, admitted under the session's cap (PD-38), and, when the task
+        awaits review, the parent's plan fence's word on it, asked as for ``delegate``."""
         started = self.clock.now().astimezone(UTC)
-        return ReopenPlan(run_name(started, new_id("run")), self.limits.cap, self.work)
+        run = run_name(started, new_id("run"))
+        context = self.context
+        try:
+            found = await threaded(
+                self.records.get, context.project_id, context.session_id, delegation_id
+            )
+        except ControlError:
+            return ReopenPlan(run, self.limits.cap, self.work)
+        if found.review != "awaiting":
+            return ReopenPlan(run, self.limits.cap, self.work)
+        refusal = await self.fence("delegate") if self.fence is not None else None
+        refused = None if refusal is None else (refusal.kind, refusal.message)
+        return ReopenPlan(run, self.limits.cap, self.work, fenced=True, refused=refused)
 
     async def reopened(self, reopened: Reopened) -> None:
         """Run a returned task a message reopened as this run's child (PD-46): the same
@@ -1109,23 +1143,34 @@ class Delegations(TurnHook):
         for a main run that is not a Resume's, every other returned task, whose parent's
         run ended without accepting it (a stopped process); and tell the user (PD-46)."""
         context = self.context
+        await self._review_max()
+        if self.depth > 0 or self.recovering:
+            return
+        try:
+            closed = await self.closer.close_all(
+                context.project_id, context.session_id, reason="parent_ended"
+            )
+        except Exception:
+            _log.exception("returned tasks were not accepted at the run's start")
+            return
+        await self._accepted(closed)
+
+    async def _review_max(self) -> None:
+        """Accept the returned tasks past ``review_max`` from their latest return: the
+        session's for a main run, its own for a delegated one (PD-46)."""
+        context = self.context
         due = self.clock.now() - timedelta(seconds=self.limits.review_max)
-        parent = self.parent if self.depth > 0 else None
         try:
             closed = await self.closer.close_all(
                 context.project_id,
                 context.session_id,
                 reason="review_max",
-                parent=parent,
+                parent=self.parent if self.depth > 0 else None,
                 work=self.work,
                 returned_before=due,
             )
-            if self.depth == 0 and not self.recovering:
-                closed += await self.closer.close_all(
-                    context.project_id, context.session_id, reason="parent_ended"
-                )
         except Exception:
-            _log.exception("returned tasks were not accepted at the run's start")
+            _log.exception("returned tasks past review_max were not accepted")
             return
         await self._accepted(closed)
 
@@ -1240,6 +1285,9 @@ class Delegations(TurnHook):
         return max(0.0, min(STOP_SECONDS, self.stop_by.at - now))
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
+        if point == "turn":
+            # review_max also passes during a long parent run (PD-46): one read a turn.
+            await self._review_max()
         found = await self._fresh(run)
         if not found:
             return ()

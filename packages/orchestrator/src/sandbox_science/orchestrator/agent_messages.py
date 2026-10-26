@@ -107,8 +107,9 @@ class Sent:
 class Reopener(Protocol):
     """The parent's delegations, which run a returned task a message reopens (PD-46)."""
 
-    def plan_reopen(self) -> ReopenPlan:
-        """The run a reopening would start, and the bounds it is admitted under."""
+    async def plan_reopen(self, delegation_id: str) -> ReopenPlan:
+        """The run a reopening of ``delegation_id`` would start, the bounds it is admitted
+        under, and the parent's plan fence's word on it."""
         ...
 
     async def reopened(self, reopened: Reopened) -> None:
@@ -336,6 +337,14 @@ class AgentMessageStore:
             if ended is not None and reviewing:
                 if reopen is None:
                     raise ControlError(CONFLICT, "this run cannot reopen a returned task")
+                if not reopen.fenced:
+                    raise ControlError(
+                        CONFLICT,
+                        "the task returned as the message was sent: send it again to reopen it",
+                    )
+                if reopen.refused is not None:
+                    # A reopening starts a run as delegate does: the plan fence decides it.
+                    raise ControlError(reopen.refused[0], reopen.refused[1])
                 reopened = reopen_in(db, project, session, target, reopen.run, cap=reopen.cap)
             message = self._insert(
                 db,
@@ -641,7 +650,11 @@ class AgentMailbox(TurnHook):
                 request.text,
                 operation,
                 references,
-                reopen=reopener.plan_reopen() if reopener is not None else None,
+                reopen=(
+                    await reopener.plan_reopen(request.delegation_id)
+                    if reopener is not None
+                    else None
+                ),
             )
             message = sent.message
             if sent.reopened is not None and reopener is not None:

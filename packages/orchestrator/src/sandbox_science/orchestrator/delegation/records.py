@@ -48,7 +48,7 @@ from sandbox_science.orchestrator.control.errors import (
     UNAVAILABLE,
 )
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.runstate import cancel_requested, close_events
+from sandbox_science.orchestrator.runstate import LEASE_SECONDS, cancel_requested, close_events
 
 Ended = Literal["returned", "failed", "cancelled", "limit_reached", "interrupted"]
 """How a delegated run ended, as the harness observed it (PD-17)."""
@@ -327,6 +327,11 @@ class ReopenPlan:
     work: str | None = None
     """The parent's durable work, when it is a Resume's continuation: a task an earlier
     attempt of it started is its child too."""
+    fenced: bool = False
+    """Whether the parent's plan fence was asked, as for ``delegate``, because the task
+    awaited review when the message was planned."""
+    refused: tuple[str, str] | None = None
+    """The fence's refusal, its kind and its reason; a reopening it refuses is refused."""
 
 
 @dataclass(frozen=True)
@@ -599,8 +604,7 @@ class DelegationRecords:
                     run,
                 ),
             ).rowcount
-            if changed:
-                _archive(tx.sql, project, session, delegation_id)
+            del changed  # the store keeps it as the next result (delegations_archived)
             return _one(tx.sql, project, session, delegation_id)
 
     def by_environment(
@@ -700,13 +704,16 @@ class DelegationRecords:
                 reason = (
                     "cancelled" if cancel_requested(db, project, session, run) else "interrupted"
                 )
+                # A reopened task in its own environment still holds its earlier results'
+                # files: its account keeps their hand-back for the sweep (PD-46, CE-6).
+                kept = _kept_environment(db, project, session, delegation_id)
                 db.execute(
                     "UPDATE delegations SET ended = ?, stopped = ?, ended_at = ?, "
-                    "results = results + 1 "
+                    "results = results + 1, environment = coalesce(environment, ?) "
                     "WHERE project_id = ? AND session_id = ? AND delegation_id = ?",
-                    (reason, reason, now.isoformat(), project, session, delegation_id),
+                    (reason, reason, now.isoformat(), kept, project, session, delegation_id),
                 )
-                _archive(db, project, session, delegation_id)
+
             unclosed = db.execute(
                 f"{tree}SELECT d.run FROM delegations AS d WHERE d.project_id = ? "  # noqa: S608
                 "AND d.session_id = ? AND (? IS NULL OR d.parent IN (SELECT run FROM tree)) "
@@ -874,6 +881,10 @@ class DelegationRecords:
                     CONFLICT,
                     f"not_your_child: delegation {delegation_id!r} is not one of this run's",
                 )
+            if parent is not None:
+                # A parent acts only while its tree's root holds the session, as a
+                # reopening message does (PD-44, PD-46).
+                self._held(db, project, session, parent)
             if row[1] != "awaiting":
                 state = _state(row[2], row[1], row[3])
                 raise ControlError(
@@ -912,16 +923,39 @@ class DelegationRecords:
             )
             return Closed(_one(db, project, session, delegation_id), row[5], plan)
 
+    def _held(self, db: sqlite3.Connection, project: str, session: str, run: str) -> None:
+        """Refuse unless ``run``'s tree's root holds the session's live lease: ``run`` itself,
+        or the parent of the delegation it runs for."""
+        found = db.execute(
+            "SELECT parent FROM delegations WHERE project_id = ? AND session_id = ? AND run = ?",
+            (project, session, run),
+        ).fetchone()
+        root = run if found is None else str(found[0])
+        lease = db.execute(
+            "SELECT run, renewed_at FROM run_leases WHERE project_id = ? AND session_id = ?",
+            (project, session),
+        ).fetchone()
+        if (
+            lease is None
+            or lease[0] != root
+            or lease[1] <= self.clock.now().timestamp() - LEASE_SECONDS
+        ):
+            raise ControlError(CONFLICT, "the research tree no longer holds its session")
+
     def closed_environment(
         self, project: str, session: str, delegation_id: str, environment: dict[str, JsonValue]
     ) -> Delegation:
-        """Write the account of a closed task's child environment once its hand-back and
-        release ended (CE-4, CE-6), in place of its ``closing`` mark; written once."""
+        """Write the account of a child environment once its hand-back and release ended
+        (CE-4, CE-6), in place of the mark that left them to the delegation's close or the
+        sweep: a closed task's ``closing``, or an ended one's ``held`` or ``kept`` with its
+        plan; written once."""
         with self.control.write() as tx:
             tx.sql.execute(
                 "UPDATE delegations SET environment = ? WHERE project_id = ? AND session_id = ? "
-                "AND delegation_id = ? AND review IN ('accepted', 'cancelled') "
-                "AND json_extract(environment, '$.end') = 'closing'",
+                "AND delegation_id = ? AND ended IS NOT NULL "
+                "AND coalesce(review, '') <> 'awaiting' "
+                "AND json_extract(environment, '$.end') IN ('held', 'kept', 'closing') "
+                "AND json_extract(environment, '$.plan') IS NOT NULL",
                 (_environment(environment), project, session, delegation_id),
             )
             return _one(tx.sql, project, session, delegation_id)
@@ -951,6 +985,18 @@ class DelegationRecords:
             if parent is None:
                 return found
             return [d for d in found if _parent_of(db, project, session, d.parent, parent, work)]
+
+    def union_plan(
+        self,
+        project: str,
+        session: str,
+        delegation_id: str,
+        latest: tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]],
+    ) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]]:
+        """``latest``, a run's hand-back plan, with every earlier result's of the delegation
+        (CE-6, PD-46): a reopened task's environment holds all of their files."""
+        with self.control.read() as tx:
+            return _union(tx.sql, project, session, delegation_id, latest)
 
     def accepted_for(self, project: str, session: str, parent: str) -> list[Delegation]:
         """The returned tasks of ``parent`` that the platform accepted for it as its run
@@ -1105,9 +1151,14 @@ def close_awaiting(
     """Accept, in the caller's transaction, every returned task of the session that awaits
     review, as the platform: what the session's close does (PD-46). Its child environments
     and kernels go with the session's. How many."""
+    # A child environment it holds goes with the session's, released without retention
+    # and without a hand-back (CE-4, JS-25): its account says so.
     return db.execute(
         "UPDATE delegations SET review = 'accepted', reviewed_at = ?, reviewed_by = 'platform', "
-        "review_reason = ? WHERE project_id = ? AND session_id = ? AND review = 'awaiting'",
+        "review_reason = ?, environment = CASE WHEN json_extract(environment, '$.end') = 'held' "
+        "THEN json_set(json_remove(environment, '$.plan'), '$.end', 'released', '$.message', "
+        "'released with the session, without a hand-back') ELSE environment END "
+        "WHERE project_id = ? AND session_id = ? AND review = 'awaiting'",
         (now, reason, project, session),
     ).rowcount
 
@@ -1153,14 +1204,28 @@ def _parent_of(
     )
 
 
-def _archive(db: sqlite3.Connection, project: str, session: str, delegation_id: str) -> None:
-    """Keep the delegation's outcome just written as its result of the next number."""
-    db.execute(
-        "INSERT INTO delegation_results SELECT delegation_id, results, project_id, "
-        "session_id, run, ended, stopped, report, ended_at, refused, result, errors, alias, "
-        "models, read_entry, read_proofs, files, environment FROM delegations "
-        "WHERE project_id = ? AND session_id = ? AND delegation_id = ? AND ended IS NOT NULL",
+def _kept_environment(
+    db: sqlite3.Connection, project: str, session: str, delegation_id: str
+) -> str | None:
+    """The account an interrupted delegation's child environment keeps: kept for a Resume,
+    with its earlier results' hand-back; ``None`` without either."""
+    row = db.execute(
+        "SELECT environment_id FROM delegations WHERE project_id = ? AND session_id = ? "
+        "AND delegation_id = ?",
         (project, session, delegation_id),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    files, retained = _union(db, project, session, delegation_id, ((), ()))
+    if not files and not retained:
+        return None
+    return _environment(
+        {
+            "environment_id": row[0],
+            "end": "kept",
+            "message": "kept for a Resume of the run to continue in",
+            "plan": {"files": list[JsonValue](files), "retained": list[JsonValue](retained)},
+        }
     )
 
 
@@ -1169,7 +1234,9 @@ def held_plan(
 ) -> tuple[tuple[str, ...], tuple[dict[str, JsonValue], ...]] | None:
     """The hand-back plan a held or closing child environment's account keeps (PD-46);
     ``None`` for any other account."""
-    if environment is None or environment.get("end") not in ("held", "closing"):
+    if environment is None or environment.get("end") not in ("held", "kept", "closing"):
+        return None
+    if environment.get("plan") is None:
         return None
     return _plan(environment.get("plan"))
 

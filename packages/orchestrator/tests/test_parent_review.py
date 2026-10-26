@@ -17,16 +17,17 @@ import asyncio
 import json
 import re
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.agent_messages import AgentMessageStore
+from sandbox_science.orchestrator.agent_messages import AgentMailbox, AgentMessageStore
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.delegation.environments import ChildPlacement
+from sandbox_science.orchestrator.delegation.environments import ChildPlacement, reconcile
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
@@ -37,6 +38,7 @@ from sandbox_science.orchestrator.delegation.records import (
     reopen_in,
 )
 from sandbox_science.orchestrator.delegation.review import Closer
+from sandbox_science.orchestrator.hooks import Refusal, RunView
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.runtree import RunTrees
@@ -302,6 +304,11 @@ def test_accept_delegation_is_refused_unless_a_returned_task_of_the_caller(
         def accept(identity: str, parent: str = ROOT) -> None:
             records.accept(PROJECT, SESSION, identity, by=parent, reason="parent", parent=parent)
 
+        # A parent acts only while its tree's root holds the session.
+        with pytest.raises(ControlError, match="no longer holds its session"):
+            accept(other)
+        RunState(store.control).acquire(PROJECT, SESSION, ROOT, "holder")
+
         with pytest.raises(ControlError, match=r"not_returned: .* is running"):
             accept(running)
         with pytest.raises(ControlError, match=r"not_returned: .* is returned"):
@@ -333,6 +340,7 @@ async def test_the_tool_refuses_and_accepts(tmp_path: Path) -> None:
         return ChildEnd("answered", False, json.dumps(DONE), result=DONE)
 
     made, records, projects, documents = _delegations(tmp_path, returns)
+    RunState(projects.control).acquire(PROJECT, SESSION, made.parent, "holder")
     try:
         async with made.lease():
             text, _ = await made.call("delegate", {"task": "Sieve."})
@@ -405,7 +413,7 @@ def test_an_acceptance_and_a_reopening_message_cannot_both_win(tmp_path: Path) -
         RunState(store.control).acquire(PROJECT, SESSION, ROOT, "holder")
         first, second = _returned(store, 1), _returned(store, 2)
         mailbox = AgentMessageStore(store.control)
-        plan = ReopenPlan("20261015T130000000000Z-again", cap=10)
+        plan = ReopenPlan("20261015T130000000000Z-again", cap=10, fenced=True)
         # Accepted first: the message is kept for the root, as a delivery failure.
         records.accept(PROJECT, SESSION, first, by=ROOT, reason="parent", parent=ROOT)
         sent = mailbox.deliver_child(
@@ -570,9 +578,20 @@ async def test_the_sessions_close_accepts_what_is_left(
         assert [b.files for b in service.hand_backs] == [("a.txt",)]
         assert found.environment is not None
         assert found.environment["end"] != "closing"
-        other = _returned(store, 4)
+        # What the close could not hand back goes with the session's, its account says.
+        second = await place.admit(_task(4).delegation_id, [])
+        other = _returned(
+            store,
+            4,
+            environment_id=second.environment_id,
+            environment={**held, "environment_id": second.environment_id},
+        )
         store.close_session(PROJECT, SESSION)
-        assert records.get(PROJECT, SESSION, other).review_reason == "session_closed"
+        left = records.get(PROJECT, SESSION, other)
+        assert left.review_reason == "session_closed"
+        assert left.environment is not None
+        assert left.environment["end"] == "released"
+        assert "plan" not in left.environment
     finally:
         store.close()
 
@@ -604,3 +623,328 @@ def test_a_version_87_store_keeps_each_outcome_as_its_first_result(tmp_path: Pat
         assert records.get(PROJECT, SESSION, _task(1).delegation_id).results == 0
     finally:
         migrated.close()
+
+
+# --- An earlier result's files when a reopened task ends otherwise (the review of PD-46) --
+
+
+def _workspace(harness: Harness, environment: str) -> Path:
+    return harness.tmp / "worker" / "environments" / environment / "project" / "sessions" / SESSION
+
+
+async def test_a_reopened_task_cancelled_hands_back_its_first_results_files(
+    owning: Harness, service: ChildService
+) -> None:
+    """Reopened, then cancelled by its parent while it runs again: its environment's
+    hand-back still brings the first result's file into work/<delegation>/."""
+    started_again, release = asyncio.Event(), asyncio.Event()
+
+    async def holds() -> None:
+        started_again.set()
+        await release.wait()
+
+    async def after_it_started() -> None:
+        await asyncio.wait_for(started_again.wait(), 30)
+
+    async def free() -> None:
+        release.set()
+
+    root = await owning.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task=FIRST)]),
+            _wait(),
+            _on_first("message_child", text=FEEDBACK),
+            Reply(calls_from=_on_first("cancel_delegation").calls_from, before=after_it_started),
+            Reply("Cancelled.", before=free),
+        ],
+        routed={
+            FIRST: [
+                Reply(calls=[call("write_file", path="basis.txt", content="3 1\n1 2\n")]),
+                Reply(json.dumps({**PARTIAL, "result_files": ["basis.txt"]})),
+                Reply(calls=[call("list_files", path=".")], before=holds),
+            ]
+        },
+    )
+    (identity,) = started(root)
+    found = delegation(owning, identity)
+    assert (found.ended, found.results, found.review) == ("cancelled", 2, None)
+    (back,) = [b for b in service.hand_backs if b.delegation_id == identity]
+    assert back.files == ("basis.txt",)
+    session = owning.context().environment_id
+    assert (_workspace(owning, session) / "work" / identity / "basis.txt").read_text() == (
+        "3 1\n1 2\n"
+    )
+    assert found.environment is not None
+    assert found.environment["end"] == "released"
+
+
+async def test_a_reopened_task_at_its_limit_hands_back_its_first_results_files(
+    owning: Harness, service: ChildService
+) -> None:
+    """Reopened, then ended at its environment's wall time, a limit (CE-9): its end hands
+    back the first result's file too."""
+
+    async def expire() -> None:
+        # The environment's wall time has passed by the time the task runs again.
+        for found in list(service.made.values()):
+            service.made[found.environment_id] = found.model_copy(
+                update={"expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+
+    root = await owning.run(
+        "root",
+        [
+            Reply(calls=[call("delegate", task=FIRST)]),
+            _wait(),
+            Reply(calls_from=_on_first("message_child", text=FEEDBACK).calls_from, before=expire),
+            _wait(1),
+            Reply("Stopped at its limit."),
+        ],
+        routed={
+            FIRST: [
+                Reply(calls=[call("write_file", path="basis.txt", content="3 1\n1 2\n")]),
+                Reply(json.dumps({**PARTIAL, "result_files": ["basis.txt"]})),
+            ]
+        },
+    )
+    (identity,) = started(root)
+    found = delegation(owning, identity)
+    assert (found.ended, found.stopped, found.results) == (
+        "limit_reached",
+        "environment_time",
+        2,
+    )
+    (back,) = [b for b in service.hand_backs if b.delegation_id == identity]
+    assert back.files == ("basis.txt",)
+    session = owning.context().environment_id
+    assert (_workspace(owning, session) / "work" / identity / "basis.txt").exists()
+
+
+async def test_a_crash_during_a_reopening_still_hands_back_the_first_results_files(
+    tmp_path: Path, service: ChildService
+) -> None:
+    """The reopening committed, then the process stopped: the next main run ends it
+    interrupted, its environment kept with the first result's hand-back planned, and the
+    sweep that releases it hands that back first (CE-4, CE-6)."""
+    store = _store(tmp_path)
+    try:
+        context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+        place = ChildPlacement(service, context)
+        made = await place.admit(_task(3).delegation_id, [])
+        held = {
+            "environment_id": made.environment_id,
+            "end": "held",
+            "plan": {"files": ["basis.txt"], "retained": []},
+        }
+        identity = _returned(store, 3, environment_id=made.environment_id, environment=held)
+        with store.control.write() as tx:
+            reopen_in(tx.sql, PROJECT, SESSION, identity, "20261015T130000000000Z-again", cap=None)
+        records = DelegationRecords(store.control)
+        records.abandon(PROJECT, SESSION)
+        found = records.get(PROJECT, SESSION, identity)
+        assert found.environment is not None
+        assert (found.ended, found.environment["end"]) == ("interrupted", "kept")
+        assert found.environment["plan"] == {"files": ["basis.txt"], "retained": []}
+        settings = records.configure(PROJECT, child_idle_max=60)
+        place.clock = FakeClock(datetime.now(UTC) + timedelta(hours=1))
+        service.failing_hand_back = True  # the fake copies nothing: the request is what counts
+        assert await reconcile(place, records, settings) == [made.environment_id]
+        assert [b.files for b in service.hand_backs] == [("basis.txt",)]
+        account = records.get(PROJECT, SESSION, identity).environment
+        assert account is not None
+        assert account["end"] == "retained"
+        assert "plan" not in account
+    finally:
+        store.close()
+
+
+async def test_a_closing_left_by_a_stopped_process_is_finished(
+    tmp_path: Path, service: ChildService
+) -> None:
+    """Accepted, then the process stopped before the hand-back: the environment stays
+    ``closing`` until a run's start finishes it (``Closer.finish``)."""
+    store = _store(tmp_path)
+    try:
+        context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+        place = ChildPlacement(service, context)
+        made = await place.admit(_task(5).delegation_id, [])
+        held = {
+            "environment_id": made.environment_id,
+            "end": "held",
+            "plan": {"files": ["basis.txt"], "retained": []},
+        }
+        identity = _returned(store, 5, environment_id=made.environment_id, environment=held)
+        records = DelegationRecords(store.control)
+        records.accept(PROJECT, SESSION, identity, by="platform", reason="parent_ended")
+        assert [d.delegation_id for d in records.closing(PROJECT, SESSION)] == [identity]
+        service.failing_hand_back = True
+        await Closer(records, place).finish(PROJECT, SESSION)
+        assert [b.files for b in service.hand_backs] == [("basis.txt",)]
+        assert service.ended == [made.environment_id]
+        assert records.closing(PROJECT, SESSION) == []
+        account = records.get(PROJECT, SESSION, identity).environment
+        assert account is not None
+        assert account["end"] not in ("held", "closing")
+    finally:
+        store.close()
+
+
+async def test_a_reopening_the_parents_plan_fence_refuses_is_refused(tmp_path: Path) -> None:
+    """A reopening starts a run as delegate does: when the parent's fence would refuse
+    delegate, the message is refused with the same reason, and the task stays returned."""
+
+    async def returns(child: Child, stop: asyncio.Event) -> ChildEnd:
+        return ChildEnd("answered", False, json.dumps(DONE), result=DONE)
+
+    async def fence(tool: str) -> Refusal | None:
+        assert tool == "delegate"
+        return Refusal("policy_denied", "plan_unread: read the session plan before new work")
+
+    made, records, projects, documents = _delegations(tmp_path, returns)
+    RunState(projects.control).acquire(PROJECT, SESSION, made.parent, "holder")
+    try:
+        async with made.lease():
+            text, _ = await made.call("delegate", {"task": "Sieve."})
+            identity = json.loads(text)["delegation_id"]
+            await asyncio.gather(*(c.task for c in made.children.values()))
+            made.fence = fence
+            mailbox = AgentMailbox(
+                AgentMessageStore(projects.control),
+                made.context,
+                run=made.parent,
+                delegation=None,
+                may_message_child=True,
+            )
+            mailbox.reopener = made
+            with pytest.raises(ControlError, match="plan_unread: read the session plan"):
+                await mailbox.call(
+                    "message_child", {"delegation_id": identity, "text": "Go on."}, "op-1"
+                )
+        found = records.get(PROJECT, SESSION, identity)
+        assert (found.ended, found.review, found.results) == ("returned", "accepted", 1)
+        assert found.review_reason == "parent_ended"  # accepted as the run ended
+        assert AgentMessageStore(projects.control).listing(PROJECT, SESSION).messages == ()
+    finally:
+        documents.close()
+        projects.close()
+
+
+def test_only_the_parent_reopens_not_a_grandparent_or_a_sibling(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        RunState(store.control).acquire(PROJECT, SESSION, ROOT, "holder")
+        child = _returned(store, 1)
+        sibling = _task(2)
+        records = DelegationRecords(store.control)
+        records.start(PROJECT, SESSION, sibling)
+        grandchild = _returned(store, 3, parent=_task(1).run)
+        mailbox = AgentMessageStore(store.control)
+        plan = ReopenPlan("20261015T130000000000Z-again", cap=10, fenced=True)
+        with pytest.raises(ControlError, match="only a direct child"):
+            mailbox.deliver_child(
+                PROJECT, SESSION, ROOT, None, grandchild, "Go on.", "op-g", reopen=plan
+            )
+        with pytest.raises(ControlError, match="only a direct child"):
+            mailbox.deliver_child(
+                PROJECT, SESSION, sibling.run, sibling.delegation_id, child, "Go on.", "op-s",
+                reopen=plan,
+            )  # fmt: skip
+        assert records.get(PROJECT, SESSION, child).review == "awaiting"
+        assert records.get(PROJECT, SESSION, grandchild).review == "awaiting"
+    finally:
+        store.close()
+
+
+def test_a_resume_continuation_of_the_parent_may_cancel_and_accept(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    try:
+        identity = _returned(store)
+        again = "20261015T140000000000Z-root-again"
+        with store.control.write() as tx:
+            # The root's first attempt, and a Resume's continuation of its work.
+            tx.sql.execute(
+                "INSERT INTO research_attempts VALUES (?,?,?,?,NULL,1,NULL)",
+                (PROJECT, SESSION, ROOT, ROOT),
+            )
+            tx.sql.execute(
+                "INSERT INTO research_attempts VALUES (?,?,?,?,?,1,NULL)",
+                (PROJECT, SESSION, again, ROOT, ROOT),
+            )
+        RunState(store.control).acquire(PROJECT, SESSION, again, "holder")
+        records = DelegationRecords(store.control)
+        with pytest.raises(ControlError, match="not_your_child"):
+            records.accept(PROJECT, SESSION, identity, by=again, reason="parent", parent=again)
+        closed = records.accept(
+            PROJECT, SESSION, identity, by=again, reason="parent", review="cancelled",
+            parent=again, work=ROOT,
+        )  # fmt: skip
+        assert (closed.delegation.review, closed.delegation.reviewed_by) == ("cancelled", again)
+    finally:
+        store.close()
+
+
+def test_the_store_refuses_what_no_transition_writes(tmp_path: Path) -> None:
+    """The review's trigger, as the review's probe tried it: a close rewrites no account,
+    an ended row takes no environment, and every outcome is its numbered result."""
+    store = _store(tmp_path)
+    try:
+        identity = _returned(store)
+        forged = (
+            "UPDATE delegations SET review='accepted', reviewed_at='t', reviewed_by='x', "
+            'review_reason=\'parent\', environment=\'{"end":"released","forged":1}\' '
+            "WHERE delegation_id=?"
+        )
+        for sql in (forged, "UPDATE delegations SET environment_id='env-x' WHERE delegation_id=?"):
+            with pytest.raises(sqlite3.IntegrityError), store.control.write() as tx:
+                tx.sql.execute(sql, (identity,))
+        with pytest.raises(sqlite3.IntegrityError), store.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO delegation_results SELECT delegation_id, 7, project_id, session_id, "
+                "'other-run', ended, stopped, report, ended_at, refused, result, errors, alias, "
+                "models, read_entry, read_proofs, files, environment FROM delegations "
+                "WHERE delegation_id=?",
+                (identity,),
+            )
+        # A reopening and an end written by hand still keep the outcome as result 2.
+        with store.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE delegations SET run='r-x', ended=NULL, stopped=NULL, ended_at=NULL, "
+                "report=NULL, result=NULL, errors=NULL, alias=NULL, models=NULL, "
+                "read_entry=NULL, read_proofs=NULL, files=NULL, environment=NULL, "
+                "acknowledged=NULL, review=NULL WHERE delegation_id=?",
+                (identity,),
+            )
+            tx.sql.execute(
+                "UPDATE delegations SET ended='returned', stopped='answered', "
+                "ended_at='2026-10-26T12:00:00+00:00', "
+                "results=results+1, review='awaiting' WHERE delegation_id=?",
+                (identity,),
+            )
+        kept = DelegationRecords(store.control).results(PROJECT, SESSION, identity)
+        assert [(r.number, r.run) for r in kept] == [(1, _task(0).run), (2, "r-x")]
+    finally:
+        store.close()
+
+
+async def test_review_max_passes_during_a_long_parent_run(tmp_path: Path) -> None:
+    async def unused(child: Child, stop: asyncio.Event) -> ChildEnd:
+        raise AssertionError
+
+    made, records, projects, documents = _delegations(tmp_path, unused)
+    try:
+        clock = FakeClock(datetime.now(UTC))
+        made.clock = clock
+        made.limits = records.configure(PROJECT, review_max=3600)
+        async with made.lease():
+            identity = _returned(projects, parent="20261015T110000000000Z-earlier")
+            view = cast(RunView, SimpleNamespace(offered={}))
+            await made.notices("turn", view)
+            assert records.get(PROJECT, SESSION, identity).review == "awaiting"
+            clock.advance(3601)
+            await made.notices("turn", view)
+            found = records.get(PROJECT, SESSION, identity)
+            assert (found.review, found.review_reason) == ("accepted", "review_max")
+    finally:
+        documents.close()
+        projects.close()

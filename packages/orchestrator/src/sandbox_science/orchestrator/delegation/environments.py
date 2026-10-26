@@ -48,7 +48,7 @@ from sandbox_science.contracts.worker import MAX_MANIFEST_FILES, validate_relati
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from .records import ChildEnvironments, DelegationRecords, DelegationSettings
+from .records import ChildEnvironments, DelegationRecords, DelegationSettings, held_plan
 
 _log = logging.getLogger(__name__)
 
@@ -398,8 +398,34 @@ async def reconcile(
                 reason = "abandoned" if interrupted else "delegation_ended"
         if reason is None:
             continue
+        # A delegation whose account still plans a hand-back (a reopened task's earlier
+        # results, PD-46) gets it before the environment goes (CE-6).
+        planned = next(
+            (
+                (d, plan)
+                for d in holders
+                if d.environment_id == environment.environment_id
+                and (plan := held_plan(d.environment)) is not None
+            ),
+            None,
+        )
         try:
-            await placement.end(environment.environment_id, reason)
+            if planned is not None:
+                holder, (files, named) = planned
+                account = await placement.close(
+                    environment.environment_id,
+                    holder.delegation_id,
+                    (files, tuple(RetainedFile.model_validate(r) for r in named)),
+                )
+                await threaded(
+                    records.closed_environment,
+                    context.project_id,
+                    context.session_id,
+                    holder.delegation_id,
+                    account,
+                )
+            else:
+                await placement.end(environment.environment_id, reason)
         except WorkerAPIError as error:
             _log.warning(
                 "child environment %s was not ended: %s", environment.environment_id, error

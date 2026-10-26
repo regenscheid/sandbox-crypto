@@ -34,7 +34,7 @@ from sandbox_science.contracts import (
     Location,
     new_id,
 )
-from sandbox_science.contracts.child_environments import is_child_environment
+from sandbox_science.contracts.child_environments import RetainedFile, is_child_environment
 from sandbox_science.contracts.context import ExecutionAuthority
 from sandbox_science.contracts.logs import log_context
 from sandbox_science.contracts.recovery import RecoveryFence
@@ -94,7 +94,7 @@ from .environment_claim import environment_claim
 from .file_settings import ProjectFiles
 from .finalization import AttemptCompletion, AttemptFinalizer
 from .finalization import save as save
-from .hooks import TurnHook
+from .hooks import Refusal, TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
 from .kernel_check import KernelCheck
@@ -1111,9 +1111,16 @@ class Harness:
                                 accept_changes=request.resume_source == "operator"
                                 or request.opening is not None,
                                 changed=sink.note,
+                                accepted_by=(
+                                    "the parent's reopening of its returned task"
+                                    if request.opening is not None
+                                    else "the user's Resume"
+                                ),
                             ),
                             *hooks,
                         )
+                    if delegations is not None:
+                        delegations.fence = functools.partial(_fence, tuple(hooks))
                     transcript = await self.loop_runner(
                         self._model(admitted),
                         toolbox,
@@ -1583,14 +1590,40 @@ class Harness:
                 session_environment=admitted.context.environment_id,
             )
             expires = found.expires_at
-        own_stop, expired = stop, asyncio.Event()
+        expired = asyncio.Event()
         watch: asyncio.Task[None] | None = None
+        running = asyncio.ensure_future(self.start(admitted, sink, stop=stop))
         if expires is not None:
-            # Its profile's wall time ends the run as a limit (CE-9).
-            own_stop = asyncio.Event()
-            watch = asyncio.create_task(_until(stop, own_stop, expired, expires, self.clock))
+            # Its profile's wall time ends the run as a limit (CE-9): the watch sets the
+            # child's own stop and cancels the run, as its parent's cancel does, so that
+            # the loop ends it there (a stop alone ends no run), and a parent's cancel,
+            # which sets the same stop first, is seen as a cancel at once.
+            watch = asyncio.create_task(_expire(stop, expired, expires, self.clock, running))
         try:
-            finished = await self.start(admitted, sink, stop=own_stop)
+            finished = await running
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if not expired.is_set() or current is None or current.cancelling():
+                raise
+            # Its environment's wall time passed before its loop began: nothing ran, and it
+            # ends as a limit; its parent's hook ends the environment with what earlier
+            # results left to hand back (CE-9, PD-46).
+            name = run_name(admitted.started_at, admitted.run_id)
+            await threaded(
+                WorkRecords(self.stores.projects.control).end_unstarted,
+                admitted.context.project_id,
+                admitted.context.session_id,
+                admitted.request.work or name,
+                tuple(r for r in (name, admitted.request.predecessor) if r is not None),
+                WALL_TIME,
+            )
+            return ChildEnd(
+                WALL_TIME,
+                False,
+                None,
+                errors=("its environment's wall time passed before it began",),
+                alias=child.alias or self.delegated.alias,
+            )
         finally:
             if watch is not None:
                 watch.cancel()
@@ -1632,14 +1665,30 @@ class Harness:
         own (CE-4, CE-6); an interrupted run's is kept for a Resume to continue in
         (CE-12)."""
         environment_id = finished.context.environment_id
+        if self.stores is None or finished.delegation is None:
+            raise ValueError("a child environment's end needs the stores and its delegation")
+        records = DelegationRecords(self.stores.projects.control, clock=self.clock)
         if finished.transcript.stopped == "interrupted":
-            return {
+            # Kept for a Resume; a reopened task's earlier results' files stay planned for
+            # the hand-back the sweep or a close makes (PD-46).
+            earlier = await threaded(
+                records.union_plan,
+                finished.context.project_id,
+                finished.context.session_id,
+                finished.delegation,
+                ((), ()),
+            )
+            interrupted: dict[str, JsonValue] = {
                 "environment_id": environment_id,
                 "end": "kept",
                 "message": "kept for a Resume of the run to continue in",
             }
-        if self.stores is None or finished.delegation is None:
-            raise ValueError("a child environment's end needs the stores and its delegation")
+            if earlier[0] or earlier[1]:
+                interrupted["plan"] = {
+                    "files": list[JsonValue](earlier[0]),
+                    "retained": list[JsonValue](earlier[1]),
+                }
+            return interrupted
         context = finished.context
         project = await threaded(self.stores.projects.get, context.project_id)
         session = project.sessions.get(context.session_id)
@@ -1669,7 +1718,20 @@ class Harness:
                 },
             }
         else:
-            kept = await placement.close(environment_id, finished.delegation, plan)
+            # Its end, other than a return, hands back every result's files: a reopened
+            # task's earlier results' too (CE-6, PD-46).
+            files, named = await threaded(
+                records.union_plan,
+                context.project_id,
+                context.session_id,
+                finished.delegation,
+                (plan[0], tuple(r.model_dump(mode="json") for r in plan[1])),
+            )
+            kept = await placement.close(
+                environment_id,
+                finished.delegation,
+                (files, tuple(RetainedFile.model_validate(r) for r in named)),
+            )
         if (previous := self.restarted.pop(environment_id, None)) is not None:
             kept["restarted"] = {
                 "replaced": previous,
@@ -2151,6 +2213,15 @@ def _deliverables(
     return asked_of(found.brief) if found.kind == "task" else ()
 
 
+async def _fence(hooks: Sequence[TurnHook], tool: str) -> Refusal | None:
+    """The first refusal of the run's gates of a call of ``tool`` that acts (``effect``),
+    as the loop asks them before a call: what a reopening asks as ``delegate`` would."""
+    for hook in hooks:
+        if (refused := await hook.gate_call(tool, "effect")) is not None:
+            return refused
+    return None
+
+
 def _earlier(
     stores: Stores, context: ExecutionContext, delegation: str, run: str
 ) -> tuple[list[Mapping[str, JsonValue] | None], list[str]]:
@@ -2205,29 +2276,29 @@ def _recorded(
     return kept
 
 
-async def _until(
+async def _expire(
     stop: asyncio.Event,
-    own: asyncio.Event,
     expired: asyncio.Event,
     expires: datetime,
     clock: Clock,
+    running: asyncio.Future[Finished],
 ) -> None:
-    """Set ``own`` when ``stop`` is set or ``expires`` passes, and ``expired`` for the latter."""
-    waiting = asyncio.ensure_future(stop.wait())
-    try:
-        while not waiting.done():
-            left = (expires - clock.now()).total_seconds()
-            if left <= 0:
-                expired.set()
-                break
-            pause = asyncio.ensure_future(clock.sleep(min(left, 60.0)))
-            try:
-                await asyncio.wait({waiting, pause}, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                pause.cancel()
-    finally:
-        waiting.cancel()
-        own.set()
+    """Once ``expires`` passes, unless ``stop`` is set first: set ``expired`` and ``stop``,
+    then cancel ``running``, which its loop then ends as stopped."""
+    while not stop.is_set():
+        left = (expires - clock.now()).total_seconds()
+        if left <= 0:
+            expired.set()
+            stop.set()
+            running.cancel()
+            return
+        waiting = asyncio.ensure_future(stop.wait())
+        pause = asyncio.ensure_future(clock.sleep(min(left, 60.0)))
+        try:
+            await asyncio.wait({waiting, pause}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiting.cancel()
+            pause.cancel()
 
 
 class _ChildSink:

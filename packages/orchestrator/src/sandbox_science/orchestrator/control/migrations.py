@@ -3786,18 +3786,36 @@ _OUTCOME_CHANGED: Final = (
 )
 """Whether an update changed a delegation's outcome, its environment's account apart."""
 _REOPEN: Final = (
-    "(OLD.review = 'awaiting' AND NEW.review IS NULL AND NEW.ended IS NULL "
+    "coalesce(OLD.review = 'awaiting' AND NEW.review IS NULL AND NEW.ended IS NULL "
     "AND NEW.run IS NOT OLD.run AND NEW.results = OLD.results AND NEW.acknowledged IS NULL "
-    "AND NEW.environment IS NULL AND NEW.reviewed_at IS NULL)"
+    "AND NEW.environment IS NULL AND NEW.reviewed_at IS NULL, 0)"
 )
-"""A message reopening a returned task: a new run, its outcome cleared (PD-46)."""
-_CLOSE: Final = "(OLD.review = 'awaiting' AND NEW.review IN ('accepted', 'cancelled'))"
+"""A message reopening a returned task: a new run, its outcome cleared (PD-46). Each
+transition is ``coalesce``d to false, so that a NULL never lets an update through."""
+_CLOSE: Final = "coalesce(OLD.review = 'awaiting' AND NEW.review IN ('accepted', 'cancelled'), 0)"
 """The parent's acceptance or cancel of a returned task, or the platform's for it."""
-_CLOSED_ENVIRONMENT: Final = (
-    "(OLD.review IN ('accepted', 'cancelled') AND NEW.review IS OLD.review "
-    "AND json_extract(OLD.environment, '$.end') = 'closing')"
+_SAME_ENVIRONMENT: Final = (
+    "json_extract(NEW.environment, '$.environment_id') "
+    "IS json_extract(OLD.environment, '$.environment_id')"
 )
-"""A closed task's child environment's account, once its hand-back and release ended."""
+_CLOSING: Final = (
+    f"coalesce({_CLOSE} AND (NEW.environment IS OLD.environment OR "
+    "(json_extract(OLD.environment, '$.end') = 'held' "
+    "AND json_extract(NEW.environment, '$.end') IN ('closing', 'released') "
+    f"AND {_SAME_ENVIRONMENT})), 0)"
+)
+"""A close that marks its held child environment ``closing`` for its hand-back, or
+``released`` with the session's; any other account stays as it is."""
+_CLOSED_ENVIRONMENT: Final = (
+    "coalesce(coalesce(OLD.review, '') <> 'awaiting' AND NEW.review IS OLD.review "
+    "AND json_extract(OLD.environment, '$.end') IN ('held', 'kept', 'closing') "
+    "AND json_extract(OLD.environment, '$.plan') IS NOT NULL "
+    "AND json_extract(NEW.environment, '$.end') NOT IN ('held', 'kept', 'closing') "
+    f"AND json_extract(NEW.environment, '$.plan') IS NULL AND {_SAME_ENVIRONMENT}, 0)"
+)
+"""The account of a child environment whose hand-back was left to its delegation's close
+or the sweep (a closed task's, or an ended one's that still held earlier results'
+files), written once as its hand-back and release ended."""
 
 
 def _parent_review(schema: Schema) -> None:
@@ -3831,12 +3849,13 @@ OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
 OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
 OR NEW.started_at IS NOT OLD.started_at
 OR (OLD.environment_id IS NOT NULL AND NEW.environment_id IS NOT OLD.environment_id)
+OR (OLD.ended IS NOT NULL AND NEW.environment_id IS NOT OLD.environment_id)
 OR (NEW.run IS NOT OLD.run AND NOT {_REOPEN})
 OR (NEW.results IS NOT OLD.results AND NOT (OLD.ended IS NULL AND NEW.ended IS NOT NULL))
 OR (OLD.ended IS NULL AND NEW.ended IS NOT NULL AND NEW.results IS NOT OLD.results + 1)
 OR (OLD.ended IS NOT NULL AND NOT {_REOPEN} AND ({_OUTCOME_CHANGED}))
-OR (OLD.ended IS NOT NULL AND NOT {_REOPEN} AND NOT {_CLOSE} AND NOT {_CLOSED_ENVIRONMENT}
-    AND NEW.environment IS NOT OLD.environment)
+OR (OLD.ended IS NOT NULL AND NOT {_REOPEN} AND NOT {_CLOSING}
+    AND NOT {_CLOSED_ENVIRONMENT} AND NEW.environment IS NOT OLD.environment)
 OR (OLD.acknowledged IS NOT NULL AND NOT {_REOPEN} AND NEW.acknowledged IS NOT OLD.acknowledged)
 OR (OLD.review IS NULL AND NEW.review IS NOT NULL
     AND NOT (OLD.ended IS NULL AND NEW.review = 'awaiting'))
@@ -3891,13 +3910,26 @@ WHEN NOT ({checks}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegati
 BEGIN SELECT RAISE(ABORT, 'a delegation''s results are kept as written'); END""",
         """CREATE TRIGGER delegation_results_no_delete BEFORE DELETE ON delegation_results
 BEGIN SELECT RAISE(ABORT, 'a delegation''s results are kept as written'); END""",
+        # A result is the delegation's outcome as its run ended, and its number the count.
+        """CREATE TRIGGER delegation_results_numbered BEFORE INSERT ON delegation_results
+WHEN NOT EXISTS (SELECT 1 FROM delegations d WHERE d.delegation_id = NEW.delegation_id
+    AND d.project_id = NEW.project_id AND d.session_id = NEW.session_id
+    AND d.results = NEW.number AND d.run = NEW.run AND d.ended = NEW.ended)
+BEGIN SELECT RAISE(ABORT, 'a delegation''s result is its latest outcome, numbered'); END""",
         "DROP TRIGGER delegations_kept",
         # Each outcome written so far is its delegation's first.
+        "UPDATE delegations SET results = 1 WHERE ended IS NOT NULL",
         "INSERT INTO delegation_results SELECT delegation_id, 1, project_id, session_id, run, "
         "ended, stopped, report, ended_at, refused, result, errors, alias, models, read_entry, "
         "read_proofs, files, environment FROM delegations WHERE ended IS NOT NULL",
-        "UPDATE delegations SET results = 1 WHERE ended IS NOT NULL",
         kept,
+        # Every outcome is kept as the next result as it is written, whoever writes it.
+        """CREATE TRIGGER delegations_archived AFTER UPDATE OF ended ON delegations
+WHEN OLD.ended IS NULL AND NEW.ended IS NOT NULL
+BEGIN INSERT INTO delegation_results VALUES (NEW.delegation_id, NEW.results, NEW.project_id,
+    NEW.session_id, NEW.run, NEW.ended, NEW.stopped, NEW.report, NEW.ended_at, NEW.refused,
+    NEW.result, NEW.errors, NEW.alias, NEW.models, NEW.read_entry, NEW.read_proofs, NEW.files,
+    NEW.environment); END""",
     ):
         schema.execute(statement)
     (create,) = schema.execute(

@@ -17,6 +17,7 @@ from sandbox_science.orchestrator.context.history.export import EvidenceExport
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import RunRecord
+from sandbox_science.orchestrator.runstate import RunState
 
 from .loop_harness import PROJECT, SESSION
 from .test_delegation_depth import ROOT, tree
@@ -54,7 +55,9 @@ async def test_long_child_loop_retrieval_receipts_and_finalization(tmp_path: Pat
             assert len(hook.started) == len(hook.received) == 240
             assert peaks[-1] - peaks[0] < 2 * 1024 * 1024
             # Completed handles have gone, but durable read/cancel behavior remains: a
-            # returned task that awaits review is closed as cancelled, once (PD-46).
+            # returned task that awaits review is closed as cancelled, once, while the
+            # root holds the session (PD-46).
+            RunState(found.records.control).acquire(PROJECT, SESSION, ROOT, "holder")
             text, _ = await hook.call("cancel_delegation", {"delegation_id": first})
             assert json.loads(text)["cancelled"] is True
             text, _ = await hook.call("cancel_delegation", {"delegation_id": first})
