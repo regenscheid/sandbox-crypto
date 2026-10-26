@@ -243,6 +243,35 @@ def test_it_will_not_run_where_calls_could_be_recorded_or_code_loaded(
     assert openshell.called() == []
 
 
+def make_repository(folder: Path) -> None:
+    (folder / ".git").mkdir(parents=True)
+    (folder / ".git/HEAD").write_text("ref: refs/heads/main\n")
+
+
+def test_an_empty_git_directory_above_the_cli_is_not_a_checkout(tmp_path: Path) -> None:
+    # babbage's home holds an empty .git directory (lab, 2026-10-26).
+    (tmp_path / ".git").mkdir()
+    cli = openshell_stand_in(tmp_path / "bin" / "openshell")
+    assert access_provider.check_cli(str(cli)) == str(cli.resolve())
+
+
+def test_a_git_directory_with_head_or_a_worktree_file_is_a_checkout(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    make_repository(real)
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / ".git").write_text("gitdir: /elsewhere/.git/worktrees/w\n")
+    for folder in (real, worktree):
+        cli = openshell_stand_in(folder / "bin" / "openshell")
+        with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
+            access_provider.check_cli(str(cli))
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    (stray / ".git").write_text("not a pointer\n")
+    cli = openshell_stand_in(stray / "bin" / "openshell")
+    assert access_provider.check_cli(str(cli)) == str(cli.resolve())
+
+
 def test_an_openshell_cli_others_control_is_refused(
     openshell: Any,
     tmp_path: Path,
@@ -254,7 +283,7 @@ def test_an_openshell_cli_others_control_is_refused(
     loose = openshell.cli("-loose")
     loose.chmod(0o775)
     checkout = tmp_path / "checkout"
-    (checkout / ".git").mkdir(parents=True)
+    make_repository(checkout)
     inside = openshell_stand_in(checkout / "bin" / "openshell")
     linked = tmp_path / "bin" / "linked"
     linked.symlink_to(inside)
@@ -280,7 +309,7 @@ def test_an_installed_homebrew_cli_is_not_in_a_checkout(tmp_path: Path) -> None:
     # On Apple Silicon, Homebrew's prefix /opt/homebrew is its own git checkout, and the
     # packages it installs are in its Cellar (Mac test, 2026-10-21).
     prefix = tmp_path / "homebrew"
-    (prefix / ".git").mkdir(parents=True)
+    make_repository(prefix)
     (prefix / "Library/Homebrew").mkdir(parents=True)
     (prefix / "Library/Homebrew/brew.sh").write_text("#!/bin/bash\n")
     installed = openshell_stand_in(prefix / "Cellar/openshell/0.1.5/bin/openshell")
@@ -290,7 +319,7 @@ def test_an_installed_homebrew_cli_is_not_in_a_checkout(tmp_path: Path) -> None:
     with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
         access_provider.check_cli(str(tracked))
     other = tmp_path / "other"
-    (other / ".git").mkdir(parents=True)
+    make_repository(other)
     copied = openshell_stand_in(other / "Cellar/openshell/0.1.5/bin/openshell")
     with pytest.raises(access_provider.RegistrationError, match="is in the git checkout"):
         access_provider.check_cli(str(copied))
