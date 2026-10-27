@@ -6,9 +6,12 @@ proxy and the provider's placeholders are in the agent runtime's sandbox. So the
 service's canary runner (``mcp_canaries.CanaryRunner``) asks the runtime, over the control
 connection it already has, with the host-to-runtime ``list_mcp_tools`` request, as it asks
 the runtime for model completions, whose key is also only the runtime's. The runtime
-lists the one server's tools through its own ``DirectClient`` with ``list_tools``, bounded
-(15 s, 32 pages, ``tools/list`` only: never a tool call), and
-answers the outcome, never the tools. The policy middleware sees and records that listing
+lists the one server's tools with ``list_tools`` through a ``DirectClient`` of that listing's
+own, bounded (15 s, 32 pages, ``tools/list`` only: never a tool call), and answers the
+outcome, never the tools. Each listing starts its own MCP session and closes its client
+after, so it sees the tools the server lists now: a server such as a portal may fix a
+session's tools when it starts, and a session kept from before a change went on listing
+the old ones. The policy middleware sees and records that listing
 like any other, drift included. The runner stores the outcome in ``mcp_canaries``.
 
 The runtime's word on a listing is a monitor's, not evidence: a runtime that lies about a
@@ -21,7 +24,7 @@ import asyncio
 import re
 from collections.abc import Callable
 from dataclasses import asdict
-from typing import Final
+from typing import Final, Protocol
 
 from pydantic import Field, JsonValue, ValidationError, field_validator
 
@@ -75,9 +78,9 @@ class DirectSettings(Contract):
     servers: dict[Identifier, DirectServerSettings] = Field(min_length=1, max_length=64)
 
     def client(self, reporter: ListingReporter | None) -> DirectClient:
-        """A client for canary listings only: no request check, since a listing is never
-        held, the canary's request bound, and its complete listings reported for the drift
-        check (``report_mcp_listing``), as an attempt's are."""
+        """A client for one canary listing or availability check: no request check, since a
+        listing is never held, the canary's request bound, and its complete listings
+        reported for the drift check (``report_mcp_listing``), as an attempt's are."""
         return DirectClient(
             {name: spec.server() for name, spec in self.servers.items()},
             project=self.project,
@@ -86,28 +89,47 @@ class DirectSettings(Contract):
         )
 
 
+class ListingSession(ListingClient, Protocol):
+    """A client for one listing, closed once it is done: ``DirectClient``."""
+
+    async def close(self) -> None: ...
+
+
 class RuntimeListings:
-    """The runtime's side of ``list_mcp_tools``."""
+    """The runtime's side of ``list_mcp_tools``: each listing with a new client from
+    ``clients``, so in a new MCP session, closed when the listing ends.
+
+    A kept session would list what the server offered when it started: the server is
+    asked again only when it forgets the session (404), and a portal whose token was
+    granted more servers went on listing its old tools to the canaries and the user's
+    check while new runs saw them all. Nor can the client learn of a change: the policy
+    middleware takes only POSTs to a server's endpoint, so neither the stream that would
+    carry ``notifications/tools/list_changed`` nor a ``DELETE`` of the session reaches the
+    server, which expires the session itself."""
 
     def __init__(
         self,
-        client: ListingClient | None,
+        clients: Callable[[], ListingSession] | None,
         servers: frozenset[str],
         *,
         seconds: float = LIST_SECONDS,
     ) -> None:
-        self.client, self.servers, self.seconds = client, servers, seconds
+        self.clients, self.servers, self.seconds = clients, servers, seconds
 
     async def list(self, value: JsonValue) -> JsonValue:
         asked = typed(ToolListing, value)
-        if self.client is None:
+        if self.clients is None:
             raise TransportError("denied", "this runtime has no direct MCP client")
         if asked.server not in self.servers:
             listing = Listing("unavailable", error_kind="undeclared_server")
         else:
-            listing = await list_tools(
-                self.client, asked.server, session=SESSION, seconds=self.seconds
-            )
+            client = self.clients()
+            try:
+                listing = await list_tools(
+                    client, asked.server, session=SESSION, seconds=self.seconds
+                )
+            finally:
+                await client.close()
         return payload(ToolsListed.model_validate(asdict(listing)))
 
 

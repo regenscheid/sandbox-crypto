@@ -177,7 +177,9 @@ class DirectClient:
     It keeps one MCP session per server, started on first use and
     shared by concurrent callers, starts it again once if the server forgot it (404),
     sends every message with its keys sorted, so a call made again after its approval is
-    the request that was approved, and never follows a redirect.
+    the request that was approved, and never follows a redirect. A session lists the tools
+    the server offered when it started, so each canary listing and availability check
+    has a client of its own (``confinement.canaries.RuntimeListings``).
     """
 
     def __init__(

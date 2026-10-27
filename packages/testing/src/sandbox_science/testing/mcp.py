@@ -189,6 +189,10 @@ class FakeServer:
         """Answers tools/list instead of the pages of ``tools``, when set."""
         self.last_cursor: str | None = None
         """A nextCursor to send on the last page of tools/list."""
+        self.session_tools = False
+        """When set, each session lists the tools as they were when it started, as a
+        portal does, so a change to ``tools`` reaches new sessions only."""
+        self.started_with: dict[str, list[str]] = {}
 
     def answer(
         self,
@@ -237,6 +241,7 @@ class FakeServer:
             version = self.version or str(message["params"]["protocolVersion"])
             session_id = self.session_id or f"upstream-session-{len(self.sessions) + 1}"
             self.sessions.add(session_id)
+            self.started_with[session_id] = list(self.tools)
             result: dict[str, object] = {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": True}, "tasks": {"list": {}}},
@@ -258,11 +263,16 @@ class FakeServer:
         request_id: object = message["id"]
         params = cast("dict[str, Any]", message.get("params") or {})
         if method == "tools/list":
+            tools = self.tools
+            if self.session_tools:
+                tools = self.started_with.get(headers["mcp-session-id"], tools)
             return web.json_response(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "result": (self.listing or self._listing)(params),
+                    "result": (
+                        self.listing(params) if self.listing else self._listing(params, tools)
+                    ),
                 }
             )
         if method == "tools/call":
@@ -290,14 +300,17 @@ class FakeServer:
         error = {"code": -32601, "message": f"{method} not found"}
         return web.json_response({"jsonrpc": "2.0", "id": request_id, "error": error})
 
-    def _listing(self, params: Mapping[str, object]) -> dict[str, object]:
+    def _listing(
+        self, params: Mapping[str, object], tools: list[str] | None = None
+    ) -> dict[str, object]:
+        tools = self.tools if tools is None else tools
         start = int(str(params.get("cursor", "0")))
-        size = self.page_size or len(self.tools)
-        page = self.tools[start : start + size]
+        size = self.page_size or len(tools)
+        page = tools[start : start + size]
         listing: dict[str, object] = {
             "tools": [{"name": name, "inputSchema": {"type": "object"}} for name in page]
         }
-        if start + size < len(self.tools):
+        if start + size < len(tools):
             listing["nextCursor"] = str(start + size)
         elif self.last_cursor is not None:
             listing["nextCursor"] = self.last_cursor
