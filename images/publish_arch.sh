@@ -8,7 +8,7 @@ profile=${1:-}
 repository=${2:-}
 run_token=${3:-}
 case $profile in
-  minimal | crypto-base | orchestrator | mcp-proxy | trusted-app | trusted-worker) ;;
+  minimal | crypto-base | orchestrator | trusted-app | trusted-worker) ;;
   *) echo "publish_arch.sh: unknown profile" >&2; exit 2 ;;
 esac
 case $repository in

@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Build a profile image: images/build.sh PROFILE [docker buildx build options]
-# PROFILE is minimal, crypto-base, orchestrator or mcp-proxy.
+# PROFILE is minimal, crypto-base or orchestrator.
 #
 # Tags sandbox-science/<profile>:<short SHA of the last commit that changed the build's inputs>
 # (with -dirty when they have uncommitted changes; revision.sh) and prints the tag, the image
 # digest, its size and the build time. It loads the image into the local image store and never
 # pushes: crypto-base contains GPL tools and can only be copied to a verified private registry
-# under D46. For orchestrator and
-# mcp-proxy it first builds the wheels of the repository's packages they install from this
-# checkout with uv. PLATFORM selects the platform (default: the host's Linux architecture);
+# under D46. For orchestrator it first builds the wheels of the repository's packages it
+# installs from this checkout with uv. PLATFORM selects the platform (default: the host's Linux architecture);
 # BUILDER selects a buildx builder.
 set -euo pipefail
 
 profile=${1:-}
 case $profile in
-  minimal | crypto-base | orchestrator | mcp-proxy) shift ;;
+  minimal | crypto-base | orchestrator) shift ;;
   *)
-    echo "usage: images/build.sh minimal|crypto-base|orchestrator|mcp-proxy" \
+    echo "usage: images/build.sh minimal|crypto-base|orchestrator" \
       "[docker buildx build options]" >&2
     exit 2
     ;;

@@ -43,13 +43,8 @@ kind: OpenShellTargets
 sandbox:
   middleware: sandbox-science-policy
   package_cache: {host: host.openshell.internal, port: ${PORT_CACHE}}
-  mcp_proxy: {host: host.openshell.internal, port: ${PORT_UNUSED}}
   binaries: [/**]
   filesystem: {read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}
-mcp_proxy:
-  binaries: [/opt/sandbox-science/bin/python*]
-  versions: ["2025-11-25"]
-  filesystem: {read_only: [/opt/sandbox-science]}
 EOF
 cat > "$LAB/gateway.toml" <<EOF
 [openshell]

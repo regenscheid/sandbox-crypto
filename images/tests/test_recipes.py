@@ -4,8 +4,8 @@
 The pins are exact, the lockfiles cover both architectures with a SHA-256 for every package,
 each image's tag covers what its build reads, the services' images install the packages they
 need, the declared OpenShell filesystem paths are valid targets sections, the Landlock emulation
-in test.sh matches the policy compiler, the MCP proxy's launcher is the image's command, and the
-license helpers that gate the permissive images behave.
+in test.sh matches the policy compiler, and the license helpers that gate the permissive
+images behave.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
-import shutil
 import subprocess
 import sys
 import tomllib
@@ -24,7 +23,6 @@ from typing import Any
 import pytest
 import yaml
 
-from sandbox_science.policy import PoolCeiling, load_policy
 from sandbox_science.policy.openshell import (
     BASELINE_READ_ONLY,
     BASELINE_READ_WRITE,
@@ -33,7 +31,6 @@ from sandbox_science.policy.openshell import (
     SANDBOX_DEVICES_READ_WRITE,
     FilesystemPolicy,
     SandboxFilesystem,
-    compile_mcp_proxy,
     compile_orchestrator,
     parse_targets,
 )
@@ -41,8 +38,9 @@ from sandbox_science.policy.openshell import (
 IMAGES = Path(__file__).resolve().parents[1]
 ROOT = IMAGES.parent
 RESEARCH_PROFILES = ("minimal", "crypto-base")
-SERVICE_PROFILES = ("orchestrator", "mcp-proxy")
-"""The platform services' images, which install the repository's packages from wheels."""
+SERVICE_PROFILES = ("orchestrator",)
+"""The platform services' images, which install the repository's packages from wheels. The
+MCP proxy's went with the proxy (D98, 2026-10-26)."""
 PROFILES = (*RESEARCH_PROFILES, *SERVICE_PROFILES)
 PLATFORMS = ["linux-64", "linux-aarch64"]
 PREFIX = "/opt/sandbox-science"
@@ -210,11 +208,6 @@ def test_the_services_lock_what_their_packages_require_and_no_kernels(profile: s
     assert not KERNEL_PACKAGES & names
 
 
-def test_the_mcp_proxy_locks_its_dependencies() -> None:
-    names = {package["name"] for package in _lockfile("mcp-proxy")["package"]}
-    assert {"python", "aiohttp", "pydantic", "pydantic-core", "pyyaml", "pip"} <= names
-
-
 @pytest.mark.parametrize(
     ("profile", "name"),
     [(profile, name) for profile in SERVICE_PROFILES for name in _service_dependencies(profile)],
@@ -310,24 +303,6 @@ def test_the_orchestrators_filesystem_section_reads_the_prefix_only() -> None:
     assert compile_orchestrator(targets.orchestrator).filesystem_policy == SERVICE_FILESYSTEM
 
 
-def test_the_mcp_proxys_filesystem_section_reads_the_prefix_only() -> None:
-    section = yaml.safe_load((IMAGES / "mcp-proxy" / "filesystem.yml").read_text())
-    filesystem = SandboxFilesystem.model_validate(section)
-    assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
-    # The example targets file lists it, with the interpreter that runs the proxy's entry point
-    # as the binary, since OpenShell sees that (lab 13); the compiler adds the baseline but
-    # no devices.
-    targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
-    assert targets.mcp_proxy.filesystem == filesystem
-    assert targets.mcp_proxy.binaries == (checks.PROXY_BINARIES,)
-    compiled = compile_mcp_proxy(
-        load_policy(ROOT / "examples" / "policy.yaml"),
-        targets.mcp_proxy,
-        ceiling=PoolCeiling.unrestricted(),
-    )
-    assert compiled.policy.filesystem_policy == SERVICE_FILESYSTEM
-
-
 def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
     text = (IMAGES / "test.sh").read_text()
 
@@ -339,9 +314,9 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
     assert array("devices_ro") == SANDBOX_DEVICES_READ_ONLY
     assert array("devices_rw") == SANDBOX_DEVICES_READ_WRITE
     assert array("frozen_ro") == RESEARCH_IMAGE_READ_ONLY == (str(layout.FROZEN), str(layout.BASE))
-    # compile_orchestrator() and compile_mcp_proxy() add none to the services' sandboxes.
+    # compile_orchestrator() adds none to the service's sandbox.
     branch = re.search(
-        r"^  orchestrator \| mcp-proxy\)$(.*?)^    ;;$",
+        r"^  orchestrator\)$(.*?)^    ;;$",
         text,
         flags=re.MULTILINE | re.DOTALL,
     )
@@ -363,32 +338,10 @@ def test_the_check_plan_names_methods_of_the_checks() -> None:
     orchestrator = checks.planned("orchestrator", landlock=True, network=True)
     assert {"landlock", "harness-cli", "harness-run", "no-kernels"} <= set(orchestrator)
     assert not {"executor", "python-kernel", "runtime-install"} & set(orchestrator)
-    proxy = checks.planned("mcp-proxy", landlock=True, network=True)
-    assert {"landlock", "proxy-cli", "launcher", "proxy-serve", "proxy-restart"} <= set(proxy)
-    assert not {"executor", "harness-run", "runtime-install"} & set(proxy)
     assert set(checks.SERVICE_PACKAGES) == set(SERVICE_PROFILES)
     for profile in SERVICE_PROFILES:
         expected = sorted(f"sandbox-science-{package}" for package in _recipe_packages(profile))
         assert sorted(checks.SERVICE_PACKAGES[profile]) == expected
-
-
-# The MCP proxy's launcher.
-
-
-def test_the_launcher_is_the_mcp_proxy_images_command() -> None:
-    launcher = IMAGES / "mcp-proxy" / "mcp-proxy-run"
-    text = launcher.read_text()
-    assert text.startswith("#!/bin/sh\n# SPDX-License-Identifier: MIT\n")
-    stage = _stages()["mcp-proxy"]
-    copy = f"COPY --chmod=0755 mcp-proxy/mcp-proxy-run {checks.LAUNCHER}"
-    assert re.search(rf"^{re.escape(copy)}$", stage, flags=re.MULTILINE)
-    assert f'CMD ["{checks.LAUNCHER}"]' in stage
-    # It runs the proxy's command, and waits for the settings where the checks write them.
-    assert f"\nproxy={checks.PROXY}\n" in text
-    assert f"\nsettings=${{1:-{checks.PROXY_SETTINGS}}}\n" in text
-    sh = shutil.which("sh")
-    if sh is not None:
-        subprocess.run([sh, "-n", str(launcher)], check=True)
 
 
 # Licenses.

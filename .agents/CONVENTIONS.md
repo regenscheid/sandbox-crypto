@@ -21,7 +21,7 @@ Applies to all code and documentation in this repository. Change this file throu
 | `web/<app>/` | Browser apps, each an npm project of its own: `web/workspace/` is the research workspace GUI (D80, [workspace](../docs/WORKSPACE.md)). Not uv members, since uv, pyright and pytest search `packages/` |
 | `skills/builtin/` | The built-in skills, one `skills/builtin/<name>/SKILL.md` each: Markdown with standard front matter, shipped with the harness, imported and pinned at a run's start as the source `builtin` ([skills](../docs/SKILLS.md#the-built-in-pack)). Edit one in the pull request that changes the tool or rule it describes; `test_builtin_skills.py` checks the tools it names |
 | `examples/` | Illustrative configuration (policy, deployment profiles); tests load these to keep them valid |
-| `images/` | Recipes for the base profile images (`minimal`, `crypto-base`) and the `orchestrator` and `mcp-proxy` images: Containerfile, Conda lockfiles, build, lock and test scripts ([images](../docs/IMAGES.md)) |
+| `images/` | Recipes for the base profile images (`minimal`, `crypto-base`) and the `orchestrator` image: Containerfile, Conda lockfiles, build, lock and test scripts ([images](../docs/IMAGES.md)) |
 | `scripts/` | Repository tooling, such as the license check |
 | `.github/workflows/` | CI |
 
@@ -37,14 +37,13 @@ Planned members (created when work starts on them):
 | `contracts` | `sandbox_science.contracts` | Library: shared contracts (`ExecutionContext`, `ArtifactRef`, `Event`, …) |
 | `worker` | `sandbox_science.worker` | Worker service (trusted, per pool) |
 | `orchestrator` | `sandbox_science.orchestrator` | Control application and harness |
-| `mcp-proxy` | `sandbox_science.mcp_proxy` | MCP proxy (runs in its own OpenShell sandbox) |
 | `policy-middleware` | `sandbox_science.policy_middleware` | OpenShell supervisor middleware that decides each request with the policy library (D69) |
 | `package-cache` | `sandbox_science.package_cache` | Pull-through package cache for research sandboxes (D71) |
 | `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D74, shared) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
 | `workspace` | `sandbox_science.workspace` | The research workspace's web server: the GUI's files and its API (D80) |
 | `launcher` | `sandbox_science.launcher` | `sandbox-science up`: starts, supervises and stops a local Sandbox Science from one config file, running the other members as commands, never importing them |
-| `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`, the worker API client `WorkerApi`, the leftover-process check in `processes`, and a fake MCP server with TLS for the MCP proxy's and the harness's tests in `mcp`). A dev dependency; no production member imports it |
+| `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`, the worker API client `WorkerApi`, the leftover-process check in `processes`, and a fake MCP server with TLS for the harness's tests in `mcp`). A dev dependency; no production member imports it |
 
 The browser front end itself is not a member: it lives in `web/workspace/`, with Node's toolchain (D60, D80).
 

@@ -1,9 +1,0 @@
-# SPDX-License-Identifier: MIT
-# The mcp_proxy.filesystem section an OpenShell targets file needs for the mcp-proxy image
-# (docs/IMAGES.md):
-#   /opt/sandbox-science  the Conda prefix: the proxy's interpreter, its packages, its command
-#                         and the launcher
-# Read-only: the proxy installs nothing at runtime, and keeps its settings and stores under the
-# workdir. images/test.sh applies it under a Landlock ruleset like OpenShell's, with no devices,
-# as compile_mcp_proxy() adds none.
-read_only: [/opt/sandbox-science]

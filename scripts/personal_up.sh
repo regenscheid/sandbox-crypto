@@ -21,7 +21,7 @@
 #   SS_PERSONAL_UNIT     ss-personal                              (the units' prefix)
 #   SS_PERSONAL_SKIP_SNAPSHOT  unset; 1 skips the pre-migration snapshot (as --skip-snapshot)
 #   SS_PERSONAL_GATEWAY_PORT 17680, SS_PERSONAL_MIDDLEWARE_PORT 50061,
-#   SS_PERSONAL_CACHE_PORT 8390, SS_PERSONAL_PROXY_PORT 8380      (loopback ports)
+#   SS_PERSONAL_CACHE_PORT 8390                                   (loopback ports)
 #   VM_VCPUS 8, VM_MEM_MIB 16384, VM_DISK_MIB 32768              (each sandbox's VM)
 #   OS_BIN ~/.local/opt/openshell-<version>/bin, where <version> is OPENSHELL_VERSION in
 #   packages/contracts/.../openshell_version.py (the script refuses any other release);
@@ -38,7 +38,6 @@ UNIT=${SS_PERSONAL_UNIT:-ss-personal}
 GATEWAY_PORT=${SS_PERSONAL_GATEWAY_PORT:-17680}
 MIDDLEWARE_PORT=${SS_PERSONAL_MIDDLEWARE_PORT:-50061}
 CACHE_PORT=${SS_PERSONAL_CACHE_PORT:-8390}
-PROXY_PORT=${SS_PERSONAL_PROXY_PORT:-8380}
 # The one OpenShell release the code supports, read from the constant that names it
 # (contracts/openshell_version.py), from the checkout this script is in.
 VERSION_FILE="$(cd "$(dirname "$0")/.." && pwd)/packages/contracts/src/sandbox_science/contracts/openshell_version.py"
@@ -218,13 +217,8 @@ kind: OpenShellTargets
 sandbox:
   middleware: sandbox-science-policy
   package_cache: {host: host.openshell.internal, port: $CACHE_PORT}
-  mcp_proxy: {host: host.openshell.internal, port: $PROXY_PORT}
   binaries: [/**]
   filesystem: {read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}
-mcp_proxy:
-  binaries: [/opt/sandbox-science/bin/python*]
-  versions: ["2025-11-25"]
-  filesystem: {read_only: [/opt/sandbox-science]}
 EOF
 cat > "$OS/gateway.toml" <<EOF
 [openshell]
@@ -306,11 +300,21 @@ echo "OpenShell: $UNIT-unit (cache, middleware, worker) and $UNIT-gateway are ru
 $START_OPENSHELL && start_openshell
 $OPENSHELL_ONLY && exit 0
 
+# The MCP proxy retired (D98, 2026-10-26): a config that still has [mcp_proxy] is refused by
+# the launcher, so say how to migrate it before starting anything that waits for it.
+retired=0
+"$R/.venv/bin/python" -I -c 'import sys, tomllib; sys.exit(3 if "mcp_proxy" in tomllib.load(open(sys.argv[1], "rb")) else 0)' "$CONFIG" 2>/dev/null || retired=$?
+if [ "$retired" -eq 3 ]; then
+  echo "$CONFIG has [mcp_proxy], which the launcher refuses since the MCP proxy retired: run" >&2
+  echo "  $R/.venv/bin/sandbox-science migrate-mcp-config $CONFIG" >&2
+  echo "then this again (docs/MCP-CONNECTORS.md, \"Migrating from [mcp_proxy]\")" >&2
+  exit 1
+fi
 # The launcher, which stops its parts in order on SIGTERM: KillMode=mixed sends it alone the
 # signal, and the timeout covers the research sandboxes' suspension.
 systemd-run --user --unit="$UNIT-launcher" --collect -q -p KillMode=mixed -p TimeoutStopSec=300 --working-directory="$R" \
   "$R/.venv/bin/sandbox-science" up --config "$CONFIG"
-echo "launcher: $UNIT-launcher started; waiting for it to report it runs (the first start imports skills and boots the MCP proxy's sandbox)"
+echo "launcher: $UNIT-launcher started; waiting for it to report it runs (the first start imports skills and boots the agent runtime's sandbox)"
 INVOCATION=$(systemctl --user show -p InvocationID --value "$UNIT-launcher")
 for _ in $(seq 1 180); do
   if ! active "$UNIT-launcher"; then

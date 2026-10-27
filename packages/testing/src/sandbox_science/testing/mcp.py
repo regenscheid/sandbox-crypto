@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""A fake MCP server over Streamable HTTP and TLS, for tests of the MCP proxy and its callers.
+"""A fake MCP server over Streamable HTTP and TLS, for tests of MCP clients.
 
-The fake server answers as ``mcp.example.test``, which ``StaticResolver`` maps to
-127.0.0.1, with a certificate from a throwaway CA that ``make_tls`` makes. It records
+The fake server answers as ``mcp.example.test``, with a certificate from a throwaway CA
+that ``make_tls`` makes, or over plain HTTP behind a test's stand-in gateway. It records
 every request it receives. It requires what OpenShell's fence and real servers
 require: after ``initialize``, a known ``Mcp-Session-Id`` (else 404) and an
 ``MCP-Protocol-Version`` header (else 400).
@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
-import socket
 import ssl
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -21,7 +20,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from aiohttp import web
-from aiohttp.abc import AbstractResolver, ResolveResult
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -55,7 +53,7 @@ def make_tls(directory: Path) -> Tls:
     ``directory``, made at test time."""
     now = datetime.datetime.now(datetime.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "MCP proxy test CA")])
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "MCP test CA")])
     ca_cert = (
         x509.CertificateBuilder()
         .subject_name(ca_name)
@@ -246,7 +244,7 @@ class FakeServer:
                 "instructions": "Use search first.",
                 **self.initialize_extra,
             }
-            # A cookie, which the proxy must not send back to any server.
+            # A cookie, which a client must not send back to any server.
             return web.json_response(
                 {"jsonrpc": "2.0", "id": message["id"], "result": result},
                 headers={"Mcp-Session-Id": session_id, "Set-Cookie": "upstream=test; Path=/"},
@@ -330,29 +328,6 @@ def _stream(request_id: object, _: dict[str, object]) -> Reply:
         {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"},
         text_result(request_id, "streamed"),
     )
-
-
-class StaticResolver(AbstractResolver):
-    """Resolves the fake server's name to 127.0.0.1, and nothing else."""
-
-    async def resolve(
-        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
-    ) -> list[ResolveResult]:
-        if host != SERVER_HOST:
-            raise OSError(f"test resolver: unknown host {host}")
-        return [
-            {
-                "hostname": host,
-                "host": "127.0.0.1",
-                "port": port,
-                "family": socket.AF_INET,
-                "proto": 0,
-                "flags": socket.AI_NUMERICHOST,
-            }
-        ]
-
-    async def close(self) -> None:
-        pass
 
 
 @dataclass(frozen=True)

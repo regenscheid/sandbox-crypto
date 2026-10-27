@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """A project's monitor figures, as the worker computes them for an operator client (D103).
 
-The worker reads the policy middleware's event store (and the MCP proxy's records, where
-they reach that store) newest first, for one window or at most ``MAX_SCANNED`` records,
+The worker reads the policy middleware's event store (and the retired MCP proxy's records,
+where they reached that store) newest first, for one window or at most ``MAX_SCANNED`` records,
 and counts by code what happened: calls by effect class and destination, permission
 requests by kind and how they ended, open holds by rule and servers whose tool list
 drifted. Beside them, the project's environments with their isolation tiers, from the
@@ -102,8 +102,8 @@ class MonitorRecords(Contract):
     """What the event store's records say for the window."""
 
     sources: list[RecordSource] = Field(max_length=2)
-    """Whose records the read found: the middleware's, and the MCP proxy's when its
-    records reach the same store."""
+    """Whose records the read found: the middleware's, and the retired MCP proxy's where its
+    older records reached the same store."""
     scanned: Counter
     """Records examined, newest first."""
     truncated: bool
