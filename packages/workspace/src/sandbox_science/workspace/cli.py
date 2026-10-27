@@ -390,6 +390,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.add_argument(
         "--mcp-check-token-file", type=Path, help="the workspace's token for --mcp-check"
     )
+    command.add_argument(
+        "--mcp-check-ca-file",
+        type=Path,
+        help="the private CA of an https --mcp-check (the Kubernetes bundle's control service)",
+    )
     agents = command.add_argument_group(
         "agent models", "trusted project choices for main, delegated and reviewer roles"
     )
@@ -545,14 +550,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ValueError:
             parser.error("--mcp-service needs a valid service name and purpose")
     checks = None
+    if args.mcp_check_ca_file is not None and args.mcp_check is None:
+        parser.error("--mcp-check-ca-file needs --mcp-check")
     if args.mcp_check is not None or args.mcp_check_token_file is not None:
         if args.mcp_check is None or args.mcp_check_token_file is None or args.mcp_project is None:
             parser.error("--mcp-check needs --mcp-check-token-file and --mcp-project")
         try:
             checks = AvailabilityClient(
-                args.mcp_check, args.mcp_check_token_file.read_text().strip()
+                args.mcp_check,
+                args.mcp_check_token_file.read_text().strip(),
+                ca_file=args.mcp_check_ca_file,
             )
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, UnicodeError, ValueError):  # ssl.SSLError is an OSError
             parser.error("cannot configure the MCP availability check")
     try:
         app = create_app(

@@ -26,6 +26,7 @@ import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final, Literal
 from urllib.parse import urlsplit
 
@@ -33,6 +34,7 @@ import aiohttp
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from sandbox_science.contracts import Contract
+from sandbox_science.orchestrator.transport_tls import client_tls
 
 CHECK_SECONDS: Final = 25.0
 """The control service's bound on one check (20 s) and a margin for the connection."""
@@ -60,7 +62,8 @@ class _Checked(BaseModel):
 class AvailabilityClient:
     """The control service's check route, with the workspace's own token. One check at a
     time, and one per server in ``interval`` seconds; a failure to reach the control service
-    is ``unavailable``."""
+    is ``unavailable``. ``ca_file`` is the private CA that signed an https control service's
+    certificate (the Kubernetes bundle's)."""
 
     def __init__(
         self,
@@ -69,6 +72,7 @@ class AvailabilityClient:
         *,
         interval: float = CHECK_INTERVAL,
         clock: Callable[[], float] = time.monotonic,
+        ca_file: Path | None = None,
     ) -> None:
         parts = urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.hostname:
@@ -79,6 +83,9 @@ class AvailabilityClient:
             raise ValueError("the control service's address has no credentials or query")
         if not _TOKEN.fullmatch(token):
             raise ValueError("the check token is one line of 32 to 256 visible characters")
+        if ca_file is not None and parts.scheme != "https":
+            raise ValueError("a CA file is for a control service reached over https")
+        self._tls = client_tls(ca_file) if ca_file is not None else None
         self.url, self._token = url.rstrip("/"), token
         self.checks: dict[str, AvailabilityCheck] = {}
         self.lock = asyncio.Lock()
@@ -102,7 +109,9 @@ class AvailabilityClient:
         try:
             async with (
                 aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=CHECK_SECONDS), trust_env=False
+                    timeout=aiohttp.ClientTimeout(total=CHECK_SECONDS),
+                    trust_env=False,
+                    connector=aiohttp.TCPConnector(ssl=self._tls) if self._tls else None,
                 ) as http,
                 http.post(
                     self.url + "/mcp-check",

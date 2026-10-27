@@ -5,12 +5,19 @@ one listing by the agent runtime's client (D98), and keeps nothing but the statu
 from __future__ import annotations
 
 import asyncio
+import datetime
+import ssl
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient
+from aiohttp.test_utils import TestClient, TestServer
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 from sandbox_science.workspace.mcp_metadata import CHECK_INTERVAL, AvailabilityClient
 
@@ -132,3 +139,57 @@ def test_an_address_or_token_the_client_should_not_use_is_refused(url: str, toke
     with pytest.raises(ValueError, match=r"control service|token") as refused:
         AvailabilityClient(url, token)
     assert "test-secret" not in str(refused.value)
+
+
+def _private_ca(directory: Path) -> tuple[ssl.SSLContext, Path]:
+    """A test-only self-signed certificate for localhost, and the server context with it."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(minutes=5))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), True)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), False)
+        .sign(key, hashes.SHA256())
+    )
+    cert_file, key_file = directory / "control.crt", directory / "control.key"
+    cert_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(cert_file, key_file)
+    return context, cert_file
+
+
+async def test_an_https_control_service_is_checked_with_its_private_ca(tmp_path: Path) -> None:
+    """The Kubernetes bundle's control service is https, signed by the site's private CA."""
+
+    async def check(request: web.Request) -> web.Response:
+        return web.json_response({"status": "listed", "tool_count": 2})
+
+    app = web.Application()
+    app.router.add_post("/mcp-check", check)
+    context, ca = _private_ca(tmp_path)
+    server = TestServer(app, host="localhost")
+    await server.start_server(ssl=context)
+    try:
+        url = f"https://localhost:{server.port}"
+        found = await AvailabilityClient(url, TOKEN, ca_file=ca).check("papers")
+        assert (found.status, found.tool_count) == ("listed", 2)
+        # Without the CA the certificate is not trusted: unavailable, never an error.
+        assert (await AvailabilityClient(url, TOKEN).check("papers")).status == "unavailable"
+    finally:
+        await server.close()
+    with pytest.raises(ValueError, match="https"):
+        AvailabilityClient("http://127.0.0.1:8202", TOKEN, ca_file=ca)
