@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""MCP inventory is read-only, project-scoped and never a live availability claim."""
+"""MCP inventory is read-only, project-scoped and never a live availability claim; its
+tools are the agent runtime's latest reported listing, which the worker keeps (D98)."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from typing import Any
 
 from aiohttp.test_utils import TestClient
 
+from sandbox_science.contracts.classifications import ListedToolView, ReportedListing
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.mcp_services import McpInventory, ServiceConfig
 
@@ -176,68 +178,58 @@ async def test_each_service_shows_its_latest_canary_beside_the_users_check(
     assert "digest" not in await response.text()
 
 
-async def test_explicit_metadata_check_is_same_origin_and_does_not_execute_tools(
+async def test_the_users_check_is_same_origin_and_asks_the_control_service(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
+    """Check availability: one listing by the agent runtime's client, asked of the control
+    service with the workspace's token (D98); it never calls a tool, and only its status
+    reaches the browser."""
     from aiohttp import web
 
-    from sandbox_science.workspace.mcp_metadata import MetadataClient
+    from sandbox_science.workspace.mcp_metadata import AvailabilityClient
 
     from .route_support import origin
 
-    calls: list[str] = []
+    token = "test-secret-workspace-check-0123456789abcdef"
+    asked: list[str] = []
     healthy = True
 
-    async def rpc(request: web.Request) -> web.Response:
-        assert request.headers["Authorization"] == "Bearer test-secret-metadata-caller"
-        body = await request.json()
-        method = body["method"]
-        calls.append(method)
-        assert method != "tools/call"
+    async def check(request: web.Request) -> web.Response:
+        assert request.headers["Authorization"] == f"Bearer {token}"
+        asked.append((await request.json())["server"])
         if not healthy:
             return web.Response(status=503)
-        if method == "notifications/initialized":
-            return web.Response(status=202)
-        result = (
-            {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "serverInfo": {"name": "fixture", "version": "1"},
-            }
-            if method == "initialize"
-            else {"tools": []}
-        )
         return web.json_response(
-            {"jsonrpc": "2.0", "id": body["id"], "result": result},
-            headers={"Mcp-Session-Id": "metadata-session"},
+            {"status": "listed", "tool_count": 4, "digest": "d" * 64, "error_kind": None}
         )
-
-    async def metadata(request: web.Request) -> web.Response:
-        assert request.headers["Authorization"] == "Bearer test-secret-metadata-caller"
-        return web.Response(status=503)
 
     app = web.Application()
-    app.router.add_post("/mcp/papers", rpc)
-    app.router.add_get("/metadata/papers", metadata)
-    proxy = await aiohttp_client(app)
-    source = MetadataClient(str(proxy.make_url("")).rstrip("/"), "test-secret-metadata-caller")
+    app.router.add_post("/mcp-check", check)
+    control = await aiohttp_client(app)
+    checks = AvailabilityClient(str(control.make_url("")).rstrip("/"), token)
     client = await workspace(
         aiohttp_client,
         state_dir,
         static_dir,
         mcp_project="p1",
         mcp_inventory=(ServiceConfig(name="papers", purpose="Research"),),
-        mcp_metadata=source,
+        mcp_checks=checks,
     )
     path = "/api/v0/projects/p1/mcp-services"
     first = await (await client.get(path)).json()
-    assert first["services"][0]["proxy_status"] == "unavailable"
-    assert calls == []
+    assert first["checks"] is True
+    assert first["services"][0]["availability"] is None
+    assert asked == []  # viewing checks nothing
     assert (await client.post(path + "/papers/check", json={})).status == 403
     checked = await client.post(path + "/papers/check", json={}, headers=origin(client))
     assert checked.status == 200
-    assert (await checked.json())["status"] == "listed"
-    assert set(calls) == {"initialize", "notifications/initialized", "tools/list"}
+    said = await checked.json()
+    assert (said["status"], said["tool_count"]) == ("listed", 4)
+    assert asked == ["papers"]
+    shown = await (await client.get(path)).json()
+    assert shown["services"][0]["availability"]["status"] == "listed"
+    assert token not in str(shown)
+    assert "digest" not in str(shown)
     assert (
         await client.post(path + "/unknown/check", json={}, headers=origin(client))
     ).status == 404
@@ -245,14 +237,112 @@ async def test_explicit_metadata_check_is_same_origin_and_does_not_execute_tools
     assert (
         await (await client.post(path + "/papers/check", json={}, headers=origin(client))).json()
     )["status"] == "unavailable"
-    healthy = True
-    assert (
-        await (await client.post(path + "/papers/check", json={}, headers=origin(client))).json()
-    )["status"] == "listed"
     anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
     assert (
         await anonymous.post(path + "/papers/check", json={}, headers=origin(anonymous))
     ).status == 401
+    # Without a check configured, the check says so; the view still shows the services.
+    unchecked = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        mcp_project="p1",
+        mcp_inventory=(ServiceConfig(name="papers", purpose="Research"),),
+    )
+    refused = await unchecked.post(path + "/papers/check", json={}, headers=origin(unchecked))
+    assert refused.status == 503
+    assert (await (await unchecked.get(path)).json())["checks"] is False
+
+
+class Listings:
+    """The worker's reported listings, as its client reads them."""
+
+    def __init__(self, found: list[ReportedListing] | Exception) -> None:
+        self.found = found
+        self.asked: list[str] = []
+
+    async def mcp_listings(self, project_id: str) -> list[ReportedListing]:
+        self.asked.append(project_id)
+        if isinstance(self.found, Exception):
+            raise self.found
+        return self.found
+
+
+REPORTED = ReportedListing(
+    server="papers",
+    reported_at=datetime(2026, 10, 26, 9, tzinfo=UTC),
+    session="a",
+    run="main-1",
+    listing="f" * 64,
+    drifted=False,
+    tools=[
+        ListedToolView(name="search", hint="read", effect="read", classified=True, action="allow"),
+        ListedToolView(
+            name="submit", hint="write", effect="write", classified=True, action="escalate"
+        ),
+        ListedToolView(
+            name="new_tool", hint="read", effect="read", classified=False, action="deny"
+        ),
+    ],
+)
+
+
+async def test_the_tools_are_the_runtimes_latest_reported_listing(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    """The Tools tab reads the latest listing the agent runtime's client reported, which the
+    worker keeps, each tool with its class in force and its decision; a service with none
+    says that no listing has been reported yet."""
+    source = Listings([REPORTED])
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        mcp_project="p1",
+        mcp_inventory=(
+            ServiceConfig(name="papers", purpose="Research"),
+            ServiceConfig(name="private", purpose="Private archive"),
+        ),
+        mcp_listings=source,
+    )
+    found = McpInventory.model_validate_json(
+        await (await client.get("/api/v0/projects/p1/mcp-services")).text()
+    )
+    papers, private = found.services
+    assert papers.listing_state == "reported"
+    assert papers.listing == REPORTED
+    assert papers.listing is not None
+    assert [(tool.name, tool.action) for tool in papers.listing.tools] == [
+        ("search", "allow"),
+        ("submit", "escalate"),
+        ("new_tool", "deny"),
+    ]
+    assert (private.listing_state, private.listing) == ("none", None)
+    assert source.asked == ["p1"]
+    # Another project's view never asks the worker for this one's.
+    await client.get("/api/v0/projects/p2/mcp-services")
+    assert source.asked == ["p1"]
+
+
+async def test_a_worker_that_cannot_be_asked_leaves_the_listing_unavailable(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    from sandbox_science.contracts import ErrorKind
+    from sandbox_science.orchestrator.worker_client import WorkerAPIError
+
+    for source in (Listings(WorkerAPIError(ErrorKind.UNAVAILABLE, "down", 503)), None):
+        client = await workspace(
+            aiohttp_client,
+            state_dir,
+            static_dir,
+            mcp_project="p1",
+            mcp_inventory=(ServiceConfig(name="papers", purpose="Research"),),
+            mcp_listings=source,
+        )
+        response = await client.get("/api/v0/projects/p1/mcp-services")
+        assert response.status == 200
+        (papers,) = McpInventory.model_validate_json(await response.text()).services
+        assert (papers.listing_state, papers.listing) == ("unavailable", None)
 
 
 async def test_the_user_turns_a_configured_connector_off_and_back_on(

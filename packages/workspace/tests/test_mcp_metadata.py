@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Metadata inspection handles streaming responses without losing boundedness."""
+"""The user's availability check asks the control service, with the workspace's token, for
+one listing by the agent runtime's client (D98), and keeps nothing but the status."""
+
+from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -10,79 +12,99 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient
 
-from sandbox_science.workspace.mcp_metadata import MetadataClient
+from sandbox_science.workspace.mcp_metadata import AvailabilityClient
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
+TOKEN = "test-secret-workspace-check-0123456789abcdef"
 
 
-def metadata_body() -> bytes:
-    return json.dumps(
-        {
-            "server": "papers",
-            "observed_at": "2026-10-18T12:00:00Z",
-            "policy": {
-                "revision": "a" * 64,
-                "protocol": "2025-11-25",
-                "authentication": "bearer",
-                "default_action": "deny",
-                "listing_action": "allow",
-                "worker_access": False,
-                "worker_tools": [],
-                "allow": [],
-                "escalate": [],
-                "deny": [],
-                "argument_bytes": 1024,
-                "response_bytes": 1024,
-            },
-        }
-    ).encode()
+async def test_a_check_asks_the_control_service_and_keeps_the_status(
+    aiohttp_client: ClientFactory,
+) -> None:
+    asked: list[dict[str, Any]] = []
+    answer: dict[str, Any] = {
+        "status": "listed",
+        "tool_count": 12,
+        "digest": "d" * 64,
+        "error_kind": None,
+    }
 
-
-async def test_metadata_waits_for_delayed_response_chunks(aiohttp_client: ClientFactory) -> None:
-    first_sent, release = asyncio.Event(), asyncio.Event()
-    raw = metadata_body()
-
-    async def respond(request: web.Request) -> web.StreamResponse:
-        assert request.headers["Authorization"] == "Bearer test-secret-metadata-caller"
-        response = web.StreamResponse(headers={"Content-Type": "application/json"})
-        await response.prepare(request)
-        await response.write(raw[:20])
-        first_sent.set()
-        await release.wait()
-        await response.write(raw[20:])
-        await response.write_eof()
-        return response
+    async def check(request: web.Request) -> web.Response:
+        assert request.headers["Authorization"] == f"Bearer {TOKEN}"
+        asked.append(await request.json())
+        return web.json_response(answer)
 
     app = web.Application()
-    app.router.add_get("/metadata/papers", respond)
-    proxy = await aiohttp_client(app)
-    source = MetadataClient(str(proxy.make_url("")), "test-secret-metadata-caller")
-    reading = asyncio.create_task(source.read("papers"))
-    try:
-        await asyncio.wait_for(first_sent.wait(), 1)
-        # The peer withholds the rest: a short read must not become an invalid JSON result.
-        done, _ = await asyncio.wait({reading}, timeout=0.02)
-        assert not done
-    finally:
-        release.set()
-        found = await reading
-    assert found is not None
-    assert found.server == "papers"
-    assert source.last["papers"] == found
+    app.router.add_post("/mcp-check", check)
+    control = await aiohttp_client(app)
+    client = AvailabilityClient(str(control.make_url("")), TOKEN)
+    found = await client.check("papers")
+    assert (found.status, found.tool_count) == ("listed", 12)
+    assert asked == [{"server": "papers"}]
+    assert client.checks["papers"] == found
+    assert "digest" not in found.model_dump()  # only the status and the count are kept
+    answer = {"status": "timeout", "tool_count": None, "digest": None, "error_kind": "timeout"}
+    assert (await client.check("papers")).status == "timeout"
 
 
-@pytest.mark.parametrize("extra", [0, 1])
-async def test_metadata_response_size_bound(aiohttp_client: ClientFactory, extra: int) -> None:
-    body = metadata_body()
-    raw = body + b" " * (1024 * 1024 + extra - len(body))
-
-    async def respond(_: web.Request) -> web.Response:
-        return web.Response(body=raw, content_type="application/json")
+@pytest.mark.parametrize(
+    "reply",
+    [
+        web.Response(status=404),
+        web.Response(status=500),
+        web.Response(body=b"not json"),
+        web.json_response({"status": "everything is fine"}),
+        web.Response(body=b"{" + b" " * (64 * 1024 + 1) + b"}", content_type="application/json"),
+    ],
+)
+async def test_anything_but_a_listing_outcome_is_unavailable(
+    aiohttp_client: ClientFactory, reply: web.Response
+) -> None:
+    async def check(request: web.Request) -> web.Response:
+        return reply
 
     app = web.Application()
-    app.router.add_get("/metadata/papers", respond)
-    proxy = await aiohttp_client(app)
-    source = MetadataClient(str(proxy.make_url("")), "test-secret-metadata-caller")
-    found = await source.read("papers")
-    assert (found is not None) == (extra == 0)
-    assert ("papers" in source.last) == (extra == 0)
+    app.router.add_post("/mcp-check", check)
+    control = await aiohttp_client(app)
+    found = await AvailabilityClient(str(control.make_url("")), TOKEN).check("papers")
+    assert found.status == "unavailable"
+
+
+async def test_an_absent_control_service_is_unavailable() -> None:
+    found = await AvailabilityClient("http://127.0.0.1:9", TOKEN).check("papers")
+    assert found.status == "unavailable"
+
+
+async def test_one_check_at_a_time(aiohttp_client: ClientFactory) -> None:
+    running, most = 0, 0
+
+    async def check(request: web.Request) -> web.Response:
+        nonlocal running, most
+        running += 1
+        most = max(most, running)
+        await asyncio.sleep(0.05)
+        running -= 1
+        return web.json_response({"status": "listed", "tool_count": 1})
+
+    app = web.Application()
+    app.router.add_post("/mcp-check", check)
+    control = await aiohttp_client(app)
+    client = AvailabilityClient(str(control.make_url("")), TOKEN)
+    await asyncio.gather(client.check("a"), client.check("b"), client.check("c"))
+    assert most == 1
+
+
+@pytest.mark.parametrize(
+    ("url", "token"),
+    [
+        ("http://control.example.org:8202", TOKEN),  # plain http off loopback
+        ("https://user:pw@control.example.org", TOKEN),
+        ("ftp://127.0.0.1", TOKEN),
+        ("http://127.0.0.1:8202", "test-secret-line1\ntest-secret-line2-0123456789"),
+        ("http://127.0.0.1:8202", "short"),
+    ],
+)
+def test_an_address_or_token_the_client_should_not_use_is_refused(url: str, token: str) -> None:
+    with pytest.raises(ValueError, match=r"control service|token") as refused:
+        AvailabilityClient(url, token)
+    assert "test-secret" not in str(refused.value)

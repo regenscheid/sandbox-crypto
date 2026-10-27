@@ -3,8 +3,9 @@
 """Disposable authenticated browser fixture for context, Skills and MCP views.
 
 No model, worker or external connections. All research data and login credentials
-are visibly synthetic. An owned loopback MCP peer and real proxy exercise metadata
-and explicit availability checks. Starts on free loopback ports and removes its own
+are visibly synthetic. An owned loopback stand-in for the control service's
+availability check, and a synthetic reported listing, exercise the MCP services view
+(the MCP proxy it used to run retired on 2026-10-26, D98). Starts on free loopback ports and removes its own
 temporary state on SIGTERM/SIGINT. Serve a built workspace from this checkout.
 """
 
@@ -25,11 +26,7 @@ from aiohttp import web
 from resource_browser import seed_resources
 
 from sandbox_science.contracts import ExecutionContext, new_id
-from sandbox_science.mcp_proxy.callers import Caller, Callers, token_digest
-from sandbox_science.mcp_proxy.proxy import McpProxy
-from sandbox_science.mcp_proxy.sessions import Sessions
-from sandbox_science.mcp_proxy.store import PolicyStore
-from sandbox_science.mcp_proxy.upstream import GuardedResolver, Upstream, client_session
+from sandbox_science.contracts.classifications import ListedToolView, ReportedListing
 from sandbox_science.orchestrator.context.history import Archive, Entry
 from sandbox_science.orchestrator.context.history.capture import (
     ContextMessage,
@@ -60,16 +57,10 @@ from sandbox_science.orchestrator.session_plans import (
 )
 from sandbox_science.orchestrator.skills import SkillStore, snapshot
 from sandbox_science.orchestrator.skills.sources import Fetched, PackFile
-from sandbox_science.policy import HardFloor, PoolCeiling
-from sandbox_science.testing.mcp import (
-    SERVER_HOST,
-    FakeServer,
-    RecordingSink,
-    StaticResolver,
-    make_tls,
-)
+from sandbox_science.policy.store import PolicyStore
+from sandbox_science.testing.mcp import SERVER_HOST
 from sandbox_science.workspace.app import create_app
-from sandbox_science.workspace.mcp_metadata import MetadataClient
+from sandbox_science.workspace.mcp_metadata import AvailabilityClient
 from sandbox_science.workspace.mcp_services import ServiceConfig
 
 TOKEN = "test-secret-disposable-context-browser-20261018"  # noqa: S105 -- synthetic fixture
@@ -78,7 +69,7 @@ ROOT = "20261018T120000000000Z-root"
 CHILD = "20261018T120001000000Z-child"
 RESUMED = "20261018T130000000000Z-resumed"
 LIVE = "20261018T140000000000Z-live"
-PROXY_TOKEN = "test-secret-owned-browser-metadata-proxy"  # noqa: S105 -- synthetic fixture
+CHECK_TOKEN = "test-secret-owned-browser-availability-check"  # noqa: S105 -- synthetic fixture
 
 
 def proxy_policy(port: int) -> bytes:
@@ -88,7 +79,7 @@ kind: ProjectPolicy
 metadata: {{name: synthetic-browser-policy}}
 defaults: {{action: deny}}
 mcp:
-  proxy: {{worker_access: false, worker_tools: [], max_argument_bytes: 16Ki, max_response_bytes: 64Ki}}
+  proxy: {{max_argument_bytes: 16Ki}}
   servers:
     papers:
       url: https://{SERVER_HOST}:{port}/mcp
@@ -101,110 +92,94 @@ mcp:
 """.encode()
 
 
+class SyntheticListings:
+    """The worker's reported listing of the synthetic service, as its client reads it."""
+
+    async def mcp_listings(self, project_id: str) -> list[ReportedListing]:
+        return [
+            ReportedListing(
+                server="papers",
+                reported_at=datetime.now(UTC) - timedelta(minutes=3),
+                session=SESSION,
+                run=LIVE,
+                listing="f" * 64,
+                drifted=False,
+                tools=[
+                    ListedToolView(
+                        name="search",
+                        hint="read",
+                        effect="read",
+                        classified=False,
+                        action="allow",
+                    ),
+                    ListedToolView(
+                        name="crawl",
+                        hint="read",
+                        effect="read",
+                        classified=False,
+                        action="escalate",
+                    ),
+                    ListedToolView(
+                        name="admin_reset",
+                        hint="admin",
+                        effect="admin",
+                        classified=False,
+                        action="deny",
+                    ),
+                ],
+            )
+        ]
+
+
 @asynccontextmanager
-async def mcp_fixture(path: Path) -> AsyncIterator[tuple[MetadataClient, dict[str, str]]]:
+async def mcp_fixture(
+    path: Path,
+) -> AsyncIterator[tuple[AvailabilityClient, SyntheticListings, dict[str, str]]]:
     """Run only owned loopback listeners; no upstream DNS or external network is used."""
     async with AsyncExitStack() as stack:
-        tls_path = path / "synthetic-tls"
-        tls_path.mkdir()
-        tls = make_tls(tls_path)
-        peer = FakeServer()
-        peer.listing = lambda _: {
-            "tools": [
-                {
-                    "name": "search",
-                    "description": "Synthetic finite-field literature search; never executed.",
-                    "inputSchema": {
-                        "type": "object",
-                        "required": ["query"],
-                        "properties": {
-                            "query": {"type": "string", "minLength": 1, "maxLength": 1000},
-                            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
-                        },
-                    },
-                },
-                {
-                    "name": "crawl",
-                    "description": "Synthetic approval-required archive listing; never executed.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {"reference": {"type": "string"}},
-                    },
-                },
-                {"name": "admin_reset", "inputSchema": {"type": "object"}},
-            ]
-        }
         available = True
         methods: list[str] = []
-        attempted_tools = 0
 
-        async def handle_peer(incoming: web.Request) -> web.StreamResponse:
-            nonlocal attempted_tools
-            body = await incoming.json()
-            method = body.get("method", "unknown")
-            methods.append(method)
+        async def check(incoming: web.Request) -> web.Response:
+            # The control service's check: one listing by the runtime's client, never a call.
+            if incoming.headers.get("Authorization") != f"Bearer {CHECK_TOKEN}":
+                raise web.HTTPNotFound()
+            if (await incoming.json()).get("server") != "papers":
+                raise web.HTTPNotFound()
+            methods.append("tools/list")
             del methods[:-32]
-            if method == "tools/call":
-                attempted_tools += 1
-                return web.Response(status=405, text="Synthetic fixture never executes tools")
-            if method not in {"initialize", "notifications/initialized", "tools/list", "ping"}:
-                return web.Response(status=405)
             if not available:
-                return web.Response(status=503, text="Synthetic peer deliberately unavailable")
-            return await peer.handle(incoming)
+                return web.json_response(
+                    {"status": "unavailable", "tool_count": None, "digest": None,
+                     "error_kind": "client_error"}
+                )  # fmt: skip
+            return web.json_response(
+                {"status": "listed", "tool_count": 2, "digest": "f" * 64, "error_kind": None}
+            )
 
-        async def serve(app: web.Application, *, ssl_context=None) -> tuple[web.AppRunner, int]:
+        async def serve(app: web.Application) -> tuple[web.AppRunner, int]:
             runner = web.AppRunner(app)
             stack.push_async_callback(runner.cleanup)
             await runner.setup()
-            site = web.TCPSite(runner, "127.0.0.1", 0, ssl_context=ssl_context)
+            site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
             return runner, runner.addresses[0][1]
 
-        peer_app = web.Application(client_max_size=64 * 1024)
-        peer_app.router.add_post("/mcp", handle_peer)
-        _, peer.port = await serve(peer_app, ssl_context=tls.server)
-        policies = PolicyStore(path / "synthetic-proxy")
-        loaded = policies.add_policy(proxy_policy(peer.port))
-        policies.bind(PROJECT, loaded.digest)
-        # This lab-only resolver is closed over one synthetic name and one owned
-        # loopback listener. Production policy/resolution is never modified.
-        resolver = GuardedResolver(
-            StaticResolver(),
-            lambda host, addresses: (
-                None
-                if host == SERVER_HOST and set(addresses) == {"127.0.0.1"}
-                else ("destination_forbidden", "not the owned synthetic MCP peer")
-            ),
-        )
-        upstream = Upstream(client_session(resolver, timeout=3, tls=tls.client))
-        stack.push_async_callback(upstream.close)
-        proxy = McpProxy(
-            store=policies,
-            callers=Callers(
-                ((token_digest(PROXY_TOKEN), Caller("browser-lab", "orchestrator", PROJECT)),)
-            ),
-            ceiling=PoolCeiling.unrestricted(),
-            floor=HardFloor(),
-            events=RecordingSink(),
-            upstream=upstream,
-            sessions=Sessions(limit=8, per_caller=4, idle=3600),
-            credentials={},
-            environ={},
-        )
-        _, proxy_port = await serve(proxy.application(max_body_bytes=64 * 1024))
+        check_app = web.Application(client_max_size=64 * 1024)
+        check_app.router.add_post("/mcp-check", check)
+        _, check_port = await serve(check_app)
 
         async def controls(_: web.Request) -> web.Response:
             return web.Response(
                 content_type="text/html",
                 text=f"""<!doctype html>
 <title>Synthetic MCP availability controls</title><h1>Synthetic fixture only</h1>
-<p>The peer is {"available" if available else "unavailable"}. Changing it does not probe MCP.
+<p>The service is {"available" if available else "unavailable"}. Changing it does not probe MCP.
 Return to MCP services and explicitly check availability after each change.</p>
 <form method="post" action="/availability/unavailable"><input type="hidden" name="token" value="{TOKEN}">
-<button>Make synthetic peer unavailable</button></form>
+<button>Make synthetic service unavailable</button></form>
 <form method="post" action="/availability/available"><input type="hidden" name="token" value="{TOKEN}">
-<button>Restore synthetic peer</button></form><p><a href="/stats">Read synthetic method counts</a></p>""",
+<button>Restore synthetic service</button></form><p><a href="/stats">Read synthetic method counts</a></p>""",
             )
 
         async def toggle(incoming: web.Request) -> web.Response:
@@ -222,8 +197,8 @@ Return to MCP services and explicitly check availability after each change.</p>
                     "synthetic": True,
                     "available": available,
                     "recent_methods": methods,
-                    "attempted_tool_calls": attempted_tools,
-                    "executed_tool_calls": len(peer.tool_calls()),
+                    "attempted_tool_calls": 0,
+                    "executed_tool_calls": 0,
                 }
             )
 
@@ -233,7 +208,8 @@ Return to MCP services and explicitly check availability after each change.</p>
         control_app.router.add_post("/availability/{state:available|unavailable}", toggle)
         _, control_port = await serve(control_app)
         yield (
-            MetadataClient(f"http://127.0.0.1:{proxy_port}", PROXY_TOKEN),
+            AvailabilityClient(f"http://127.0.0.1:{check_port}", CHECK_TOKEN),
+            SyntheticListings(),
             {
                 "mcp_controls": f"http://127.0.0.1:{control_port}/",
                 "mcp_stats": f"http://127.0.0.1:{control_port}/stats",
@@ -684,7 +660,7 @@ async def main() -> None:
     with tempfile.TemporaryDirectory(prefix="ss-context-browser-", dir="/var/tmp") as temp:
         path = Path(temp)
         info = seed(path)
-        async with mcp_fixture(path) as (metadata, mcp_info):
+        async with mcp_fixture(path) as (checks, listings, mcp_info):
             store = ProjectStore(path, readonly=True)
             app = create_app(
                 store,
@@ -694,7 +670,8 @@ async def main() -> None:
                 mcp_inventory=(
                     ServiceConfig(name="papers", purpose="Synthetic literature service"),
                 ),
-                mcp_metadata=metadata,
+                mcp_checks=checks,
+                mcp_listings=listings,
             )
             runner = web.AppRunner(app)
             update = None

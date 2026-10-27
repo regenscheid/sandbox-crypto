@@ -42,11 +42,10 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace.app import create_app
-from sandbox_science.workspace.approvals import ApprovalClient
 from sandbox_science.workspace.classifications import ClassificationSource
 from sandbox_science.workspace.context import TIMEOUTS, Timeouts
-from sandbox_science.workspace.mcp_metadata import MetadataClient
-from sandbox_science.workspace.mcp_services import ServiceConfig
+from sandbox_science.workspace.mcp_metadata import AvailabilityClient
+from sandbox_science.workspace.mcp_services import ListingSource, ServiceConfig
 
 TOKEN = "test-secret-route-characterization-login-0123456789"
 WORKER_TOKEN = "test-secret-route-characterization-worker"
@@ -521,8 +520,8 @@ async def workspace(
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
     mcp_inventory: tuple[ServiceConfig, ...] = (),
-    mcp_metadata: MetadataClient | None = None,
-    mcp_approvals: ApprovalClient | None = None,
+    mcp_checks: AvailabilityClient | None = None,
+    mcp_listings: ListingSource | None = None,
     mcp_classifications: ClassificationSource | None = None,
 ) -> TestClient[Any, Any]:
     """The workspace app under test, optionally connected to a worker and logged in."""
@@ -538,8 +537,8 @@ async def workspace(
             skills_metadata=skills_metadata,
             mcp_project=mcp_project,
             mcp_inventory=mcp_inventory,
-            mcp_metadata=mcp_metadata,
-            mcp_approvals=mcp_approvals,
+            mcp_checks=mcp_checks,
+            mcp_listings=mcp_listings,
             mcp_classifications=mcp_classifications,
         )
     )

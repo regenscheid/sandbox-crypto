@@ -241,6 +241,8 @@ def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> Wor
             partial(project_policy, environments),
             store.classification_receipts,
             manager.clock,
+            ceiling=environments.ceiling,
+            floor=environments.floor,
         )
         if provisioner.permissions is not None and environments is not None
         else None

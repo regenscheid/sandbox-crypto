@@ -31,7 +31,7 @@ const request: PendingApproval = {
   on_timeout: 'deny',
   child: null,
   kind: 'mcp',
-  source: 'proxy',
+  source: 'worker',
   caller_kind: 'agent',
   effect: 'write',
   max_grant: 'project',

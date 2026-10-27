@@ -61,7 +61,7 @@ export interface AnswerResult {
   seq: number;
   decision: string;
   kind: "mcp" | "network" | "packages" | "hold";
-  source: "proxy" | "worker";
+  source: "worker";
   granted: ProjectGrant[];
 }
 
@@ -123,6 +123,7 @@ export interface Author {
 export interface AvailabilityCheck {
   checked_at: string;
   status: "listed" | "unavailable" | "denied" | "timeout";
+  tool_count: number | null;
 }
 
 export interface BackgroundJob {
@@ -274,7 +275,7 @@ export interface CheckInSummary {
   progress: number;
 }
 
-/** The delegated run whose call is held (D99): agent-attributed text, never the user's. The workspace sets it from its own records; the proxy's listing never carries it. */
+/** The delegated run whose call is held (D99): agent-attributed text, never the user's. The workspace sets it from its own records; the worker's listing never carries it. */
 export interface ChildAsked {
   delegation_id: string;
   run: string;
@@ -1596,6 +1597,15 @@ export interface LicenseObservation {
   agpl: boolean | null;
 }
 
+/** One tool of the latest listing reported for a server, as the workspace's MCP services view shows it: the class its hints give it, its class as a listing tells it (``effect``: by the project's classification in force when it names the tool, else by the hint; ``read`` only when no argument can make a call of it more), and what a call of it by name alone, without arguments, is decided as (``allow``, ``escalate`` or ``deny``) under the project's policy and classification in force. Arguments can make a call stricter. */
+export interface ListedToolView {
+  name: string;
+  hint: "read" | "write" | "communicate" | "browse" | "admin" | "unclassified";
+  effect: "read" | "write" | "communicate" | "browse" | "admin" | "unclassified";
+  classified: boolean;
+  action: "allow" | "escalate" | "deny";
+}
+
 export interface LockfileDiffPage {
   project_id: string;
   environment_id: string;
@@ -1675,6 +1685,7 @@ export interface McpInventory {
   inspected_runs: number;
   skipped_runs: number;
   observation_scope: string;
+  checks: boolean;
 }
 
 /** The newest listing found in the bounded sample, not its present state. */
@@ -1686,50 +1697,14 @@ export interface McpObservation {
   listed_tools: number | null;
 }
 
-export interface McpPolicyMetadata {
-  revision: string;
-  protocol: string;
-  authentication: string;
-  default_action: string;
-  listing_action: string;
-  worker_access: boolean;
-  worker_tools: string[];
-  allow: string[];
-  escalate: string[];
-  deny: string[];
-  argument_bytes: number;
-  response_bytes: number;
-}
-
-export interface McpServiceMetadata {
-  server: string;
-  observed_at: string;
-  policy: McpPolicyMetadata;
-  checked_at: string | null;
-  status: "unknown" | "listed" | "responded" | "unavailable" | "denied";
-  listing_at: string | null;
-  listing_policy: string | null;
-  tools: McpToolMetadata[];
-  truncated: boolean;
-  schema_projection: string;
-}
-
 export interface McpServiceView {
   name: string;
   purpose: string;
   observation: McpObservation | null;
-  metadata: McpServiceMetadata | null;
-  proxy_checked_at: string | null;
-  proxy_status: "reachable" | "unknown" | "unavailable";
+  listing: ReportedListing | null;
+  listing_state: "reported" | "none" | "unavailable";
   availability: AvailabilityCheck | null;
   canary: McpCanary | null;
-}
-
-export interface McpToolMetadata {
-  name: string;
-  description: string;
-  parameters_json: string;
-  action: string;
 }
 
 /** A project's memory as the Memory page shows it: the accepted entries in order. */
@@ -1953,7 +1928,7 @@ export interface PatchRecord {
 export interface PendingApproval {
   seq: number;
   kind: "mcp" | "network" | "packages" | "hold";
-  source: "proxy" | "worker";
+  source: "worker";
   server: string;
   tool: string;
   method: string;
@@ -2349,6 +2324,17 @@ export interface RemovedBlock {
 export interface RemovedMath {
   id: string;
   block: string;
+}
+
+/** The latest complete listing of a server that the agent runtime's client reported (``report_mcp_listing``, D98) and the worker took, with each tool as the classification in force sees it now. The worker keeps the latest one per project and server in memory: after it restarts there is none until a run or a canary lists the server again. */
+export interface ReportedListing {
+  server: string;
+  reported_at: string;
+  session: string | null;
+  run: string | null;
+  listing: string;
+  drifted: boolean;
+  tools: ListedToolView[];
 }
 
 /** A resume or a cancel, written for the run service. */

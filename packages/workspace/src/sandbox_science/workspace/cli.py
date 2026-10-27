@@ -53,10 +53,9 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .app import create_app
-from .approvals import ApprovalClient
 from .context import CONTEXT
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
-from .mcp_metadata import MetadataClient
+from .mcp_metadata import AvailabilityClient
 from .mcp_services import ServiceConfig
 from .preview import Capabilities, Preview, create_preview_app, own_host
 from .project_settings import ModelConfiguration
@@ -382,14 +381,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         metavar="NAME=PURPOSE",
         help="a configured MCP service and its public purpose; repeat for each service",
     )
-    command.add_argument("--mcp-proxy", help="private host proxy address for metadata")
     command.add_argument(
-        "--mcp-proxy-token-file", type=Path, help="host-only proxy caller token path"
+        "--mcp-check",
+        metavar="URL",
+        help="the control service, which lists a service through the agent runtime's own "
+        "client for the user's availability check (D98)",
     )
     command.add_argument(
-        "--mcp-operator-token-file",
-        type=Path,
-        help="the proxy operator token, with which the user answers held tool calls",
+        "--mcp-check-token-file", type=Path, help="the workspace's token for --mcp-check"
     )
     agents = command.add_argument_group(
         "agent models", "trusted project choices for main, delegated and reviewer roles"
@@ -545,24 +544,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             mcp_inventory.append(ServiceConfig(name=service, purpose=purpose))
         except ValueError:
             parser.error("--mcp-service needs a valid service name and purpose")
-    metadata = None
-    if args.mcp_proxy is not None or args.mcp_proxy_token_file is not None:
-        if args.mcp_proxy is None or args.mcp_proxy_token_file is None or args.mcp_project is None:
-            parser.error("MCP metadata needs proxy, token file and project together")
+    checks = None
+    if args.mcp_check is not None or args.mcp_check_token_file is not None:
+        if args.mcp_check is None or args.mcp_check_token_file is None or args.mcp_project is None:
+            parser.error("--mcp-check needs --mcp-check-token-file and --mcp-project")
         try:
-            metadata = MetadataClient(args.mcp_proxy, args.mcp_proxy_token_file.read_text().strip())
-        except (OSError, UnicodeError, ValueError):
-            parser.error("cannot configure MCP metadata source")
-    answers = None
-    if args.mcp_operator_token_file is not None:
-        if args.mcp_proxy is None or args.mcp_project is None:
-            parser.error("--mcp-operator-token-file needs --mcp-proxy and --mcp-project")
-        try:
-            answers = ApprovalClient(
-                args.mcp_proxy, args.mcp_operator_token_file.read_text().strip()
+            checks = AvailabilityClient(
+                args.mcp_check, args.mcp_check_token_file.read_text().strip()
             )
         except (OSError, UnicodeError, ValueError):
-            parser.error("cannot read the MCP operator token")
+            parser.error("cannot configure the MCP availability check")
     try:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
@@ -577,8 +568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             skills_metadata=args.skills_metadata_model,
             mcp_project=args.mcp_project,
             mcp_inventory=tuple(mcp_inventory),
-            mcp_metadata=metadata,
-            mcp_approvals=answers,
+            mcp_checks=checks,
             model_configuration=model_configuration,
             exposure=exposure,
         )
