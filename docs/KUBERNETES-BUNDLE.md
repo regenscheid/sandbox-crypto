@@ -413,6 +413,9 @@ project = "crypto"                        # a site project: the policy the middl
 provider = "crypto-research-mcp"          # the OpenShell provider (the default)
 provider_secret = "research-mcp-provider" # the Secret the operator creates (below)
 # index = ["crypto-research-mcp/e-print-mcp"]
+# [mcp_direct.canaries]                   # on by default, as below
+# enabled = true
+# interval = 900                          # seconds, 60 to 86400
 [mcp_direct.servers.crypto-research-mcp]
 credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
 [mcp_direct.about]
@@ -445,7 +448,11 @@ pool ceiling admit. With it:
   ([worker](WORKER.md)).
   `runtime-manager.json` gets the `worker` link (the worker Service, verified with the
   private CA in `control-ca.crt`) and `mcp` (the two files and the provider);
-  `control.json` gets `direct` (the run service's servers, `about` and `index`) and
+  `control.json` gets `direct` (the run service's servers, `about` and `index`),
+  `canaries` (the direct path's project and servers, every `[mcp_direct.canaries]` `interval`
+  seconds, 900 by default, as the host launcher writes them; control refuses the
+  workspace's listing report without it, so "Check availability" would return
+  `unavailable`; `enabled = false` omits it) and
   `check_token_sha256_file`, the digest (`mcp-check-token.sha256`) of the workspace's token
   for the user's availability check (`mcp-check-token`, in the workspace's Secret alone); and
   `middleware.toml` gets `mcp_listings = true` and `[inspect]` at the middleware's defaults
@@ -787,7 +794,7 @@ The ConfigMap carries `configmap_labels` and the annotation `k8s-sidecar-target-
 | `SandboxScienceManagerUnreachable` (critical) | The runtime manager has noted `gateway_unreachable` or `control_unreachable` for over 10 minutes: it logs `event: runtime_manager_note` with the note's `kind` and `since` when the note starts and every 5 minutes while it holds, and the rule asks for a record within each 8 minutes, held for 10 (`for: 10m`). It resolves up to 8 minutes after the note clears | `service`, `kind` |
 | `SandboxScienceCreationUnknown` | The worker's reconciliation read a creation with an unknown outcome past `creation_grace` and could not yet confirm the sandbox present or absent: it logs `event: environment_creation_unknown` at each pass (every `creation_recheck`, 30 s by default), with the environment and project. The window is 15 minutes, longer than `creation_recheck`, so a creation unknown at every pass stays in it from one pass to the next; with a `creation_recheck` over 15 minutes, widen it. A creation it settles is `environment_creation_reconciled` instead | `service`, `project`, `environment` |
 | `SandboxScienceMcpCanaryChanged` | A scheduled [MCP canary](MCP-CONNECTORS.md#canaries) changed from `listed` (or no earlier result) to `unavailable`, `denied` or `timeout` (`event: mcp_canary_changed`): the notification. It resolves 20 minutes after the change | `service`, `server`, `status` |
-| `SandboxScienceMcpCanaryFailing` | Every canary of a server within `canary_window_minutes` (20) failed (`event: mcp_canary`, `status` not `listed`, and no listed one): it holds while the server keeps failing and resolves at its first listed result. The window must exceed the canaries' interval (15 minutes by default). The bundle runs no canaries yet: both canary rules fire once canaries run where Alloy collects their logs | `service`, `server` |
+| `SandboxScienceMcpCanaryFailing` | Every canary of a server within `canary_window_minutes` (20) failed (`event: mcp_canary`, `status` not `listed`, and no listed one): it holds while the server keeps failing and resolves at its first listed result. The window must exceed the canaries' interval (15 minutes by default). With `[mcp_direct]` the bundle's control runs the canaries (`[mcp_direct.canaries]`): both canary rules fire from their logs where Alloy collects them | `service`, `server` |
 | `SandboxSciencePolicyHold` | A detect-and-hold rule opened a hold: the middleware's `event: detect_finding` with `outcome` `hold` (a session's outward calls held, [detect and hold](POLICY-MIDDLEWARE.md#detect-and-hold-d103)) or `hold_call` (one call held for approval). Not grouped by project: a held call's record, and an HTTP detection's, carry none | `service`, `rule`, `outcome` |
 
 **Network-policy drops are not alerted on.** The services' logs do not carry them: a Kubernetes NetworkPolicy drop is the CNI's to report, and OpenShell's sandbox network denials reach Loki only as OCSF events through the sample's optional OCSF pipeline, whose `class_uid` and `action` values have not been seen on a cluster. The rule file ends with that rule commented out, for once they have. None of the rules has run in a Loki ruler yet.
