@@ -1061,5 +1061,32 @@ def test_block_and_alert_records_are_never_dropped_and_drops_are_recorded() -> N
     assert "mcp-inspection-dropped" in sink.kinds
     (report,) = [p for k, p in sink.payloads if k == "mcp-inspection-dropped"]
     assert report["counts"] == [
-        {"project": "p", "sandbox_id": "sbx-busy", "answers": inspection.dropped}
+        {"project": "p", "sandbox_id": "sbx-busy", "answers": inspection.dropped, "compacted": 0}
+    ]
+
+
+def test_the_never_dropped_queue_is_bounded_by_compacting_past_it() -> None:
+    sink = SlowSink()
+    inspection = Inspection(sink, max_pending=4, max_urgent=3, drop_report_seconds=0)
+    for index in range(8):
+        alerted = finding_answer(inspection, f"hit-{index}", "sbx-loud")
+        alerted.feed(b"a hit and some text " * 50)
+        alerted.finish(complete=True)
+    # The writer holds the first; three wait whole (the backlog past four loses its
+    # excerpt); the rest are kept compact.
+    assert inspection.compacted >= 4
+    assert inspection.dropped == 0
+    sink.release.set()
+    inspection.flush()
+    written: list[dict[str, Any]] = [dict(p) for k, p in sink.payloads if k == "mcp-answer"]
+    assert len(written) == 8  # none dropped
+    compact = [p for p in written if p.get("compacted")]
+    assert len(compact) == inspection.compacted
+    assert all(p["excerpt"] is None for p in compact)
+    assert all(f["excerpt"] == "" and f["name"] == "hit" for p in compact for f in p["findings"])
+    assert all(p["bytes"] == 1000 for p in compact)
+    (report,) = [p for k, p in sink.payloads if k == "mcp-inspection-dropped"]
+    assert (report["answers"], report["compacted"]) == (0, inspection.compacted)
+    assert report["counts"] == [
+        {"project": "p", "sandbox_id": "sbx-loud", "answers": 0, "compacted": inspection.compacted}
     ]

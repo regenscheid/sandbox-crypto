@@ -73,6 +73,9 @@ MAX_SANDBOXES: Final = 4096
 MAX_PENDING: Final = 1024
 """Plain answers waiting to be recorded; past it, one is dropped and counted, never waited
 for. Answers with a finding, a block or no inspection are never dropped."""
+MAX_URGENT: Final = 4096
+"""Answers with a finding, a block or no inspection waiting in full; past it, each is kept
+compact (names and sizes, no excerpts) and counted, never dropped."""
 DROPPED_RECORD: Final = "mcp-inspection-dropped"
 DROP_REPORT_SECONDS: Final = 60.0
 """How often dropped answers are counted into an ``mcp-inspection-dropped`` record."""
@@ -289,6 +292,8 @@ class AnswerInspection:
         self._answered = False
         self.after_result = False
         """The stream was cut after the call's response had passed: no error was added."""
+        self.compacted = False
+        """Recorded with names and sizes only: the never-dropped queue was full."""
         self.inspected = True
         """False when the answer passed unread (``reason``): no pattern applied to it."""
         self.reason: str | None = None
@@ -477,6 +482,8 @@ class AnswerInspection:
             payload["more_findings"] = self._more
         if self.after_result:
             payload["cut_after_result"] = True
+        if self.compacted:
+            payload["compacted"] = True
         if not self.inspected:
             payload["inspected"] = False
             payload["reason"] = self.reason
@@ -492,6 +499,18 @@ class AnswerInspection:
         self._text.excerpt.clear()
         self._excerpt_limit = 0
         self.note = self.note or "excerpt left out: the record queue was full"
+
+    def compact(self) -> None:
+        """Keep only what the record needs at least: names, sizes and the decision, no
+        excerpt, no text around a finding, nothing held for searching."""
+        self.lean()
+        for found in self._findings:
+            found.excerpt = ""
+        self._seen.clear()
+        self._spans = None
+        self._text.carry = ""
+        self.events = None if self.events is None else _EventData()
+        self.compacted = True
 
     def pass_unread(self, reason: str) -> None:
         """Let the answer pass without reading it (``reason``, such as ``capacity``): its
@@ -538,6 +557,7 @@ class Inspection:
         defaults: bool = True,
         redactor: Redactor | None = None,
         max_pending: int = MAX_PENDING,
+        max_urgent: int = MAX_URGENT,
         drop_report_seconds: float = DROP_REPORT_SECONDS,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
@@ -559,11 +579,16 @@ class Inspection:
         self._plain: deque[AnswerInspection] = deque()
         self._busy = 0
         self._max_pending = max_pending
+        self._max_urgent = max_urgent
         self._writer: threading.Thread | None = None
         self.dropped = 0
         """Plain answers not recorded because the queue was full, since the start."""
-        self._drops: dict[tuple[str, str], int] = {}
-        """Drops not yet reported, by project and sandbox."""
+        self.compacted = 0
+        """Answers with a finding, a block or no inspection recorded compact, since the
+        start."""
+        self._drops: dict[tuple[str, str], list[int]] = {}
+        """Plain answers dropped and important ones compacted, not yet reported, by
+        project and sandbox."""
         self._drop_report = drop_report_seconds
         self._clock = clock
         self._reported_at = clock.monotonic()
@@ -628,14 +653,18 @@ class Inspection:
         block or no inspection is never dropped: it goes ahead of the others, without
         its excerpt when the queue is full. A plain answer is dropped when the queue is
         full, counted by sandbox into a periodic ``mcp-inspection-dropped`` record."""
+        key = (str(answer.tracked.subject.get("project")), answer.tracked.sandbox_id)
         with self._cond:
             if answer.important():
-                if len(self._plain) >= self._max_pending:
+                if len(self._urgent) >= self._max_urgent:
+                    answer.compact()  # memory stays bounded per answer, the record kept
+                    self._drops.setdefault(key, [0, 0])[1] += 1
+                    self.compacted += 1
+                elif len(self._urgent) + len(self._plain) >= self._max_pending:
                     answer.lean()  # the excerpt's redaction is what a backlog cannot afford
                 self._urgent.append(answer)
             elif len(self._plain) >= self._max_pending:
-                key = (str(answer.tracked.subject.get("project")), answer.tracked.sandbox_id)
-                self._drops[key] = self._drops.get(key, 0) + 1
+                self._drops.setdefault(key, [0, 0])[0] += 1
                 self.dropped += 1
                 _log.warning("MCP answer records dropped, the queue being full: %d", self.dropped)
             else:
@@ -687,15 +716,18 @@ class Inspection:
             drops, self._drops = self._drops, {}
             self._reported_at = self._clock.monotonic()
         counts = [
-            {"project": project, "sandbox_id": sandbox, "answers": count}
-            for (project, sandbox), count in sorted(drops.items())
+            {"project": project, "sandbox_id": sandbox, "answers": dropped, "compacted": kept}
+            for (project, sandbox), (dropped, kept) in sorted(drops.items())
         ]
+        total = sum(item[0] for item in drops.values())
+        compacted = sum(item[1] for item in drops.values())
         try:
             self._events.record(
-                DROPPED_RECORD, {"answers": sum(drops.values()), "counts": counts[:256]}
+                DROPPED_RECORD,
+                {"answers": total, "compacted": compacted, "counts": counts[:256]},
             )
         except Exception:
-            _log.exception("could not record %d dropped MCP answers", sum(drops.values()))
+            _log.exception("could not record %d dropped MCP answers", total)
 
     def _write(self, answer: AnswerInspection) -> None:
         """Write an answer's records; a store that fails is logged, never the client's
