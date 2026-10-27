@@ -453,3 +453,21 @@ def test_answer_alerts_and_blocks_are_counted_by_server(tmp_path: Path) -> None:
     found = desk(events.store.path).figures("p1", "24h")
     assert found.records is not None
     assert found.records.inspection_enabled is False
+
+
+def test_the_inspection_state_is_found_behind_later_records_of_other_kinds(
+    tmp_path: Path,
+) -> None:
+    events = Clocked(tmp_path / "events.db")
+    events.add("mcp-inspection-state", {"enabled": True})
+    alert: dict[str, object] = {"project": "p1", "server": "papers", "action": "alert"}
+    for _ in range(3):
+        events.add("mcp-answer-alert", alert)
+    events.add("mcp-inspection-dropped", {"answers": 1, "counts": []})
+    found = desk(events.store.path).figures("p1", "24h")
+    assert found.records is not None
+    assert found.records.inspection_enabled is True
+    # The search is bounded like the scan: past the cap the state is unknown, not guessed.
+    found = desk(events.store.path, cap=4).figures("p1", "24h")
+    assert found.records is not None
+    assert found.records.inspection_enabled is None

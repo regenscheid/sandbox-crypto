@@ -425,7 +425,9 @@ COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-scienc
 COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
 COPY --from=trusted-node-unpack /node/bin/node /usr/local/bin/node
 COPY --from=trusted-node-unpack /node/LICENSE /usr/share/licenses/node/LICENSE
-COPY --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
+# tar keeps the release archive's uid (1001), which the runtime manager's CLI check refuses:
+# the Pod runs as uid 1000 and accepts only root's or its own.
+COPY --chown=0:0 --chmod=0755 --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
 COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
 COPY --from=trusted-web-build /build/web/workspace/dist /usr/share/sandbox-science/workspace
 COPY --from=trusted-web-build /build/web/workspace/dist-math /usr/share/sandbox-science/math
@@ -482,7 +484,9 @@ RUN --mount=type=bind,from=trusted-inputs,source=requirements.txt,target=/run/ss
 USER root
 COPY --chmod=0755 services/copy_credentials.py /usr/local/libexec/sandbox-science/copy-credentials.py
 COPY --chmod=0755 services/initialize_state.py /usr/local/libexec/sandbox-science/initialize-state.py
-COPY --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
+# tar keeps the release archive's uid (1001), which the runtime manager's CLI check refuses:
+# the Pod runs as uid 1000 and accepts only root's or its own.
+COPY --chown=0:0 --chmod=0755 --from=trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell
 COPY --from=trusted-openshell-unpack /openshell/LICENSE /usr/share/licenses/openshell/LICENSE
 ARG UBUNTU_IMAGE
 ARG UBUNTU_SNAPSHOT

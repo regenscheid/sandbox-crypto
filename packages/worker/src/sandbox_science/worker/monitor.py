@@ -397,7 +397,11 @@ class MonitorDesk:
             try:
                 with StoreReader(permissions.path, timeout=STORE_TIMEOUT) as reader:
                     head = reader.head().seq
-                    state = next(reader.newest(1, (INSPECTION_STATE,)), None)
+                    # Newest of its kind within the same bound: `newest(1, ...)` would
+                    # look at the newest record of any kind only, so any later record
+                    # hid the state. The store has no index on kind, so the bound keeps
+                    # this a range scan of the primary key.
+                    state = next(reader.newest(self.max_scanned, (INSPECTION_STATE,)), None)
                     counted, scanned, reached = _scan(
                         reader.newest(self.max_scanned, KINDS), project, owners, since
                     )

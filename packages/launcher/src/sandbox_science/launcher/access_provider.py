@@ -52,8 +52,10 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import grp
 import json
 import os
+import pwd
 import re
 import resource
 import stat
@@ -130,6 +132,56 @@ def _in_checkout(path: Path) -> Path | None:
     return None
 
 
+def cli_refusal(
+    real: Path,
+    info: os.stat_result,
+    folder: os.stat_result,
+    uid: int,
+    private_gid: int | None = None,
+) -> str | None:
+    """Why the CLI file, with its directory's status, is not safe to run; ``None`` if it is.
+
+    Safe is a regular file that root or the running user owns, that group and others may
+    not write, in a directory they may not write either: root-owned 0755 in
+    ``/usr/local/bin`` is the image's case. Others who can write the directory can
+    replace the file, whatever its own mode says. A directory writable by
+    ``private_gid``, the running user's own group with no other members, is the user's
+    alone: ``~/.local/bin`` under a umask of 002 on a user-private-group system.
+    """
+    if not stat.S_ISREG(info.st_mode):
+        return f"the OpenShell CLI {real} is not a regular file"
+    if info.st_uid not in (uid, 0):
+        return f"the OpenShell CLI {real} is neither this user's nor root's"
+    if info.st_mode & 0o022:
+        return f"the OpenShell CLI {real} may be changed by others"
+    if folder.st_uid not in (uid, 0):
+        return f"the OpenShell CLI {real} is in a directory that is neither this user's nor root's"
+    if folder.st_mode & 0o002 or (
+        folder.st_mode & 0o020 and (private_gid is None or folder.st_gid != private_gid)
+    ):
+        return f"the OpenShell CLI {real} is in a directory others may change"
+    return None
+
+
+def _private_group() -> int | None:
+    """The running user's primary group if no one else is in it, else ``None``."""
+    gid = os.getgid()
+    try:
+        group = grp.getgrgid(gid)
+    except KeyError:
+        return None
+    others = [name for name in group.gr_mem if name != _user_name()]
+    shared = any(entry.pw_gid == gid and entry.pw_uid != os.getuid() for entry in pwd.getpwall())
+    return None if others or shared else gid
+
+
+def _user_name() -> str | None:
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return None
+
+
 def check_cli(cli: str) -> str:
     """The OpenShell CLI's real path, once it is shown to be the user's or root's own."""
     if not os.path.isabs(cli):
@@ -141,12 +193,12 @@ def check_cli(cli: str) -> str:
         info = real.stat()
     except OSError as exc:
         raise RegistrationError(f"cannot use the OpenShell CLI {cli}: {exc.strerror}") from None
-    if not stat.S_ISREG(info.st_mode):
-        raise RegistrationError(f"the OpenShell CLI {real} is not a regular file")
-    if info.st_uid not in (os.getuid(), 0):
-        raise RegistrationError(f"the OpenShell CLI {real} is neither this user's nor root's")
-    if info.st_mode & 0o022:
-        raise RegistrationError(f"the OpenShell CLI {real} may be changed by others")
+    try:
+        folder = real.parent.stat()
+    except OSError as exc:
+        raise RegistrationError(f"cannot use the OpenShell CLI {cli}: {exc.strerror}") from None
+    if (refusal := cli_refusal(real, info, folder, os.getuid(), _private_group())) is not None:
+        raise RegistrationError(refusal)
     return str(real)
 
 

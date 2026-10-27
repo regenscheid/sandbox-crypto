@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -346,6 +347,93 @@ def test_an_openshell_cli_others_control_is_refused(
         f"error: the OpenShell CLI {cli} is neither this user's nor root's",
     ]
     assert openshell.called() == []
+
+
+def _info(mode: int, uid: int) -> os.stat_result:
+    return os.stat_result((mode, 0, 0, 1, uid, uid, 0, 0, 0, 0))
+
+
+_FILE = stat.S_IFREG
+_FOLDER = stat.S_IFDIR
+_SELF = 1000  # the Pod's user
+_CLI = Path("/usr/local/bin/openshell")
+
+
+@pytest.mark.parametrize(
+    ("cli_uid", "cli_mode", "folder_uid", "folder_mode"),
+    [
+        (0, 0o755, 0, 0o755),  # the image's install: root:root 0755 in /usr/local/bin
+        (_SELF, 0o755, 0, 0o755),
+        (0, 0o755, _SELF, 0o755),
+        (_SELF, 0o700, _SELF, 0o700),
+    ],
+)
+def test_a_cli_root_or_the_user_owns_and_others_cannot_write_is_accepted(
+    cli_uid: int, cli_mode: int, folder_uid: int, folder_mode: int
+) -> None:
+    assert (
+        access_provider.cli_refusal(
+            _CLI, _info(_FILE | cli_mode, cli_uid), _info(_FOLDER | folder_mode, folder_uid), _SELF
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("cli_uid", "cli_mode", "folder_uid", "folder_mode", "reason"),
+    [
+        (1001, 0o755, 0, 0o755, "neither this user's nor root's"),  # the unpacked archive's owner
+        (0, 0o775, 0, 0o755, "may be changed by others"),
+        (0, 0o757, 0, 0o755, "may be changed by others"),
+        (_SELF, 0o666, 0, 0o755, "may be changed by others"),
+        (0, 0o755, 0, 0o775, "in a directory others may change"),
+        (0, 0o755, 0, 0o777, "in a directory others may change"),
+        (0, 0o755, 1001, 0o755, "in a directory that is neither"),
+    ],
+)
+def test_a_cli_others_own_or_can_write_is_refused(
+    cli_uid: int, cli_mode: int, folder_uid: int, folder_mode: int, reason: str
+) -> None:
+    refusal = access_provider.cli_refusal(
+        _CLI, _info(_FILE | cli_mode, cli_uid), _info(_FOLDER | folder_mode, folder_uid), _SELF
+    )
+    assert refusal is not None
+    assert reason in refusal
+
+
+def _folder(mode: int, uid: int, gid: int) -> os.stat_result:
+    return os.stat_result((_FOLDER | mode, 0, 0, 1, uid, gid, 0, 0, 0, 0))
+
+
+@pytest.mark.parametrize(
+    ("folder_mode", "folder_gid", "private_gid", "accepted"),
+    [
+        (0o775, _SELF, _SELF, True),  # ~/.local/bin under umask 002 with a user-private group
+        (0o775, _SELF, None, False),  # the user's group has other members
+        (0o775, 1001, _SELF, False),  # a shared group may write it
+        (0o777, _SELF, _SELF, False),  # anyone may write it
+    ],
+)
+def test_a_directory_only_the_users_private_group_may_write_is_the_users(
+    folder_mode: int, folder_gid: int, private_gid: int | None, accepted: bool
+) -> None:
+    refusal = access_provider.cli_refusal(
+        _CLI,
+        _info(_FILE | 0o755, _SELF),
+        _folder(folder_mode, _SELF, folder_gid),
+        _SELF,
+        private_gid,
+    )
+    assert (refusal is None) is accepted
+
+
+def test_a_cli_in_a_directory_others_can_write_is_refused(tmp_path: Path) -> None:
+    folder = tmp_path / "open"
+    cli = openshell_stand_in(folder / "openshell")
+    assert access_provider.check_cli(str(cli)) == str(cli.resolve())
+    folder.chmod(0o777)
+    with pytest.raises(access_provider.RegistrationError, match="directory others may change"):
+        access_provider.check_cli(str(cli))
 
 
 def test_an_installed_homebrew_cli_is_not_in_a_checkout(tmp_path: Path) -> None:
