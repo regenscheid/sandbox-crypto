@@ -196,6 +196,13 @@ def test_trusted_native_pins_and_build_contexts_are_explicit() -> None:
             "trusted-openshell-unpack /openshell/openshell /usr/local/bin/openshell"
             in (stages[profile])
         )
+        # tar keeps the archive's uid (1001); the runtime manager refuses a CLI that is
+        # neither root's nor the Pod user's (uid 1000), so the install names its owner.
+        copy = next(
+            line for line in stages[profile].splitlines() if "/usr/local/bin/openshell" in line
+        )
+        assert "--chown=0:0" in copy
+        assert "--chmod=0755" in copy
         assert "openshell --version" in stages[profile]
     assert "sandbox-science-launcher" in stages["trusted-app"]
     # The worker pool runs its three services through the launcher's unit entry point.

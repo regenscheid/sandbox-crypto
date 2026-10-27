@@ -130,6 +130,27 @@ def _in_checkout(path: Path) -> Path | None:
     return None
 
 
+def cli_refusal(real: Path, info: os.stat_result, folder: os.stat_result, uid: int) -> str | None:
+    """Why the CLI file, with its directory's status, is not safe to run; ``None`` if it is.
+
+    Safe is a regular file that root or the running user owns, that group and others may
+    not write, in a directory they may not write either: root-owned 0755 in
+    ``/usr/local/bin`` is the image's case. Others who can write the directory can
+    replace the file, whatever its own mode says.
+    """
+    if not stat.S_ISREG(info.st_mode):
+        return f"the OpenShell CLI {real} is not a regular file"
+    if info.st_uid not in (uid, 0):
+        return f"the OpenShell CLI {real} is neither this user's nor root's"
+    if info.st_mode & 0o022:
+        return f"the OpenShell CLI {real} may be changed by others"
+    if folder.st_uid not in (uid, 0):
+        return f"the OpenShell CLI {real} is in a directory that is neither this user's nor root's"
+    if folder.st_mode & 0o022:
+        return f"the OpenShell CLI {real} is in a directory others may change"
+    return None
+
+
 def check_cli(cli: str) -> str:
     """The OpenShell CLI's real path, once it is shown to be the user's or root's own."""
     if not os.path.isabs(cli):
@@ -141,12 +162,12 @@ def check_cli(cli: str) -> str:
         info = real.stat()
     except OSError as exc:
         raise RegistrationError(f"cannot use the OpenShell CLI {cli}: {exc.strerror}") from None
-    if not stat.S_ISREG(info.st_mode):
-        raise RegistrationError(f"the OpenShell CLI {real} is not a regular file")
-    if info.st_uid not in (os.getuid(), 0):
-        raise RegistrationError(f"the OpenShell CLI {real} is neither this user's nor root's")
-    if info.st_mode & 0o022:
-        raise RegistrationError(f"the OpenShell CLI {real} may be changed by others")
+    try:
+        folder = real.parent.stat()
+    except OSError as exc:
+        raise RegistrationError(f"cannot use the OpenShell CLI {cli}: {exc.strerror}") from None
+    if (refusal := cli_refusal(real, info, folder, os.getuid())) is not None:
+        raise RegistrationError(refusal)
     return str(real)
 
 

@@ -142,6 +142,7 @@ def openshell_stand_in(command: Path, **defaults: Path | str) -> Path:
         f"os.environ.setdefault({name!r}, {str(value)!r})\n" for name, value in defaults.items()
     )
     command.parent.mkdir(parents=True, exist_ok=True)
+    command.parent.chmod(0o755)  # a umask of 002 would leave it writable by the group
     command.write_text(
         f"#!{sys.executable}\n"
         "import os, runpy, sys\n"
