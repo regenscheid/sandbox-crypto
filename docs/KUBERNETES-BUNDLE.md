@@ -163,8 +163,13 @@ the configured endpoint/region. Metadata credentials remain disabled through
 access-key/session-token variables, arbitrary process/code-path environment,
 proxy configuration or TLS-verification bypass is accepted.
 
-For example, grant the workspace a separate read-only object-store principal and
-create its private credential/config keys through the site's Secret workflow:
+For example, grant the workspace a separate object-store principal and create its
+private credential/config keys through the site's Secret workflow. The workspace reads
+evicted content (cold downloads) and also **writes the originals of user uploads
+itself**: once the backing is configured, an upload succeeds only after its verified
+remote copy, so a read-only workspace principal makes every upload fail as unavailable
+(the store answers 403). Give it write access to the artifact bucket if uploads are
+used; a read-only principal suits a deployment that accepts no uploads:
 
 ```toml
 [secrets.workspace]
@@ -179,7 +184,9 @@ AWS_PROFILE = "artifact-reader"
 
 Only paths and the profile name appear in the rendered manifest. The credential
 file holds the actual keys; do not put them in this TOML. Select a suitable writer
-profile separately under `control.environment`, and use another prefix-limited
+profile separately under `control.environment` (control and the workspace both need
+write on the artifacts bucket: control for publications, the workspace for upload
+originals), and use another prefix-limited
 principal for an operator's checkpoint transport. The renderer validates file
 selection, not the permissions, certificate contents or SDK profile correctness.
 
@@ -645,6 +652,13 @@ page's thread (FG-17, [preview](WORKSPACE.md#the-pdf-viewers-origin)).
 
 ## Maintenance
 
+Workspace checkpoints to object storage, the third item on D92's list, have no renderer:
+the operator command needs the pool PVC (the worker's state and lock) and the sandbox's
+workspace PVC in one Pod, and a Pod mounts only claims of its own namespace. With the
+sandboxes in a namespace of their own (`[sandboxes] namespace`, as the first deployment
+runs them), the two claims are in different namespaces, so no Job built from these parts
+can run the checkpoint; it needs a design change first.
+
 Two maintenance workloads from D92's list before a research stress test: scheduled
 control-cache trimming, rendered into the bundle by an opt-in `[maintenance]` section, and
 the offline worker replica release, a Job the operator creates by hand. Neither Pod mounts
@@ -697,6 +711,11 @@ faster than that needs a tighter schedule or a larger bound. Check it with
 `kubectl -n <namespace> get cronjob,jobs -l app.kubernetes.io/component=maintenance` and
 the Job's log, one JSON report per pass; `kubectl create job --from=cronjob/<name>-maintenance <name>-maintenance-now`
 runs one pass at once.
+
+To see a pass evict on a volume that is still nearly empty, the lowest threshold is 1%:
+render a one-off with `at_use_percent = 1` (and a short `min_age_seconds`), raise the
+volume's use past 1% with a temporary file on the app PVC if needed, run one Job from the
+CronJob, then remove the file and render the section back.
 
 ### Offline worker replica release
 

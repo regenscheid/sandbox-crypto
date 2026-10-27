@@ -119,18 +119,14 @@ Size: about 100 GiB for the app and 200 GiB for the pool ([D92](KUBERNETES.md#fi
 
 Verify: a 1 Gi test PVC reaches `Bound`; `kubectl get pv -o custom-columns=NAME:.metadata.name,RECLAIM:.spec.persistentVolumeReclaimPolicy` shows `Retain` for it. Delete the PVC, confirm the PV stays `Released`, then remove the PV and the Longhorn volume by hand.
 
-### 2.2 Recurring snapshot and backup to Garage
+### 2.2 Recurring snapshot and backup off the cluster
 
-Create a Garage bucket and key for backups, separate from the artifact bucket of step 6 (`garage bucket create longhorn-backup`, `garage key create longhorn-backup`, `garage bucket allow --read --write --owner longhorn-backup --key longhorn-backup`). Then the credential Secret and the backup target:
+Longhorn's backups go to a target outside the cluster (D92, amended 2026-10-27): an NFS export or an S3 store on another machine. Not to a Garage that runs in this cluster on Longhorn volumes: losing the cluster's storage would lose the backups with the data. Garage holds the artifacts and checkpoints (step 6). If you already have a backup target, check it (`kubectl -n longhorn-system get backuptargets.longhorn.io` shows it `AVAILABLE`) and reuse it; otherwise set one in the Longhorn UI under Backup and Restore, or through the Helm `defaultBackupStore` values:
 
-```sh
-kubectl -n longhorn-system create secret generic garage-backup \
-  --from-literal=AWS_ACCESS_KEY_ID=... --from-literal=AWS_SECRET_ACCESS_KEY=... \
-  --from-literal=AWS_ENDPOINTS=https://<garage-s3-endpoint> \
-  --from-file=AWS_CERT=<private-ca.pem>      # only if the endpoint certificate is from a private CA
-```
+- NFS: `nfs://<backup-host>:/<export>/longhorn`.
+- S3 outside the cluster (a Garage elsewhere, for example): a bucket and key for backups alone, a credential Secret in `longhorn-system` (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINTS`, and `AWS_CERT` only for a private CA; created from files, not literals), and the target `s3://<bucket>@<region>/` (the trailing `/` is required). Garage needs path-style access: leave `VIRTUAL_HOSTED_STYLE` unset.
 
-Set the backup target to `s3://longhorn-backup@garage/` (the trailing `/` is required) with credential secret `garage-backup`, in the Longhorn UI under Backup and Restore, or through the Helm `defaultBackupStore` values. Garage needs path-style access: leave `VIRTUAL_HOSTED_STYLE` unset.
+A backup is not encrypted unless the volume is (Longhorn volume encryption) or the target is. The control volume holds the runtime's credential file and the research volumes hold research data: decide whether the target may hold them in the clear, and record the decision.
 
 ```yaml
 apiVersion: longhorn.io/v1beta2
@@ -144,11 +140,11 @@ metadata: {name: research-backup, namespace: longhorn-system}
 spec: {task: backup, cron: "30 2 * * *", retain: 14, concurrency: 1}
 ```
 
-The schedule is a starting point (snapshots every six hours, one backup a night); tune it to the write rate and the Garage capacity. The class applies the jobs to volumes created from it, so create the bundle's PVCs after this step. A volume created earlier needs the jobs added to it in the Longhorn UI.
+The schedule is a starting point (snapshots every six hours, one backup a night); tune it to the write rate and the target's capacity. The class applies the jobs to volumes created from it, so create the bundle's PVCs after this step. A volume created earlier needs the jobs added to it in the Longhorn UI.
 
 Verify: the target shows `Available` in Longhorn; after the first run, `kubectl -n longhorn-system get backups.longhorn.io` lists a backup per volume; restore one into a scratch volume and mount it before relying on it (the restore drill belongs in the backup runbook, backlog). A backup is crash-consistent, not application-consistent: for SQLite it relies on the database's journal. Take a manual snapshot before each migration or image change.
 
-Rollback: remove the jobs with `kubectl delete recurringjob`; backups already in Garage stay until you delete them in Longhorn. Never delete a backup bucket that holds the only copy.
+Rollback: remove the jobs with `kubectl delete recurringjob`; backups already on the target stay until you delete them in Longhorn. Never delete a backup target that holds the only copy.
 
 ## 3. Kata on the amd64 nodes
 
@@ -324,17 +320,24 @@ Rollback: `helm uninstall openshell -n openshell` leaves the PVCs of existing sa
 
 ## 6. Garage artifacts
 
-On the Garage host, one bucket and distinct keys per application (D94), with the artifact bucket separate from the Longhorn backup bucket:
+Garage may run on another machine or in the cluster. In the cluster, give it a namespace of its own, one Pod per node with its data on a single-replica local class (Garage replicates; Longhorn should not again), its S3 port (3900) on a ClusterIP Service only, and a NetworkPolicy that admits the bundle's Pods (`app.kubernetes.io/part-of: <name>` in the bundle's namespace) to 3900 and the Garage Pods to each other on the RPC port. Two things to check on Longhorn: a volume with no recurring-job label joins Longhorn's `default` group, so if a default job backs up to a target that may not hold artifacts in the clear, give the class's `recurringJobSelector` an empty group of its own; and an in-cluster Garage needs its own copy outside the cluster (step 2.2 does not cover it), for example a nightly `rclone copy` (never `sync`, so a deletion does not propagate) through an rclone `crypt` remote, with the crypt passwords kept off the cluster.
+
+One bucket and distinct keys per application (D94), with checkpoints in a bucket of their own so that the checkpoint key cannot write artifact objects, and no key with the owner right (which includes lifecycle rules). The workspace writes the originals of user uploads itself, so its key needs write access too unless the deployment takes no uploads ([bundle](KUBERNETES-BUNDLE.md#prepare-existing-secrets-and-recovery-state)):
 
 ```sh
 garage bucket create <instance>-artifacts
+garage bucket create <instance>-checkpoints
 garage key create <instance>-control          # read and write, the artifact writer
-garage key create <instance>-workspace        # read-only, cold downloads
-garage key create <instance>-checkpoint       # a separate prefix, the worker's checkpoint transport
-garage bucket allow --read --write --owner <instance>-artifacts --key <instance>-control
-garage bucket allow --read <instance>-artifacts --key <instance>-workspace
-garage bucket allow --read --write <instance>-artifacts --key <instance>-checkpoint
+garage key create <instance>-workspace        # cold downloads, and user upload originals
+garage key create <instance>-checkpoint       # the operator's checkpoint Job
+garage bucket allow --read --write <instance>-artifacts --key <instance>-control
+garage bucket allow --read --write <instance>-artifacts --key <instance>-workspace  # --read alone refuses uploads
+garage bucket allow --read --write <instance>-checkpoints --key <instance>-checkpoint
 ```
+
+`garage key create` prints the secret key: send its output to a private file, not the terminal. A quota on the checkpoint bucket (`garage bucket set-quotas <instance>-checkpoints --max-size ...`) keeps checkpoints from filling the store; never a lifecycle rule on either bucket.
+
+**Garage has no conditional writes**: it ignores `If-None-Match: *` and overwrites. The hash-named keys and the read-back check of every write take the place of the 412, and immutability rests on the keys above ([stores without conditional writes](ARTIFACT-S3.md#stores-without-conditional-writes)).
 
 Each key goes into its own standard-chain credential file (an `s3-credentials` and `s3-config` pair per service) in step 7. After the app Pod is running (step 8), configure the control database once, inside the control container, so the owner-only `control.sqlite3.artifacts/storage.toml` lands on the PVC ([S3 artifact backing](ARTIFACT-S3.md)):
 
@@ -342,24 +345,29 @@ Each key goes into its own standard-chain credential file (an `s3-credentials` a
 kubectl -n research exec deploy/<name>-app -c control -- sandbox-science-artifacts configure \
   --database /var/lib/sandbox-science/control/control.sqlite3 \
   --bucket <instance>-artifacts --prefix artifacts \
-  --endpoint https://<garage-s3-endpoint> --addressing-style path --region garage
+  --endpoint <garage-s3-endpoint> --addressing-style path --region garage
 ```
 
-Run it before any research data exists. Repeating the same configuration is safe; a different destination is refused.
+The endpoint is `https://<garage-host>` for a Garage elsewhere, or `http://garage.<garage-namespace>.svc.<cluster-domain>:3900` in the cluster (plain HTTP inside the cluster: SigV4 keeps the keys off the wire, the object bytes are not encrypted on the Pod network). Use the cluster's real domain: `cluster.local` resolves only where it is the cluster domain. Run it before any research data exists. Repeating the same configuration is safe; a different destination is refused.
 
-Egress: add the Garage address to the bundle as an explicit entry for each Pod that reaches it (control and workspace are in the app Pod; the worker's checkpoint transport is in the pool Pod). Longhorn's own backup traffic leaves `longhorn-system`, outside this bundle:
+Egress: add the Garage address to the bundle as an explicit entry for the app Pod, which runs control and the workspace and whose flows the maintenance CronJob shares. The pool needs a `network.pool_egress` entry of the same form only if the checkpoint transport runs in the pool Pod; a separate checkpoint Job with its own key and NetworkPolicy needs none. Longhorn's own backup traffic leaves `longhorn-system`, outside this bundle. For a Garage elsewhere, its address:
 
 ```toml
 [[network.app_egress]]
 ports = [443]
 peer.cidr = "<garage-ip>/32"
-
-[[network.pool_egress]]
-ports = [443]
-peer.cidr = "<garage-ip>/32"
 ```
 
-Verify: the SDK check `SS_INTEGRATION=1 SS_ARTIFACT_S3_TEST_BUCKET=<test bucket> SS_ARTIFACT_S3_TEST_ENDPOINT=https://<garage-s3-endpoint> SS_ARTIFACT_S3_TEST_REGION=garage uv run --extra s3 pytest -q packages/orchestrator/tests/test_artifact_s3.py::test_opt_in_compatible_endpoint` against a dedicated test bucket; then, after step 8, `sandbox-science-artifacts archive --database ...` on a first artifact. A bucket lifecycle rule must never expire referenced objects. The artifact bucket is part of the recovery set with the control PVC.
+For a Garage in the cluster, its Pods by namespace and label, no address:
+
+```toml
+[[network.app_egress]]
+ports = [3900]
+peer.namespace_labels = { "kubernetes.io/metadata.name" = "<garage-namespace>" }
+peer.pod_labels = { "app.kubernetes.io/name" = "garage" }
+```
+
+Verify: the SDK check `SS_INTEGRATION=1 SS_ARTIFACT_S3_TEST_BUCKET=<test bucket> SS_ARTIFACT_S3_TEST_ENDPOINT=<garage-s3-endpoint> SS_ARTIFACT_S3_TEST_REGION=garage uv run --extra s3 pytest -q packages/orchestrator/tests/test_artifact_s3.py::test_opt_in_compatible_endpoint` against a dedicated test bucket (in the cluster, through `kubectl port-forward` to the Service; the first run right after `garage layout apply` can fail while the layout settles); a second `PutObject` with `If-None-Match: *` on one scratch key, to record whether the store refuses it; then, after step 8, `sandbox-science-artifacts archive --database ...` on a first artifact. The artifact bucket is part of the recovery set with the control PVC.
 
 Rollback: the configuration is write-once; a different destination needs an explicit migration that keeps archived content. Do not delete the bucket once it holds a referenced artifact.
 
@@ -519,8 +527,8 @@ Orphan survival after an abrupt gateway loss (restart the gateway Pod during a r
 
 D103: structured JSON logs from every service, OpenShell's OCSF events and the proxy and middleware records go to Loki through Alloy. The bundle already makes each container log JSON lines and labels each Pod ([bundle: log collection](KUBERNETES-BUNDLE.md#log-collection)); this step installs the collector. Do it before the live proofs of step 10, so their denials are kept.
 
-1. **Install Loki** (3.x, for structured metadata) with storage and retention you choose; the proofs' evidence needs at least the length of the qualification (a month is a start), and the bundle sets none. Note the push URL.
-2. **Install Alloy** where it can read the namespace's Pod logs: `get`, `list` and `watch` on `pods` and `get` on `pods/log` for its ServiceAccount, in the bundle's namespace and the sandboxes' namespace. It needs no NetworkPolicy ingress rule on the bundle's Pods; it needs egress to Loki.
+1. **Install Loki** (3.x, for structured metadata) with storage and retention you choose; the proofs' evidence needs at least the length of the qualification (a month is a start), and the bundle sets none. Note the push URL. With the Loki Helm chart in single-binary mode, set `global.clusterDomain` to the cluster's domain (otherwise its memberlist name uses `cluster.local` and never resolves on another domain), and `rbac.namespaced: true`: the chart's default for the rules sidecar is a ClusterRole that reads every ConfigMap and Secret in the cluster.
+2. **Install Alloy** where it can read the namespace's Pod logs: `get`, `list` and `watch` on `pods` and `get` on `pods/log` for its ServiceAccount, in the bundle's namespace and the sandboxes' namespace. It needs no NetworkPolicy ingress rule on the bundle's Pods; it needs egress to Loki. The Alloy Helm chart's own RBAC is broader (and cluster-wide by default): turn it off (`rbac.create: false`) and bind a Role with exactly those verbs in each namespace it reads.
 3. **Configure it from the sample.** Copy [alloy-config.alloy](../examples/kubernetes/alloy-config.alloy) outside Git; set the namespaces (the sample has `research` and `research-runtimes`) and the Loki URL.
 4. **OpenShell's events.** Turn the supervisors' OCSF JSON on (`openshell settings set --global --key ocsf_json_enabled --value true`) and, if you export over OTLP, add `[openshell.gateway.otlp]` and `[openshell.gateway.otlp.ocsf]` to the gateway's configuration with the Alloy listener's address (the sample's OTLP receiver) as the endpoint; the listener must be reachable from the sandboxes, which the sandbox network policy and a NetworkPolicy must allow. The gateway's metrics listener (`metrics_bind_address`) is for Prometheus, if you run one.
 5. **Check it.** `kubectl -n research logs deploy/<name>-pool -c worker --tail 3` shows JSON lines; in Loki, `{service="worker"} | json` returns the same lines, and `{service="middleware"} | json | event != ""` finds the middleware's records. Trigger the denial of 10.1 and find it by its OCSF line. A container that logs text (no `service` field) is a bundle rendered before this change.
@@ -552,12 +560,12 @@ Serves the workspace and its preview origin at two host names through Traefik, o
      namespace: research
    spec:
      forwardAuth:
-       address: http://<outpost-service>.<authentik-namespace>.svc.<cluster-domain>:9000/outpost.goauthentik.io/auth/traefik
+       address: http://<outpost-service>.<authentik-namespace>.svc.<cluster-domain>:<port>/outpost.goauthentik.io/auth/traefik
        trustForwardHeader: true
        authResponseHeaders: [X-authentik-username, X-authentik-groups, X-authentik-email, X-authentik-name, X-authentik-uid]
    ```
 
-   Traefik must be able to reach the outpost; that path, and Traefik's own NetworkPolicy, are the cluster's, not the bundle's.
+   `<port>` is the outpost Service's HTTP port: 9000 on a dedicated outpost's Service; for the embedded outpost, the Authentik server Service's HTTP port (80 in the Helm chart, which forwards to the server's 9000). With domain-level forward auth the callback runs on the authentication URL's host, so that host must reach the outpost too (the embedded outpost answers there already). Traefik must be able to reach the outpost; that path, and Traefik's own NetworkPolicy, are the cluster's, not the bundle's.
 6. **The bundle.** Add `[workspace] allow_remote = true`, `[ingress]` and `[[ingress.traefik]]` to the private TOML (see [the template](../examples/kubernetes-bundle.toml)), then `check`, `render`, `kubectl diff` and `apply` as in step 8. The workspace Pod restarts onto the Pod network; the rest of the bundle is unchanged. cert-manager issues the two certificates into `<name>-workspace-tls` and `<name>-preview-tls`.
 
 Verify:

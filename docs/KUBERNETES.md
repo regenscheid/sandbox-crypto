@@ -386,7 +386,9 @@ Decided 2026-10-23 ([D92, amended](DECISIONS.md)).
 - **In the first deployment:** the app (control and workspace), the worker pool,
   the runtime manager, OpenShell 0.1.5, Kata on the amd64 nodes, Garage artifacts,
   prefix continuity, credential generations, Longhorn recurring snapshots with
-  backup to Garage from the start, the GUI by `kubectl port-forward`, and log
+  backup to an off-cluster target from the start (Garage holds artifacts and
+  checkpoints, not the Longhorn backups: amended 2026-10-27), the GUI by
+  `kubectl port-forward`, and log
   collection into Loki through Alloy (D103). Worker, policy middleware and package
   cache deploy as one unit (D101). Size the app and pool volumes generously (about
   100 GiB and 200 GiB) and switch cache trimming on at about 70% use: the bundle's
@@ -403,7 +405,9 @@ It counts as deployed after three live proofs:
    and MCP work; an unlisted host fails with a policy denial; a raw socket to an IP
    fails; the LAN and other pods are unreachable.
 2. Kata in effect on the workload pod with tier 3 recorded; a runc-scheduled
-   sandbox is recorded at tier 1 through `node_kernel_releases`.
+   sandbox is recorded at tier 1 through `node_kernel_releases`. Where OpenShell
+   cannot start a sandbox under runc at all, as on the first cluster (D43), the
+   runc case fails closed and is closed by that refusal (D92, amended 2026-10-27).
 3. Manager cycle: bootstrap; after the app and manager pods are killed, reconnect
    to the same sandbox ID; explicit replace; control history intact. The manager's
    requests, its `request status` notes (with their kind and since time, cleared when
