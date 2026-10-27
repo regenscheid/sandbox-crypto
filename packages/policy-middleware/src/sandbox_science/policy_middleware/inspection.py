@@ -304,12 +304,12 @@ class AnswerInspection:
         state.excerpt_bytes += len(text.encode("utf-8"))
 
     def _found(self, pattern: Compiled, match: re.Match[str], window: str, offset: int) -> None:
+        if len(self._findings) >= MAX_FINDINGS:
+            self._more += 1  # counted, not remembered: the set of seen matches stays small
+            return
         if (pattern.name, offset) in self._seen:
             return
         self._seen.add((pattern.name, offset))
-        if len(self._findings) >= MAX_FINDINGS:
-            self._more += 1
-            return
         middle = (match.start() + match.end()) // 2
         start = max(0, middle - FINDING_CONTEXT // 2)
         context = window[start : start + FINDING_CONTEXT]

@@ -87,10 +87,12 @@ class InspectSettings(_Model):
     POLICY-MIDDLEWARE.md, "MCP traffic inspection"). A project policy's
     ``mcp.inspection`` replaces a pattern of the same name, or drops the defaults."""
 
-    argument_bytes: Annotated[int, Field(ge=256, le=MAX_PAYLOAD_BYTES)] = 16 * 1024
+    argument_bytes: Annotated[int, Field(ge=256, le=64 * 1024)] = 16 * 1024
     """The most of a call's parameters recorded, as redacted JSON text."""
-    answer_bytes: Annotated[int, Field(ge=0, le=MAX_PAYLOAD_BYTES)] = 64 * 1024
-    """The most of an answer's text recorded: 0 records sizes and findings only."""
+    answer_bytes: Annotated[int, Field(ge=0, le=128 * 1024)] = 64 * 1024
+    """The most of an answer's text recorded: 0 records sizes and findings only. Both
+    bounds keep a record within the event store's 1 MiB payload, which canonical JSON's
+    escapes can make six times the text."""
     run_bytes: Annotated[int, Field(ge=0, le=1024 * 1024 * 1024)] = 8 * 1024 * 1024
     """The most answer text recorded for one run; past it, sizes and findings only."""
     defaults: bool = True
