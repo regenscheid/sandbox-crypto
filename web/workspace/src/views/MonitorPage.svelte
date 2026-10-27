@@ -261,6 +261,12 @@
             ? 'off (the deployment turned it off: nothing is recorded or checked)'
             : 'not reported by the policy middleware'}.
       </p>
+      {#if records.inspection_dropped}
+        <p class="problem inspection-dropped" role="status">
+          {records.inspection_dropped} plain answers were not recorded in this window: the policy middleware's
+          record queue was full. Answers with a finding, a block or no inspection are never dropped.
+        </p>
+      {/if}
       {#if records.inspection.length === 0}
         <p class="muted">No MCP answer matched an inspection pattern in this window.</p>
       {:else}

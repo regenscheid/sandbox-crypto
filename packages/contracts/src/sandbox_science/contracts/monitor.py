@@ -130,6 +130,10 @@ class MonitorRecords(Contract):
         default_factory=list[InspectionRow], max_length=MAX_SERVERS
     )
     """Alerts and blocks of MCP answers by server, the busiest first."""
+    inspection_dropped: Counter = 0
+    """The project's answers whose records the middleware dropped within the window, its
+    record queue being full (``mcp-inspection-dropped``): plain answers only, never one
+    with a finding, a block or no inspection."""
     inspection_enabled: bool | None = None
     """Whether MCP traffic inspection is on, as the middleware recorded when it last
     started (``mcp-inspection-state``); null when it never recorded."""

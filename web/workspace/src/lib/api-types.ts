@@ -1898,6 +1898,7 @@ export interface MonitorRecords {
   holds: OpenHolds[];
   drift: DriftedServer[];
   inspection: InspectionRow[];
+  inspection_dropped: number;
   inspection_enabled: boolean | null;
 }
 

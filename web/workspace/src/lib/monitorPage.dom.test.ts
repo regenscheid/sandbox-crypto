@@ -111,6 +111,7 @@ function figures(window: '24h' | '7d'): ProjectMonitor {
         drift: [{ server: 'web', at: '2026-10-25T10:00:00Z' }],
         inspection: [{ server: 'pa\u202Epers', alerts: 3, blocks: 1, uninspected: 2 }],
         inspection_enabled: true,
+        inspection_dropped: 4,
       },
       environments: [
         {
@@ -212,6 +213,7 @@ it('shows each section from the figures', async () => {
   // Alerts and blocks by server; a server's name shows its hidden characters.
   expect(texts(target, '.inspection-row')).toEqual(['pa⟦U+202E⟧pers312']);
   expect(target.querySelector('.inspection-state')!.textContent).toContain('inspection: on');
+  expect(target.querySelector('.inspection-dropped')!.textContent).toContain('4 plain answers');
   expect(texts(target, '.model-row')[1]).toContain('unknown');
   expect(texts(target, '.role-row')[0]).toContain('The main agent');
   expect(target.querySelector('.project-cost')!.textContent).toContain('$10.63 in all');

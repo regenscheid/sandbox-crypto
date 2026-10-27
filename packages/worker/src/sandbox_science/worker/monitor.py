@@ -65,7 +65,17 @@ APPROVED: Final = "approved"
 ALERT: Final = "alert"
 ANSWER_ALERT: Final = "mcp-answer-alert"
 INSPECTION_STATE: Final = "mcp-inspection-state"
-KINDS: Final = (MCP_CALL, ESCALATION, APPROVAL, DENIAL, APPROVED, ALERT, ANSWER_ALERT)
+INSPECTION_DROPPED: Final = "mcp-inspection-dropped"
+KINDS: Final = (
+    MCP_CALL,
+    ESCALATION,
+    APPROVAL,
+    DENIAL,
+    APPROVED,
+    ALERT,
+    ANSWER_ALERT,
+    INSPECTION_DROPPED,
+)
 """The record kinds the figures count."""
 SOURCES: Final[tuple[RecordSource, ...]] = ("policy-middleware", "mcp-proxy")
 DETECTION: Final = "detect."
@@ -124,7 +134,9 @@ class _Tally:
     """Each request's earliest answer seen: its kind, time and whether it is a withdrawal."""
     sources: set[RecordSource] = field(default_factory=set[RecordSource])
     inspected: dict[str, list[int]] = field(default_factory=dict[str, list[int]])
-    """Each server's answers with an alert, and those blocked or cut."""
+    """Each server's answers with an alert, those blocked or cut, and those not read."""
+    dropped: int = 0
+    """The project's answers whose records the middleware dropped."""
 
     def row(self, effect: str, server: str | None = None, host: str | None = None) -> _Row:
         return self.rows.setdefault((effect, server, host), _Row())
@@ -153,6 +165,8 @@ class _Tally:
             counted = self._passed(data)
         elif record.kind == ANSWER_ALERT:
             counted = self._answer_alert(data)
+        elif record.kind == INSPECTION_DROPPED:
+            counted = self._dropped(data)
         if counted and source is not None:
             self.sources.add(source)
 
@@ -185,6 +199,17 @@ class _Tally:
         action = data.get("action")
         counts[1 if action == "block" else 2 if action == "uninspected" else 0] += 1
         return True
+
+    def _dropped(self, data: Mapping[str, object]) -> bool:
+        counts = data.get("counts")
+        found = False
+        for entry in cast(list[object], counts) if isinstance(counts, list) else []:
+            item = _object(entry)
+            answers = item.get("answers")
+            if item.get("project") == self.project and isinstance(answers, int):
+                self.dropped += max(0, answers)
+                found = True
+        return found
 
     def inspection(self) -> list[InspectionRow]:
         rows = [
@@ -396,6 +421,7 @@ class MonitorDesk:
             drift=self._drift(project),
             inspection=counted.inspection(),
             inspection_enabled=_enabled(state),
+            inspection_dropped=counted.dropped,
         )
 
     @staticmethod
