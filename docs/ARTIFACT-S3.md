@@ -15,8 +15,10 @@ uv run --extra s3 sandbox-science-artifacts configure \
 ```
 
 Omit `--endpoint` for AWS S3, and use `--region` as appropriate (`us-east-1` by
-default). The bucket must already exist and support conditional `PutObject` with
-`If-None-Match: *`, full/ranged `GetObject`, and `HeadObject`. The SDK uses Signature
+default). The bucket must already exist and support full/ranged `GetObject`,
+`HeadObject` and `PutObject`. Each `PutObject` carries `If-None-Match: *`, and a store
+that honors it refuses an overwrite with 412; a store that ignores it, such as Garage
+([no conditional writes](#stores-without-conditional-writes)), is accepted too. The SDK uses Signature
 Version 4, finite connection/read timeouts and one HTTP attempt. Optional SDK
 checksum extensions are disabled; the application verifies exact length and
 SHA-256 independently after upload. See the official [SDK configuration](https://docs.aws.amazon.com/boto3/latest/guide/configuration.html)
@@ -51,6 +53,31 @@ dry-run unless `--apply` is present. It verifies both local and remote content f
 a failed copy or verification preserves the local file. It never deletes remote
 objects, staging, orphans, reservations, worker copies, upload records, legacy
 inline SQLite content or environment PVCs. Logical retention quota usage is unchanged.
+
+## Stores without conditional writes
+
+Garage (2.x) ignores `If-None-Match: *` and overwrites (upstream issue 1052, kept open
+because conditional writes conflict with its weakly consistent replication). The
+backing does not depend on the 412: every object key is the SHA-256 of its content, and
+every write is read back and checked for its exact length and hash before a publication
+succeeds or a local copy may be evicted. What changes without the 412:
+
+- A retry, or a second writer of the same content, rewrites identical bytes under the
+  same key; the read-back verifies and nothing is lost.
+- A write of different bytes under an existing key is not prevented: it replaces the
+  object, and the writer's read-back fails. Only a holder of a write key can do that, so
+  immutability rests on the keys: give write access only to control's key (and to the
+  checkpoint key, on a bucket of its own), give every reader a read-only key, and grant
+  no key the bucket-owner right, which also covers lifecycle rules.
+- A replaced object is found when it is read whole: full cold reads and eviction verify
+  the hash, so a wrong object is refused rather than served. Ranged provenance-prefix
+  reads check only the range and size, so they do not detect it.
+- The opt-in endpoint qualification below passes on such a store, since it does not test
+  the 412. Check the store's behavior once by hand (two `PutObject` calls with
+  `If-None-Match: *` on one scratch key) and record which kind it is.
+
+The [checkpoint transport](WORKER.md#offline-complete-workspace-checkpoints) uses the same
+hash-named keys with read-back, so the same holds for its chunks and manifests.
 
 ## Bounded cache maintenance
 

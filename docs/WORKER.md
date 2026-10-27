@@ -1030,7 +1030,11 @@ full hash and length. Existing objects and lost PUT replies take the same exact
 readback path; an unverified result never creates a completed manifest. The final
 bounded NDJSON manifest, including the original receipt values, is published last
 and independently verified. An identical upload retry produces the same manifest
-identity and never replaces remote bytes.
+identity and never replaces remote bytes with different ones. On a store that ignores
+`If-None-Match: *`, such as Garage, a retry rewrites identical bytes and a conflicting
+write is detected by the read-back instead of refused, so keep the checkpoint bucket's
+write key to the operator's checkpoint Job ([stores without conditional
+writes](ARTIFACT-S3.md#stores-without-conditional-writes)).
 
 The transport supports archives up to 1 TiB, 65,536 chunks and an 8 MiB manifest,
 independently of local checkpoint and scientific artifact limits. It keeps no full
