@@ -8,8 +8,8 @@ name, so a project can turn a default from ``alert`` to ``block`` or narrow it t
 servers; ``defaults: false`` in either the deployment's or the project's section drops
 the shipped defaults. docs/POLICY-MIDDLEWARE.md, "MCP traffic inspection", lists them.
 
-Every default is written to take time linear in its input: bounded repetitions, no
-nested quantifiers, and token patterns anchored where a run of their characters starts.
+Patterns are RE2 (``linear_regex``): matching takes time linear in the answer, whatever
+the pattern, and backreferences and lookaround are not available.
 """
 
 from __future__ import annotations
@@ -33,15 +33,11 @@ DEFAULT_PATTERNS: Final[tuple[InspectionPattern, ...]] = (
     InspectionPattern(name="begin-system", regex=r"(?i)\bBEGIN\s{1,4}SYSTEM\b"),
     # Secrets that should not come back from a server.
     InspectionPattern(name="private-key", regex=r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----"),
-    InspectionPattern(
-        name="aws-access-key", regex=r"(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])"
-    ),
-    InspectionPattern(
-        name="google-api-key", regex=r"(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])"
-    ),
+    InspectionPattern(name="aws-access-key", regex=r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    InspectionPattern(name="google-api-key", regex=r"\bAIza[0-9A-Za-z_-]{35}"),
     InspectionPattern(
         name="github-token",
-        regex=r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})",
+        regex=r"\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})",
     ),
     # data: URLs that carry script.
     InspectionPattern(

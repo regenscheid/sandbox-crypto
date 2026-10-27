@@ -34,6 +34,7 @@ from pydantic import (
 from .decision import Action
 from .effects import CATALOG, ClassActions, EffectClass, ToolName
 from .hosts import HostKind, HostPattern, normalize_host, parse_ip
+from .linear_regex import compile_linear
 from .units import ByteSize, Duration
 
 API_VERSION: Final = "sandbox-science/v0alpha1"
@@ -583,57 +584,13 @@ InspectionName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,39
 MAX_INSPECTION_REGEX: Final = 512
 """The longest regular expression an inspection pattern may have, in characters."""
 MAX_INSPECTION_PATTERNS: Final = 64
-_QUANTIFIERS: Final = frozenset("*+{")
 
 
 def _check_inspection_regex(value: str) -> str:
-    """Compile an inspection pattern, and refuse the shapes that can take time exponential
-    in their input: backreferences, and a group repeated by ``*``, ``+`` or ``{}`` that
-    itself repeats or alternates (``(a+)+``, ``(a|ab)*``). A heuristic, not a proof: every
-    search also has bounded input (one response piece and a carry-over window)."""
-    try:
-        re.compile(value)
-    except re.error as exc:
-        raise ValueError(f"invalid regular expression: {exc}") from exc
-    if re.search(r"\\[1-9]|\(\?P=", value):
-        raise ValueError("inspection patterns may not use backreferences")
-    groups: list[bool] = []
-    """For each open group: whether it repeats or alternates within."""
-    risky_closed = False
-    index, in_class = 0, False
-    while index < len(value):
-        char = value[index]
-        if char == "\\":
-            index += 2
-            risky_closed = False
-            continue
-        if in_class:
-            in_class = char != "]"
-        elif char == "[":
-            in_class = True
-            if value[index + 1 : index + 2] == "^":
-                index += 1
-            if value[index + 1 : index + 2] == "]":
-                index += 1  # a literal "]" first in a class
-        elif char == "(":
-            groups.append(False)
-        elif char == ")":
-            inner = groups.pop() if groups else False
-            if groups and inner:
-                groups[-1] = True
-            risky_closed = inner
-            index += 1
-            continue
-        elif char in _QUANTIFIERS or char == "|":
-            if char in _QUANTIFIERS and risky_closed:
-                raise ValueError(
-                    "inspection patterns may not repeat a group that repeats or alternates "
-                    "within it (catastrophic backtracking)"
-                )
-            if groups:
-                groups[-1] = True
-        risky_closed = False
-        index += 1
+    """Compile an inspection pattern with RE2, which matches in time linear in its input
+    (answers come from MCP servers) and refuses what it cannot: backreferences and
+    lookaround."""
+    compile_linear(value)
     return value
 
 
@@ -649,8 +606,8 @@ class InspectionPattern(StrictModel):
     a match is a finding in the answer's record; ``alert`` also writes an
     ``mcp-answer-alert`` record, and ``block`` withholds the answer (a JSON answer is
     refused, an event stream cut at the piece that matched). ``servers`` limits it to some
-    declared servers; without it, it applies to every one. Matched as Python ``re``,
-    case-sensitive unless the pattern says ``(?i)``."""
+    declared servers; without it, it applies to every one. Matched with RE2 (linear time:
+    no backreferences or lookaround), case-sensitive unless the pattern says ``(?i)``."""
 
     name: InspectionName
     regex: InspectionRegex

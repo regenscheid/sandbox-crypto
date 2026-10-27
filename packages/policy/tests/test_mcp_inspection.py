@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from pathlib import Path
 
@@ -12,6 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from sandbox_science.policy import PolicyLoadError, parse_policy
+from sandbox_science.policy.linear_regex import compile_linear
 from sandbox_science.policy.mcp_inspection import DEFAULT_PATTERNS, effective_patterns
 from sandbox_science.policy.model import InspectionPattern, McpInspection
 
@@ -68,12 +68,18 @@ def test_a_pattern_has_a_bounded_length() -> None:
         pattern("a", "x" * 513)
 
 
-@pytest.mark.parametrize(
-    "regex", ["(a+)+", "(a|ab)*", r"(\w+\s?){2,}", r"(.)\1", r"(?P<x>a)(?P=x)", "[", "(?:x*)*"]
-)
-def test_patterns_that_can_backtrack_catastrophically_are_refused(regex: str) -> None:
-    with pytest.raises(ValidationError):
+@pytest.mark.parametrize("regex", [r"(.)\1", r"(?P<x>a)(?P=x)", r"(?<!x)a", r"a(?=b)", "[", "(a"])
+def test_patterns_re2_cannot_match_in_linear_time_are_refused(regex: str) -> None:
+    with pytest.raises(ValidationError, match="RE2"):
         pattern("a", regex)
+
+
+@pytest.mark.parametrize("regex", [r"\w+\w+!", "(a+)+b", "(a|aa)*c", r"(\w+\s?){2,}x"])
+def test_patterns_that_backtrack_in_python_match_in_linear_time(regex: str) -> None:
+    compiled = compile_linear(pattern("a", regex).regex)
+    started = time.perf_counter()
+    assert list(compiled.finditer("a" * 50_000)) == []
+    assert time.perf_counter() - started < 1.0
 
 
 @pytest.mark.parametrize("regex", [r"(?:all\s{1,4})?x", r"[(]+a", r"\(a+\)+", r"(?i)ab(cd)?"])
@@ -85,7 +91,7 @@ def test_the_defaults_are_linear_on_adversarial_input() -> None:
     hostile = "ignore " * 20_000 + "a" * 50_000 + "eyJ" * 10_000 + "-----BEGIN " * 5_000
     for item in DEFAULT_PATTERNS:
         started = time.perf_counter()
-        list(re.finditer(item.regex, hostile))
+        list(compile_linear(item.regex).finditer(hostile))
         assert time.perf_counter() - started < 1.0, item.name
         assert item.action == "alert"
 
@@ -102,20 +108,21 @@ def test_the_defaults_are_linear_on_adversarial_input() -> None:
         ("private-key", "-----BEGIN OPENSSH PRIVATE KEY-----"),
         ("aws-access-key", "key AKIAABCDEFGHIJKLMNOP"),
         ("github-token", "ghp_" + "a" * 36),
+        ("google-api-key", "key AIza" + "B" * 35),
         ("script-data-url", '<a href="data:text/html;base64,PHNjcmlwdD4=">'),
         ("script-data-url", "data:image/svg+xml,<svg onload=alert(1)>"),
     ],
 )
 def test_each_default_finds_what_it_names(name: str, text: str) -> None:
     (item,) = [p for p in DEFAULT_PATTERNS if p.name == name][:1]
-    assert re.search(item.regex, text)
+    assert compile_linear(item.regex).search(text)
 
 
 def test_a_data_url_of_an_image_is_no_finding() -> None:
     (item,) = [p for p in DEFAULT_PATTERNS if p.name == "script-data-url"]
-    assert re.search(item.regex, "data:image/png;base64,iVBOR") is None
+    assert compile_linear(item.regex).search("data:image/png;base64,iVBOR") is None
     # An event stream's own field name is not a data URL.
-    assert re.search(item.regex, 'data: {"jsonrpc":"2.0"}') is None
+    assert compile_linear(item.regex).search('data: {"jsonrpc":"2.0"}') is None
 
 
 def test_layers_replace_patterns_by_name() -> None:
