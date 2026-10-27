@@ -43,7 +43,7 @@ Holds therefore fit.
 
 - **Only advertised tools.** The proxy refuses a tool missing from the server's latest listing (`tool_not_advertised`); here the native rules and the policy decide by name alone.
 - **Its own bytes upstream.** The proxy re-serializes what it decided; here the server gets the client's bytes, which the middleware has read strictly.
-- **Answers.** The proxy bounds answers (`max_response_bytes`), answers a server's `ping` and refuses its other requests in a stream, and records each call's outcome. Here the harness bounds answers at 8 MiB and declares no capabilities, which the middleware requires.
+- **Answers.** The proxy bounds answers (`max_response_bytes`), answers a server's `ping` and refuses its other requests in a stream. Here the harness bounds answers at 8 MiB and declares no capabilities, which the middleware requires; the middleware records each answer, bounded and redacted, and checks it for the policy's patterns ([MCP traffic inspection](../POLICY-MIDDLEWARE.md#mcp-traffic-inspection), owner 2026-10-26).
 - **Callers.** The proxy tells callers apart by token and applies `worker_access` and `worker_tools` to worker code. This path covers the agent runtime only; research sandboxes still cannot reach MCP hosts.
 - **Credentials.** The provider is attached to the agent runtime's sandbox, whose processes hold placeholders, never values; the compiled endpoint admits only the interpreter named as its binary.
 

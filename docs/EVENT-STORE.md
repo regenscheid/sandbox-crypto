@@ -37,6 +37,9 @@ There are two stores in a deployment: the middleware's (`events.db` in its state
 | `alert` | `mcp-proxy` | `mcp_proxy.proxy`: the same for a call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
 | `monitor` | `policy-middleware` | `policy_middleware.evaluator`: a monitor threshold crossed | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#results) |
 | `mcp-call` | `mcp-proxy` | `mcp_proxy.proxy`: every message an authenticated caller sends | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `mcp-call` | `policy-middleware` | `policy_middleware.evaluator`: every message of the agent's MCP calls on the direct path (D98), with its arguments, redacted and bounded | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#mcp-traffic-inspection) |
+| `mcp-answer` | `policy-middleware` | `policy_middleware.inspection`: every answer to an admitted direct call: its head, size, digest, a redacted excerpt, pattern findings and what inspection did with it | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#mcp-traffic-inspection) |
+| `mcp-answer-alert` | `policy-middleware` | `policy_middleware.inspection`: an answer in which a pattern was found, alerted or blocked | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#mcp-traffic-inspection) |
 | `provision.requested`, `provision.awaiting_permission`, `provision.finished` | `worker` | `worker.provision_events`, through `worker.permissions` | Middleware | [Provisioning events](PROVISION-EVENTS.md) |
 
 Payloads are each writer's own; the pages in the last column describe them. The permission logic (`sandbox_science.policy.approvals`) reads only `escalation`, `approval` and `denial` records, whatever their source; other kinds are never requests or answers, and the worker's writer for provisioning observations refuses any kind but the three `provision.*` ones.
@@ -149,5 +152,5 @@ To back up a running store, export it or use SQLite's backup; a copy of `events.
 
 - **Other writers.** The behavior monitor and the orchestrator's own model and fetch requests (D47) write nothing yet. The orchestrator's MCP calls are recorded by the MCP proxy, with the orchestrator as their caller.
 - **Checkpoints** go to the journal only where someone installs the timer; nothing sends them off the host. The MCP proxy's store, in its sandbox, has no timer; its records leave the sandbox only through `export`.
-- **Retention.** The store only grows. Rotating to a new file that starts from the old one's final checkpoint is a possible later step.
+- **Retention.** The store only grows. Rotating to a new file that starts from the old one's final checkpoint is a possible later step. The middleware's MCP traffic records (`mcp-call` arguments, `mcp-answer` excerpts) are its largest; their growth is bounded per call, per answer and per run ([inspection](POLICY-MIDDLEWARE.md#mcp-traffic-inspection)), and they follow whatever retention the store gets.
 - **Several hosts.** A store is one file on one host; the worker writes to the middleware's store through a shared filesystem, and components on other hosts would need a store service.
