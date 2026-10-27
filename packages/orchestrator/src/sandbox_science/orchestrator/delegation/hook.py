@@ -105,6 +105,9 @@ STOP_SECONDS: Final = 60.0
 STOP_SHARE: Final = 0.5
 """The part of its own wait a parent gives a cancelled child to stop its children."""
 SUMMARY_CHARS: Final = 300
+IDLE_SWEEP_SECONDS: Final = 300.0
+"""How often a main run's turns look for child environments idle past ``child_idle_max``
+(CE-4): at its start, then at most once in this many seconds."""
 """The head of a report a notice shows; ``wait_delegations`` returns the whole."""
 WRITES: Final = 3
 """Tries at writing an outcome; one never written ends ``interrupted`` at the session's
@@ -336,6 +339,8 @@ class Delegations(TurnHook):
         self.fence: Callable[[str], Awaitable[Refusal | None]] | None = None
         """The run's gates, asked of a reopening as of a ``delegate`` call (PD-46): the
         harness sets it once the run's hooks are assembled."""
+        self._swept = -IDLE_SWEEP_SECONDS
+        """When the idle sweep last ran, by the clock's monotonic time."""
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
         """Outcomes a wait returned that no model call has seen yet."""
@@ -1106,26 +1111,10 @@ class Delegations(TurnHook):
         # Returned tasks past review_max are accepted for their parent (PD-46); a main run
         # also accepts those a stopped run left, whose parent's run has ended.
         await self._review_due()
-        if (
-            self.depth == 0
-            and self.placement is not None
-            and not self.recovering
-            and (
-                self.limits.child_environments != "off"
-                or await threaded(
-                    self.records.uses_child_environments,
-                    context.project_id,
-                    context.session_id,
-                )
-            )
-        ):
-            # Child environments nothing will use: never written, or left idle (CE-4).
-            # Also under "off" when the session had children: a project switched off
-            # may still hold some. A recovering run's Resume decides its children's
-            # environments itself. One a closed task left closing is handed back and
-            # released first (PD-46).
+        if await self._sweeps():
+            # One a closed task left closing is handed back and released first (PD-46).
             await self.closer.finish(context.project_id, context.session_id)
-            await reconcile(self.placement, self.records, self.limits)
+            await self._idle_sweep(force=True)
         try:
             yield
         finally:
@@ -1150,6 +1139,44 @@ class Delegations(TurnHook):
                     # The parent's final answer is its review: what it left unreviewed
                     # is accepted for it as its run ends (PD-46).
                     await held(self._accept_left())
+
+    async def _sweeps(self) -> bool:
+        """Whether this run releases the session's child environments nothing will use:
+        never written, or settled and left idle (CE-4). A main run does, also under
+        "off" when the session had children, since a project switched off may still hold
+        some; a recovering run's Resume decides its children's environments itself."""
+        context = self.context
+        return (
+            self.depth == 0
+            and self.placement is not None
+            and not self.recovering
+            and (
+                self.limits.child_environments != "off"
+                or await threaded(
+                    self.records.uses_child_environments,
+                    context.project_id,
+                    context.session_id,
+                )
+            )
+        )
+
+    async def _idle_sweep(self, *, force: bool = False) -> None:
+        """Release the session's idle child environments (``reconcile``): at a main run's
+        start, and during it at most once in ``IDLE_SWEEP_SECONDS``, so that
+        ``child_idle_max`` passes during a long run as ``review_max`` does. One whose task
+        awaits its parent's review is never idle (PD-46)."""
+        now = self.clock.monotonic()
+        if self.placement is None or (not force and now - self._swept < IDLE_SWEEP_SECONDS):
+            return
+        self._swept = now
+        if force:
+            await reconcile(self.placement, self.records, self.limits)
+            return
+        try:
+            if await self._sweeps():
+                await reconcile(self.placement, self.records, self.limits)
+        except Exception:
+            _log.exception("idle child environments were not released")
 
     async def _review_due(self) -> None:
         """At a run's start: accept the returned tasks past ``review_max`` from their
@@ -1302,6 +1329,7 @@ class Delegations(TurnHook):
         if point == "turn":
             # review_max also passes during a long parent run (PD-46): one read a turn.
             await self._review_max()
+            await self._idle_sweep()
         found = await self._fresh(run)
         if not found:
             return ()
