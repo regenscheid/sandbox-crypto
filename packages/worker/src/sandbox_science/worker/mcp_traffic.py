@@ -6,7 +6,8 @@ the call's arguments when it inspects traffic) and the answer to every admitted 
 (``mcp-answer``), redacted and bounded before they are written (docs/POLICY-MIDDLEWARE.md,
 "MCP traffic inspection"). This reads them oldest first after a record, for one project
 and optionally one session, run or tool, and joins each call to its answer by
-OpenShell's request id and the sandbox. A record that cannot be read as its kind is
+OpenShell's request id and the sandbox; an answer whose call is on an earlier page comes
+on its own (``late_answers``). A record that cannot be read as its kind is
 skipped. Nothing here writes; what it returns is the agent's and servers' text, which
 the workspace shows as data.
 """
@@ -21,7 +22,6 @@ from typing import Final, cast
 from pydantic import ValidationError
 
 from sandbox_science.contracts.mcp_traffic import (
-    ANSWER_LOOKAHEAD,
     MAX_TRAFFIC_CALLS,
     MAX_TRAFFIC_SCAN,
     TrafficAnswer,
@@ -96,7 +96,10 @@ def _answer(record: Record, data: Mapping[str, object]) -> TrafficAnswer | None:
             {
                 "seq": record.seq,
                 "at": record.time.replace("Z", "+00:00"),
+                "request_id": data.get("request_id"),
                 "status": data.get("status"),
+                "inspected": data.get("inspected", True),
+                "reason": data.get("reason"),
                 "content_type": data.get("content_type"),
                 "mode": data.get("mode"),
                 "bytes": data.get("bytes"),
@@ -108,6 +111,7 @@ def _answer(record: Record, data: Mapping[str, object]) -> TrafficAnswer | None:
                 "events": data.get("events"),
                 "findings": data.get("findings", []),
                 "more_findings": data.get("more_findings", 0),
+                "cut_after_result": data.get("cut_after_result") is True,
                 "decision": data.get("decision"),
             }
         )
@@ -116,21 +120,21 @@ def _answer(record: Record, data: Mapping[str, object]) -> TrafficAnswer | None:
 
 
 def page(records: Iterable[Record], query: TrafficQuery) -> WorkerMcpTraffic:
-    """One page from ``records``, oldest first after ``query.after``."""
+    """One page from ``records``, oldest first after ``query.after``: the calls in the
+    records it covers, each with its answer when that is among them too, and the answers
+    to calls of earlier pages (``late_answers``). The page ends at the last record it
+    covers (``next_after``), so every call and every answer is in exactly one page."""
     calls: list[TrafficCall] = []
+    late: list[TrafficAnswer] = []
     waiting: dict[tuple[str, str], int] = {}
     """The index of each listed call still waiting for its answer, by request and sandbox."""
     scanned = last = 0
-    full_at: int | None = None
-    """How many records had been read when the page filled."""
     more = False
     for record in records:
-        scanned += 1
-        if scanned > MAX_TRAFFIC_SCAN or (
-            full_at is not None and (not waiting or scanned - full_at > ANSWER_LOOKAHEAD)
-        ):
+        if scanned >= MAX_TRAFFIC_SCAN or len(calls) + len(late) >= MAX_TRAFFIC_CALLS:
             more = True
             break
+        scanned += 1
         last = record.seq
         try:
             data = record.data()
@@ -140,27 +144,27 @@ def page(records: Iterable[Record], query: TrafficQuery) -> WorkerMcpTraffic:
             continue
         key = (str(data.get("request_id")), str(data.get("sandbox_id")))
         if record.kind == CALL:
-            if full_at is not None:
-                more = True
-                continue  # the next page's
             found = _call(record, data)
             if found is None:
                 continue
             calls.append(found)
             if found.decision.outcome == "admitted":
                 waiting[key] = len(calls) - 1
-            if len(calls) == MAX_TRAFFIC_CALLS:
-                full_at = scanned
-        elif record.kind == ANSWER and key in waiting:
+        elif record.kind == ANSWER:
             answer = _answer(record, data)
-            index = waiting.pop(key)
-            if answer is not None:
+            if answer is None:
+                continue
+            index = waiting.pop(key, None)
+            if index is None:
+                late.append(answer)  # its call is on an earlier page
+            else:
                 calls[index] = calls[index].model_copy(update={"answer": answer})
     return WorkerMcpTraffic(
         project_id=query.project,
         calls=calls,
-        next_after=(calls[-1].seq if calls else last) if more or full_at is not None else None,
-        scanned=min(scanned, MAX_TRAFFIC_SCAN),
+        late_answers=late,
+        next_after=last if more else None,
+        scanned=scanned,
     )
 
 

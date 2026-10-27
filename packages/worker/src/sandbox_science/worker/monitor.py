@@ -64,6 +64,7 @@ MCP_CALL: Final = "mcp-call"
 APPROVED: Final = "approved"
 ALERT: Final = "alert"
 ANSWER_ALERT: Final = "mcp-answer-alert"
+INSPECTION_STATE: Final = "mcp-inspection-state"
 KINDS: Final = (MCP_CALL, ESCALATION, APPROVAL, DENIAL, APPROVED, ALERT, ANSWER_ALERT)
 """The record kinds the figures count."""
 SOURCES: Final[tuple[RecordSource, ...]] = ("policy-middleware", "mcp-proxy")
@@ -180,16 +181,17 @@ class _Tally:
         server = _text(data.get("server"))
         if data.get("project") != self.project or server is None:
             return False
-        counts = self.inspected.setdefault(server, [0, 0])
-        counts[1 if data.get("action") == "block" else 0] += 1
+        counts = self.inspected.setdefault(server, [0, 0, 0])
+        action = data.get("action")
+        counts[1 if action == "block" else 2 if action == "uninspected" else 0] += 1
         return True
 
     def inspection(self) -> list[InspectionRow]:
         rows = [
-            InspectionRow(server=server, alerts=alerts, blocks=blocks)
-            for server, (alerts, blocks) in self.inspected.items()
+            InspectionRow(server=server, alerts=alerts, blocks=blocks, uninspected=unread)
+            for server, (alerts, blocks, unread) in self.inspected.items()
         ]
-        rows.sort(key=lambda row: (-(row.alerts + row.blocks), row.server))
+        rows.sort(key=lambda row: (-(row.alerts + row.blocks + row.uninspected), row.server))
         return rows[:MAX_SERVERS]
 
     def _escalation(self, seq: int, data: Mapping[str, object], at: datetime) -> bool:
@@ -286,6 +288,17 @@ class _Tally:
         ]
 
 
+def _enabled(record: Record | None) -> bool | None:
+    """Whether the middleware's latest start recorded inspection on."""
+    if record is None:
+        return None
+    try:
+        enabled = record.data().get("enabled")
+    except (EventStoreError, ValueError):
+        return None
+    return enabled if isinstance(enabled, bool) else None
+
+
 def _scan(
     records: Iterable[Record], project: str, owners: Mapping[str, str], since: datetime
 ) -> tuple[_Tally, int, bool]:
@@ -359,6 +372,7 @@ class MonitorDesk:
             try:
                 with StoreReader(permissions.path, timeout=STORE_TIMEOUT) as reader:
                     head = reader.head().seq
+                    state = next(reader.newest(1, (INSPECTION_STATE,)), None)
                     counted, scanned, reached = _scan(
                         reader.newest(self.max_scanned, KINDS), project, owners, since
                     )
@@ -371,7 +385,7 @@ class MonitorDesk:
             except EventStoreError as exc:
                 raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
         else:
-            counted, scanned, truncated = _Tally(project, owners), 0, False
+            counted, scanned, truncated, state = _Tally(project, owners), 0, False, None
         return MonitorRecords(
             sources=[source for source in SOURCES if source in counted.sources],
             scanned=scanned,
@@ -381,6 +395,7 @@ class MonitorDesk:
             holds=self._holds(permissions, project, owners),
             drift=self._drift(project),
             inspection=counted.inspection(),
+            inspection_enabled=_enabled(state),
         )
 
     @staticmethod

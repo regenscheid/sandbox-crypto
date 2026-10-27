@@ -105,23 +105,34 @@ def test_calls_are_joined_to_their_answers_and_filtered(tmp_path: Path) -> None:
     events.store.close()
 
 
-def test_pages_follow_one_another_and_find_answers_after_a_full_page(tmp_path: Path) -> None:
+def test_every_call_and_every_answer_comes_once_however_late_the_answer(
+    tmp_path: Path,
+) -> None:
     events = Clocked(tmp_path / "events.db")
     total = MAX_TRAFFIC_CALLS + 5
     for index in range(total):
         events.add("mcp-call", call(f"r{index}"))
     for index in range(total):
         events.add("mcp-answer", answer(f"r{index}"))
-    first = read_traffic(events.store.path, TrafficQuery("p1"))
-    assert len(first.calls) == MAX_TRAFFIC_CALLS
-    assert all(item.answer is not None for item in first.calls)
-    assert first.next_after == first.calls[-1].seq
-    second = read_traffic(events.store.path, TrafficQuery("p1", after=first.next_after or 0))
-    assert [item.request_id for item in second.calls] == [
-        f"r{index}" for index in range(MAX_TRAFFIC_CALLS, total)
-    ]
-    assert all(item.answer is not None for item in second.calls)
-    assert second.next_after is None
+    calls: dict[str, int] = {}
+    answered: list[str] = []
+    after, pages = 0, 0
+    while True:
+        found = read_traffic(events.store.path, TrafficQuery("p1", after=after))
+        pages += 1
+        assert len(found.calls) + len(found.late_answers) <= MAX_TRAFFIC_CALLS
+        for item in found.calls:
+            assert item.request_id not in calls
+            calls[item.request_id] = item.seq
+            if item.answer is not None:
+                answered.append(item.request_id)
+        answered += [item.request_id for item in found.late_answers]
+        if found.next_after is None:
+            break
+        after = found.next_after
+    assert sorted(calls) == sorted(f"r{index}" for index in range(total))
+    assert sorted(answered) == sorted(calls)  # each answer once, none lost
+    assert pages >= 3
     events.store.close()
 
 

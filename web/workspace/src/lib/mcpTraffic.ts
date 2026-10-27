@@ -54,6 +54,12 @@ export async function readTraffic(
       return { calls, unavailable: found.unavailable ?? 'unavailable', more: false };
     }
     calls.push(...found.traffic.calls);
+    // An answer recorded after its call's page comes on a later page of its own.
+    for (const late of found.traffic.late_answers) {
+      const index = calls.findIndex((call) => call.request_id === late.request_id);
+      if (index >= 0 && calls[index]!.answer === null)
+        calls[index] = { ...calls[index]!, answer: late };
+    }
     if (found.traffic.unavailable) {
       return { calls, unavailable: found.traffic.unavailable, more: false };
     }
@@ -120,6 +126,10 @@ export function callDecision(call: TrafficCall): string {
 /** What inspection did with an answer, in words. */
 export function answerDecision(answer: TrafficAnswer): string {
   const decision = answer.decision;
+  if (!answer.inspected)
+    return `Not inspected (${answer.reason ?? 'unknown'}): passed unread, no pattern applied`;
+  if (decision.action === 'cut' && answer.cut_after_result)
+    return `Stream cut after the call's result had passed, nothing added: ${decision.reason_code ?? ''}`;
   if (decision.action === 'blocked')
     return `Refused whole, not delivered: ${decision.reason_code ?? decision.pattern ?? ''}`;
   if (decision.action === 'cut')

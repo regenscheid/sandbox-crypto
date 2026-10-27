@@ -106,6 +106,8 @@ class InspectionRow(Contract):
     server: Name
     alerts: Counter = 0
     blocks: Counter = 0
+    uninspected: Counter = 0
+    """Passed unread, every response thread being busy: no pattern applied to them."""
 
 
 class MonitorRecords(Contract):
@@ -128,6 +130,9 @@ class MonitorRecords(Contract):
         default_factory=list[InspectionRow], max_length=MAX_SERVERS
     )
     """Alerts and blocks of MCP answers by server, the busiest first."""
+    inspection_enabled: bool | None = None
+    """Whether MCP traffic inspection is on, as the middleware recorded when it last
+    started (``mcp-inspection-state``); null when it never recorded."""
 
 
 class EnvironmentTier(Contract):

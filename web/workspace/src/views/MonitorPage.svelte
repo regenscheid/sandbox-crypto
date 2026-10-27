@@ -254,17 +254,28 @@
   <section aria-labelledby="monitor-inspection">
     <h2 id="monitor-inspection">Inspected answers</h2>
     {#if records}
+      <p class="inspection-state">
+        MCP traffic inspection: {records.inspection_enabled === true
+          ? 'on'
+          : records.inspection_enabled === false
+            ? 'off (the deployment turned it off: nothing is recorded or checked)'
+            : 'not reported by the policy middleware'}.
+      </p>
       {#if records.inspection.length === 0}
         <p class="muted">No MCP answer matched an inspection pattern in this window.</p>
       {:else}
         <table>
-          <thead><tr><th>Server</th><th>Alerts</th><th>Blocked or cut</th></tr></thead>
+          <thead
+            ><tr><th>Server</th><th>Alerts</th><th>Blocked or cut</th><th>Not inspected</th></tr
+            ></thead
+          >
           <tbody>
             {#each records.inspection as item (item.server)}
               <tr class="inspection-row">
                 <td><code>{visible(item.server)}</code></td>
                 <td>{item.alerts}</td>
                 <td>{item.blocks}</td>
+                <td>{item.uninspected}</td>
               </tr>
             {/each}
           </tbody>

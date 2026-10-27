@@ -428,9 +428,15 @@ def test_answer_alerts_and_blocks_are_counted_by_server(tmp_path: Path) -> None:
     events.add("mcp-answer-alert", {**alert, "action": "block"})
     events.add("mcp-answer-alert", {**alert, "server": "web", "action": "block"})
     events.add("mcp-answer-alert", {**alert, "project": "p2"})
+    events.add("mcp-answer-alert", {**alert, "action": "uninspected", "reason": "capacity"})
     found = desk(events.store.path).figures("p1", "24h")
     assert found.records is not None
-    assert [(row.server, row.alerts, row.blocks) for row in found.records.inspection] == [
-        ("papers", 2, 1),
-        ("web", 0, 1),
-    ]
+    assert [
+        (row.server, row.alerts, row.blocks, row.uninspected) for row in found.records.inspection
+    ] == [("papers", 2, 1, 1), ("web", 0, 1, 0)]
+    assert found.records.inspection_enabled is None  # the middleware never said
+    events.add("mcp-inspection-state", {"enabled": True})
+    events.add("mcp-inspection-state", {"enabled": False})  # the latest start's word
+    found = desk(events.store.path).figures("p1", "24h")
+    assert found.records is not None
+    assert found.records.inspection_enabled is False

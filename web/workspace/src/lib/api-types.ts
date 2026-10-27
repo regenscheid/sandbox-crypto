@@ -1470,6 +1470,7 @@ export interface InspectionRow {
   server: string;
   alerts: number;
   blocks: number;
+  uninspected: number;
 }
 
 export interface JobCancellation {
@@ -1897,6 +1898,7 @@ export interface MonitorRecords {
   holds: OpenHolds[];
   drift: DriftedServer[];
   inspection: InspectionRow[];
+  inspection_enabled: boolean | null;
 }
 
 export interface MonitorSpend {
@@ -2773,7 +2775,10 @@ export interface ToolRule {
 export interface TrafficAnswer {
   seq: number;
   at: string;
+  request_id: string;
   status: number;
+  inspected: boolean;
+  reason: string | null;
   content_type: string | null;
   mode: "whole" | "stream" | "headers";
   bytes: number;
@@ -2785,6 +2790,7 @@ export interface TrafficAnswer {
   events: number | null;
   findings: TrafficFinding[];
   more_findings: number;
+  cut_after_result: boolean;
   decision: AnswerDecision;
 }
 
@@ -2936,6 +2942,7 @@ export interface WorkRecord {
 export interface WorkerMcpTraffic {
   project_id: string;
   calls: TrafficCall[];
+  late_answers: TrafficAnswer[];
   next_after: number | null;
   scanned: number;
   unavailable: string | null;

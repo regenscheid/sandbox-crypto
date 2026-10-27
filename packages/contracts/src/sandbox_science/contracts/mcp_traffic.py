@@ -5,7 +5,8 @@ The policy middleware records each MCP call it decides on the direct path (D98) 
 arguments (``mcp-call``) and each answer to an admitted call (``mcp-answer``), both
 bounded and redacted before they are written (docs/POLICY-MIDDLEWARE.md, "MCP traffic
 inspection"). ``GET /v1/mcp-traffic?project=P[&session=S][&run=R][&tool=T][&after=N]``
-pages through a project's calls oldest first, each with its answer when one is recorded.
+pages through a project's records oldest first: its calls, each with its answer when that
+is in the same page, and the answers to earlier pages' calls.
 Everything in it came from the agent or a server: it is data to show as text, never
 instructions.
 """
@@ -19,11 +20,9 @@ from pydantic import AwareDatetime, Field, StringConstraints
 from .model import Contract, Counter, Identifier, Sha256
 
 MAX_TRAFFIC_CALLS: Final = 20
-"""Calls one page carries, oldest first."""
+"""Calls and late answers one page carries together, oldest first."""
 MAX_TRAFFIC_SCAN: Final = 100_000
 """Records one read examines; a page that stops there says so with ``next_after``."""
-ANSWER_LOOKAHEAD: Final = 5_000
-"""Records read past a full page's last call for the answers of its calls."""
 MAX_RECORDED_TEXT: Final = 4 * 1024 * 1024
 MAX_FINDINGS: Final = 32
 
@@ -81,7 +80,12 @@ class TrafficAnswer(Contract):
 
     seq: Counter
     at: AwareDatetime
+    request_id: Name
+    """The call's, which a late answer is matched to."""
     status: Annotated[int, Field(ge=0, le=999)]
+    inspected: bool = True
+    """False when it passed unread (``reason``, such as ``capacity``): no pattern applied."""
+    reason: Note | None = None
     content_type: Name | None = None
     mode: Literal["whole", "stream", "headers"]
     """How it was read: whole, piece by piece, or its head only (nothing to read)."""
@@ -97,6 +101,8 @@ class TrafficAnswer(Contract):
     """An event stream's events."""
     findings: list[TrafficFinding] = Field(default_factory=list[TrafficFinding], max_length=32)
     more_findings: Counter = 0
+    cut_after_result: bool = False
+    """A block cut the stream after the call's response had passed: no error was added."""
     decision: AnswerDecision
 
 
@@ -123,8 +129,13 @@ class WorkerMcpTraffic(Contract):
 
     project_id: Identifier
     calls: list[TrafficCall] = Field(max_length=MAX_TRAFFIC_CALLS)
+    late_answers: list[TrafficAnswer] = Field(
+        default_factory=list[TrafficAnswer], max_length=MAX_TRAFFIC_CALLS
+    )
+    """Answers recorded after the page that holds their call: match them by
+    ``request_id``."""
     next_after: Counter | None = None
-    """Pass as ``after`` for the next page; null when this page reached the newest call."""
+    """Pass as ``after`` for the next page; null when this page reached the newest record."""
     scanned: Counter
     unavailable: Note | None = None
     """Why the event store could not be read; ``calls`` is then empty."""

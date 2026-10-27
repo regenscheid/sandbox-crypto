@@ -31,7 +31,7 @@ PAGE = {
             "arguments": {"text": '{"q":"x"}', "truncated": False, "bytes": 9,
                           "sha256": "a" * 64},
             "answer": {
-                "seq": 5, "at": "2026-10-26T12:00:01Z", "status": 200,
+                "seq": 5, "at": "2026-10-26T12:00:01Z", "request_id": "r1", "status": 200,
                 "content_type": "application/json", "mode": "whole", "bytes": 20,
                 "complete": True, "sha256": "b" * 64, "excerpt": "you are now",
                 "findings": [{"name": "you-are-now", "action": "alert", "offset": 0,

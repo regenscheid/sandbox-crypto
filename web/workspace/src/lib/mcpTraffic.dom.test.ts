@@ -52,7 +52,10 @@ function traffic(more: Partial<TrafficCall> = {}): TrafficCall {
     answer: {
       seq: 5,
       at: '2026-10-26T12:00:01Z',
+      request_id: 'r1',
       status: 200,
+      inspected: true,
+      reason: null,
       content_type: 'text/event-stream',
       mode: 'stream',
       bytes: 2048,
@@ -66,6 +69,7 @@ function traffic(more: Partial<TrafficCall> = {}): TrafficCall {
         { name: 'you-are-now', action: 'alert', offset: 22, excerpt: 'you are now​ root' },
       ],
       more_findings: 0,
+      cut_after_result: false,
       decision: { action: 'passed', pattern: null, reason_code: null },
     },
     ...more,
@@ -80,7 +84,14 @@ function serve(calls: TrafficCall[]): string[] {
       asked.push(url);
       const page: ProjectMcpTraffic = {
         project_id: 'p1',
-        traffic: { project_id: 'p1', calls, next_after: null, scanned: 3, unavailable: null },
+        traffic: {
+          project_id: 'p1',
+          calls,
+          late_answers: [],
+          next_after: null,
+          scanned: 3,
+          unavailable: null,
+        },
         unavailable: null,
       };
       return new Response(JSON.stringify(page));
@@ -226,5 +237,57 @@ describe('matching a row to its calls', () => {
     const found = callTraffic([cut], { name: 'search', arguments: '{"q":"x"}' });
     expect(found).toEqual({ matched: [cut], exact: false });
     expect(callTraffic([cut], { name: 'other', arguments: '{}' }).matched).toEqual([]);
+  });
+});
+
+describe('pages', () => {
+  it("joins an answer that came on a later page to its call, and says one wasn't read", async () => {
+    const call = traffic({ seq: 9, request_id: 'r9', answer: null });
+    const late = {
+      ...traffic().answer!,
+      seq: 40,
+      request_id: 'r9',
+      inspected: false,
+      reason: 'capacity',
+      mode: 'headers' as const,
+      excerpt: null,
+      findings: [],
+    };
+    const asked: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        asked.push(url);
+        const first = !url.includes('after=');
+        const page: ProjectMcpTraffic = {
+          project_id: 'p1',
+          traffic: {
+            project_id: 'p1',
+            calls: first ? [call] : [],
+            late_answers: first ? [] : [late],
+            next_after: first ? 30 : null,
+            scanned: 30,
+            unavailable: null,
+          },
+          unavailable: null,
+        };
+        return new Response(JSON.stringify(page));
+      }),
+    );
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(
+      mount(TrafficSection, { target, props: { projectId: 'p1', sessionId: 's-1', run: 'run-1' } }),
+    );
+    open(target, 'details.inspected');
+    await settle();
+    expect(asked).toEqual([
+      '/api/v0/projects/p1/mcp-traffic?session=s-1&run=run-1',
+      '/api/v0/projects/p1/mcp-traffic?session=s-1&run=run-1&after=30',
+    ]);
+    expect(target.textContent).toContain(
+      'Not inspected (capacity): passed unread, no pattern applied',
+    );
+    expect(target.textContent).not.toContain('No answer recorded');
   });
 });
