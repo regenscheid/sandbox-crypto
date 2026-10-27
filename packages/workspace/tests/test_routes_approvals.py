@@ -199,7 +199,8 @@ async def test_each_decision_sends_its_answer_and_stores_its_grant(
     fake.hold(1, "crawl")
     fake.hold(2, "submit_feedback")
     fake.hold(3, "notify", effect="communicate", max_grant="session")
-    fake.hold(4, "x")
+    # Another server's call, so the relay cannot answer it from 2's grant before 4's deny.
+    fake.hold(4, "x", server="notes")
     once = await post(client, ANSWER.format(1), {"decision": "once"})
     assert (once["decision"], once["granted"]) == ("once", [])
     project = await post(client, ANSWER.format(2), {"decision": "project"})
