@@ -1050,33 +1050,38 @@ def test_package_cache_config_is_accepted(
 MCP_HOST = "mcp-proxy.sandbox-science.internal"
 
 
-def with_services(config: dict[str, object]) -> dict[str, object]:
+def with_retired_proxy(config: dict[str, object]) -> dict[str, object]:
+    """A sandbox compiled before the MCP proxy retired (D98) names it beside the cache."""
     return {
         **with_cache(config),
         "mcp_proxy": {"host": MCP_HOST, "port": 8080.0},
     }
 
 
-def test_worker_access_false_keeps_worker_code_from_the_mcp_proxy(
+@pytest.mark.parametrize("port", [8080, 443])
+def test_the_retired_mcp_proxy_host_is_refused_on_every_port(
     store: PolicyStore,
     sandbox_id: str,
     make_facts: FactsFactory,
     policy_config: Callable[[LoadedPolicy], dict[str, object]],
+    port: int,
 ) -> None:
-    loaded = bind_policy(store, sandbox_id, "mcp:\n  proxy: {worker_access: false}\n")
+    loaded = bind_policy(store, sandbox_id, "defaults: {action: allow}\n")
     middleware = PolicyMiddleware(
         store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=_NullSink()
     )
+    config = with_retired_proxy(policy_config(loaded))
+    assert middleware.validate_config(config) is None  # an older sandbox still loads
     facts = make_facts(
-        scheme="http",
+        scheme="http" if port == 8080 else "https",
         host=MCP_HOST,
-        port=8080,
+        port=port,
         method="POST",
         path="/mcp",
         body=b"{}",
-        config=with_services(policy_config(loaded)),
+        config=config,
     )
-    assert middleware.evaluate_http(facts).reason_code == reasons.POLICY_DENIED
+    assert middleware.evaluate_http(facts).reason_code == reasons.DESTINATION_FORBIDDEN
 
 
 @pytest.mark.parametrize(
