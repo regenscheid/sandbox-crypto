@@ -803,7 +803,6 @@ class AppSettings:
     """What a launch needs from the private application config."""
 
     policy: Path
-    mcp_proxy_port: int
 
 
 def expected_app_values(settings: Settings) -> dict[str, str]:
@@ -852,14 +851,7 @@ def check_app_config(settings: Settings, source: Path, config: dict[str, object]
     policy = resolved(value("worker.policy"))
     if policy is None or not policy.is_file():
         raise SetupError("Application config [worker] policy must name an existing policy file")
-    listen = value("mcp_proxy.listen")
-    port = 18080
-    if isinstance(listen, str):
-        match = re.fullmatch(r"127\.0\.0\.1:(\d{4,5})", listen)
-        if match is None:
-            raise SetupError("Application config [mcp_proxy] listen must be 127.0.0.1:<port>")
-        port = int(match.group(1))
-    return AppSettings(policy=policy, mcp_proxy_port=port)
+    return AppSettings(policy=policy)
 
 
 def ensure_middleware_tls(settings: Settings) -> None:
@@ -1035,13 +1027,8 @@ kind: OpenShellTargets
 sandbox:
   middleware: {MIDDLEWARE}
   package_cache: {{host: host.openshell.internal, port: {settings.package_cache_port}}}
-  mcp_proxy: {{host: host.openshell.internal, port: {app.mcp_proxy_port}}}
   binaries: [/**]
   filesystem: {{read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}}
-mcp_proxy:
-  binaries: [/opt/sandbox-science/bin/python*]
-  versions: ["2025-11-25"]
-  filesystem: {{read_only: [/opt/sandbox-science]}}
 """,
     )
     launch = settings.root / "gateway/gateway-launch.toml"

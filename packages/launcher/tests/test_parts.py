@@ -407,63 +407,62 @@ def test_a_private_write_is_synced_before_its_rename_and_its_directory_after(
     assert after == '{"name": "ss-orch-0123456789", "id": null}\n'
 
 
-def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
-    make_config: Any, commands: Path
+def test_the_workspace_gets_the_direct_paths_services_and_its_check(
+    make_config: Any, commands: Path, tmp_path: Path
 ) -> None:
-    proxy = {
-        "image": "sandbox-science/mcp-proxy:abc1234",
-        "providers": ["p"],
-        "servers": ["s", "t"],
-        "about": {"s/e-print-mcp": "IACR ePrint papers", "s": "the policy's server s"},
-        "index": ["s/e-print-mcp"],
+    """With [mcp_direct] (D98), the workspace shows the configured servers and asks the
+    control service, with a token of its own, for the user's availability check; no MCP
+    proxy part is needed, made or started (it retired on 2026-10-26)."""
+
+    from .test_direct_mcp import direct_files
+
+    direct_files(tmp_path)
+    direct = {
+        "servers": {"crypto-research-mcp": {}},
+        "about": {
+            "crypto-research-mcp/e-print-mcp": "IACR ePrint papers",
+            "crypto-research-mcp": "the portal",
+        },
+        "index": ["crypto-research-mcp/e-print-mcp"],
     }
-    config = load_config(make_config({"bin_dir": str(commands), "mcp_proxy": proxy}))
-    parts.check(config)
+    config = load_config(make_config({"bin_dir": str(commands), "mcp_direct": direct}))
+    parts.check(config)  # no sandbox-science-mcp-proxy command is looked for
     layout = parts.prepare(config)
-    upload = layout.mcp / "upload"
-    assert mode(layout.mcp) == mode(upload) == 0o700
-    for name in ("pool-ceiling.yaml", "policy.yaml", "proxy.toml"):
-        assert mode(upload / name) == 0o600
-    assert (upload / "policy.yaml").read_text() == config.worker.policy.read_text()
-    assert mode(layout.token("mcp-orchestrator")) == 0o600
-    harness = parts.harness_argv(config, layout)
-    assert harness[harness.index("--mcp-proxy") :] == [
-        "--mcp-proxy", "http://127.0.0.1:18080",
-        "--mcp-token-file", str(layout.token("mcp-orchestrator")),
-        "--mcp-project", "crypto", "--mcp-server", "s", "--mcp-server", "t",
-        "--mcp-about", "s/e-print-mcp=IACR ePrint papers", "--mcp-about", "s=the policy's server s",
-        "--mcp-index", "s/e-print-mcp",
-    ]  # fmt: skip
+    assert not layout.mcp.exists()  # nothing of the retired proxy's is made
     workspace = parts.workspace_argv(config, layout)
     assert workspace[workspace.index("--mcp-project") :] == [
-        "--mcp-project",
-        "crypto",
-        "--mcp-proxy",
-        "http://127.0.0.1:18080",
-        "--mcp-proxy-token-file",
-        str(layout.token("mcp-orchestrator")),
-        "--mcp-operator-token-file",
-        str(layout.token("mcp-workspace")),
-        "--mcp-service",
-        "s=the policy's server s",
-        "--mcp-service",
-        "t=",
-    ]
+        "--mcp-project", "crypto",
+        "--mcp-service", "crypto-research-mcp=the portal",
+        "--mcp-check", "http://127.0.0.1:8202",
+        "--mcp-check-token-file", str(layout.token("workspace-control")),
+    ]  # fmt: skip
     assert "IACR ePrint papers" not in workspace  # behind-service purpose is not top-level
+    assert not {"--mcp-proxy", "--mcp-token-file"} & set(parts.harness_argv(config, layout))
+    directory, _ = orchestrator.prepare(config, layout)
+    host = json.loads((directory / "control.json").read_text())
+    digest = Path(host["check_token_sha256_file"])
+    assert mode(digest) == mode(layout.token("workspace-control")) == 0o600
+    token = layout.token("workspace-control").read_text().strip()
+    assert digest.read_text().strip() == hashlib.sha256(token.encode()).hexdigest()
+    assert "proxy" not in host
     for wrong in (
         {"about": {"Not_A_Server": "x"}},
         {"about": {"e-print-mcp": "IACR ePrint"}},  # not behind a configured server
-        {"about": {"s/e-print-mcp": ""}},
-        {"about": {"s/e-print-mcp": "   "}},
-        {"about": {"s/e-print-mcp": "x" * 201}},
+        {"about": {"crypto-research-mcp/e-print-mcp": ""}},
+        {"about": {"crypto-research-mcp/e-print-mcp": "   "}},
+        {"about": {"crypto-research-mcp/e-print-mcp": "x" * 201}},
         {"index": []},
         {"index": ["other/e-print-mcp"]},
     ):
         with pytest.raises(LauncherError):
-            load_config(make_config({"mcp_proxy": {**proxy, **wrong}}))
-    (commands / "sandbox-science-mcp-proxy").unlink()
-    with pytest.raises(LauncherError, match="no sandbox-science-mcp-proxy in"):
-        parts.check(config)
+            load_config(make_config({"mcp_direct": {**direct, **wrong}}))
+
+
+def test_without_mcp_the_workspace_shows_no_services(make_config: Any, commands: Path) -> None:
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    layout = parts.prepare(config)
+    workspace = parts.workspace_argv(config, layout)
+    assert not {"--mcp-project", "--mcp-service", "--mcp-check"} & set(workspace)
 
 
 def test_the_run_service_takes_the_review_limits_the_config_sets(
@@ -630,29 +629,3 @@ def test_role_effort_reaches_both_confined_sides_and_native_cli(make_config: Any
 def test_invalid_role_effort_is_refused(make_config: Any, efforts: dict[str, str]) -> None:
     with pytest.raises(LauncherError, match="reasoning_effort"):
         load_config(make_config({"model": {"reasoning_effort": efforts}}))
-
-
-def test_without_approvals_the_proxy_gets_the_callers_an_older_image_knows(
-    make_config: Any, commands: Path
-) -> None:
-    proxy = {
-        "image": "sandbox-science/mcp-proxy:abc1234",
-        "providers": ["p"],
-        "servers": ["s"],
-        "approvals": False,
-    }
-    config = load_config(make_config({"bin_dir": str(commands), "mcp_proxy": proxy}))
-    layout = parts.prepare(config)
-    import tomllib
-
-    callers = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())["callers"]
-    assert [caller["kind"] for caller in callers] == ["orchestrator"]
-    assert not layout.token("mcp-workspace").exists()
-    assert "--mcp-operator-token-file" not in parts.workspace_argv(config, layout)
-    approving = load_config(
-        make_config({"bin_dir": str(commands), "mcp_proxy": {**proxy, "approvals": True}})
-    )
-    layout = parts.prepare(approving)
-    callers = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())["callers"]
-    assert [caller["kind"] for caller in callers] == ["orchestrator", "operator"]
-    assert mode(layout.token("mcp-workspace")) == 0o600

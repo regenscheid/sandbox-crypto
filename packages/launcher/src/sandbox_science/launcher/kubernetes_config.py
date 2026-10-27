@@ -518,7 +518,7 @@ class BundleConfig(Model):
     alerts: Alerts | None = None
     """Absent, no alert rules are rendered."""
     mcp_direct: McpDirect | None = None
-    """Absent, the agent runtime makes no MCP request (no MCP proxy runs in the cluster)."""
+    """Absent, the agent runtime makes no MCP request."""
     image_pull_secret: Name = "ghcr-pull"  # noqa: S105 - a Secret's name, not a value
     """The registry Secret (``kubernetes.io/dockerconfigjson``) in the bundle's namespace that
     every rendered Pod names in ``imagePullSecrets``: the app, the pool, the runtime manager,

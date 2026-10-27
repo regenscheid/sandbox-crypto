@@ -28,7 +28,6 @@ PARTS = (
     "sandbox-science-package-cache",
     "sandbox-science-harness",
     "sandbox-science-workspace",
-    "sandbox-science-mcp-proxy",
     "sandbox-science-control",
 )
 

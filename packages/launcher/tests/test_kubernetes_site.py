@@ -347,9 +347,8 @@ def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp
     output = generate(tmp_path, direct=True)
     secrets = output / "secrets"
     server = "crypto-research-mcp"
-    # Control's run service takes the direct path, with no proxy.
+    # Control's run service takes the direct path.
     control = ControlSettings.model_validate_json((secrets / "control/control.json").read_text())
-    assert control.proxy is None
     assert control.direct is not None
     assert (control.direct.project, control.direct.servers) == ("crypto", (server,))
     assert control.direct.about == {server: "Cryptography research servers"}

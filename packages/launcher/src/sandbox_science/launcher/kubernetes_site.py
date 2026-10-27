@@ -441,7 +441,6 @@ def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings
             worker=f"https://{_qualified(site, bundle, 'worker')}:{WORKER_PORT}",
             model=site.model.url,
             control=f"{control}:{CONTROL_PORT}",
-            proxy=None,
             python=RuntimeManagerSettings.model_fields["python"].default,
             relay_tls=True,
         ),
@@ -704,8 +703,8 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
     )
     direct = bundle.mcp_direct
     mcp = (
-        "No MCP proxy is configured (`control.json` has no `proxy`); the agent's connector\n"
-        f"  calls take the direct path (`[mcp_direct]`, D98) for project `{direct.project}`:\n"
+        "The agent's connector calls take the direct path (`[mcp_direct]`, D98) for\n"
+        f"  project `{direct.project}`:\n"
         f"  before the bundle's manager starts, create the Secret `{direct.provider_secret}`\n"
         "  from the provider's env file (`CF_ACCESS_CLIENT_ID=` and\n"
         "  `CF_ACCESS_CLIENT_SECRET=` lines), which its init container registers as the\n"
@@ -718,8 +717,7 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
         "  The middleware's `mcp_listings` is on. The site's policy was compiled into the\n"
         "  manager's Secret: after a new policy revision, generate the Secrets anew.\n"
         if direct is not None
-        else "No MCP proxy is configured (`control.json` has no `proxy`) and no direct path\n"
-        "  (`[mcp_direct]`): the agent has no connectors.\n"
+        else "No MCP servers are configured (`[mcp_direct]`): the agent has no connectors.\n"
     )
     return f"""# Secrets for {name} in {ns}
 

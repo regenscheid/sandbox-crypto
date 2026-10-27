@@ -11,7 +11,7 @@ instead of ENV_FILE (and ``--profile`` optional), it reads the two values from i
 environment, where the Kubernetes bundle's runtime manager Pod puts them from the Secret
 its ``[mcp_direct] provider_secret`` names, in an init container of its own
 (docs/KUBERNETES-PREP.md); the rest is the same. ``sandbox-science up``
-runs it in a process of its own when ``[mcp_proxy] provider_env_file`` is set and the
+runs it in a process of its own when ``[mcp_direct] provider_env_file`` is set and the
 provider is missing, or with ``--refresh-provider``; the launcher never opens the file.
 It:
 

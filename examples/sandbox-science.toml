@@ -119,45 +119,35 @@ ceiling = "~/.local/state/openshell-lab/middleware/pool-ceiling.yaml"
 minimal = "sandbox-science/minimal:02f85b3"
 crypto-base = "sandbox-science/crypto-base:02f85b3"
 
-# Instead of [mcp_proxy] below (never both), the direct path (D98, docs/MCP-CONNECTORS.md#the-direct-path):
+# The MCP servers the agent's connectors reach (D98, docs/MCP-CONNECTORS.md#the-direct-path):
 # the agent runtime's own client makes the connector calls from its sandbox, through
-# OpenShell's native rules and the policy middleware (whose settings need mcp_listings = true).
-# The proxy stays the default until the babbage lab passes.
-# [mcp_direct]
-# providers = ["crypto-research-mcp"]
-# provider_env_file = "/path/to/the/owners/cloudflare.env"
-# provider_profile = "openshell/profiles/cloudflare-access.yaml"
-# index = ["crypto-research-mcp/e-print-mcp", "crypto-research-mcp/nist-csrc-mcp"]
-#
-# [mcp_direct.servers.crypto-research-mcp]   # its URL is the project policy's
-# credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
-
-# The MCP proxy, in an OpenShell sandbox of its own (docs/QUICKSTART.md): uncomment once
-# images/build.sh mcp-proxy has built its image. With provider_env_file, up registers the
-# provider from the owner's file when the gateway has none, as on each new lab gateway:
-# babbage's default for now (the owner, 2026-10-15). The path below is a placeholder: no
-# file in the repository names the real one, which only a config outside it does, as the
-# lab's (.agents/labs/README.md). Without provider_env_file, create the provider by hand
-# (docs/MCP-CONNECTORS.md). index and [mcp_proxy.about] shape the index of the servers'
+# OpenShell's native rules and the policy middleware (whose settings need
+# mcp_listings = true); it needs [orchestrator]. The MCP proxy and its [mcp_proxy] retired
+# on 2026-10-26: sandbox-science migrate-mcp-config rewrites an older config's. With
+# provider_env_file, up registers the provider from the owner's file when the gateway has
+# none, as on each new lab gateway: babbage's default for now (the owner, 2026-10-15). The
+# path below is a placeholder: no file in the repository names the real one, which only a
+# config outside it does, as the lab's (.agents/labs/README.md). Without provider_env_file,
+# create the provider by hand (docs/MCP-CONNECTORS.md). A server's URL is the project
+# policy's; its credentials name each header's environment variable, which holds the
+# provider's placeholder. index and [mcp_direct.about] shape the index of the servers'
 # tools the main agent gets (lab 39, B5): the servers behind the portal it lists tool by
 # tool, the others by their count, found with a query; and what each server is for, which
 # it marks as the operator's. A key is SERVER/BEHIND: the portal, and the server behind it.
-# [canaries] lists each server on a schedule from the trusted side, never calling a tool,
-# for the workspace's MCP services view and the alerts (docs/MCP-CONNECTORS.md#canaries).
-# [mcp_proxy]
-# image = "sandbox-science/mcp-proxy:d27e41a"
+# [canaries] lists each server on a schedule through the runtime's client, never calling a
+# tool, for the workspace's MCP services view and the alerts
+# (docs/MCP-CONNECTORS.md#canaries).
+# [mcp_direct]
 # providers = ["crypto-research-mcp"]
-# servers = ["crypto-research-mcp"]
 # provider_env_file = "/path/to/the/owners/cloudflare.env"
 # provider_profile = "openshell/profiles/cloudflare-access.yaml"
 #
 # index = ["crypto-research-mcp/attack-catalog-mcp", "crypto-research-mcp/e-print-mcp", "crypto-research-mcp/nist-csrc-mcp", "crypto-research-mcp/paper-search-mcp", "crypto-research-mcp/web-fetch-mcp"]
 #
-# [mcp_proxy.credentials]
-# "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID"
-# "crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET"
+# [mcp_direct.servers.crypto-research-mcp]
+# credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
 #
-# [mcp_proxy.about]
+# [mcp_direct.about]
 # "crypto-research-mcp/attack-catalog-mcp" = "a catalog of cryptanalytic attacks: which apply to a scheme, and their sources"
 # "crypto-research-mcp/e-print-mcp" = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs"
 # "crypto-research-mcp/firecrawl-mcp" = "the open web: search, scrape and crawl pages; for papers, use a paper archive first"

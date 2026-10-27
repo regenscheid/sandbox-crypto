@@ -7,6 +7,7 @@ sandbox-science down [--config sandbox-science.toml] [--keep-sandboxes]
 sandbox-science prepare [--config sandbox-science.toml]
 sandbox-science status [--config sandbox-science.toml]
 sandbox-science skills update [--config sandbox-science.toml] [--pack NAME ...]
+sandbox-science migrate-mcp-config CONFIG [--print]
 ```
 
 ``up`` checks the config, makes what the parts need in the state directory, and starts
@@ -26,6 +27,8 @@ tokens and the worker's settings and starts nothing, for a unit that must run be
 ``up``. ``skills update`` imports the config's skill packs again from their refs and
 moves the projects' pins to them, saying what changed,
 whether an instance runs or not: runs started before it keep the skills they have.
+``migrate-mcp-config`` rewrites a config's retired ``[mcp_proxy]`` into ``[mcp_direct]``
+(migrate_mcp.py).
 """
 
 from __future__ import annotations
@@ -45,7 +48,17 @@ from pathlib import Path
 
 from sandbox_science.contracts.clock import wait_or_sleep
 
-from . import instance, mcp, orchestrator, parts, replacement, sandboxes, skills, unit
+from . import (
+    instance,
+    mcp,
+    migrate_mcp,
+    orchestrator,
+    parts,
+    replacement,
+    sandboxes,
+    skills,
+    unit,
+)
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
 from .state import Layout, check_private, write_private
@@ -104,7 +117,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 action="store_true",
                 help="leave the research sandboxes running, rather than suspend them",
             )
+    migrate = commands.add_parser(
+        "migrate-mcp-config",
+        help="rewrite a config's retired [mcp_proxy] into [mcp_direct] (D98)",
+    )
+    migrate.add_argument("config", type=Path)
+    migrate.add_argument(
+        "--print",
+        action="store_true",
+        dest="show",
+        help="print the rewritten config instead of writing it",
+    )
     args = parser.parse_args(argv)
+    if args.command == "migrate-mcp-config":
+        try:
+            return migrate_mcp.main(args.config, show=args.show)
+        except LauncherError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     try:
         config = load_config(args.config)
         match args.command:
@@ -340,13 +370,11 @@ async def _start(
 ) -> None:
     timeout = config.start_timeout
     if mcp.provided(config) is not None:
-        # The proxy's sandbox's providers, or the agent runtime's on the direct path.
+        # The agent runtime's providers (D98).
         await mcp.register_provider(config, layout, supervisor, refresh=refresh)
         await mcp.check_providers(config)
     elif refresh:
-        raise LauncherError(
-            "--refresh-provider needs [mcp_proxy] or [mcp_direct] provider_env_file"
-        )
+        raise LauncherError("--refresh-provider needs [mcp_direct] provider_env_file")
     worker_env = passed(config.worker.pass_env)
     if config.worker.unit is not None:
         await _adopt_unit(config.worker.unit, supervisor, timeout)
@@ -375,8 +403,9 @@ async def _start(
     lines, _ = await skills.keep(config, layout, supervisor, update=update, models=False)
     for line in lines:  # a pack that failed is said here, and the rest starts without it
         print(line, flush=True)
-    if config.mcp_proxy is not None:
-        await mcp.start(config, layout, supervisor, parts.commands(config))
+    made = mcp.recorded(layout)
+    if made is not None and await mcp.delete_recorded(config, layout):
+        print(f"deleted the retired MCP proxy's sandbox {made[0]} an earlier launcher made")
     await orchestrator.start(config, layout, supervisor)
     print(f"starting the workspace on {config.workspace.listen}", flush=True)
     layout.login.unlink(missing_ok=True)
@@ -392,34 +421,6 @@ async def _start(
         required=not bool(config.orchestrator and config.orchestrator.recover_infrastructure),
     )
     await supervisor.start(workspace, timeout)
-    if (argv := parts.canaries_argv(config, layout)) is not None:
-        print(f"starting the MCP canaries, every {config.canaries.interval:g} s", flush=True)
-        await start_canaries(supervisor, _canaries(argv, layout), timeout)
-
-
-async def start_canaries(supervisor: Supervisor, part: Part, timeout: float) -> bool:
-    """Start the canaries as a monitor, not a service the others need: one that fails to
-    start is said, stopped and left out, and the launch goes on. Whether they run."""
-    try:
-        await supervisor.start(part, timeout)
-    except LauncherError as exc:
-        print(f"the MCP canaries did not start, and run no more this launch: {exc}", flush=True)
-        await supervisor.stop_part(part.name)
-        return False
-    return True
-
-
-def _canaries(argv: list[str], layout: Layout) -> Part:
-    """The scheduled MCP canaries: started again when they stop, never stopping the rest,
-    since research does not depend on them."""
-    return Part(
-        "mcp-canaries",
-        argv,
-        layout.control,
-        ready_line=parts.CANARIES_READY,
-        required=False,
-        restart=True,
-    )
 
 
 async def _existing(
@@ -544,7 +545,7 @@ def _down_stopped(config: LauncherConfig, path: Path, layout: Layout, *, keep: b
         asyncio.run(orchestrator.delete_recorded(config, layout))
     made = mcp.recorded(layout)
     if made is not None and asyncio.run(mcp.delete_recorded(config, layout)):
-        print(f"deleted the sandbox {made[0]} an earlier launcher made")
+        print(f"deleted the retired MCP proxy's sandbox {made[0]} an earlier launcher made")
     if not stopped and made is None:
         print("Sandbox Science is not running")
     known = sandboxes.remembered(layout)
@@ -639,7 +640,8 @@ def status(config: LauncherConfig) -> int:
             )
         if made is not None:
             print(
-                f"  but the sandbox {made[0]} it made may be left: sandbox-science down deletes it"
+                f"  but the retired MCP proxy's sandbox {made[0]} may be left: "
+                "sandbox-science down deletes it"
             )
         for part in left:
             print(
@@ -682,7 +684,7 @@ def status(config: LauncherConfig) -> int:
             print(f"    {name}: {listen} {'answers' if ok else 'is silent'}")
     made = mcp.recorded(layout)
     if made is not None:
-        print(f"  the MCP proxy's sandbox: {made[0]}")
+        print(f"  the retired MCP proxy's sandbox {made[0]} is left: sandbox-science up deletes it")
     agent = orchestrator.recorded(layout)
     if agent is not None:
         print(f"  the orchestrator's sandbox: {agent[0]}")

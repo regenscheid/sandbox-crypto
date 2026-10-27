@@ -2,10 +2,9 @@
 """The agent runtime sandbox's direct MCP egress (D98), compiled from the project policy.
 
 With ``[mcp_direct]`` (or the Kubernetes bundle's ``[mcp_direct]``) the agent's connector
-calls leave from the runtime's own sandbox, through OpenShell's proxy, with no MCP proxy
-(docs/specs/mcp-middleware-prototype.md). Beside its platform services
-(``compile_orchestrator``), the sandbox then gets, from the same compiler the MCP proxy's
-fence uses (``compile_agent_mcp``):
+calls leave from the runtime's own sandbox, through OpenShell's proxy (D98; the MCP proxy
+retired on 2026-10-26, docs/MCP-CONNECTORS.md). Beside its platform services
+(``compile_orchestrator``), the sandbox then gets (``compile_agent_mcp``):
 
 - one inspected ``protocol: mcp`` endpoint per configured server, whose native rules allow
   and deny tools by name, bound to its provider's credentials, and admitting only the
