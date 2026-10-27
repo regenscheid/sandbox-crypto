@@ -189,6 +189,9 @@ listen = "127.0.0.1:$MIDDLEWARE_PORT"
 registration = "sandbox-science-policy"
 state_dir = "$OS/middleware/state"
 ceiling = "$OS/middleware/pool-ceiling.yaml"
+# The agent runtime's MCP listings (D98: the direct path, the only one since the MCP proxy
+# retired), which the middleware reads to drop denied tools; [mcp_direct] needs it.
+mcp_listings = true
 
 [middleware.tls]
 certificate = "$MW/middleware.pem"
