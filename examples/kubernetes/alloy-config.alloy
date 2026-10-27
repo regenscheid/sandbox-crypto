@@ -106,7 +106,7 @@ loki.process "ocsf" {
     action   = "drop"
   }
   stage.regex {
-    expression = "^\\S+ OCSF-JSON (?P<ocsf>\\{.*\\})$"
+    expression = "^\\S+ OCSF-JSON (?P<ocsf>\\{.*\\})\\s*$"  // the line keeps its trailing newline
   }
   stage.json {
     source      = "ocsf"
