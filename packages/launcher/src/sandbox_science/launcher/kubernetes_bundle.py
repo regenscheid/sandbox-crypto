@@ -12,6 +12,7 @@ import yaml
 
 from . import toml
 from .kubernetes_config import (
+    CHECK_TOKEN,
     GATEWAY_PROFILE,
     Alerts,
     BundleConfig,
@@ -213,6 +214,12 @@ def _policies(config: BundleConfig) -> list[dict[str, object]]:
                     "ports": _ports(8100),
                 }
             )
+            if config.mcp_direct is not None:
+                # The workspace asks control, in its own Pod, by control's Service name
+                # for the user's availability check (D98).
+                own = {"podSelector": {"matchLabels": _labels(config, "app")}}
+                ingress.append({"from": [own], "ports": _ports(CONTROL_PORT)})
+                egress.append({"to": [own], "ports": _ports(CONTROL_PORT)})
         else:
             # The gateway connects to each registered middleware at startup and exits if
             # it cannot; the supervisors call it for every request they decide.
@@ -539,11 +546,32 @@ def _command(config: BundleConfig, name: str) -> list[str]:
             "--worker-ca-file",
             f"{PRIVATE}/worker-ca.crt",
             *config.models.workspace_arguments(),
+            *_mcp_services(config),
         ]
     # The pool's services run the unit's entry point on the unit's config, one container
     # each so that each keeps its own credentials, limits and probes; ``--only`` picks the
     # container's service from the file all three share (docs/UNIT.md).
     return [UNIT, "serve", "--config", f"{UNIT_DIR}/unit.toml", "--only", name]
+
+
+def _mcp_services(config: BundleConfig) -> list[str]:
+    """With ``[mcp_direct]``, the workspace's MCP services view (D98): the project's
+    configured servers with their purposes, and the user's "Check availability", which
+    asks control (``POST /mcp-check``) with the workspace's own token, as ``sandbox-science
+    up`` wires it. Control is in the same Pod but reached by its Service name, which its
+    certificate names, signed by the site's private CA (the workspace's ``worker-ca.crt``)."""
+    direct = config.mcp_direct
+    if direct is None:
+        return []
+    arguments = ["--mcp-project", direct.project]
+    for server in direct.servers:
+        arguments += ["--mcp-service", f"{server}={direct.about.get(server, '')}"]
+    return [
+        *arguments,
+        "--mcp-check", f"https://{config.name}-control.{config.namespace}.svc:{CONTROL_PORT}",
+        "--mcp-check-token-file", f"{PRIVATE}/{CHECK_TOKEN}",
+        "--mcp-check-ca-file", f"{PRIVATE}/worker-ca.crt",
+    ]  # fmt: skip
 
 
 def _data_mounts(name: str, capacity: Capacity) -> list[dict[str, object]]:

@@ -145,7 +145,6 @@ The Kubernetes bundle runs no canaries yet. Tested with a fake listing client an
 - Rate limits per project and server. Cost control belongs to the MCP services; a project-side control is a low-priority backlog item.
 - MCP 2026-07-28, which the policy library knows: it has no sessions, carries metadata in every request, mirrors names in `Mcp-Method` and `Mcp-Name` headers and embeds server requests in results.
 - Passing server notifications (progress, logging, list changes) to callers, and resuming interrupted event streams.
-- The workspace's MCP services view and availability check on the Kubernetes bundle, whose workspace gets no `--mcp-service`, `--mcp-check` yet.
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
 
 

@@ -127,8 +127,8 @@ corresponding cluster authority; this is not a replacement for cluster Secret po
 
 | Secret setting | Required keys copied to `/private/<key>` |
 | --- | --- |
-| `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` |
-| `secrets.workspace` | `worker-token`, `worker-ca.crt` |
+| `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt`; with `[mcp_direct]` also `mcp-check-token.sha256` |
+| `secrets.workspace` | `worker-token`, `worker-ca.crt`; with `[mcp_direct]` also `mcp-check-token`, which no other Secret may project |
 | `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` |
 | `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` |
 | optional `secrets.cache` | `cache.toml` |
@@ -405,9 +405,7 @@ Without it the agent has no connectors. With it, the agent's connector calls tak
 direct path (D98, [MCP connectors](MCP-CONNECTORS.md#the-direct-path)): control's run
 service admits each call and the agent runtime's own client makes it from its sandbox,
 through OpenShell's native `protocol: mcp` rules and the policy middleware. It is the only
-MCP path since the MCP proxy retired (2026-10-26). The bundle does not yet give the
-workspace the servers or the control service's availability check (`--mcp-service`,
-`--mcp-check`), so its MCP services view lists none.
+MCP path since the MCP proxy retired (2026-10-26). Nothing of the proxy is rendered.
 
 ```toml
 [mcp_direct]
@@ -447,8 +445,20 @@ pool ceiling admit. With it:
   ([worker](WORKER.md)).
   `runtime-manager.json` gets the `worker` link (the worker Service, verified with the
   private CA in `control-ca.crt`) and `mcp` (the two files and the provider);
-  `control.json` gets `direct` (the run service's servers, `about` and `index`); and
-  `middleware.toml` gets `mcp_listings = true`.
+  `control.json` gets `direct` (the run service's servers, `about` and `index`) and
+  `check_token_sha256_file`, the digest (`mcp-check-token.sha256`) of the workspace's token
+  for the user's availability check (`mcp-check-token`, in the workspace's Secret alone); and
+  `middleware.toml` gets `mcp_listings = true` and `[inspect]` at the middleware's defaults
+  (on; 16 KiB of arguments, 64 KiB of each answer and 8 MiB a run recorded; the shipped
+  patterns), which the operator may change ([MCP traffic
+  inspection](POLICY-MIDDLEWARE.md#mcp-traffic-inspection)).
+- **The workspace** gets the MCP services view as `sandbox-science up` wires it: the
+  project and its servers with their `about` purposes (`--mcp-project`, `--mcp-service`), and
+  the user's **Check availability**, which asks control's `POST /mcp-check` by control's
+  Service name, `https://<name>-control.<namespace>.svc:8443`, with its own token
+  (`--mcp-check-token-file`) and the site's private CA (`--mcp-check-ca-file`, its
+  `worker-ca.crt`, which signs control's certificate too). The app Pod's NetworkPolicy
+  admits the app Pod itself to TCP 8443, and lets it reach it, for that call alone.
 - **The runtime manager** merges the egress into the runtime sandbox's policy beside its
   platform services, attaches the provider to the sandbox (`--provider`), labels it with its
   project (`sandbox-science.io/project`, which the worker checks before binding), binds the sandbox

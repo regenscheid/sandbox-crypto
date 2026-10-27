@@ -369,8 +369,8 @@ Create each Secret through the site's secure workflow, with exactly the keys the
 
 | Secret (bundle setting) | Required keys | Notes |
 | --- | --- | --- |
-| `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` | `runtime-manager-token.sha256` is the lowercase SHA-256 hex of the manager's bearer token (the file `manager-control.token` in the manager's Secret). Add `extra_files` `s3-credentials`, `s3-config` for the writer key |
-| `secrets.workspace` | `worker-token`, `worker-ca.crt` | `extra_files` `s3-credentials`, `s3-config` for the read-only key; `[workspace.environment]` names them |
+| `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` | `runtime-manager-token.sha256` is the lowercase SHA-256 hex of the manager's bearer token (the file `manager-control.token` in the manager's Secret). With the bundle's `[mcp_direct]` also `mcp-check-token.sha256`, the digest of the workspace's `mcp-check-token`, which `site` generates. Add `extra_files` `s3-credentials`, `s3-config` for the writer key |
+| `secrets.workspace` | `worker-token`, `worker-ca.crt` | With the bundle's `[mcp_direct]` also `mcp-check-token`, the workspace's token for the availability check, which `site` generates. `extra_files` `s3-credentials`, `s3-config` for the read-only key; `[workspace.environment]` names them |
 | `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` | `extra_files` `pool-token`, `ceiling.yaml`, `targets.yaml` (required by `site`), the checkpoint S3 pair; the OpenShell CLI tree goes on the PVC |
 | `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` | `extra_files` `ceiling.yaml` and `gateway-public.pem`, the gateway verifier's public key (both required by `site`), optionally `targets.yaml` |
 | `secrets.cache` (optional) | `cache.toml` | Needs `network.sandboxes` peers |

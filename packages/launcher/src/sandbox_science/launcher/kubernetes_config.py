@@ -76,6 +76,15 @@ DIRECT_MANAGER_FILES: tuple[str, ...] = (
 """The runtime manager's further keys with ``[mcp_direct]``: its binding-only token for the
 worker (never its control token), which binds the runtime's sandbox (``WorkerLink``), the
 runtime sandbox's compiled MCP egress and the runtime client's servers (``ManagerMcp``)."""
+CHECK_TOKEN = "mcp-check-token"  # noqa: S105 - a Secret key's name, not a token
+CHECK_DIGEST = "mcp-check-token.sha256"
+DIRECT_CHECK_FILES: dict[str, tuple[str, ...]] = {
+    "control": (CHECK_DIGEST,),
+    "workspace": (CHECK_TOKEN,),
+}
+"""With ``[mcp_direct]``, the workspace's token for the user's availability check
+(``POST /mcp-check``, D98) and its SHA-256, which control keeps; no other Secret holds the
+token."""
 MANAGER_ONLY = frozenset(
     (*GATEWAY_PROFILE, "manager-control.token", "model.key", *DIRECT_MANAGER_FILES)
 )
@@ -216,6 +225,9 @@ class Secrets(Model):
                 raise ValueError("the runtime manager's Secret is its own")
             if MANAGER_ONLY.intersection(secret.extra_files):
                 raise ValueError("only the runtime manager projects its gateway and model keys")
+        for secret in (self.control, self.worker, self.middleware, self.cache):
+            if secret is not None and CHECK_TOKEN in secret.extra_files:
+                raise ValueError("only the workspace projects its availability-check token")
         return self
 
 
@@ -567,11 +579,14 @@ class BundleConfig(Model):
 
 
 def projected_files(config: BundleConfig, role: str) -> tuple[str, ...]:
-    """The keys ``role``'s Secret must hold: ``REQUIRED_FILES``'s, and the runtime
-    manager's direct MCP ones with ``[mcp_direct]``."""
+    """The keys ``role``'s Secret must hold: ``REQUIRED_FILES``'s, and with ``[mcp_direct]``
+    the runtime manager's direct MCP ones and the availability check's token (the
+    workspace's) and its digest (control's)."""
     files = REQUIRED_FILES[role]
-    if role == "runtime-manager" and config.mcp_direct is not None:
-        files = (*files, *DIRECT_MANAGER_FILES)
+    if config.mcp_direct is not None:
+        if role == "runtime-manager":
+            files = (*files, *DIRECT_MANAGER_FILES)
+        files = (*files, *DIRECT_CHECK_FILES.get(role, ()))
     return files
 
 

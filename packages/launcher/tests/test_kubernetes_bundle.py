@@ -1796,6 +1796,62 @@ def test_the_direct_path_is_bounded_and_names_its_servers():
             configured(values() | {"mcp_direct": DIRECT | change})
 
 
+def test_the_direct_path_wires_the_workspaces_mcp_view_and_check_through_control():
+    # As `sandbox-science up` does (D98): the workspace shows the project's servers and asks
+    # control, with a token of its own, for the user's "Check availability".
+    data = values() | {"mcp_direct": DIRECT | {"about": {"crypto-research-mcp": "Papers"}}}
+    config = configured(data)
+    items = objects(config)
+    command = workspace_command(items)
+    tail = command[command.index("--mcp-project") :]
+    assert tail == [
+        "--mcp-project", "crypto",
+        "--mcp-service", "crypto-research-mcp=Papers",
+        "--mcp-check", "https://research-control.research-test.svc:8443",
+        "--mcp-check-token-file", "/private/mcp-check-token",
+        "--mcp-check-ca-file", "/private/worker-ca.crt",
+    ]  # fmt: skip
+    # The token reaches only the workspace's projection; control gets its digest.
+    spec = pod(items, "app")
+    projected = {
+        init["name"]: {pair[0] for pair in json.loads(init["args"][-1])}
+        for init in spec["initContainers"]
+        if init["name"].startswith("copy-")
+    }
+    assert "mcp-check-token" in projected["copy-workspace"]
+    assert "mcp-check-token" not in projected["copy-control"]
+    assert "mcp-check-token.sha256" in projected["copy-control"]
+    for component in ("pool", "runtime-manager"):
+        for init in pod(items, component)["initContainers"]:
+            if init["name"].startswith("copy-"):
+                assert "mcp-check-token" not in init["args"][-1]
+    # The workspace reaches control's port in its own Pod, and nothing else new.
+    app_labels = {"app.kubernetes.io/part-of": "research", "app.kubernetes.io/component": "app"}
+    own = {"podSelector": {"matchLabels": app_labels}}
+    control_port = [{"protocol": "TCP", "port": 8443}]
+    app = _policy("research-app", config)
+    plain = _policy("research-app")
+    assert app["ingress"] == [*plain["ingress"], {"from": [own], "ports": control_port}]
+    assert app["egress"] == [*plain["egress"], {"to": [own], "ports": control_port}]
+    # Without [mcp_direct], the workspace has no MCP view and no check.
+    assert not any(flag.startswith("--mcp") for flag in workspace_command(objects()))
+    # No other Secret may project the workspace's token.
+    for role in ("control", "worker", "middleware"):
+        changed = values() | {"mcp_direct": DIRECT}
+        changed["secrets"][role]["extra_files"] = ["mcp-check-token"]
+        with pytest.raises(ValidationError, match="availability-check token"):
+            configured(changed)
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_the_rendered_bundle_has_no_mcp_proxy_part_or_image(direct: bool):
+    # The MCP proxy retired (D98, 2026-10-26): nothing of it is rendered.
+    data = with_maintenance(values() | ({"mcp_direct": DIRECT} if direct else {}))
+    rendered = json.dumps(render(configured(data)))
+    for name in ("mcp-proxy", "mcp_proxy", "McpProxy", "sandbox-science-mcp-proxy"):
+        assert name not in rendered
+
+
 def test_every_rendered_pod_names_the_registry_pull_secret():
     # The images are private: each Pod names the namespace's pull Secret itself rather than
     # relying on the default ServiceAccount carrying it (docs/KUBERNETES-PREP.md, step 1).
