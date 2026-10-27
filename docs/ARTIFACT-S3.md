@@ -66,9 +66,10 @@ succeeds or a local copy may be evicted. What changes without the 412:
   same key; the read-back verifies and nothing is lost.
 - A write of different bytes under an existing key is not prevented: it replaces the
   object, and the writer's read-back fails. Only a holder of a write key can do that, so
-  immutability rests on the keys: give write access only to control's key (and to the
-  checkpoint key, on a bucket of its own), give every reader a read-only key, and grant
-  no key the bucket-owner right, which also covers lifecycle rules.
+  immutability rests on the keys: give write access only to the processes that write
+  (control, and the workspace, which writes user upload originals), put checkpoints in a
+  bucket of their own with their own key, give any other reader a read-only key, and
+  grant no key the bucket-owner right, which also covers lifecycle rules.
 - A replaced object is found when it is read whole: full cold reads and eviction verify
   the hash, so a wrong object is refused rather than served. Ranged provenance-prefix
   reads check only the range and size, so they do not detect it.

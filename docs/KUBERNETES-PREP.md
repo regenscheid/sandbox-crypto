@@ -322,16 +322,16 @@ Rollback: `helm uninstall openshell -n openshell` leaves the PVCs of existing sa
 
 Garage may run on another machine or in the cluster. In the cluster, give it a namespace of its own, one Pod per node with its data on a single-replica local class (Garage replicates; Longhorn should not again), its S3 port (3900) on a ClusterIP Service only, and a NetworkPolicy that admits the bundle's Pods (`app.kubernetes.io/part-of: <name>` in the bundle's namespace) to 3900 and the Garage Pods to each other on the RPC port. Two things to check on Longhorn: a volume with no recurring-job label joins Longhorn's `default` group, so if a default job backs up to a target that may not hold artifacts in the clear, give the class's `recurringJobSelector` an empty group of its own; and an in-cluster Garage needs its own copy outside the cluster (step 2.2 does not cover it), for example a nightly `rclone copy` (never `sync`, so a deletion does not propagate) through an rclone `crypt` remote, with the crypt passwords kept off the cluster.
 
-One bucket and distinct keys per application (D94), with checkpoints in a bucket of their own so that the checkpoint key cannot write artifact objects, and no key with the owner right (which includes lifecycle rules):
+One bucket and distinct keys per application (D94), with checkpoints in a bucket of their own so that the checkpoint key cannot write artifact objects, and no key with the owner right (which includes lifecycle rules). The workspace writes the originals of user uploads itself, so its key needs write access too unless the deployment takes no uploads ([bundle](KUBERNETES-BUNDLE.md#prepare-existing-secrets-and-recovery-state)):
 
 ```sh
 garage bucket create <instance>-artifacts
 garage bucket create <instance>-checkpoints
 garage key create <instance>-control          # read and write, the artifact writer
-garage key create <instance>-workspace        # read-only, cold downloads
+garage key create <instance>-workspace        # cold downloads, and user upload originals
 garage key create <instance>-checkpoint       # the operator's checkpoint Job
 garage bucket allow --read --write <instance>-artifacts --key <instance>-control
-garage bucket allow --read <instance>-artifacts --key <instance>-workspace
+garage bucket allow --read --write <instance>-artifacts --key <instance>-workspace  # --read alone refuses uploads
 garage bucket allow --read --write <instance>-checkpoints --key <instance>-checkpoint
 ```
 
@@ -527,8 +527,8 @@ Orphan survival after an abrupt gateway loss (restart the gateway Pod during a r
 
 D103: structured JSON logs from every service, OpenShell's OCSF events and the proxy and middleware records go to Loki through Alloy. The bundle already makes each container log JSON lines and labels each Pod ([bundle: log collection](KUBERNETES-BUNDLE.md#log-collection)); this step installs the collector. Do it before the live proofs of step 10, so their denials are kept.
 
-1. **Install Loki** (3.x, for structured metadata) with storage and retention you choose; the proofs' evidence needs at least the length of the qualification (a month is a start), and the bundle sets none. Note the push URL.
-2. **Install Alloy** where it can read the namespace's Pod logs: `get`, `list` and `watch` on `pods` and `get` on `pods/log` for its ServiceAccount, in the bundle's namespace and the sandboxes' namespace. It needs no NetworkPolicy ingress rule on the bundle's Pods; it needs egress to Loki.
+1. **Install Loki** (3.x, for structured metadata) with storage and retention you choose; the proofs' evidence needs at least the length of the qualification (a month is a start), and the bundle sets none. Note the push URL. With the Loki Helm chart in single-binary mode, set `global.clusterDomain` to the cluster's domain (otherwise its memberlist name uses `cluster.local` and never resolves on another domain), and `rbac.namespaced: true`: the chart's default for the rules sidecar is a ClusterRole that reads every ConfigMap and Secret in the cluster.
+2. **Install Alloy** where it can read the namespace's Pod logs: `get`, `list` and `watch` on `pods` and `get` on `pods/log` for its ServiceAccount, in the bundle's namespace and the sandboxes' namespace. It needs no NetworkPolicy ingress rule on the bundle's Pods; it needs egress to Loki. The Alloy Helm chart's own RBAC is broader (and cluster-wide by default): turn it off (`rbac.create: false`) and bind a Role with exactly those verbs in each namespace it reads.
 3. **Configure it from the sample.** Copy [alloy-config.alloy](../examples/kubernetes/alloy-config.alloy) outside Git; set the namespaces (the sample has `research` and `research-runtimes`) and the Loki URL.
 4. **OpenShell's events.** Turn the supervisors' OCSF JSON on (`openshell settings set --global --key ocsf_json_enabled --value true`) and, if you export over OTLP, add `[openshell.gateway.otlp]` and `[openshell.gateway.otlp.ocsf]` to the gateway's configuration with the Alloy listener's address (the sample's OTLP receiver) as the endpoint; the listener must be reachable from the sandboxes, which the sandbox network policy and a NetworkPolicy must allow. The gateway's metrics listener (`metrics_bind_address`) is for Prometheus, if you run one.
 5. **Check it.** `kubectl -n research logs deploy/<name>-pool -c worker --tail 3` shows JSON lines; in Loki, `{service="worker"} | json` returns the same lines, and `{service="middleware"} | json | event != ""` finds the middleware's records. Trigger the denial of 10.1 and find it by its OCSF line. A container that logs text (no `service` field) is a bundle rendered before this change.
@@ -560,12 +560,12 @@ Serves the workspace and its preview origin at two host names through Traefik, o
      namespace: research
    spec:
      forwardAuth:
-       address: http://<outpost-service>.<authentik-namespace>.svc.<cluster-domain>:9000/outpost.goauthentik.io/auth/traefik
+       address: http://<outpost-service>.<authentik-namespace>.svc.<cluster-domain>:<port>/outpost.goauthentik.io/auth/traefik
        trustForwardHeader: true
        authResponseHeaders: [X-authentik-username, X-authentik-groups, X-authentik-email, X-authentik-name, X-authentik-uid]
    ```
 
-   Traefik must be able to reach the outpost; that path, and Traefik's own NetworkPolicy, are the cluster's, not the bundle's.
+   `<port>` is the outpost Service's HTTP port: 9000 on a dedicated outpost's Service; for the embedded outpost, the Authentik server Service's HTTP port (80 in the Helm chart, which forwards to the server's 9000). With domain-level forward auth the callback runs on the authentication URL's host, so that host must reach the outpost too (the embedded outpost answers there already). Traefik must be able to reach the outpost; that path, and Traefik's own NetworkPolicy, are the cluster's, not the bundle's.
 6. **The bundle.** Add `[workspace] allow_remote = true`, `[ingress]` and `[[ingress.traefik]]` to the private TOML (see [the template](../examples/kubernetes-bundle.toml)), then `check`, `render`, `kubectl diff` and `apply` as in step 8. The workspace Pod restarts onto the Pod network; the rest of the bundle is unchanged. cert-manager issues the two certificates into `<name>-workspace-tls` and `<name>-preview-tls`.
 
 Verify:
