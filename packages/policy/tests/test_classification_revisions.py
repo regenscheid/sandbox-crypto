@@ -235,6 +235,31 @@ def test_the_fence_admits_tools_by_the_projects_revision() -> None:
     assert "brand_new_tool" in revised.policy.to_yaml()
 
 
+def test_the_fence_reads_the_revisions_in_force_and_names_the_unreadable(
+    tmp_path: Path,
+) -> None:
+    store = PolicyStore(tmp_path)
+    # No binding: no revision, and the catalog's applies.
+    none = store.fence_classifications("p1", [SERVER])
+    assert (dict(none.revisions), dict(none.unreadable)) == ({}, {})
+    hex_ = accept(store, revision(entry(SCRAPE, "write")))
+    found = store.fence_classifications("p1", [SERVER])
+    assert found.revisions[SERVER].revision == hex_
+    assert store.fence_classifications("p2", [SERVER]).revisions == {}  # its own project's
+    current = tmp_path / "classifications" / "p1" / SERVER / "current.json"
+    for broken in ("not json", '{"revision": "' + "b" * 64 + '"}', '{"other": 1}'):
+        current.write_text(broken)
+        unreadable = store.fence_classifications("p1", [SERVER])
+        assert dict(unreadable.revisions) == {}
+        assert SERVER in unreadable.unreadable
+    # A revision file that no longer holds its digest is unreadable too.
+    current.write_text('{"revision": "' + hex_ + '"}')
+    (current.parent / f"{hex_}.yaml").write_bytes(revision(entry(SCRAPE, "read")))
+    assert SERVER in store.fence_classifications("p1", [SERVER]).unreadable
+    # A project ID the store cannot name reads as unreadable, never as the catalog's quietly.
+    assert SERVER in store.fence_classifications("../p1", [SERVER]).unreadable
+
+
 # --- Widenings ----------------------------------------------------------------------------------
 
 

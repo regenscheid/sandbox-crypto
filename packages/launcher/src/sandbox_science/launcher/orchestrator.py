@@ -165,7 +165,12 @@ def checks(node: str, build: Path) -> dict[str, str]:
 
 
 def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
-    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers, if any."""
+    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers, if any.
+
+    Compiled on ``up`` and on every replacement (``prepare``), with the project's
+    classification revisions the policy store binds at that moment, so a revision accepted
+    while the runtime runs reaches its fence at the next replacement; the policy middleware
+    decides by the revision from the next call meanwhile."""
     if config.mcp_direct is None:
         return None
     environments = config.openshell.environments
@@ -176,6 +181,7 @@ def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
         project=config.mcp_project(),
         servers=config.mcp_direct.servers,
         python=configured(config).python,
+        policy_store=environments.policy_store,
     )
 
 
@@ -201,6 +207,12 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         policy = direct_mcp.merged(policy, egress.fragment)
         for warning in egress.warnings():
             print(f"the agent runtime's MCP egress: {warning}", flush=True)
+        for server, revision in sorted(egress.revisions.items()):
+            print(
+                f"the agent runtime's MCP egress: {server}'s tools are admitted by the "
+                f"project's accepted classification revision {revision[:12]}",
+                flush=True,
+            )
     write_private(directory / "policy.yaml", policy.to_yaml())
     write_private(directory / "generation", generation + "\n")
     model, service = config.model, config.run_service

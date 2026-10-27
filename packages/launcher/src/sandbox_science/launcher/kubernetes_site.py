@@ -403,7 +403,14 @@ def cache_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
 
 def direct_egress(site: Site, bundle: BundleConfig) -> direct_mcp.DirectEgress | None:
     """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers (D98), from the
-    site's policy, ceiling and targets, as ``sandbox-science up`` compiles it."""
+    site's policy, ceiling and targets, as ``sandbox-science up`` compiles it.
+
+    The bundle is generated where the cluster's policy store is not, so its fence admits
+    tools by the catalog's classification: a project revision accepted in the cluster
+    reaches it once exported, checked in and the bundle regenerated. The middleware
+    decides by the revision from its next call meanwhile, so the stale fence refuses a
+    widening (stricter), and a narrowed tool it still admits is asked about or refused by
+    the middleware as the revision classes it."""
     direct = bundle.mcp_direct
     if direct is None:
         return None

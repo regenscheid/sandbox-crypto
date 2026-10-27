@@ -474,7 +474,10 @@ pool ceiling admit. With it:
 
 The egress is compiled from the site's policy file: after a new policy revision, generate the
 Secrets anew. The fence admits tools by the catalog's classification, not a project's
-accepted revision of it.
+accepted revision of it, since the bundle is generated without the cluster's policy store; the
+middleware decides each call by the revision in force, so the fence refuses a widening until
+the revision is exported, checked in and the Secrets generated anew, and never admits more
+than the middleware allows ([project revisions](MCP-CONNECTORS.md#project-revisions)).
 
 ## Job sandboxes and node drains
 

@@ -20,22 +20,34 @@ whatever the runtime shows or asks, so a runtime that widened it gains nothing.
 
 A configured server must be one of the project policy's, at the policy's URL, and one the
 floor and the pool ceiling let the compiler admit; anything else is refused before a
-sandbox is made. Only the configured servers' endpoints are kept. The fence admits tools
-by the catalog's classification: a project's accepted revision of a classification
-(``PolicyStore.classification``) is not read here.
+sandbox is made. Only the configured servers' endpoints are kept.
+
+The fence admits tools by the classification in force for the project when it is
+compiled: the project's accepted revision of a server's classification where the policy
+store binds one (``PolicyStore.fence_classifications``), else the catalog's. The host
+launcher compiles it on ``up`` and on every replacement of the runtime, so a revision
+accepted while a runtime runs reaches its fence at the next replacement; the Kubernetes
+bundle is generated without the cluster's store, so its fence keeps the catalog's. Until
+a fence is compiled again the policy middleware, which reads the binding at every call, is
+the authority: a narrowing applies to the next call whatever the fence admits, and a
+widening is refused at the stale fence (stricter).
+A binding or revision that cannot be read leaves the server's fence on the catalog's, with
+a warning; the middleware refuses that server's calls until it can be read.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from sandbox_science.policy import load_ceiling, load_policy
+from sandbox_science.policy.classification import ServerClassification
 from sandbox_science.policy.errors import PolicyLoadError
+from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import (
     AgentMcpTarget,
     CompileError,
@@ -48,6 +60,7 @@ from sandbox_science.policy.openshell import (
     load_targets,
     tool_admission,
 )
+from sandbox_science.policy.store import PolicyStore
 
 from .config import LauncherError, McpDirectServer
 
@@ -64,6 +77,9 @@ class DirectEgress:
     fragment: OpenShellPolicy
     servers: dict[str, dict[str, Any]]
     findings: tuple[Finding, ...]
+    revisions: dict[str, str] = field(default_factory=dict[str, str])
+    """The project's accepted classification revision (hex) the fence admits each
+    server's tools by; a server not named here is admitted by the catalog's."""
 
     def runtime(self) -> dict[str, Any]:
         """``runtime.json``'s ``mcp``: the project and each server's URL, credential
@@ -86,8 +102,12 @@ def compile_direct(
     project: str,
     servers: Mapping[str, McpDirectServer],
     python: str,
+    policy_store: Path | None = None,
 ) -> DirectEgress:
-    """Compile the runtime sandbox's egress to ``servers`` for ``project``'s ``policy``."""
+    """Compile the runtime sandbox's egress to ``servers`` for ``project``'s ``policy``,
+    admitting tools by the project's classification revisions in ``policy_store`` where it
+    binds them (the store the worker and the policy middleware share), else, and without a
+    store, by the catalog's."""
     try:
         loaded = load_policy(policy)
         pool = load_ceiling(ceiling)
@@ -107,8 +127,9 @@ def compile_direct(
     target = AgentMcpTarget(
         middleware=middleware, project=project, caller=CALLER, binaries=(python + "*",)
     )
+    revisions, notes = _classifications(policy_store, project, servers, declared)
     try:
-        compiled = compile_agent_mcp(loaded, target, ceiling=pool)
+        compiled = compile_agent_mcp(loaded, target, ceiling=pool, classifications=revisions)
     except CompileError as exc:
         raise LauncherError(f"the direct MCP path does not compile: {exc}") from None
     network: dict[str, NetworkPolicy] = {}
@@ -134,7 +155,49 @@ def compile_direct(
         for key, value in (compiled.policy.network_middlewares or {}).items()
     }
     fragment = OpenShellPolicy(network_policies=network, network_middlewares=middlewares or None)
-    return DirectEgress(project, fragment, runtime, compiled.findings)
+    return DirectEgress(
+        project,
+        fragment,
+        runtime,
+        (*compiled.findings, *notes),
+        {name: found.revision for name, found in revisions.items() if found.revision},
+    )
+
+
+def _classifications(
+    store: Path | None,
+    project: str,
+    servers: Mapping[str, McpDirectServer],
+    declared: Mapping[str, McpServer],
+) -> tuple[dict[str, ServerClassification], list[Finding]]:
+    """The project's accepted revisions of the configured servers' classifications, and a
+    finding for each server whose fence they decide or whose binding cannot be read."""
+    if store is None:
+        return {}, []
+    # A revision applies only where the policy names a classification for the server
+    # (``server_classification``), so only those servers' bindings are read.
+    classified = sorted(name for name in servers if declared[name].classification is not None)
+    found = PolicyStore(store).fence_classifications(project, classified)
+    notes: list[Finding] = []
+    for name, revision in sorted(found.revisions.items()):
+        notes.append(
+            Finding(
+                Severity.INFO,
+                f"mcp.servers.{name}.classification",
+                f"the fence admits tools by the project's accepted revision {revision.revision}",
+            )
+        )
+    for name, why in sorted(found.unreadable.items()):
+        notes.append(
+            Finding(
+                Severity.WARNING,
+                f"mcp.servers.{name}.classification",
+                f"the project's classification binding cannot be read ({why}); the fence "
+                "admits tools by the catalog's, and the policy middleware refuses the "
+                "server's calls until the binding can be read",
+            )
+        )
+    return dict(found.revisions), notes
 
 
 def merged(base: OpenShellPolicy, fragment: OpenShellPolicy) -> OpenShellPolicy:
