@@ -30,6 +30,7 @@
   const scopes = $derived(scopeChoices(request));
   let scope = $state<string>('once');
   let menu = $state(false);
+  let split = $state<HTMLDivElement>();
   const sending = $state(idle());
   const chosen = $derived(scopes.find((item) => item.id === scope) ?? scopes[0]!);
   /** The asking agent's own words: a delegated agent's from its request's record, a
@@ -57,9 +58,14 @@
   }
 </script>
 
+<!-- A press outside this card's own split button closes its menu, another card's caret
+     included, and so does Escape. -->
 <svelte:window
   onpointerdown={(event) => {
-    if (menu && !(event.target as Element).closest?.('.allow-split')) menu = false;
+    if (menu && !split?.contains(event.target as Node)) menu = false;
+  }}
+  onkeydown={(event) => {
+    if (menu && event.key === 'Escape') menu = false;
   }}
 />
 <section class="permission" aria-label="A request waiting for your approval">
@@ -124,7 +130,7 @@
       : 'let through with an alert'} at {clock(request.expires_at)}.
   </p>
   <div class="permission-actions">
-    <div class="allow-split">
+    <div class="allow-split" bind:this={split}>
       <button
         type="button"
         class="primary-button allow"
