@@ -140,6 +140,26 @@ describe('a held tool call', () => {
     expect(sent).toEqual(['once', 'deny', 'session', 'project']);
   });
 
+  it("closes its scope menu on Escape and when another card's menu opens (A4 lab)", () => {
+    const first = card();
+    const second = card(null, { ...request, seq: 13 });
+    const caret = (root: HTMLElement) =>
+      root.querySelector<HTMLButtonElement>('[aria-label="Choose how long to allow"]')!;
+    caret(first.target).click();
+    flushSync();
+    expect(first.target.querySelector('[role="menu"]')).not.toBeNull();
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    flushSync();
+    expect(first.target.querySelector('[role="menu"]')).toBeNull();
+    caret(first.target).click();
+    flushSync();
+    caret(second.target).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    caret(second.target).click();
+    flushSync();
+    expect(first.target.querySelector('[role="menu"]')).toBeNull();
+    expect(second.target.querySelector('[role="menu"]')).not.toBeNull();
+  });
+
   it('offers only the scopes the ceiling allows', () => {
     const { target } = card(null, { ...request, effect: 'unclassified', scopes: ['once'] });
     expect(target.querySelector('[aria-label="Choose how long to allow"]')).toBeNull();

@@ -152,6 +152,35 @@ arguments, then reaches the server, which refuses them. The lab also asks once f
 listing, which the middleware reads and rewrites if the portal answers JSON. Receipts carry counts, reason codes, request numbers and tool
 names only, and are exported with a SHA-256 manifest to `/var/tmp/ss-direct-mcp-evidence-*`.
 
+## Workspace answers to network and package requests (A4, D97)
+
+`a4_approvals.py` shows research code's network requests and package requests reaching the
+workspace as cards, and the user's answers (once, a session grant, a project grant, deny)
+going back through the worker to the policy middleware or the provisioning operation. It
+reuses this file's machinery (`make_root`, `OwnedRoot`, `recovery_acceptance_up.sh` with
+`LAB_POLICY`): a marked `/var/tmp/ss-a4lab-*` root with its own gateway, middleware, cache,
+worker and workspace server (`sandbox-science-workspace serve --worker`), on random loopback
+ports. No agent runtime and no model: research code runs as shell executions the lab submits
+through the worker, and provisioning operations as the `provision` tool would ask for them.
+Every answer goes through the workspace's API with its printed login token, same origin.
+It needs `sandbox-science/minimal` built from the committed inputs (`images/build.sh minimal`)
+and the workspace UI built (`npm run build` in `web/workspace`).
+
+```bash
+.venv/bin/python -I .agents/labs/a4_approvals.py prepare
+.venv/bin/python -I .agents/labs/a4_approvals.py up "$LAB"
+.venv/bin/python -I .agents/labs/a4_approvals.py cards "$LAB"     # one network and one package card wait
+# optional: log in to the printed workspace URL in a browser and take screenshots of the cards
+.venv/bin/python -I .agents/labs/a4_approvals.py answers "$LAB"
+.venv/bin/python -I .agents/labs/a4_approvals.py cleanup "$LAB"   # or abort "$LAB"
+```
+
+The lab policy is the example's without its MCP server and credential, with GETs to
+example.com, example.org and www.example.com escalated and PyPI's files escalated. Receipts
+keep status and reason codes, request numbers, offered scopes, card shapes and grant rows,
+and are exported with a SHA-256 manifest to `/var/tmp/ss-a4lab-evidence-*`
+([report](../docs/agent-reports/babbage-a4-approvals-lab-2026-10-27.md)).
+
 Lab32's `provisioning_revision_packages.py` reads exact recorded package/license
 inventories. Root-owned acceptance on signed `6d4c448`/helper `c85126d4` passed
 worker/workspace/native paging and separately qualified stopped-VM reads. The old
