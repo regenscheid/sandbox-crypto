@@ -5,7 +5,8 @@
   generated from its tools, and opened again a row per call (B10, item 1): the call's
   purpose, the agent's words, labelled as such (CM-49), or else its tool and main argument;
   and on the right its result's gloss. A row opened shows the call's arguments and result as
-  text. While the run is still on these steps (`live`), it shows what runs now instead: the
+  text, and for an MCP server's tool, the traffic the policy middleware inspected for it
+  (arguments, answer, findings and decisions). While the run is still on these steps (`live`), it shows what runs now instead: the
   latest calls as rows with their states, open until the user closes it.
 -->
 <script lang="ts">
@@ -22,8 +23,10 @@
     type StepCall,
     type WorkStep,
   } from '../lib/conversation';
+  import { mayBeConnector } from '../lib/mcpTraffic';
   import { visible, visibleOutput } from '../lib/text';
   import Icon from './Icon.svelte';
+  import TrafficSection from './TrafficSection.svelte';
 
   let {
     from,
@@ -35,6 +38,7 @@
     now = Date.now(),
     subagents = null,
     showAgents = null,
+    traffic = null,
   }: {
     from: string;
     to: string;
@@ -48,6 +52,8 @@
     /** "1 active subagent", when any run. */
     subagents?: string | null;
     showAgents?: (() => void) | null;
+    /** Where the run's inspected MCP traffic is read, for its MCP tool rows. */
+    traffic?: { projectId: string; sessionId: string; run: string } | null;
   } = $props();
   let liveOpen = $state(true);
   /** The latest calls, oldest first, each with when its step began. */
@@ -157,6 +163,10 @@
                       {#if call.done}<pre class="call-result">{visibleOutput(
                             call.result,
                           )}</pre>{/if}
+                      {#if traffic && call.done && mayBeConnector(call)}<TrafficSection
+                          {...traffic}
+                          {call}
+                        />{/if}
                     </div>
                   </details>
                 </li>

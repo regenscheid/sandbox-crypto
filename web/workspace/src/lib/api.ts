@@ -48,6 +48,7 @@ import type {
   MemoryHistory,
   MemoryProposals,
   McpInventory,
+  ProjectMcpTraffic,
   ProjectMonitor,
   ModelSettings,
   ProjectAnswer,
@@ -657,6 +658,25 @@ export const api = {
     get<ProjectMonitor>(`/projects/${part(project)}/monitor?` + new URLSearchParams({ window }), {
       signal,
     }),
+  /** A page of the project's inspected MCP calls, oldest first after `after`: arguments,
+   * answers, findings and decisions, as the policy middleware recorded them (agents' and
+   * servers' text, redacted). */
+  mcpTraffic: (
+    project: string,
+    filter: { session?: string; run?: string; tool?: string; after?: number },
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    for (const name of ['session', 'run', 'tool'] as const) {
+      const value = filter[name];
+      if (value !== undefined) query.set(name, value);
+    }
+    if (filter.after) query.set('after', String(filter.after));
+    return get<ProjectMcpTraffic>(`/projects/${part(project)}/mcp-traffic?${query}`, {
+      signal,
+      maxBytes: 32 * 1024 * 1024,
+    });
+  },
   /** The requests that wait for the user's answer in the session (D76, D97): connector
    * tool calls the MCP proxy or the policy middleware holds, and research code's network
    * and package requests. */

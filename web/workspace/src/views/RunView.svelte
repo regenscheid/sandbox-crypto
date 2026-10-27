@@ -1,5 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- A run's conversation: the task, the agent's messages and its tool calls, the answer. -->
+<!-- A run's conversation: the task, the agent's messages and its tool calls, the answer;
+     and the MCP traffic the policy middleware inspected for it. -->
 <script lang="ts">
   import type { RunRecord } from '../lib/api';
   import { duration, formatTime } from '../lib/format';
@@ -11,6 +12,7 @@
   import RunSkills from './RunSkills.svelte';
   import ContextInspector from './ContextInspector.svelte';
   import ToolCall from './ToolCall.svelte';
+  import TrafficSection from './TrafficSection.svelte';
 
   let { run, runName }: { run: RunRecord; runName: string } = $props();
   let contextOpen = $state(false);
@@ -89,6 +91,11 @@
 
 <RunSkills {run} />
 <RunFolds {run} />
+<TrafficSection
+  projectId={run.context.project_id}
+  sessionId={run.context.session_id}
+  run={runName}
+/>
 
 {#if run.stopped === 'error'}
   <p class="problem">Partial transcript. No final answer was recorded.</p>

@@ -98,11 +98,15 @@ class McpRef:
 
 
 class McpRequestError(MiddlewareError):
-    """A request to an MCP endpoint that is refused before the policy decides it."""
+    """A request to an MCP endpoint that is refused before the policy decides it.
 
-    def __init__(self, code: str, reason: str) -> None:
+    ``params`` are the request's parameters as read, when it was refused for them (too
+    large, or carrying a placeholder): its record keeps them, redacted and bounded."""
+
+    def __init__(self, code: str, reason: str, params: bytes | None = None) -> None:
         super().__init__(reason)
         self.code = code
+        self.params = params
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,10 +208,14 @@ def read_call(
         raise McpRequestError(REQUEST_UNCLASSIFIABLE, str(exc)) from exc
     if len(encoded) > max_argument_bytes:
         raise McpRequestError(
-            ARGUMENTS_TOO_LARGE, f"params are {len(encoded)} bytes, over {max_argument_bytes}"
+            ARGUMENTS_TOO_LARGE,
+            f"params are {len(encoded)} bytes, over {max_argument_bytes}",
+            encoded,
         )
     if mcp_wire.contains_placeholder(body):
-        raise McpRequestError(CREDENTIAL_IN_BODY, "the body contains a credential placeholder")
+        raise McpRequestError(
+            CREDENTIAL_IN_BODY, "the body contains a credential placeholder", encoded
+        )
     tool = (params or {}).get("name") if name == "tools/call" else None
     cursor = (params or {}).get("cursor") if name == "tools/list" else None
     return McpCall(

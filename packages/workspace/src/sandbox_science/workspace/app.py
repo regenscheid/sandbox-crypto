@@ -67,6 +67,7 @@ from . import (
     kernels,
     ledger,
     mcp_services,
+    mcp_traffic,
     memory,
     messages,
     monitor,
@@ -413,6 +414,7 @@ def create_app(
         mcp_services,
         classifications,
         monitor,
+        mcp_traffic,
         messages,
         uploads,
         session_opening,
@@ -431,6 +433,7 @@ def create_app(
         else classifications.from_worker(job_worker),
     )
     monitor.configure(app, job_worker)
+    mcp_traffic.configure(app, job_worker)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)

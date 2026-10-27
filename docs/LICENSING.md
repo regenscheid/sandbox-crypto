@@ -96,6 +96,7 @@ for embedded subcomponents.
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |
 | PyYAML | MIT | Policy file parsing; living documents' front matter |
+| google-re2 (RE2's Python binding, wheels for CPython 3.12 and 3.13 on manylinux x86_64 and aarch64) | BSD-3-Clause | Tier 1: MCP traffic inspection's patterns, which RE2 matches in time linear in the answer ([policy middleware](POLICY-MIDDLEWARE.md#mcp-traffic-inspection)) |
 | OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.5) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license, and the middleware package declares `MIT AND Apache-2.0` |
 | grpcio | Apache-2.0 | Policy middleware gRPC server |
 | protobuf | BSD-3-Clause | Policy middleware messages |

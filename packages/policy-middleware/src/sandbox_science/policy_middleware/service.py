@@ -15,13 +15,20 @@ event stream, passes it on without the tools the policy denies (the others marke
 MCP proxy does), and records a drift from the pinned list as a finding. An event-stream
 listing OpenShell does not offer whole passes unread, with an ``mcp-tools-listing-unread``
 record: the agent runtime's client filters it and reports it for drift. Any other listing
-it cannot read is blocked. Every other response is skipped at preflight and passes
-unchanged as it arrives.
+it cannot read is blocked.
+
+With MCP traffic inspection (``inspection``), the answers to every admitted call of such a
+sandbox are also read and recorded, and checked for the policy's patterns: a JSON answer
+that comes with its length whole, anything else piece by piece as it streams, each piece
+passed on unchanged the moment it is read. Only a ``block`` pattern changes what the
+sandbox gets. Every other response is skipped at preflight and passes unchanged as it
+arrives.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterator, Mapping
 from concurrent import futures
 from importlib.metadata import version
@@ -35,6 +42,7 @@ from ._proto import supervisor_middleware_pb2 as pb
 from .auth import Authenticator, Caller, require_sandbox
 from .errors import AuthError
 from .evaluator import HttpRequestFacts, PolicyMiddleware, Verdict
+from .inspection import FINDING_TYPE, AnswerInspection, blocked_code
 from .mcp import DRIFT_FINDING, LISTING_BLOCKED, ListingCheck
 
 _log = logging.getLogger(__name__)
@@ -65,6 +73,40 @@ _LISTING_MEDIA: Final = frozenset({"application/json", "text/event-stream"})
 """The media a ``tools/list`` answer may have: JSON, or an event stream that ends with the
 response. Either is read whole (``WHOLE_BODY_BYTES``), since an event stream's 64 KiB
 pieces cannot be rewritten one by one; any other is blocked."""
+RESPONSE_STREAMS: Final = 32
+"""Responses read at once, by default; past it, an answer passes unread (``capacity``)."""
+CAPACITY: Final = "capacity"
+INSPECTION_CAPACITY: Final = "inspection_capacity"
+"""An answer refused because it could not be inspected while a block pattern applies."""
+
+
+class StreamSlots:
+    """The response threads: at most ``total`` responses read at once, and at most
+    ``per_sandbox`` of one sandbox's."""
+
+    def __init__(self, total: int, per_sandbox: int) -> None:
+        self._total, self._per_sandbox = total, min(per_sandbox, total)
+        self._lock = threading.Lock()
+        self._held: dict[str, int] = {}
+
+    def acquire(self, sandbox: str) -> bool:
+        """Take a slot for ``sandbox``, or say there is none, without waiting."""
+        with self._lock:
+            mine = self._held.get(sandbox, 0)
+            if mine >= self._per_sandbox or sum(self._held.values()) >= self._total:
+                return False
+            self._held[sandbox] = mine + 1
+            return True
+
+    def release(self, sandbox: str) -> None:
+        with self._lock:
+            left = self._held.get(sandbox, 0) - 1
+            if left > 0:
+                self._held[sandbox] = left
+            else:
+                self._held.pop(sandbox, None)
+
+
 _MAX_REASON_BYTES: Final = 4096
 _MAX_FINDINGS: Final = 32
 
@@ -79,8 +121,20 @@ class MiddlewareService:
         *,
         max_payload_bytes: int,
         expected_audience: str = "",
+        response_streams: int = RESPONSE_STREAMS,
+        sandbox_streams: int | None = None,
     ) -> None:
+        """``response_streams`` bounds the responses read at once: each holds a thread of
+        its own while it streams (``build_server`` adds them to the pool), so request
+        decisions never wait behind slow or endless answers. ``sandbox_streams`` (a
+        quarter of them by default) is one sandbox's share, so that one cannot take
+        them all."""
         self._middleware = middleware
+        self.response_streams = response_streams
+        self._streams = StreamSlots(
+            response_streams,
+            sandbox_streams if sandbox_streams is not None else max(1, response_streams // 4),
+        )
         self._authenticator = authenticator
         self._max_payload_bytes = max_payload_bytes
         self._expected_audience = expected_audience
@@ -203,62 +257,103 @@ class MiddlewareService:
         self, requests: Iterator[pb.HttpResponseEvent], context: grpc.ServicerContext
     ) -> Iterator[pb.HttpResponseEventResult]:
         """Read a ``tools/list`` answer whole and pass it on without the tools the policy
-        denies; skip every other response. A listing that cannot be read is blocked."""
+        denies, and inspect the answers to admitted MCP calls; skip every other response.
+        A listing that cannot be read is blocked."""
         caller = self._caller(context)
         check: ListingCheck | None = None
-        for event in requests:
-            match event.WhichOneof("event"):
-                case "preflight":
-                    preflight = event.preflight
-                    self._require_sandbox(context, caller, preflight.context.sandbox_id)
-                    check, action = self._listing_check(preflight)
-                    yield pb.HttpResponseEventResult(preflight_result=action)
-                    if check is None:
-                        return
-                case "body":
-                    unit = event.body
-                    if check is None or not unit.end_of_stream:
-                        # A whole body comes as one final unit; anything else is not read.
-                        yield _blocked_unit(unit.sequence)
-                        return
-                    check.feed(unit.data)
-                    outcome = check.finish()
-                    if outcome.body is None:
-                        yield _blocked_unit(unit.sequence)
-                        return
-                    drift = outcome.drift
-                    findings = (
-                        [
-                            pb.Finding(
-                                type=DRIFT_FINDING,
-                                label=drift.server,
-                                count=len(drift.added) + len(drift.removed) + len(drift.changed),
-                                confidence="high",
-                                severity="medium",
-                            )
-                        ]
-                        if drift is not None
-                        else []
-                    )
-                    yield pb.HttpResponseEventResult(
-                        body_result=pb.HttpResponseBodyResult(
-                            sequence=unit.sequence,
-                            transform=pb.HttpResponseBodyTransform(data=outcome.body),
-                            findings=findings,
+        answer: AnswerInspection | None = None
+        held = False
+        sandbox = ""
+        try:
+            for event in requests:
+                match event.WhichOneof("event"):
+                    case "preflight":
+                        preflight = event.preflight
+                        sandbox = preflight.context.sandbox_id
+                        self._require_sandbox(context, caller, sandbox)
+                        check, answer, action = self._response_plan(preflight)
+                        if action.WhichOneof("action") == "inspect":
+                            held = self._streams.acquire(sandbox)
+                            if not held:
+                                check, action = None, _over_capacity(check, answer)
+                        yield pb.HttpResponseEventResult(preflight_result=action)
+                        if action.WhichOneof("action") != "inspect":
+                            return
+                    case "body":
+                        unit = event.body
+                        if check is not None:
+                            yield self._listing_unit(check, answer, unit)
+                        elif answer is not None:
+                            yield _inspected_unit(answer, unit)
+                        else:
+                            yield _blocked_unit(unit.sequence)
+                        if unit.end_of_stream and answer is not None:
+                            # Recorded once the last piece has gone on its way.
+                            answer.finish(complete=True)
+                    case "trailers":
+                        yield pb.HttpResponseEventResult(
+                            trailers_result=pb.HttpResponseTrailersResult()
                         )
-                    )
-                case "trailers":
-                    yield pb.HttpResponseEventResult(
-                        trailers_result=pb.HttpResponseTrailersResult()
-                    )
-                case _:
-                    pass  # session_end has no result
+                    case _:
+                        pass  # session_end has no result
+        finally:
+            if held:
+                self._streams.release(sandbox)
+            if answer is not None:
+                # A response that ended early (the client left, the server failed): what
+                # was seen is recorded, marked incomplete.
+                answer.finish(complete=False)
 
-    def _listing_check(
+    def _listing_unit(
+        self, check: ListingCheck, answer: AnswerInspection | None, unit: pb.HttpResponseBodyUnit
+    ) -> pb.HttpResponseEventResult:
+        """A listing read whole: rewritten, or blocked when unreadable or a pattern
+        blocks it."""
+        if not unit.end_of_stream:
+            # A whole body comes as one final unit; anything else is not read.
+            if answer is not None:
+                answer.decision = "blocked"
+            return _blocked_unit(unit.sequence)
+        if answer is not None:
+            answer.feed(unit.data)
+            if answer.blocked is not None:
+                return _blocked_unit(unit.sequence, blocked_code(answer.blocked.pattern.name))
+        check.feed(unit.data)
+        outcome = check.finish()
+        if outcome.body is None:
+            if answer is not None:
+                answer.decision = "blocked"
+                answer.note = LISTING_BLOCKED
+            return _blocked_unit(unit.sequence)
+        drift = outcome.drift
+        findings = (
+            [
+                pb.Finding(
+                    type=DRIFT_FINDING,
+                    label=drift.server,
+                    count=len(drift.added) + len(drift.removed) + len(drift.changed),
+                    confidence="high",
+                    severity="medium",
+                )
+            ]
+            if drift is not None
+            else []
+        )
+        if answer is not None:
+            findings += _pattern_findings(answer)
+        return pb.HttpResponseEventResult(
+            body_result=pb.HttpResponseBodyResult(
+                sequence=unit.sequence,
+                transform=pb.HttpResponseBodyTransform(data=outcome.body),
+                findings=findings[:_MAX_FINDINGS],
+            )
+        )
+
+    def _response_plan(
         self, preflight: pb.HttpResponsePreflight
-    ) -> tuple[ListingCheck | None, pb.HttpResponsePreflightResult]:
-        """How to treat a response: a check of a listing with the action that reads it
-        whole, or no check and skip, or no check and block."""
+    ) -> tuple[ListingCheck | None, AnswerInspection | None, pb.HttpResponsePreflightResult]:
+        """How to treat a response: a listing's check, an answer's inspection, and the
+        action that reads the body as they need it, or skips or blocks it."""
         if self._middleware.response_statuses:
             self._middleware.response_status(
                 preflight.context.request_id, preflight.context.sandbox_id, preflight.status_code
@@ -266,28 +361,51 @@ class MiddlewareService:
         modes = set(preflight.permitted_body_modes)
         types = [h.value.lower() for h in preflight.headers if h.name.lower() == "content-type"]
         media = types[0].split(";", 1)[0].strip() if len(types) == 1 else ""
+        lengths = [h.value for h in preflight.headers if h.name.lower() == "content-length"]
+        request_id, sandbox_id = preflight.context.request_id, preflight.context.sandbox_id
         check = self._middleware.check_listing(
-            preflight.context.request_id,
-            preflight.context.sandbox_id,
-            stream=media == "text/event-stream",
+            request_id, sandbox_id, stream=media == "text/event-stream"
         )
-        if check is None or preflight.status_code != 200:
-            # Not a listing's answer, or no result: a client reads no tools from an error.
-            return None, pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
+        answer = self._middleware.inspect_answer(
+            request_id, sandbox_id, status=preflight.status_code, media=media[:128] or None
+        )
         whole = pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES in modes
-        if media == "text/event-stream" and not whole:
-            # OpenShell 0.1.5 never offers an event stream whole: it passes unread, recorded,
-            # and the agent runtime's client filters it and reports it for drift (D98).
-            check.unread()
-            return None, pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
-        if media not in _LISTING_MEDIA or not whole:
-            return None, pb.HttpResponsePreflightResult(
-                block_delivery=pb.HttpResponseBlockDelivery(), reason_code=LISTING_BLOCKED
+        streamed = pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES in modes
+        if check is not None and preflight.status_code == 200:
+            if media == "text/event-stream" and not whole:
+                # OpenShell 0.1.5 never offers an event stream whole: it passes unrewritten,
+                # recorded, and the agent runtime's client filters it and reports it for
+                # drift (D98). Inspection still reads it as it streams.
+                check.unread()
+                return None, answer, _inspect_plan(answer, streamed=streamed, whole=False)
+            if media not in _LISTING_MEDIA or not whole:
+                if answer is not None:
+                    answer.decision, answer.note = "blocked", LISTING_BLOCKED
+                return (
+                    None,
+                    answer,
+                    pb.HttpResponsePreflightResult(
+                        block_delivery=pb.HttpResponseBlockDelivery(), reason_code=LISTING_BLOCKED
+                    ),
+                )
+            if answer is not None:
+                answer.mode = "whole"
+            inspect = pb.HttpResponsePreflightInspect(
+                body_mode=pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES
             )
-        inspect = pb.HttpResponsePreflightInspect(
-            body_mode=pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES
+            return check, answer, pb.HttpResponsePreflightResult(inspect=inspect)
+        # Not a listing's answer, or no result: a client reads no tools from an error.
+        # A JSON answer of known length is read whole, so that a block refuses it before
+        # anything is sent; a JSON answer of unknown length could outgrow the whole-body
+        # bound, which would fail it, so it streams like everything else.
+        known = len(lengths) == 1 and lengths[0].strip().isdigit()
+        return (
+            None,
+            answer,
+            _inspect_plan(
+                answer, streamed=streamed, whole=whole and known and media == "application/json"
+            ),
         )
-        return check, pb.HttpResponsePreflightResult(inspect=inspect)
 
     def _caller(self, context: grpc.ServicerContext) -> Caller:
         authorization = [
@@ -362,8 +480,10 @@ def build_server(
     credentials: grpc.ServerCredentials | None,
 ) -> tuple[grpc.Server, int]:
     """Create (but do not start) a server; return it with the port it bound."""
+    # Request decisions keep ``workers`` threads: a response being read holds one more
+    # of its own for as long as it streams, at most ``response_streams`` of them.
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=workers),
+        futures.ThreadPoolExecutor(max_workers=workers + service.response_streams),
         handlers=[handler(service), response_handler(service)],
         options=list(SERVER_OPTIONS),
     )
@@ -396,14 +516,122 @@ def _negotiation_problem(request: pb.MiddlewareDescribeRequest) -> str | None:
     return None
 
 
-def _blocked_unit(sequence: int) -> pb.HttpResponseEventResult:
+def _blocked_unit(sequence: int, code: str = LISTING_BLOCKED) -> pb.HttpResponseEventResult:
     return pb.HttpResponseEventResult(
         body_result=pb.HttpResponseBodyResult(
             sequence=sequence,
             block_delivery=pb.HttpResponseBlockDelivery(),
-            reason_code=LISTING_BLOCKED,
+            reason_code=code,
         )
     )
+
+
+def _over_capacity(
+    check: ListingCheck | None, answer: AnswerInspection | None
+) -> pb.HttpResponsePreflightResult:
+    """No response thread is free for this sandbox: a listing that must be rewritten is
+    blocked (the agent would see denied tools); an answer from a server a ``block``
+    pattern applies to is refused (``inspection_capacity``), before any of it is sent;
+    any other answer passes unread, recorded as such."""
+    _log.warning("response streams at capacity: an answer is not inspected")
+    if answer is not None:
+        answer.pass_unread(CAPACITY)
+        if check is None and any(p.action == "block" for p in answer.tracked.patterns):
+            answer.decision = "blocked"
+            return pb.HttpResponsePreflightResult(
+                block_delivery=pb.HttpResponseBlockDelivery(), reason_code=INSPECTION_CAPACITY
+            )
+    if check is not None:
+        if answer is not None:
+            answer.decision = "blocked"
+        return pb.HttpResponsePreflightResult(
+            block_delivery=pb.HttpResponseBlockDelivery(), reason_code=LISTING_BLOCKED
+        )
+    return pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
+
+
+def _inspect_plan(
+    answer: AnswerInspection | None, *, streamed: bool, whole: bool
+) -> pb.HttpResponsePreflightResult:
+    """Read an answer whole or piece by piece for its inspection, or skip it: with no
+    inspection, or a body OpenShell offers neither way (encoded, partial or bodyless),
+    whose record then has its head only."""
+    if answer is None:
+        return pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
+    if whole:
+        answer.mode = "whole"
+        mode = pb.HTTP_RESPONSE_BODY_MODE_WHOLE_BODY_BYTES
+    elif streamed:
+        answer.mode = "stream"
+        mode = pb.HTTP_RESPONSE_BODY_MODE_STREAM_BYTES
+    else:
+        answer.note = answer.note or "headers_only: OpenShell offered no body to inspect"
+        return pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
+    return pb.HttpResponsePreflightResult(inspect=pb.HttpResponsePreflightInspect(body_mode=mode))
+
+
+def _inspected_unit(
+    answer: AnswerInspection, unit: pb.HttpResponseBodyUnit
+) -> pb.HttpResponseEventResult:
+    """One piece of an inspected answer: passed on as it came, unless a ``block`` pattern
+    matched. Then a whole answer is refused; in a stream the matching piece is replaced by
+    an MCP error naming the finding (an event stream) or delivery is aborted (another
+    media), and later pieces are dropped."""
+    sequence = unit.sequence
+    if answer.blocked is not None:
+        answer.feed(unit.data)  # counted, not searched: delivery has stopped
+        return _body(sequence, transform=pb.HttpResponseBodyTransform(data=b""))
+    answer.feed(unit.data)
+    found = answer.blocked
+    findings = _pattern_findings(answer)
+    if found is None:
+        return _body(sequence, pass_through=pb.HttpResponseBodyPassThrough(), findings=findings)
+    code = blocked_code(found.pattern.name)
+    if answer.mode == "stream" and answer.stream:
+        answer.decision = "cut"
+        replacement = pb.HttpResponseBodyTransform(data=answer.cut_event())
+        return _body(sequence, transform=replacement, findings=findings, reason_code=code)
+    return pb.HttpResponseEventResult(
+        body_result=pb.HttpResponseBodyResult(
+            sequence=sequence,
+            block_delivery=pb.HttpResponseBlockDelivery(),
+            reason_code=code,
+            findings=findings,
+        )
+    )
+
+
+def _body(
+    sequence: int,
+    *,
+    pass_through: pb.HttpResponseBodyPassThrough | None = None,
+    transform: pb.HttpResponseBodyTransform | None = None,
+    findings: list[pb.Finding] | None = None,
+    reason_code: str = "",
+) -> pb.HttpResponseEventResult:
+    return pb.HttpResponseEventResult(
+        body_result=pb.HttpResponseBodyResult(
+            sequence=sequence,
+            pass_through=pass_through,
+            transform=transform,
+            findings=findings or [],
+            reason_code=reason_code,
+        )
+    )
+
+
+def _pattern_findings(answer: AnswerInspection) -> list[pb.Finding]:
+    """The patterns an answer matched so far, for OpenShell's log (names only)."""
+    return [
+        pb.Finding(
+            type=FINDING_TYPE,
+            label=name,
+            count=1,
+            confidence="medium",
+            severity="high" if action == "block" else "medium",
+        )
+        for name, action in answer.new_findings()[:_MAX_FINDINGS]
+    ]
 
 
 def _result(verdict: Verdict) -> pb.HttpRequestResult:

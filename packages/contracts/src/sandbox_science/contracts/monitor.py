@@ -98,6 +98,18 @@ class DriftedServer(Contract):
     at: AwareDatetime | None = None
 
 
+class InspectionRow(Contract):
+    """One MCP server's answers in which inspection found a pattern within the window:
+    those passed on with an alert, and those blocked or cut (docs/POLICY-MIDDLEWARE.md,
+    "MCP traffic inspection")."""
+
+    server: Name
+    alerts: Counter = 0
+    blocks: Counter = 0
+    uninspected: Counter = 0
+    """Passed unread, every response thread being busy: no pattern applied to them."""
+
+
 class MonitorRecords(Contract):
     """What the event store's records say for the window."""
 
@@ -114,6 +126,17 @@ class MonitorRecords(Contract):
     """Every kind, in the order mcp, network, packages, hold."""
     holds: list[OpenHolds] = Field(max_length=64)
     drift: list[DriftedServer] = Field(max_length=MAX_SERVERS)
+    inspection: list[InspectionRow] = Field(
+        default_factory=list[InspectionRow], max_length=MAX_SERVERS
+    )
+    """Alerts and blocks of MCP answers by server, the busiest first."""
+    inspection_dropped: Counter = 0
+    """The project's answers whose records the middleware dropped within the window, its
+    record queue being full (``mcp-inspection-dropped``): plain answers only, never one
+    with a finding, a block or no inspection."""
+    inspection_enabled: bool | None = None
+    """Whether MCP traffic inspection is on, as the middleware recorded when it last
+    started (``mcp-inspection-state``); null when it never recorded."""
 
 
 class EnvironmentTier(Contract):

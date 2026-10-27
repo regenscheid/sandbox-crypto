@@ -15,7 +15,9 @@ than the window, and counts:
   now, and the median wait for an answer;
 - **holds** nobody has answered, by rule, however old (the ledger's own fold);
 - **drift**: servers whose tool list drifted and is not accepted again for the project
-  (the classification review's own reading).
+  (the classification review's own reading);
+- **inspection**: by server, MCP answers in which traffic inspection found a pattern,
+  passed with an alert or blocked (``mcp-answer-alert``).
 
 A record whose project is not the one asked for, or that cannot be read as its kind, is
 skipped. Research code's requests name a sandbox, not a project: they count for the
@@ -37,12 +39,14 @@ from sandbox_science.contracts.monitor import (
     MAX_CALL_ROWS,
     MAX_HOLD_SESSIONS,
     MAX_SCANNED,
+    MAX_SERVERS,
     WINDOWS,
     ApprovalCounts,
     ApprovalKind,
     CallRow,
     DriftedServer,
     EnvironmentTier,
+    InspectionRow,
     MonitorRecords,
     MonitorWindow,
     OpenHolds,
@@ -59,7 +63,19 @@ from .permissions import STORE_TIMEOUT, Permissions, PermissionStoreError
 MCP_CALL: Final = "mcp-call"
 APPROVED: Final = "approved"
 ALERT: Final = "alert"
-KINDS: Final = (MCP_CALL, ESCALATION, APPROVAL, DENIAL, APPROVED, ALERT)
+ANSWER_ALERT: Final = "mcp-answer-alert"
+INSPECTION_STATE: Final = "mcp-inspection-state"
+INSPECTION_DROPPED: Final = "mcp-inspection-dropped"
+KINDS: Final = (
+    MCP_CALL,
+    ESCALATION,
+    APPROVAL,
+    DENIAL,
+    APPROVED,
+    ALERT,
+    ANSWER_ALERT,
+    INSPECTION_DROPPED,
+)
 """The record kinds the figures count."""
 SOURCES: Final[tuple[RecordSource, ...]] = ("policy-middleware", "mcp-proxy")
 DETECTION: Final = "detect."
@@ -117,6 +133,10 @@ class _Tally:
     )
     """Each request's earliest answer seen: its kind, time and whether it is a withdrawal."""
     sources: set[RecordSource] = field(default_factory=set[RecordSource])
+    inspected: dict[str, list[int]] = field(default_factory=dict[str, list[int]])
+    """Each server's answers with an alert, those blocked or cut, and those not read."""
+    dropped: int = 0
+    """The project's answers whose records the middleware dropped."""
 
     def row(self, effect: str, server: str | None = None, host: str | None = None) -> _Row:
         return self.rows.setdefault((effect, server, host), _Row())
@@ -143,6 +163,10 @@ class _Tally:
             counted = self._escalation(record.seq, data, at)
         elif record.kind in (APPROVED, ALERT):
             counted = self._passed(data)
+        elif record.kind == ANSWER_ALERT:
+            counted = self._answer_alert(data)
+        elif record.kind == INSPECTION_DROPPED:
+            counted = self._dropped(data)
         if counted and source is not None:
             self.sources.add(source)
 
@@ -165,6 +189,35 @@ class _Tally:
             # A request waiting for its answer is counted once, by its escalation.
             row.denied += 1
         return True
+
+    def _answer_alert(self, data: Mapping[str, object]) -> bool:
+        """An MCP answer in which inspection found a pattern: alerted, or blocked."""
+        server = _text(data.get("server"))
+        if data.get("project") != self.project or server is None:
+            return False
+        counts = self.inspected.setdefault(server, [0, 0, 0])
+        action = data.get("action")
+        counts[1 if action == "block" else 2 if action == "uninspected" else 0] += 1
+        return True
+
+    def _dropped(self, data: Mapping[str, object]) -> bool:
+        counts = data.get("counts")
+        found = False
+        for entry in cast(list[object], counts) if isinstance(counts, list) else []:
+            item = _object(entry)
+            answers = item.get("answers")
+            if item.get("project") == self.project and isinstance(answers, int):
+                self.dropped += max(0, answers)
+                found = True
+        return found
+
+    def inspection(self) -> list[InspectionRow]:
+        rows = [
+            InspectionRow(server=server, alerts=alerts, blocks=blocks, uninspected=unread)
+            for server, (alerts, blocks, unread) in self.inspected.items()
+        ]
+        rows.sort(key=lambda row: (-(row.alerts + row.blocks + row.uninspected), row.server))
+        return rows[:MAX_SERVERS]
 
     def _escalation(self, seq: int, data: Mapping[str, object], at: datetime) -> bool:
         key = RequestKey.from_payload(_object(data.get("target")))
@@ -260,6 +313,17 @@ class _Tally:
         ]
 
 
+def _enabled(record: Record | None) -> bool | None:
+    """Whether the middleware's latest start recorded inspection on."""
+    if record is None:
+        return None
+    try:
+        enabled = record.data().get("enabled")
+    except (EventStoreError, ValueError):
+        return None
+    return enabled if isinstance(enabled, bool) else None
+
+
 def _scan(
     records: Iterable[Record], project: str, owners: Mapping[str, str], since: datetime
 ) -> tuple[_Tally, int, bool]:
@@ -333,6 +397,7 @@ class MonitorDesk:
             try:
                 with StoreReader(permissions.path, timeout=STORE_TIMEOUT) as reader:
                     head = reader.head().seq
+                    state = next(reader.newest(1, (INSPECTION_STATE,)), None)
                     counted, scanned, reached = _scan(
                         reader.newest(self.max_scanned, KINDS), project, owners, since
                     )
@@ -345,7 +410,7 @@ class MonitorDesk:
             except EventStoreError as exc:
                 raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
         else:
-            counted, scanned, truncated = _Tally(project, owners), 0, False
+            counted, scanned, truncated, state = _Tally(project, owners), 0, False, None
         return MonitorRecords(
             sources=[source for source in SOURCES if source in counted.sources],
             scanned=scanned,
@@ -354,6 +419,9 @@ class MonitorDesk:
             approvals=counted.approvals(now),
             holds=self._holds(permissions, project, owners),
             drift=self._drift(project),
+            inspection=counted.inspection(),
+            inspection_enabled=_enabled(state),
+            inspection_dropped=counted.dropped,
         )
 
     @staticmethod

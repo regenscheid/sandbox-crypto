@@ -118,6 +118,7 @@ from sandbox_science.workspace.ledger import (
     LedgerWork,
 )
 from sandbox_science.workspace.mcp_services import McpInventory
+from sandbox_science.workspace.mcp_traffic import ProjectMcpTraffic
 from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
 from sandbox_science.workspace.messages import ToolRecordChunk, ToolRecordListing
 from sandbox_science.workspace.monitor import ProjectMonitor
@@ -189,6 +190,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     ProjectSkills,
     McpInventory,
     ProjectMonitor,
+    ProjectMcpTraffic,
     ClassificationListing,
     ClassificationView,
     DraftListing,
