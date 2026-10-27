@@ -47,7 +47,6 @@ import argparse
 import asyncio
 import json
 import math
-import re
 import signal
 import sys
 from collections.abc import Callable
@@ -57,12 +56,10 @@ from typing import cast
 
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import ErrorKind, Identifier
+from sandbox_science.contracts import Identifier
 from sandbox_science.contracts.logs import configure_logging
 
 from .chat import session_lease
-from .cli_canaries import add_parser as add_canaries_parser
-from .cli_canaries import mcp_canaries
 from .cli_classify import add_parser as add_classify_parser
 from .cli_classify import classify_draft
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
@@ -70,7 +67,6 @@ from .cli_skills import add_parser as add_skills_parser
 from .cli_skills import embedding_alias, skills
 from .cli_tool_mix import add_parser as add_tool_mix_parser
 from .cli_tool_mix import tool_mix
-from .connectors import ProxyClient, check_proxy
 from .consistency.models import REVIEWER_MAX_RESPONSE_BYTES, ReviewConfig
 from .context.history import CEILING
 from .context.history.geometry import Shares
@@ -81,7 +77,6 @@ from .harness import (
     Finished,
     Harness,
     IsolationRefusedError,
-    McpAccess,
     Role,
     RunRequest,
     Settings,
@@ -112,9 +107,6 @@ from .skills.embeddings import Embedder, SkillVectors
 from .stock_prompts import TEMPLATE_IDS
 from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
-
-_SERVER = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-"""A server's name in a project policy's ``mcp.servers``."""
 
 
 class _Printer:
@@ -369,24 +361,6 @@ def _harness(
         embedder = Embedder(args.model_url, embedding, read_secret(args.api_key_file))
         vectors = SkillVectors(embedder)
         closing(stack, interruption, vectors.close)
-    mcp = None
-    if args.mcp_proxy is not None:
-        token = read_secret(args.mcp_token_file)
-        try:
-            check_proxy(args.mcp_proxy, token)
-        except ValueError as exc:
-            raise ProjectError(ErrorKind.INVALID_REQUEST, str(exc)) from None
-        if args.mcp_token_file.stat().st_mode & 0o077:
-            print(
-                f"warning: {args.mcp_token_file} is readable by others; keep the MCP proxy "
-                "token to its owner (chmod 600)",
-                file=sys.stderr,
-            )
-        proxy = ProxyClient(args.mcp_proxy, token)
-        closing(stack, interruption, proxy.close)
-        about = {name: text for name, _, text in (item.partition("=") for item in args.mcp_about)}
-        shown = tuple(args.mcp_index) if args.mcp_index else None
-        mcp = McpAccess(proxy, tuple(args.mcp_server), args.mcp_project, about, shown)
     return Harness(
         client,
         main,
@@ -426,7 +400,6 @@ def _harness(
             cost_limits=getattr(args, "command", None) == "serve",
             run_share=None if (share := getattr(args, "run_share", None)) is None else share / 100,
         ),
-        mcp=mcp,
         vectors=vectors,
         skills_metadata=getattr(args, "skills_metadata_model", None),
     )
@@ -624,39 +597,6 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--figure-bundle", type=Path, help="operator-configured built figure checker bundle"
     )
     command.add_argument(
-        "--mcp-proxy", help="the MCP proxy's address; agents get its servers' tools (D-08)"
-    )
-    command.add_argument(
-        "--mcp-token-file", type=Path, help="the harness's caller token for the MCP proxy"
-    )
-    command.add_argument(
-        "--mcp-project",
-        help="the project the MCP proxy token is for: only its runs get the servers' tools",
-    )
-    command.add_argument(
-        "--mcp-server",
-        action="append",
-        default=[],
-        help="an MCP server behind the proxy whose tools runs get; repeat for more",
-    )
-    command.add_argument(
-        "--mcp-about",
-        action="append",
-        default=[],
-        metavar="SERVER[/BEHIND]=TEXT",
-        help="what an MCP server is for, which the tool index says: a --mcp-server, or "
-        "SERVER/BEHIND for a server behind a portal, the one a tool's name starts with "
-        "(crypto-research-mcp/e-print-mcp); repeat for more",
-    )
-    command.add_argument(
-        "--mcp-index",
-        action="append",
-        default=[],
-        metavar="SERVER[/BEHIND]",
-        help="a server whose tools the index lists one by one, named as for --mcp-about; the "
-        "others are found with a query. By default it lists every server's; repeat for more",
-    )
-    command.add_argument(
         "--reviewer-model", help="the consistency reviewer's model alias, which may be MAIN's"
     )
     command.add_argument(
@@ -755,35 +695,6 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
     for flag in ("words_share", "digest_share", "region_share", "region_cap_share"):
         if (value := getattr(args, flag, None)) is not None and not 0 < value <= 0.5:
             parser.error(f"--{flag.replace('_', '-')} must be above 0 and at most 0.5")
-    mcp = (args.mcp_proxy, args.mcp_token_file, args.mcp_project)
-    if (any(value is not None for value in mcp) and any(value is None for value in mcp)) or (
-        args.mcp_proxy is None and args.mcp_server
-    ):
-        parser.error("--mcp-proxy, --mcp-token-file, --mcp-project and --mcp-server go together")
-    if args.mcp_proxy is not None and not args.mcp_server:
-        parser.error("--mcp-proxy needs at least one --mcp-server")
-    for name in args.mcp_server:
-        if not _SERVER.fullmatch(name):
-            parser.error(f"--mcp-server {name!r} is not a server name of the project policy")
-    if (args.mcp_about or args.mcp_index) and args.mcp_proxy is None:
-        parser.error("--mcp-about and --mcp-index need --mcp-proxy")
-
-    # A key names a configured server, or SERVER/BEHIND for a server behind it: what an
-    # operator says about one server never reaches another's tools.
-    def configured(key: str) -> bool:
-        server, slash, behind = key.partition("/")
-        return server in args.mcp_server and (not slash or bool(_SERVER.fullmatch(behind)))
-
-    for item in args.mcp_about:
-        key, equals, text = item.partition("=")
-        if not equals or not configured(key) or not text.strip() or len(text) > 200:
-            parser.error(
-                "--mcp-about takes SERVER=TEXT or SERVER/BEHIND=TEXT, for a --mcp-server, "
-                f"with at most 200 characters: {item!r}"
-            )
-    for key in args.mcp_index:
-        if not configured(key):
-            parser.error(f"--mcp-index {key!r} is not a --mcp-server, or SERVER/BEHIND for one")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -838,10 +749,7 @@ def main(argv: list[str] | None = None) -> int:
     add_skills_parser(commands)
     add_classify_parser(commands)
     add_tool_mix_parser(commands)
-    add_canaries_parser(commands)
     args = parser.parse_args(argv)
-    if args.command == "mcp-canaries":
-        return mcp_canaries(args)
     if args.command == "classify-draft":
         return classify_draft(args)
     if args.command == "tool-mix":

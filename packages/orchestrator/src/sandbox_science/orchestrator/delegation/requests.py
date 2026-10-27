@@ -2,14 +2,15 @@
 """A delegated run's effect requests that wait for the user (D99; delegated agents spec
 DA-8 to DA-10).
 
-When the MCP proxy holds a child's connector call for the user's answer, the child's run
-records the request here: the proxy's request number, the run and delegation that asked,
-the server and tool, and the child's own words at the call. The brief its parent gave is
-read from the delegation. The workspace's card in the session's chat shows them beside
-the proxy's request, and the parent is told through the agent mailbox.
+When the policy middleware holds a child's connector call for the user's answer (the MCP
+proxy did until it retired, D98), the child's run records the request here: its permission
+request number, the run and delegation that asked, the server and tool, and the child's
+own words at the call. The brief its parent gave is read from the delegation. The
+workspace's card in the session's chat shows them beside the request, and the parent is
+told through the agent mailbox.
 
 The parent may withdraw a request, never approve it. A withdrawal only refuses: the
-workspace then denies that one call at the proxy and no longer shows its card, so the
+workspace then denies that one call and no longer shows its card, so the
 child's call ends as a denied one does. Only the user approves (DA-8, PD-16). Records
 are kept: a request's attribution, words and times never change once written, and a
 withdrawal or end is written once.
@@ -53,7 +54,8 @@ class ChildRequest(Contract):
     """A child's call that waits, or waited, for the user's answer."""
 
     request: int
-    """The MCP proxy's permission request number."""
+    """The permission request's number (the policy middleware's, or the retired MCP
+    proxy's in an older record)."""
     delegation_id: str
     run: str
     """The child's run, which made the call."""
@@ -179,7 +181,7 @@ class ChildRequests:
         tool: str,
         words: str,
     ) -> ChildRequest:
-        """The child ``run`` of ``delegation`` waits on the proxy's ``request``. The
+        """The child ``run`` of ``delegation`` waits on the permission ``request``. The
         first run to wait on a request keeps its attribution; the same again is a no-op."""
         with self.control.write() as tx:
             db = tx.sql
@@ -262,6 +264,18 @@ class ChildRequests:
                 (project, session, MAX_LISTED),
             ).fetchall()
         return {item.request: item for item in map(_row, rows)}
+
+    def projects_withdrawing(self) -> list[str]:
+        """The projects with a withdrawn request that has not ended: those whose held calls
+        the workspace's relay denies (D99)."""
+        if self.control.missing:
+            return []
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT DISTINCT project_id FROM child_requests WHERE withdrawn_by IS NOT NULL "
+                "AND ended_at IS NULL ORDER BY project_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def withdrawn(self, project: str, requests: list[int]) -> set[int]:
         """Those of the project's ``requests`` that a parent withdrew."""

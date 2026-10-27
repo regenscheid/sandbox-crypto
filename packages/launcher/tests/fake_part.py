@@ -316,13 +316,7 @@ match (name, args[:2]):
                 note(f"saw {seen}")
         if "--skills-embedding-model" in args:
             note(f"embeds with {option('--skills-embedding-model')}")
-        if "--mcp-proxy" in args:
-            servers = [args[i + 1] for i, arg in enumerate(args) if arg == "--mcp-server"]
-            note(f"has MCP {option('--mcp-proxy')} for {option('--mcp-project')}: {servers}")
         serve(None, [f"serving the sessions of {option('--state-dir')}"], stream=sys.stderr)
-    case ("sandbox-science-mcp-proxy", ["compile-policy", *_]):
-        Path(option("--out")).write_text("# compiled\n")
-        note("compile-policy" + (" --admit-escalated" if "--admit-escalated" in args else ""))
     case ("sandbox-science-workspace", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:

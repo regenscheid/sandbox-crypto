@@ -12,6 +12,7 @@ import secrets
 import stat
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 from aiohttp import WSCloseCode, web
@@ -19,7 +20,6 @@ from pydantic import Field, JsonValue, ValidationError, field_validator, model_v
 
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
-from sandbox_science.orchestrator.connectors import ProxyClient
 from sandbox_science.orchestrator.consistency.models import REVIEWER_MAX_RESPONSE_BYTES
 from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.control import store_path as control_path
@@ -82,6 +82,8 @@ from .wire import (
     Ready,
     ResumeBranch,
     ResumeReady,
+    ToolListing,
+    ToolsListed,
     Waiting,
     payload,
     typed,
@@ -91,19 +93,10 @@ REVIEWER_MAX_OUTPUT = 4096
 """Reviewer output tokens, kept in sync with the host-mode reviewer."""
 
 
-class ProxySettings(Contract):
-    url: str = Field(min_length=1, max_length=2048)
-    token_file: Path
-    project: Identifier
-    servers: tuple[Identifier, ...]
-    about: dict[str, str] = Field(default_factory=dict[str, str])
-    index: tuple[str, ...] | None = None
-
-
 class DirectAccessSettings(Contract):
     """The run service's connectors on the direct MCP path (D98): the project whose runs
-    get them, its servers, and what the index says of them, as ``ProxySettings``. Each
-    request is made by the connected runtime's own client (``mcp_request``)."""
+    get them, its servers, and what the index says of them. Each request is made by the
+    connected runtime's own client (``mcp_request``)."""
 
     project: Identifier
     servers: tuple[Identifier, ...] = Field(min_length=1, max_length=64)
@@ -148,9 +141,9 @@ class ControlSettings(Contract):
     delegated: ModelAlias | None = None
     agent_models: tuple[ModelAlias, ...] = Field(default_factory=tuple, max_length=64)
     settings: Settings = Field(default_factory=Settings)
-    proxy: ProxySettings | None = None
     direct: DirectAccessSettings | None = None
-    """The direct MCP path's connectors, which exclude ``proxy`` (D98)."""
+    """The run service's connectors on the direct MCP path (D98), the only one since the
+    MCP proxy retired (2026-10-26)."""
     embedding: ModelAlias | None = None
     metadata: ModelAlias | None = None
     checks: CheckSettings | None = None
@@ -158,18 +151,16 @@ class ControlSettings(Contract):
     manager_listen: str = "127.0.0.1:8444"
     manager_token_sha256_file: Path | None = None
     canaries: CanarySettings | None = None
+    check_token_sha256_file: Path | None = None
+    """The SHA-256 of the workspace's token for ``POST /mcp-check``, the user's "Check
+    availability" of a ``direct`` server: one listing by the runtime's client, as a canary's
+    (``list_mcp_tools``). Without it, or without ``direct``, the route answers 404."""
 
     @field_validator("listen", "manager_listen")
     @classmethod
     def valid_listen(cls, value: str) -> str:
         bind_address(value)
         return value
-
-    @model_validator(mode="after")
-    def one_mcp_path(self) -> ControlSettings:
-        if self.proxy is not None and self.direct is not None:
-            raise ValueError("connectors take the MCP proxy or the direct path, not both")
-        return self
 
     @model_validator(mode="after")
     def remote_tls(self) -> ControlSettings:
@@ -291,7 +282,6 @@ def create_app(settings: ControlSettings) -> web.Application:
         lifecycle.claim(socket)
         projects: ProjectStore | None = None
         documents: DocumentStore | None = None
-        proxy: ProxyClient | None = None
         loops: HostLoops | None = None
         service: RunService | None = None
         hello = False
@@ -433,13 +423,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                     RunState(projects.control),
                 )
                 access = None
-                if settings.proxy is not None:
-                    spec = settings.proxy
-                    if spec.project not in settings.projects:
-                        raise ValueError("proxy project is outside runtime scope")
-                    proxy = ProxyClient(spec.url, private_token(spec.token_file))
-                    access = McpAccess(proxy, spec.servers, spec.project, spec.about, spec.index)
-                elif settings.direct is not None:
+                if settings.direct is not None:
                     direct = settings.direct
                     if direct.project not in settings.projects:
                         raise ValueError("direct MCP project is outside runtime scope")
@@ -451,7 +435,6 @@ def create_app(settings: ControlSettings) -> web.Application:
                         direct.project,
                         direct.about,
                         direct.index,
-                        path="direct",
                     )
                 metadata = (
                     Metadata(
@@ -566,8 +549,6 @@ def create_app(settings: ControlSettings) -> web.Application:
                     cleanup.callback(projects.close)
                 if documents is not None:
                     cleanup.callback(documents.close)
-                if proxy is not None:
-                    cleanup.push_async_callback(proxy.close)
                 if service is not None and service.harness.vectors is not None:
                     cleanup.push_async_callback(service.harness.vectors.close)
                 if service is not None:
@@ -578,10 +559,43 @@ def create_app(settings: ControlSettings) -> web.Application:
                     cleanup.push_async_callback(service.close)
         return socket
 
+    checking = asyncio.Lock()
+    listings = RuntimeSource(lambda: lifecycle.channel if lifecycle.handshaken else None)
+
+    async def mcp_check(request: web.Request) -> web.Response:
+        """The workspace user's availability check of one ``direct`` server: one bounded
+        listing by the connected runtime's client, never a tool call, answered as its
+        outcome (``ToolsListed``) and stored nowhere. One check at a time. The token's
+        digest is read for each check, so that a Secret can rotate; while it cannot be read
+        (missing, not private, not a digest) the route answers 404, as without one."""
+        digest_file, direct = settings.check_token_sha256_file, settings.direct
+        if digest_file is None or direct is None:
+            raise web.HTTPNotFound()
+        header = request.headers.get("Authorization", "")
+        supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
+        try:
+            expected = private_digest(digest_file)
+        except (OSError, ValueError, UnicodeDecodeError):
+            raise web.HTTPNotFound() from None
+        if not hmac.compare_digest(hashlib.sha256(supplied.encode()).hexdigest(), expected):
+            raise web.HTTPNotFound()
+        if request.content_length is None or request.content_length > MAX_REQUEST_BYTES:
+            raise web.HTTPBadRequest(text="a check is one small JSON object")
+        try:
+            asked = ToolListing.model_validate_json(await request.read())
+        except ValidationError:
+            raise web.HTTPBadRequest(text='expected {"server": "<name>"}') from None
+        if asked.server not in direct.servers:
+            raise web.HTTPNotFound(text="not a configured MCP server")
+        async with checking:
+            found = await listings.list(asked.server)
+        return web.json_response(ToolsListed.model_validate(asdict(found)).model_dump(mode="json"))
+
     app.router.add_get("/health", health)
     app.router.add_get("/live", live)
     app.router.add_get("/ready", ready)
     app.router.add_get("/control", control)
+    app.router.add_post("/mcp-check", mcp_check)
     if settings.canaries is not None:
         _canaries(app, settings, settings.canaries, lifecycle, runtime_seen)
     app.on_shutdown.append(lifecycle.shutdown)

@@ -41,7 +41,7 @@ import secrets
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 from aiohttp import hdrs, web
 
@@ -97,7 +97,7 @@ from .mathrepair import (
     SessionLimitError,
     parse_request,
 )
-from .mcp_metadata import MetadataClient
+from .mcp_metadata import AvailabilityClient
 from .preview import Preview
 from .proxy import Exposure, ForwardedHeaderError
 
@@ -232,8 +232,8 @@ def create_app(
     skills_metadata: str | None = None,
     mcp_project: str | None = None,
     mcp_inventory: tuple[mcp_services.ServiceConfig, ...] = (),
-    mcp_metadata: MetadataClient | None = None,
-    mcp_approvals: approvals.ApprovalClient | None = None,
+    mcp_checks: AvailabilityClient | None = None,
+    mcp_listings: mcp_services.ListingSource | None = None,
     mcp_classifications: classifications.ClassificationSource | None = None,
     model_configuration: project_settings.ModelConfiguration | None = None,
     exposure: Exposure | None = None,
@@ -251,7 +251,9 @@ def create_app(
     that pass derived, as runs are given it. ``exposure`` names a public origin and the
     proxies trusted to forward the scheme and host (proxy.py); without it a request is seen
     as it arrives. ``mcp_classifications`` reads and accepts the configured services'
-    classifications; without it, ``job_worker`` does when its client has those routes."""
+    classifications, and ``mcp_listings`` reads the listings the agent runtime reported;
+    without them, ``job_worker`` does when its client has those routes. ``mcp_checks``
+    asks the control service for the user's availability check of a service."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
     if mcp_inventory and mcp_project is None:
@@ -376,8 +378,11 @@ def create_app(
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
     if skills_metadata is not None:
         app[skills.METADATA] = skills_metadata
+    listings = mcp_listings
+    if listings is None and callable(getattr(job_worker, "mcp_listings", None)):
+        listings = cast(mcp_services.ListingSource, job_worker)
     app[mcp_services.CONFIGURATION] = mcp_services.Configuration(
-        mcp_project, mcp_inventory, mcp_metadata
+        mcp_project, mcp_inventory, mcp_checks, listings
     )
     if model_configuration is not None:
         app[project_settings.MODEL_CONFIGURATION] = model_configuration
@@ -421,11 +426,9 @@ def create_app(
         approvals,
     ):
         feature.add_routes(app)
-    if mcp_approvals is not None and mcp_project is None:
-        raise ValueError("MCP approvals need an explicit project scope")
-    if mcp_approvals is not None or job_worker is not None:
-        # Cards for tool calls the proxy holds, and network and package requests (D97).
-        approvals.configure(app, mcp_project, mcp_approvals, job_worker)
+    if job_worker is not None:
+        # Cards for the tool calls, network and package requests the middleware holds (D97).
+        approvals.configure(app, job_worker)
     classifications.configure(
         app,
         mcp_classifications

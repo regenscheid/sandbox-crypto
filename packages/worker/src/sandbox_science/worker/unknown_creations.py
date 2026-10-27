@@ -57,10 +57,10 @@ MAX_LISTED_NAMES: Final = 32
 MAX_OBSERVATIONS: Final = 16
 """Observations kept per environment and sandbox name; the newest are kept."""
 ENVIRONMENT_LABEL: Final = "sandbox-science.io/environment"
+"""The label ``Environments.create`` gives a sandbox: the environment's ID."""
 PROJECT_LABEL: Final = "sandbox-science.io/project"
 """The label the launcher and the Kubernetes runtime manager give the agent runtime's
 sandbox: its project, which the worker checks before a project-scoped client binds it."""
-"""The label ``Environments.create`` gives a sandbox: the environment's ID."""
 _LABEL_VALUE: Final = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$")
 MAX_LIST_PAGES: Final = 32
 """Pages of a sandbox listing read at most; a longer listing confirms nothing."""

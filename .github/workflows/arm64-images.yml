@@ -51,8 +51,6 @@ jobs:
       - run: NETWORK=0 images/test.sh minimal
       - run: images/build.sh orchestrator
       - run: NETWORK=0 images/test.sh orchestrator
-      - run: images/build.sh mcp-proxy
-      - run: NETWORK=0 images/test.sh mcp-proxy
 
   crypto-base:
     if: ${{ inputs.crypto_base && !inputs.publish }}
@@ -85,7 +83,7 @@ jobs:
                 echo 'Publishing all profiles requires crypto_base=true; choose trusted or minimal.' >&2
                 exit 1
               fi
-              profiles='["minimal","orchestrator","mcp-proxy","crypto-base","trusted-app","trusted-worker"]' ;;
+              profiles='["minimal","orchestrator","crypto-base","trusted-app","trusted-worker"]' ;;
             trusted) profiles='["trusted-app","trusted-worker"]' ;;
             minimal) profiles='["minimal"]' ;;
             *) echo 'unknown publication scope' >&2; exit 1 ;;

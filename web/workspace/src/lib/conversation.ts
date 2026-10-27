@@ -820,8 +820,8 @@ export function elapsed(from: string, now: number): string {
 
 /**
  * The call a held permission request is for, as the run's transcript has it: the latest
- * call of ``tool`` with no result yet, its arguments and its step's words. The proxy keeps
- * only a digest of the arguments, so the page shows them from here; null when the
+ * call of ``tool`` with no result yet, its arguments and its step's words. The middleware
+ * keeps only a digest of the arguments, so the page shows them from here; null when the
  * transcript has no such call.
  */
 export function heldCall(

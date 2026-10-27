@@ -260,3 +260,43 @@ class ListingReported(Contract):
 
     drifted: bool
     record: int | None = Field(default=None, ge=1)
+
+
+class ListedToolView(Contract):
+    """One tool of the latest listing reported for a server, as the workspace's MCP
+    services view shows it: the class its hints give it, its class as a listing tells it
+    (``effect``: by the project's classification in force when it names the tool, else by
+    the hint; ``read`` only when no argument can make a call of it more), and what a call
+    of it by name alone, without arguments, is decided as (``allow``, ``escalate`` or
+    ``deny``) under the project's policy and classification in force. Arguments can make a
+    call stricter."""
+
+    name: ToolName
+    hint: EffectName
+    effect: EffectName
+    classified: bool
+    """Whether the classification in force names the tool."""
+    action: Literal["allow", "escalate", "deny"]
+
+
+class ReportedListing(Contract):
+    """The latest complete listing of a server that the agent runtime's client reported
+    (``report_mcp_listing``, D98) and the worker took, with each tool as the classification
+    in force sees it now. The worker keeps the latest one per project and server in memory:
+    after it restarts there is none until a run or a canary lists the server again."""
+
+    server: ServerName
+    reported_at: AwareDatetime
+    session: Identifier | None = None
+    run: str | None = Field(default=None, max_length=160)
+    listing: Sha256
+    drifted: bool
+    """Whether the listing drifted from the project's pin when it was reported."""
+    tools: list[ListedToolView] = Field(max_length=MAX_REPORTED_TOOLS)
+
+
+class ReportedListings(RootModel[list[ReportedListing]]):
+    """``GET /v1/mcp-listings?project=``: one per server of the project that has one."""
+
+    model_config = ConfigDict(frozen=True)
+    root: list[ReportedListing] = Field(max_length=MAX_SERVERS)

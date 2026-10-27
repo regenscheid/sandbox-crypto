@@ -103,6 +103,8 @@ from sandbox_science.contracts.classifications import (
     DriftAccepted,
     ListingReport,
     ListingReported,
+    ReportedListing,
+    ReportedListings,
 )
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.mcp_traffic import WorkerMcpTraffic
@@ -575,6 +577,19 @@ class WorkerClient:
         """Report a listing the agent runtime's direct client read, for the worker to compare
         with the project's pin and record a drift (D98): any client, for its own projects."""
         return await self._call("POST", "/v1/mcp-listings", ListingReported, report)
+
+    async def mcp_listings(self, project_id: str) -> list[ReportedListing]:
+        """The latest listing the agent runtime's client reported of each of the project's
+        servers, each tool as the policy and classification in force decide it: an operator
+        client's read, for the workspace's MCP services view (D98)."""
+        found = await self._call(
+            "GET",
+            "/v1/mcp-listings",
+            ReportedListings,
+            params={"project": project_id},
+            max_bytes=8 * 1024 * 1024,
+        )
+        return list(found.root)
 
     # Monitor figures, for the workspace's Monitor view (D103).
 

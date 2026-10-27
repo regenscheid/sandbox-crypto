@@ -678,8 +678,8 @@ export const api = {
     });
   },
   /** The requests that wait for the user's answer in the session (D76, D97): connector
-   * tool calls the MCP proxy or the policy middleware holds, and research code's network
-   * and package requests. */
+   * tool calls the policy middleware holds (D98), and research code's network and package
+   * requests. */
   permissionRequests: (project: string, session: string, signal?: AbortSignal) =>
     get<PendingListing>(
       `/projects/${part(project)}/sessions/${part(session)}/permission-requests`,
@@ -694,7 +694,7 @@ export const api = {
     post<AnswerResult>(`/projects/${part(project)}/permission-requests/${request.seq}/answer`, {
       decision,
       kind: request.kind,
-      // Who holds it: the MCP proxy, or the worker for the policy middleware (D98).
+      // Who holds it: the worker, for the policy middleware (D98).
       source: request.source ?? null,
       // The session whose run a stopped hold stops, when the hold names none (D103).
       session,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Check a profile image as a sandbox sees it: images/test.sh PROFILE [IMAGE]
-# PROFILE is minimal, crypto-base, orchestrator or mcp-proxy.
+# PROFILE is minimal, crypto-base or orchestrator.
 #
 # Runs images/checks/check_image.py in the image as uid 1000, with no capabilities, a read-only
 # root filesystem and only the declared paths writable (docs/IMAGES.md, "Tests"):
@@ -11,7 +11,7 @@
 #              the frozen trees' and the base's paths the policy compiler adds to research sandboxes, and the
 #              image's filesystem section
 #              (images/common/sandbox-filesystem.yml, or images/<profile>/filesystem.yml for the
-#              orchestrator's and the MCP proxy's sandboxes, which get no devices).
+#              orchestrator's sandbox, which gets no devices).
 # IMAGE defaults to the tag build.sh gives. MODES picks the modes (default
 # "container landlock"); NETWORK=0 skips the runtime installs, which need conda-forge and PyPI;
 # FILESYSTEM names another filesystem section to try. Prints one JSON line per check and exits 1
@@ -20,8 +20,8 @@ set -euo pipefail
 
 profile=${1:-}
 case $profile in
-  minimal | crypto-base | orchestrator | mcp-proxy) ;;
-  *) echo "usage: images/test.sh minimal|crypto-base|orchestrator|mcp-proxy [IMAGE]" >&2; exit 2 ;;
+  minimal | crypto-base | orchestrator) ;;
+  *) echo "usage: images/test.sh minimal|crypto-base|orchestrator [IMAGE]" >&2; exit 2 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
 worker="$here/../packages/worker/src/sandbox_science/worker"   # its in-sandbox files
@@ -47,9 +47,8 @@ filesystem=${FILESYSTEM:-$here/common/sandbox-filesystem.yml}
 # Empty Docker volumes copy the image workspace, matching OpenShell workspace seeding.
 workspace=(--mount type=volume,target=/sandbox)
 case $profile in
-  orchestrator | mcp-proxy)
-    # compile_orchestrator() and compile_mcp_proxy() add no devices, and the services' prefixes
-    # stay read-only.
+  orchestrator)
+    # compile_orchestrator() adds no devices, and the service's prefix stays read-only.
     devices_ro=()
     devices_rw=()
     frozen_ro=()

@@ -6,13 +6,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from sandbox_science.launcher.config import LauncherError, load_config
+from sandbox_science.launcher.config import LauncherConfig, LauncherError, load_config
 
 
 def test_paths_are_against_the_file_and_home(make_config: Any, home: Path) -> None:
@@ -156,7 +155,7 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
         [
             sys.executable, "-I", str(script), str(out), "--state-dir", str(tmp_path / "state"),
             "--project", "lab41", "--profile", "crypto-base", "--session", "a",
-            "--mcp-proxy", "sandbox-science/mcp-proxy:test", "--provider-env-file", str(owner),
+            "--mcp", "--provider-env-file", str(owner),
         ],
         capture_output=True, text=True, check=False, env={**os.environ, "HOME": str(home)},
     )  # fmt: skip
@@ -164,14 +163,18 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
     assert out.stat().st_mode & 0o777 == 0o600
     config = load_config(out)
     assert config.model.delegated == config.model.reviewer == config.model.name
-    proxy = config.mcp_proxy
-    assert proxy is not None
-    assert proxy.provider_env_file == owner
+    direct = config.mcp_direct
+    assert direct is not None
+    assert direct.provider_env_file == owner
     assert not owner.exists()
+    assert direct.servers["crypto-research-mcp"].credentials == {
+        "CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID",
+        "CF-Access-Client-Secret": "CF_ACCESS_CLIENT_SECRET",
+    }
     listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
-    assert proxy.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
-    assert len(proxy.about) == 7
-    assert proxy.about["crypto-research-mcp/web-fetch-mcp"] == (
+    assert direct.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
+    assert len(direct.about) == 7
+    assert direct.about["crypto-research-mcp/web-fetch-mcp"] == (
         "fetch a web page, or its links, as text"
     )
     (project,) = config.projects
@@ -214,30 +217,29 @@ def test_the_labs_config_sets_the_skills(home: Path, tmp_path: Path) -> None:
     assert "a pack is NAME=GIT[@REF]" in refused.stderr
 
 
-def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) -> None:
+def test_the_examples_mcp_direct_works_uncommented(home: Path, tmp_path: Path) -> None:
     example = Path(__file__).parents[3] / "examples" / "sandbox-science.toml"
     lines = example.read_text().splitlines()
-    start = lines.index("# [mcp_proxy]")
+    start = lines.index("# [mcp_direct]")
     uncommented = [line.removeprefix("# ").removeprefix("#") for line in lines[start:]]
     path = tmp_path / "sandbox-science.toml"
     path.write_text("\n".join([*lines[:start], *uncommented]) + "\n")
     loaded = load_config(path)
     assert loaded.canaries.enabled
     assert loaded.canaries.interval == 900
-    proxy = loaded.mcp_proxy
-    assert proxy is not None
-    assert proxy.providers == ("crypto-research-mcp",)
-    assert proxy.credentials["crypto-research-mcp.CF_ACCESS_CLIENT_SECRET"] == (
-        "CF_ACCESS_CLIENT_SECRET"
-    )
+    direct = loaded.mcp_direct
+    assert direct is not None
+    assert direct.providers == ("crypto-research-mcp",)
+    credentials = direct.servers["crypto-research-mcp"].credentials
+    assert credentials["CF-Access-Client-Secret"] == "CF_ACCESS_CLIENT_SECRET"
     # Only named: loading the config opens nothing there.
-    assert proxy.provider_env_file == Path("/path/to/the/owners/cloudflare.env")
-    assert proxy.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
+    assert direct.provider_env_file == Path("/path/to/the/owners/cloudflare.env")
+    assert direct.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
     # The tool index (lab 39, B5): what each server behind the portal is for.
     listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
-    assert proxy.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
-    assert proxy.about["crypto-research-mcp/e-print-mcp"].startswith("the IACR Cryptology ePrint")
-    assert len(proxy.about) == 7
+    assert direct.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
+    assert direct.about["crypto-research-mcp/e-print-mcp"].startswith("the IACR Cryptology ePrint")
+    assert len(direct.about) == 7
 
 
 def test_skill_packs_name_urls_as_they_are_and_paths_against_the_file(
@@ -289,45 +291,24 @@ def test_the_examples_skills_work_uncommented(home: Path, tmp_path: Path) -> Non
     assert config.skills.embedding_model == "sandbox-embedding"
 
 
-MCP = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
+PROXY = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
+"""An ``[mcp_proxy]`` as configs had it until the MCP proxy retired (D98, 2026-10-26)."""
 
 
-def test_the_mcp_proxy_defaults_to_the_only_project(make_config: Any) -> None:
-    config = load_config(make_config({"mcp_proxy": MCP}))
-    assert config.mcp_project() == "crypto"
-    assert config.mcp_proxy is not None
-    assert config.mcp_proxy.sandbox == "ss-mcp-proxy"
-    assert config.addresses()["MCP proxy's forward"] == "127.0.0.1:18080"
-
-
-@pytest.mark.parametrize(
-    ("changes", "message"),
-    [
-        (
-            {"projects": [{"id": "a", "profile": "minimal"}, {"id": "b", "profile": "minimal"}]},
-            "mcp_proxy.project names the project",
-        ),
-        ({"mcp_proxy": {"project": "other"}}, "is not a project"),
-        ({"mcp_proxy": {"sandbox": "a-name-far-too-long-for-it"}}, "mcp_proxy.sandbox"),
-        ({"mcp_proxy": {"listen": "127.0.0.1:18100"}}, "the worker and the MCP proxy's forward"),
-        ({"mcp_proxy": {"servers": []}}, "mcp_proxy.servers"),
-        (
-            {"mcp_proxy": {"providers": ["crypto-research-mcp"], "provider_env_file": "a.env"}},
-            "mcp_proxy.provider_env_file needs provider_profile",
-        ),
-        (
-            {"mcp_proxy": {"provider_env_file": "a.env", "provider_profile": "a.yaml"}},
-            "registers the provider crypto-research-mcp, which mcp_proxy.providers must name",
-        ),
-    ],
-)
-def test_an_mcp_proxy_that_cannot_work_is_refused(
-    make_config: Any, changes: dict[str, Any], message: str
+@pytest.mark.parametrize("proxy", [PROXY, {}])
+def test_the_retired_mcp_proxy_is_refused_with_its_replacement(
+    make_config: Any, proxy: dict[str, Any]
 ) -> None:
-    proxy = {**MCP, **changes.get("mcp_proxy", {})}
     with pytest.raises(LauncherError) as error:
-        load_config(make_config({**changes, "mcp_proxy": proxy}))
-    assert message in str(error.value)
+        load_config(make_config({"mcp_proxy": proxy}))
+    said = str(error.value)
+    assert "[mcp_proxy] is retired" in said
+    assert "[mcp_direct]" in said
+    assert "sandbox-science migrate-mcp-config" in said
+    assert "Migrating from [mcp_proxy]" in said
+    # Built in code rather than read from a file, it is refused the same.
+    with pytest.raises(ValueError, match=r"\[mcp_proxy\] is retired"):
+        LauncherConfig.model_validate({"mcp_proxy": proxy})
 
 
 def test_sessions_are_names_or_tables_with_dedicated(make_config: Any) -> None:
@@ -385,45 +366,6 @@ def test_the_run_service_takes_a_watcher_and_the_math_checks(make_config: Any) -
     assert load_config(make_config()).run_service.node == "node"  # a name on PATH
 
 
-def test_canaries_are_off_by_default_and_list_the_proxys_servers_when_on(
-    make_config: Any,
-) -> None:
-    from sandbox_science.launcher import parts
-    from sandbox_science.launcher.state import Layout
-
-    config = load_config(make_config({"mcp_proxy": MCP}))
-    assert not config.canaries.enabled
-    assert config.canaries.interval == 900
-    assert parts.canaries_argv(config, Layout(config.state_dir)) is None
-    config = load_config(
-        make_config({"mcp_proxy": MCP, "canaries": {"enabled": True, "interval": 600}})
-    )
-    layout = Layout(config.state_dir)
-    argv = parts.canaries_argv(config, layout)
-    assert argv is not None
-    assert argv[1] == "mcp-canaries"
-    assert argv[argv.index("--interval") + 1] == "600"
-    assert argv[argv.index("--server") + 1] == "s"
-    assert argv[argv.index("--mcp-proxy") + 1] == "http://127.0.0.1:18080"
-    # A caller token of the canaries' own, which the proxy's settings name "canary": never
-    # the run service's, whose session places the listings would take, nor the operator's.
-    assert argv[argv.index("--mcp-token-file") + 1] == str(layout.token("mcp-canary"))
-    from sandbox_science.launcher import mcp
-
-    layout.make()
-    mcp.prepare(config, layout)
-    proxy = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())
-    callers = {caller["name"]: caller for caller in proxy["callers"]}
-    assert callers["canary"]["kind"] == "orchestrator"
-    assert callers["canary"]["project"] == "crypto"
-    assert callers["canary"]["token_sha256"] != callers["orchestrator"]["token_sha256"]
-    # Off, the proxy gets no canary caller.
-    config = load_config(make_config({"mcp_proxy": MCP}))
-    mcp.prepare(config, layout)
-    proxy = tomllib.loads((layout.mcp / "upload" / "proxy.toml").read_text())
-    assert "canary" not in {caller["name"] for caller in proxy["callers"]}
-
-
 DIRECT = {
     "servers": {
         "papers": {
@@ -434,7 +376,7 @@ DIRECT = {
 }
 
 
-def test_without_the_proxy_the_canaries_ask_the_runtimes_direct_client(
+def test_the_canaries_ask_the_runtimes_client_and_are_off_by_default(
     make_config: Any, tmp_path: Path
 ) -> None:
     import json
@@ -444,10 +386,12 @@ def test_without_the_proxy_the_canaries_ask_the_runtimes_direct_client(
     from .test_direct_mcp import DIRECT, direct_files
 
     direct_files(tmp_path)
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    assert not config.canaries.enabled
+    assert config.canaries.interval == 900
     config = load_config(make_config({"mcp_direct": DIRECT, "canaries": {"enabled": True}}))
     layout = parts.prepare(config)
-    # No canary part: the control service runs them over the runtime's connection.
-    assert parts.canaries_argv(config, layout) is None
+    # The control service runs them over the runtime's connection.
     directory, upload = orchestrator.prepare(config, layout)
     host = json.loads((directory / "control.json").read_text())
     assert host["canaries"] == {
@@ -468,7 +412,7 @@ def test_without_the_proxy_the_canaries_ask_the_runtimes_direct_client(
     ("changes", "message"),
     [
         ({"mcp_direct": DIRECT, "orchestrator": None}, "mcp_direct's client runs in the agent"),
-        ({"mcp_direct": DIRECT, "mcp_proxy": MCP}, "configure one MCP path"),
+        ({"mcp_direct": DIRECT, "mcp_proxy": PROXY}, "[mcp_proxy] is retired"),
         (
             {"mcp_direct": {**DIRECT, "provider_env_file": "cf.env"}},
             "provider_env_file needs provider_profile",
@@ -504,9 +448,9 @@ def test_a_direct_path_that_cannot_work_is_refused(
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"canaries": {"enabled": True}}, "canaries list the servers through the MCP proxy"),
-        ({"mcp_proxy": MCP, "canaries": {"interval": 30}}, "canaries.interval"),
-        ({"mcp_proxy": MCP, "canaries": {"enabled": True, "every": 60}}, "canaries.every"),
+        ({"canaries": {"enabled": True}}, "canaries list the servers through the agent runtime"),
+        ({"canaries": {"interval": 30}}, "canaries.interval"),
+        ({"canaries": {"enabled": True, "every": 60}}, "canaries.every"),
     ],
 )
 def test_canaries_that_cannot_work_are_refused(

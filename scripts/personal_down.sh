@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Stop the owner's personal Sandbox Science on babbage (docs/PERSONAL-BABBAGE.md): the
 # launcher first (`sandbox-science down`, which suspends the research sandboxes through the
-# unit's worker and deletes the MCP proxy's), then the worker-side unit (which stops the
+# unit's worker and deletes the agent runtime's), then the worker-side unit (which stops the
 # worker, the policy middleware and the package cache in that order) and its OpenShell
 # gateway. It deletes nothing: the projects, the sandboxes' files and the OpenShell state
 # stay under $SS_PERSONAL_ROOT for the next scripts/personal_up.sh.

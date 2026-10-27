@@ -93,12 +93,12 @@ Tool-list-change notifications invalidate the cached listing.
 the normal policy-checked initialize/metadata-list handshake through the host
 client, bounded to 15 seconds and 32 pages, and never invokes `tools/call`.
 The result records a checked timestamp and listed/denied/unavailable/timeout
-category. Proxy reachability and service availability are distinct. Observations
+category. Since the MCP proxy retired (D98, 2026-10-26), the check is one listing by the agent runtime's client, asked of the control service, and the tools are the runtime's latest reported listing, kept by the worker. Observations
 become stale after five minutes; missing checks or a process restart are unknown.
 A listing success does not prove that a particular tool call will succeed.
 Previous safe snapshots survive a failed refresh in this workspace process and
-are labeled previous; current policy is unknown while the proxy is unreachable.
-No browser gets proxy credentials or direct MCP access.
+are labeled previous.
+No browser gets credentials or direct MCP access.
 
 ## Classification review
 
@@ -161,10 +161,9 @@ numbered CL-n.
   reason recorded: a changed tool keeps its class only after re-acceptance, an added tool
   is `unclassified` until a classification names it, a removed one is listed as gone.
   Re-acceptance is admin-only, as acceptance is.
-- CL-5. **Proxy-side drift.** The MCP proxy holds no pins and records no drift today. If
-  the proxy stays after the A2 decision, it records the same drift kind from its
-  listings against the project's pins, and the tab reads both sources; until then the
-  tab reads the middleware's records and says so where a project uses the proxy path.
+- CL-5. **Proxy-side drift.** Moot: the MCP proxy retired after the A2 decision
+  (2026-10-26). The tab reads the middleware's records and the runtime's reported
+  listings' (source `runtime`).
 - CL-6. **Records and routes.** `GET …/mcp-services/{server}/classification` (in force,
   per tool with pin state), `GET …/classification/drafts` and `POST …/classification/
   drafts/{draft}/accept` (admin, with the edited YAML and a reason), `POST

@@ -4,7 +4,7 @@
 With ``[mcp_direct]`` no trusted service can reach an MCP server: the client, OpenShell's
 proxy and the provider's placeholders are in the agent runtime's sandbox, whose compiled
 ``protocol: mcp`` endpoints admit only the runtime's interpreter. The host keeps
-everything else of a run's connectors, as on the proxy path: the tool index, the
+everything else of a run's connectors: the tool index, the
 ``mcp_tools`` loads, the plan fence and the other gates of each call, a server the user
 turned off, the wait on a held call's permission request and its card, and the tool
 record (``Connectors``, through the host's toolbox and its ``tool`` capability). Only the

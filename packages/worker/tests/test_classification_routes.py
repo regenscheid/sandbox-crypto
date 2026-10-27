@@ -609,6 +609,13 @@ async def test_every_report_taken_is_recorded_and_reports_are_rate_limited(api: 
     # The rate is per caller: another client of the project still reports.
     status, _ = await report(api, reported(), who="workspace")
     assert status == 200
+    # Checks' listings, which name no session or run (the canaries', the user's availability
+    # check), have a budget of their own: they never spend the runs'.
+    check = {**reported(), "session": None, "run": None}
+    for _ in range(10):
+        assert (await report(api, check))[0] == 200
+    status, refused = await report(api, check)
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
 
 
 async def test_a_newer_drift_never_hides_an_older_one_from_review_or_acceptance(api: Api) -> None:
@@ -641,3 +648,50 @@ async def test_a_newer_drift_never_hides_an_older_one_from_review_or_acceptance(
     status, _ = await api.post(path, {"project": "p1", "reason": "both seen", "listings": both})
     assert status == 201
     assert ledger_for(api).drifted(SERVER, pin, "p1") is None
+
+
+async def test_the_latest_reported_listing_is_kept_for_the_services_view(api: Api) -> None:
+    """The workspace's MCP services view reads the latest listing the runtime reported of
+    each server (D98): every tool the server listed, its class in force and what a call of
+    it by name is decided as; operator-only, for its own projects; none before a report."""
+    status, found = await api.get("/v1/mcp-listings?project=p1")
+    assert (status, found) == (200, [])
+    await report(api, reported())
+    newer = reported({"brand_new": "1" * 64})
+    await report(api, newer)
+    status, found = await api.get("/v1/mcp-listings?project=p1")
+    assert status == 200, found
+    (listing,) = found
+    assert (listing["server"], listing["listing"], listing["drifted"]) == (
+        SERVER, newer["listing"], True,
+    )  # fmt: skip
+    assert (listing["session"], listing["run"]) == ("s1", newer["run"])
+    assert listing["reported_at"] == "2026-10-25T12:00:00Z"
+    tools = {tool["name"]: tool for tool in listing["tools"]}
+    assert len(tools) == len(newer["tools"])  # the server's own listing, denied tools too
+    # A read without arguments, which an argument can make browsing: told as browse.
+    assert tools[SCRAPE] == {
+        "name": SCRAPE, "hint": "read", "effect": "browse", "classified": True, "action": "allow",
+    }  # fmt: skip
+    assert (tools[FEEDBACK]["effect"], tools[FEEDBACK]["action"]) == ("write", "escalate")
+    assert tools["portal_toggle_servers"]["action"] == "deny"
+    # A tool the classification does not name is decided by its hint, here a write.
+    assert tools["brand_new"] == {
+        "name": "brand_new", "hint": "write", "effect": "write", "classified": False,
+        "action": "escalate",
+    }  # fmt: skip
+    # Only the operator client, for its own projects.
+    assert (await api.get("/v1/mcp-listings?project=p1", who="harness"))[0] == 403
+    assert (await api.get("/v1/mcp-listings?project=p2"))[0] == 403
+    assert (await api.get("/v1/mcp-listings"))[0] == 400
+
+
+async def test_the_worker_client_reads_the_reported_listings(api: Api) -> None:
+    await report(api, reported())
+    async with WorkerClient(
+        str(api.client.make_url("/")).rstrip("/"), TOKENS["workspace"]
+    ) as worker:
+        (listing,) = await worker.mcp_listings("p1")
+    assert listing.server == SERVER
+    assert not listing.drifted
+    assert {tool.action for tool in listing.tools} >= {"allow", "escalate"}

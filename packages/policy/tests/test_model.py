@@ -298,11 +298,12 @@ def test_mcp_proxy_size_limits() -> None:
         parse_policy(policy_text("mcp: {proxy: {max_argument_bytes: 0}}\n"))
 
 
-def test_worker_tools_must_be_inherit_or_patterns() -> None:
-    with pytest.raises(PolicyLoadError, match="worker_tools"):
-        parse_policy(policy_text("mcp: {proxy: {worker_tools: everything}}\n"))
-    policy = parse_policy(policy_text("mcp: {proxy: {worker_tools: ['*search*']}}\n")).policy
-    assert policy.mcp.proxy.worker_tools == ("*search*",)
+def test_worker_tools_are_retired_with_the_mcp_proxy() -> None:
+    for value in ("everything", "['*search*']"):
+        with pytest.raises(PolicyLoadError, match="worker_tools are retired"):
+            parse_policy(policy_text(f"mcp: {{proxy: {{worker_tools: {value}}}}}\n"))
+    policy = parse_policy(policy_text("mcp: {proxy: {worker_tools: inherit}}\n")).policy
+    assert policy.mcp.proxy.worker_tools == "inherit"
 
 
 def test_provider_names_are_unique() -> None:

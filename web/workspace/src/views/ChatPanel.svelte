@@ -191,7 +191,7 @@
       (!draft.text.trim() && !attachments.length) ||
       tooLong,
   );
-  // Requests that wait for the user's answer (D76, D97): connector calls the proxy holds,
+  // Requests that wait for the user's answer (D76, D97): connector calls the middleware holds,
   // and research code's network and package requests, polled with the chat.
   let permissions = $state<PendingApproval[]>([]);
   $effect(() => {

@@ -469,8 +469,8 @@ def test_a_missing_value_is_named_and_nothing_runs(
 
 
 def test_a_refresh_needs_the_owners_file(make_config: Any) -> None:
-    proxy = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
-    config = load_config(make_config({"mcp_proxy": proxy}))
+    direct = {"servers": {"s": {}}, "providers": ["p"]}
+    config = load_config(make_config({"mcp_direct": direct}))
     layout = Layout(config.state_dir)
     with pytest.raises(LauncherError, match="--refresh-provider needs"):
         asyncio.run(mcp.register_provider(config, layout, cast(Any, None), refresh=True))

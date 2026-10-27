@@ -4,7 +4,7 @@
 - the [worker](WORKER.md), which runs research code in OpenShell sandboxes;
 - a confined agent runtime in its own OpenShell sandbox, plus the trusted host control service that persists state and validates tool effects;
 - the [workspace](WORKSPACE.md), the GUI, with its PDF viewer's origin;
-- optionally, the [MCP proxy](#the-mcp-proxy) in an OpenShell sandbox of its own.
+- optionally, [MCP servers](#mcp-servers) for the agent's connectors, reached by the agent runtime's own client.
 
 Everything listens on loopback, so only your own computer can reach it. The steps below are for babbage.
 
@@ -31,8 +31,8 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | `[run_service]` | Optional:<br>- `context_ceiling`, a positive context-token ceiling capped by the model input limit when known; omitted keeps 600,000. It controls folding, separately from cumulative budgets;<br>- `max_turns`, the model calls a main run makes before it pauses and asks you in the chat to continue for another block of as many, or to stop, 2,000 by default (0 is the default too; at most 100,000): a check-in rather than a bound on the run's work, beside the runaway guard ([run service](specs/run-service.md), RS-6f);<br>- `run_share`, the percent of a project's daily cost limit one run may use, when the project has a limit (none by default): a run stops at its next safe point once it has used it, or once the project reaches its limit ([run service](specs/run-service.md), RS-6c);<br>- `math_checks`, the math checker's build (`web/workspace/dist-math`), and `node` (`node` on `PATH` by default). Without `math_checks`, every formula in a document shows "renderer unavailable", and the figure checks, which the same build holds, are unavailable;<br>- its `pass_env` |
 | `[workspace]` | Its `listen` address, its `preview_listen` address for the PDF viewer (by default the next port), `preview_name`, the name the viewer is given by (by default `localhost`, another site from `127.0.0.1`), and `static`, the web app's build |
 | `[openshell]` | The worker's own `[openshell]` table ([worker settings](WORKER.md)): the OpenShell CLI (`up` refuses one whose `--version` is not the release this checkout is built for, `OPENSHELL_VERSION` in `contracts/openshell_version.py`) and the `env` it needs to reach the gateway, the sandboxes' Python, the isolation tier, the package cache, and `[openshell.environments]` with the profiles' image tags |
-| `[mcp_proxy]` | Optional: the [MCP proxy](#the-mcp-proxy) |
-| `[canaries]` | Optional, with `[mcp_proxy]`: `enabled` (false by default) runs the scheduled [MCP canaries](MCP-CONNECTORS.md#canaries), a bounded listing of each server every `interval` seconds (900 by default, at least 60), recorded in the control store and shown in the workspace's MCP services view. They call the proxy with a token of their own, `tokens/mcp-canary`, which `up` gives the proxy as the caller `canary`. A canary part that fails to start, or keeps stopping, is reported and left out; the rest runs on |
+| `[mcp_direct]` | Optional: the [MCP servers](#mcp-servers) the agent's connectors reach. `[mcp_proxy]`, the retired MCP proxy's, is refused: `sandbox-science migrate-mcp-config` rewrites it |
+| `[canaries]` | Optional, with `[mcp_direct]`: `enabled` (false by default) runs the scheduled [MCP canaries](MCP-CONNECTORS.md#canaries), a bounded listing of each server every `interval` seconds (900 by default, at least 60), recorded in the control store and shown in the workspace's MCP services view. The control service asks the agent runtime to list each server through its own client |
 | `[skills]` | Optional: the [skill packs](#skill-packs), `[skills.packs.NAME]` with `git` (and `ref`) or `archive`, and `path`, which each project names in its `skills`; `embedding_model`, the gateway's embedding alias; `metadata_model`, the alias of the import's pass over a pack's catalog; and `pass_env`, for the skills commands' git |
 
 `start_timeout` (300 s) and `stop_timeout` (30 s) bound how long each part may take to start and to stop. `bin_dir` says where the parts' commands are, by default beside the launcher's Python.
@@ -164,43 +164,35 @@ ref = "main"                                                     # optional: the
 - **Cost.** The import's model calls, embeddings and the pass, count for the first project in the config that names the pack.
 - Taking a pack out of a project's `skills` does not unpin it: exclude its skills with `sandbox-science-harness skills settings --project P --expected N --exclude SOURCE/NAME`, against `control/` as above, where `N` is the revision `skills settings --project P` shows.
 
-## The MCP proxy
+## MCP servers
 
-With `[mcp_proxy]` in the config, `up` also runs the [MCP proxy](MCP-CONNECTORS.md#the-mcp-proxy-as-built) in an OpenShell sandbox of its own. The main agent of one project then gets the tools of the MCP servers named:
+With `[mcp_direct]` in the config (D98), the main agent of one project gets the tools of the MCP servers named, through the agent runtime's own client: its calls leave from the runtime's sandbox, through OpenShell's native `protocol: mcp` rules and the policy middleware, whose settings need `mcp_listings = true` ([the direct path](MCP-CONNECTORS.md#the-direct-path)). It needs `[orchestrator]`.
 
 ```toml
-[mcp_proxy]
-image = "sandbox-science/mcp-proxy:d27e41a"        # as images/build.sh mcp-proxy tagged it
+[mcp_direct]
 providers = ["crypto-research-mcp"]                # OpenShell providers with the servers' credentials
-servers = ["crypto-research-mcp"]                  # servers in the policy whose tools the agent gets
-credentials = { "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID", "crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET" }
 # project = "crypto"                               # by default the only project
-# policy, targets, ceiling                         # by default the worker's policy, targets and pool ceiling
-# sandbox = "ss-mcp-proxy"                         # its name's start, at most 12 characters
-# listen = "127.0.0.1:18080"                       # where the run service reaches it
 # provider_env_file = "/path/to/the/owners/cloudflare.env"                # registers crypto-research-mcp from it
 # provider_profile = "examples/openshell/profiles/cloudflare-access.yaml"    # needed with provider_env_file
 # index = ["crypto-research-mcp/e-print-mcp"]      # servers the tool index lists tool by tool; by default all
-# about = { "crypto-research-mcp/e-print-mcp" = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs" }
+
+[mcp_direct.servers.crypto-research-mcp]           # a server of the policy; its URL is the policy's
+credentials = { "CF-Access-Client-Id" = "CF_ACCESS_CLIENT_ID", "CF-Access-Client-Secret" = "CF_ACCESS_CLIENT_SECRET" }
+
+[mcp_direct.about]
+"crypto-research-mcp/e-print-mcp" = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs"
 ```
 
-- **The providers** hold the servers' credentials. You create them yourself ([what the owner does](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)), or `up` registers `crypto-research-mcp` from `provider_env_file`. The launcher never sees the credentials. If a provider is still missing, `up` refuses before it starts anything.
+- **The providers** hold the servers' credentials, attached to the agent runtime's sandbox, whose processes see placeholders only. You create them yourself ([what the owner does](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)), or `up` registers `crypto-research-mcp` from `provider_env_file`. The launcher never sees the credentials. If a provider is still missing, `up` refuses before it starts anything.
 - **`provider_env_file`** names the owner's file with crypto-research-mcp's Access service token. This is babbage's default for now (the owner, 2026-10-15). Only a config outside the repository names the real file, such as a lab's ([labs](../.agents/labs/README.md)): whoever writes the config also chooses the OpenShell CLI that gets the values.
   - When the gateway has no such provider, as a new lab gateway doesn't, `up` registers it from the file before it starts anything.
   - The registration runs in a process of its own (`sandbox_science.launcher.access_provider`), with the parts' usual environment and `[openshell] env` alone. The launcher never opens the file, and the values reach only the OpenShell command that registers them, and OpenShell's own encrypted store ([from the owner's file](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)).
   - `up --refresh-provider` registers it again even if it exists, as after a rotation.
   - It needs `provider_profile`, the provider's OpenShell profile, which `up` imports when the gateway has none.
+- **`credentials`** names, for each credential header of a server, the environment variable in the runtime's sandbox that holds its placeholder.
 - **`about` and `index`** shape the index of the servers' tools that the main agent gets instead of every tool's schema at every call ([an index, and tools loaded on demand](MCP-CONNECTORS.md#the-harnesss-client)). `about` says what each server is for, at most 200 characters and not blank, so the agent picks the right one; the index marks it as the operator's. A key is one of `servers`, or `SERVER/BEHIND` for a server behind a portal, the one a tool's name starts with, such as `crypto-research-mcp/e-print-mcp`, so one server's words never reach another's tools. `index` names the servers whose tools are listed one by one, at least one when given; the agent finds the others' with a query. The example config says both for crypto-research-mcp.
-- **`credentials`** is the proxy's `[credentials]` table: which environment variable holds each provider credential that a server's headers name ([running it](MCP-CONNECTORS.md#running-it)).
-- **What `up` does** is the [steps in running it](MCP-CONNECTORS.md#running-it):
-  1. It compiles the sandbox's policy.
-  2. It creates the sandbox with the providers.
-  3. It uploads the proxy's files. The proxy's one caller is the run service, by its token's digest.
-  4. It binds the project to its policy.
-  5. It forwards `listen` to the proxy. The forward starts again whenever it exits, as it does when the sandbox stops: after 2 s, then twice as long each time it keeps stopping, up to a minute. After ten times in a row, or if something else has taken `listen` meanwhile, the launcher gives up and stops everything, so the run service never sends its token to anyone else.
-- **The targets file** needs an `mcp_proxy` section, as babbage's lab targets have.
-- **Its name** is `sandbox` and six random hex digits, new at each `up`, such as `ss-mcp-proxy-3fa91c`, so it is never another launcher's, or one made by hand.
-- **On stopping**, the launcher deletes the sandbox, after stopping the run service and before the worker. It deletes only the sandbox it made, by the name it recorded before making it and the ID it recorded once it was ready. If the launcher was killed, `down` or the next `up` deletes the sandbox it left.
+- **What `up` does** is [the direct path's steps](MCP-CONNECTORS.md#the-direct-path): it compiles the runtime sandbox's MCP egress from the project policy, creates the sandbox with the providers and binds it to the project's policy revision through the worker, and gives the workspace the servers and the control service's availability check.
+- **From `[mcp_proxy]`.** The MCP proxy retired on 2026-10-26: a config with `[mcp_proxy]` is refused. `sandbox-science migrate-mcp-config CONFIG` rewrites it, keeping the original beside it ([migrating](MCP-CONNECTORS.md#migrating-from-mcp_proxy)); a proxy sandbox an earlier launcher left is deleted by the next `up` or `down`.
 
 ## Stopping
 
@@ -252,8 +244,8 @@ Everything in it is only for your user: the directories are mode 700 and the fil
 | `worker/worker.toml`, `worker/state/` | The worker's settings, written at each `up`, and its state directory. Do not delete the state directory while its sandboxes exist: it holds their endpoints |
 | `control/` | The control store, with the projects, sessions, runs and documents, that the run service and the workspace share |
 | `sandboxes.json`, `stopped.json` | The research sandboxes as last listed, and what the last stop did to them, for `down` to say |
-| `logs/` | Each part's output (`worker.log`, `run-service.log`, `workspace.log`, `mcp-forward.log`), and `launcher.log` with the output of the commands `up` runs once |
-| `mcp-proxy/` | With `[mcp_proxy]`: the proxy's compiled policy, the files uploaded to its sandbox, and the record of the sandbox the launcher made |
+| `logs/` | Each part's output (`worker.log`, `control-service.log`, `workspace.log`, …), and `launcher.log` with the output of the commands `up` runs once |
+| `mcp-proxy/` | The provider registration's working directory, and the record of a sandbox of the retired MCP proxy an earlier launcher made, until `up` or `down` deletes it |
 
 ## When something goes wrong
 

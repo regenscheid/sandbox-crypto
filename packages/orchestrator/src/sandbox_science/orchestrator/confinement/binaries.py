@@ -4,11 +4,11 @@
 In the confined runtime the direct MCP client (``mcp_direct.DirectClient``) runs in the
 agent runtime's sandbox, where OpenShell's proxy and the provider's placeholders are
 (D98). A ``tools/call`` answer's images, audio and blobs reach it there, as base64, while
-the run's artifact publisher is the host's. The runtime withholds them by the proxy's
-rule (``Connectors`` with a ``BinarySink``) and sends each over the attempt's
+the run's artifact publisher is the host's. The runtime withholds them
+(``policy.mcp_answers``, ``Connectors`` with a ``BinarySink``) and sends each over the attempt's
 ``publish_mcp_binary`` capability (``ControlBinaries``): the model's call ID, the media
 type, the SHA-256 of the decoded bytes and the bytes. The host (``CallBinaries``) keeps
-the item exactly as ``mcp_binaries.ArtifactBinaries`` keeps a proxy-path item: written
+the item as ``mcp_binaries.ArtifactBinaries`` keeps any: written
 under ``mcp-results/`` in the session's workspace through the worker and published with
 the run's publisher. It answers the artifact, revision and SHA-256, and the note that
 replaces the item in the result the model sees.
@@ -24,9 +24,9 @@ again answers what it answered the first time without keeping it again. The item
 kept are recorded with its tool result (``mcp_binaries``), each with the source
 ``runtime``.
 
-The capability is on only for a run whose connector calls take the direct path
-(``Connectors.path``): ``[mcp_direct]``, where the host's toolbox admits each call and
-relays it to the runtime's client. Through the proxy no result is the runtime's to publish.
+Every run's connector calls are admitted by the host's toolbox and relayed to the
+runtime's client since the MCP proxy retired (2026-10-26), so the capability is on for any
+run with connectors and an artifact sink.
 """
 
 from __future__ import annotations
@@ -143,10 +143,6 @@ class CallBinaries:
         tool = connectors.tools.get(relaying.name) if connectors is not None else None
         if connectors is None or tool is None:
             raise TransportError("denied", "the call is not a connector tool's")
-        if connectors.path != "direct":
-            # The run's connector calls go through the proxy, from the host: no result of
-            # theirs is the runtime's to publish.
-            raise TransportError("denied", "this run's connector calls are not on the direct path")
         sink = connectors.binaries
         if not isinstance(sink, ArtifactBinaries):
             raise TransportError("denied", "this attempt keeps no binary results")

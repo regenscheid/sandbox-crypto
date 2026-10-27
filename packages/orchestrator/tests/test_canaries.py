@@ -5,18 +5,16 @@ change events, pruning), the control store's table and its migration."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sqlite3
 from collections.abc import Iterator, Mapping
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
-from sandbox_science.mcp_proxy.callers import Caller, token_digest
-from sandbox_science.orchestrator.connectors import ConnectorError, ProxyClient
+from sandbox_science.orchestrator.connectors import ConnectorError
 from sandbox_science.orchestrator.control import ControlStore, migrations, store_path
 from sandbox_science.orchestrator.mcp_canaries import (
     CHANGED,
@@ -25,21 +23,16 @@ from sandbox_science.orchestrator.mcp_canaries import (
     CanaryRunner,
     CanaryStore,
     Listing,
-    ProxySource,
     list_tools,
     stamp,
 )
 from sandbox_science.testing import FakeClock, eventually
-from sandbox_science.testing.mcp import FakeServer, Tls
 
 from .control_versions import at_version
-from .loop_harness import PROJECT
-from .test_connectors import TOKEN, serve_proxy
-from .test_connectors import tls as tls
 
 
 class Pages:
-    """A fake proxy client: answers ``tools/list`` from ``pages`` in turn, or raises."""
+    """A fake client: answers ``tools/list`` from ``pages`` in turn, or raises."""
 
     def __init__(self, *answers: dict[str, Any] | BaseException) -> None:
         self.answers = list(answers)
@@ -324,81 +317,3 @@ def test_a_read_only_store_before_any_writer_has_no_canaries(tmp_path: Path) -> 
         assert CanaryStore(reader).latest(["papers"]) == {}
     finally:
         reader.close()
-
-
-def test_the_canaries_command_refuses_a_short_interval_and_an_open_token(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from sandbox_science.orchestrator.cli import main
-
-    token = tmp_path / "token"
-    token.write_text("test-secret-token-0123456789\n")
-    token.chmod(0o600)
-    base = [
-        "mcp-canaries", "--state-dir", str(tmp_path / "state"),
-        "--mcp-proxy", "http://127.0.0.1:18080", "--mcp-token-file", str(token),
-        "--server", "papers",
-    ]  # fmt: skip
-    assert main([*base, "--interval", "5"]) == 2
-    assert "at least 60" in capsys.readouterr().err
-    token.chmod(0o644)
-    assert main(base) == 1
-    assert "open to other users" in capsys.readouterr().err
-    token.chmod(0o600)
-    assert main([*base[:3], "--mcp-proxy", "http://198.51.100.7:80", *base[5:]]) == 1
-    assert "loopback" in capsys.readouterr().err
-
-
-def test_the_ready_line_is_the_one_the_launcher_waits_for() -> None:
-    from sandbox_science.launcher.parts import CANARIES_READY
-    from sandbox_science.orchestrator.cli_canaries import READY
-
-    assert READY == CANARIES_READY
-    assert json.dumps(READY)  # one line of plain text
-
-
-def _initializes(fake: FakeServer) -> int:
-    """The upstream sessions the proxy started at the fake server."""
-    return sum(
-        1
-        for seen in fake.seen
-        if isinstance(seen.message, dict)
-        and cast("dict[str, object]", seen.message).get("method") == "initialize"
-    )
-
-
-async def test_the_canaries_hold_no_proxy_session_and_take_no_run_service_place(
-    tls: Tls, tmp_path: Path
-) -> None:
-    """Against the real proxy: the canaries' own caller, one client per server across runs,
-    and each listing's session ended, so after many runs the canary caller holds at most
-    one session per server (none, once each listing has ended), and the run service's
-    session is never evicted (the proxy allows 4 per caller here)."""
-    canary_token = "test-secret-canary-caller-token"
-    canary = Caller("canary", "orchestrator", PROJECT)
-    async with serve_proxy(
-        tls, tmp_path / "proxy", callers=[(token_digest(canary_token), canary)]
-    ) as proxied:
-        assert proxied.sessions is not None
-        run_service = ProxyClient(proxied.url, TOKEN)
-        await run_service.request("papers", "tools/list", {}, session="s-1")
-        started = _initializes(proxied.fake)
-        source = ProxySource(proxied.url, canary_token)
-        clock = FakeClock()
-        control = ControlStore(store_path(tmp_path))
-        try:
-            runner = CanaryRunner(CanaryStore(control), source, ["papers"], clock=clock)
-            for _ in range(6):
-                (result,) = await runner.run_once()
-                assert result.status == "listed"
-                assert result.tool_count is not None
-                assert result.tool_count > 0
-                # The run service's one session, and none of the canary's: each ended.
-                assert len(proxied.sessions) == 1
-            # The run service's session is the one it started: no new initialize.
-            await run_service.request("papers", "tools/list", {}, session="s-1")
-            assert _initializes(proxied.fake) == started + 6
-        finally:
-            await source.close()
-            await run_service.close()
-            control.close()

@@ -3,10 +3,10 @@
 
 A canary is one bounded ``tools/list`` per configured MCP server, made every
 ``interval`` through the same path as the workspace's explicit availability check: the
-MCP proxy's ordinary, policy-enforcing endpoint, with the proxy caller's token. It
-initializes and lists, and never calls a tool; it never retries within a run (a run is
-one listing per server, at most ``MAX_PAGES`` pages within ``LIST_SECONDS``, each request
-within ``REQUEST_SECONDS``).
+agent runtime's own client, asked by the control service (``list_mcp_tools``), since no
+trusted service can reach a server (D98). It initializes and lists, and never calls a
+tool; it never retries within a run (a run is one listing per server, at most
+``MAX_PAGES`` pages within ``LIST_SECONDS``, each request within ``REQUEST_SECONDS``).
 
 Each result is a row of the control store's ``mcp_canaries`` (status, tool count and
 listing digest when listed, elapsed milliseconds, error kind otherwise), and one log
@@ -16,10 +16,9 @@ result that is not ``listed`` counts as a change too, from no earlier result, so
 down from the start is noticed. The runner prunes each server's rows to
 ``RETENTION_DAYS`` and ``RETENTION_ROWS`` after each run, every server's.
 
-On the direct path (D98 prototype) no trusted service reaches a server: the control
-service's runner asks the agent runtime to list through its own direct client instead
-(``confinement.canaries.RuntimeSource``, the ``list_mcp_tools`` request), with the same
-``list_tools`` and bounds.
+The control service's runner asks the agent runtime to list through its own direct client
+(``confinement.canaries.RuntimeSource``, the ``list_mcp_tools`` request). The MCP proxy,
+through which the canaries listed before, retired on 2026-10-26.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ import aiohttp
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
 
-from .connectors import ConnectorError, ProxyClient, check_proxy
+from .connectors import ConnectorError
 from .control import ControlError, ControlStore, Tx
 
 _log = logging.getLogger(__name__)
@@ -48,7 +47,7 @@ ListingStatus = Literal["listed", "unavailable", "denied", "timeout"]
 LIST_SECONDS: Final = 15.0
 """The bound on one server's whole listing, every page included."""
 REQUEST_SECONDS: Final = 10.0
-"""The bound on one request to the proxy."""
+"""The bound on one request to a server."""
 MAX_PAGES: Final = 32
 """Pages one listing may take; a longer one is ``unavailable``."""
 INTERVAL: Final = 900.0
@@ -59,14 +58,14 @@ RETENTION_ROWS: Final = 10_000
 MAX_PRUNED_SERVERS: Final = 256
 """Servers whose rows one pruning bounds by count."""
 SESSION: Final = "mcp-canary"
-"""The session name the canary's requests carry to the proxy."""
+"""The session name the canary's requests carry, which the policy middleware records."""
 EVENT: Final = "mcp_canary"
 CHANGED: Final = "mcp_canary_changed"
 _KIND: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
 class ListingClient(Protocol):
-    """What a listing needs of a client: ``ProxyClient.request``."""
+    """What a listing needs of a client: ``DirectClient.request``."""
 
     async def request(
         self,
@@ -145,37 +144,10 @@ async def list_tools(
 
 
 class ListingSource(Protocol):
-    """Where the runner's listings come from: the proxy, or a test's fake."""
+    """Where the runner's listings come from: the agent runtime
+    (``confinement.canaries.RuntimeSource``), or a test's fake."""
 
     async def list(self, server: str) -> Listing: ...
-
-
-class ProxySource:
-    """Listings through the MCP proxy with the canaries' own caller token, so the proxy's
-    records name them and their sessions never take the run service's places. One client
-    per server lasts across runs, and each listing's MCP session is ended (the proxy's
-    ``DELETE``) as soon as it is done, so the canaries hold no session between listings."""
-
-    def __init__(self, url: str, token: str) -> None:
-        check_proxy(url, token)
-        self.url, self._token = url.rstrip("/"), token
-        self._clients: dict[str, ProxyClient] = {}
-
-    async def list(self, server: str) -> Listing:
-        client = self._clients.get(server)
-        if client is None:
-            client = self._clients[server] = ProxyClient(
-                self.url, self._token, timeout=REQUEST_SECONDS
-            )
-        try:
-            return await list_tools(client, server, session=SESSION)
-        finally:
-            await client.end(server, session=SESSION)
-
-    async def close(self) -> None:
-        for client in self._clients.values():
-            await client.close()
-        self._clients.clear()
 
 
 @dataclass(frozen=True, slots=True)

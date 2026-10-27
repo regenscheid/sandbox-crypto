@@ -347,9 +347,8 @@ def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp
     output = generate(tmp_path, direct=True)
     secrets = output / "secrets"
     server = "crypto-research-mcp"
-    # Control's run service takes the direct path, with no proxy.
+    # Control's run service takes the direct path.
     control = ControlSettings.model_validate_json((secrets / "control/control.json").read_text())
-    assert control.proxy is None
     assert control.direct is not None
     assert (control.direct.project, control.direct.servers) == ("crypto", (server,))
     assert control.direct.about == {server: "Cryptography research servers"}
@@ -399,6 +398,43 @@ def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp
     readme = (output / "README.md").read_text()
     assert "kubectl -n research-test create secret generic test-mcp-provider" in readme
     assert "--from-env-file=<path>" in readme
+
+
+def test_the_direct_path_gives_the_workspace_its_check_token_and_the_middleware_inspection(
+    tmp_path,
+):
+    from sandbox_science.launcher.kubernetes_site import INSPECT_DEFAULTS
+    from sandbox_science.policy_middleware.settings import InspectSettings
+
+    output = generate(tmp_path, direct=True)
+    secrets = output / "secrets"
+    # The workspace's token for the user's availability check; control keeps its digest,
+    # which control.json names, and no other Secret has the token.
+    token = (secrets / "workspace/mcp-check-token").read_text()
+    assert len(token) >= 32
+    assert (secrets / "control/mcp-check-token.sha256").read_text() == _digest(token)
+    control = ControlSettings.model_validate_json((secrets / "control/control.json").read_text())
+    assert str(control.check_token_sha256_file) == "/private/mcp-check-token.sha256"
+    holders = {
+        path.parent.name
+        for path in secrets.rglob("*")
+        if path.is_file() and (path.read_bytes() == token.encode())
+    }
+    assert holders == {"workspace"}
+    assert token not in (output / "secrets.sh").read_text()
+    # The middleware reads listings and inspects the direct path's traffic, at its defaults.
+    middleware = load_middleware(secrets / "middleware/middleware.toml")
+    assert middleware.mcp_listings
+    assert middleware.inspect == InspectSettings()
+    assert InspectSettings().model_dump(exclude={"patterns"}) == INSPECT_DEFAULTS
+    written = tomllib.loads((secrets / "middleware/middleware.toml").read_text())
+    assert written["inspect"] == INSPECT_DEFAULTS
+    # Without [mcp_direct], neither.
+    (tmp_path / "plain").mkdir()
+    plain = generate(tmp_path / "plain", direct=False) / "secrets"
+    assert not (plain / "workspace/mcp-check-token").exists()
+    assert not (plain / "control/mcp-check-token.sha256").exists()
+    assert "inspect" not in tomllib.loads((plain / "middleware/middleware.toml").read_text())
 
 
 def test_the_managers_worker_token_is_not_its_control_token(tmp_path):

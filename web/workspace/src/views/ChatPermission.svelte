@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- A request that waits for the user's answer (D76, D97): a connector tool call the MCP
-     proxy holds, or research code's network or package request. The card shows a
+<!-- A request that waits for the user's answer (D76, D97): a connector tool call the
+     policy middleware holds (D98), or research code's network or package request. The card shows a
      structured summary (the tool or endpoint, the destination, the effect class and the
      significant arguments, or method, host, path, content type and size), the agent's own
      words (marked as the agent's), and for a delegated agent the brief its parent gave it

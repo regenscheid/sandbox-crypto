@@ -505,7 +505,10 @@ def reserved_host_reason(host: str, policy: LoadedPolicy) -> str | None:
         return reason
     for name, server in policy.policy.mcp.servers.items():
         if server.host == host:
-            return f"{host} hosts MCP server {name!r}, reachable only through the MCP proxy"
+            return (
+                f"{host} hosts MCP server {name!r}, reachable only by the agent runtime's "
+                "MCP client"
+            )
     return None
 
 
@@ -543,8 +546,8 @@ def _evaluate_network(
     if server is not None:
         return _deny(
             "floor",
-            f"{operation.host} hosts MCP server {server!r}, which is reachable only through "
-            "the MCP proxy (D67)",
+            f"{operation.host} hosts MCP server {server!r}, which is reachable only by the "
+            "agent runtime's MCP client (D98)",
             policy,
         )
     # Otherwise a read rule would let workers fetch packages around the package
@@ -682,7 +685,8 @@ def _evaluate_mcp(
     reason = ceiling.check_mcp_server(operation.server) or ceiling.check_host(server.host, resolved)
     if reason is not None:
         return _deny("ceiling", reason, policy)
-    if operation.origin == "worker" and not mcp.proxy.worker_access:
+    if operation.origin == "worker":
+        # Research code has no MCP access since the MCP proxy retired (D98, 2026-10-26).
         return _deny(
             "policy", "worker code may not call MCP servers (mcp.proxy.worker_access)", policy
         )
@@ -706,14 +710,6 @@ def _evaluate_mcp(
                 "policy", f"tool {tool!r} is outside the server's tool prefix {prefix!r}", policy
             )
         name = tool.removeprefix(prefix)
-    worker_tools = mcp.proxy.worker_tools
-    if (
-        operation.origin == "worker"
-        and worker_tools != "inherit"
-        and not any(tool_pattern_matches(pattern, name) for pattern in worker_tools)
-    ):
-        return _deny("policy", f"tool {tool!r} is not in mcp.proxy.worker_tools", policy)
-
     if policy.policy.lockdown.mcp == "locked" and not named(server, name, classification):
         return _deny(
             "policy",

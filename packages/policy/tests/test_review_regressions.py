@@ -194,17 +194,6 @@ def test_tools_outside_a_declared_prefix_are_denied(name: str) -> None:
     assert tool("firecrawl-mcp_firecrawl_search") is Action.ALLOW
 
 
-def test_worker_tools_narrow_after_the_prefix_is_removed() -> None:
-    for text, prefix in ((EXAMPLE_TEXT, ""), (PREFIXED_TEXT, PREFIX)):
-        narrowed = parse_policy(text.replace("worker_tools: inherit", 'worker_tools: ["*_search"]'))
-        search, crawl = (
-            prefix + "paper-search-mcp_arxiv_search",
-            prefix + "firecrawl-mcp_firecrawl_map",
-        )
-        assert tool(search, narrowed, origin="worker") is Action.ALLOW
-        assert tool(crawl, narrowed, origin="worker") is Action.DENY
-
-
 # Finding 4: what a reviewer reads must be what is enforced.
 
 
@@ -463,7 +452,8 @@ def test_lowercase_methods_are_denied(method: str) -> None:
     assert decide(method, "https://example.org/") is Action.DENY
 
 
-# Finding 12: MCP servers are reachable only through the MCP proxy.
+# Finding 12: MCP servers are reachable only by the agent's MCP client (the MCP proxy's,
+# until it retired).
 
 
 def test_declared_mcp_endpoints_cannot_be_reached_as_plain_http() -> None:
@@ -669,8 +659,12 @@ def test_backslash_escapes_in_double_quoted_strings_are_rejected(entry: str) -> 
 
 
 def test_single_quoted_and_plain_strings_still_work() -> None:
-    loaded = parse_policy(HEADER + "mcp: {proxy: {worker_tools: ['*_search', plain_name]}}\n")
-    assert loaded.policy.mcp.proxy.worker_tools == ("*_search", "plain_name")
+    loaded = parse_policy(
+        HEADER
+        + "mcp: {servers: {s: {url: 'https://mcp.example.org/x', revision: '1',\n"
+        + "  auth: {mode: none}, tools: {allow: ['*_search', plain_name]}}}}\n"
+    )
+    assert loaded.policy.mcp.servers["s"].tools.allow == ("*_search", "plain_name")
 
 
 def test_entries_cannot_hide_beyond_the_edge_of_the_screen() -> None:

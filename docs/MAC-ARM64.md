@@ -75,7 +75,7 @@ is macOS: a policy listing only `/opt/sandbox-science` could not start
 `/usr/bin/sleep`, and compiled policies, which have network rules, lost `/lib`
 and `/proc`. The policy compiler therefore lists the baseline in every compiled
 policy ([policy](POLICY.md), "Mapping to enforcement"). On 2026-10-21, with
-OpenShell v0.1.5, the compiler's research, orchestrator and MCP proxy policies
+OpenShell v0.1.5, the compiler's research, orchestrator and (since retired) MCP proxy policies
 (Landlock as a hard requirement; the policy middleware and credential bindings
 left out, since the test gateway registers neither) started in Mac MicroVMs and
 could read `/proc` and run Sage; the research sandbox also had pseudo-terminals,

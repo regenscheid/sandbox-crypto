@@ -21,6 +21,10 @@ with the pin of the project's classification in force, with the library's code
 (``mcp_listings``), and appends the same ``mcp-tools-drift`` record the middleware would,
 with source ``runtime``, unless that listing is the drift in force already. The
 middleware's ``DriftLedger`` then holds the server's non-read calls as for its own reads.
+It keeps the latest listing it took of each project's server, in memory, for the
+workspace's MCP services view (``listings``), which shows each tool as the classification
+and the policy in force decide a call of it by name; a worker that restarts has none until
+a run or a canary lists the server again.
 
 The project's policy is the revision the policy store binds the project to, else the one
 granted to it last (``policy add --project``). The single workspace user holds the operator
@@ -53,16 +57,27 @@ from sandbox_science.contracts.classifications import (
     DriftSummary,
     DriftTool,
     EffectName,
+    ListedToolView,
     ListingReport,
     ListingReported,
     PinState,
+    ReportedListing,
     ToolRule,
 )
-from sandbox_science.policy import Action, LoadedPolicy, PolicyLoadError
+from sandbox_science.policy import (
+    Action,
+    HardFloor,
+    LoadedPolicy,
+    PolicyLoadError,
+    PoolCeiling,
+    evaluate_mcp_message,
+)
 from sandbox_science.policy.classification import (
     ServerClassification,
     changed_tools,
     class_action,
+    classified_names,
+    listed_effect,
     resolve,
     restrictiveness,
     revision_classification,
@@ -79,6 +94,7 @@ from sandbox_science.policy.detection import (
     pin_digest,
 )
 from sandbox_science.policy.effects import EffectClass, ToolEntry
+from sandbox_science.policy.evaluate import DEFAULT_FLOOR
 from sandbox_science.policy.mcp_listings import drift_record, listing_digest, listing_drift
 from sandbox_science.policy.mcp_wire import ListedTool
 from sandbox_science.policy.model import McpServer
@@ -91,10 +107,15 @@ from .permissions import Permissions, PermissionStoreError
 _log = logging.getLogger(__name__)
 
 MAX_REPORTS: Final = 10
-"""Listing reports one caller may make of one project's server a minute."""
+"""Listing reports one caller may make of one project's server a minute, counted apart for
+runs' listings (a report naming a session or run) and for those naming neither, the
+canaries' and the workspace user's availability checks, so that checks never spend the
+runs' budget."""
 REPORT_WINDOW: Final = timedelta(minutes=1)
 MAX_REPORTERS: Final = 4096
 """Callers, projects and servers whose recent reports are counted, the oldest forgotten."""
+MAX_KEPT_LISTINGS: Final = 4096
+"""Projects' servers whose latest listing is kept, the oldest forgotten."""
 RUNTIME_CALLER: Final = "agent-runtime"
 """The caller a reported listing's record names: the agent runtime's direct client."""
 ACTOR: Final = "user"
@@ -121,15 +142,25 @@ class ClassificationDesk:
         policies: Callable[[str], LoadedPolicy | None],
         receipts: ClassificationReceipts,
         clock: Clock = SYSTEM_CLOCK,
+        *,
+        ceiling: PoolCeiling | None = None,
+        floor: HardFloor = DEFAULT_FLOOR,
     ) -> None:
         self.store = store
         self.permissions = permissions
         self.policies = policies
         self.receipts = receipts
         self.clock = clock
+        self.ceiling = ceiling if ceiling is not None else PoolCeiling.unrestricted()
+        """The pool's ceiling and floor, which decide the listed tools' calls with the
+        policy, as the middleware does."""
+        self.floor = floor
+        self._listings: dict[tuple[str, str], tuple[ListingReport, datetime, bool]] = {}
+        """The latest listing taken of each project's server: the report, when, and whether
+        it drifted."""
         self._reports = threading.RLock()
         """One report's check of the drifts and its records at a time."""
-        self._recent: dict[tuple[str, str, str], deque[datetime]] = {}
+        self._recent: dict[tuple[str, str, str, str], deque[datetime]] = {}
         """Each caller's recent reports by project and server, for the rate."""
 
     # Reads.
@@ -329,7 +360,7 @@ class ClassificationDesk:
         own; the server must be one of the project's policy. A report may start or keep a
         hold, never end one: one whose listing the project accepted while another drift of
         the server holds it is refused. At most ``MAX_REPORTS`` a minute per caller, project
-        and server. Blocking."""
+        and server, for runs and for checks apart. Blocking."""
         _, entry = self._server(report.project_id, report.server)
         seen = {
             tool.name: ListedTool(tool.name, tool.digest, EffectClass(tool.hint))
@@ -339,7 +370,8 @@ class ClassificationDesk:
             raise ClassificationReviewError("a reported listing names a tool twice", "invalid")
         if listing_digest(seen) != report.listing:
             raise ClassificationReviewError("the listing's digest is not its tools'", "invalid")
-        self._admit(caller, report.project_id, report.server)
+        scope = "check" if report.session is None and report.run is None else "run"
+        self._admit(caller, report.project_id, report.server, scope)
         current = self._current(report.project_id, report.server, entry)
         pin = pin_digest(current.pins) if current is not None else None
         drift = listing_drift(report.server, current.pins, seen) if current is not None else None
@@ -372,13 +404,102 @@ class ClassificationDesk:
                 {**subject, "pin": pin, "listing": report.listing, "drifted": drift is not None},
                 kind=LISTING_REPORTED_RECORD,
             )
+            key = (report.project_id, report.server)
+            self._listings.pop(key, None)
+            self._listings[key] = (report, self.clock.now(), drift is not None)
+            if len(self._listings) > MAX_KEPT_LISTINGS:
+                self._listings.pop(next(iter(self._listings)))
         return ListingReported(drifted=drift is not None, record=seq)
 
-    def _admit(self, caller: str, project: str, server: str) -> None:
-        """Count one report of the caller's for the project's server; refuse past the rate."""
+    def listings(self, project: str) -> list[ReportedListing]:
+        """The latest listing taken of each of the project's servers that has one, each
+        tool as the policy and classification in force decide a call of it by name alone.
+        Blocking."""
+        loaded = self.policies(project)
+        if loaded is None:
+            return []
+        with self._reports:
+            kept = [
+                (server, found)
+                for (owner, server), found in self._listings.items()
+                if owner == project
+            ]
+        found: list[ReportedListing] = []
+        for server, (report, at, drifted) in sorted(kept, key=lambda item: item[0]):
+            entry = loaded.policy.mcp.servers.get(server)
+            if entry is None:
+                continue  # a server the project's policy no longer declares
+            try:
+                revision = self.store.classification(project, server)
+            except (StoreError, PolicyLoadError) as exc:
+                raise PermissionStoreError(f"the classification of {server}: {exc}") from exc
+            found.append(
+                ReportedListing(
+                    server=server,
+                    reported_at=at,
+                    session=report.session,
+                    run=report.run,
+                    listing=report.listing,
+                    drifted=drifted,
+                    tools=[
+                        self._listed(loaded, server, entry, revision, tool.name, tool.hint)
+                        for tool in report.tools
+                    ],
+                )
+            )
+        return found
+
+    def _listed(
+        self,
+        loaded: LoadedPolicy,
+        server: str,
+        entry: McpServer,
+        revision: ServerClassification | None,
+        name: str,
+        hint: EffectName,
+    ) -> ListedToolView:
+        """A listed tool as a call of it by name, without arguments, is decided: by the
+        policy, the pool's ceiling and floor, the classification in force and its hint, as
+        the middleware decides one (D96, D98)."""
+        message: dict[str, object] = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}},
+        }
+        decision = evaluate_mcp_message(
+            server,
+            message,
+            loaded,
+            origin="orchestrator",
+            ceiling=self.ceiling,
+            floor=self.floor,
+            hints={name: EffectClass(hint)},
+            classification=revision,
+        )
+        effect = listed_effect(entry, name, decision, revision)
+        action = (
+            "deny"
+            if decision.action is Action.DENY
+            else "escalate"
+            if decision.action is Action.ESCALATE
+            else "allow"
+        )
+        stripped = name.removeprefix(entry.tool_prefix or "")
+        return ListedToolView(
+            name=name,
+            hint=hint,
+            effect=cast(EffectName, effect if effect in _EFFECTS else "unclassified"),
+            classified=stripped in classified_names(entry, revision),
+            action=action,
+        )
+
+    def _admit(self, caller: str, project: str, server: str, scope: str) -> None:
+        """Count one report of the caller's for the project's server, of runs' or checks'
+        listings (``scope``); refuse past the rate."""
         now = self.clock.now()
         with self._reports:
-            recent = self._recent.setdefault((caller, project, server), deque())
+            recent = self._recent.setdefault((caller, project, server, scope), deque())
             while recent and now - recent[0] >= REPORT_WINDOW:
                 recent.popleft()
             if len(recent) >= MAX_REPORTS:

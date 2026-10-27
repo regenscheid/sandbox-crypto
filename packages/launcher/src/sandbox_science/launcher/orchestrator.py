@@ -26,7 +26,7 @@ from .config import (
     SkillsConfig,
 )
 from .runtime_binding import WorkerBinding
-from .state import Layout, private_dir, write_private
+from .state import Layout, ensure_token, private_dir, write_private
 from .supervise import Part, Supervisor, passed
 
 
@@ -91,7 +91,6 @@ def runtime_target(
     worker: str,
     model: str,
     control: str,
-    proxy: str | None,
     python: str,
     relay_tls: bool = False,
 ) -> OrchestratorTarget:
@@ -103,7 +102,6 @@ def runtime_target(
         worker_api=endpoint(worker).model_copy(update=private),
         model_gateway=endpoint(model),
         state_service=endpoint(control).model_copy(update=private),
-        mcp_proxy=endpoint(proxy) if proxy is not None else None,
         binaries=(python + "*",),
         filesystem=SandboxFilesystem(
             read_only=("/opt/sandbox-science", "/usr/share/sandbox-science")
@@ -193,7 +191,6 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         worker=parts.worker_url(config),
         model=config.model.url,
         control=control_url,
-        proxy=f"http://{config.mcp_proxy.listen}" if config.mcp_proxy else None,
         python=runtime.python,
     )
     policy = compile_orchestrator(target)
@@ -221,16 +218,6 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
     }
     if service.math_checks is not None:
         host["checks"] = checks(parts.node(config) or service.node, service.math_checks)
-    if config.mcp_proxy is not None:
-        spec = config.mcp_proxy
-        host["proxy"] = {
-            "url": f"http://{spec.listen}",
-            "token_file": str(layout.token(mcp.PROXY_CALLER)),
-            "project": config.mcp_project(),
-            "servers": spec.servers,
-            "about": spec.about,
-            "index": spec.index,
-        }
     direct = None
     if config.mcp_direct is not None and egress is not None:
         spec = config.mcp_direct
@@ -242,6 +229,10 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
             "about": spec.about,
             "index": spec.index,
         }
+        # The workspace's "Check availability" (POST /mcp-check), with a token of its own.
+        check = directory / "workspace-check.sha256"
+        write_private(check, ensure_token(layout.token(parts.CHECK_CALLER)) + "\n")
+        host["check_token_sha256_file"] = str(check)
         if config.canaries.enabled:
             # The direct path's canaries: control asks the runtime to list (list_mcp_tools).
             host["canaries"] = {

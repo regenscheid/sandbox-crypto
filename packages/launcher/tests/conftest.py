@@ -28,7 +28,6 @@ PARTS = (
     "sandbox-science-package-cache",
     "sandbox-science-harness",
     "sandbox-science-workspace",
-    "sandbox-science-mcp-proxy",
     "sandbox-science-control",
 )
 
@@ -212,8 +211,8 @@ def bound_port(span: int = 1) -> int:
 def free_port(taken: Collection[int], probe: Callable[[], int] = bound_port) -> int:
     """A free loopback port that is none of ``taken``. A port picked by binding and
     closing is free only until the system hands it out again, which it may do at once: a
-    CI run gave the MCP proxy's forward the workspace's port, and the launcher refused
-    the config (``both listen on``)."""
+    CI run gave the (since retired) MCP proxy's forward the workspace's port, and the
+    launcher refused the config (``both listen on``)."""
     for _ in range(100):
         port = probe()
         if port not in taken:

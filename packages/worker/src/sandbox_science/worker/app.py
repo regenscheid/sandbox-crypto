@@ -82,6 +82,7 @@ from sandbox_science.contracts.classifications import (
     ClassificationsInForce,
     DriftAcceptance,
     ListingReport,
+    ReportedListings,
 )
 from sandbox_science.contracts.documents import (
     MAX_CATALOG_PAGE_BYTES,
@@ -1334,6 +1335,16 @@ async def report_mcp_listing(request: web.Request) -> web.Response:
     return _json(await _reviewed(lambda: desk.report_listing(report, caller)))
 
 
+async def mcp_listings(request: web.Request) -> web.Response:
+    """The latest listing the agent runtime's client reported of each of a project's servers,
+    each tool as the policy and classification in force decide it (D98): for the workspace's
+    MCP services view, an operator client's, for its own projects."""
+    project = _project_query(request)
+    desk = _classifications(request, project)
+    found = await _reviewed(lambda: desk.listings(project))
+    return _json(ReportedListings(found))
+
+
 async def export_classification(request: web.Request) -> web.Response:
     """A project's accepted revision, its YAML exactly as stored, to check in (CL-3)."""
     project = _project_query(request)
@@ -1430,6 +1441,7 @@ CLASSIFICATION_ROUTES: Final = (
     web.post("/v1/classifications/{server}/drafts/{draft}/accept", accept_classification_draft),
     web.post("/v1/classifications/{server}/drift/accept", accept_classification_drift),
     web.post("/v1/mcp-listings", report_mcp_listing),
+    web.get("/v1/mcp-listings", mcp_listings),
     web.get("/v1/classifications/{server}/revisions/{revision}/export", export_classification),
 )
 _SERVER_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")

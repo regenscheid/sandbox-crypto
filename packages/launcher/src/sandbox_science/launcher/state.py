@@ -13,7 +13,8 @@
     worker/state/             the worker's state directory, with its lock
     control/                  the control store the run service and workspace share
     logs/<part>.log           what each part writes
-    mcp-proxy/                the MCP proxy's files, and the record of its sandbox
+    mcp-proxy/                the provider registration's directory, and the record of a
+                              sandbox of the retired MCP proxy an earlier launcher made
 ```
 
 Delete ``tokens/`` with the launcher stopped to have new tokens made; never delete the

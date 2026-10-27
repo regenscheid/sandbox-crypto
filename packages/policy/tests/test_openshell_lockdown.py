@@ -7,8 +7,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 from sandbox_science.policy import (
     Action,
     LoadedPolicy,
@@ -23,7 +21,6 @@ from sandbox_science.policy.openshell import (
     Compiled,
     admission_refusal,
     compile_agent_mcp,
-    compile_mcp_proxy,
     compile_sandbox,
     load_targets,
 )
@@ -81,13 +78,13 @@ def decide(policy: LoadedPolicy, tool: str) -> Action:
     return evaluate_mcp_message(SERVER, message, policy, ceiling=OPEN).action
 
 
-@pytest.mark.parametrize("admit", [False, True])
-def test_the_fence_admits_classified_tools_as_their_class_allows(admit: bool) -> None:
+def test_the_fence_admits_classified_tools_as_their_class_allows() -> None:
     policy = mcp_policy()
-    compiled = compile_mcp_proxy(policy, TARGETS.mcp_proxy, ceiling=OPEN, admit_escalated=admit)
+    compiled = compile_agent_mcp(policy, AGENT, ceiling=OPEN)
     for tool in catalog(SERVER).tools:
         action = decide(policy, tool)
-        expected = action is Action.ALLOW or (admit and action is Action.ESCALATE)
+        # Escalated tools are admitted: the middleware holds each call (D98).
+        expected = action in (Action.ALLOW, Action.ESCALATE)
         assert fence_admits(compiled, tool) is expected, (tool, action)
 
 
@@ -104,14 +101,11 @@ def test_the_agent_fence_admits_escalations_and_never_browsing_while_it_is_off()
     assert fence_admits(enabled, "firecrawl-mcp_firecrawl_interact")
 
 
-@pytest.mark.parametrize("compile_fence", ["proxy", "agent"])
-def test_locked_mcp_compiles_exact_names_only(compile_fence: str) -> None:
+def test_locked_mcp_compiles_exact_names_only() -> None:
     tools = '{allow: ["*_search"]}'
     declared, locked = mcp_policy(tools=tools), mcp_policy("lockdown: {mcp: locked}\n", tools=tools)
 
     def fence(policy: LoadedPolicy) -> Compiled:
-        if compile_fence == "proxy":
-            return compile_mcp_proxy(policy, TARGETS.mcp_proxy, ceiling=OPEN)
         return compile_agent_mcp(policy, AGENT, ceiling=OPEN)
 
     added = "e-print-mcp_brand_new_search"

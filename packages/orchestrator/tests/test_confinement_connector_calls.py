@@ -152,7 +152,6 @@ def connectors(linked: Linked, heard: list[Any] | None = None) -> Connectors:
         session="s-1",
         run=RUN,
         on_approval=on_approval if heard is not None else None,
-        path="direct",
     )
 
 
@@ -165,7 +164,6 @@ async def test_the_runs_listing_is_made_and_filtered_by_the_runtime_and_reported
     assert READ_TOOL in found.tools
     assert ESCALATED_TOOL in found.tools
     assert DENIED_TOOL not in found.tools  # the compiled native rules deny it
-    assert found.path == "direct"
     assert linked.reports.taken == [(SERVER, "crypto", "s-1", RUN)]
     (asked,) = linked.asked
     assert (asked["method"], asked["call"], asked["session"]) == ("tools/list", None, "s-1")
@@ -316,13 +314,14 @@ async def test_a_server_the_runtime_does_not_declare_is_unavailable() -> None:
     assert cast(dict[str, Any], answer["failure"])["kind"] == "unavailable"
 
 
-def test_control_takes_the_proxy_or_the_direct_path_never_both(tmp_path: Any) -> None:
+def test_control_refuses_the_retired_proxy_settings(tmp_path: Any) -> None:
+    """The MCP proxy retired (D98, 2026-10-26): ``control.json`` has the direct path's
+    connectors only, and a ``proxy`` an older launcher wrote is refused."""
     from pydantic import ValidationError
 
     from sandbox_science.orchestrator.confinement.server import (
         ControlSettings,
         DirectAccessSettings,
-        ProxySettings,
     )
 
     base: dict[str, Any] = {
@@ -336,9 +335,7 @@ def test_control_takes_the_proxy_or_the_direct_path_never_both(tmp_path: Any) ->
         "image_revision": "a" * 40,
     }
     direct = DirectAccessSettings(project="crypto", servers=(SERVER,))
-    proxy = ProxySettings(
-        url="http://127.0.0.1:2", token_file=tmp_path / "t", project="crypto", servers=(SERVER,)
-    )
     assert ControlSettings(**base, direct=direct).direct == direct
-    with pytest.raises(ValidationError, match="not both"):
-        ControlSettings(**base, direct=direct, proxy=proxy)
+    proxy = {"url": "http://127.0.0.1:2", "token_file": str(tmp_path / "t"), "project": "crypto"}
+    with pytest.raises(ValidationError, match="proxy"):
+        ControlSettings.model_validate({**base, "direct": direct, "proxy": proxy})

@@ -14,7 +14,9 @@ settings hold the digests of the two clients' tokens:
 
 The run service and the workspace share the control store and need no token between
 them; the browser logs in to the workspace with the address the workspace makes at
-each start.
+each start. With ``[mcp_direct]`` the workspace asks the control service to check a
+server's availability with a token of its own, ``workspace-control``, whose digest the
+control service holds (orchestrator.py).
 """
 
 from __future__ import annotations
@@ -28,13 +30,16 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from . import mcp, openshell_version, toml, unit
+from . import openshell_version, toml, unit
 from .config import LauncherConfig, LauncherError
 from .state import Layout, ensure_token, write_private
 
 WORKER = "sandbox-science-worker"
 HARNESS = "sandbox-science-harness"
 WORKSPACE = "sandbox-science-workspace"
+CHECK_CALLER = "workspace-control"
+"""The workspace's token for the control service's availability check, by its file's name
+in tokens/: the control service holds its digest (orchestrator.py)."""
 CLIENTS = ("harness", "workspace", "launcher")
 """The worker's clients, each with a token limited to the config's projects: the launcher's
 own lists and suspends the projects' research sandboxes (sandboxes.py)."""
@@ -74,13 +79,6 @@ def check(config: LauncherConfig) -> None:
     if cli_problem is not None:
         problems.append(cli_problem)
     names = [WORKER, HARNESS, WORKSPACE, "sandbox-science-control"]
-    if config.mcp_proxy is not None:
-        names.append(mcp.COMMAND)
-        problems.extend(
-            f"no MCP proxy {what} at {path}"
-            for what, path in mcp.sources(config).items()
-            if not path.is_file()
-        )
     problems.extend(
         f"no {name} in {commands(config)}"
         for name in names
@@ -167,8 +165,6 @@ def prepare(config: LauncherConfig) -> Layout:
     ensure_token(layout.token("worker"))
     digests = {name: ensure_token(layout.token(f"{name}-worker")) for name in CLIENTS}
     write_private(layout.worker_settings, toml.dumps(worker_settings(config, layout, digests)))
-    if config.mcp_proxy is not None:
-        mcp.prepare(config, layout)
     return layout
 
 
@@ -328,7 +324,6 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--model-url", model.url, "--model", model.name,
         "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *apis, *efforts,
         *shared, *math,
-        *mcp.harness_options(config, layout),
     ]  # fmt: skip
 
 
@@ -370,21 +365,18 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     # The skills page shows what the pass runs are given derived.
     derived = config.skills.metadata_model
     page = [] if derived is None else ["--skills-metadata-model", derived]
-    services = []
-    if config.mcp_proxy is not None:
-        services = [
-            "--mcp-project",
-            config.mcp_project(),
-            "--mcp-proxy",
-            f"http://{config.mcp_proxy.listen}",
-            "--mcp-proxy-token-file",
-            str(layout.token(mcp.PROXY_CALLER)),
-        ]
-        if config.mcp_proxy.approvals:
-            # An operator caller: it reads and answers the project's permission requests.
-            services += ["--mcp-operator-token-file", str(layout.token(mcp.OPERATOR_CALLER))]
-        for server in config.mcp_proxy.servers:
-            services += ["--mcp-service", f"{server}={config.mcp_proxy.about.get(server, '')}"]
+    services: list[str] = []
+    direct = config.mcp_direct
+    if direct is not None and config.orchestrator is not None:
+        services = ["--mcp-project", config.mcp_project()]
+        for server in direct.servers:
+            services += ["--mcp-service", f"{server}={direct.about.get(server, '')}"]
+        # The user's "Check availability": a listing by the runtime's client, asked of the
+        # control service with the workspace's own token (D98).
+        services += [
+            "--mcp-check", f"http://{config.orchestrator.control_listen}",
+            "--mcp-check-token-file", str(layout.token(CHECK_CALLER)),
+        ]  # fmt: skip
     named = workspace.preview_name
     viewer = [] if named is None else ["--preview-name", named]
     return [
@@ -396,27 +388,4 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--worker-token-file", str(layout.token("workspace-worker")),
         *repairs, *agent_models, *page,
         *services,
-    ]  # fmt: skip
-
-
-CANARIES_READY = "MCP canaries running"
-"""The line ``sandbox-science-harness mcp-canaries`` prints once it runs."""
-
-
-def canaries_argv(config: LauncherConfig, layout: Layout) -> list[str] | None:
-    """The scheduled MCP canaries (docs/MCP-CONNECTORS.md, "Canaries"), when ``[canaries]``
-    is enabled: each ``[mcp_proxy]`` server listed through the proxy with the canaries' own
-    caller token (``mcp-canary``, which ``mcp.prepare`` gives the proxy), the results
-    recorded in the control store. None when they are off, or on the direct path, whose
-    canaries the control service runs (``orchestrator.prepare``)."""
-    if not config.canaries.enabled or config.mcp_proxy is None:
-        return None
-    proxy = config.mcp_proxy
-    servers = [option for server in proxy.servers for option in ("--server", server)]
-    return [
-        str(commands(config) / HARNESS), "mcp-canaries",
-        "--state-dir", str(layout.control),
-        "--mcp-proxy", f"http://{proxy.listen}",
-        "--mcp-token-file", str(layout.token(mcp.CANARY_CALLER)),
-        "--interval", f"{config.canaries.interval:g}", *servers,
     ]  # fmt: skip

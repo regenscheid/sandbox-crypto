@@ -18,9 +18,7 @@ import subprocess
 from collections.abc import Mapping
 from typing import Any
 
-PROFILES = frozenset(
-    {"minimal", "crypto-base", "orchestrator", "mcp-proxy", "trusted-app", "trusted-worker"}
-)
+PROFILES = frozenset({"minimal", "crypto-base", "orchestrator", "trusted-app", "trusted-worker"})
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 

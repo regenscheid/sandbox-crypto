@@ -2,9 +2,10 @@
 # one crypto-research-mcp's Access application admits (docs/MCP-CONNECTORS.md).
 #
 # It has no endpoints: the project policy's MCP server entry names the host, and the
-# MCP proxy's compiled policy binds the provider there with credential_binding, which
-# OpenShell refuses for a provider whose profile has endpoints (lab 2). The MCP proxy
-# places the two placeholders in the headers itself (mode: headers), so the
+# agent runtime sandbox's compiled policy binds the provider there with
+# credential_binding, which OpenShell refuses for a provider whose profile has endpoints
+# (lab 2). The runtime's MCP client places the two placeholders in the headers itself
+# (mode: headers; [mcp_direct.servers.NAME] credentials), so the
 # placement fields below are descriptive; OpenShell substitutes the values as the
 # request leaves toward the bound host. The owner imports it and creates the
 # provider from the token, read into the environment without echo:
@@ -14,12 +15,12 @@
 #   openshell provider create --name crypto-research-mcp --type cloudflare-access \
 #     --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET
 #
-# The proxy's sandbox sees only placeholders, under CF_ACCESS_CLIENT_ID and
+# The agent runtime's sandbox sees only placeholders, under CF_ACCESS_CLIENT_ID and
 # CF_ACCESS_CLIENT_SECRET.
 
 id: cloudflare-access
 display_name: Cloudflare Access service token
-description: A Cloudflare Access service token, bound to its host by the compiled MCP proxy policy
+description: A Cloudflare Access service token, bound to its host by the agent runtime's compiled policy
 category: other
 credentials:
   - name: client_id

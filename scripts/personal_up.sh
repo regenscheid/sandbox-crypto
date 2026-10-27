@@ -21,7 +21,7 @@
 #   SS_PERSONAL_UNIT     ss-personal                              (the units' prefix)
 #   SS_PERSONAL_SKIP_SNAPSHOT  unset; 1 skips the pre-migration snapshot (as --skip-snapshot)
 #   SS_PERSONAL_GATEWAY_PORT 17680, SS_PERSONAL_MIDDLEWARE_PORT 50061,
-#   SS_PERSONAL_CACHE_PORT 8390, SS_PERSONAL_PROXY_PORT 8380      (loopback ports)
+#   SS_PERSONAL_CACHE_PORT 8390                                   (loopback ports)
 #   VM_VCPUS 8, VM_MEM_MIB 16384, VM_DISK_MIB 32768              (each sandbox's VM)
 #   OS_BIN ~/.local/opt/openshell-<version>/bin, where <version> is OPENSHELL_VERSION in
 #   packages/contracts/.../openshell_version.py (the script refuses any other release);
@@ -38,7 +38,6 @@ UNIT=${SS_PERSONAL_UNIT:-ss-personal}
 GATEWAY_PORT=${SS_PERSONAL_GATEWAY_PORT:-17680}
 MIDDLEWARE_PORT=${SS_PERSONAL_MIDDLEWARE_PORT:-50061}
 CACHE_PORT=${SS_PERSONAL_CACHE_PORT:-8390}
-PROXY_PORT=${SS_PERSONAL_PROXY_PORT:-8380}
 # The one OpenShell release the code supports, read from the constant that names it
 # (contracts/openshell_version.py), from the checkout this script is in.
 VERSION_FILE="$(cd "$(dirname "$0")/.." && pwd)/packages/contracts/src/sandbox_science/contracts/openshell_version.py"
@@ -75,6 +74,51 @@ esac
 # The unit's worker takes its settings, with the clients' tokens, from the launcher's config,
 # so even --openshell-only needs it.
 if [ ! -f "$CONFIG" ]; then echo "no config at $CONFIG" >&2; exit 1; fi
+# The MCP proxy retired (D98, 2026-10-26). Before any unit starts: a config that still has
+# [mcp_proxy] is refused by the launcher, and a policy that lets research code use MCP
+# (mcp.proxy.worker_access or worker_tools, other than false and inherit) is refused by the
+# middleware's store and the worker. Both stop here with what to do.
+retired=0
+"$R/.venv/bin/python" -I - "$CONFIG" "$R/examples/policy.yaml" <<'PY' || retired=$?
+import sys, tomllib
+from pathlib import Path
+
+import yaml
+
+config_path = Path(sys.argv[1])
+config = tomllib.loads(config_path.read_text())
+if "mcp_proxy" in config:
+    sys.exit(3)
+policies = [Path(sys.argv[2])]
+named = config.get("worker", {}).get("policy")
+if isinstance(named, str):
+    policies.append(config_path.parent / Path(named).expanduser())
+for policy in policies:
+    try:
+        loaded = yaml.safe_load(policy.read_text())
+    except (OSError, yaml.YAMLError):
+        continue  # the store and the worker say what is wrong with it
+    proxy = ((loaded or {}).get("mcp") or {}).get("proxy") or {}
+    if not isinstance(proxy, dict):
+        continue
+    if proxy.get("worker_access", False) is not False or proxy.get("worker_tools", "inherit") != "inherit":
+        print(policy)
+        sys.exit(4)
+PY
+if [ "$retired" -eq 3 ]; then
+  echo "$CONFIG has [mcp_proxy], which the launcher refuses since the MCP proxy retired: run" >&2
+  echo "  $R/.venv/bin/sandbox-science migrate-mcp-config $CONFIG" >&2
+  echo "then this again (docs/MCP-CONNECTORS.md, \"Migrating from [mcp_proxy]\"); nothing was started" >&2
+  exit 1
+elif [ "$retired" -eq 4 ]; then
+  echo "the policy above sets mcp.proxy.worker_access or worker_tools, which retired with the MCP" >&2
+  echo "proxy (D98): research code has no MCP access. Remove both keys (or set worker_access: false" >&2
+  echo "and worker_tools: inherit), then run this again (docs/POLICY.md); nothing was started" >&2
+  exit 1
+elif [ "$retired" -ne 0 ]; then
+  echo "could not read $CONFIG to check it for [mcp_proxy]; nothing was started" >&2
+  exit 1
+fi
 for part in cache middleware; do
   if active "$UNIT-$part"; then
     echo "$UNIT-$part, a unit of the earlier layout, runs: scripts/personal_down.sh first" >&2; exit 1
@@ -190,6 +234,9 @@ listen = "127.0.0.1:$MIDDLEWARE_PORT"
 registration = "sandbox-science-policy"
 state_dir = "$OS/middleware/state"
 ceiling = "$OS/middleware/pool-ceiling.yaml"
+# The agent runtime's MCP listings (D98: the direct path, the only one since the MCP proxy
+# retired), which the middleware reads to drop denied tools; [mcp_direct] needs it.
+mcp_listings = true
 
 [middleware.tls]
 certificate = "$MW/middleware.pem"
@@ -218,13 +265,8 @@ kind: OpenShellTargets
 sandbox:
   middleware: sandbox-science-policy
   package_cache: {host: host.openshell.internal, port: $CACHE_PORT}
-  mcp_proxy: {host: host.openshell.internal, port: $PROXY_PORT}
   binaries: [/**]
   filesystem: {read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}
-mcp_proxy:
-  binaries: [/opt/sandbox-science/bin/python*]
-  versions: ["2025-11-25"]
-  filesystem: {read_only: [/opt/sandbox-science]}
 EOF
 cat > "$OS/gateway.toml" <<EOF
 [openshell]
@@ -310,7 +352,7 @@ $OPENSHELL_ONLY && exit 0
 # signal, and the timeout covers the research sandboxes' suspension.
 systemd-run --user --unit="$UNIT-launcher" --collect -q -p KillMode=mixed -p TimeoutStopSec=300 --working-directory="$R" \
   "$R/.venv/bin/sandbox-science" up --config "$CONFIG"
-echo "launcher: $UNIT-launcher started; waiting for it to report it runs (the first start imports skills and boots the MCP proxy's sandbox)"
+echo "launcher: $UNIT-launcher started; waiting for it to report it runs (the first start imports skills and boots the agent runtime's sandbox)"
 INVOCATION=$(systemctl --user show -p InvocationID --value "$UNIT-launcher")
 for _ in $(seq 1 180); do
   if ! active "$UNIT-launcher"; then

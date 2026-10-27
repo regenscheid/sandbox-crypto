@@ -161,6 +161,15 @@ class Instance:
             program(self.os_bin, name, body)
         for name, body in COMMANDS.items():
             program(self.repo / ".venv/bin", name, body)
+        # The checkout's interpreter, which reads the config and the policy before anything
+        # starts: this one, with the policy library's YAML.
+        python = self.repo / ".venv/bin/python"
+        python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        python.chmod(python.stat().st_mode | stat.S_IXUSR)
+        (self.repo / "examples").mkdir()
+        (self.repo / "examples/policy.yaml").write_text(
+            "mcp:\n  proxy: {max_argument_bytes: 1Ki}\n"
+        )
         (self.repo / "scripts").mkdir()
         program(self.repo / "scripts", "backup_stores.py", BACKUP_STORES)
         # What the script makes once and keeps, already there: nothing needs openssl.
@@ -387,6 +396,49 @@ def test_a_config_is_needed_even_to_start_only_openshell(instance: Instance) -> 
     assert done.returncode == 1
     assert "no config at" in done.stderr
     assert instance.started() == []
+
+
+def test_a_config_with_the_retired_mcp_proxy_is_refused_before_anything_starts(
+    instance: Instance,
+) -> None:
+    instance.config.write_text('[mcp_proxy]\nservers = ["papers"]\n')
+    for args in ((), ("--openshell-only",)):
+        done = instance.run("personal_up.sh", *args)
+        assert done.returncode == 1
+        assert "has [mcp_proxy], which the launcher refuses" in done.stderr
+        assert "migrate-mcp-config" in done.stderr
+        assert instance.started() == []
+        assert not instance.unit_config.exists()
+
+
+@pytest.mark.parametrize(
+    "proxy", ["{worker_access: true}", "{worker_tools: [search]}", "{worker_access: 'yes'}"]
+)
+@pytest.mark.parametrize("which", ["example", "config"])
+def test_a_policy_giving_research_code_mcp_is_refused_before_anything_starts(
+    instance: Instance, proxy: str, which: str
+) -> None:
+    body = f"mcp:\n  proxy: {proxy}\n"
+    if which == "example":
+        (instance.repo / "examples/policy.yaml").write_text(body)
+        named = instance.repo / "examples/policy.yaml"
+    else:
+        named = instance.config.parent / "personal-policy.yaml"
+        named.write_text(body)
+        instance.config.write_text('[worker]\npolicy = "personal-policy.yaml"\n')
+    done = instance.run("personal_up.sh")
+    assert done.returncode == 1
+    assert str(named) in done.stdout
+    assert "sets mcp.proxy.worker_access or worker_tools, which retired" in done.stderr
+    assert instance.started() == []
+
+
+def test_a_policy_with_the_defaults_of_the_retired_keys_starts(instance: Instance) -> None:
+    named = instance.config.parent / "personal-policy.yaml"
+    named.write_text("mcp:\n  proxy: {worker_access: false, worker_tools: inherit}\n")
+    instance.config.write_text('[worker]\npolicy = "personal-policy.yaml"\n')
+    done = instance.run("personal_up.sh")
+    assert done.returncode == 0, done.stderr
 
 
 def test_a_unit_of_the_earlier_layout_must_be_stopped_first(instance: Instance) -> None:

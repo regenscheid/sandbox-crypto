@@ -7,7 +7,7 @@ service's canary runner (``mcp_canaries.CanaryRunner``) asks the runtime, over t
 connection it already has, with the host-to-runtime ``list_mcp_tools`` request, as it asks
 the runtime for model completions, whose key is also only the runtime's. The runtime
 lists the one server's tools through its own ``DirectClient`` with ``list_tools``, bounded
-as the proxy's canary is (15 s, 32 pages, ``tools/list`` only: never a tool call), and
+(15 s, 32 pages, ``tools/list`` only: never a tool call), and
 answers the outcome, never the tools. The policy middleware sees and records that listing
 like any other, drift included. The runner stores the outcome in ``mcp_canaries``.
 

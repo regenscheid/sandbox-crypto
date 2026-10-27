@@ -47,8 +47,11 @@ address is a loopback one. ``[openshell]`` is the worker's own table (docs/WORKE
 the launcher passes it on with its paths made absolute, and runs its own OpenShell
 commands with its ``cli`` and ``env``. The model's key file is only named here: the
 launcher never reads it, and gives its path to the run service. Nor does it open
-``[mcp_proxy]`` or ``[mcp_direct] provider_env_file``: a process of its own does
-(access_provider.py).
+``[mcp_direct] provider_env_file``: a process of its own does (access_provider.py).
+
+``[mcp_direct]`` is a deployment's MCP configuration (D98). ``[mcp_proxy]``, the MCP
+proxy's, is refused since the proxy retired (2026-10-26): ``sandbox-science
+migrate-mcp-config`` rewrites it (docs/MCP-CONNECTORS.md, "Migrating from [mcp_proxy]").
 """
 
 from __future__ import annotations
@@ -480,80 +483,17 @@ class OpenShellConfig(BaseModel):
         }
 
 
-class McpProxyConfig(_Strict):
-    """The MCP proxy in an OpenShell sandbox of its own (docs/MCP-CONNECTORS.md)."""
-
-    image: str = Field(min_length=1)
-    """Its image, as ``images/build.sh mcp-proxy`` tagged it."""
-    providers: tuple[Identifier, ...] = Field(min_length=1)
-    """The OpenShell providers with the servers' credentials, which the owner creates."""
-    credentials: dict[str, str] = Field(default_factory=dict[str, str])
-    """The proxy's ``[credentials]``: the environment variable that holds each provider
-    credential a server's headers name (docs/MCP-CONNECTORS.md)."""
-    servers: tuple[Identifier, ...] = Field(min_length=1)
-    """The policy's MCP servers whose tools the main agent gets."""
-    about: dict[
-        IndexKey, Annotated[str, StringConstraints(max_length=200), AfterValidator(_said)]
-    ] = Field(default_factory=dict[str, str])
-    """What each server is for, which the agent's tool index says, marked as the
-    operator's, so the agent picks the right one (lab 39, B5):
-    ``"crypto-research-mcp/e-print-mcp" = "IACR ePrint papers: ..."``."""
-    index: tuple[IndexKey, ...] | None = Field(default=None, min_length=1)
-    """The servers whose tools the index lists one by one, named as in ``about``; the
-    others are found with a query. By default it lists every server's."""
-    project: Identifier | None = None
-    """The project whose runs get them; by default the only project."""
-    policy: ConfigPath | None = None
-    """The policy with the servers; by default the worker's project policy."""
-    targets: ConfigPath | None = None
-    """By default the worker's targets file, which has an ``mcp_proxy`` section."""
-    ceiling: ConfigPath | None = None
-    """By default the worker's pool ceiling."""
-    sandbox: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,11}$")] = (
-        "ss-mcp-proxy"
-    )
-    """The start of the sandbox's name: each launch adds a dash and six random hex digits,
-    within OpenShell's 19 characters."""
-    listen: Listen = "127.0.0.1:18080"
-    """Where the forward to the proxy listens, for the run service."""
-    approvals: bool = True
-    """Whether the user answers the project's escalated tool calls in the workspace's
-    chat: the proxy sandbox's fence admits the tools the policy escalates by name, and
-    the proxy holds each call until its permission request is approved (D76). Off, an
-    escalated tool is refused at the fence, whatever the answer."""
-    provider_env_file: ConfigPath | None = None
-    """The owner's file with the Cloudflare Access service token of the provider
-    ``crypto-research-mcp``. With it, ``up`` registers the provider from the file, in a
-    process of its own, when the provider is missing, or with ``--refresh-provider``
-    (the owner, 2026-10-15, for now). The launcher never opens the file."""
-    provider_profile: ConfigPath | None = None
-    """The provider's OpenShell profile, ``examples/openshell/profiles/cloudflare-access
-    .yaml``, imported when the gateway has none yet; needed with ``provider_env_file``."""
-
-    @model_validator(mode="after")
-    def _registered(self) -> Self:
-        for key in (*self.about, *(self.index or ())):
-            if key.partition("/")[0] not in self.servers:
-                raise ValueError(
-                    f"mcp_proxy.about and index name one of mcp_proxy.servers, or "
-                    f"SERVER/BEHIND for one behind it: {key!r}"
-                )
-        if self.provider_env_file is not None:
-            if self.provider_profile is None:
-                raise ValueError(
-                    "mcp_proxy.provider_env_file needs provider_profile, the provider's "
-                    "OpenShell profile (examples/openshell/profiles/cloudflare-access.yaml)"
-                )
-            if PROVIDER not in self.providers:
-                raise ValueError(
-                    f"mcp_proxy.provider_env_file registers the provider {PROVIDER}, which "
-                    "mcp_proxy.providers must name"
-                )
-        return self
+RETIRED_PROXY = (
+    "[mcp_proxy] is retired: the MCP proxy retired on 2026-10-26 (D98), and the agent "
+    "runtime's own client reaches the servers, configured by [mcp_direct]. Run "
+    "sandbox-science migrate-mcp-config CONFIG to rewrite it (docs/MCP-CONNECTORS.md, "
+    '"Migrating from [mcp_proxy]")'
+)
+"""Why a config with ``[mcp_proxy]`` is refused, and what replaces it."""
 
 
 class McpDirectServer(_Strict):
-    """A server the agent runtime's direct MCP client reaches (D98)."""
+    """A server the agent runtime's MCP client reaches (D98)."""
 
     url: str | None = Field(default=None, pattern=r"^https?://[\x21-\x7e]{1,2040}$")
     """Its URL: by default the project policy's, which it must equal when given."""
@@ -566,12 +506,12 @@ class McpDirectServer(_Strict):
 
 
 class McpDirectConfig(_Strict):
-    """The direct MCP path (D98, docs/specs/mcp-middleware-prototype.md): the agent's
-    connector calls made by the agent runtime's own client, in its sandbox, through
-    OpenShell's native ``protocol: mcp`` rules and the policy middleware, with no MCP
-    proxy. ``up`` compiles the runtime sandbox's egress to these servers from the project
-    policy (``compile_agent_mcp``), attaches ``providers`` to the sandbox and binds it to
-    the project's policy revision. Needs ``[orchestrator]``, and excludes ``[mcp_proxy]``.
+    """The deployment's MCP configuration (D98, docs/MCP-CONNECTORS.md, "The direct path"):
+    the agent's connector calls made by the agent runtime's own client, in its sandbox,
+    through OpenShell's native ``protocol: mcp`` rules and the policy middleware. ``up``
+    compiles the runtime sandbox's egress to these servers from the project policy
+    (``compile_agent_mcp``), attaches ``providers`` to the sandbox and binds it to the
+    project's policy revision. Needs ``[orchestrator]``.
     """
 
     servers: dict[Identifier, McpDirectServer] = Field(min_length=1, max_length=64)
@@ -584,15 +524,20 @@ class McpDirectConfig(_Strict):
     about: dict[
         IndexKey, Annotated[str, StringConstraints(max_length=200), AfterValidator(_said)]
     ] = Field(default_factory=dict[str, str])
-    """What each server is for, as ``[mcp_proxy] about`` says it."""
+    """What each server is for, which the agent's tool index says, marked as the
+    operator's, so the agent picks the right one (lab 39, B5):
+    ``"crypto-research-mcp/e-print-mcp" = "IACR ePrint papers: ..."``."""
     index: tuple[IndexKey, ...] | None = Field(default=None, min_length=1)
-    """The servers whose tools the index lists one by one, as ``[mcp_proxy] index``."""
+    """The servers whose tools the index lists one by one, named as in ``about``; the
+    others are found with a query. By default it lists every server's."""
     provider_env_file: ConfigPath | None = None
-    """As ``[mcp_proxy] provider_env_file``: the owner's file with the Cloudflare Access
-    service token, from which ``up`` registers the provider when it is missing. The
-    launcher never opens it."""
+    """The owner's file with the Cloudflare Access service token of the provider
+    ``crypto-research-mcp``. With it, ``up`` registers the provider from the file, in a
+    process of its own, when the provider is missing, or with ``--refresh-provider``
+    (the owner, 2026-10-15, for now). The launcher never opens the file."""
     provider_profile: ConfigPath | None = None
-    """The provider's OpenShell profile; needed with ``provider_env_file``."""
+    """The provider's OpenShell profile, ``examples/openshell/profiles/cloudflare-access
+    .yaml``, imported when the gateway has none yet; needed with ``provider_env_file``."""
 
     @model_validator(mode="after")
     def _registered(self) -> Self:
@@ -629,14 +574,9 @@ class OrchestratorConfig(_Strict):
 
 class CanariesConfig(_Strict):
     """Scheduled MCP canaries (D103, docs/MCP-CONNECTORS.md, "Canaries"): every ``interval``
-    seconds, one bounded ``tools/list`` per server from the trusted side, never a tool call.
-    Off by default; on, it needs ``[mcp_proxy]`` or ``[mcp_direct]``. With ``[mcp_proxy]``,
-    each of its servers is listed through the proxy with a token of the canaries' own,
-    ``tokens/mcp-canary``, which ``up`` gives the proxy as the caller ``canary``, so their
-    sessions never take the run service's places; a canary part that fails to start, or
-    keeps stopping, is reported and left out: research does not depend on it. Without it,
-    the control service asks the agent runtime to list each ``[mcp_direct]`` server through
-    its direct client (``list_mcp_tools``)."""
+    seconds, one bounded ``tools/list`` per server, never a tool call. Off by default; on,
+    it needs ``[mcp_direct]``: the control service asks the agent runtime to list each of
+    its servers through the runtime's own client (``list_mcp_tools``)."""
 
     enabled: bool = False
     interval: float = Field(default=900.0, ge=60, le=86400)
@@ -659,26 +599,27 @@ class LauncherConfig(_Strict):
     run_service: RunServiceConfig = Field(default_factory=RunServiceConfig)
     workspace: WorkspaceConfig
     openshell: OpenShellConfig
-    mcp_proxy: McpProxyConfig | None = None
     mcp_direct: McpDirectConfig | None = None
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     orchestrator: OrchestratorConfig | None = None
     canaries: CanariesConfig = Field(default_factory=CanariesConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_proxy(cls, data: object) -> object:
+        if isinstance(data, dict) and "mcp_proxy" in cast(dict[str, object], data):
+            raise ValueError(RETIRED_PROXY)
+        return cast(object, data)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         ids = [project.id for project in self.projects]
         if len(set(ids)) != len(ids):
             raise ValueError("each project is listed once")
-        if self.canaries.enabled and self.mcp_proxy is None and self.mcp_direct is None:
+        if self.canaries.enabled and self.mcp_direct is None:
             raise ValueError(
-                "canaries list the servers through the MCP proxy or the agent runtime's direct "
-                "client: configure [mcp_proxy] or [mcp_direct], or leave canaries.enabled off"
-            )
-        if self.mcp_direct is not None and self.mcp_proxy is not None:
-            raise ValueError(
-                "configure one MCP path: [mcp_proxy] (the MCP proxy, the default) or "
-                "[mcp_direct] (the agent runtime's own client, D98), not both"
+                "canaries list the servers through the agent runtime's own client: configure "
+                "[mcp_direct], or leave canaries.enabled off"
             )
         if self.mcp_direct is not None:
             if self.orchestrator is None:
@@ -687,11 +628,6 @@ class LauncherConfig(_Strict):
                 raise ValueError("mcp_direct.project names the project whose policy applies")
             if (self.mcp_direct.project or ids[0]) not in ids:
                 raise ValueError(f"mcp_direct.project {self.mcp_direct.project!r} is not a project")
-        if self.mcp_proxy is not None:
-            if self.mcp_proxy.project is None and len(ids) != 1:
-                raise ValueError("mcp_proxy.project names the project whose runs use it")
-            if self.mcp_project() not in ids:
-                raise ValueError(f"mcp_proxy.project {self.mcp_project()!r} is not a project")
         profiles = self.openshell.environments.profiles
         for project in self.projects:
             if project.profile not in profiles:
@@ -717,17 +653,13 @@ class LauncherConfig(_Strict):
             "workspace": self.workspace.listen,
             "workspace preview": self.workspace.preview(),
         }
-        if self.mcp_proxy is not None:
-            addresses["MCP proxy's forward"] = self.mcp_proxy.listen
         if self.orchestrator is not None:
             addresses["control capability service"] = self.orchestrator.control_listen
         return addresses
 
     def mcp_project(self) -> str:
-        """The project whose runs use the MCP proxy or the direct path, when there is one;
-        the runtime's sandbox is bound to its policy revision."""
-        if self.mcp_proxy is not None and self.mcp_proxy.project is not None:
-            return self.mcp_proxy.project
+        """The project whose runs get the MCP servers' tools, by default the only one; the
+        runtime's sandbox is bound to its policy revision."""
         if self.mcp_direct is not None and self.mcp_direct.project is not None:
             return self.mcp_direct.project
         return self.projects[0].id
@@ -753,6 +685,8 @@ def load_config(path: Path) -> LauncherConfig:
         raise LauncherError(f"cannot read {path}: {exc}") from None
     except tomllib.TOMLDecodeError as exc:
         raise LauncherError(f"{path} is not TOML: {exc}") from None
+    if "mcp_proxy" in raw:
+        raise LauncherError(f"{path}: {RETIRED_PROXY}")
     try:
         return LauncherConfig.model_validate(raw, context={"base": path.absolute().parent})
     except ValidationError as exc:

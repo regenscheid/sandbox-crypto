@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""The user's answers to permission requests (approvals.py), against stand-ins for the MCP
-proxy's operator routes and the worker's permission routes: what the chat is shown, what
+"""The user's answers to permission requests (approvals.py), against a stand-in for the
+worker's permission routes, which hold the policy middleware's requests: the agent's MCP
+calls (D98), research code's network and package requests, what the chat is shown, what
 each decision sends, the grants it stores within the request's ceiling, and the requests
-the relay answers from grants (D97)."""
+the relay answers from grants (D97). The MCP proxy, a second source until it retired
+(2026-10-26), is gone."""
 
 from __future__ import annotations
 
@@ -22,23 +24,21 @@ from sandbox_science.orchestrator.delegation.requests import ChildRequests
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.testing.worker_api import fake_worker_app
 from sandbox_science.workspace import approvals
-from sandbox_science.workspace.approvals import ApprovalClient
 
 from .route_support import WORKER_TOKEN, workspace
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 ServerFactory = Callable[..., Awaitable[TestServer]]
-OPERATOR = "test-secret-operator-token-0123456789"
 ANSWER = "/api/v0/projects/p1/permission-requests/{}/answer"
 
 
-class FakeProxy:
-    """The proxy's operator routes: its waiting requests, and the answers it was sent."""
+class FakeWorker:
+    """The worker's permission routes: a project's waiting requests, of the agent's MCP
+    calls and research code's network and package requests."""
 
     def __init__(self) -> None:
         self.waiting: list[dict[str, Any]] = []
         self.answers: list[tuple[int, dict[str, Any]]] = []
-        self.tokens: list[str] = []
 
     def hold(
         self,
@@ -51,39 +51,14 @@ class FakeProxy:
         max_grant: str = "project",
         caller_kind: str = "agent",
         summary: dict[str, str] | None = None,
+        run: str | None = None,
     ) -> None:
-        self.waiting.append(
-            {
-                # Every field the proxy's listing sends (mcp_proxy.proxy), no fewer.
-                "seq": seq, "server": server, "tool": tool, "method": "tools/call",
-                "policy": "sha256:" + "a" * 64,
-                "session": session, "rule": None, "reason": "escalated",
-                "recorded_at": "2026-10-21T18:00:00+00:00",
-                "expires_at": "2026-10-21T18:30:00+00:00", "timed_out": False,
-                "on_timeout": "deny", "caller_kind": caller_kind, "effect": effect,
-                "max_grant": max_grant, "summary": summary or {},
-            }
+        """An MCP call the middleware holds."""
+        self._add(
+            seq, "mcp", session, max_grant, caller=caller_kind, run=run,
+            mcp={"server": server, "method": "tools/call", "tool": tool, "effect": effect,
+                 "summary": summary or {}},
         )  # fmt: skip
-
-    async def listing(self, request: web.Request) -> web.Response:
-        self.tokens.append(request.headers.get("Authorization", ""))
-        return web.json_response({"requests": self.waiting})
-
-    async def answer(self, request: web.Request) -> web.Response:
-        seq = int(request.match_info["seq"])
-        if not any(item["seq"] == seq for item in self.waiting):
-            return web.json_response({"error": "no such permission request"}, status=404)
-        self.answers.append((seq, await request.json()))
-        self.waiting = [item for item in self.waiting if item["seq"] != seq]
-        return web.json_response({"answer": 99, "kind": "approval"}, status=201)
-
-
-class FakeWorker:
-    """The worker's permission routes: a project's waiting network and package requests."""
-
-    def __init__(self) -> None:
-        self.waiting: list[dict[str, Any]] = []
-        self.answers: list[tuple[int, dict[str, Any]]] = []
 
     def network(self, seq: int, host: str, method: str = "GET", path: str = "/data") -> None:
         self._add(
@@ -108,7 +83,8 @@ class FakeWorker:
     ) -> None:  # fmt: skip
         self.waiting.append(
             {
-                "seq": seq, "kind": kind, "project_id": "p1", "environment_id": "env1",
+                "seq": seq, "kind": kind, "project_id": "p1",
+                "environment_id": None if kind == "mcp" else "env1",
                 "session_id": session, "caller_kind": caller, "policy": "sha256:" + "b" * 64,
                 "rule": "r", "reason": "escalated", "max_grant": max_grant,
                 "http": None, "packages": None, **cards,
@@ -126,8 +102,9 @@ class FakeWorker:
 
     async def listing(self, request: web.Request) -> web.Response:
         assert request.headers["Authorization"] == f"Bearer {WORKER_TOKEN}"
-        assert dict(request.query) == {"project": "p1"}
-        return web.json_response({"requests": self.waiting})
+        assert set(request.query) == {"project"}
+        mine = request.query["project"] == "p1"
+        return web.json_response({"requests": self.waiting if mine else []})
 
     async def answer(self, request: web.Request) -> web.Response:
         seq = int(request.match_info["seq"])
@@ -136,20 +113,6 @@ class FakeWorker:
         self.waiting = [item for item in self.waiting if item["seq"] != seq]
         kind = "approval" if body["approve"] else "denial"
         return web.json_response({"seq": seq, "answer": 50 + seq, "kind": kind}, status=201)
-
-
-@pytest.fixture
-async def proxy() -> Any:
-    fake = FakeProxy()
-    app = web.Application()
-    app.router.add_get("/permission-requests", fake.listing)
-    app.router.add_post("/permission-requests/{seq}/answer", fake.answer)
-    server = TestServer(app, host="127.0.0.1")
-    await server.start_server()
-    try:
-        yield fake, str(server.make_url("")).rstrip("/")
-    finally:
-        await server.close()
 
 
 @pytest.fixture
@@ -165,19 +128,10 @@ def quick_relay(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def client_for(
-    aiohttp_client: ClientFactory,
-    state_dir: Path,
-    static_dir: Path,
-    url: str,
-    worker_url: str | None = None,
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, worker_url: str
 ) -> TestClient[Any, Any]:
     return await workspace(
-        aiohttp_client,
-        state_dir,
-        static_dir,
-        mcp_project="p1",
-        mcp_approvals=ApprovalClient(url, OPERATOR),
-        worker_url=worker_url,
+        aiohttp_client, state_dir, static_dir, mcp_project="p1", worker_url=worker_url
     )
 
 
@@ -208,9 +162,12 @@ async def until(condition: Callable[[], bool]) -> None:
 
 
 async def test_a_card_offers_only_the_scopes_its_ceiling_allows(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
+    fake, url = worker
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     fake.hold(1, "submit_feedback", summary={"title": "A note"})
     fake.hold(2, "notify", effect="communicate", max_grant="session")
@@ -227,19 +184,23 @@ async def test_a_card_offers_only_the_scopes_its_ceiling_allows(
     assert found[3]["scopes"] == ["once"]
     assert found[4]["scopes"] == ["once"]
     assert found[5]["scopes"] == ["once"]  # no class grant rides on research code
-    assert fake.tokens[-1] == f"Bearer {OPERATOR}"
-    assert OPERATOR not in str(found)
+    assert {item["source"] for item in found.values()} == {"worker"}
+    assert WORKER_TOKEN not in str(found)
 
 
 async def test_each_decision_sends_its_answer_and_stores_its_grant(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
+    fake, url = worker
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     fake.hold(1, "crawl")
     fake.hold(2, "submit_feedback")
     fake.hold(3, "notify", effect="communicate", max_grant="session")
-    fake.hold(4, "x")
+    # Another server's call, so the relay cannot answer it from 2's grant before 4's deny.
+    fake.hold(4, "x", server="notes")
     once = await post(client, ANSWER.format(1), {"decision": "once"})
     assert (once["decision"], once["granted"]) == ("once", [])
     project = await post(client, ANSWER.format(2), {"decision": "project"})
@@ -269,9 +230,12 @@ async def test_each_decision_sends_its_answer_and_stores_its_grant(
 
 
 async def test_a_scope_above_the_ceiling_is_refused_whatever_the_client_sends(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
+    fake, url = worker
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     fake.hold(1, "notify", effect="communicate", max_grant="session")
     fake.hold(2, "mystery", effect="unclassified", max_grant="project")
@@ -286,9 +250,12 @@ async def test_a_scope_above_the_ceiling_is_refused_whatever_the_client_sends(
 
 
 async def test_a_class_grant_covers_a_new_tool_of_that_class_only(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
+    fake, url = worker
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     fake.hold(1, "submit_feedback")
     await post(client, ANSWER.format(1), {"decision": "project"})
@@ -309,9 +276,12 @@ async def test_a_class_grant_covers_a_new_tool_of_that_class_only(
 
 
 async def test_a_session_grant_covers_its_session_only(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
+    fake, url = worker
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     fake.hold(1, "notify", effect="communicate", max_grant="session")
     await post(client, ANSWER.format(1), {"decision": "session"})
@@ -323,9 +293,12 @@ async def test_a_session_grant_covers_its_session_only(
 
 
 async def test_revoking_a_grant_stops_it_covering_at_once(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
+    fake, url = worker
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     fake.hold(1, "submit_feedback")
     [grant] = (await post(client, ANSWER.format(1), {"decision": "project"}))["granted"]
@@ -340,17 +313,20 @@ async def test_revoking_a_grant_stops_it_covering_at_once(
 
 
 async def test_answers_need_the_same_origin_and_the_configured_project(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
+    fake, url = worker
     fake.hold(1, "crawl")
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     for headers in ({}, {"Origin": "https://untrusted.invalid"}):
         response = await client.post(ANSWER.format(1), json={"decision": "once"}, headers=headers)
         assert response.status == 403
     await post(
-        client, "/api/v0/projects/p2/permission-requests/1/answer", {"decision": "once"}, 404
-    )
+        client, "/api/v0/projects/p2/permission-requests/1/answer", {"decision": "once"}, 409
+    )  # another project's request numbers are not this one's
     # A session the project does not have is not found; another project has no requests.
     assert (await client.get("/api/v0/projects/p1/sessions/x/permission-requests")).status == 404
     assert (await client.get("/api/v0/projects/p2/sessions/x/permission-requests")).status == 404
@@ -361,12 +337,10 @@ async def test_network_and_package_requests_are_cards_answered_in_the_workspace(
     aiohttp_client: ClientFactory,
     state_dir: Path,
     static_dir: Path,
-    proxy: Any,
     worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
     desk, worker_url = worker
-    client = await client_for(aiohttp_client, state_dir, static_dir, url, worker_url)
+    client = await client_for(aiohttp_client, state_dir, static_dir, worker_url)
     desk.network(10, "data.example.org")
     desk.network(11, "api.example.org", method="POST", path="/submit")
     desk.packages(12, [("conda", "conda-forge")])
@@ -390,19 +364,16 @@ async def test_network_and_package_requests_are_cards_answered_in_the_workspace(
         (11, {"approve": True, "scope": "request", "hours": approvals.ONCE_HOURS}),
         (12, {"approve": True, "scope": "files", "hours": None}),
     ]
-    assert fake.answers == []
 
 
 async def test_the_relay_answers_network_and_package_requests_from_grants(
     aiohttp_client: ClientFactory,
     state_dir: Path,
     static_dir: Path,
-    proxy: Any,
     worker: tuple[FakeWorker, str],
 ) -> None:
-    fake, url = proxy
     desk, worker_url = worker
-    client = await client_for(aiohttp_client, state_dir, static_dir, url, worker_url)
+    client = await client_for(aiohttp_client, state_dir, static_dir, worker_url)
     desk.network(10, "data.example.org")
     desk.packages(11, [("conda", "conda-forge")])
     await post(client, ANSWER.format(10), {"decision": "project", "kind": "network"})
@@ -413,53 +384,49 @@ async def test_the_relay_answers_network_and_package_requests_from_grants(
     desk.packages(23, [("conda", "conda-forge")])  # the granted source
     desk.packages(24, [("conda", "conda-forge"), ("conda", "bioconda")])  # one ungranted
     # The agent's MCP call naming the granted host is not covered by the host's grant.
-    fake.hold(25, "fetch", summary={"url": "https://data.example.org/x"})
+    desk.hold(25, "fetch", summary={"url": "https://data.example.org/x"})
     await until(lambda: len(desk.answers) == 4)
     await asyncio.sleep(0.2)
     assert [seq for seq, _ in desk.answers] == [10, 11, 20, 23]
     assert desk.answers[2] == (
         20, {"approve": True, "scope": "host", "hours": approvals.HOST_HOURS},
     )  # fmt: skip
-    assert fake.answers == []
 
 
-async def test_a_worker_without_permission_routes_still_shows_tool_calls(
+async def test_a_worker_without_permission_routes_shows_no_cards(
     aiohttp_client: ClientFactory,
     aiohttp_server: ServerFactory,
     state_dir: Path,
     static_dir: Path,
-    proxy: Any,
 ) -> None:
-    fake, url = proxy
     server = await aiohttp_server(fake_worker_app())
     client = await client_for(
-        aiohttp_client, state_dir, static_dir, url, str(server.make_url("/")).rstrip("/")
+        aiohttp_client, state_dir, static_dir, str(server.make_url("/")).rstrip("/")
     )
-    fake.hold(1, "crawl")
-    assert sorted(await shown(client)) == [1]
+    assert await shown(client) == {}
 
 
-def test_the_listing_is_read_with_every_field_the_proxy_sends() -> None:
-    # The proxy's listing (test_proxy.py pins the same set): a field it adds must be
-    # declared here, or the strict model refuses every listing. The rest are the
-    # workspace's own: ``child`` from its records of delegated runs' requests (D99), the
-    # kind, the worker's request summaries and the scopes it offers (D97), the source
-    # that holds the request (D98), and what a detection rule's hold saw (D103).
-    assert set(approvals.PendingApproval.model_fields) - {
-        "child", "kind", "http", "packages", "scopes", "source", "hold",
-    } == {
-        "seq", "server", "method", "tool", "policy", "session", "run", "rule", "reason",
-        "recorded_at", "expires_at", "timed_out", "on_timeout", "caller_kind", "effect",
-        "max_grant", "summary",
-    }  # fmt: skip
+async def test_without_a_worker_nothing_is_answered_here(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir, mcp_project="p1")
+    assert await shown(client) == {}
+    await post(client, ANSWER.format(1), {"decision": "once"}, 404)
+    # The retired MCP proxy is no source an answer may name.
+    await post(client, ANSWER.format(1), {"decision": "once", "source": "proxy"}, 400)
 
 
 async def test_a_childs_held_call_names_the_child_and_its_withdrawal_only_refuses(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, proxy: Any
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    worker: tuple[FakeWorker, str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """D99: the card says which delegated agent asked, with its parent's brief and its own
     words; a request the parent withdrew is not shown, cannot be approved, and the relay
-    denies it at the proxy, once."""
+    denies it at the middleware, once. A child record of the same number for another call
+    (the retired MCP proxy numbered its requests apart) is not this request's."""
     delegation = new_id("dlg")
     store = ProjectStore(state_dir)
     try:
@@ -473,22 +440,33 @@ async def test_a_childs_held_call_names_the_child_and_its_withdrawal_only_refuse
             ),
         )  # fmt: skip
         requests = ChildRequests(store.control)
-        for seq in (21, 22):
+        for seq in (21, 22, 23):
             requests.record(
                 "p1", "a", run="child", delegation=delegation, request=seq,
                 server="papers", tool="fetch", words=f"Fetching for step {seq}.",
             )  # fmt: skip
-        requests.withdraw("p1", "a", parent="root", delegation=delegation, request=22)
+        for seq in (22, 23):
+            requests.withdraw("p1", "a", parent="root", delegation=delegation, request=seq)
     finally:
         store.close()
-    fake, url = proxy
-    fake.hold(20, "crawl")  # the main run's
-    fake.hold(21, "fetch")
-    fake.hold(22, "fetch")
+    relayed = approvals._relay_worker
+    gate = asyncio.Event()
+
+    async def after_the_user(*args: Any) -> None:
+        await gate.wait()
+        await relayed(*args)
+
+    monkeypatch.setattr(approvals, "_relay_worker", after_the_user)
+    fake, url = worker
+    fake.hold(20, "crawl", run="main")  # the main run's
+    fake.hold(21, "fetch", run="child")
+    fake.hold(22, "fetch", run="child")
+    fake.hold(23, "crawl", run="main")  # a withdrawn record's number, but another call
     client = await client_for(aiohttp_client, state_dir, static_dir, url)
     by_seq = await shown(client)
-    assert set(by_seq) == {20, 21}
+    assert set(by_seq) == {20, 21, 23}
     assert by_seq[20]["child"] is None
+    assert by_seq[23]["child"] is None
     assert by_seq[21]["child"] == {
         "delegation_id": delegation,
         "run": "child",
@@ -498,7 +476,9 @@ async def test_a_childs_held_call_names_the_child_and_its_withdrawal_only_refuse
     }
     refused = await post(client, ANSWER.format(22), {"decision": "once"}, status=409)
     assert "withdrawn" in str(refused)
+    gate.set()
     await until(lambda: bool(fake.answers))
+    await asyncio.sleep(0.2)  # the relay had time for 23 too, which is not withdrawn
     assert fake.answers == [(22, {"approve": False, "scope": "call", "hours": None})]
     # The child's other request is still the user's to answer.
     await post(client, ANSWER.format(21), {"decision": "once"})

@@ -17,7 +17,6 @@ Paths are under `~/.local/state/sandbox-science-personal/` (`$ROOT`) on the pers
 | **Event store** (hash-chained: permission decisions, alerts, provisioning records) | `openshell/middleware/state/events.db` | Yes. [Event store](EVENT-STORE.md). Checkpoints in the journal are kept by the journal |
 | **Policy store**: project policies by hash, sandbox bindings | `openshell/middleware/state/policies/`, `sandboxes/`, `projects/` | Yes (small) |
 | **Config**: the launcher's config and the project policy (no secrets) | `~/.config/sandbox-science/personal.toml`, `personal-policy.yaml` | Yes |
-| **MCP proxy's event store**, in its sandbox | inside the `ss-pers-mcp` sandbox | Not by the script: `sandbox-science-events export` it ([event store](EVENT-STORE.md#command-line)) |
 | **Package cache** | `openshell/cache/` | No: refetched on demand |
 | **Worker `environments/` and `shared/`**, the launcher's `sandboxes.json`, logs | `launcher/worker/state/environments/`, `shared/` | No: rebuilt from the sandboxes, or only diagnostics |
 | **Sandboxes' disks** (research files, installed packages, kernel state) | `vm/`, owned by the OpenShell VM driver | No: large, and the driver's. What the agent publishes as artifacts is in the control store |

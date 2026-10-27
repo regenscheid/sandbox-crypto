@@ -10,7 +10,7 @@ address), which go to a private file of their own instead.
 A part that listens must find its address free before it starts, and is ready when it
 prints its ready line and its address takes connections while it still runs. One that
 stops before it is ready, or later by itself, stops the launcher, unless it is one to
-start again (the MCP proxy's forward, which exits whenever its sandbox stops): that one
+start again (such as a forward, which exits whenever its sandbox stops): that one
 starts again after a delay that doubles while it keeps stopping, and the launcher gives
 up on it after ``RESTARTS`` in a row, or at once if something else took its address.
 Besides the parts, the launcher can have actions to take when it stops, such as deleting

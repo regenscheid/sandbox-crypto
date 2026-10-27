@@ -551,16 +551,11 @@ def test_launch_requires_the_helpers_state_and_services(tmp_path: Path) -> None:
     (source.parent / "policy.yaml").write_text("kind: ProjectPolicy\n")
     app = mac.check_app_config(chosen, source, app_config(chosen))
     assert app.policy == (source.parent / "policy.yaml").resolve()
-    assert app.mcp_proxy_port == 18080
     wrong = app_config(chosen, **{"openshell.package_cache": "http://host.openshell.internal:8090"})
     with pytest.raises(
         mac.SetupError, match=re.escape('package_cache = "http://host.openshell.internal:18083"')
     ):
         mac.check_app_config(chosen, source, wrong)
-    proxied = app_config(chosen)
-    proxied["mcp_proxy"] = {"listen": "0.0.0.0:18080"}
-    with pytest.raises(mac.SetupError, match=re.escape("listen must be 127.0.0.1")):
-        mac.check_app_config(chosen, source, proxied)
 
 
 def test_only_a_launch_registers_the_middleware(
@@ -570,7 +565,7 @@ def test_only_a_launch_registers_the_middleware(
     driver_dir = tmp_path / "homebrew/libexec"
     monkeypatch.setattr(mac.os.path, "ismount", lambda _path: True)
     mac.prepare_dirs(chosen)
-    app = mac.AppSettings(policy=tmp_path / "policy.yaml", mcp_proxy_port=18090)
+    app = mac.AppSettings(policy=tmp_path / "policy.yaml")
     launch = mac.write_service_settings(chosen, app, driver_dir)
     registered = tomllib.loads(launch.read_text())["openshell"]["supervisor"]["middleware"]
     services = mac.services_dir(chosen)
@@ -587,7 +582,8 @@ def test_only_a_launch_registers_the_middleware(
     assert "supervisor" not in tomllib.loads(mac.config_path(chosen).read_text())["openshell"]
     targets = yaml.safe_load((services / "targets.yaml").read_text())
     assert targets["sandbox"]["package_cache"] == {"host": "host.openshell.internal", "port": 18083}
-    assert targets["sandbox"]["mcp_proxy"]["port"] == 18090
+    assert "mcp_proxy" not in targets["sandbox"]  # the MCP proxy retired (D98)
+    assert "mcp_proxy" not in targets
     middleware = tomllib.loads((services / "middleware/middleware.toml").read_text())
     assert middleware["listen"] == "127.0.0.1:18082"
     assert middleware["tokens"]["public_key"] == str(chosen.root / "gateway/tls/jwt/public.pem")

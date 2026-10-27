@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Cards for MCP calls the policy middleware holds (D98), end to end: the real middleware
 escalates an agent's direct call into its event store, the real worker lists it and takes
-the answer, and the workspace shows and answers it as it does a call the MCP proxy holds.
+the answer, and the workspace shows and answers it (as it did a call the retired MCP proxy
+held).
 A grant given there answers the middleware's later calls it covers, through the relay."""
 
 from __future__ import annotations
@@ -184,7 +185,7 @@ async def until(condition: Callable[[], bool]) -> None:
     raise AssertionError("the condition never held")
 
 
-async def test_a_held_direct_call_is_a_card_answered_like_a_proxy_call(
+async def test_a_held_direct_call_is_a_card_answered_in_the_workspace(
     aiohttp_client: ClientFactory,
     state_dir: Path,
     static_dir: Path,
@@ -194,7 +195,7 @@ async def test_a_held_direct_call_is_a_card_answered_like_a_proxy_call(
     client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=worker_url)
     seq = request_of(middleware.call({"id": "monitor-1"}))
     card = (await shown(client))[seq]
-    # The fields a proxy-held call's card has, from the middleware's own record.
+    # The card's fields, from the middleware's own record.
     assert (card["kind"], card["source"], card["server"], card["tool"], card["method"]) == (
         "mcp", "worker", SERVER, WRITE_TOOL, "tools/call",
     )  # fmt: skip
@@ -217,7 +218,7 @@ async def test_a_held_direct_call_is_a_card_answered_like_a_proxy_call(
     assert later not in await shown(client)
 
 
-async def test_a_direct_call_is_never_answered_through_the_proxy_or_beyond_its_ceiling(
+async def test_a_direct_call_is_never_answered_beyond_its_ceiling(
     aiohttp_client: ClientFactory,
     state_dir: Path,
     static_dir: Path,
@@ -226,10 +227,10 @@ async def test_a_direct_call_is_never_answered_through_the_proxy_or_beyond_its_c
 ) -> None:
     client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=worker_url)
     seq = request_of(middleware.call({"id": "monitor-3"}))
-    # Without its source, an MCP call is the proxy's, which this workspace does not answer.
-    await post(client, ANSWER.format(seq), {"decision": "once", "kind": "mcp"}, 404)
-    # A denial refuses the call's retry.
-    await post(client, ANSWER.format(seq), {"decision": "deny", "kind": "mcp", "source": "worker"})
+    # The retired MCP proxy is no source an answer may name.
+    await post(client, ANSWER.format(seq), {"decision": "once", "source": "proxy"}, 400)
+    # A denial refuses the call's retry; without a source, the worker's is meant.
+    await post(client, ANSWER.format(seq), {"decision": "deny", "kind": "mcp"})
     assert middleware.call({"id": "monitor-3"}) == f"approval_denied_r{seq}"
     # The network kind of the same number is not this request.
     other = request_of(middleware.call({"id": "monitor-4"}))

@@ -127,8 +127,8 @@ corresponding cluster authority; this is not a replacement for cluster Secret po
 
 | Secret setting | Required keys copied to `/private/<key>` |
 | --- | --- |
-| `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt` |
-| `secrets.workspace` | `worker-token`, `worker-ca.crt` |
+| `secrets.control` | `control.json`, `runtime-manager-token.sha256`, `worker-token`, `control.crt`, `control.key`, `worker-ca.crt`; with `[mcp_direct]` also `mcp-check-token.sha256` |
+| `secrets.workspace` | `worker-token`, `worker-ca.crt`; with `[mcp_direct]` also `mcp-check-token`, which no other Secret may project |
 | `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` |
 | `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` |
 | optional `secrets.cache` | `cache.toml` |
@@ -339,7 +339,7 @@ client entries, the runtime's OpenShell target) and models (`RuntimeManagerSetti
 `control-models.json` is `control.json`'s model part. The worker declares
 `isolation_tier = 3`, `node_kernel_releases = ["*-talos"]` and a Kubernetes profile for
 each base profile; `control.json` names the `trusted-app` image's Node and math checker
-(`/usr/local/bin/node`, `/usr/share/sandbox-science/math`) and no MCP proxy. The
+(`/usr/local/bin/node`, `/usr/share/sandbox-science/math`). The
 middleware verifies the gateway's tokens with the given public key. The CA's key is
 never written: renewing a certificate or rotating a token means generating a new
 directory, replacing every Secret and recreating the Pods. The tests load each settings
@@ -401,12 +401,11 @@ does not replace middleware token verification or OpenShell sandbox policy.
 
 ## The direct MCP path (opt-in)
 
-Without it the cluster runs no MCP proxy and the agent has no connectors. With it, the
-agent's connector calls take the direct path (D98, [MCP connectors](MCP-CONNECTORS.md#the-direct-path)):
-control's run service admits each call and the agent runtime's own client makes it from its
-sandbox, through OpenShell's native `protocol: mcp` rules and the policy middleware. The
-MCP proxy stays the default path until the babbage lab passes; the cluster has only this
-one.
+Without it the agent has no connectors. With it, the agent's connector calls take the
+direct path (D98, [MCP connectors](MCP-CONNECTORS.md#the-direct-path)): control's run
+service admits each call and the agent runtime's own client makes it from its sandbox,
+through OpenShell's native `protocol: mcp` rules and the policy middleware. It is the only
+MCP path since the MCP proxy retired (2026-10-26). Nothing of the proxy is rendered.
 
 ```toml
 [mcp_direct]
@@ -446,8 +445,20 @@ pool ceiling admit. With it:
   ([worker](WORKER.md)).
   `runtime-manager.json` gets the `worker` link (the worker Service, verified with the
   private CA in `control-ca.crt`) and `mcp` (the two files and the provider);
-  `control.json` gets `direct` (the run service's servers, `about` and `index`); and
-  `middleware.toml` gets `mcp_listings = true`.
+  `control.json` gets `direct` (the run service's servers, `about` and `index`) and
+  `check_token_sha256_file`, the digest (`mcp-check-token.sha256`) of the workspace's token
+  for the user's availability check (`mcp-check-token`, in the workspace's Secret alone); and
+  `middleware.toml` gets `mcp_listings = true` and `[inspect]` at the middleware's defaults
+  (on; 16 KiB of arguments, 64 KiB of each answer and 8 MiB a run recorded; the shipped
+  patterns), which the operator may change ([MCP traffic
+  inspection](POLICY-MIDDLEWARE.md#mcp-traffic-inspection)).
+- **The workspace** gets the MCP services view as `sandbox-science up` wires it: the
+  project and its servers with their `about` purposes (`--mcp-project`, `--mcp-service`), and
+  the user's **Check availability**, which asks control's `POST /mcp-check` by control's
+  Service name, `https://<name>-control.<namespace>.svc:8443`, with its own token
+  (`--mcp-check-token-file`) and the site's private CA (`--mcp-check-ca-file`, its
+  `worker-ca.crt`, which signs control's certificate too). The app Pod's NetworkPolicy
+  admits the app Pod itself to TCP 8443, and lets it reach it, for that call alone.
 - **The runtime manager** merges the egress into the runtime sandbox's policy beside its
   platform services, attaches the provider to the sandbox (`--provider`), labels it with its
   project (`sandbox-science.io/project`, which the worker checks before binding), binds the sandbox
@@ -750,7 +761,7 @@ own sandbox namespace (and select it in `network.runtimes`) where OpenShell allo
 The first deployment collects every service's logs into Loki through Alloy (D103). The bundle renders nothing for Loki or Alloy: the operator installs both ([preparation, step 11](KUBERNETES-PREP.md#11-log-collection)). The bundle makes the logs collectable.
 
 - **JSON on the container's output.** Every container sets `SS_LOG_FORMAT=json`, so each service writes one JSON object per line on standard error, which the kubelet keeps with standard output as the container's log. The shared setup is `sandbox_science.contracts.logs`: `ts` (UTC), `level`, `service`, `logger`, `msg`, `event` when the call names one, and, when known, `project`, `session`, `run`, `environment` and `request`; an exception is one `exc` field. A message, field or traceback passes the redaction first (URL user information, `Authorization` and `Bearer` values, `name=value` where the name ends in `token`, `secret`, `password`, `api_key`, `credential` or `cookie`, and a few credential formats), and a field named like a secret is never written. Local runs keep the text line unless `SS_LOG_FORMAT=json` is set ([the unit](UNIT.md#how-it-runs)).
-- **`service`** is `control`, `workspace`, `harness`, `agent-runtime`, `worker`, `middleware`, `cache`, `mcp-proxy`, `runtime-manager` or `unit`. In the pool Pod each container runs one service of the unit (`--only`), so a line's `service` is the container's; a line a service wrote that is not a record (a traceback, a library's output) becomes a record of its service. The runtime manager passes on the agent runtime's output as records of the service `runtime` when the runtime wrote none.
+- **`service`** is `control`, `workspace`, `harness`, `agent-runtime`, `worker`, `middleware`, `cache`, `runtime-manager` or `unit` (`mcp-proxy` in older lines, before the proxy retired). In the pool Pod each container runs one service of the unit (`--only`), so a line's `service` is the container's; a line a service wrote that is not a record (a traceback, a library's output) becomes a record of its service. The runtime manager passes on the agent runtime's output as records of the service `runtime` when the runtime wrote none.
 - **Pod labels.** Every Pod the renderer makes (`app`, `pool`, `runtime-manager`) carries `app.kubernetes.io/name: sandbox-science`, `app.kubernetes.io/instance: <name>` (the bundle's `name`), `app.kubernetes.io/part-of: <name>` and `app.kubernetes.io/component: app|pool|runtime-manager`; the container name (`control`, `workspace`, `worker`, `middleware`, `cache`, `manager`) tells the service apart within a Pod. The log labels are on the Pods and objects only: selectors and NetworkPolicies keep to `part-of` and `component`. Alloy reads logs through the Kubernetes API or the nodes' files, so no NetworkPolicy needs an ingress rule for it.
 - **OpenShell's events.** The gateway's and the sandbox supervisors' OCSF events are OpenShell's to export, from its own configuration: `ocsf_json_enabled` makes the supervisors write `OCSF-JSON` lines on their Pod's standard error and the gateway write JSONL (`[openshell.gateway.ocsf_log]`), and `[openshell.gateway.otlp]` with `[openshell.gateway.otlp.ocsf]` sends the events, and the traces, to an OTLP/gRPC collector that the sandboxes can reach too. OpenShell's pages on [observability](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/overview.mdx), [OCSF JSON export](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/ocsf-json-export.mdx) and [telemetry](https://github.com/NVIDIA/OpenShell/blob/v0.1.5/docs/observability/telemetry.mdx) (its anonymous usage data, separate from these signals) name every setting. The gateway's Prometheus listener (`metrics_bind_address`) is scraped, not logged.
 - **A sample Alloy configuration** is [alloy-config.alloy](../examples/kubernetes/alloy-config.alloy): the bundle's Pods selected by `app.kubernetes.io/name`, the JSON fields `level` and `service` as labels and the identifiers as structured metadata (a project, session, run or request is a filter, not a stream), an optional pipeline for the supervisors' `OCSF-JSON` lines, and an optional OTLP receiver. It has not run on a cluster. Retention, the Loki URL and Alloy's own access are the operator's.

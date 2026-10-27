@@ -370,12 +370,10 @@ class RunRequest:
 class McpAccess:
     """The MCP client the harness calls, and the servers whose tools a run gets (D-08).
 
-    Through the MCP proxy (``path`` ``proxy``), the proxy knows the harness's token as one
-    project's caller, and applies that project's policy and approvals to every call. On
-    the direct path (D98), the confined runtime's own client makes each request the
-    host's toolbox admitted (``confinement.connector_calls``), and OpenShell's native
-    rules and the policy middleware decide it for the project. Either way only runs of
-    ``project`` get the servers' tools."""
+    The confined runtime's own client makes each request the host's toolbox admitted
+    (``confinement.connector_calls``), and OpenShell's native rules and the policy
+    middleware decide it for the project (D98); only runs of ``project`` get the servers'
+    tools."""
 
     client: McpClient
     servers: tuple[str, ...]
@@ -385,8 +383,6 @@ class McpAccess:
     configured server, or one behind a portal (``e-print-mcp``)."""
     shown: tuple[str, ...] | None = None
     """The servers whose tools the index lists one by one; ``None`` lists every one."""
-    path: Literal["proxy", "direct"] = "proxy"
-    """Which path the run's connector calls take (``Connectors.path``)."""
 
 
 class RunSink(Protocol):
@@ -654,7 +650,7 @@ class Harness:
         self.clock = clock
         """The time the run's messages and leases are read in."""
         self.mcp = mcp
-        """The MCP proxy and the servers behind it whose tools runs are offered."""
+        """The MCP client and the servers whose tools runs are offered."""
         self.delegated = delegated or (
             Role(
                 main.model.cached_as("unassigned").for_role(
@@ -1322,7 +1318,7 @@ class Harness:
                 admitted.context,
                 run_id=admitted.run_id,
                 granted=request.track[0] if request.track is not None else None,
-                # It reads each connector tool's class as the proxy listed it (D99).
+                # It reads each connector tool's class as its client listed it (D99).
                 connectors=connectors.tools.get if connectors is not None else None,
             )
             # Its result is read from its closing answer once every other hook has had its say,
@@ -1878,8 +1874,8 @@ class Harness:
 
         A delegated run gets its parent's tools without the review tools, the plan tools,
         the delegate tools and ``ask_user``, and a check only the reads of the ledger, the
-        documents and the memory, and of the connectors only the tools the proxy classes
-        ``read``; it is not reviewed, and the user's messages do not end its job waits
+        documents and the memory, and of the connectors only the tools classed ``read``;
+        it is not reviewed, and the user's messages do not end its job waits
         (PD-34, DA-1, DA-3)."""
         stores, settings = self.stores, self.settings
         alias = self.role(admitted.request).alias
@@ -1942,10 +1938,8 @@ class Harness:
                 shown=self.mcp.shown,
                 disabled=settings_of,
                 on_approval=self._on_approval(chat, admitted),
-                # Binary results a direct client gets become artifacts (D98); the proxy's
-                # answers carry none.
+                # Binary results the runtime's client gets become artifacts (D98).
                 binaries=ArtifactBinaries(self.client, context),
-                path=self.mcp.path,
             )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:

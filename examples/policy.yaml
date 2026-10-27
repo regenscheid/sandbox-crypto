@@ -161,11 +161,11 @@ network:
 # remain available (docs/POLICY.md).
 
 mcp:
-  proxy:                    # all MCP traffic goes through the MCP proxy (D67)
-    worker_access: true     # worker code may call allowed tools via the proxy
-    worker_tools: inherit   # or a narrower allow list for worker code
-    max_response_bytes: 2Mi
-    binary_results: artifact   # store as artifact references, not inline base64
+  # The agent runtime's own client reaches the servers below, through OpenShell's native
+  # rules and the policy middleware (D98); research code has no MCP access, and
+  # proxy.worker_access and worker_tools, retired with the MCP proxy, are refused.
+  proxy:
+    max_argument_bytes: 64Ki   # the parameters of one request, which the middleware bounds
   browser_automation: disabled     # browse calls (Firecrawl interact and agent, page actions) are denied (D96)
   # Per-class actions and the widest grant a user may give (D97), for every server
   # unless a server's own `effects` say otherwise. The shipped defaults:

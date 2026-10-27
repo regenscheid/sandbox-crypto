@@ -55,6 +55,8 @@ from .kubernetes_bundle import (
     RUNTIME_CREDENTIALS,
 )
 from .kubernetes_config import (
+    CHECK_DIGEST,
+    CHECK_TOKEN,
     GATEWAY_PROFILE,
     BundleConfig,
     BundleError,
@@ -89,6 +91,15 @@ MANAGER_WORKER_TOKEN = "manager-worker"  # noqa: S105 - a token's key, not a tok
 manager's bearer token for control, which control sees on every manager request."""
 GATEWAY_VALUES = "gateway/openshell-values-middleware.yaml"
 """The OpenShell chart's values that register the middleware (``_gateway_values``)."""
+INSPECT_DEFAULTS: dict[str, Any] = {
+    "enabled": True,
+    "argument_bytes": 16 * 1024,
+    "answer_bytes": 64 * 1024,
+    "run_bytes": 8 * 1024 * 1024,
+    "defaults": True,
+}
+"""The middleware's ``[inspect]`` defaults (``policy_middleware.settings.InspectSettings``,
+which the launcher never imports; a test compares them)."""
 _INPUT_BYTES = 64 * 1024
 _CA_DAYS, _LEAF_DAYS = 3650, 1095
 
@@ -252,7 +263,9 @@ def control_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
                 "servers": list(direct.servers),
                 "about": dict(direct.about),
                 "index": list(direct.index) if direct.index is not None else None,
-            }
+            },
+            # The workspace's token for the user's availability check (D98).
+            "check_token_sha256_file": f"{PRIVATE}/{CHECK_DIGEST}",
         }
         if direct is not None
         else {}
@@ -334,7 +347,8 @@ def worker_settings(site: Site, bundle: BundleConfig, digests: dict[str, str]) -
 
 
 def middleware_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
-    """``middleware.toml``: TLS for the gateway's registration and its tokens verified."""
+    """``middleware.toml``: TLS for the gateway's registration and its tokens verified; with
+    ``[mcp_direct]``, the listings read and MCP traffic inspection at its defaults."""
     tokens: dict[str, str] = {
         "gateway_id": site.openshell.gateway_id,
         "public_key": f"{PRIVATE}/gateway-public.pem",
@@ -355,6 +369,9 @@ def middleware_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
     if bundle.mcp_direct is not None:
         # The direct path's listings: read whole when OpenShell offers them (D98).
         settings["mcp_listings"] = True
+        # MCP traffic inspection of the direct path, written out at the middleware's own
+        # defaults (InspectSettings) so that the operator sees and can change them.
+        settings["inspect"] = dict(INSPECT_DEFAULTS)
     return settings
 
 
@@ -441,7 +458,6 @@ def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings
             worker=f"https://{_qualified(site, bundle, 'worker')}:{WORKER_PORT}",
             model=site.model.url,
             control=f"{control}:{CONTROL_PORT}",
-            proxy=None,
             python=RuntimeManagerSettings.model_fields["python"].default,
             relay_tls=True,
         ),
@@ -490,9 +506,15 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
     tokens = {name: _token() for name in ("harness", "workspace", "pool", "manager")}
     digests = {name: _digest(tokens[name]) for name in ("harness", "workspace")}
     egress = direct_egress(site, bundle)
+    check: dict[str, dict[str, bytes]] = {"control": {}, "workspace": {}}
     if egress is not None:
         tokens[MANAGER_WORKER_TOKEN] = _token()
         digests[MANAGER_CLIENT] = _digest(tokens[MANAGER_WORKER_TOKEN])
+        token = _token()
+        check = {
+            "control": {CHECK_DIGEST: _digest(token).encode()},
+            "workspace": {CHECK_TOKEN: token.encode()},
+        }
     models = control_models(site.model, site.skills, site.runtime.revision)
     gateway = bundle.runtime_manager.openshell_gateway
     profile = _cli_tree(gateway, site.openshell.endpoint, manager_identity)
@@ -504,8 +526,13 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
             "control.crt": certificates["control"][0],
             "control.key": certificates["control"][1],
             "worker-ca.crt": authority.pem,
+            **check["control"],
         },
-        "workspace": {"worker-token": tokens["workspace"].encode(), "worker-ca.crt": authority.pem},
+        "workspace": {
+            "worker-token": tokens["workspace"].encode(),
+            "worker-ca.crt": authority.pem,
+            **check["workspace"],
+        },
         "worker": {
             "worker.toml": toml.dumps(worker_settings(site, bundle, digests)).encode(),
             "worker.crt": certificates["worker"][0],
@@ -704,8 +731,8 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
     )
     direct = bundle.mcp_direct
     mcp = (
-        "No MCP proxy is configured (`control.json` has no `proxy`); the agent's connector\n"
-        f"  calls take the direct path (`[mcp_direct]`, D98) for project `{direct.project}`:\n"
+        "The agent's connector calls take the direct path (`[mcp_direct]`, D98) for\n"
+        f"  project `{direct.project}`:\n"
         f"  before the bundle's manager starts, create the Secret `{direct.provider_secret}`\n"
         "  from the provider's env file (`CF_ACCESS_CLIENT_ID=` and\n"
         "  `CF_ACCESS_CLIENT_SECRET=` lines), which its init container registers as the\n"
@@ -718,8 +745,7 @@ def _readme(site: Site, bundle: BundleConfig) -> str:
         "  The middleware's `mcp_listings` is on. The site's policy was compiled into the\n"
         "  manager's Secret: after a new policy revision, generate the Secrets anew.\n"
         if direct is not None
-        else "No MCP proxy is configured (`control.json` has no `proxy`) and no direct path\n"
-        "  (`[mcp_direct]`): the agent has no connectors.\n"
+        else "No MCP servers are configured (`[mcp_direct]`): the agent has no connectors.\n"
     )
     return f"""# Secrets for {name} in {ns}
 

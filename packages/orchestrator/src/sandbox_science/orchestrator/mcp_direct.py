@@ -1,19 +1,20 @@
 # SPDX-License-Identifier: MIT
-"""An MCP client that reaches declared servers straight through OpenShell (D98 prototype).
+"""The MCP client that reaches declared servers straight through OpenShell (D98).
 
-The harness's other client, ``ProxyClient``, calls the MCP proxy, which holds the servers'
-credentials and decides each call. In a sandbox compiled with ``compile_agent_mcp``, the
-harness instead speaks MCP's Streamable HTTP transport to each server's own URL, through
-OpenShell's proxy (its ``HTTPS_PROXY``): OpenShell's native rules allow and deny tools by
-name, the policy middleware decides the rest, and OpenShell substitutes the credentials,
-whose placeholders the harness reads from its environment, as the proxy does.
+In a sandbox compiled with ``compile_agent_mcp``, the agent runtime's client speaks MCP's
+Streamable HTTP transport to each server's own URL, through OpenShell's proxy (its
+``HTTPS_PROXY``): OpenShell's native rules allow and deny tools by name, the policy
+middleware decides the rest, and OpenShell substitutes the credentials, whose placeholders
+the client reads from its environment. It replaced the MCP proxy, a service in a sandbox of
+its own that held the servers' credentials and decided each call, which retired on
+2026-10-26.
 
 Each request names the session and the run in ``Sandbox-Science-Session`` and
 ``Sandbox-Science-Run``, which the middleware records. A refusal comes back as OpenShell's
 ``403`` with a JSON body: ``policy_denied`` from the native rules, or ``middleware_denied``
 with the middleware's reason code, which for a held call names its permission request
-(``approval_required_r12``). Both become the ``ConnectorError`` the proxy's refusal would,
-so ``Connectors`` waits for an approval and calls again exactly as it does with the proxy.
+(``approval_required_r12``). Both become a ``ConnectorError`` with that reason, so
+``Connectors`` waits for an approval and calls again.
 
 The server is untrusted, and nothing marks OpenShell's denial as OpenShell's: its body is
 fixed JSON (``error``, ``detail``, the policy's and the middleware's names, ``reason_code``)
@@ -39,12 +40,11 @@ OpenShell does not offer it whole; each complete listing, as the server sent it,
 take is not shown.
 
 In the confined runtime the client runs in the agent runtime's sandbox, beside OpenShell's
-proxy and the provider's placeholders: there it makes the agent's connector requests when
-the deployment takes the direct path (``[mcp_direct]``): the host's toolbox admits each
-call and relays its request (``confinement.connector_calls``); it lists servers for the
-control service's canaries (``confinement.canaries``), and hands binary results to the
-host over ``publish_mcp_binary`` (``confinement.binaries``). The MCP proxy stays the
-default until the babbage lab passes (D98).
+proxy and the provider's placeholders: there it makes the agent's connector requests
+(``[mcp_direct]``): the host's toolbox admits each call and relays its request
+(``confinement.connector_calls``); it lists servers for the control service's canaries and
+the workspace's availability checks (``confinement.canaries``), and hands binary results to
+the host over ``publish_mcp_binary`` (``confinement.binaries``).
 """
 
 from __future__ import annotations
@@ -174,7 +174,7 @@ class WorkerRequestCheck:
 class DirectClient:
     """One run's MCP connections to declared servers, through OpenShell.
 
-    Like ``ProxyClient``, it keeps one MCP session per server, started on first use and
+    It keeps one MCP session per server, started on first use and
     shared by concurrent callers, starts it again once if the server forgot it (404),
     sends every message with its keys sorted, so a call made again after its approval is
     the request that was approved, and never follows a redirect.
@@ -508,7 +508,8 @@ def _result(status: int, kind: str, body: bytes, request_id: int) -> dict[str, A
 
 
 def _refusal(body: bytes) -> None:
-    """Raise OpenShell's refusal as the proxy's would be raised; anything else is the server's."""
+    """Raise OpenShell's refusal as its reason's ``ConnectorError``; anything else is the
+    server's."""
     try:
         value = json.loads(body)
     except (ValueError, RecursionError):

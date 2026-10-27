@@ -5993,17 +5993,6 @@ network_policies:
       allow_encoded_slash: true
     binaries:
     - path: /**
-  sandbox-science-mcp-proxy:
-    name: Sandbox Science MCP proxy
-    endpoints:
-    - host: mcp-proxy.sandbox-science.internal
-      ports:
-      - 8080
-      protocol: rest
-      enforcement: enforce
-      access: full
-    binaries:
-    - path: /**
   sandbox-science-credentials:
     name: Sandbox Science credentials
     endpoints:
@@ -6408,10 +6397,7 @@ network_middlewares:
     config:
       policy:
         name: permissive-default
-        digest: sha256:79ec2ec3cad5ec7983e20520eb42dad29329d892bf67aa42188857078e140795
+        digest: sha256:e91d9bbde5e38af89428c3624dad1e4c43d50ef0a4edbe4b7f061a72fe911c7d
       package_cache:
         host: package-cache.sandbox-science.internal
         port: 8090
-      mcp_proxy:
-        host: mcp-proxy.sandbox-science.internal
-        port: 8080

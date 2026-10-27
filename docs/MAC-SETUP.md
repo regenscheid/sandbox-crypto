@@ -271,7 +271,7 @@ The rest of the application config also needs these Mac-specific corrections:
    cd ../..
    ```
 
-6. Set any optional MCP proxy and skill-pack settings you intend to use. An
+6. Set any optional `[mcp_direct]` and skill-pack settings you intend to use. An
    MCP server's provider must be registered with this gateway first
    ([MCP connectors](MCP-CONNECTORS.md)); `launch` registers only a placeholder
    for a policy provider with the `github-token` profile, as babbage does

@@ -163,7 +163,7 @@ class PolicyStore:
             return cached
         path = self._policy_path(digest)
         try:
-            loaded = parse_policy(read_limited(path), source=str(path))
+            loaded = parse_policy(read_limited(path), source=str(path), stored=True)
         except PolicyLoadError as exc:
             if isinstance(exc.__cause__, FileNotFoundError):
                 raise StoreError(f"no policy with revision {digest}") from exc
