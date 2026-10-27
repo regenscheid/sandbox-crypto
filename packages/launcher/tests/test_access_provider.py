@@ -401,6 +401,32 @@ def test_a_cli_others_own_or_can_write_is_refused(
     assert reason in refusal
 
 
+def _folder(mode: int, uid: int, gid: int) -> os.stat_result:
+    return os.stat_result((_FOLDER | mode, 0, 0, 1, uid, gid, 0, 0, 0, 0))
+
+
+@pytest.mark.parametrize(
+    ("folder_mode", "folder_gid", "private_gid", "accepted"),
+    [
+        (0o775, _SELF, _SELF, True),  # ~/.local/bin under umask 002 with a user-private group
+        (0o775, _SELF, None, False),  # the user's group has other members
+        (0o775, 1001, _SELF, False),  # a shared group may write it
+        (0o777, _SELF, _SELF, False),  # anyone may write it
+    ],
+)
+def test_a_directory_only_the_users_private_group_may_write_is_the_users(
+    folder_mode: int, folder_gid: int, private_gid: int | None, accepted: bool
+) -> None:
+    refusal = access_provider.cli_refusal(
+        _CLI,
+        _info(_FILE | 0o755, _SELF),
+        _folder(folder_mode, _SELF, folder_gid),
+        _SELF,
+        private_gid,
+    )
+    assert (refusal is None) is accepted
+
+
 def test_a_cli_in_a_directory_others_can_write_is_refused(tmp_path: Path) -> None:
     folder = tmp_path / "open"
     cli = openshell_stand_in(folder / "openshell")
