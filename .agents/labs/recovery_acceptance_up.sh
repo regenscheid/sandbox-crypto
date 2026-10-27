@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Disposable labs only (recovery_acceptance.py, direct_mcp.py), which generate the required
-# environment. MIDDLEWARE_EXTRA, if set, adds lines to the middleware's settings.
+# Disposable labs only (recovery_acceptance.py, direct_mcp.py, a4_approvals.py), which generate
+# the required environment. MIDDLEWARE_EXTRA, if set, adds lines to the middleware's settings;
+# LAB_POLICY, if set, is the project policy compiled and stored in place of the example's.
 set -euo pipefail
 
 : "${R:?}" "${LAB:?}" "${LAB_UNIT:?}" "${OS_BIN:?}"
-test "${LAB%/*}" = /var/tmp && [[ "${LAB##*/}" = ss-recovery-* || "${LAB##*/}" = ss-direct-mcp-* ]]
+test "${LAB%/*}" = /var/tmp && [[ "${LAB##*/}" = ss-recovery-* || "${LAB##*/}" = ss-direct-mcp-* || "${LAB##*/}" = ss-a4lab-* ]]
 test -f "$LAB/identity.json" && test -f "$LAB/env.sh"
 test ! -e "$LAB/gateway.toml" || { echo 'already prepared' >&2; exit 1; }
 # shellcheck source=/dev/null
@@ -88,14 +89,15 @@ max_payload_bytes = 4194304
 timeout           = "500ms"
 EOF
 chmod 600 "$LAB/gateway.toml"
-"$R/.venv/bin/python" -I -B - "$R/examples/policy.yaml" "$LAB/targets.yaml" "$LAB/policies/research-lab.yaml" <<'PY'
+POLICY_FILE=${LAB_POLICY:-$R/examples/policy.yaml}
+"$R/.venv/bin/python" -I -B - "$POLICY_FILE" "$LAB/targets.yaml" "$LAB/policies/research-lab.yaml" <<'PY'
 import sys
 from sandbox_science.policy import load_policy, PoolCeiling
 from sandbox_science.policy.openshell import compile_sandbox, load_targets
 policy = load_policy(sys.argv[1]); targets = load_targets(sys.argv[2])
 open(sys.argv[3], "w").write(compile_sandbox(policy, targets.sandbox, ceiling=PoolCeiling.unrestricted()).policy.to_yaml())
 PY
-"$R/.venv/bin/sandbox-science-policy-middleware" store --state-dir "$LAB/middleware/state" --policy "$R/examples/policy.yaml" >/dev/null
+"$R/.venv/bin/sandbox-science-policy-middleware" store --state-dir "$LAB/middleware/state" --policy "$POLICY_FILE" >/dev/null
 systemd-run --user --unit=${LAB_UNIT}-cache --collect -q -p LimitNOFILE=65536 --working-directory="$LAB" "$R/.venv/bin/sandbox-science-package-cache" serve --settings "$LAB/cache.toml" --log-level info
 systemd-run --user --unit=${LAB_UNIT}-middleware --collect -q --working-directory="$LAB/middleware" "$R/.venv/bin/sandbox-science-policy-middleware" serve --settings "$LAB/middleware/middleware.toml" --log-level INFO
 for _ in $(seq 1 40); do ss -ltn | grep -q "127.0.0.1:${PORT_MIDDLEWARE}" && ss -ltn | grep -q "127.0.0.1:${PORT_CACHE}" && break; sleep 0.5; done
