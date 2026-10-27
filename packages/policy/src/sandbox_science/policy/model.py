@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import StrEnum
-from typing import Annotated, Final, Literal, Self
+from typing import Annotated, Final, Literal, Self, cast
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -26,6 +26,7 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StringConstraints,
+    ValidationInfo,
     WithJsonSchema,
     field_validator,
     model_validator,
@@ -562,13 +563,33 @@ class McpServer(StrictModel):
         return normalize_host(urlsplit(self.url).hostname or "")
 
 
-class McpProxy(StrictModel):
-    """MCP proxy settings (D67).
+STORED: Final = "stored_revision"
+"""Validation context key: the policy is a revision the store kept, read again. A revision
+stored before the MCP proxy retired may set ``mcp.proxy.worker_access`` or ``worker_tools``;
+it still loads, read as if it did not (``McpProxy``), so a sandbox bound to it keeps its
+policy instead of failing to load one."""
 
-    ``max_argument_bytes`` bounds the ``params`` of each request the proxy
-    forwards, as compact JSON (for ``tools/call``, the tool name and its
-    arguments): tool arguments can carry data out, as URLs can.
-    ``max_response_bytes`` bounds each answer the proxy reads from a server.
+RETIRED_WORKER_ACCESS: Final = (
+    "mcp.proxy.worker_access and worker_tools are retired with the MCP proxy (D98, "
+    "2026-10-26): research code has no MCP access, so remove them from the policy "
+    "(docs/POLICY.md)"
+)
+
+
+class McpProxy(StrictModel):
+    """MCP limits, named for the MCP proxy that applied them until it retired (D67, D98).
+
+    ``max_argument_bytes`` bounds the ``params`` of each request, as compact JSON (for
+    ``tools/call``, the tool name and its arguments): tool arguments can carry data out,
+    as URLs can. The policy middleware applies it to the agent runtime's MCP requests.
+    ``max_response_bytes`` bounded each answer the proxy read from a server; nothing reads
+    it since the proxy retired, and the harness bounds answers at 8 MiB.
+
+    ``worker_access`` and ``worker_tools`` let research code call MCP servers through the
+    proxy. With the proxy retired (D98, 2026-10-26) research code has no MCP access: a
+    policy may still say ``worker_access: false`` and ``worker_tools: inherit``, the
+    defaults, and is refused if it sets anything else. A stored revision read again
+    (``STORED`` in the validation context) is read with the defaults instead.
     """
 
     worker_access: StrictBool = False
@@ -577,9 +598,29 @@ class McpProxy(StrictModel):
     max_response_bytes: ByteSize = 2 * 1024 * 1024
     binary_results: Literal["artifact"] = "artifact"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _no_worker_access(cls, data: object, info: ValidationInfo) -> object:
+        if not isinstance(data, dict):
+            return data
+        fields = cast("dict[str, object]", dict(cast("dict[object, object]", data)))
+        access, tools = fields.get("worker_access", False), fields.get("worker_tools", "inherit")
+        if access is False and tools == "inherit":
+            return fields
+        context = info.context
+        if isinstance(context, dict) and cast("dict[str, object]", context).get(STORED):
+            # A stored revision is read as research code is now treated: no MCP access.
+            return {
+                key: value
+                for key, value in fields.items()
+                if key not in ("worker_access", "worker_tools")
+            }
+        raise ValueError(RETIRED_WORKER_ACCESS)
+
 
 class Mcp(StrictModel):
-    """MCP servers and the proxy that all MCP traffic goes through."""
+    """MCP servers, reached by the agent runtime's own client through OpenShell's native
+    rules and the policy middleware (D98), and their limits."""
 
     proxy: McpProxy = McpProxy()
     servers: dict[Name, McpServer] = Field(default_factory=dict[str, McpServer])

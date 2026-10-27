@@ -2124,62 +2124,36 @@ def test_worker_calls_are_denied_when_worker_access_is_false() -> None:
     assert decide_mcp(policy, "tools/list", origin="worker").action == Action.DENY
 
 
-def test_worker_access_inherits_the_server_tool_rules() -> None:
-    policy = load(
-        """
-        mcp:
-          proxy: {worker_access: true, worker_tools: inherit}
-          servers:
-            search:
-              url: https://mcp.example.org/mcp
-              revision: "2025-11-25"
-              auth: {mode: none}
-              tools: {allow: ["*search*"], escalate: ["*crawl*"], deny: ["*reset*"]}
-        """
-    )
-    assert call_tool(policy, "web_search", origin="worker").action == Action.ALLOW
-    assert call_tool(policy, "crawl_site", origin="worker").action == Action.ESCALATE
-    assert call_tool(policy, "index_reset", origin="worker").action == Action.DENY
-    assert decide_mcp(policy, "tools/list", origin="worker").action == Action.ALLOW
+RETIRED_ACCESS = """
+mcp:
+  proxy: {worker_access: true, worker_tools: ["*search*"]}
+  servers:
+    search:
+      url: https://mcp.example.org/mcp
+      revision: "2025-11-25"
+      auth: {mode: none}
+      tools: {allow: ["*search*"], escalate: [], deny: []}
+"""
 
 
-def test_worker_tools_list_narrows_worker_tool_calls() -> None:
-    policy = load(
-        """
-        mcp:
-          proxy: {worker_access: true, worker_tools: ["*search*", fetch]}
-          servers:
-            search:
-              url: https://mcp.example.org/mcp
-              revision: "2025-11-25"
-              auth: {mode: none}
-              tools: {allow: ["*"], escalate: [], deny: []}
-        """
-    )
-    assert call_tool(policy, "web_search", origin="worker").action == Action.ALLOW
-    assert call_tool(policy, "fetch_page", origin="worker").action == Action.DENY
-    assert call_tool(policy, "read_page", origin="worker").action == Action.DENY
-    assert call_tool(policy, "read_page", origin="orchestrator").action == Action.ALLOW
-    assert decide_mcp(policy, "tools/list", origin="worker").action == Action.ALLOW
+def test_a_policy_giving_research_code_mcp_access_is_refused() -> None:
+    # The MCP proxy that carried research code's MCP calls retired (D98, 2026-10-26).
+    with pytest.raises(PolicyLoadError, match="retired with the MCP proxy"):
+        load(RETIRED_ACCESS)
+    with pytest.raises(PolicyLoadError, match="retired with the MCP proxy"):
+        load("mcp:\n  proxy: {worker_tools: [fetch]}\n")
+    # The defaults may still be written.
+    assert load("mcp:\n  proxy: {worker_access: false, worker_tools: inherit}\n")
 
 
-def test_worker_tools_never_widen_the_server_tool_rules() -> None:
-    policy = load(
-        """
-        defaults: {action: escalate}
-        mcp:
-          proxy: {worker_access: true, worker_tools: ["*"]}
-          servers:
-            search:
-              url: https://mcp.example.org/mcp
-              revision: "2025-11-25"
-              auth: {mode: none}
-              tools: {allow: ["*search*"], escalate: ["*crawl*"], deny: ["*reset*"]}
-        """
-    )
-    assert call_tool(policy, "index_reset", origin="worker").action == Action.DENY
-    assert call_tool(policy, "crawl_site", origin="worker").action == Action.ESCALATE
-    assert call_tool(policy, "summarize", origin="worker").action == Action.ESCALATE
+def test_a_stored_revision_with_worker_access_loads_without_it() -> None:
+    # A revision the store kept from before is read as research code is now treated.
+    policy = parse_policy(HEADER + RETIRED_ACCESS, stored=True)
+    assert policy.policy.mcp.proxy.worker_access is False
+    assert policy.policy.mcp.proxy.worker_tools == "inherit"
+    assert call_tool(policy, "web_search", origin="worker").action == Action.DENY
+    assert decide_mcp(policy, "tools/list", origin="worker").action == Action.DENY
+    assert call_tool(policy, "web_search", origin="orchestrator").action == Action.ALLOW
 
 
 # --- Packages ------------------------------------------------------------------------------------

@@ -27,7 +27,7 @@ from yaml.nodes import MappingNode, Node, ScalarNode
 
 from .ceiling import PoolCeiling
 from .errors import PolicyLoadError
-from .model import ProjectPolicy
+from .model import STORED, ProjectPolicy
 
 MAX_FILE_BYTES: Final = 1024 * 1024
 """Policy and ceiling files larger than this are rejected."""
@@ -307,9 +307,14 @@ def read_yaml_mapping(data: bytes, source: str | None, kind: str) -> dict[str, o
     return cast("dict[str, object]", document)
 
 
-def _validate[M: BaseModel](model: type[M], document: dict[str, object], label: str) -> M:
+def _validate[M: BaseModel](
+    model: type[M],
+    document: dict[str, object],
+    label: str,
+    context: dict[str, object] | None = None,
+) -> M:
     try:
-        return model.model_validate(document)
+        return model.model_validate(document, context=context)
     except ValidationError as exc:
         details = "\n".join(
             f"  {'.'.join(str(part) for part in error['loc']) or '<top level>'}: {error['msg']}"
@@ -336,11 +341,18 @@ def _as_bytes(text: str | bytes, label: str) -> bytes:
         raise PolicyLoadError(f"{label} cannot be encoded as UTF-8") from exc
 
 
-def parse_policy(text: str | bytes, *, source: str | None = None) -> LoadedPolicy:
-    """Parse and validate a policy file's contents. Raises PolicyLoadError."""
+def parse_policy(
+    text: str | bytes, *, source: str | None = None, stored: bool = False
+) -> LoadedPolicy:
+    """Parse and validate a policy file's contents. Raises PolicyLoadError.
+
+    ``stored`` reads a revision the policy store kept: one stored before the MCP proxy
+    retired may set ``mcp.proxy.worker_access``, which is then read as unset (``STORED``)
+    rather than refused, so that what was bound to it still loads."""
     data = _as_bytes(text, _label(source, "policy"))
     document = read_yaml_mapping(data, source, "policy")
-    policy = _validate(ProjectPolicy, document, _label(source, "policy"))
+    context: dict[str, object] | None = {STORED: True} if stored else None
+    policy = _validate(ProjectPolicy, document, _label(source, "policy"), context)
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     return LoadedPolicy(policy=policy, digest=digest, source=source)
 

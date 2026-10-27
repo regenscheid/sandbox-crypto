@@ -1057,28 +1057,6 @@ def with_services(config: dict[str, object]) -> dict[str, object]:
     }
 
 
-def test_worker_code_reaches_the_mcp_proxy_when_the_policy_allows_it(
-    middleware: PolicyMiddleware,
-    make_facts: FactsFactory,
-    example: LoadedPolicy,
-    policy_config: Callable[[LoadedPolicy], dict[str, object]],
-) -> None:
-    facts = make_facts(
-        scheme="http",
-        host=MCP_HOST,
-        port=8080,
-        method="POST",
-        path="/mcp",
-        headers=(("content-type", "application/json"),),
-        body=b'{"jsonrpc": "2.0", "method": "tools/list", "id": 1}',
-        config=with_services(policy_config(example)),
-    )
-    verdict = middleware.evaluate_http(facts)
-    assert verdict.allowed
-    assert verdict.decision is not None
-    assert verdict.decision.rule == "mcp.proxy.worker_access"
-
-
 def test_worker_access_false_keeps_worker_code_from_the_mcp_proxy(
     store: PolicyStore,
     sandbox_id: str,

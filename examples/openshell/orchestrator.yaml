@@ -39,14 +39,3 @@ network_policies:
       access: full
     binaries:
     - path: /opt/sandbox-science/bin/python*
-  sandbox-science-mcp-proxy:
-    name: Sandbox Science MCP proxy
-    endpoints:
-    - host: mcp-proxy.sandbox-science.internal
-      ports:
-      - 8080
-      protocol: rest
-      enforcement: enforce
-      access: full
-    binaries:
-    - path: /opt/sandbox-science/bin/python*

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The compiled policy of a sandbox whose agent calls MCP servers directly (D98 prototype)."""
+"""The compiled policy of a sandbox whose agent calls MCP servers directly (D98)."""
 
 from __future__ import annotations
 
@@ -14,14 +14,11 @@ from sandbox_science.policy.openshell import (
     Endpoint,
     ToolAdmission,
     compile_agent_mcp,
-    compile_mcp_proxy,
-    load_targets,
     tool_admission,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = load_policy(ROOT / "examples" / "policy.yaml")
-TARGETS = load_targets(ROOT / "examples" / "openshell" / "targets.yaml")
 OPEN = PoolCeiling.unrestricted()
 TARGET = AgentMcpTarget(
     middleware="sandbox-science-policy", project="crypto", binaries=("/usr/bin/python3.13",)
@@ -68,9 +65,6 @@ def test_native_rules_admit_reads_and_escalations_and_never_a_denied_tool() -> N
     assert not {
         name for name in names if name.startswith("portal_") and name != "portal_list_servers"
     }
-    proxy = compile_mcp_proxy(EXAMPLE, TARGETS.mcp_proxy, ceiling=OPEN)
-    (proxy_entry,) = proxy.policy.network_policies.values()
-    assert "firecrawl-mcp_firecrawl_monitor_create" not in called(proxy_entry.endpoints[0])
 
 
 def test_the_runtimes_client_shows_what_the_native_rules_admit_and_nothing_else() -> None:
@@ -114,9 +108,3 @@ def test_without_servers_there_is_nothing_to_reach() -> None:
     compiled = compile_agent_mcp(policy, TARGET, ceiling=OPEN)
     assert compiled.policy.network_policies == {}
     assert compiled.policy.network_middlewares is None
-
-
-def test_the_proxy_sandbox_compiles_as_before() -> None:
-    before = compile_mcp_proxy(EXAMPLE, TARGETS.mcp_proxy, ceiling=OPEN)
-    assert before.policy.network_middlewares is None
-    assert [finding.subject for finding in before.findings].count("mcp.servers") == 1

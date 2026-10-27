@@ -322,7 +322,9 @@ def test_example_packages(
             "orchestrator",
             Action.ALLOW,
         ),
-        ({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "worker", Action.ALLOW),
+        # Research code has no MCP access (D98: the MCP proxy retired).
+        ({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "worker", Action.DENY),
+        ({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "orchestrator", Action.ALLOW),
         (
             {
                 "jsonrpc": "2.0",
@@ -331,6 +333,16 @@ def test_example_packages(
                 "params": {"name": "paper-search-mcp_arxiv_search", "arguments": {}},
             },
             "worker",
+            Action.DENY,
+        ),
+        (
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "paper-search-mcp_arxiv_search", "arguments": {}},
+            },
+            "orchestrator",
             Action.ALLOW,
         ),
         (
