@@ -578,15 +578,129 @@ class McpProxy(StrictModel):
     binary_results: Literal["artifact"] = "artifact"
 
 
+InspectionName = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,39}$")]
+"""A pattern's name: it becomes part of a reason code (``answer_blocked_<name>``)."""
+MAX_INSPECTION_REGEX: Final = 512
+"""The longest regular expression an inspection pattern may have, in characters."""
+MAX_INSPECTION_PATTERNS: Final = 64
+_QUANTIFIERS: Final = frozenset("*+{")
+
+
+def _check_inspection_regex(value: str) -> str:
+    """Compile an inspection pattern, and refuse the shapes that can take time exponential
+    in their input: backreferences, and a group repeated by ``*``, ``+`` or ``{}`` that
+    itself repeats or alternates (``(a+)+``, ``(a|ab)*``). A heuristic, not a proof: every
+    search also has bounded input (one response piece and a carry-over window)."""
+    try:
+        re.compile(value)
+    except re.error as exc:
+        raise ValueError(f"invalid regular expression: {exc}") from exc
+    if re.search(r"\\[1-9]|\(\?P=", value):
+        raise ValueError("inspection patterns may not use backreferences")
+    groups: list[bool] = []
+    """For each open group: whether it repeats or alternates within."""
+    risky_closed = False
+    index, in_class = 0, False
+    while index < len(value):
+        char = value[index]
+        if char == "\\":
+            index += 2
+            risky_closed = False
+            continue
+        if in_class:
+            in_class = char != "]"
+        elif char == "[":
+            in_class = True
+            if value[index + 1 : index + 2] == "^":
+                index += 1
+            if value[index + 1 : index + 2] == "]":
+                index += 1  # a literal "]" first in a class
+        elif char == "(":
+            groups.append(False)
+        elif char == ")":
+            inner = groups.pop() if groups else False
+            if groups and inner:
+                groups[-1] = True
+            risky_closed = inner
+            index += 1
+            continue
+        elif char in _QUANTIFIERS or char == "|":
+            if char in _QUANTIFIERS and risky_closed:
+                raise ValueError(
+                    "inspection patterns may not repeat a group that repeats or alternates "
+                    "within it (catastrophic backtracking)"
+                )
+            if groups:
+                groups[-1] = True
+        risky_closed = False
+        index += 1
+    return value
+
+
+InspectionRegex = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_INSPECTION_REGEX),
+    AfterValidator(_check_inspection_regex),
+]
+
+
+class InspectionPattern(StrictModel):
+    """A pattern the policy middleware looks for in MCP answers on the direct path (D98):
+    a match is a finding in the answer's record; ``alert`` also writes an
+    ``mcp-answer-alert`` record, and ``block`` withholds the answer (a JSON answer is
+    refused, an event stream cut at the piece that matched). ``servers`` limits it to some
+    declared servers; without it, it applies to every one. Matched as Python ``re``,
+    case-sensitive unless the pattern says ``(?i)``."""
+
+    name: InspectionName
+    regex: InspectionRegex
+    action: Literal["alert", "block"] = "alert"
+    servers: tuple[Name, ...] | None = None
+
+
+class McpInspection(StrictModel):
+    """MCP traffic inspection's patterns (docs/POLICY-MIDDLEWARE.md, "MCP traffic
+    inspection"). The deployment's patterns (the middleware's settings) and the shipped
+    defaults apply unless the project's name the same pattern, which replaces them;
+    ``defaults: false`` drops the shipped defaults for the project."""
+
+    defaults: StrictBool = True
+    patterns: tuple[InspectionPattern, ...] = Field(default=(), max_length=MAX_INSPECTION_PATTERNS)
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> Self:
+        names = [pattern.name for pattern in self.patterns]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"inspection pattern names must be unique: {', '.join(duplicates)}")
+        return self
+
+
 class Mcp(StrictModel):
     """MCP servers and the proxy that all MCP traffic goes through."""
 
     proxy: McpProxy = McpProxy()
+    inspection: McpInspection = McpInspection()
+    """Pattern checks on the answers the policy middleware inspects (D98's direct path)."""
     servers: dict[Name, McpServer] = Field(default_factory=dict[str, McpServer])
     effects: ClassActions = Field(default_factory=ClassActions)
     """Cross-server per-class actions and grant ceilings, over the shipped defaults (D97)."""
     browser_automation: Literal["disabled", "enabled"] = "disabled"
     """Whether ``browse`` calls may happen at all: disabled, they are denied (D96)."""
+
+    @model_validator(mode="after")
+    def _inspected_servers_declared(self) -> Self:
+        unknown = sorted(
+            {
+                server
+                for pattern in self.inspection.patterns
+                for server in pattern.servers or ()
+                if server not in self.servers
+            }
+        )
+        if unknown:
+            raise ValueError(f"inspection patterns name undeclared servers: {', '.join(unknown)}")
+        return self
 
     @model_validator(mode="after")
     def _browse_needs_automation(self) -> Self:
