@@ -29,21 +29,21 @@ import codecs
 import hashlib
 import json
 import logging
-import queue
 import re
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.policy import LoadedPolicy
 from sandbox_science.policy.linear_regex import LinearMatch, LinearPattern, compile_linear
 from sandbox_science.policy.mcp_inspection import effective_patterns
 from sandbox_science.policy.model import InspectionPattern
 
 from .events import EventSink
-from .redaction import Redactor, cut
+from .redaction import Redactor, Span, cut
 
 _log = logging.getLogger(__name__)
 
@@ -71,7 +71,11 @@ a sandbox can only push out its own."""
 MAX_SANDBOXES: Final = 4096
 """Sandboxes whose calls are tracked, least recently active forgotten first."""
 MAX_PENDING: Final = 1024
-"""Answers waiting to be recorded; past it, one is dropped and counted, never waited for."""
+"""Plain answers waiting to be recorded; past it, one is dropped and counted, never waited
+for. Answers with a finding, a block or no inspection are never dropped."""
+DROPPED_RECORD: Final = "mcp-inspection-dropped"
+DROP_REPORT_SECONDS: Final = 60.0
+"""How often dropped answers are counted into an ``mcp-inspection-dropped`` record."""
 _EDGE: Final = 256
 """Characters of an event's data kept at each end, to tell the call's response by its id."""
 MAX_RUNS: Final = 4096
@@ -289,6 +293,12 @@ class AnswerInspection:
         """False when the answer passed unread (``reason``): no pattern applied to it."""
         self.reason: str | None = None
         self._seen: set[tuple[str, int]] = set()
+        self._open: tuple[str, int] | None = None
+        """A secret left open at the end of the text read so far: its continuation mode
+        and where it began, in characters."""
+        self._spans: list[Span] | None = None
+        """The current search's secret spans, found once when a finding needs them."""
+        self._opening: str | None = None
         self.mode: Mode = "headers"
         self.note: str | None = None
         self.blocked: _Finding | None = None
@@ -326,6 +336,10 @@ class AnswerInspection:
         state = self._text
         window = state.carry + text
         held = len(state.carry)
+        # A secret that began before this window (beyond the carry) goes on at its start.
+        opened = self._open
+        self._opening = opened[0] if opened is not None and opened[1] < state.base else None
+        self._spans = None
         for pattern in self.tracked.patterns:
             for match in pattern.regex.finditer(window):
                 if match.end() <= held:
@@ -333,6 +347,12 @@ class AnswerInspection:
                 self._found(pattern, match, window, state.base + match.start())
                 if self.blocked is not None:
                     return
+        redactor = self._inspection.redactor
+        _, left = redactor.scan(window, self._opening, only_open=True)
+        if left is None:
+            self._open = None
+        elif not (opened is not None and self._opening is not None and left[1] == 0):
+            self._open = (left[0], state.base + left[1])
         state.carry = window[-CARRY:]
         state.base += len(window) - len(state.carry)
         # Only a match that starts in the carry can be met again: forget the others.
@@ -361,8 +381,12 @@ class AnswerInspection:
         middle = (match.start() + match.end()) // 2
         start = max(0, middle - FINDING_CONTEXT // 2)
         end = min(len(window), start + FINDING_CONTEXT)
-        # Redacted as part of the text around it, so a secret the window cuts goes whole.
-        context = self._inspection.redactor.window(window, start, end)
+        # Redacted with the secrets of the whole text searched (and one an earlier piece
+        # left open), so that a secret the window cuts goes whole, however long.
+        redactor = self._inspection.redactor
+        if self._spans is None:
+            self._spans = redactor.scan(window, self._opening)[0]
+        context = redactor.window(window, start, end, spans=self._spans)
         found = _Finding(pattern, offset, context)
         self._findings.append(found)
         if pattern.action == "block" and self.blocked is None:
@@ -458,6 +482,17 @@ class AnswerInspection:
             payload["reason"] = self.reason
         return payload, charged
 
+    def important(self) -> bool:
+        """Whether the answer's records must not be dropped: a finding, a block, a cut or
+        an answer that was not inspected."""
+        return bool(self._findings) or self.decision != "passed" or not self.inspected
+
+    def lean(self) -> None:
+        """Record this answer without its excerpt (a backlog of records)."""
+        self._text.excerpt.clear()
+        self._excerpt_limit = 0
+        self.note = self.note or "excerpt left out: the record queue was full"
+
     def pass_unread(self, reason: str) -> None:
         """Let the answer pass without reading it (``reason``, such as ``capacity``): its
         record has its head only, and no pattern, ``block`` included, applies to it."""
@@ -473,7 +508,7 @@ class AnswerInspection:
             return {
                 **self.tracked.subject,
                 "request_id": self._request_id,
-                "action": "uninspected",
+                "action": "block" if self.decision == "blocked" else "uninspected",
                 "reason": self.reason,
                 "findings": [],
             }
@@ -503,6 +538,8 @@ class Inspection:
         defaults: bool = True,
         redactor: Redactor | None = None,
         max_pending: int = MAX_PENDING,
+        drop_report_seconds: float = DROP_REPORT_SECONDS,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         """``patterns`` and ``defaults`` are the deployment's (``[inspect]``), under each
         project policy's ``mcp.inspection``."""
@@ -516,10 +553,20 @@ class Inspection:
         self._waiting: OrderedDict[str, OrderedDict[str, Tracked]] = OrderedDict()
         """Each sandbox's admitted calls by request id, so that one cannot push out another's."""
         self._runs: OrderedDict[tuple[str, ...], int] = OrderedDict()
-        self._queue: queue.Queue[AnswerInspection] = queue.Queue(max_pending)
+        self._cond = threading.Condition()
+        self._urgent: deque[AnswerInspection] = deque()
+        """Answers with a finding, a block or no inspection: never dropped, written first."""
+        self._plain: deque[AnswerInspection] = deque()
+        self._busy = 0
+        self._max_pending = max_pending
         self._writer: threading.Thread | None = None
         self.dropped = 0
-        """Answers not recorded because the queue was full."""
+        """Plain answers not recorded because the queue was full, since the start."""
+        self._drops: dict[tuple[str, str], int] = {}
+        """Drops not yet reported, by project and sandbox."""
+        self._drop_report = drop_report_seconds
+        self._clock = clock
+        self._reported_at = clock.monotonic()
 
     def arguments(self, encoded: bytes) -> dict[str, object]:
         """A call's ``arguments`` field, redacted and bounded."""
@@ -577,17 +624,23 @@ class Inspection:
 
     def record(self, answer: AnswerInspection) -> None:
         """Queue an answer for its records, written on a thread of their own so that the
-        response never waits for redaction or the store. A full queue drops the record,
-        counted and logged, rather than hold the response."""
-        try:
-            self._queue.put_nowait(answer)
-        except queue.Full:
-            with self._lock:
+        response never waits for redaction or the store. An answer with a finding, a
+        block or no inspection is never dropped: it goes ahead of the others, without
+        its excerpt when the queue is full. A plain answer is dropped when the queue is
+        full, counted by sandbox into a periodic ``mcp-inspection-dropped`` record."""
+        with self._cond:
+            if answer.important():
+                if len(self._plain) >= self._max_pending:
+                    answer.lean()  # the excerpt's redaction is what a backlog cannot afford
+                self._urgent.append(answer)
+            elif len(self._plain) >= self._max_pending:
+                key = (str(answer.tracked.subject.get("project")), answer.tracked.sandbox_id)
+                self._drops[key] = self._drops.get(key, 0) + 1
                 self.dropped += 1
-                dropped = self.dropped
-            _log.warning("MCP answer records dropped, the queue being full: %d so far", dropped)
-            return
-        with self._lock:
+                _log.warning("MCP answer records dropped, the queue being full: %d", self.dropped)
+            else:
+                self._plain.append(answer)
+            self._cond.notify_all()
             if self._writer is None:
                 self._writer = threading.Thread(
                     target=self._write_all, name="mcp-answer-records", daemon=True
@@ -595,18 +648,54 @@ class Inspection:
                 self._writer.start()
 
     def flush(self) -> None:
-        """Wait until every queued answer is recorded (shutdown, tests)."""
-        self._queue.join()
+        """Wait until every queued answer is recorded, then report drops (shutdown,
+        tests)."""
+        with self._cond:
+            while self._urgent or self._plain or self._busy:
+                self._cond.wait(0.1)
+        self._report_drops(force=True)
 
     def _write_all(self) -> None:
         while True:
-            answer = self._queue.get()
+            with self._cond:
+                while not self._urgent and not self._plain:
+                    self._cond.wait(self._drop_report if self._drops else None)
+                    if self._drops and self._due():
+                        break
+                queue = self._urgent or self._plain
+                answer = queue.popleft() if queue else None
+                self._busy += answer is not None
             try:
-                self._write(answer)
+                if answer is not None:
+                    self._write(answer)
+                self._report_drops()
             except Exception:
                 _log.exception("could not record an MCP answer")
             finally:
-                self._queue.task_done()
+                with self._cond:
+                    self._busy -= answer is not None
+                    self._cond.notify_all()
+
+    def _due(self) -> bool:
+        return self._clock.monotonic() - self._reported_at >= self._drop_report
+
+    def _report_drops(self, *, force: bool = False) -> None:
+        """Write the drops counted since the last report, when one is due."""
+        with self._cond:
+            if not self._drops or not (force or self._due()):
+                return
+            drops, self._drops = self._drops, {}
+            self._reported_at = self._clock.monotonic()
+        counts = [
+            {"project": project, "sandbox_id": sandbox, "answers": count}
+            for (project, sandbox), count in sorted(drops.items())
+        ]
+        try:
+            self._events.record(
+                DROPPED_RECORD, {"answers": sum(drops.values()), "counts": counts[:256]}
+            )
+        except Exception:
+            _log.exception("could not record %d dropped MCP answers", sum(drops.values()))
 
     def _write(self, answer: AnswerInspection) -> None:
         """Write an answer's records; a store that fails is logged, never the client's

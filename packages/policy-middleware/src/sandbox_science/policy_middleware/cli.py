@@ -242,6 +242,7 @@ def record_inspection_state(sink: StoreSink, settings: Settings) -> None:
                 "answer_bytes": inspect.answer_bytes,
                 "run_bytes": inspect.run_bytes,
                 "response_streams": settings.response_streams,
+                "sandbox_streams": settings.sandbox_streams,
                 "patterns": len(inspect.patterns),
                 "defaults": inspect.defaults,
             },
@@ -278,6 +279,7 @@ def _run(settings: Settings, middleware: PolicyMiddleware) -> int:
         max_payload_bytes=settings.max_payload_bytes,
         expected_audience=audience,
         response_streams=settings.response_streams,
+        sandbox_streams=settings.sandbox_streams,
     )
     server, port = build_server(
         service, listen=settings.listen, workers=settings.workers, credentials=credentials

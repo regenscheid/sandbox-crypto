@@ -76,6 +76,37 @@ pieces cannot be rewritten one by one; any other is blocked."""
 RESPONSE_STREAMS: Final = 32
 """Responses read at once, by default; past it, an answer passes unread (``capacity``)."""
 CAPACITY: Final = "capacity"
+INSPECTION_CAPACITY: Final = "inspection_capacity"
+"""An answer refused because it could not be inspected while a block pattern applies."""
+
+
+class StreamSlots:
+    """The response threads: at most ``total`` responses read at once, and at most
+    ``per_sandbox`` of one sandbox's."""
+
+    def __init__(self, total: int, per_sandbox: int) -> None:
+        self._total, self._per_sandbox = total, min(per_sandbox, total)
+        self._lock = threading.Lock()
+        self._held: dict[str, int] = {}
+
+    def acquire(self, sandbox: str) -> bool:
+        """Take a slot for ``sandbox``, or say there is none, without waiting."""
+        with self._lock:
+            mine = self._held.get(sandbox, 0)
+            if mine >= self._per_sandbox or sum(self._held.values()) >= self._total:
+                return False
+            self._held[sandbox] = mine + 1
+            return True
+
+    def release(self, sandbox: str) -> None:
+        with self._lock:
+            left = self._held.get(sandbox, 0) - 1
+            if left > 0:
+                self._held[sandbox] = left
+            else:
+                self._held.pop(sandbox, None)
+
+
 _MAX_REASON_BYTES: Final = 4096
 _MAX_FINDINGS: Final = 32
 
@@ -91,13 +122,19 @@ class MiddlewareService:
         max_payload_bytes: int,
         expected_audience: str = "",
         response_streams: int = RESPONSE_STREAMS,
+        sandbox_streams: int | None = None,
     ) -> None:
         """``response_streams`` bounds the responses read at once: each holds a thread of
         its own while it streams (``build_server`` adds them to the pool), so request
-        decisions never wait behind slow or endless answers."""
+        decisions never wait behind slow or endless answers. ``sandbox_streams`` (a
+        quarter of them by default) is one sandbox's share, so that one cannot take
+        them all."""
         self._middleware = middleware
         self.response_streams = response_streams
-        self._streams = threading.BoundedSemaphore(response_streams)
+        self._streams = StreamSlots(
+            response_streams,
+            sandbox_streams if sandbox_streams is not None else max(1, response_streams // 4),
+        )
         self._authenticator = authenticator
         self._max_payload_bytes = max_payload_bytes
         self._expected_audience = expected_audience
@@ -226,15 +263,17 @@ class MiddlewareService:
         check: ListingCheck | None = None
         answer: AnswerInspection | None = None
         held = False
+        sandbox = ""
         try:
             for event in requests:
                 match event.WhichOneof("event"):
                     case "preflight":
                         preflight = event.preflight
-                        self._require_sandbox(context, caller, preflight.context.sandbox_id)
+                        sandbox = preflight.context.sandbox_id
+                        self._require_sandbox(context, caller, sandbox)
                         check, answer, action = self._response_plan(preflight)
                         if action.WhichOneof("action") == "inspect":
-                            held = self._streams.acquire(blocking=False)
+                            held = self._streams.acquire(sandbox)
                             if not held:
                                 check, action = None, _over_capacity(check, answer)
                         yield pb.HttpResponseEventResult(preflight_result=action)
@@ -259,7 +298,7 @@ class MiddlewareService:
                         pass  # session_end has no result
         finally:
             if held:
-                self._streams.release()
+                self._streams.release(sandbox)
             if answer is not None:
                 # A response that ended early (the client left, the server failed): what
                 # was seen is recorded, marked incomplete.
@@ -490,12 +529,18 @@ def _blocked_unit(sequence: int, code: str = LISTING_BLOCKED) -> pb.HttpResponse
 def _over_capacity(
     check: ListingCheck | None, answer: AnswerInspection | None
 ) -> pb.HttpResponsePreflightResult:
-    """Every response thread is busy: a listing that must be rewritten is blocked (the
-    agent would see denied tools), and an answer passes unread, recorded as such; no
-    pattern, ``block`` included, applies to it."""
-    _log.warning("response streams at capacity: an answer passes uninspected")
+    """No response thread is free for this sandbox: a listing that must be rewritten is
+    blocked (the agent would see denied tools); an answer from a server a ``block``
+    pattern applies to is refused (``inspection_capacity``), before any of it is sent;
+    any other answer passes unread, recorded as such."""
+    _log.warning("response streams at capacity: an answer is not inspected")
     if answer is not None:
         answer.pass_unread(CAPACITY)
+        if check is None and any(p.action == "block" for p in answer.tracked.patterns):
+            answer.decision = "blocked"
+            return pb.HttpResponsePreflightResult(
+                block_delivery=pb.HttpResponseBlockDelivery(), reason_code=INSPECTION_CAPACITY
+            )
     if check is not None:
         if answer is not None:
             answer.decision = "blocked"

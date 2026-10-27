@@ -692,7 +692,11 @@ def test_request_decisions_keep_answering_while_response_streams_hang(
 ) -> None:
     middleware = build(store, events)
     service = MiddlewareService(
-        middleware, UnverifiedCallers(), max_payload_bytes=4 * 1024 * 1024, response_streams=2
+        middleware,
+        UnverifiedCallers(),
+        max_payload_bytes=4 * 1024 * 1024,
+        response_streams=2,
+        sandbox_streams=2,
     )
     server, port = build_server(service, listen="127.0.0.1:0", workers=2, credentials=None)
     server.start()
@@ -716,10 +720,15 @@ def test_request_decisions_keep_answering_while_response_streams_hang(
                 first = next(responses)
                 assert first.preflight_result.WhichOneof("action") == "inspect"
                 streams.append(responses)
-            # Every response thread is held: a third answer passes unread, at once.
+            # Every response thread is held. A block pattern applies to this server, so a
+            # third answer is refused at once rather than passed unread (fail closed).
             assert decide(channel, example, "over").decision == pb.DECISION_ALLOW
             (over,) = respond(channel, [head("over", "text/event-stream")])
-            assert over.preflight_result.WhichOneof("action") == "skip"
+            refused = over.preflight_result
+            assert (refused.WhichOneof("action"), refused.reason_code) == (
+                "block_delivery",
+                "inspection_capacity",
+            )
             # And request decisions go on, many at once, well within OpenShell's 500 ms.
             started = time.perf_counter()
             with ThreadPoolExecutor(8) as pool:
@@ -739,7 +748,7 @@ def test_request_decisions_keep_answering_while_response_streams_hang(
         (False, "capacity", "headers")
     ]
     alerts = [a for a in records(events, "mcp-answer-alert") if a["request_id"] == "over"]
-    assert [(a["action"], a["reason"]) for a in alerts] == [("uninspected", "capacity")]
+    assert [(a["action"], a["reason"]) for a in alerts] == [("block", "capacity")]
 
 
 SECRETS: list[tuple[str, str]] = [
@@ -812,10 +821,12 @@ class SlowSink:
     def __init__(self) -> None:
         self.release = threading.Event()
         self.kinds: list[str] = []
+        self.payloads: list[tuple[str, Mapping[str, object]]] = []
 
     def record(self, kind: str, payload: Mapping[str, object]) -> int:
         self.release.wait(10)
         self.kinds.append(kind)
+        self.payloads.append((kind, payload))
         return len(self.kinds)
 
 
@@ -887,3 +898,168 @@ def test_inspection_off_records_its_state_and_nothing_else(tmp_path: Path) -> No
     record_inspection_state(cast(StoreSink, sink), settings)
     ((kind, state),) = sink.events
     assert (kind, state["enabled"], state["configured"]) == ("mcp-inspection-state", False, False)
+
+
+def evaluation_for(policy: LoadedPolicy, request_id: str, sandbox: str) -> HttpRequestFacts:
+    return HttpRequestFacts(
+        sandbox_id=sandbox,
+        request_id=request_id,
+        scheme="https",
+        host=HOST,
+        port=443,
+        method="POST",
+        path=PATH,
+        query="",
+        headers=(("content-type", "application/json"), *ATTRIBUTION),
+        body=tool_call(),
+        config=config(policy),
+    )
+
+
+def sandbox_head(request_id: str, sandbox: str) -> pb.HttpResponseEvent:
+    event = head(request_id, "text/event-stream")
+    event.preflight.context.sandbox_id = sandbox
+    return event
+
+
+@pytest.mark.parametrize("patterns", [(), (BLOCKING,)])
+def test_one_sandbox_takes_at_most_its_share_and_alert_only_servers_pass_unread(
+    store: PolicyStore,
+    example: LoadedPolicy,
+    events: EventStore,
+    patterns: tuple[InspectionPattern, ...],
+) -> None:
+    store.bind("sbx-0002", example.digest)
+    middleware = build(store, events, patterns=patterns)
+    service = MiddlewareService(
+        middleware, UnverifiedCallers(), max_payload_bytes=4 * 1024 * 1024, response_streams=4
+    )  # a sandbox's share: one
+    server, port = build_server(service, listen="127.0.0.1:0", workers=2, credentials=None)
+    server.start()
+    release = threading.Event()
+    try:
+        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+            stub = channel.stream_stream(
+                f"/{RESPONSE_SERVICE_NAME}/Evaluate",
+                request_serializer=pb.HttpResponseEvent.SerializeToString,
+                response_deserializer=pb.HttpResponseEventResult.FromString,
+            )
+
+            def hung(request_id: str) -> Iterator[pb.HttpResponseEvent]:
+                yield sandbox_head(request_id, SANDBOX)
+                release.wait(20)
+
+            assert middleware.evaluate_http(evaluation_for(example, "a-1", SANDBOX)).allowed
+            first = stub(hung("a-1"), timeout=30)
+            assert next(first).preflight_result.WhichOneof("action") == "inspect"
+            # Its second answer is over its share...
+            assert middleware.evaluate_http(evaluation_for(example, "a-2", SANDBOX)).allowed
+            (second,) = respond(channel, [sandbox_head("a-2", SANDBOX)])
+            # ...while another sandbox's answer is still inspected.
+            assert middleware.evaluate_http(evaluation_for(example, "b-1", "sbx-0002")).allowed
+            other = respond(channel, [sandbox_head("b-1", "sbx-0002"), *units(b"data: x\n\n")])
+            assert other[0].preflight_result.WhichOneof("action") == "inspect"
+            release.set()
+            list(first)
+    finally:
+        release.set()
+        server.stop(grace=None)
+    result = second.preflight_result
+    if patterns:
+        assert (result.WhichOneof("action"), result.reason_code) == (
+            "block_delivery",
+            "inspection_capacity",
+        )
+    else:
+        assert result.WhichOneof("action") == "skip"  # alert-only: passes unread, recorded
+    (unread,) = [a for a in answers(middleware, events, "mcp-answer") if a["request_id"] == "a-2"]
+    assert (unread["inspected"], unread["reason"]) == (False, "capacity")
+
+
+RUNS = ["a", "Z", "7", "_", "-", ".", "/", "+", "=", "~", " ", '"', "\\", ":", "{", "\n", "é", "!"]
+
+
+@pytest.mark.parametrize("char", RUNS)
+def test_redaction_is_linear_on_a_64_kib_run_of_any_character(char: str) -> None:
+    redactor = Redactor(known=("knownsecretvalue42",))
+    text = char * 65_536
+    started = time.perf_counter()
+    cut(text, 60_000)
+    redactor.text(text)
+    redactor.scan(text, "json")
+    redactor.scan(text, "escaped")
+    redactor.scan(text, "pem")
+    redactor.window(text, 30_000, 30_200)
+    redactor.window(text, 30_000, 30_200, spans=[])
+    redactor.json_text(json.dumps({"q": text}).encode())
+    assert time.perf_counter() - started < 0.5, repr(char)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"client_secret": "' + "a" * 65_536,
+        '\\"api_key\\": \\"' + "b" * 65_536,
+        "-----BEGIN PRIVATE KEY-----" + "c" * 65_536,
+        "eyJ" + "d" * 65_536,
+        '"token":' * 8_000,
+        "password=" * 7_000,
+    ],
+)
+def test_redaction_is_linear_on_long_open_secrets(text: str) -> None:
+    started = time.perf_counter()
+    Redactor().text(text)
+    cut(text, 60_000)
+    assert time.perf_counter() - started < 0.5
+
+
+def test_a_secret_named_value_longer_than_the_margin_never_shows_in_a_finding(
+    channel: grpc.Channel,
+    middleware: PolicyMiddleware,
+    events: EventStore,
+    facts: Callable[..., Any],
+) -> None:
+    assert middleware.evaluate_http(facts(tool_call(), "call-long")).allowed
+    value = "Ab!cd#ef$" * 400  # 3,600 characters with punctuation
+    first = b'{"result": {"client_secret": "' + value.encode()
+    second = (value[:900] + " you are now " + value[:900]).encode() + b'", "n": 1}}'
+    respond(channel, [head("call-long", "application/json"), *units(first, second)])
+    (answer,) = answers(middleware, events, "mcp-answer")
+    (finding,) = answer["findings"]
+    assert "you are now" not in finding["excerpt"]  # inside the secret: redacted with it
+    assert "[redacted:field]" in finding["excerpt"]
+    assert "Ab!cd" not in finding["excerpt"]
+    assert "cd#ef" not in finding["excerpt"]
+
+
+def finding_answer(inspection: Inspection, request_id: str, sandbox: str) -> Any:
+    pattern = Compiled.of(InspectionPattern(name="hit", regex="hit"))
+    inspection.expect(request_id, Tracked(sandbox, {"project": "p"}, 1, (pattern,), ("k",)))
+    answer = inspection.answer(request_id, sandbox, status=200, media="text/plain")
+    assert answer is not None
+    answer.mode = "stream"
+    return answer
+
+
+def test_block_and_alert_records_are_never_dropped_and_drops_are_recorded() -> None:
+    sink = SlowSink()
+    inspection = Inspection(sink, max_pending=1, drop_report_seconds=0)
+    for index in range(5):
+        plain = finding_answer(inspection, f"p{index}", "sbx-busy")
+        plain.feed(b"nothing here")
+        plain.finish(complete=True)
+    alerted = finding_answer(inspection, "alerted", "sbx-busy")
+    alerted.feed(b"a hit " + b"x" * 1000)
+    alerted.finish(complete=True)
+    unread = finding_answer(inspection, "unread", "sbx-busy")
+    unread.pass_unread("capacity")
+    unread.finish(complete=False)
+    assert inspection.dropped >= 3
+    sink.release.set()
+    inspection.flush()
+    assert sink.kinds.count("mcp-answer-alert") == 2  # the alert and the uninspected answer
+    assert "mcp-inspection-dropped" in sink.kinds
+    (report,) = [p for k, p in sink.payloads if k == "mcp-inspection-dropped"]
+    assert report["counts"] == [
+        {"project": "p", "sandbox_id": "sbx-busy", "answers": inspection.dropped}
+    ]

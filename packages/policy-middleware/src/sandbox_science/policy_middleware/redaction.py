@@ -60,16 +60,20 @@ class _Shape:
     kind: str
     group: int | str = 0
     name: int | None = None
+    opens: str | None = None
+    """The continuation mode when a match can run to the end of the text unfinished (its
+    ``close`` group empty): the secret goes on in the next piece."""
 
 
 _SHAPES: Final[tuple[_Shape, ...]] = (
     _Shape(re.compile(r"(?i)openshell:resolve:[A-Za-z0-9_.:/=+-]{0,512}"), "placeholder"),
     _Shape(
         re.compile(
-            r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[^-]*(?:-----END [A-Z0-9 ]{0,40}"
-            r"PRIVATE KEY-----)?"
+            r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[^-]*(?P<close>-----END [A-Z0-9 ]{0,40}"
+            r"PRIVATE KEY-----|)"
         ),
         "private-key",
+        opens="pem",
     ),
     _Shape(
         re.compile(
@@ -107,18 +111,23 @@ _SHAPES: Final[tuple[_Shape, ...]] = (
     _Shape(
         re.compile(
             r"\"([^\"\\]{1,128})\"\s{0,4}:\s{0,4}"
-            r"(?:\"(?P<s>(?:[^\"\\]|\\.)*)\"|(?P<n>-?[0-9][0-9.eE+-]{0,64}|true|false))"
+            r"(?:\"(?P<s>(?:[^\"\\]|\\[\s\S]|\\\Z)*)(?P<close>\"|\Z)"
+            r"|(?P<n>-?[0-9][0-9.eE+-]{0,64}|true|false))"
         ),
         "field",
         "value",
         1,
+        opens="json",
     ),
     # \"name\": \"value\": JSON written inside a JSON string, as tools often answer.
     _Shape(
-        re.compile(r"\\\"([^\"\\]{1,128})\\\"\s{0,4}:\s{0,4}\\\"((?:[^\"\\]|\\[^\"])*)\\\""),
+        re.compile(
+            r"\\\"([^\"\\]{1,128})\\\"\s{0,4}:\s{0,4}\\\"((?:[^\"\\]|\\[^\"]|\\\Z)*)(?P<close>\\\"|\Z)"
+        ),
         "field",
         2,
         1,
+        opens="escaped",
     ),
     # name=value or name: value in other text (environment files, YAML, URLs).
     _Shape(
@@ -132,12 +141,27 @@ _SHAPES: Final[tuple[_Shape, ...]] = (
 )
 
 _FIELD: Final = _mark("field")
-_RUN_CLASS: Final = "A-Za-z0-9+/=_.~-"
-_TOKEN_TAIL: Final = re.compile(rf"[{_RUN_CLASS}]{{1,8192}}$")
-_TOKEN_HEAD: Final = re.compile(rf"^[{_RUN_CLASS}]{{1,8192}}")
-_TOKEN: Final = re.compile(rf"[{_RUN_CLASS}]")
+_RUN_CHARS: Final = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_.~-"
+)
+"""Token characters: a run of them cut at an edge may be part of a secret."""
+_CONTINUED: Final[dict[str, tuple[re.Pattern[str], str]]] = {
+    "json": (re.compile(r"(?:[^\"\\]|\\[\s\S]|\\\Z)*(?P<close>\"|\Z)"), "field"),
+    "escaped": (re.compile(r"(?:[^\"\\]|\\[^\"]|\\\Z)*(?P<close>\\\"|\Z)"), "field"),
+    "pem": (
+        re.compile(r"[^-]*(?P<close>-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|)"),
+        "private-key",
+    ),
+}
+"""How a secret left open at the end of one text goes on at the start of the next."""
+_HINT: Final = re.compile(
+    r"(?i)token|secret|passw|api.?key|authoriz|credential|private.?key|cookie"
+)
+"""A name a secret field could have: without one, no field shape can match."""
 
 Span = tuple[int, int, str]
+Open = tuple[str, int]
+"""A secret that runs to the end of the text: its continuation mode and where it began."""
 
 
 def _span(shape: _Shape, match: re.Match[str]) -> tuple[int, int] | None:
@@ -147,6 +171,28 @@ def _span(shape: _Shape, match: re.Match[str]) -> tuple[int, int] | None:
         group = "s" if match.group("s") is not None else "n"
         return match.span(group)
     return match.span(shape.group)
+
+
+def _open(shape: _Shape, match: re.Match[str], end: int) -> bool:
+    """Whether the match is a secret left unfinished at the end of the text."""
+    if shape.opens is None or match.end() != end:
+        return False
+    if shape.group == "value" and match.group("s") is None:
+        return False
+    return not match.group("close")
+
+
+def trim_edges(text: str, *, head: bool, tail: bool) -> str:
+    """``text`` without its leading (``head``) and trailing (``tail``) run of token
+    characters: a plain scan, linear in what it drops."""
+    start, end = 0, len(text)
+    if head:
+        while start < end and text[start] in _RUN_CHARS:
+            start += 1
+    if tail:
+        while end > start and text[end - 1] in _RUN_CHARS:
+            end -= 1
+    return text[start:end]
 
 
 class Redactor:
@@ -160,48 +206,81 @@ class Redactor:
 
     def spans(self, text: str) -> list[Span]:
         """Where ``text`` shows a secret: sorted, merged spans with the kind of the first."""
+        return self.scan(text)[0]
+
+    def scan(
+        self, text: str, opening: str | None = None, *, only_open: bool = False
+    ) -> tuple[list[Span], Open | None]:
+        """The secret spans of ``text``, and the secret it leaves open at its end, if
+        any. ``opening`` is the mode of a secret an earlier text left open, which goes on
+        at the start of this one. With ``only_open``, only the shapes that can stay open
+        are looked for (fields' values and private keys), to carry the state cheaply.
+        Every pattern is linear in ``text``."""
         found: list[Span] = []
-        if self._known is not None:
+        left: Open | None = None
+        if opening is not None:
+            pattern, kind = _CONTINUED[opening]
+            match = pattern.match(text)
+            if match is not None:
+                found.append((0, match.end(), kind))
+                if match.end() == len(text) and not match.group("close"):
+                    left = (opening, 0)
+        if self._known is not None and not only_open:
             found += [(m.start(), m.end(), "credential") for m in self._known.finditer(text)]
+        hinted = _HINT.search(text) is not None
         for shape in _SHAPES:
+            if only_open and shape.opens is None:
+                continue
+            if shape.kind == "field" and not hinted:
+                continue
+            if shape.opens == "pem" and "-----BEGIN" not in text:
+                continue
             for match in shape.regex.finditer(text):
                 span = _span(shape, match)
-                if span is not None and span[1] > span[0]:
-                    found.append((span[0], span[1], shape.kind))
+                if span is None or (span[1] <= span[0] and not _open(shape, match, len(text))):
+                    continue
+                found.append((span[0], span[1], shape.kind))
+                if shape.opens is not None and _open(shape, match, len(text)):
+                    left = (shape.opens, span[0])
         found.sort(key=lambda span: (span[0], -span[1]))
         merged: list[Span] = []
         for start, end, kind in found:
             if merged and start < merged[-1][1]:
                 last = merged[-1]
                 merged[-1] = (last[0], max(last[1], end), last[2])
-            else:
+            elif end > start:
                 merged.append((start, end, kind))
-        return merged
+        return merged, left
 
     def text(self, text: str) -> str:
         """``text`` with every secret it shows replaced by ``[redacted:<kind>]``."""
         return _replace(text, self.spans(text), 0, len(text))
 
-    def window(self, text: str, start: int, end: int, margin: int = 256) -> str:
-        """``text[start:end]`` redacted as part of the text around it: the secrets of
-        ``margin`` characters either side are found first, so that a secret the window
-        cuts, or whose name lies outside it, is still taken out whole, and an unbroken run
-        of token characters cut at either edge is dropped. The end of ``text`` counts as
-        a cut, since more may follow."""
-        low, high = max(0, start - margin), min(len(text), end + margin)
-        wide = text[low:high]
-        shown = _replace(wide, self.spans(wide), start - low, end - low)
-        if (
-            0 < start < len(text)
-            and _TOKEN.fullmatch(text[start - 1])
-            and _TOKEN.fullmatch(text[start])
-        ):
-            shown = _TOKEN_HEAD.sub("", shown)
-        if end >= len(text) or (
-            end > 0 and _TOKEN.fullmatch(text[end]) and _TOKEN.fullmatch(text[end - 1])
-        ):
-            shown = _TOKEN_TAIL.sub("", shown)
-        return shown
+    def window(
+        self,
+        text: str,
+        start: int,
+        end: int,
+        margin: int = 256,
+        spans: list[Span] | None = None,
+    ) -> str:
+        """``text[start:end]`` redacted as part of the text around it: the secrets of all
+        ``text`` (``spans``, when the caller has found them once for the whole text) or
+        else of ``margin`` characters either side, so that a secret the window cuts, or
+        whose name lies outside it, is taken out whole; and an unbroken run of token
+        characters cut at either edge is dropped. The end of ``text`` counts as a cut,
+        since more may follow."""
+        if spans is not None:
+            shown = _replace(text, spans, start, end)
+        else:
+            low, high = max(0, start - margin), min(len(text), end + margin)
+            wide = text[low:high]
+            shown = _replace(wide, self.spans(wide), start - low, end - low)
+        head = 0 < start < len(text) and text[start - 1] in _RUN_CHARS and text[start] in _RUN_CHARS
+        tail = end >= len(text) or (
+            end > 0 and text[end] in _RUN_CHARS and text[end - 1] in _RUN_CHARS
+        )
+        return trim_edges(shown, head=head, tail=tail)
 
     def value(self, value: object) -> object:
         """A parsed JSON value with secret-named fields' values replaced, at any depth,
@@ -253,4 +332,4 @@ def cut(text: str, limit: int) -> tuple[str, bool]:
     if len(data) <= limit:
         return text, False
     kept = data[:limit].decode("utf-8", "ignore")
-    return _TOKEN_TAIL.sub("", kept), True
+    return trim_edges(kept, head=False, tail=True), True

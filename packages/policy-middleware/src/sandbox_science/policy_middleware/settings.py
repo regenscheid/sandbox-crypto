@@ -147,6 +147,9 @@ class Settings(_Model):
     """Responses read at once (listings and inspected answers), each on a thread of its
     own beside ``workers``, so that slow or endless answers never starve request
     decisions. Past it, a listing is blocked and an answer passes uninspected."""
+    sandbox_streams: Annotated[int, Field(ge=1, le=1024)] | None = None
+    """One sandbox's share of ``response_streams``: a quarter of them by default, so that
+    one sandbox cannot take them all and leave the others' answers uninspected."""
     response_statuses: bool = False
     """Read every response's status (``HttpResponsePreReturn`` preflight, which costs one
     exchange per response), so that 4xx and 5xx answers count towards the ``host-failures``
