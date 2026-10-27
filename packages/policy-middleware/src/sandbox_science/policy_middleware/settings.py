@@ -15,6 +15,13 @@ mcp_listings = true                           # for direct MCP: filter tool list
 mcp_tool_pins = "mcp-tools.json"              # optional: {"<server>": ["<tool>", ...]}
 response_statuses = true                      # optional: count 4xx/5xx for detection (D103)
 
+[inspect]                                     # MCP traffic inspection on the direct path
+argument_bytes = 16384                        # each call's recorded arguments
+answer_bytes = 65536                          # each answer's recorded excerpt
+run_bytes = 8388608                           # one run's recorded excerpts together
+defaults = true                               # the shipped patterns
+patterns = [{ name = "internal-host", regex = "corp\\.example\\.invalid", action = "alert" }]
+
 [tls]
 certificate = "tls/middleware.pem"
 private_key = "tls/middleware-key.pem"
@@ -39,6 +46,8 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+
+from sandbox_science.policy.model import MAX_INSPECTION_PATTERNS, InspectionPattern
 
 from .errors import SettingsError
 
@@ -71,6 +80,24 @@ class TokenSettings(_Model):
     audience: Annotated[str, StringConstraints(min_length=1)] | None = None
     """Defaults to OpenShell's ``urn:openshell:extension:middleware:<registration>``."""
     leeway_seconds: Annotated[int, Field(ge=0, le=300)] = 30
+
+
+class InspectSettings(_Model):
+    """MCP traffic inspection's bounds and the deployment's patterns (docs/
+    POLICY-MIDDLEWARE.md, "MCP traffic inspection"). A project policy's
+    ``mcp.inspection`` replaces a pattern of the same name, or drops the defaults."""
+
+    argument_bytes: Annotated[int, Field(ge=256, le=MAX_PAYLOAD_BYTES)] = 16 * 1024
+    """The most of a call's parameters recorded, as redacted JSON text."""
+    answer_bytes: Annotated[int, Field(ge=0, le=MAX_PAYLOAD_BYTES)] = 64 * 1024
+    """The most of an answer's text recorded: 0 records sizes and findings only."""
+    run_bytes: Annotated[int, Field(ge=0, le=1024 * 1024 * 1024)] = 8 * 1024 * 1024
+    """The most answer text recorded for one run; past it, sizes and findings only."""
+    defaults: bool = True
+    """Whether the shipped patterns apply (``policy.mcp_inspection.DEFAULT_PATTERNS``)."""
+    patterns: Annotated[
+        tuple[InspectionPattern, ...], Field(max_length=MAX_INSPECTION_PATTERNS)
+    ] = ()
 
 
 class Settings(_Model):
@@ -106,6 +133,10 @@ class Settings(_Model):
     """Seconds the agent runtime has to report a listing this service let pass unread (an
     event stream OpenShell would not offer whole, D98) before the server's non-read calls
     ask, as for an unknown listing."""
+    inspect: InspectSettings = InspectSettings()
+    """MCP traffic inspection of the sandboxes that call MCP servers directly (D98): each
+    call's arguments and answer recorded, bounded and redacted, and answers checked for
+    patterns. It needs ``mcp_listings``, whose response binding it uses."""
     response_statuses: bool = False
     """Read every response's status (``HttpResponsePreReturn`` preflight, which costs one
     exchange per response), so that 4xx and 5xx answers count towards the ``host-failures``

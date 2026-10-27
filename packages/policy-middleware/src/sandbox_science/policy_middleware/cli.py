@@ -57,6 +57,7 @@ from .auth import (
 from .errors import MiddlewareError, SettingsError, StoreError
 from .evaluator import PolicyMiddleware
 from .events import OPERATOR, STORE_TIMEOUT, StoreSink
+from .inspection import Bounds, Inspection
 from .mcp import ToolListings, load_tool_pins
 from .service import MiddlewareService, build_server
 from .settings import Settings, load_settings
@@ -179,11 +180,12 @@ def _serve(settings: Settings) -> int:
     ceiling = load_ceiling(settings.ceiling)
     with EventStore(settings.event_store_path, timeout=STORE_TIMEOUT) as events:
         _log.info("recording escalations, alerts and monitor findings in %s", events.path)
+        sink = StoreSink(events)
         middleware = PolicyMiddleware(
             PolicyStore(settings.state_dir),
             ceiling=ceiling,
             floor=HardFloor(frozenset(settings.admin_hosts)),
-            events=StoreSink(events),
+            events=sink,
             requests=partial(_read_records, settings.event_store_path),
             archives=(
                 CacheArchiveLookup(settings.package_cache_url)
@@ -199,6 +201,16 @@ def _serve(settings: Settings) -> int:
             ),
             response_statuses=settings.response_statuses,
             listing_report_grace=timedelta(seconds=settings.listing_report_grace),
+            inspection=Inspection(
+                sink,
+                bounds=Bounds(
+                    argument_bytes=settings.inspect.argument_bytes,
+                    answer_bytes=settings.inspect.answer_bytes,
+                    run_bytes=settings.inspect.run_bytes,
+                ),
+                patterns=settings.inspect.patterns,
+                defaults=settings.inspect.defaults,
+            ),
         )
         middleware.prime_approvals()
         return _run(settings, middleware)

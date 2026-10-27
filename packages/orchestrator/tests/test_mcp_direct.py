@@ -609,3 +609,17 @@ def test_an_answer_of_another_media_holds_no_result() -> None:
     with pytest.raises(ConnectorError) as raised:
         _result(200, "text/plain", body, 1)  # the middleware reads no listing of it
     assert raised.value.kind == "no_usable_answer"
+
+
+def test_a_stream_the_middleware_cut_answers_its_error() -> None:
+    from sandbox_science.orchestrator.mcp_direct import _result
+
+    cut = (
+        b'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"sec'
+        b'\n\nevent: message\ndata: {"jsonrpc":"2.0","id":1,"error":{"code":-32001,'
+        b'"message":"answer_blocked_exfil: the platform withheld the rest of this answer"}}\n\n'
+    )
+    with pytest.raises(ConnectorError) as raised:
+        _result(200, "text/event-stream", cut, 1)
+    assert raised.value.kind == "server_error"
+    assert "answer_blocked_exfil" in raised.value.message
