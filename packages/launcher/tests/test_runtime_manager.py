@@ -13,8 +13,9 @@ import secrets
 import signal
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,19 +24,23 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from sandbox_science.contracts.classifications import RuntimeClassifications
 from sandbox_science.contracts.openshell_version import OPENSHELL_VERSION_OUTPUT
-from sandbox_science.launcher import direct_mcp, openshell_version, runtime_owner
-from sandbox_science.launcher.config import McpDirectServer
+from sandbox_science.launcher import openshell_version, runtime_owner
+from sandbox_science.launcher.config import LauncherError
 from sandbox_science.launcher.runtime_manager import (
     RuntimeManager,
     RuntimeManagerSettings,
     request,
 )
 from sandbox_science.launcher.runtime_manager.control import ControlClient
+from sandbox_science.launcher.runtime_manager.fence import Reader
 from sandbox_science.launcher.runtime_manager.manager import request_deadline
 from sandbox_science.launcher.runtime_manager.records import ManagerRequest, Result, Status
 from sandbox_science.launcher.state import private_dir
+from sandbox_science.policy.store import Acceptance, PolicyStore
 from sandbox_science.testing import eventually
+from sandbox_science.worker.classifications import runtime_classifications
 
 from .conftest import openshell_stand_in
 from .manager_support import (
@@ -71,11 +76,15 @@ class Site:
         return RuntimeManagerSettings.model_validate(self.document | changes)
 
     def manager(
-        self, binding: runtime_owner.Binding | None = None, **changes: Any
+        self,
+        binding: runtime_owner.Binding | None = None,
+        classifications: Reader | None = None,
+        **changes: Any,
     ) -> RuntimeManager:
         return RuntimeManager(
             self.settings(**changes),
             binding=binding,
+            classifications=classifications,
             poll=0.02,
             health_interval=0.05,
             delays=(0.02,) * 6,
@@ -247,23 +256,11 @@ async def test_the_runtime_sandbox_is_bound_when_created_and_unbound_when_delete
 
 
 def direct_files(site: Site) -> dict[str, Any]:
-    """The direct MCP path's settings, with its files as the site generator writes them
-    (``direct_mcp`` over the example policy)."""
+    """The direct MCP path's settings, with the site's files as the site generator puts
+    them in the manager's Secret (the example policy)."""
     root = Path(__file__).parents[3]
     ceiling = site.tmp_path / "ceiling.yaml"
     ceiling.write_text("apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n")
-    egress = direct_mcp.compile_direct(
-        policy=root / "examples/policy.yaml",
-        ceiling=ceiling,
-        targets=root / "examples/openshell/targets.yaml",
-        project="crypto",
-        servers={"crypto-research-mcp": McpDirectServer()},
-        python="/opt/sandbox-science/bin/python",
-    )
-    policy = site.tmp_path / "agent-mcp-policy.yaml"
-    policy.write_text(direct_mcp.fragment_yaml(egress))
-    runtime = site.tmp_path / "runtime-mcp.json"
-    runtime.write_text(json.dumps(egress.runtime()))
     token = site.tmp_path / "secret" / "manager-worker.token"
     token.write_text("test-secret-manager-worker")
     return {
@@ -274,17 +271,160 @@ def direct_files(site: Site) -> dict[str, Any]:
             "project": "crypto",
         },
         "mcp": {
-            "policy_file": str(policy),
-            "runtime_file": str(runtime),
-            "providers": ["crypto-research-mcp"],
+            "project_policy_file": str(root / "examples/policy.yaml"),
+            "ceiling_file": str(ceiling),
+            "targets_file": str(root / "examples/openshell/targets.yaml"),
+            "servers": {SERVER: {"credentials": {"CF-Access-Client-Id": "CF_ACCESS_CLIENT_ID"}}},
+            "providers": [SERVER],
         },
     }
+
+
+SERVER = "crypto-research-mcp"
+READ_TOOL = "attack-catalog-mcp_search_attacks"
+NEW_TOOL = "attack-catalog-mcp_brand_new"
+
+
+class StoreClassifications:
+    """The worker's ``GET /v1/runtime-classifications`` over a local policy store, as the
+    manager's worker link reads it, recording each read."""
+
+    def __init__(self, root: Path) -> None:
+        self.store = PolicyStore(root)
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    async def __call__(self, project: str, servers: Sequence[str]) -> RuntimeClassifications:
+        self.calls.append((project, tuple(servers)))
+        return runtime_classifications(self.store, project, servers)
+
+    def accept(self, tools: dict[str, str]) -> str:
+        entries = "".join(
+            f'  {name}:\n    class: {effect}\n    reason: "Reviewed."\n'
+            for name, effect in tools.items()
+        )
+        data = (
+            "apiVersion: sandbox-science/v0alpha1\nkind: ToolClassification\n"
+            f"server: {SERVER}\ntools:\n{entries}"
+        ).encode()
+        found = self.store.accept_classification(
+            "crypto", SERVER, data, Acceptance("user", datetime.now(UTC), "reviewed")
+        )
+        assert found.revision is not None
+        return found.revision
+
+
+def fence(site: Site, name: str) -> tuple[set[str], set[str]]:
+    """The tools a created sandbox's fence allows by name, and those its runtime is told."""
+    policy = yaml.safe_load(site.fake()["sandboxes"][name]["policy"])
+    (endpoint,) = policy["network_policies"][f"mcp-{SERVER}"]["endpoints"]
+    allowed = {
+        tool
+        for rule in endpoint["rules"]
+        if rule["allow"]["method"] == "tools/call"
+        for tool in rule["allow"]["tool"]["any"]
+    }
+    runtime = json.loads(site.uploaded(name, "runtime.json"))
+    return allowed, set(runtime["mcp"]["servers"][SERVER]["tools"]["allow"])
+
+
+async def test_the_manager_compiles_the_fence_from_the_projects_bound_revision(
+    site: Site,
+) -> None:
+    site.set_fake(providers=[SERVER])
+    reader = StoreClassifications(site.tmp_path / "policy-store")
+    reader.accept({READ_TOOL: "browse", NEW_TOOL: "read"})
+    async with serving(site.manager(Bindings(), reader, **direct_files(site))) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        record = site.record()
+        assert record is not None
+        allowed, told = fence(site, record["name"])
+        assert NEW_TOOL in allowed  # widened by the revision
+        assert READ_TOOL not in allowed  # narrowed: browse is denied
+        assert told == allowed  # the runtime is offered what its fence admits
+    assert reader.calls == [("crypto", (SERVER,))]
+
+
+@pytest.mark.parametrize("binding", [None, "not json", '{"revision": "' + "d" * 64 + '"}'])
+async def test_the_manager_falls_back_to_the_checked_in_file_without_a_readable_binding(
+    site: Site, binding: str | None
+) -> None:
+    site.set_fake(providers=[SERVER])
+    reader = StoreClassifications(site.tmp_path / "policy-store")
+    if binding is not None:
+        reader.accept({NEW_TOOL: "read"})
+        current = site.tmp_path / "policy-store/classifications/crypto" / SERVER
+        (current / "current.json").write_text(binding)
+    async with serving(site.manager(Bindings(), reader, **direct_files(site))) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        record = site.record()
+        assert record is not None
+        allowed, told = fence(site, record["name"])
+        assert READ_TOOL in allowed  # the checked-in classification
+        assert NEW_TOOL not in allowed
+        assert told == allowed
+
+
+async def test_the_manager_falls_back_when_the_worker_does_not_answer(site: Site) -> None:
+    site.set_fake(providers=[SERVER])
+
+    async def unanswered(project: str, servers: Sequence[str]) -> RuntimeClassifications:
+        raise LauncherError("the worker did not answer")
+
+    async with serving(site.manager(Bindings(), unanswered, **direct_files(site))) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        record = site.record()
+        assert record is not None
+        allowed, _ = fence(site, record["name"])
+        assert READ_TOOL in allowed
+        assert NEW_TOOL not in allowed
+
+
+async def test_a_revision_that_does_not_compile_blocks_no_creation(site: Site) -> None:
+    site.set_fake(providers=[SERVER])
+    reader = StoreClassifications(site.tmp_path / "policy-store")
+    async with serving(site.manager(Bindings(), reader, **direct_files(site))) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        first = site.record()
+        assert first is not None
+        catalog = fence(site, first["name"])
+        # More tools than a fence may name: it loads, and does not compile.
+        reader.accept({f"attack-catalog-mcp_t{i}": "read" for i in range(5000)})
+        assert await site.ask(manager, "replace") is None
+        second = site.record()
+        assert second is not None
+        assert second["name"] != first["name"]
+        assert fence(site, second["name"]) == catalog
+
+
+async def test_the_manager_recompiles_the_fence_at_replace_after_an_acceptance(
+    site: Site,
+) -> None:
+    site.set_fake(providers=[SERVER])
+    reader = StoreClassifications(site.tmp_path / "policy-store")
+    async with serving(site.manager(Bindings(), reader, **direct_files(site))) as manager:
+        assert await site.ask(manager, "bootstrap") is None
+        first = site.record()
+        assert first is not None
+        before, _ = fence(site, first["name"])
+        assert NEW_TOOL not in before
+        # Accepted while the runtime runs: the middleware decides by it from the next call,
+        # and the fence follows at the next creation of the sandbox.
+        reader.accept({READ_TOOL: "read", NEW_TOOL: "read"})
+        assert await site.ask(manager, "replace") is None
+        second = site.record()
+        assert second is not None
+        assert second["name"] != first["name"]
+        after, told = fence(site, second["name"])
+        assert NEW_TOOL in after
+        assert told == after
+    assert len(reader.calls) == 2
 
 
 async def test_the_direct_path_attaches_its_provider_and_merges_its_egress(site: Site) -> None:
     site.set_fake(providers=["crypto-research-mcp"])
     bindings = Bindings()
-    async with serving(site.manager(bindings, **direct_files(site))) as manager:
+    reader = StoreClassifications(site.tmp_path / "policy-store")
+    async with serving(site.manager(bindings, reader, **direct_files(site))) as manager:
         assert await site.ask(manager, "bootstrap") is None
         record = site.record()
         assert record is not None

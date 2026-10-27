@@ -15,6 +15,7 @@ from sandbox_science.policy.openshell import (
     ServiceEndpoint,
     compile_orchestrator,
 )
+from sandbox_science.policy.store import PolicyStore
 
 from . import direct_mcp, mcp, parts, runtime_owner, sandboxes
 from .config import (
@@ -165,7 +166,12 @@ def checks(node: str, build: Path) -> dict[str, str]:
 
 
 def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
-    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers, if any."""
+    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers, if any.
+
+    Compiled on ``up`` and on every replacement (``prepare``), with the project's
+    classification revisions the policy store binds at that moment, so a revision accepted
+    while the runtime runs reaches its fence at the next replacement; the policy middleware
+    decides by the revision from the next call meanwhile."""
     if config.mcp_direct is None:
         return None
     environments = config.openshell.environments
@@ -176,11 +182,17 @@ def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
         project=config.mcp_project(),
         servers=config.mcp_direct.servers,
         python=configured(config).python,
+        classifications=PolicyStore(environments.policy_store).fence_classifications(
+            config.mcp_project(), sorted(config.mcp_direct.servers)
+        ),
     )
 
 
-def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
-    """Write scoped configuration and generated capability tokens, never read model keys."""
+def prepare(
+    config: LauncherConfig, layout: Layout, egress: direct_mcp.DirectEgress | None = None
+) -> tuple[Path, Path]:
+    """Write scoped configuration and generated capability tokens, never read model keys;
+    ``egress`` is the direct path's, when the caller compiled it already."""
     runtime, directory = configured(config), _directory(layout)
     upload = private_dir(directory / "upload")
     generation = "runtime-" + secrets.token_hex(12)
@@ -194,13 +206,19 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         python=runtime.python,
     )
     policy = compile_orchestrator(target)
-    egress = direct_egress(config)
+    egress = egress or direct_egress(config)
     if egress is not None:
         # The direct path's servers, decided by OpenShell's native rules and the policy
         # middleware, beside the platform services (D98).
         policy = direct_mcp.merged(policy, egress.fragment)
         for warning in egress.warnings():
             print(f"the agent runtime's MCP egress: {warning}", flush=True)
+        for server, revision in sorted(egress.revisions.items()):
+            print(
+                f"the agent runtime's MCP egress: {server}'s tools are admitted by the "
+                f"project's accepted classification revision {revision[:12]}",
+                flush=True,
+            )
     write_private(directory / "policy.yaml", policy.to_yaml())
     write_private(directory / "generation", generation + "\n")
     model, service = config.model, config.run_service
@@ -298,13 +316,16 @@ async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) 
 
 
 async def replace(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
-    """Explicit runtime replacement preserves control/UI and never creates Resume intent."""
+    """Explicit runtime replacement preserves control/UI and never creates Resume intent.
+    The direct path's egress is compiled first, so that files that do not compile leave
+    the running runtime alone."""
+    egress = direct_egress(config)
     await supervisor.stop_part("agent-runtime")
     await delete_recorded(config, layout)
     await runtime_owner.wait_unoccupied(
         f"http://{configured(config).control_listen}/health", timeout=config.stop_timeout
     )
-    directory, upload = prepare(config, layout)
+    directory, upload = prepare(config, layout, egress)
     await _agent(config, layout, supervisor, directory, upload)
 
 

@@ -31,8 +31,8 @@ import os
 import re
 import tempfile
 import threading
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -99,6 +99,22 @@ class Acceptance:
                 key: list(names)[:_MAX_RECORD_NAMES] for key, names in (self.diff or {}).items()
             },
         }
+
+
+@dataclass(frozen=True, slots=True)
+class FenceClassifications:
+    """What a fence's compile reads of a project's classifications
+    (``PolicyStore.fence_classifications``)."""
+
+    revisions: Mapping[str, ServerClassification]
+    """The accepted revision in force, by server; a server without one takes the catalog's."""
+    unreadable: Mapping[str, str]
+    """Servers whose binding or revision cannot be read, with why; they take the catalog's.
+    The middleware, reading the same binding, refuses their calls."""
+    unread: Mapping[str, str] = field(default_factory=dict[str, str])
+    """Servers whose classification in force a reader other than the store could not
+    fetch or check (the worker did not answer, a file arrived changed), with why; they take
+    the catalog's, while the middleware decides by the classification in force."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +271,27 @@ class PolicyStore:
             if revision is not None
             else None
         )
+
+    def fence_classifications(self, project: str, servers: Iterable[str]) -> FenceClassifications:
+        """The project's revisions in force for ``servers``, for compiling the agent
+        runtime's native fence (``compile_agent_mcp``'s ``classifications``).
+
+        A server with no binding has no revision: the catalog's applies. One whose binding
+        or revision cannot be read is named in ``unreadable`` and has no revision either,
+        so the fence falls back to the catalog's: the middleware, which reads the same
+        binding at every call, refuses each of that server's calls while it stays
+        unreadable, so no call the fallback admits passes."""
+        revisions: dict[str, ServerClassification] = {}
+        unreadable: dict[str, str] = {}
+        for server in servers:
+            try:
+                found = self.classification(project, server)
+            except StoreError as exc:
+                unreadable[server] = str(exc)
+                continue
+            if found is not None:
+                revisions[server] = found
+        return FenceClassifications(revisions, unreadable)
 
     def classification_binding(self, project: str, server: str) -> str | None:
         """The revision (hex) in force for the project and server, or None."""

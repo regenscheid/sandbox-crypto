@@ -43,7 +43,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
-from sandbox_science.policy.store import PolicyStore
+from sandbox_science.policy.store import Acceptance, PolicyStore
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker import environments as environments_module
 from sandbox_science.worker import suspend as suspend_module
@@ -2143,6 +2143,78 @@ async def test_a_scoped_client_binds_only_a_sandbox_the_gateway_labels_for_its_p
         # The pool's own token keeps binding any sandbox it names.
         status, _ = await api.call("POST", "/v1/runtime-sandboxes", TOKEN, body)
         assert status == 200
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_binding_only_client_reads_its_projects_classifications_in_force(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    """The Kubernetes runtime manager's one read: each named server's revision in force
+    for its own project, the file as stored, for compiling the runtime's fence (A3)."""
+    manager = idle_manager(tmp_path / "worker-api")
+    await manager.start()
+    binder = ClientSettings(
+        name="manager", token_sha256=token_digest(BINDER_TOKEN), projects=("p1",),
+        binding_only=True,
+    )  # fmt: skip
+    client = await aiohttp_client(
+        create_app(manager, TOKEN, setup.environments, (*CLIENTS, binder))
+    )
+    api = Api(client, setup)
+    data = (
+        b"apiVersion: sandbox-science/v0alpha1\nkind: ToolClassification\nserver: papers\n"
+        b'tools:\n  papers_search:\n    class: read\n    reason: "Reviewed."\n'
+    )
+    store = setup.environments.store
+    accepted = store.accept_classification(
+        "p1", "papers", data, Acceptance("user", datetime.now(UTC), "reviewed")
+    )
+    path = "/v1/runtime-classifications?project=p1&server=papers&server=other"
+    try:
+        status, reply = await api.call("GET", path, BINDER_TOKEN)
+        assert status == 200
+        assert reply == {
+            "project_id": "p1",
+            "servers": [
+                {
+                    "server": "papers",
+                    "revision": accepted.revision,
+                    "classification": data.decode(),
+                    "error_kind": None,
+                    "error": None,
+                },
+                {
+                    "server": "other",
+                    "revision": None,
+                    "classification": None,
+                    "error_kind": None,
+                    "error": None,
+                },
+            ],
+        }
+        # An unreadable binding is reported with why, never as none.
+        current = setup.environments.settings.policy_store / "classifications/p1/papers"
+        (current / "current.json").write_text("not json")
+        status, reply = await api.call("GET", path, BINDER_TOKEN)
+        first = reply["servers"][0]
+        assert (first["revision"], first["error_kind"]) == (None, "binding")
+        assert str(setup.environments.settings.policy_store) not in first["error"]  # no paths
+        assert "/" not in first["error"]
+        # A revision the binding names but the store lacks is the revision's error.
+        (current / "current.json").write_text('{"revision": "' + "e" * 64 + '"}')
+        status, reply = await api.call("GET", path, BINDER_TOKEN)
+        first = reply["servers"][0]
+        assert (first["revision"], first["error_kind"]) == (None, "revision")
+        assert "/" not in first["error"]
+        # Its own project only, and named servers only; an execution client reads none.
+        other = "/v1/runtime-classifications?project=p2&server=papers"
+        assert await api.refused("GET", other, BINDER_TOKEN) == (403, "policy_denied")
+        for bad in ("?project=p1", "?project=p1&server=Bad_Name", "?project=p1&server=a&x=1"):
+            refused = await api.refused("GET", "/v1/runtime-classifications" + bad, BINDER_TOKEN)
+            assert refused == (400, "invalid_request")
+        assert (await api.refused("GET", path, A_TOKEN))[0] == 403
     finally:
         await manager.close()
         manager.store.close()

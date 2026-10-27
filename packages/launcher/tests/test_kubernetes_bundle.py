@@ -1721,10 +1721,15 @@ def test_the_direct_path_links_the_manager_to_the_worker_and_registers_its_provi
         pool["ingress"]
     )
     spec = pod(items, "runtime-manager")
-    # Its Secret projects the worker token and the compiled direct path beside its keys.
+    # Its Secret projects the worker token and the direct path's site files beside its keys.
     copy = next(init for init in spec["initContainers"] if init["name"] == "copy-runtime-manager")
     projected = {pair[0] for pair in json.loads(copy["args"][-1])}
-    assert {"manager-worker.token", "agent-mcp-policy.yaml", "runtime-mcp.json"} <= projected
+    assert {
+        "manager-worker.token",
+        "agent-mcp-project-policy.yaml",
+        "agent-mcp-ceiling.yaml",
+        "agent-mcp-targets.yaml",
+    } <= projected
     # The provider's Secret reaches one init container, as its environment, after the copy.
     names = [init["name"] for init in spec["initContainers"]]
     assert names[-1] == "register-mcp-provider"

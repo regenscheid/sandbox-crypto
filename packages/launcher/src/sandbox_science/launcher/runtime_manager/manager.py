@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import json
 import os
 import re
 import secrets
@@ -45,14 +46,14 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, NoReturn
+from typing import Literal, NoReturn, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
 from sandbox_science.contracts.logs import json_line, log_format, relayed_line
 from sandbox_science.launcher import runtime_owner
 from sandbox_science.launcher.config import LauncherError, error_text
-from sandbox_science.launcher.direct_mcp import load_fragment, merged
+from sandbox_science.launcher.direct_mcp import DirectEgress, merged
 from sandbox_science.launcher.infrastructure import InfrastructureRecovery, RecoveryState
 from sandbox_science.launcher.mcp import DEAD_PHASES, OpenShell, SandboxMissingError
 from sandbox_science.launcher.runtime_binding import WorkerBinding
@@ -62,6 +63,7 @@ from sandbox_science.launcher.state import private_dir, write_private
 from sandbox_science.policy.openshell import compile_orchestrator
 
 from .control import ControlClient, ControlError, Issued, OccupiedError, SupersededError
+from .fence import Reader, compile_egress, worker_reader
 from .records import (
     CredentialsRecord,
     ManagerOwnership,
@@ -160,6 +162,12 @@ def _ours(owned: Owned) -> None:
         raise LauncherError("the recorded sandbox name is not one the runtime manager makes")
 
 
+RUNTIME_MCP = "runtime-mcp.json"
+"""The direct path's servers and tool admissions as the recorded sandbox's fence was
+compiled, which each attach gives the runtime (``runtime.json``'s ``mcp``)."""
+MAX_RUNTIME_MCP = 1024 * 1024
+
+
 class RuntimeManager:
     """One serving manager: its record, its exec session and its recovery journal."""
 
@@ -170,6 +178,7 @@ class RuntimeManager:
         cli: OpenShell | None = None,
         control: ControlClient | None = None,
         binding: runtime_owner.Binding | None = None,
+        classifications: Reader | None = None,
         clock: Clock = SYSTEM_CLOCK,
         poll: float = 1.0,
         health_interval: float = 5.0,
@@ -188,6 +197,8 @@ class RuntimeManager:
             token_file=settings.manager_token_file,
         )
         self.binding = binding or self._worker_binding(settings)
+        self.classifications = classifications or worker_reader(settings)
+        """Reads the project's classification revisions in force for the fence (``fence``)."""
         self.clock, self.poll = clock, poll
         self.health_interval, self.steady = health_interval, steady
         self.gateway_backoff, self.gateway_interval = gateway_backoff, gateway_interval
@@ -439,7 +450,8 @@ class RuntimeManager:
             raise ControlError("control's health names no control_instance")
         issued = await self._credentials()
         settings = self.root / "runtime.json"
-        write_private(settings, self.settings.runtime_json(self.models, issued.generation))
+        mcp = await self._runtime_mcp(owned)
+        write_private(settings, self.settings.runtime_json(self.models, issued.generation, mcp))
         with tempfile.TemporaryDirectory(prefix="runtime-manager-") as scratch:
             token = Path(scratch) / "runtime.token"
             write_private(token, issued.token + "\n")
@@ -461,6 +473,35 @@ class RuntimeManager:
         self.attached, self._exited = instance, False
         self._cleared("exited", "action")
         say(f"runtime attached in {owned.name} ({issued.generation})")
+
+    async def _runtime_mcp(self, owned: Owned) -> dict[str, object] | None:
+        """The direct path's servers as this sandbox's fence was compiled at its creation.
+        None is recorded for it when an earlier manager made it, or when the manager
+        stopped between its creation and the record: the checked-in classification is
+        compiled again then, which the fence of a sandbox made from the site's files had.
+        The record only narrows what the model is offered; the fence and the middleware
+        decide every call whatever it says."""
+        if self.settings.mcp is None:
+            return None
+        data = read_bounded(self.root / RUNTIME_MCP, MAX_RUNTIME_MCP)
+        found: object = None
+        if data is not None:
+            try:
+                found = json.loads(data)
+            except ValueError:
+                found = None
+        if isinstance(found, dict):
+            record = cast(dict[str, object], found)
+            mcp = record.get("mcp")
+            if record.get("sandbox") == owned.name and isinstance(mcp, dict):
+                return cast(dict[str, object], mcp)
+        say(f"no tool admission is recorded for {owned.name}; the checked-in one is offered")
+        egress = await compile_egress(self.settings, None, say, revisions=False)
+        if egress is None:
+            return None
+        record = {"sandbox": owned.name, "mcp": egress.runtime()}
+        write_private(self.root / RUNTIME_MCP, json.dumps(record) + "\n")
+        return egress.runtime()
 
     def _credentials_record(self) -> CredentialsRecord | None:
         data = read_bounded(self.root / "credentials.json")
@@ -568,13 +609,18 @@ class RuntimeManager:
         api = WorkerApi(link.url, link.token_file, link.ca_file)
         return WorkerBinding(api, link.project, say)
 
-    async def _create_and_attach(self, driver_config: str) -> None:
+    async def _egress(self) -> DirectEgress | None:
+        """The direct MCP path's servers (D98) with the classification in force for the
+        project now (A3), compiled before anything is deleted, so that a site whose files
+        do not compile leaves the running sandbox alone."""
+        return await compile_egress(self.settings, self.classifications, say)
+
+    async def _create_and_attach(self, driver_config: str, egress: DirectEgress | None) -> None:
         policy = self.root / "policy.yaml"
         compiled = compile_orchestrator(self.settings.policy)
-        egress = self.settings.direct_policy()
         if egress is not None:
-            # The direct MCP path's servers beside the platform services (D98).
-            compiled = merged(compiled, load_fragment(egress))
+            # Beside the platform services.
+            compiled = merged(compiled, egress.fragment)
         write_private(policy, compiled.to_yaml())
         self.ownership.creating = Placement.of(
             self.settings.image, self.settings.revision, driver_config
@@ -598,6 +644,11 @@ class RuntimeManager:
             raise LauncherError(f"{exc}; request bootstrap to create another") from None
         finally:
             self.ownership.creating = None
+        if egress is not None:
+            # Only once the sandbox exists: the runtime's client is given the tools this
+            # very fence admits, at every attach to it.
+            record = {"sandbox": owned.name, "mcp": egress.runtime()}
+            write_private(self.root / RUNTIME_MCP, json.dumps(record) + "\n")
         self._created = True
         await self._attach(owned)
 
@@ -617,7 +668,8 @@ class RuntimeManager:
         return deleted
 
     async def _replace(self, driver_config: str) -> None:
-        """Stop, confirmed identity-checked deletion, drain, create, attach (KRB-14)."""
+        """Compile, stop, confirmed identity-checked deletion, drain, create, attach (KRB-14)."""
+        egress = await self._egress()
         await self._stop_exec()
         if not await self._delete():
             raise LauncherError("no runtime sandbox is recorded; request bootstrap")
@@ -635,19 +687,20 @@ class RuntimeManager:
             say(f"control did not answer the drain check ({exc}); creating")
         except LauncherError as exc:
             raise LauncherError(f"{exc}; the old sandbox is deleted: request bootstrap") from None
-        await self._create_and_attach(driver_config)
+        await self._create_and_attach(driver_config, egress)
 
     async def _bootstrap(self) -> None:
+        if self.ownership.read() is not None and self.ownership.rolled_back() is None:
+            raise LauncherError(
+                "a runtime sandbox is already recorded; bootstrap needs none (request replace)"
+            )
+        egress = await self._egress()
         if self.ownership.read() is not None:
-            if self.ownership.rolled_back() is None:
-                raise LauncherError(
-                    "a runtime sandbox is already recorded; bootstrap needs none (request replace)"
-                )
             await self._clear_rolled_back()
         self.recovery.save(RecoveryState())
         (self.root / "credentials.json").unlink(missing_ok=True)
         await self._stop_exec()
-        await self._create_and_attach(self.settings.driver_config())
+        await self._create_and_attach(self.settings.driver_config(), egress)
 
     async def _clear_rolled_back(self) -> None:
         """Clear a record whose create the gateway rolled back, as ``forget`` clears one

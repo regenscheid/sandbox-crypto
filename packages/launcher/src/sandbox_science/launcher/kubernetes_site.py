@@ -401,9 +401,22 @@ def cache_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
     }
 
 
+def _direct_servers(bundle: BundleConfig) -> dict[str, McpDirectServer]:
+    direct = bundle.mcp_direct
+    if direct is None:
+        return {}
+    return {
+        name: McpDirectServer(credentials=dict(server.credentials))
+        for name, server in direct.servers.items()
+    }
+
+
 def direct_egress(site: Site, bundle: BundleConfig) -> direct_mcp.DirectEgress | None:
-    """The runtime sandbox's compiled egress to the ``[mcp_direct]`` servers (D98), from the
-    site's policy, ceiling and targets, as ``sandbox-science up`` compiles it."""
+    """The runtime sandbox's egress to the ``[mcp_direct]`` servers (D98), compiled from
+    the site's policy, ceiling and targets as ``sandbox-science up`` compiles it, to refuse
+    a bundle whose files do not compile. The runtime manager compiles it again at each
+    creation of the runtime's sandbox from the same files, which its Secret carries, with
+    the project's classification revisions in force in the cluster (``runtime_manager.fence``)."""
     direct = bundle.mcp_direct
     if direct is None:
         return None
@@ -415,10 +428,7 @@ def direct_egress(site: Site, bundle: BundleConfig) -> direct_mcp.DirectEgress |
             ceiling=site.ceiling,
             targets=site.targets,
             project=direct.project,
-            servers={
-                name: McpDirectServer(credentials=dict(server.credentials))
-                for name, server in direct.servers.items()
-            },
+            servers=_direct_servers(bundle),
             python=RuntimeManagerSettings.model_fields["python"].default,
         )
     except LauncherError as exc:
@@ -445,8 +455,10 @@ def manager_settings(site: Site, bundle: BundleConfig) -> RuntimeManagerSettings
     )
     mcp = (
         ManagerMcp(
-            policy_file=Path(PRIVATE, "agent-mcp-policy.yaml"),
-            runtime_file=Path(PRIVATE, "runtime-mcp.json"),
+            project_policy_file=Path(PRIVATE, "agent-mcp-project-policy.yaml"),
+            ceiling_file=Path(PRIVATE, "agent-mcp-ceiling.yaml"),
+            targets_file=Path(PRIVATE, "agent-mcp-targets.yaml"),
+            servers=_direct_servers(bundle),
             providers=(direct.provider,),
         )
         if direct is not None
@@ -567,8 +579,9 @@ def plan(site: Site, bundle: BundleConfig) -> dict[str, bytes]:
             **(
                 {
                     "manager-worker.token": tokens[MANAGER_WORKER_TOKEN].encode(),
-                    "agent-mcp-policy.yaml": direct_mcp.fragment_yaml(egress).encode(),
-                    "runtime-mcp.json": _json(egress.runtime()),
+                    "agent-mcp-project-policy.yaml": _read(site.worker_policy),
+                    "agent-mcp-ceiling.yaml": _read(site.ceiling),
+                    "agent-mcp-targets.yaml": _read(site.targets),
                 }
                 if egress is not None
                 else {}

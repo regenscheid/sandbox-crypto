@@ -330,8 +330,10 @@ class ClientSettings(_Model):
     """Control service may acknowledge durable artifact retention for its projects."""
     binding_only: bool = Field(default=False, strict=True)
     """The client may only bind and unbind the agent runtime's sandbox for its projects
-    (``POST /v1/runtime-sandboxes``, ``DELETE /v1/runtime-sandboxes/{id}``): the Kubernetes
-    runtime manager's on the direct MCP path (D98). Every other route refuses it."""
+    (``POST /v1/runtime-sandboxes``, ``DELETE /v1/runtime-sandboxes/{id}``) and read their
+    classification revisions in force, which the sandbox's fence is compiled with
+    (``GET /v1/runtime-classifications``): the Kubernetes runtime manager's on the direct
+    MCP path (D98). Every other route refuses it."""
 
     @model_validator(mode="after")
     def _binding_alone(self) -> Self:

@@ -77,6 +77,7 @@ from sandbox_science.contracts.child_environments import (
     HandBackRequest,
 )
 from sandbox_science.contracts.classifications import (
+    MAX_RUNTIME_SERVERS,
     ClassificationAcceptance,
     ClassificationDrafts,
     ClassificationsInForce,
@@ -120,7 +121,11 @@ from sandbox_science.policy import effective_resources
 
 from .child_environments import RESERVED_OPERATION as RESERVED_CHILD_OPERATION
 from .child_environments import ChildEnvironments
-from .classifications import ClassificationDesk, ClassificationReviewError
+from .classifications import (
+    ClassificationDesk,
+    ClassificationReviewError,
+    runtime_classifications,
+)
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments
 from .errors import WorkerError
@@ -192,7 +197,8 @@ class Client:
     operator: bool = False
     artifact_retention: bool = False
     binding_only: bool = False
-    """Only the runtime sandbox's bind and unbind routes (``ClientSettings.binding_only``)."""
+    """Only the runtime sandbox's bind and unbind routes and the read of its project's
+    classification revisions in force (``ClientSettings.binding_only``)."""
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -308,7 +314,9 @@ def create_app(
         request[_CLIENT] = client
         if client.binding_only and not _binding_route(request):
             response = _error(
-                ErrorKind.POLICY_DENIED, "this client may only bind the runtime's sandbox", 403
+                ErrorKind.POLICY_DENIED,
+                "this client may only bind the runtime's sandbox and read its classifications",
+                403,
             )
             _audit(request, client, response.status)
             return response
@@ -406,6 +414,7 @@ def create_app(
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
             web.post("/v1/runtime-sandboxes", bind_runtime_sandbox),
             web.delete("/v1/runtime-sandboxes/{sandbox_id}", unbind_runtime_sandbox),
+            web.get("/v1/runtime-classifications", runtime_classifications_in_force),
             web.delete("/v1/environments/{environment_id}", delete_environment),
             web.post("/v1/environments/{environment_id}/admissions", admit_hosts),
             web.post("/v1/environments/{environment_id}/suspend", suspend_environment),
@@ -617,9 +626,14 @@ def _client(request: web.Request) -> Client:
 
 
 _BINDING_ROUTES = frozenset(
-    {("POST", "/v1/runtime-sandboxes"), ("DELETE", "/v1/runtime-sandboxes/{sandbox_id}")}
+    {
+        ("POST", "/v1/runtime-sandboxes"),
+        ("DELETE", "/v1/runtime-sandboxes/{sandbox_id}"),
+        ("GET", "/v1/runtime-classifications"),
+    }
 )
-"""The only routes a ``binding_only`` client reaches."""
+"""The only routes a ``binding_only`` client reaches: binding the runtime's sandbox, and
+reading the classification revisions in force its fence is compiled with."""
 
 
 def _binding_route(request: web.Request) -> bool:
@@ -875,6 +889,28 @@ async def unbind_runtime_sandbox(request: web.Request) -> web.Response:
     projects = _client(request).projects
     removed = await asyncio.to_thread(environments.unbind_runtime, sandbox_id, projects)
     return _json(RuntimeSandboxUnbound(sandbox_id=sandbox_id, unbound=removed))
+
+
+async def runtime_classifications_in_force(request: web.Request) -> web.Response:
+    """The project's classification revisions in force for the servers named, each file as
+    stored: what the Kubernetes runtime manager compiles the agent runtime's fence with at
+    each creation of its sandbox. Read-only and for the client's own project; it shows no
+    draft, acceptance record or drift (the operator's ``/v1/classifications`` do)."""
+    environments = _runtime_sandbox(request)
+    if set(request.query) - {"project", "server"} or len(request.query.getall("project", [])) != 1:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "name one project and its servers")
+    project = _identifier(request.query["project"], "project")
+    servers = request.query.getall("server", [])
+    if not 1 <= len(servers) <= MAX_RUNTIME_SERVERS or len(set(servers)) != len(servers):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST, f"name 1 to {MAX_RUNTIME_SERVERS} distinct servers"
+        )
+    for server in servers:
+        if not _SERVER_RE.fullmatch(server):
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid server name")
+    _allowed(request, project)
+    found = await asyncio.to_thread(runtime_classifications, environments.store, project, servers)
+    return _json(found)
 
 
 async def delete_environment(request: web.Request) -> web.Response:

@@ -300,3 +300,33 @@ class ReportedListings(RootModel[list[ReportedListing]]):
 
     model_config = ConfigDict(frozen=True)
     root: list[ReportedListing] = Field(max_length=MAX_SERVERS)
+
+
+MAX_RUNTIME_SERVERS: Final = 64
+"""Servers one ``GET /v1/runtime-classifications`` may name: ``[mcp_direct]``'s bound."""
+
+
+class RuntimeClassification(Contract):
+    """One server's classification revision in force for a project, for compiling the agent
+    runtime's fence: none (the checked-in file applies), the revision's file exactly as
+    stored, or why the binding cannot be read (the fence then takes the checked-in file,
+    and the policy middleware refuses the server's calls while it stays unreadable)."""
+
+    server: ServerName
+    revision: Sha256 | None = None
+    classification: str | None = Field(default=None, max_length=MAX_YAML_CHARS)
+    """The revision's YAML; the reader checks that it digests to ``revision``."""
+    error_kind: Literal["binding", "revision"] | None = None
+    """Why nothing is answered: the binding (``current.json``) or the revision it names
+    cannot be read. The policy middleware, reading the same, refuses the server's calls."""
+    error: Text | None = None
+    """A short reason, without the worker's paths; the worker logs the details."""
+
+
+class RuntimeClassifications(Contract):
+    """``GET /v1/runtime-classifications?project=&server=``: the Kubernetes runtime manager's
+    one read besides binding the runtime's sandbox (``binding_only``), for its own project
+    and the servers it names, and nothing of drafts, acceptances or drift."""
+
+    project_id: Identifier
+    servers: list[RuntimeClassification] = Field(max_length=MAX_RUNTIME_SERVERS)

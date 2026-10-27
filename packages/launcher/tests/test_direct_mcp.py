@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import json
 import signal
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from sandbox_science.launcher import orchestrator, parts
-from sandbox_science.launcher.config import LauncherError, load_config
+from sandbox_science.launcher import direct_mcp, orchestrator, parts
+from sandbox_science.launcher.config import LauncherError, McpDirectServer, load_config
 from sandbox_science.launcher.state import Layout
+from sandbox_science.policy.store import Acceptance, FenceClassifications, PolicyStore
 
 ROOT = Path(__file__).parents[3]
 SERVER = "crypto-research-mcp"
@@ -133,6 +135,138 @@ def test_a_server_the_ceiling_rules_out_is_refused(make_config: Any, tmp_path: P
     with pytest.raises(LauncherError) as error:
         orchestrator.prepare(config, parts.prepare(config))
     assert f"mcp_direct.servers.{SERVER}: not compiled" in str(error.value)
+
+
+READ_TOOL = "attack-catalog-mcp_search_attacks"
+NEW_TOOL = "attack-catalog-mcp_brand_new"
+
+
+def admitted(directory: Path, upload: Path) -> tuple[set[str], set[str]]:
+    """The tools the compiled endpoint allows and denies by name, and the runtime's."""
+    policy = yaml.safe_load((directory / "policy.yaml").read_text())
+    (endpoint,) = policy["network_policies"][f"mcp-{SERVER}"]["endpoints"]
+    allowed = {
+        name
+        for rule in endpoint["rules"]
+        if rule["allow"]["method"] == "tools/call"
+        for name in rule["allow"]["tool"]["any"]
+    }
+    runtime = json.loads((upload / "runtime.json").read_text())["mcp"]["servers"][SERVER]
+    assert set(runtime["tools"]["allow"]) == allowed  # the runtime's, from the same endpoint
+    return allowed, set(runtime["tools"]["deny"])
+
+
+def accept_revision(tmp_path: Path, tools: dict[str, str]) -> str:
+    """A revision the user accepted for the project, in the store the worker and the
+    middleware share (``[openshell.environments] policy_store``)."""
+    entries = "".join(
+        f'  {name}:\n    class: {effect}\n    reason: "Reviewed."\n'
+        for name, effect in tools.items()
+    )
+    data = (
+        "apiVersion: sandbox-science/v0alpha1\nkind: ToolClassification\n"
+        f"server: {SERVER}\ntools:\n{entries}"
+    ).encode()
+    found = PolicyStore(tmp_path / "site" / "policy-store").accept_classification(
+        "crypto", SERVER, data, Acceptance("user", datetime.now(UTC), "reviewed")
+    )
+    assert found.revision is not None
+    return found.revision
+
+
+def test_the_fence_follows_the_projects_revision_at_each_compile(
+    make_config: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    direct_files(tmp_path)
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    layout = parts.prepare(config)
+    # No revision: the checked-in classification.
+    before, _ = admitted(*orchestrator.prepare(config, layout))
+    assert READ_TOOL in before
+    assert NEW_TOOL not in before
+    assert "classification revision" not in capsys.readouterr().out
+    # A revision accepted while the runtime runs reaches the fence at the next compile,
+    # which every replacement makes (``replace`` calls ``prepare``).
+    hex_ = accept_revision(tmp_path, {READ_TOOL: "browse", NEW_TOOL: "read"})
+    after, _ = admitted(*orchestrator.prepare(config, layout))
+    assert NEW_TOOL in after  # widened
+    assert READ_TOOL not in after  # narrowed: browse is denied while automation is off
+    assert f"accepted classification revision {hex_[:12]}" in capsys.readouterr().out
+    egress = orchestrator.direct_egress(config)
+    assert egress is not None
+    assert egress.revisions == {SERVER: hex_}
+
+
+@pytest.mark.parametrize("binding", ["not json", '{"revision": "' + "c" * 64 + '"}'])
+def test_an_unreadable_binding_leaves_the_fence_on_the_checked_in_file(
+    make_config: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str], binding: str
+) -> None:
+    direct_files(tmp_path)
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    layout = parts.prepare(config)
+    catalog = admitted(*orchestrator.prepare(config, layout))
+    accept_revision(tmp_path, {READ_TOOL: "read", NEW_TOOL: "read"})
+    current = tmp_path / "site/policy-store/classifications/crypto" / SERVER / "current.json"
+    current.write_text(binding)
+    capsys.readouterr()
+    assert admitted(*orchestrator.prepare(config, layout)) == catalog
+    out = capsys.readouterr().out
+    assert "classification binding cannot be read" in out
+    assert "the policy middleware refuses the server's calls" in out
+
+
+def many_tools() -> dict[str, str]:
+    """A revision that loads but does not compile into a fence: more tools than a tool
+    admission may name."""
+    return {f"attack-catalog-mcp_t{i}": "read" for i in range(5000)}
+
+
+def test_a_revision_that_does_not_compile_leaves_the_fence_on_the_checked_in_file(
+    make_config: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    direct_files(tmp_path)
+    config = load_config(make_config({"mcp_direct": DIRECT}))
+    layout = parts.prepare(config)
+    catalog = admitted(*orchestrator.prepare(config, layout))
+    accept_revision(tmp_path, many_tools())
+    capsys.readouterr()
+    # Neither up nor a replacement fails: the server's fence takes the checked-in file.
+    assert admitted(*orchestrator.prepare(config, layout)) == catalog
+    out = capsys.readouterr().out
+    assert "does not compile into the fence" in out
+    assert "the policy middleware decides each call by the revision" in out
+    egress = orchestrator.direct_egress(config)
+    assert egress is not None
+    assert egress.revisions == {}
+
+
+@pytest.mark.parametrize(
+    ("found", "said", "unsaid"),
+    [
+        (FenceClassifications({}, {SERVER: "not JSON"}), "refuses the server's calls", "decides"),
+        (
+            FenceClassifications({}, {}, {SERVER: "the worker did not answer"}),
+            "decides each call by the classification in force",
+            "refuses",
+        ),
+    ],
+)
+def test_a_fallback_warning_says_what_the_middleware_does(
+    tmp_path: Path, found: FenceClassifications, said: str, unsaid: str
+) -> None:
+    site = direct_files(tmp_path)
+    egress = direct_mcp.compile_direct(
+        policy=site / "policy.yaml",
+        ceiling=site / "pool-ceiling.yaml",
+        targets=site / "targets.yaml",
+        project="crypto",
+        servers={SERVER: McpDirectServer()},
+        python="/opt/sandbox-science/bin/python",
+        classifications=found,
+    )
+    (warning,) = [w for w in egress.warnings() if ".classification:" in w]
+    assert said in warning
+    assert unsaid not in warning
 
 
 @pytest.mark.slow

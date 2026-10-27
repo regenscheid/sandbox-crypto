@@ -154,6 +154,15 @@ numbered CL-n.
     policy revision; the widening rule is in [connectors](../MCP-CONNECTORS.md#project-revisions).
     An accepted revision exports as its stored YAML through `GET /v1/classifications/{server}/
     revisions/{revision}/export?project=P` ([worker](../WORKER.md)).
+  - *As built 2026-10-27 (fences):* the agent runtime's native fence admits tools by the
+    revision in force when the launcher compiles it, on `up` and at every runtime
+    replacement, so a revision accepted while a runtime runs reaches the fence at the next
+    replacement; the middleware decides by it from the next call, so a stale fence only
+    refuses a widening and never admits more than the middleware allows. An unreadable
+    binding leaves the fence on the checked-in file while the middleware refuses the
+    server's calls. The Kubernetes runtime manager does the same at each creation of the
+    runtime's sandbox, reading the revisions through the worker
+    ([connectors](../MCP-CONNECTORS.md#project-revisions)).
 - CL-4. **Drift.** When the middleware records `tool_list_drift` for a server, the tab
   shows the added, removed and changed tools with their digests, dated, and the
   middleware's hold (its non-read calls ask until re-accepted, D103). **Re-accept** from
