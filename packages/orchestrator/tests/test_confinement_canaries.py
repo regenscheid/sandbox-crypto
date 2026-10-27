@@ -338,6 +338,19 @@ async def test_the_users_check_lists_one_server_through_the_runtime(tmp_path: Pa
         assert answer.status == 404
         answer = await client.post("/mcp-check", json={"tool": "papers"}, headers=allowed)
         assert answer.status == 400
+        # A digest file that cannot be read is no route, never a server error.
+        for broken in ("missing", "public", "not a digest"):
+            saved = digest.read_bytes()
+            if broken == "missing":
+                digest.unlink()
+            elif broken == "public":
+                digest.chmod(0o644)
+            else:
+                digest.write_text("z" * 64)
+            answer = await client.post("/mcp-check", json={"server": "papers"}, headers=allowed)
+            assert answer.status == 404, broken
+            digest.unlink(missing_ok=True)
+            private(digest, saved.decode().strip())
         # No runtime connected: unavailable, said as a canary says it.
         answer = await client.post("/mcp-check", json={"server": "papers"}, headers=allowed)
         assert answer.status == 200

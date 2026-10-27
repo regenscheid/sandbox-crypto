@@ -565,13 +565,18 @@ def create_app(settings: ControlSettings) -> web.Application:
     async def mcp_check(request: web.Request) -> web.Response:
         """The workspace user's availability check of one ``direct`` server: one bounded
         listing by the connected runtime's client, never a tool call, answered as its
-        outcome (``ToolsListed``) and stored nowhere. One check at a time."""
+        outcome (``ToolsListed``) and stored nowhere. One check at a time. The token's
+        digest is read for each check, so that a Secret can rotate; while it cannot be read
+        (missing, not private, not a digest) the route answers 404, as without one."""
         digest_file, direct = settings.check_token_sha256_file, settings.direct
         if digest_file is None or direct is None:
             raise web.HTTPNotFound()
         header = request.headers.get("Authorization", "")
         supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else ""
-        expected = private_digest(digest_file)
+        try:
+            expected = private_digest(digest_file)
+        except (OSError, ValueError, UnicodeDecodeError):
+            raise web.HTTPNotFound() from None
         if not hmac.compare_digest(hashlib.sha256(supplied.encode()).hexdigest(), expected):
             raise web.HTTPNotFound()
         if request.content_length is None or request.content_length > MAX_REQUEST_BYTES:
