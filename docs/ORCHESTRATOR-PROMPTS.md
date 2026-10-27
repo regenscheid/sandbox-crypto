@@ -290,7 +290,7 @@ authority or proof of provider behavior:
   its result's files, and those the platform could not keep, into
   `work/<delegation_id>/`, then releases it. `sandbox-delegated-task-17` adds that an
   environment of its own is working memory, gone once the task closes, so what it keeps
-  it records or publishes and names in `result_files`. The `delegate` tool's description
+  it records or publishes and names in `result_files`, and that its brief may narrow its connectors, so that `mcp_tools` lists only the ones named and a task needing another tells its parent with `message_parent` ([delegated agents](specs/delegated-agents.md), DA-6). The `delegate` tool's description
   says that such a task starts once its environment is ready, about one to five
   minutes, and that a small task asks for `environment: shared`
   ([child environments](specs/child-environments.md), CE-5, CE-13). The

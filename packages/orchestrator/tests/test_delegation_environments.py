@@ -877,6 +877,8 @@ def test_the_prompts_say_when_to_ask_for_an_environment_and_what_comes_back() ->
     task = " ".join(TASK_PROMPT.split())
     assert "its disk is working memory, gone once your task closes" in task
     assert "name your results in result_files" in task
+    # The connectors narrowing of DA-6, in the same version.
+    assert "Your brief may narrow your connectors: mcp_tools then lists only" in task
     (delegate,) = [spec for spec in SPECS if spec.name == "delegate"]
     assert "about one to five minutes" in delegate.description
     assert "give a small task environment: shared" in delegate.description
