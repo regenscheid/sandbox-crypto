@@ -167,7 +167,9 @@ class Instance:
         python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
         python.chmod(python.stat().st_mode | stat.S_IXUSR)
         (self.repo / "examples").mkdir()
-        (self.repo / "examples/policy.yaml").write_text("mcp:\n  proxy: {max_argument_bytes: 1Ki}\n")
+        (self.repo / "examples/policy.yaml").write_text(
+            "mcp:\n  proxy: {max_argument_bytes: 1Ki}\n"
+        )
         (self.repo / "scripts").mkdir()
         program(self.repo / "scripts", "backup_stores.py", BACKUP_STORES)
         # What the script makes once and keeps, already there: nothing needs openssl.
