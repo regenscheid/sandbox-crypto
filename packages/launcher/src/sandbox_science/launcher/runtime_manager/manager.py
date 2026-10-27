@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import json
 import os
 import re
 import secrets
@@ -45,14 +46,14 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, NoReturn
+from typing import Literal, NoReturn, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.clock import wait_or_sleep
 from sandbox_science.contracts.logs import json_line, log_format, relayed_line
 from sandbox_science.launcher import runtime_owner
 from sandbox_science.launcher.config import LauncherError, error_text
-from sandbox_science.launcher.direct_mcp import load_fragment, merged
+from sandbox_science.launcher.direct_mcp import merged
 from sandbox_science.launcher.infrastructure import InfrastructureRecovery, RecoveryState
 from sandbox_science.launcher.mcp import DEAD_PHASES, OpenShell, SandboxMissingError
 from sandbox_science.launcher.runtime_binding import WorkerBinding
@@ -62,6 +63,7 @@ from sandbox_science.launcher.state import private_dir, write_private
 from sandbox_science.policy.openshell import compile_orchestrator
 
 from .control import ControlClient, ControlError, Issued, OccupiedError, SupersededError
+from .fence import Reader, compile_egress, worker_reader
 from .records import (
     CredentialsRecord,
     ManagerOwnership,
@@ -160,6 +162,12 @@ def _ours(owned: Owned) -> None:
         raise LauncherError("the recorded sandbox name is not one the runtime manager makes")
 
 
+RUNTIME_MCP = "runtime-mcp.json"
+"""The direct path's servers and tool admissions as the recorded sandbox's fence was
+compiled, which each attach gives the runtime (``runtime.json``'s ``mcp``)."""
+MAX_RUNTIME_MCP = 1024 * 1024
+
+
 class RuntimeManager:
     """One serving manager: its record, its exec session and its recovery journal."""
 
@@ -170,6 +178,7 @@ class RuntimeManager:
         cli: OpenShell | None = None,
         control: ControlClient | None = None,
         binding: runtime_owner.Binding | None = None,
+        classifications: Reader | None = None,
         clock: Clock = SYSTEM_CLOCK,
         poll: float = 1.0,
         health_interval: float = 5.0,
@@ -188,6 +197,8 @@ class RuntimeManager:
             token_file=settings.manager_token_file,
         )
         self.binding = binding or self._worker_binding(settings)
+        self.classifications = classifications or worker_reader(settings)
+        """Reads the project's classification revisions in force for the fence (``fence``)."""
         self.clock, self.poll = clock, poll
         self.health_interval, self.steady = health_interval, steady
         self.gateway_backoff, self.gateway_interval = gateway_backoff, gateway_interval
@@ -439,7 +450,8 @@ class RuntimeManager:
             raise ControlError("control's health names no control_instance")
         issued = await self._credentials()
         settings = self.root / "runtime.json"
-        write_private(settings, self.settings.runtime_json(self.models, issued.generation))
+        mcp = await self._runtime_mcp()
+        write_private(settings, self.settings.runtime_json(self.models, issued.generation, mcp))
         with tempfile.TemporaryDirectory(prefix="runtime-manager-") as scratch:
             token = Path(scratch) / "runtime.token"
             write_private(token, issued.token + "\n")
@@ -461,6 +473,27 @@ class RuntimeManager:
         self.attached, self._exited = instance, False
         self._cleared("exited", "action")
         say(f"runtime attached in {owned.name} ({issued.generation})")
+
+    async def _runtime_mcp(self) -> dict[str, object] | None:
+        """The direct path's servers as this sandbox's fence was compiled at its creation.
+        A sandbox an earlier manager made has none recorded: its fence was the site's
+        checked-in one, so that is compiled again."""
+        if self.settings.mcp is None:
+            return None
+        data = read_bounded(self.root / RUNTIME_MCP, MAX_RUNTIME_MCP)
+        if data is None:
+            egress = await compile_egress(self.settings, None, say, revisions=False)
+            if egress is None:
+                return None
+            write_private(self.root / RUNTIME_MCP, json.dumps(egress.runtime()) + "\n")
+            return egress.runtime()
+        try:
+            found = json.loads(data)
+        except ValueError:
+            raise LauncherError(f"{RUNTIME_MCP} is not JSON; request replace") from None
+        if not isinstance(found, dict):
+            raise LauncherError(f"{RUNTIME_MCP} is not an object; request replace")
+        return cast(dict[str, object], found)
 
     def _credentials_record(self) -> CredentialsRecord | None:
         data = read_bounded(self.root / "credentials.json")
@@ -571,10 +604,13 @@ class RuntimeManager:
     async def _create_and_attach(self, driver_config: str) -> None:
         policy = self.root / "policy.yaml"
         compiled = compile_orchestrator(self.settings.policy)
-        egress = self.settings.direct_policy()
+        # The direct MCP path's servers beside the platform services (D98), with the
+        # classification in force for the project now (A3); the runtime's client is given
+        # the tools this very fence admits, at every attach to this sandbox.
+        egress = await compile_egress(self.settings, self.classifications, say)
         if egress is not None:
-            # The direct MCP path's servers beside the platform services (D98).
-            compiled = merged(compiled, load_fragment(egress))
+            compiled = merged(compiled, egress.fragment)
+            write_private(self.root / RUNTIME_MCP, json.dumps(egress.runtime()) + "\n")
         write_private(policy, compiled.to_yaml())
         self.ownership.creating = Placement.of(
             self.settings.image, self.settings.revision, driver_config

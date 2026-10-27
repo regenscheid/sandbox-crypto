@@ -132,7 +132,7 @@ corresponding cluster authority; this is not a replacement for cluster Secret po
 | `secrets.worker` | `worker.toml`, `worker.crt`, `worker.key` |
 | `secrets.middleware` | `middleware.toml`, `middleware.crt`, `middleware.key` |
 | optional `secrets.cache` | `cache.toml` |
-| `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, and the OpenShell CLI profile `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key`; with `[mcp_direct]` also `manager-worker.token`, `agent-mcp-policy.yaml` and `runtime-mcp.json` ([the direct MCP path](#the-direct-mcp-path-opt-in)) |
+| `secrets.runtime_manager` | `runtime-manager.json`, `control-models.json`, `manager-control.token`, `model.key`, `control-ca.crt`, and the OpenShell CLI profile `active-gateway`, `gateway-metadata.json`, `gateway-ca.crt`, `gateway-tls.crt`, `gateway-tls.key`; with `[mcp_direct]` also `manager-worker.token`, `agent-mcp-project-policy.yaml`, `agent-mcp-ceiling.yaml` and `agent-mcp-targets.yaml` ([the direct MCP path](#the-direct-mcp-path-opt-in)) |
 
 The runtime manager's Secret is its own (no other service may name it) and takes no
 `extra_files`. No other service's `extra_files` may name `manager-control.token`,
@@ -436,18 +436,21 @@ pool ceiling admit. With it:
   ([prep](KUBERNETES-PREP.md#the-direct-mcp-paths-provider)). The manager's NetworkPolicy
   adds the worker's TCP 8100, and the pool's admits the manager there.
 - **The site generator** compiles the runtime sandbox's egress from the site's policy, pool
-  ceiling and targets (`launcher.direct_mcp`, as `sandbox-science up` does): one inspected
-  `protocol: mcp` endpoint per server, bound to the provider's credentials and admitting
-  only the runtime's interpreter, and the policy middleware (the targets file's
-  registration) for their hosts, with the project and the caller `agent-runtime`. It writes
-  it as `agent-mcp-policy.yaml` in the manager's Secret, the runtime client's servers with
-  each one's tool admission as `runtime-mcp.json`, and a token for the worker,
+  ceiling and targets (`launcher.direct_mcp`, as `sandbox-science up` does) to refuse a
+  bundle whose files do not compile: one inspected `protocol: mcp` endpoint per server,
+  bound to the provider's credentials and admitting only the runtime's interpreter, and the
+  policy middleware (the targets file's registration) for their hosts, with the project and
+  the caller `agent-runtime`. It writes the three files into the manager's Secret
+  (`agent-mcp-project-policy.yaml`, `agent-mcp-ceiling.yaml`, `agent-mcp-targets.yaml`),
+  from which the manager compiles the egress itself, and a token for the worker,
   `manager-worker.token`, generated apart from the manager's control token (which control sees
   on every manager request), whose client (`manager`) the worker knows as `binding_only` for
-  that project alone: it may bind and unbind the runtime's sandbox and reach no other route
-  ([worker](WORKER.md)).
+  that project alone: it may bind and unbind the runtime's sandbox and read the project's
+  classification revisions in force (`GET /v1/runtime-classifications`), and reach no other
+  route ([worker](WORKER.md)).
   `runtime-manager.json` gets the `worker` link (the worker Service, verified with the
-  private CA in `control-ca.crt`) and `mcp` (the two files and the provider);
+  private CA in `control-ca.crt`) and `mcp` (the three files, the servers with their
+  credential headers, and the provider);
   `control.json` gets `direct` (the run service's servers, `about` and `index`),
   `canaries` (the direct path's project and servers, every `[mcp_direct.canaries]` `interval`
   seconds, 900 by default, as the host launcher writes them; control refuses the
@@ -466,18 +469,27 @@ pool ceiling admit. With it:
   (`--mcp-check-token-file`) and the site's private CA (`--mcp-check-ca-file`, its
   `worker-ca.crt`, which signs control's certificate too). The app Pod's NetworkPolicy
   admits the app Pod itself to TCP 8443, and lets it reach it, for that call alone.
-- **The runtime manager** merges the egress into the runtime sandbox's policy beside its
-  platform services, attaches the provider to the sandbox (`--provider`), labels it with its
-  project (`sandbox-science.io/project`, which the worker checks before binding), binds the sandbox
-  to the project's revision through the worker once it is Ready, and gives the runtime its
-  servers in `runtime.json`. It compiles nothing and never reads the provider's values.
+- **The runtime manager** compiles the egress at each creation of the runtime's sandbox,
+  bootstrap and replacement alike (`runtime_manager.fence`), with the project's
+  classification in force: it reads each server's revision through the worker (the file as
+  stored, which it checks against its digest) and compiles with it where one is bound, else
+  with the checked-in file, as the host launcher does. It merges the egress into the
+  sandbox's policy beside its platform services, attaches the provider to the sandbox
+  (`--provider`), labels it with its project (`sandbox-science.io/project`, which the worker
+  checks before binding), binds the sandbox to the project's revision through the worker
+  once it is Ready, and gives the runtime its servers in `runtime.json`, with the tools that
+  sandbox's fence admits (kept as `runtime-mcp.json` in its state, for every attach to the
+  sandbox). It never reads the provider's values.
 
 The egress is compiled from the site's policy file: after a new policy revision, generate the
-Secrets anew. The fence admits tools by the catalog's classification, not a project's
-accepted revision of it, since the bundle is generated without the cluster's policy store; the
-middleware decides each call by the revision in force, so the fence refuses a widening until
-the revision is exported, checked in and the Secrets generated anew, and never admits more
-than the middleware allows ([project revisions](MCP-CONNECTORS.md#project-revisions)).
+Secrets anew. A classification revision accepted while the runtime runs reaches its fence at
+the next replacement (`sandbox-science-runtime-manager request replace`, or an automatic one);
+the middleware decides each call by the revision in force meanwhile, so the stale fence
+refuses a widening and never admits more than the middleware allows. A binding the worker
+cannot read, a revision that does not check against its digest, or a worker that does not
+answer leaves the servers concerned on the checked-in file with a warning in the manager's
+log, while the middleware refuses those servers' calls
+([project revisions](MCP-CONNECTORS.md#project-revisions)).
 
 ## Job sandboxes and node drains
 

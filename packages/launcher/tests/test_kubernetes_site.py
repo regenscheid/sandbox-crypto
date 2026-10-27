@@ -4,6 +4,7 @@ other and with the bundle, each settings file loaded through its service's own m
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import hashlib
 import json
@@ -27,6 +28,7 @@ from sandbox_science.launcher.kubernetes_config import load as load_bundle
 from sandbox_science.launcher.kubernetes_site import plan, write
 from sandbox_science.launcher.kubernetes_site_config import CACHE_ECOSYSTEMS, load
 from sandbox_science.launcher.runtime_manager import settings as manager_settings
+from sandbox_science.launcher.runtime_manager.fence import compile_egress
 from sandbox_science.orchestrator.confinement.server import ControlSettings
 from sandbox_science.package_cache.settings import Settings as CacheSettings
 from sandbox_science.package_cache.settings import load_settings as load_cache
@@ -374,24 +376,29 @@ def test_the_direct_path_binds_the_runtimes_sandbox_and_gives_it_its_servers(tmp
     assert issued.issuer == ca.subject
     assert manager.mcp is not None
     assert manager.mcp.providers == ("crypto-research-mcp",)
-    # The runtime's sandbox gets the server's endpoint and the middleware beside its services,
-    # and its client the server's tool admission, both compiled from the site's policy.
+    # The manager compiles the runtime sandbox's egress from the site's files in its Secret,
+    # as `up` does: the server's endpoint and the middleware, and the client's tool admission.
+    assert set(manager.mcp.servers) == {server}
+    private = secrets / "runtime-manager"
     local = manager.model_copy(
         update={
             "mcp": manager.mcp.model_copy(
                 update={
-                    "policy_file": secrets / "runtime-manager/agent-mcp-policy.yaml",
-                    "runtime_file": secrets / "runtime-manager/runtime-mcp.json",
+                    "project_policy_file": private / "agent-mcp-project-policy.yaml",
+                    "ceiling_file": private / "agent-mcp-ceiling.yaml",
+                    "targets_file": private / "agent-mcp-targets.yaml",
                 }
             ),
-            "control_models_file": secrets / "runtime-manager/control-models.json",
+            "control_models_file": private / "control-models.json",
         }
     )
-    fragment = yaml.safe_load(local.direct_policy() or "")
-    assert list(fragment["network_policies"]) == [f"mcp-{server}"]
-    (middleware,) = fragment["network_middlewares"].values()
-    assert middleware["config"]["mcp"] == {"project": "crypto", "caller": "agent-runtime"}
-    runtime = json.loads(local.runtime_json(local.models(), "runtime-test"))
+    egress = asyncio.run(compile_egress(local, None, print))
+    assert egress is not None
+    assert list(egress.fragment.network_policies) == [f"mcp-{server}"]
+    (middleware,) = (egress.fragment.network_middlewares or {}).values()
+    assert middleware.config is not None
+    assert middleware.config["mcp"] == {"project": "crypto", "caller": "agent-runtime"}
+    runtime = json.loads(local.runtime_json(local.models(), "runtime-test", egress.runtime()))
     assert runtime["mcp"]["project"] == "crypto"
     assert runtime["mcp"]["servers"][server]["tools"]["allow"]
     # The README says what the operator creates: the provider's Secret, by its file.

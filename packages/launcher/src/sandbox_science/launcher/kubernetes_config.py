@@ -70,12 +70,15 @@ GATEWAY_PROFILE: dict[str, str] = {
 """The manager Secret's OpenShell CLI profile keys and their places in the CLI's tree."""
 DIRECT_MANAGER_FILES: tuple[str, ...] = (
     "manager-worker.token",
-    "agent-mcp-policy.yaml",
-    "runtime-mcp.json",
+    "agent-mcp-project-policy.yaml",
+    "agent-mcp-ceiling.yaml",
+    "agent-mcp-targets.yaml",
 )
 """The runtime manager's further keys with ``[mcp_direct]``: its binding-only token for the
-worker (never its control token), which binds the runtime's sandbox (``WorkerLink``), the
-runtime sandbox's compiled MCP egress and the runtime client's servers (``ManagerMcp``)."""
+worker (never its control token), which binds the runtime's sandbox and reads the
+project's classification revisions in force (``WorkerLink``), and the site's project
+policy, pool ceiling and targets, from which it compiles the runtime sandbox's MCP egress
+at each creation (``ManagerMcp``)."""
 CHECK_TOKEN = "mcp-check-token"  # noqa: S105 - a Secret key's name, not a token
 CHECK_DIGEST = "mcp-check-token.sha256"
 DIRECT_CHECK_FILES: dict[str, tuple[str, ...]] = {
@@ -486,9 +489,11 @@ class McpCanaries(Model):
 class McpDirect(Model):
     """The direct MCP path in the cluster (D98, docs/MCP-CONNECTORS.md): the agent's
     connector calls made by the runtime's own client in its sandbox, through OpenShell's
-    native rules and the policy middleware. The runtime manager compiles nothing: the site
-    generator compiles the runtime sandbox's egress from the site's policy into the
-    manager's Secret, with a binding-only token for the worker that binds the sandbox. The
+    native rules and the policy middleware. The site generator puts the site's policy,
+    pool ceiling and targets into the manager's Secret, from which the manager compiles
+    the runtime sandbox's egress at each creation with the project's classification
+    revisions in force, and a binding-only token for the worker, which binds the sandbox
+    and reads those revisions. The
     manager Pod registers ``provider`` with the gateway from the Secret
     ``provider_secret`` (made by the operator with ``kubectl create secret generic …
     --from-env-file=<path>``, docs/KUBERNETES-PREP.md) in an init container of its own,

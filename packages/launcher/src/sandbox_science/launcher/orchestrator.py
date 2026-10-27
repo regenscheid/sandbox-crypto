@@ -15,6 +15,7 @@ from sandbox_science.policy.openshell import (
     ServiceEndpoint,
     compile_orchestrator,
 )
+from sandbox_science.policy.store import PolicyStore
 
 from . import direct_mcp, mcp, parts, runtime_owner, sandboxes
 from .config import (
@@ -181,7 +182,9 @@ def direct_egress(config: LauncherConfig) -> direct_mcp.DirectEgress | None:
         project=config.mcp_project(),
         servers=config.mcp_direct.servers,
         python=configured(config).python,
-        policy_store=environments.policy_store,
+        classifications=PolicyStore(environments.policy_store).fence_classifications(
+            config.mcp_project(), sorted(config.mcp_direct.servers)
+        ),
     )
 
 

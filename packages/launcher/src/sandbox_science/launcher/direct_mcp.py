@@ -24,10 +24,11 @@ sandbox is made. Only the configured servers' endpoints are kept.
 
 The fence admits tools by the classification in force for the project when it is
 compiled: the project's accepted revision of a server's classification where the policy
-store binds one (``PolicyStore.fence_classifications``), else the catalog's. The host
-launcher compiles it on ``up`` and on every replacement of the runtime, so a revision
-accepted while a runtime runs reaches its fence at the next replacement; the Kubernetes
-bundle is generated without the cluster's store, so its fence keeps the catalog's. Until
+store binds one, else the catalog's. The host launcher compiles it on ``up`` and on every
+replacement of the runtime, reading the policy store (``PolicyStore.fence_classifications``);
+the Kubernetes runtime manager at every creation of the runtime's sandbox, reading the
+revisions through the worker (``runtime_manager.fence``). A revision accepted while a
+runtime runs therefore reaches its fence at the next replacement. Until
 a fence is compiled again the policy middleware, which reads the binding at every call, is
 the authority: a narrowing applies to the next call whatever the fence admits, and a
 widening is refused at the stale fence (stricter).
@@ -37,15 +38,15 @@ a warning; the middleware refuses that server's calls until it can be read.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from sandbox_science.contracts.classifications import RuntimeClassifications
 from sandbox_science.policy import load_ceiling, load_policy
-from sandbox_science.policy.classification import ServerClassification
+from sandbox_science.policy.classification import ServerClassification, revision_classification
 from sandbox_science.policy.errors import PolicyLoadError
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import (
@@ -60,7 +61,7 @@ from sandbox_science.policy.openshell import (
     load_targets,
     tool_admission,
 )
-from sandbox_science.policy.store import PolicyStore
+from sandbox_science.policy.store import FenceClassifications
 
 from .config import LauncherError, McpDirectServer
 
@@ -102,12 +103,13 @@ def compile_direct(
     project: str,
     servers: Mapping[str, McpDirectServer],
     python: str,
-    policy_store: Path | None = None,
+    classifications: FenceClassifications | None = None,
 ) -> DirectEgress:
     """Compile the runtime sandbox's egress to ``servers`` for ``project``'s ``policy``,
-    admitting tools by the project's classification revisions in ``policy_store`` where it
-    binds them (the store the worker and the policy middleware share), else, and without a
-    store, by the catalog's."""
+    admitting tools by the project's classification revisions in force
+    (``classifications``: the host reads them from the policy store the worker and the
+    middleware share, the Kubernetes runtime manager through the worker) where the policy
+    names a classification for the server, else by the catalog's."""
     try:
         loaded = load_policy(policy)
         pool = load_ceiling(ceiling)
@@ -127,7 +129,7 @@ def compile_direct(
     target = AgentMcpTarget(
         middleware=middleware, project=project, caller=CALLER, binaries=(python + "*",)
     )
-    revisions, notes = _classifications(policy_store, project, servers, declared)
+    revisions, notes = _classifications(classifications, servers, declared)
     try:
         compiled = compile_agent_mcp(loaded, target, ceiling=pool, classifications=revisions)
     except CompileError as exc:
@@ -165,21 +167,21 @@ def compile_direct(
 
 
 def _classifications(
-    store: Path | None,
-    project: str,
+    found: FenceClassifications | None,
     servers: Mapping[str, McpDirectServer],
     declared: Mapping[str, McpServer],
 ) -> tuple[dict[str, ServerClassification], list[Finding]]:
     """The project's accepted revisions of the configured servers' classifications, and a
     finding for each server whose fence they decide or whose binding cannot be read."""
-    if store is None:
+    if found is None:
         return {}, []
     # A revision applies only where the policy names a classification for the server
-    # (``server_classification``), so only those servers' bindings are read.
-    classified = sorted(name for name in servers if declared[name].classification is not None)
-    found = PolicyStore(store).fence_classifications(project, classified)
+    # (``server_classification``), so only those servers' are taken.
+    classified = {name for name in servers if declared[name].classification is not None}
+    revisions = {name: rev for name, rev in found.revisions.items() if name in classified}
+    unreadable = {name: why for name, why in found.unreadable.items() if name in classified}
     notes: list[Finding] = []
-    for name, revision in sorted(found.revisions.items()):
+    for name, revision in sorted(revisions.items()):
         notes.append(
             Finding(
                 Severity.INFO,
@@ -187,7 +189,7 @@ def _classifications(
                 f"the fence admits tools by the project's accepted revision {revision.revision}",
             )
         )
-    for name, why in sorted(found.unreadable.items()):
+    for name, why in sorted(unreadable.items()):
         notes.append(
             Finding(
                 Severity.WARNING,
@@ -197,7 +199,7 @@ def _classifications(
                 "server's calls until the binding can be read",
             )
         )
-    return dict(found.revisions), notes
+    return revisions, notes
 
 
 def merged(base: OpenShellPolicy, fragment: OpenShellPolicy) -> OpenShellPolicy:
@@ -217,18 +219,25 @@ def merged(base: OpenShellPolicy, fragment: OpenShellPolicy) -> OpenShellPolicy:
     )
 
 
-def fragment_yaml(egress: DirectEgress) -> str:
-    """The fragment as the Kubernetes runtime manager reads it back (``load_fragment``)."""
-    return egress.fragment.to_yaml()
-
-
-def load_fragment(text: str) -> OpenShellPolicy:
-    """A fragment ``fragment_yaml`` wrote: network policies and middlewares only."""
-    try:
-        document = yaml.safe_load(text)
-        policy = OpenShellPolicy.model_validate(document)
-    except (yaml.YAMLError, ValueError) as exc:
-        raise LauncherError(f"the runtime's MCP egress is not a policy fragment: {exc}") from None
-    if policy.filesystem_policy is not None or policy.landlock is not None:
-        raise LauncherError("the runtime's MCP egress may carry network sections only")
-    return policy
+def worker_classifications(answer: RuntimeClassifications) -> FenceClassifications:
+    """The revisions in force the worker answered (``GET /v1/runtime-classifications``),
+    each checked as the policy store checks its own: a file that does not digest to its
+    revision or does not load as that server's classification is unreadable, as is one
+    the worker could not read, and its server's fence takes the catalog's."""
+    revisions: dict[str, ServerClassification] = {}
+    unreadable: dict[str, str] = {}
+    for entry in answer.servers:
+        if entry.error is not None:
+            unreadable[entry.server] = entry.error
+            continue
+        if entry.revision is None:
+            continue
+        data = (entry.classification or "").encode()
+        if hashlib.sha256(data).hexdigest() != entry.revision:
+            unreadable[entry.server] = f"the file does not hold revision {entry.revision}"
+            continue
+        try:
+            revisions[entry.server] = revision_classification(data, entry.server)
+        except PolicyLoadError as exc:
+            unreadable[entry.server] = f"revision {entry.revision} cannot be loaded: {exc}"
+    return FenceClassifications(revisions, unreadable)

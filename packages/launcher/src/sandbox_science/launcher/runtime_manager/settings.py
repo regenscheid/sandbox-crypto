@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Annotated, Self, cast
+from typing import Annotated, Self
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -32,7 +32,7 @@ from pydantic import (
 )
 
 from sandbox_science.contracts.model import Contract
-from sandbox_science.launcher.config import LauncherError, ThinkingReplayConfig
+from sandbox_science.launcher.config import LauncherError, McpDirectServer, ThinkingReplayConfig
 from sandbox_science.launcher.runtime_owner import agent_settings
 from sandbox_science.policy.kubernetes import KubernetesProfile
 from sandbox_science.policy.model import Resources
@@ -42,8 +42,6 @@ DEFAULT_STATE = Path("/var/lib/sandbox-science/runtime")
 DEFAULT_XDG_CONFIG_HOME = "/private/xdg"
 """Where the bundle mounts the CLI's gateway profile (``kubernetes_bundle.XDG``)."""
 _SETTINGS_BYTES = 64 * 1024
-_MCP_BYTES = 1024 * 1024
-"""The direct MCP path's compiled egress and runtime settings: each server's tool rules."""
 _KATA = re.compile(r"kata(?:-[a-z0-9]+)*")
 """Kata Containers' RuntimeClass names: ``kata``, ``kata-qemu``, ``kata-clh`` and so on."""
 Alias = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")]
@@ -85,14 +83,17 @@ class WorkerLink(Contract):
 
 
 class ManagerMcp(Contract):
-    """The direct MCP path's part of the runtime's sandbox (D98), which the site generator
-    compiled from the site's policy (``direct_mcp``): the egress fragment merged into the
-    sandbox's policy beside its platform services, the runtime client's servers
-    (``runtime.json``'s ``mcp``, with each server's tool admission) and the providers
-    attached to the sandbox. The manager reads the files and compiles nothing."""
+    """The direct MCP path's part of the runtime's sandbox (D98): the site's project
+    policy, pool ceiling and targets, from which the manager compiles the egress at each
+    creation of the sandbox (``direct_mcp.compile_direct``, as ``up`` does) with the
+    project's classification revisions in force, read through the worker; the servers the
+    runtime's client reaches, with their credential headers; and the providers attached to
+    the sandbox."""
 
-    policy_file: Path
-    runtime_file: Path
+    project_policy_file: Path
+    ceiling_file: Path
+    targets_file: Path
+    servers: dict[str, McpDirectServer] = Field(min_length=1, max_length=64)
     providers: tuple[str, ...] = Field(default=(), max_length=16)
 
     @field_validator("providers")
@@ -231,8 +232,12 @@ class RuntimeManagerSettings(Contract):
             raise LauncherError("control's image revision differs from the runtime image's")
         return models
 
-    def runtime_json(self, models: ControlModels, generation: str) -> str:
-        """The runtime's ``runtime.json`` for an issued generation, as ``prepare`` makes it."""
+    def runtime_json(
+        self, models: ControlModels, generation: str, mcp: dict[str, object] | None = None
+    ) -> str:
+        """The runtime's ``runtime.json`` for an issued generation, as ``prepare`` makes it;
+        ``mcp`` is the direct path's servers as the sandbox's fence was compiled
+        (``DirectEgress.runtime``)."""
         settings = agent_settings(
             control_url=self.control_url,
             model_url=self.model_url,
@@ -245,27 +250,9 @@ class RuntimeManagerSettings(Contract):
             else None,
             generation=generation,
             control_ca=True,
-            mcp=self.direct_runtime(),
+            mcp=mcp,
         )
         return json.dumps(settings) + "\n"
-
-    def direct_runtime(self) -> dict[str, object] | None:
-        """``runtime.json``'s ``mcp``, from ``mcp.runtime_file``."""
-        if self.mcp is None:
-            return None
-        try:
-            found = json.loads(_bounded(self.mcp.runtime_file, _MCP_BYTES))
-        except ValueError:
-            raise LauncherError("the runtime's MCP settings are not JSON") from None
-        if not isinstance(found, dict):
-            raise LauncherError("the runtime's MCP settings are not an object")
-        return cast(dict[str, object], found)
-
-    def direct_policy(self) -> str | None:
-        """The runtime sandbox's compiled MCP egress, from ``mcp.policy_file``."""
-        if self.mcp is None:
-            return None
-        return _bounded(self.mcp.policy_file, _MCP_BYTES).decode("utf-8", errors="strict")
 
 
 def _bounded(path: Path, limit: int = _SETTINGS_BYTES) -> bytes:

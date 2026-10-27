@@ -62,6 +62,8 @@ from sandbox_science.contracts.classifications import (
     ListingReported,
     PinState,
     ReportedListing,
+    RuntimeClassification,
+    RuntimeClassifications,
     ToolRule,
 )
 from sandbox_science.policy import (
@@ -648,6 +650,29 @@ class ClassificationDesk:
             yaml=draft.data.decode("utf-8", "replace"),
             tools=tools,
         )
+
+
+def runtime_classifications(
+    store: PolicyStore, project: str, servers: Sequence[str]
+) -> RuntimeClassifications:
+    """The project's classification revisions in force for ``servers``, each file exactly
+    as stored, for the Kubernetes runtime manager's compile of the agent runtime's fence
+    (``GET /v1/runtime-classifications``). A binding or revision that cannot be read is
+    reported with why, never as none, so the manager can say it fell back. Blocking."""
+    found: list[RuntimeClassification] = []
+    for server in servers:
+        try:
+            revision = store.classification_binding(project, server)
+            text = (
+                store.classification_revision_bytes(project, server, revision).decode()
+                if revision is not None
+                else None
+            )
+        except (StoreError, UnicodeDecodeError) as exc:
+            found.append(RuntimeClassification(server=server, error=str(exc)[:600]))
+            continue
+        found.append(RuntimeClassification(server=server, revision=revision, classification=text))
+    return RuntimeClassifications(project_id=project, servers=found)
 
 
 def project_policy(environments: Environments, project: str) -> LoadedPolicy | None:

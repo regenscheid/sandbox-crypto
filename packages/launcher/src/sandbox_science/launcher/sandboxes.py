@@ -28,12 +28,17 @@ import contextlib
 import json
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic import ValidationError
+
+from sandbox_science.contracts.classifications import RuntimeClassifications
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 
 from .config import LauncherConfig, LauncherError
@@ -127,6 +132,20 @@ class WorkerApi:
             {"project_id": project, "sandbox_id": sandbox_id},
         )
         return str(bound["policy"])
+
+    async def runtime_classifications(
+        self, project: str, servers: Sequence[str]
+    ) -> RuntimeClassifications:
+        """The project's classification revisions in force for ``servers``, each file as
+        stored, which the runtime's fence is compiled with."""
+        query = urllib.parse.urlencode([("project", project), *(("server", s) for s in servers)])
+        found = await asyncio.to_thread(
+            self._call, "GET", f"/v1/runtime-classifications?{query}", BIND_TIMEOUT
+        )
+        try:
+            return RuntimeClassifications.model_validate(found)
+        except ValidationError as exc:
+            raise LauncherError(f"the worker's classifications are malformed: {exc}") from None
 
     async def unbind_runtime(self, sandbox_id: str) -> bool:
         """Remove a deleted runtime sandbox's binding; whether it had one."""
