@@ -28,7 +28,10 @@ from sandbox_science.orchestrator.confinement.wire import ToolsListed
 from sandbox_science.orchestrator.connectors import ConnectorError
 from sandbox_science.orchestrator.control import ControlStore, store_path
 from sandbox_science.orchestrator.mcp_canaries import CanaryRunner, CanaryStore
-from sandbox_science.testing import FakeClock
+from sandbox_science.orchestrator.mcp_direct import DirectClient
+from sandbox_science.policy.openshell import ToolAdmission
+from sandbox_science.testing import FakeClock, eventually
+from sandbox_science.testing.mcp import FakeServer
 
 TOOL = {"name": "search", "description": "Find papers", "inputSchema": {"type": "object"}}
 
@@ -40,6 +43,14 @@ class Direct:
     def __init__(self, *answers: dict[str, Any] | BaseException | None) -> None:
         self.answers = list(answers)
         self.methods: list[str] = []
+        self.closed = 0
+
+    def opened(self) -> Direct:
+        """This client as each listing's new one."""
+        return self
+
+    async def close(self) -> None:
+        self.closed += 1
 
     async def request(
         self,
@@ -58,6 +69,28 @@ class Direct:
         if isinstance(answer, BaseException):
             raise answer
         return answer
+
+
+class Closing:
+    """A direct client that remembers being closed."""
+
+    def __init__(self, client: DirectClient) -> None:
+        self.client, self.closed = client, False
+
+    async def request(
+        self,
+        server: str,
+        method: str,
+        params: Mapping[str, object],
+        *,
+        session: str,
+        run: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.client.request(server, method, params, session=session, run=run)
+
+    async def close(self) -> None:
+        self.closed = True
+        await self.client.close()
 
 
 @dataclass
@@ -93,20 +126,23 @@ async def test_the_runtime_lists_through_its_direct_client_and_never_calls_a_too
     linked: Linked,
 ) -> None:
     client = Direct({"tools": [TOOL], "nextCursor": "2"}, {"tools": [TOOL]})
-    linked.listings.client = client
+    linked.listings.clients = client.opened
     listing = await linked.source.list("papers")
     assert (listing.status, listing.tool_count, listing.error_kind) == ("listed", 2, None)
     assert listing.digest is not None
     assert len(listing.digest) == 64
     assert client.methods == ["tools/list", "tools/list"]
+    assert client.closed == 1
 
 
 async def test_a_listing_that_never_answers_is_a_timeout(linked: Linked) -> None:
     client = Direct()
-    linked.listings.client = client
+    linked.listings.clients = client.opened
     listing = await linked.source.list("papers")
     assert (listing.status, listing.error_kind) == ("timeout", "timeout")
     assert client.methods == ["tools/list"]
+    # The runtime's own bound ends its listing later, and closes the client.
+    await eventually(lambda: client.closed == 1, describe="the listing's client closed")
 
 
 async def test_failures_are_statuses_and_no_tool_is_ever_called(linked: Linked) -> None:
@@ -118,7 +154,7 @@ async def test_failures_are_statuses_and_no_tool_is_ever_called(linked: Linked) 
     assert (listing.status, listing.error_kind) == ("unavailable", "runtime_refused")
     # A server the runtime does not declare is never asked.
     client = Direct(ConnectorError("policy_denied", "no"))
-    linked.listings.client = client
+    linked.listings.clients = client.opened
     listing = await linked.source.list("elsewhere")
     assert (listing.status, listing.error_kind) == ("unavailable", "undeclared_server")
     assert client.methods == []
@@ -132,7 +168,9 @@ async def test_failures_are_statuses_and_no_tool_is_ever_called(linked: Linked) 
 
 
 async def test_the_runner_stores_the_runtimes_listings(linked: Linked, tmp_path: Path) -> None:
-    linked.listings.client = Direct({"tools": [TOOL]}, ConnectorError("upstream_error", "down"))
+    linked.listings.clients = Direct(
+        {"tools": [TOOL]}, ConnectorError("upstream_error", "down")
+    ).opened
     control = ControlStore(store_path(tmp_path))
     control.initialize()
     try:
@@ -145,6 +183,68 @@ async def test_the_runner_stores_the_runtimes_listings(linked: Linked, tmp_path:
         assert (second.status, second.error_kind) == ("unavailable", "upstream_error")
     finally:
         control.close()
+
+
+async def test_each_listing_sees_the_tools_the_server_lists_now(
+    linked: Linked, tmp_path: Path
+) -> None:
+    """A portal fixes a session's tools when it starts. A canary client that kept its
+    session listed the old tools after the server offered more (2026-10-27): each check
+    and each canary listing starts a session of its own, and closes its client after."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    fake = FakeServer()
+    fake.session_tools = True
+    fake.tools = ["search"]
+    app = web.Application()
+    app.router.add_route("*", "/mcp", fake.handle)
+    reported: list[tuple[str, list[str], str]] = []
+
+    async def reporter(server: str, tools: Any, listing: str) -> None:
+        reported.append((server, [tool.name for tool in tools], listing))
+
+    async with TestServer(app, host="127.0.0.1") as server:
+        settings = DirectSettings(
+            project="crypto",
+            servers={
+                "papers": DirectServerSettings(
+                    url=str(server.make_url("/mcp")), tools=ToolAdmission(allow=("**",))
+                )
+            },
+        )
+        opened: list[Closing] = []
+
+        def clients() -> Closing:
+            opened.append(Closing(settings.client(reporter)))
+            return opened[-1]
+
+        linked.listings.clients = clients
+        linked.listings.seconds = 5.0
+        linked.source.seconds = 5.0
+        first = await linked.source.list("papers")
+        assert (first.status, first.tool_count) == ("listed", 1)
+        # The server now offers more; a session started before would still list one tool.
+        fake.tools = ["search", "fetch", "crawl"]
+        second = await linked.source.list("papers")
+        assert (second.status, second.tool_count) == ("listed", 3)
+        assert second.digest != first.digest
+        # A canary run goes the same way, through the runner and its store.
+        fake.tools = ["search", "fetch", "crawl", "monitor_delete"]
+        control = ControlStore(store_path(tmp_path))
+        control.initialize()
+        try:
+            store = CanaryStore(control)
+            await CanaryRunner(store, linked.source, ["papers"], clock=FakeClock()).run_once()
+            (row,) = store.history("papers")
+            assert (row.status, row.tool_count) == ("listed", 4)
+        finally:
+            control.close()
+    # Three listings, three sessions, three clients closed; each listing reported whole.
+    assert len(fake.messages("initialize")) == 3
+    assert len(fake.started_with) == 3
+    assert [len(names) for _, names, _ in reported] == [1, 3, 4]
+    assert [client.closed for client in opened] == [True, True, True]
 
 
 def test_a_listing_reply_is_consistent_or_refused() -> None:
@@ -194,7 +294,6 @@ async def test_the_control_service_runs_them_over_the_runtimes_connection(
         Reply,
         Request,
     )
-    from sandbox_science.testing import eventually
 
     from .test_confinement_control import TOKEN, WORKER, private
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+from functools import partial
 from pathlib import Path
 
 import aiohttp
@@ -15,7 +16,6 @@ from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.contracts.logs import configure_logging
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.control.migrations import VERSION
-from sandbox_science.orchestrator.mcp_direct import DirectClient
 from sandbox_science.orchestrator.messages import ThinkingReplay
 from sandbox_science.orchestrator.model import ModelGateway
 from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
@@ -112,7 +112,6 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         timeout=aiohttp.ClientTimeout(sock_connect=10), trace_configs=[control_trace()]
     )
     loops: RuntimeLoops | None = None
-    direct: DirectClient | None = None
     calls: RuntimeConnectorCalls | None = None
     listings = RuntimeListings(
         None, frozenset(settings.mcp.servers) if settings.mcp is not None else frozenset()
@@ -155,8 +154,11 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
 
             channel = Channel(socket.send_str, handle)
             if settings.mcp is not None:
-                # Its complete listings go to the host for the drift check (D98).
-                direct = listings.client = settings.mcp.client(ControlListingReports(channel, None))
+                # A client for each listing, so a new session each (D103); their complete
+                # listings go to the host for the drift check (D98).
+                listings.clients = partial(
+                    settings.mcp.client, ControlListingReports(channel, None)
+                )
                 # The attempts' connector requests, each with a client of its attempt's.
                 calls = RuntimeConnectorCalls(settings.mcp, channel)
             models = RuntimeModels(gateway, frozenset(settings.models), channel)
@@ -214,8 +216,6 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
     finally:
         await session.close()
         await gateway.close()
-        if direct is not None:
-            await direct.close()
         if calls is not None:
             await calls.close()
         if embedder is not None:
