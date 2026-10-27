@@ -194,7 +194,10 @@ SPECS: Final = (
         "it end. A check that returned confirmed counts as the entry's independent check "
         "once you add it as evidence: role independent_check, delegation its ID, checked "
         "the revision it checked; one of the same material that refuted it, or completed "
-        "inconclusive, keeps any from counting.",
+        "inconclusive, keeps any from counting. "
+        "Where the project gives tasks environments of their own, a task in one starts "
+        "once it is ready, about one to five minutes; give a small task environment: "
+        "shared.",
         {
             "type": "object",
             "properties": {

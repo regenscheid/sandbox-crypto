@@ -484,7 +484,7 @@ async def test_a_task_is_shown_a_messages_references_with_it(world: World) -> No
 
 def test_the_task_prompt_says_references_exist_and_how_to_ask() -> None:
     """DA-15: a child lacking context asks its parent, which may answer with references."""
-    assert TASK_VERSION == "sandbox-delegated-task-16"
+    assert TASK_VERSION == "sandbox-delegated-task-17"
     assert "When you lack context to go on, ask your parent with message_parent" in TASK_PROMPT
     assert "by reference" in TASK_PROMPT
     assert references.PREFIX == "reference_refused: "

@@ -66,13 +66,15 @@ from sandbox_science.orchestrator.delegation.environments import (
     placement,
 )
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd, observed
+from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
     Ending,
     reopen_in,
 )
-from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.delegation.specs import SPECS
+from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import FakeClock
@@ -859,6 +861,25 @@ async def test_child_idle_max_releases_a_settled_environment_during_a_run(
     finally:
         documents.close()
         projects.close()
+
+
+def test_the_prompts_say_when_to_ask_for_an_environment_and_what_comes_back() -> None:
+    """CE-13 and CE-5: the MAIN prompt says when a task gets an environment of its own and
+    that a returned task keeps it until acceptance hands its files back (PD-46); the
+    task prompt, that its own environment is working memory; ``delegate``, what one
+    costs in time and that a small task shares."""
+    main = " ".join(SYSTEM_PROMPT.split())
+    assert "heavy in compute, memory or disk" in main
+    assert "keep short tasks shared (environment: shared)" in main
+    assert "A returned task keeps its environment; accepting it copies" in main
+    assert "work/<delegation_id>/" in main
+    assert "A returned task awaits your review" in main
+    task = " ".join(TASK_PROMPT.split())
+    assert "its disk is working memory, gone once your task closes" in task
+    assert "name your results in result_files" in task
+    (delegate,) = [spec for spec in SPECS if spec.name == "delegate"]
+    assert "about one to five minutes" in delegate.description
+    assert "give a small task environment: shared" in delegate.description
 
 
 async def test_a_resume_finishes_a_hand_back_cut_short(service: ChildService) -> None:
