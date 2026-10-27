@@ -29,6 +29,7 @@ import codecs
 import hashlib
 import json
 import logging
+import queue
 import re
 import threading
 from collections import OrderedDict
@@ -37,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Final, Literal
 
 from sandbox_science.policy import LoadedPolicy
+from sandbox_science.policy.linear_regex import LinearMatch, LinearPattern, compile_linear
 from sandbox_science.policy.mcp_inspection import effective_patterns
 from sandbox_science.policy.model import InspectionPattern
 
@@ -47,6 +49,8 @@ _log = logging.getLogger(__name__)
 
 ANSWER_RECORD: Final = "mcp-answer"
 ALERT_RECORD: Final = "mcp-answer-alert"
+INSPECTION_STATE: Final = "mcp-inspection-state"
+"""Whether inspection is on, recorded as the middleware starts."""
 FINDING_TYPE: Final = "mcp_answer_pattern"
 """The type of the finding OpenShell logs for a pattern found in an answer."""
 BLOCKED_PREFIX: Final = "answer_blocked_"
@@ -61,8 +65,15 @@ FINDING_CONTEXT: Final = 200
 _SLACK: Final = 4096
 """Text kept beyond an excerpt's bound until it is redacted, so that a secret the bound
 splits is still recognized as a whole before the excerpt is cut."""
-MAX_TRACKED: Final = 4096
-"""Calls whose answers the middleware waits for, oldest forgotten first."""
+MAX_TRACKED: Final = 1024
+"""Calls of one sandbox whose answers the middleware waits for, oldest forgotten first:
+a sandbox can only push out its own."""
+MAX_SANDBOXES: Final = 4096
+"""Sandboxes whose calls are tracked, least recently active forgotten first."""
+MAX_PENDING: Final = 1024
+"""Answers waiting to be recorded; past it, one is dropped and counted, never waited for."""
+_EDGE: Final = 256
+"""Characters of an event's data kept at each end, to tell the call's response by its id."""
 MAX_RUNS: Final = 4096
 """Runs whose recorded answer bytes are counted, least recently used forgotten first."""
 _ERROR_CODE: Final = -32001
@@ -88,7 +99,7 @@ class Compiled:
 
     name: str
     action: Literal["alert", "block"]
-    regex: re.Pattern[str]
+    regex: LinearPattern
     servers: frozenset[str] | None
 
     @classmethod
@@ -96,7 +107,7 @@ class Compiled:
         return cls(
             pattern.name,
             pattern.action,
-            re.compile(pattern.regex),
+            compile_linear(pattern.regex),
             frozenset(pattern.servers) if pattern.servers is not None else None,
         )
 
@@ -124,7 +135,16 @@ class _EventData:
     data line's value is passed on as it arrives. Data lines of one event are joined by
     a line feed, and events by another, as the excerpt shows them."""
 
-    def __init__(self) -> None:
+    def __init__(self, rpc_id: str | int | None = None) -> None:
+        self._id = (
+            re.compile(r'"id"\s{0,8}:\s{0,8}' + re.escape(json.dumps(rpc_id)) + r"(?![0-9])")
+            if rpc_id is not None
+            else None
+        )
+        self._head = ""
+        self._tail = ""
+        self.responded = False
+        """Whether an event that reads as the response to the call has ended."""
         self._name = ""
         self._field: str | None = None
         self._space = False
@@ -166,6 +186,9 @@ class _EventData:
                 segment = segment.removeprefix(" ")
                 self._space = False
             out.append(segment)
+            if len(self._head) < _EDGE:
+                self._head += segment[: _EDGE - len(self._head)]
+            self._tail = (self._tail + segment[-_EDGE:])[-_EDGE:]
 
     def _start(self, name: str, out: list[str]) -> None:
         self._field = name
@@ -174,13 +197,25 @@ class _EventData:
                 out.append("\n")
             self._in_event = self._any = True
 
+    def _answers(self) -> bool:
+        """Whether the event that ended reads as the call's response: its id, and a
+        result or an error, at either end of its data (a heuristic over 256 characters)."""
+        if self._id is None:
+            return False
+        ends = (self._head, self._tail)
+        return any(self._id.search(end) for end in ends) and any(
+            '"result"' in end or '"error"' in end for end in ends
+        )
+
     def _end_line(self, out: list[str]) -> None:
         if self._field is None:
             if not self._name:
                 # A blank line ends the event.
                 if self._in_event:
                     self.events += 1
+                    self.responded = self.responded or self._answers()
                 self._in_event = self.pending = False
+                self._head = self._tail = ""
                 return
             self._start(self._name, out)  # a field name without a colon, an empty value
         self._field, self._name, self._space = None, "", False
@@ -202,6 +237,7 @@ class Tracked:
     rpc_id: str | int | None
     patterns: tuple[Compiled, ...]
     run_key: tuple[str, ...]
+    """Whose recorded bytes the answer counts towards (``run_key``)."""
 
 
 @dataclass(slots=True)
@@ -234,7 +270,9 @@ class AnswerInspection:
         self._request_id = request_id
         self._status = status
         self._media = media
-        self.events: _EventData | None = _EventData() if media == "text/event-stream" else None
+        self.events: _EventData | None = (
+            _EventData(tracked.rpc_id) if media == "text/event-stream" else None
+        )
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._hash = hashlib.sha256()
         self._size = 0
@@ -244,6 +282,12 @@ class AnswerInspection:
         self._more = 0
         self._reported = 0
         self._inside = False
+        self._answered = False
+        self.after_result = False
+        """The stream was cut after the call's response had passed: no error was added."""
+        self.inspected = True
+        """False when the answer passed unread (``reason``): no pattern applied to it."""
+        self.reason: str | None = None
         self._seen: set[tuple[str, int]] = set()
         self.mode: Mode = "headers"
         self.note: str | None = None
@@ -266,6 +310,7 @@ class AnswerInspection:
             return
         # Where the client stands before this piece: a cut replaces the whole piece.
         self._inside = self.events is not None and self.events.pending
+        self._answered = self.events is not None and self.events.responded
         for start in range(0, len(data), PIECE):
             self._search(data[start : start + PIECE])
             if self.blocked is not None:
@@ -290,6 +335,8 @@ class AnswerInspection:
                     return
         state.carry = window[-CARRY:]
         state.base += len(window) - len(state.carry)
+        # Only a match that starts in the carry can be met again: forget the others.
+        self._seen = {seen for seen in self._seen if seen[1] >= state.base}
 
     def _keep(self, text: str) -> None:
         state = self._text
@@ -303,17 +350,20 @@ class AnswerInspection:
         state.excerpt.append(text)
         state.excerpt_bytes += len(text.encode("utf-8"))
 
-    def _found(self, pattern: Compiled, match: re.Match[str], window: str, offset: int) -> None:
-        if len(self._findings) >= MAX_FINDINGS:
-            self._more += 1  # counted, not remembered: the set of seen matches stays small
-            return
+    def _found(self, pattern: Compiled, match: LinearMatch, window: str, offset: int) -> None:
+        # Seen before (a match the carry meets again) counts once, whether recorded or not.
         if (pattern.name, offset) in self._seen:
             return
         self._seen.add((pattern.name, offset))
+        if len(self._findings) >= MAX_FINDINGS:
+            self._more += 1
+            return
         middle = (match.start() + match.end()) // 2
         start = max(0, middle - FINDING_CONTEXT // 2)
-        context = window[start : start + FINDING_CONTEXT]
-        found = _Finding(pattern, offset, self._inspection.redactor.text(context))
+        end = min(len(window), start + FINDING_CONTEXT)
+        # Redacted as part of the text around it, so a secret the window cuts goes whole.
+        context = self._inspection.redactor.window(window, start, end)
+        found = _Finding(pattern, offset, context)
         self._findings.append(found)
         if pattern.action == "block" and self.blocked is None:
             self.blocked = found
@@ -329,7 +379,12 @@ class AnswerInspection:
     def cut_event(self) -> bytes:
         """What replaces the piece a ``block`` pattern matched in an event stream: an end
         to the event the client was receiving, if it was inside one, and an MCP error
-        naming the finding, as the answer to the call."""
+        naming the finding, as the answer to the call. When the call's response has
+        already passed, nothing: a second response to one call would confuse the client,
+        so the stream is only cut (``after_result``)."""
+        if self._answered:
+            self.after_result = True
+            return b""
         name = self.blocked.pattern.name if self.blocked is not None else "a pattern"
         message = {
             "jsonrpc": "2.0",
@@ -396,10 +451,32 @@ class AnswerInspection:
             payload["events"] = self.events.events
         if self._more:
             payload["more_findings"] = self._more
+        if self.after_result:
+            payload["cut_after_result"] = True
+        if not self.inspected:
+            payload["inspected"] = False
+            payload["reason"] = self.reason
         return payload, charged
 
+    def pass_unread(self, reason: str) -> None:
+        """Let the answer pass without reading it (``reason``, such as ``capacity``): its
+        record has its head only, and no pattern, ``block`` included, applies to it."""
+        self.inspected = False
+        self.reason = reason
+        self.mode = "headers"
+        self.note = f"not inspected: {reason}"
+
     def alert(self) -> dict[str, object] | None:
-        """The ``mcp-answer-alert`` record, when a pattern was found."""
+        """The ``mcp-answer-alert`` record, when a pattern was found or the answer passed
+        uninspected (``action`` ``uninspected``, with its reason)."""
+        if not self.inspected:
+            return {
+                **self.tracked.subject,
+                "request_id": self._request_id,
+                "action": "uninspected",
+                "reason": self.reason,
+                "findings": [],
+            }
         if not self._findings:
             return None
         return {
@@ -425,6 +502,7 @@ class Inspection:
         patterns: Sequence[InspectionPattern] = (),
         defaults: bool = True,
         redactor: Redactor | None = None,
+        max_pending: int = MAX_PENDING,
     ) -> None:
         """``patterns`` and ``defaults`` are the deployment's (``[inspect]``), under each
         project policy's ``mcp.inspection``."""
@@ -435,8 +513,13 @@ class Inspection:
         self._defaults = defaults
         self._lock = threading.Lock()
         self._compiled: OrderedDict[str, tuple[Compiled, ...]] = OrderedDict()
-        self._waiting: OrderedDict[str, Tracked] = OrderedDict()
+        self._waiting: OrderedDict[str, OrderedDict[str, Tracked]] = OrderedDict()
+        """Each sandbox's admitted calls by request id, so that one cannot push out another's."""
         self._runs: OrderedDict[tuple[str, ...], int] = OrderedDict()
+        self._queue: queue.Queue[AnswerInspection] = queue.Queue(max_pending)
+        self._writer: threading.Thread | None = None
+        self.dropped = 0
+        """Answers not recorded because the queue was full."""
 
     def arguments(self, encoded: bytes) -> dict[str, object]:
         """A call's ``arguments`` field, redacted and bounded."""
@@ -461,8 +544,12 @@ class Inspection:
         if not request_id:
             return
         with self._lock:
-            self._waiting[request_id] = tracked
-            while len(self._waiting) > MAX_TRACKED:
+            calls = self._waiting.setdefault(tracked.sandbox_id, OrderedDict())
+            self._waiting.move_to_end(tracked.sandbox_id)
+            calls[request_id] = tracked
+            while len(calls) > MAX_TRACKED:
+                calls.popitem(last=False)
+            while len(self._waiting) > MAX_SANDBOXES:
                 self._waiting.popitem(last=False)
 
     def answer(
@@ -470,8 +557,9 @@ class Inspection:
     ) -> AnswerInspection | None:
         """The inspection of the answer to an admitted call, once; None for any other."""
         with self._lock:
-            tracked = self._waiting.pop(request_id, None)
-            if tracked is None or tracked.sandbox_id != sandbox_id:
+            calls = self._waiting.get(sandbox_id)
+            tracked = calls.pop(request_id, None) if calls is not None else None
+            if tracked is None:
                 return None
             used = self._runs.get(tracked.run_key, 0)
         room = max(0, self.bounds.run_bytes - used)
@@ -488,6 +576,39 @@ class Inspection:
         return answer
 
     def record(self, answer: AnswerInspection) -> None:
+        """Queue an answer for its records, written on a thread of their own so that the
+        response never waits for redaction or the store. A full queue drops the record,
+        counted and logged, rather than hold the response."""
+        try:
+            self._queue.put_nowait(answer)
+        except queue.Full:
+            with self._lock:
+                self.dropped += 1
+                dropped = self.dropped
+            _log.warning("MCP answer records dropped, the queue being full: %d so far", dropped)
+            return
+        with self._lock:
+            if self._writer is None:
+                self._writer = threading.Thread(
+                    target=self._write_all, name="mcp-answer-records", daemon=True
+                )
+                self._writer.start()
+
+    def flush(self) -> None:
+        """Wait until every queued answer is recorded (shutdown, tests)."""
+        self._queue.join()
+
+    def _write_all(self) -> None:
+        while True:
+            answer = self._queue.get()
+            try:
+                self._write(answer)
+            except Exception:
+                _log.exception("could not record an MCP answer")
+            finally:
+                self._queue.task_done()
+
+    def _write(self, answer: AnswerInspection) -> None:
         """Write an answer's records; a store that fails is logged, never the client's
         problem: inspection changes no answer but a blocked one."""
         payload, charged = answer.payload()
@@ -507,5 +628,10 @@ class Inspection:
 
 
 def run_key(subject: Mapping[str, object]) -> tuple[str, ...]:
-    """Whose run an answer counts towards: project, session and run."""
-    return tuple(str(subject.get(name)) for name in ("project", "session", "run"))
+    """Whose recorded bytes an answer counts towards: its run's, by project, session and
+    run; a call that names no run counts towards its session's calls without one, a key no
+    run's name can take."""
+    project, session, run = (subject.get(name) for name in ("project", "session", "run"))
+    if isinstance(run, str):
+        return ("run", str(project), str(session), run)
+    return ("session", str(project), str(session))

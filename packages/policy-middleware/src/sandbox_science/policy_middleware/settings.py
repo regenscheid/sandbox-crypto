@@ -19,6 +19,7 @@ response_statuses = true                      # optional: count 4xx/5xx for dete
 argument_bytes = 16384                        # each call's recorded arguments
 answer_bytes = 65536                          # each answer's recorded excerpt
 run_bytes = 8388608                           # one run's recorded excerpts together
+enabled = true                                # off: nothing recorded or checked
 defaults = true                               # the shipped patterns
 patterns = [{ name = "internal-host", regex = "corp\\.example\\.invalid", action = "alert" }]
 
@@ -87,6 +88,9 @@ class InspectSettings(_Model):
     POLICY-MIDDLEWARE.md, "MCP traffic inspection"). A project policy's
     ``mcp.inspection`` replaces a pattern of the same name, or drops the defaults."""
 
+    enabled: bool = True
+    """Off, no call's arguments or answer is recorded or checked (for debugging); the
+    middleware records which it is as it starts (``mcp-inspection-state``)."""
     argument_bytes: Annotated[int, Field(ge=256, le=64 * 1024)] = 16 * 1024
     """The most of a call's parameters recorded, as redacted JSON text."""
     answer_bytes: Annotated[int, Field(ge=0, le=128 * 1024)] = 64 * 1024
@@ -139,10 +143,19 @@ class Settings(_Model):
     """MCP traffic inspection of the sandboxes that call MCP servers directly (D98): each
     call's arguments and answer recorded, bounded and redacted, and answers checked for
     patterns. It needs ``mcp_listings``, whose response binding it uses."""
+    response_streams: Annotated[int, Field(ge=1, le=1024)] = 32
+    """Responses read at once (listings and inspected answers), each on a thread of its
+    own beside ``workers``, so that slow or endless answers never starve request
+    decisions. Past it, a listing is blocked and an answer passes uninspected."""
     response_statuses: bool = False
     """Read every response's status (``HttpResponsePreReturn`` preflight, which costs one
     exchange per response), so that 4xx and 5xx answers count towards the ``host-failures``
     detection rule (D103). Without it, only the middleware's own refusals count."""
+
+    @property
+    def mcp_listings_on(self) -> bool:
+        """Whether the middleware reads listings, the response binding inspection uses."""
+        return self.mcp_listings or self.mcp_tool_pins is not None
 
     @property
     def event_store_path(self) -> Path:

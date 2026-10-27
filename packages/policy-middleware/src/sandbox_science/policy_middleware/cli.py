@@ -57,7 +57,7 @@ from .auth import (
 from .errors import MiddlewareError, SettingsError, StoreError
 from .evaluator import PolicyMiddleware
 from .events import OPERATOR, STORE_TIMEOUT, StoreSink
-from .inspection import Bounds, Inspection
+from .inspection import INSPECTION_STATE, Bounds, Inspection
 from .mcp import ToolListings, load_tool_pins
 from .service import MiddlewareService, build_server
 from .settings import Settings, load_settings
@@ -201,19 +201,53 @@ def _serve(settings: Settings) -> int:
             ),
             response_statuses=settings.response_statuses,
             listing_report_grace=timedelta(seconds=settings.listing_report_grace),
-            inspection=Inspection(
-                sink,
-                bounds=Bounds(
-                    argument_bytes=settings.inspect.argument_bytes,
-                    answer_bytes=settings.inspect.answer_bytes,
-                    run_bytes=settings.inspect.run_bytes,
-                ),
-                patterns=settings.inspect.patterns,
-                defaults=settings.inspect.defaults,
+            inspection=(
+                Inspection(
+                    sink,
+                    bounds=Bounds(
+                        argument_bytes=settings.inspect.argument_bytes,
+                        answer_bytes=settings.inspect.answer_bytes,
+                        run_bytes=settings.inspect.run_bytes,
+                    ),
+                    patterns=settings.inspect.patterns,
+                    defaults=settings.inspect.defaults,
+                )
+                if settings.inspect.enabled
+                else None
             ),
         )
+        record_inspection_state(sink, settings)
         middleware.prime_approvals()
-        return _run(settings, middleware)
+        try:
+            return _run(settings, middleware)
+        finally:
+            if middleware.inspection is not None:
+                middleware.inspection.flush()  # the answers queued before the stop
+
+
+def record_inspection_state(sink: StoreSink, settings: Settings) -> None:
+    """Record, as the middleware starts, whether MCP traffic inspection is on and with
+    which bounds (``mcp-inspection-state``): the deployment's status, which the worker's
+    monitor figures show. A store that cannot take it is logged."""
+    inspect = settings.inspect
+    enabled = inspect.enabled and settings.mcp_listings_on
+    _log.info("MCP traffic inspection is %s", "on" if enabled else "off")
+    try:
+        sink.record(
+            INSPECTION_STATE,
+            {
+                "enabled": enabled,
+                "configured": inspect.enabled,
+                "argument_bytes": inspect.argument_bytes,
+                "answer_bytes": inspect.answer_bytes,
+                "run_bytes": inspect.run_bytes,
+                "response_streams": settings.response_streams,
+                "patterns": len(inspect.patterns),
+                "defaults": inspect.defaults,
+            },
+        )
+    except Exception:
+        _log.exception("could not record the MCP traffic inspection state")
 
 
 def _run(settings: Settings, middleware: PolicyMiddleware) -> int:
@@ -243,6 +277,7 @@ def _run(settings: Settings, middleware: PolicyMiddleware) -> int:
         authenticator,
         max_payload_bytes=settings.max_payload_bytes,
         expected_audience=audience,
+        response_streams=settings.response_streams,
     )
     server, port = build_server(
         service, listen=settings.listen, workers=settings.workers, credentials=credentials

@@ -19,6 +19,7 @@ replaced by ``[redacted:<kind>]``:
 - ``authorization``: an ``Authorization: ...`` value written as text;
 - ``bearer``: a ``Bearer ...`` token;
 - ``aws-key``: an AWS access key ID (``AKIA``/``ASIA`` and 16 characters);
+- ``google-key``: a Google API key (``AIza`` and 35 characters);
 - ``github-token``: a GitHub token (``ghp_``, ``gho_``, ``ghu_``, ``ghs_``, ``ghr_``,
   ``github_pat_``);
 - ``jwt``: a JSON Web Token's shape (three base64url parts, the first starting ``eyJ``);
@@ -34,7 +35,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Final, cast
 
 from sandbox_science.contracts.redaction import is_secret_name
@@ -49,69 +51,102 @@ def _mark(kind: str) -> str:
     return f"[redacted:{kind}]"
 
 
-_PATTERNS: Final[tuple[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]], ...]] = (
-    (re.compile(r"(?i)openshell:resolve:[A-Za-z0-9_.:/=+-]{0,512}"), _mark("placeholder")),
-    (
+@dataclass(frozen=True, slots=True)
+class _Shape:
+    """A secret's shape: the pattern, its kind, the group that is the secret (0: all of
+    it) and, for a field, the group that must be a secret-like name."""
+
+    regex: re.Pattern[str]
+    kind: str
+    group: int | str = 0
+    name: int | None = None
+
+
+_SHAPES: Final[tuple[_Shape, ...]] = (
+    _Shape(re.compile(r"(?i)openshell:resolve:[A-Za-z0-9_.:/=+-]{0,512}"), "placeholder"),
+    _Shape(
         re.compile(
             r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----[^-]*(?:-----END [A-Z0-9 ]{0,40}"
             r"PRIVATE KEY-----)?"
         ),
-        _mark("private-key"),
+        "private-key",
     ),
-    (
+    _Shape(
         re.compile(
-            r"(?i)(cf-access-client-secret)([\"'\\]{0,2}\s{0,4}[:=]\s{0,4}[\"'\\]{0,2})"
-            r"[0-9a-f]{16,256}"
+            r"(?i)cf-access-client-secret[\"'\\]{0,2}\s{0,4}[:=]\s{0,4}[\"'\\]{0,2}"
+            r"([0-9a-f]{16,256})"
         ),
-        rf"\1\2{_mark('cloudflare-secret')}",
+        "cloudflare-secret",
+        1,
     ),
-    (
+    _Shape(
         re.compile(
-            r"(?i)(\bauthorization[\"'\\]{0,2}\s{0,4}[:=]\s{0,4}[\"'\\]{0,2})"
-            r"(?:(?:bearer|basic|token)\s{1,4})?[^\s\"',;\\]{1,4096}"
+            r"(?i)\bauthorization[\"'\\]{0,2}\s{0,4}[:=]\s{0,4}[\"'\\]{0,2}"
+            r"((?:(?:bearer|basic|token)\s{1,4})?[^\s\"',;\\]{1,4096})"
         ),
-        rf"\1{_mark('authorization')}",
+        "authorization",
+        1,
     ),
-    (re.compile(r"(?i)\b(bearer)\s{1,4}[A-Za-z0-9._~+/=-]{8,4096}"), rf"\1 {_mark('bearer')}"),
-    (re.compile(r"(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])"), _mark("aws-key")),
-    (
+    _Shape(re.compile(r"(?i)\bbearer\s{1,4}([A-Za-z0-9._~+/=-]{8,4096})"), "bearer", 1),
+    _Shape(re.compile(r"(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])"), "aws-key"),
+    _Shape(re.compile(r"(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}"), "google-key"),
+    _Shape(
         re.compile(
             r"(?<![A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})"
         ),
-        _mark("github-token"),
+        "github-token",
     ),
-    (
+    _Shape(
         re.compile(
             r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{4,8192}\.[A-Za-z0-9_-]{4,8192}"
             r"\.[A-Za-z0-9_-]{0,8192}"
         ),
-        _mark("jwt"),
+        "jwt",
+    ),
+    # "name": value with a string, number or boolean value, in JSON text.
+    _Shape(
+        re.compile(
+            r"\"([^\"\\]{1,128})\"\s{0,4}:\s{0,4}"
+            r"(?:\"(?P<s>(?:[^\"\\]|\\.)*)\"|(?P<n>-?[0-9][0-9.eE+-]{0,64}|true|false))"
+        ),
+        "field",
+        "value",
+        1,
+    ),
+    # \"name\": \"value\": JSON written inside a JSON string, as tools often answer.
+    _Shape(
+        re.compile(r"\\\"([^\"\\]{1,128})\\\"\s{0,4}:\s{0,4}\\\"((?:[^\"\\]|\\[^\"])*)\\\""),
+        "field",
+        2,
+        1,
+    ),
+    # name=value or name: value in other text (environment files, YAML, URLs).
+    _Shape(
+        re.compile(
+            rf"(?i)(?<![A-Za-z0-9_.-])({_NAME_WORDS})\s{{0,4}}[=:]\s{{0,4}}"
+            r"([^\s,;&\"'\\{}\[\]]{1,4096})"
+        ),
+        "field",
+        2,
     ),
 )
-_JSON_FIELD: Final = re.compile(
-    r"(\"([^\"\\]{1,128})\"\s{0,4}:\s{0,4})"
-    r"(\"(?:[^\"\\]|\\.)*\"|-?[0-9][0-9.eE+-]{0,64}|true|false)"
-)
-"""``"name": value`` with a string, number or boolean value, in JSON text."""
-_ESCAPED_FIELD: Final = re.compile(
-    r"(\\\"([^\"\\]{1,128})\\\"\s{0,4}:\s{0,4})(\\\"(?:[^\"\\]|\\[^\"])*\\\")"
-)
-"""``\\"name\\": \\"value\\"``: JSON written inside a JSON string, as tools often answer."""
-_NAMED: Final = re.compile(
-    rf"(?i)(?<![A-Za-z0-9_.-])({_NAME_WORDS})(\s{{0,4}}[=:]\s{{0,4}})"
-    r"([^\s,;&\"'\\{}\[\]]{1,4096})"
-)
-"""``name=value`` or ``name: value`` in other text (environment files, YAML, URLs)."""
 
 _FIELD: Final = _mark("field")
-_TOKEN_TAIL: Final = re.compile(r"[A-Za-z0-9+/=_.~-]{1,8192}$")
+_RUN_CLASS: Final = "A-Za-z0-9+/=_.~-"
+_TOKEN_TAIL: Final = re.compile(rf"[{_RUN_CLASS}]{{1,8192}}$")
+_TOKEN_HEAD: Final = re.compile(rf"^[{_RUN_CLASS}]{{1,8192}}")
+_TOKEN: Final = re.compile(rf"[{_RUN_CLASS}]")
+
+Span = tuple[int, int, str]
 
 
-def _field(match: re.Match[str]) -> str:
-    if not is_secret_name(match.group(2)):
-        return match.group(0)
-    escaped = match.group(3).startswith('\\"')
-    return match.group(1) + (f'\\"{_FIELD}\\"' if escaped else f'"{_FIELD}"')
+def _span(shape: _Shape, match: re.Match[str]) -> tuple[int, int] | None:
+    if shape.name is not None and not is_secret_name(match.group(shape.name)):
+        return None
+    if shape.group == "value":
+        group = "s" if match.group("s") is not None else "n"
+        return match.span(group)
+    return match.span(shape.group)
 
 
 class Redactor:
@@ -123,15 +158,50 @@ class Redactor:
         values = sorted({value for value in known if len(value) >= 8}, key=len, reverse=True)
         self._known = re.compile("|".join(re.escape(value) for value in values)) if values else None
 
+    def spans(self, text: str) -> list[Span]:
+        """Where ``text`` shows a secret: sorted, merged spans with the kind of the first."""
+        found: list[Span] = []
+        if self._known is not None:
+            found += [(m.start(), m.end(), "credential") for m in self._known.finditer(text)]
+        for shape in _SHAPES:
+            for match in shape.regex.finditer(text):
+                span = _span(shape, match)
+                if span is not None and span[1] > span[0]:
+                    found.append((span[0], span[1], shape.kind))
+        found.sort(key=lambda span: (span[0], -span[1]))
+        merged: list[Span] = []
+        for start, end, kind in found:
+            if merged and start < merged[-1][1]:
+                last = merged[-1]
+                merged[-1] = (last[0], max(last[1], end), last[2])
+            else:
+                merged.append((start, end, kind))
+        return merged
+
     def text(self, text: str) -> str:
         """``text`` with every secret it shows replaced by ``[redacted:<kind>]``."""
-        if self._known is not None:
-            text = self._known.sub(_mark("credential"), text)
-        for pattern, replacement in _PATTERNS:
-            text = pattern.sub(replacement, text)
-        text = _JSON_FIELD.sub(_field, text)
-        text = _ESCAPED_FIELD.sub(_field, text)
-        return _NAMED.sub(rf"\1\2{_FIELD}", text)
+        return _replace(text, self.spans(text), 0, len(text))
+
+    def window(self, text: str, start: int, end: int, margin: int = 256) -> str:
+        """``text[start:end]`` redacted as part of the text around it: the secrets of
+        ``margin`` characters either side are found first, so that a secret the window
+        cuts, or whose name lies outside it, is still taken out whole, and an unbroken run
+        of token characters cut at either edge is dropped. The end of ``text`` counts as
+        a cut, since more may follow."""
+        low, high = max(0, start - margin), min(len(text), end + margin)
+        wide = text[low:high]
+        shown = _replace(wide, self.spans(wide), start - low, end - low)
+        if (
+            0 < start < len(text)
+            and _TOKEN.fullmatch(text[start - 1])
+            and _TOKEN.fullmatch(text[start])
+        ):
+            shown = _TOKEN_HEAD.sub("", shown)
+        if end >= len(text) or (
+            end > 0 and _TOKEN.fullmatch(text[end]) and _TOKEN.fullmatch(text[end - 1])
+        ):
+            shown = _TOKEN_TAIL.sub("", shown)
+        return shown
 
     def value(self, value: object) -> object:
         """A parsed JSON value with secret-named fields' values replaced, at any depth,
@@ -157,6 +227,22 @@ class Redactor:
             return json.dumps(walked, ensure_ascii=False, separators=(",", ":"))
         except (ValueError, RecursionError):
             return self.text(text)
+
+
+def _replace(text: str, spans: list[Span], start: int, end: int) -> str:
+    """``text[start:end]`` with each secret span overlapping it replaced, whole, by its
+    marker."""
+    out: list[str] = []
+    at = start
+    for low, high, kind in spans:
+        if high <= start or low >= end:
+            continue
+        out.append(text[at : max(low, at)])
+        out.append(_mark(kind))
+        at = max(at, high)
+    if at < end:
+        out.append(text[at:end])
+    return "".join(out)
 
 
 def cut(text: str, limit: int) -> tuple[str, bool]:

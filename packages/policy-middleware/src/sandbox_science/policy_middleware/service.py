@@ -28,6 +28,7 @@ arrives.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Iterator, Mapping
 from concurrent import futures
 from importlib.metadata import version
@@ -72,6 +73,9 @@ _LISTING_MEDIA: Final = frozenset({"application/json", "text/event-stream"})
 """The media a ``tools/list`` answer may have: JSON, or an event stream that ends with the
 response. Either is read whole (``WHOLE_BODY_BYTES``), since an event stream's 64 KiB
 pieces cannot be rewritten one by one; any other is blocked."""
+RESPONSE_STREAMS: Final = 32
+"""Responses read at once, by default; past it, an answer passes unread (``capacity``)."""
+CAPACITY: Final = "capacity"
 _MAX_REASON_BYTES: Final = 4096
 _MAX_FINDINGS: Final = 32
 
@@ -86,8 +90,14 @@ class MiddlewareService:
         *,
         max_payload_bytes: int,
         expected_audience: str = "",
+        response_streams: int = RESPONSE_STREAMS,
     ) -> None:
+        """``response_streams`` bounds the responses read at once: each holds a thread of
+        its own while it streams (``build_server`` adds them to the pool), so request
+        decisions never wait behind slow or endless answers."""
         self._middleware = middleware
+        self.response_streams = response_streams
+        self._streams = threading.BoundedSemaphore(response_streams)
         self._authenticator = authenticator
         self._max_payload_bytes = max_payload_bytes
         self._expected_audience = expected_audience
@@ -215,6 +225,7 @@ class MiddlewareService:
         caller = self._caller(context)
         check: ListingCheck | None = None
         answer: AnswerInspection | None = None
+        held = False
         try:
             for event in requests:
                 match event.WhichOneof("event"):
@@ -222,6 +233,10 @@ class MiddlewareService:
                         preflight = event.preflight
                         self._require_sandbox(context, caller, preflight.context.sandbox_id)
                         check, answer, action = self._response_plan(preflight)
+                        if action.WhichOneof("action") == "inspect":
+                            held = self._streams.acquire(blocking=False)
+                            if not held:
+                                check, action = None, _over_capacity(check, answer)
                         yield pb.HttpResponseEventResult(preflight_result=action)
                         if action.WhichOneof("action") != "inspect":
                             return
@@ -243,6 +258,8 @@ class MiddlewareService:
                     case _:
                         pass  # session_end has no result
         finally:
+            if held:
+                self._streams.release()
             if answer is not None:
                 # A response that ended early (the client left, the server failed): what
                 # was seen is recorded, marked incomplete.
@@ -424,8 +441,10 @@ def build_server(
     credentials: grpc.ServerCredentials | None,
 ) -> tuple[grpc.Server, int]:
     """Create (but do not start) a server; return it with the port it bound."""
+    # Request decisions keep ``workers`` threads: a response being read holds one more
+    # of its own for as long as it streams, at most ``response_streams`` of them.
     server = grpc.server(
-        futures.ThreadPoolExecutor(max_workers=workers),
+        futures.ThreadPoolExecutor(max_workers=workers + service.response_streams),
         handlers=[handler(service), response_handler(service)],
         options=list(SERVER_OPTIONS),
     )
@@ -466,6 +485,24 @@ def _blocked_unit(sequence: int, code: str = LISTING_BLOCKED) -> pb.HttpResponse
             reason_code=code,
         )
     )
+
+
+def _over_capacity(
+    check: ListingCheck | None, answer: AnswerInspection | None
+) -> pb.HttpResponsePreflightResult:
+    """Every response thread is busy: a listing that must be rewritten is blocked (the
+    agent would see denied tools), and an answer passes unread, recorded as such; no
+    pattern, ``block`` included, applies to it."""
+    _log.warning("response streams at capacity: an answer passes uninspected")
+    if answer is not None:
+        answer.pass_unread(CAPACITY)
+    if check is not None:
+        if answer is not None:
+            answer.decision = "blocked"
+        return pb.HttpResponsePreflightResult(
+            block_delivery=pb.HttpResponseBlockDelivery(), reason_code=LISTING_BLOCKED
+        )
+    return pb.HttpResponsePreflightResult(skip=pb.HttpResponsePreflightSkip())
 
 
 def _inspect_plan(
