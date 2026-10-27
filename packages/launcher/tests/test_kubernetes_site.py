@@ -437,6 +437,53 @@ def test_the_direct_path_gives_the_workspace_its_check_token_and_the_middleware_
     assert "inspect" not in tomllib.loads((plain / "middleware/middleware.toml").read_text())
 
 
+def _control_json(output):
+    return json.loads((output / "secrets/control/control.json").read_text())
+
+
+def test_control_gets_the_canaries_that_accept_the_availability_check(tmp_path):
+    """Defect C: without ``canaries``, control refuses the workspace's listing report, so
+    "Check availability" returned unavailable and no scheduled listing ran."""
+    output = generate(tmp_path, direct=True)
+    document = _control_json(output)
+    assert document["canaries"] == {
+        "project": "crypto",
+        "servers": ["crypto-research-mcp"],
+        "interval": 900.0,
+    }
+    control = ControlSettings.model_validate_json(
+        (output / "secrets/control/control.json").read_text()
+    )
+    assert control.canaries is not None
+    assert control.canaries.project == "crypto"
+    assert control.canaries.servers == ("crypto-research-mcp",)
+    assert control.canaries.interval == 900
+    # Without [mcp_direct], none.
+    (tmp_path / "plain").mkdir()
+    assert "canaries" not in _control_json(generate(tmp_path / "plain", direct=False))
+
+
+def test_the_canaries_follow_the_sites_interval_and_can_be_turned_off(tmp_path):
+    values = site_values(tmp_path, direct=True)
+    bundle = tmp_path / "inputs/bundle.toml"
+    document = tomllib.loads(bundle.read_text())
+    document["mcp_direct"]["canaries"] = {"interval": 300}
+    bundle.write_text(toml.dumps(document))
+    output = tmp_path / "out"
+    write(output, plan(*load(site_file(tmp_path, values))))
+    assert _control_json(output)["canaries"]["interval"] == 300
+    document["mcp_direct"]["canaries"] = {"enabled": False}
+    bundle.write_text(toml.dumps(document))
+    off = tmp_path / "off"
+    write(off, plan(*load(site_file(tmp_path, values))))
+    assert "canaries" not in _control_json(off)
+    # An interval control would refuse is refused when the bundle loads.
+    document["mcp_direct"]["canaries"] = {"interval": 30}
+    bundle.write_text(toml.dumps(document))
+    with pytest.raises(BundleError, match="invalid deployment configuration"):
+        load_bundle(bundle)
+
+
 def test_the_managers_worker_token_is_not_its_control_token(tmp_path):
     """Review of a2/direct-wiring (HIGH): control sees the manager's bearer token on every
     manager request, so the manager's worker token must be another value, and control's

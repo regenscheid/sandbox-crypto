@@ -266,6 +266,19 @@ def control_settings(site: Site, bundle: BundleConfig) -> dict[str, Any]:
             },
             # The workspace's token for the user's availability check (D98).
             "check_token_sha256_file": f"{PRIVATE}/{CHECK_DIGEST}",
+            # Control accepts the availability check's listing report, and lists the servers
+            # on a schedule, only with canaries, as the host launcher writes them.
+            **(
+                {
+                    "canaries": {
+                        "project": direct.project,
+                        "servers": list(direct.servers),
+                        "interval": direct.canaries.interval,
+                    }
+                }
+                if direct.canaries.enabled
+                else {}
+            ),
         }
         if direct is not None
         else {}

@@ -471,6 +471,18 @@ class McpDirectServer(Model):
     ] = Field(default_factory=dict, max_length=16)
 
 
+class McpCanaries(Model):
+    """Scheduled MCP canaries of the direct path (D103, docs/MCP-CONNECTORS.md, "Canaries"):
+    every ``interval`` seconds control asks the agent runtime to list each server. They are
+    also what lets control accept the workspace's "Check availability" listing, so they are
+    on unless the operator turns them off. The host launcher's ``[canaries]`` has the same
+    keys and the same 15-minute default."""
+
+    enabled: bool = True
+    interval: Annotated[float, Field(ge=60, le=86400)] = 900.0
+    """Seconds between runs: 15 minutes by default."""
+
+
 class McpDirect(Model):
     """The direct MCP path in the cluster (D98, docs/MCP-CONNECTORS.md): the agent's
     connector calls made by the runtime's own client in its sandbox, through OpenShell's
@@ -495,6 +507,7 @@ class McpDirect(Model):
     ) = None
     provider: Name = "crypto-research-mcp"
     """The OpenShell provider with the servers' credentials."""
+    canaries: McpCanaries = Field(default_factory=McpCanaries)
     provider_secret: Name
     """The Secret with the provider's ``CF_ACCESS_CLIENT_ID`` and ``CF_ACCESS_CLIENT_SECRET``,
     which only the manager Pod's registering init container reads, as its environment."""
