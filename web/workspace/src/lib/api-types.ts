@@ -291,6 +291,34 @@ export interface ChildAsked {
   words: string;
 }
 
+/** An open session's child environments, oldest first. */
+export interface ChildEnvironmentListing {
+  project_id: string;
+  session_id: string;
+  environments: ChildEnvironmentView[];
+}
+
+/** One child environment, as the environment views and the Compute tab show it. */
+export interface ChildEnvironmentView {
+  kind: "child";
+  environment_id: string;
+  delegation_id: string;
+  profile: string;
+  phase: "creating" | "preparing" | "ready" | "collecting" | "released" | "retained";
+  failure: "environment_unavailable" | "isolation_insufficient" | "package_replay_failed" | "environment_mismatch" | "inputs_too_large" | "staging_failed" | "worker_restarted" | "wall_time" | null;
+  message: string | null;
+  isolation_tier: number | null;
+  created_at: string;
+  ready_by: string;
+  ready_at: string | null;
+  expires_at: string;
+  retained_until: string | null;
+  hand_back: HandBackView | null;
+  delegation: DelegationView | null;
+  use: "preparing" | "running" | "awaiting_review" | "idle" | "unclaimed" | "ended";
+  idle_release_after: string | null;
+}
+
 /** A consistency reviewer's check of a quote (CR-4), as the entry view shows it. */
 export interface CitationCheckView {
   check_id: string;
@@ -715,6 +743,18 @@ export interface DelegationResult {
   read_proofs: boolean | null;
   files: Record<string, JsonValue> | null;
   environment: Record<string, JsonValue> | null;
+}
+
+/** The delegation a child environment holds: the one it was made for, or a Resume's continuation placed in it (CE-12), the latest. */
+export interface DelegationView {
+  delegation_id: string;
+  run: string;
+  kind: "check" | "task";
+  brief: Record<string, JsonValue>;
+  ended: "returned" | "failed" | "cancelled" | "limit_reached" | "interrupted" | null;
+  ended_at: string | null;
+  review: "awaiting" | "accepted" | "cancelled" | null;
+  review_reason: "parent" | "parent_ended" | "session_closed" | "review_max" | null;
 }
 
 /** Full provenance or the compact form stored in history and older annotations. */
@@ -1385,6 +1425,16 @@ export interface GoalOutcome {
 export interface GrantListing {
   project: string;
   grants: ProjectGrant[];
+}
+
+/** A hand-back's account: what came back into ``target``, and what did not. */
+export interface HandBackView {
+  target: string;
+  complete: boolean;
+  copied: number;
+  retained: number;
+  left: UncollectedFile[];
+  left_count: number;
 }
 
 /** A derived binding the project's runs do not set, and why (SK-31). */
@@ -2837,6 +2887,11 @@ export interface TreeRun {
   alias: string | null;
   limits: Record<string, JsonValue> | null;
   tool_mix: Record<string, JsonValue> | null;
+}
+
+export interface UncollectedFile {
+  path: string;
+  reason: string;
 }
 
 export interface UploadPage {
