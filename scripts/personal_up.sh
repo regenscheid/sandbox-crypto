@@ -74,6 +74,51 @@ esac
 # The unit's worker takes its settings, with the clients' tokens, from the launcher's config,
 # so even --openshell-only needs it.
 if [ ! -f "$CONFIG" ]; then echo "no config at $CONFIG" >&2; exit 1; fi
+# The MCP proxy retired (D98, 2026-10-26). Before any unit starts: a config that still has
+# [mcp_proxy] is refused by the launcher, and a policy that lets research code use MCP
+# (mcp.proxy.worker_access or worker_tools, other than false and inherit) is refused by the
+# middleware's store and the worker. Both stop here with what to do.
+retired=0
+"$R/.venv/bin/python" -I - "$CONFIG" "$R/examples/policy.yaml" <<'PY' || retired=$?
+import sys, tomllib
+from pathlib import Path
+
+import yaml
+
+config_path = Path(sys.argv[1])
+config = tomllib.loads(config_path.read_text())
+if "mcp_proxy" in config:
+    sys.exit(3)
+policies = [Path(sys.argv[2])]
+named = config.get("worker", {}).get("policy")
+if isinstance(named, str):
+    policies.append(config_path.parent / Path(named).expanduser())
+for policy in policies:
+    try:
+        loaded = yaml.safe_load(policy.read_text())
+    except (OSError, yaml.YAMLError):
+        continue  # the store and the worker say what is wrong with it
+    proxy = ((loaded or {}).get("mcp") or {}).get("proxy") or {}
+    if not isinstance(proxy, dict):
+        continue
+    if proxy.get("worker_access", False) is not False or proxy.get("worker_tools", "inherit") != "inherit":
+        print(policy)
+        sys.exit(4)
+PY
+if [ "$retired" -eq 3 ]; then
+  echo "$CONFIG has [mcp_proxy], which the launcher refuses since the MCP proxy retired: run" >&2
+  echo "  $R/.venv/bin/sandbox-science migrate-mcp-config $CONFIG" >&2
+  echo "then this again (docs/MCP-CONNECTORS.md, \"Migrating from [mcp_proxy]\"); nothing was started" >&2
+  exit 1
+elif [ "$retired" -eq 4 ]; then
+  echo "the policy above sets mcp.proxy.worker_access or worker_tools, which retired with the MCP" >&2
+  echo "proxy (D98): research code has no MCP access. Remove both keys (or set worker_access: false" >&2
+  echo "and worker_tools: inherit), then run this again (docs/POLICY.md); nothing was started" >&2
+  exit 1
+elif [ "$retired" -ne 0 ]; then
+  echo "could not read $CONFIG to check it for [mcp_proxy]; nothing was started" >&2
+  exit 1
+fi
 for part in cache middleware; do
   if active "$UNIT-$part"; then
     echo "$UNIT-$part, a unit of the earlier layout, runs: scripts/personal_down.sh first" >&2; exit 1
@@ -303,16 +348,6 @@ echo "OpenShell: $UNIT-unit (cache, middleware, worker) and $UNIT-gateway are ru
 $START_OPENSHELL && start_openshell
 $OPENSHELL_ONLY && exit 0
 
-# The MCP proxy retired (D98, 2026-10-26): a config that still has [mcp_proxy] is refused by
-# the launcher, so say how to migrate it before starting anything that waits for it.
-retired=0
-"$R/.venv/bin/python" -I -c 'import sys, tomllib; sys.exit(3 if "mcp_proxy" in tomllib.load(open(sys.argv[1], "rb")) else 0)' "$CONFIG" 2>/dev/null || retired=$?
-if [ "$retired" -eq 3 ]; then
-  echo "$CONFIG has [mcp_proxy], which the launcher refuses since the MCP proxy retired: run" >&2
-  echo "  $R/.venv/bin/sandbox-science migrate-mcp-config $CONFIG" >&2
-  echo "then this again (docs/MCP-CONNECTORS.md, \"Migrating from [mcp_proxy]\")" >&2
-  exit 1
-fi
 # The launcher, which stops its parts in order on SIGTERM: KillMode=mixed sends it alone the
 # signal, and the timeout covers the research sandboxes' suspension.
 systemd-run --user --unit="$UNIT-launcher" --collect -q -p KillMode=mixed -p TimeoutStopSec=300 --working-directory="$R" \
