@@ -84,6 +84,7 @@ from .delegation.environments import (
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Deadline, Delegations
 from .delegation.models import ModelChoice
+from .delegation.narrowing import Narrowing, of_brief
 from .delegation.outcome import Asked, Outcome, Target, asked_of, result_of
 from .delegation.records import DelegationRecords
 from .delegation.requests import ChildApproval, ChildRequests
@@ -1857,6 +1858,24 @@ class Harness:
             delegation=delegation,
         )
 
+    @staticmethod
+    def _narrowing(stores: Stores, admitted: Admitted) -> Narrowing | None:
+        """The narrowing a delegated run's brief records (DA-6), read from its delegation,
+        so a resumed or reopened run gets the tools its first run did. A delegation the
+        records lack narrows to nothing, failing closed."""
+        delegation = admitted.request.delegation
+        if delegation is None:
+            return None
+        context = admitted.context
+        try:
+            found = DelegationRecords(stores.documents).get(
+                context.project_id, context.session_id, delegation
+            )
+        except ControlError:
+            _log.warning("delegation %s has no record: its run gets no connectors", delegation)
+            return Narrowing(((),))
+        return of_brief(found.brief)
+
     async def _toolbox(
         self,
         admitted: Admitted,
@@ -1928,12 +1947,18 @@ class Harness:
             off: frozenset[str] = (
                 await asyncio.to_thread(settings_of) if settings_of is not None else frozenset()
             )
+            narrowing = (
+                await threaded(self._narrowing, stores, admitted)
+                if delegated and stores is not None
+                else None
+            )
             connectors = Connectors(
                 self.mcp.client,
                 [server for server in self.mcp.servers if server not in off],
                 session=context.session_id,
                 run=run_name(admitted.started_at, admitted.run_id),
                 reads_only=delegated and admitted.request.target is not None,
+                narrowing=narrowing,
                 about=self.mcp.about,
                 shown=self.mcp.shown,
                 disabled=settings_of,
@@ -1944,6 +1969,10 @@ class Harness:
             await connectors.load(taken=HARNESS_TOOL_NAMES)
             if chat is not None and connectors.failed:
                 chat.unavailable = dict(connectors.failed)
+        if delegations is not None:
+            # A task brief's narrowing is checked against these (DA-6).
+            delegations.connectors = connectors
+            delegations.configured = self.mcp.servers if self.mcp is not None else ()
         if stores is None:
             return Toolbox(
                 self.client,

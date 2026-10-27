@@ -338,6 +338,17 @@ class ChildApproval:
             tool=str(wait.get("tool", "")),
             words=self.chat.said,
         )
+        asked = (self.chat.run, str(wait.get("server", "")), str(wait.get("tool", "")))
+        if record.ended_at is not None or (record.run, record.server, record.tool) != asked:
+            # The number is an older record's, of another call (the retired MCP proxy
+            # numbered its requests apart, and a session can span the retirement): the
+            # card names the child from the delegation alone, and no notice says it waits.
+            self.waiting = None
+            _log.warning(
+                "request %s of %s has an older child record of another call: the parent "
+                "is not told of it", request, self.chat.run,
+            )  # fmt: skip
+            return
         body = NOTICE.format(tool=record.tool, server=record.server, request=request)
         # The notice is the parent's to read; a parent that cannot be told (the tree lost
         # its session) does not cost the child its wait, which the card still shows.

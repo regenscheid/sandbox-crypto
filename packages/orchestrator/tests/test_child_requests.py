@@ -296,3 +296,26 @@ def test_a_parent_is_offered_withdrawal_with_its_messaging_and_a_leaf_is_not(
         requests=ChildRequests(control),
     )
     assert WITHDRAW_SPEC not in leaf.specs
+
+
+async def test_a_number_an_older_record_of_another_call_holds_is_not_told_as_this_one(
+    tree: tuple[ControlStore, str, str],
+) -> None:
+    """The retired MCP proxy numbered its requests apart from the middleware: a session
+    that spans the retirement can hold an older child record of the same number. The
+    child's wait on the middleware's request does not tell its parent of the other call."""
+    control, child, _ = tree
+    requests = ChildRequests(control)
+    requests.record(
+        PROJECT, SESSION, run="child", delegation=child, request=12,
+        server="papers", tool="papers_fetch", words="An older call.",
+    )  # fmt: skip
+    requests.ended(PROJECT, SESSION, 12, "child")
+    chat = FakeChat("child", "A new call.")
+    wait = ChildApproval(
+        cast(RunChat, chat), requests, AgentMessageStore(control), CONTEXT, delegation=child
+    )
+    await wait({"permission_request": 12, "server": "web", "tool": "web_crawl"})
+    assert AgentMessageStore(control).pending(PROJECT, SESSION, None) == []
+    assert requests.in_session(PROJECT, SESSION) == {}
+    await wait(None)  # the end of the wait leaves the older record as it was
