@@ -3,6 +3,7 @@
 # Set [images].app and .worker to approved trusted-app/trusted-worker digest URLs.
 name = "research-workbench"
 namespace = "research"
+# image_pull_secret = "ghcr-pull"  # the registry Secret every Pod names (the default)
 
 [images]
 # app = "YOUR_REGISTRY/trusted-app@sha256:YOUR_VERIFIED_DIGEST"

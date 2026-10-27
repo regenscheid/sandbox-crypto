@@ -52,7 +52,10 @@ downloads an image or substitutes a placeholder. Match both image platform cover
 and the explicit `app.architecture` / `pool.architecture` (`amd64` or `arm64`).
 
 Set an existing namespace, bundle name, each `storage_gib` and optional
-`storage_class`. Use block-backed SQLite-compatible storage; RWX/NFS does not make
+`storage_class`. `image_pull_secret` (default `ghcr-pull`) names the registry Secret in
+that namespace that every rendered Pod lists in `imagePullSecrets` (the app, the pool, the
+runtime manager, the maintenance CronJob's and the release Job's Pods, init containers
+included), since the images are private ([preparation, step 1](KUBERNETES-PREP.md#1-namespaces-and-the-pull-secret)). Use block-backed SQLite-compatible storage; RWX/NFS does not make
 independent SQLite writers safe. An omitted class uses the cluster default. The
 renderer cannot verify its type, binding behavior, capacity or reclaim policy.
 Inspect the actual StorageClass/PV and choose Retain behavior before real data.

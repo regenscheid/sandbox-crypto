@@ -1794,3 +1794,25 @@ def test_the_direct_path_is_bounded_and_names_its_servers():
     ):
         with pytest.raises(Exception, match=message):
             configured(values() | {"mcp_direct": DIRECT | change})
+
+
+def test_every_rendered_pod_names_the_registry_pull_secret():
+    # The images are private: each Pod names the namespace's pull Secret itself rather than
+    # relying on the default ServiceAccount carrying it (docs/KUBERNETES-PREP.md, step 1).
+    def pod_specs(data: dict) -> list[dict]:
+        config = configured(data)
+        items = objects(config)
+        specs = [pod(items, component) for component in ("app", "pool", "runtime-manager")]
+        specs.append(maintenance_pod(items))
+        specs.append(release(config)["spec"]["template"]["spec"])
+        return specs
+
+    data = with_maintenance(values() | {"mcp_direct": DIRECT})
+    for spec in pod_specs(data):
+        assert spec["imagePullSecrets"] == [{"name": "ghcr-pull"}]
+    data["image_pull_secret"] = "site-registry"
+    for spec in pod_specs(data):
+        assert spec["imagePullSecrets"] == [{"name": "site-registry"}]
+    for bad in ("", "Bad_Name", "x" * 64):
+        with pytest.raises(ValidationError):
+            configured(values() | {"image_pull_secret": bad})

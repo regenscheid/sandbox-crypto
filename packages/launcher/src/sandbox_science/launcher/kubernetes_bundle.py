@@ -731,6 +731,7 @@ def _deployment(config: BundleConfig, component: str) -> dict[str, object]:
                 "spec": {
                     "automountServiceAccountToken": False,
                     "enableServiceLinks": False,
+                    "imagePullSecrets": _pull(config),
                     "terminationGracePeriodSeconds": 120,
                     "nodeSelector": {"kubernetes.io/arch": placement.architecture},
                     "securityContext": {
@@ -956,6 +957,12 @@ def _batch(item: dict[str, object]) -> dict[str, object]:
     return {**item, "apiVersion": "batch/v1"}
 
 
+def _pull(config: BundleConfig) -> list[dict[str, object]]:
+    """Every rendered Pod pulls the private images with the namespace's registry Secret,
+    without relying on its default ServiceAccount carrying it."""
+    return [{"name": config.image_pull_secret}]
+
+
 def _pod_security() -> dict[str, object]:
     return {
         "runAsNonRoot": True,
@@ -1078,6 +1085,7 @@ def _maintenance_pod(config: BundleConfig, maintenance: Maintenance) -> dict[str
         "restartPolicy": "Never",
         "automountServiceAccountToken": False,
         "enableServiceLinks": False,
+        "imagePullSecrets": _pull(config),
         "terminationGracePeriodSeconds": 120,
         "nodeSelector": {"kubernetes.io/arch": config.app.architecture},
         # The app PVC is ReadWriteOnce: a second Pod can mount it only on the app Pod's
@@ -1228,6 +1236,7 @@ def release_job(
                         "restartPolicy": "Never",
                         "automountServiceAccountToken": False,
                         "enableServiceLinks": False,
+                        "imagePullSecrets": _pull(config),
                         "nodeSelector": {"kubernetes.io/arch": config.pool.architecture},
                         "securityContext": _pod_security(),
                         "initContainers": [init],

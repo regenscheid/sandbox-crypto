@@ -519,6 +519,12 @@ class BundleConfig(Model):
     """Absent, no alert rules are rendered."""
     mcp_direct: McpDirect | None = None
     """Absent, the agent runtime makes no MCP request (no MCP proxy runs in the cluster)."""
+    image_pull_secret: Name = "ghcr-pull"  # noqa: S105 - a Secret's name, not a value
+    """The registry Secret (``kubernetes.io/dockerconfigjson``) in the bundle's namespace that
+    every rendered Pod names in ``imagePullSecrets``: the app, the pool, the runtime manager,
+    the maintenance CronJob's and the release Job's. The images are private
+    (docs/KUBERNETES-PREP.md, step 1); a Secret that does not exist only draws a kubelet
+    warning, and a public image still pulls."""
 
     @model_validator(mode="after")
     def remote_workspace(self) -> Self:

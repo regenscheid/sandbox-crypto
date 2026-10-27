@@ -17,8 +17,8 @@ against the live tools before relying on them:
 - the bundle's container names (`control`, `workspace`, `worker`) and the exact proof
   commands in step 10; the test deployment ran 10.1 except its MCP row.
 
-The bundle renders no `imagePullSecrets`; step 1 attaches the pull secret to the
-namespace's default ServiceAccount instead.
+Every Pod the bundle renders names the pull secret in `imagePullSecrets`
+(`image_pull_secret`, default `ghcr-pull`); step 1 creates it.
 
 ## Placeholders
 
@@ -59,7 +59,8 @@ for ns in research research-runtimes; do
     --docker-server=ghcr.io --docker-username=<github-user> --docker-password-stdin < ghcr-token.txt
 done
 
-# The bundle renders no imagePullSecrets, so attach the secret to the default ServiceAccount that its Pods use.
+# The bundle's Pods name it themselves (bundle image_pull_secret, default ghcr-pull). Optionally attach it to the
+# default ServiceAccount too, for Pods made by hand (the throwaway pull test below):
 kubectl -n research patch serviceaccount default -p '{"imagePullSecrets":[{"name":"ghcr-pull"}]}'
 ```
 
