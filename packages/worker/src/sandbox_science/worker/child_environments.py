@@ -80,6 +80,7 @@ from sandbox_science.contracts.child_environments import (
 )
 from sandbox_science.contracts.worker import (
     DEFAULT_COLLECT_MAX_BYTES,
+    MAX_FILE_WRITE_BYTES,
     MAX_MANIFEST_FILES,
     ManifestFile,
     ReplayedPackages,
@@ -111,6 +112,9 @@ INPUTS: Final = "inputs"
 WALL_TIME_GRACE: Final = 3600.0
 """Seconds past its wall time after which the worker ends a ready child environment that
 the orchestrator did not end: kept stopped, as after an incomplete hand-back."""
+LARGEST_SHOWN: Final = 5
+"""The files too large to hand back that a retained child environment's message names,
+largest first."""
 _FAILURE_KINDS: Final[dict[str, ChildFailure]] = {
     "isolation_insufficient": "isolation_insufficient",
     "package_replay_failed": "package_replay_failed",
@@ -143,6 +147,52 @@ class _Copied(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     collected: ManifestFile | None = None
     left: UncollectedFile | None = None
+    size: int | None = None
+    """The size of a file left out because it was too large, as its first read said."""
+
+
+def size_text(size: int) -> str:
+    """A size in binary units, as a person reads it: ``1.5 GiB``, ``100 MiB``."""
+    for unit, scale in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
+        if size >= scale:
+            return f"{size / scale:.1f}".removesuffix(".0") + f" {unit}"
+    return f"{size} bytes"
+
+
+def too_large(error: TooLargeError) -> str:
+    """Why a hand-back left a file out for its size: its size and the limit it passed."""
+    size = f"{size_text(error.size)} ({error.size} bytes)"
+    if error.per_file:
+        return (
+            f"{size} is over the {size_text(MAX_FILE_WRITE_BYTES)} ({MAX_FILE_WRITE_BYTES}"
+            " bytes) a hand-back copies per file; it stays in the child environment while"
+            " that is retained"
+        )
+    return (
+        f"{size} is over the {error.limit} bytes left of the child profile's hand-back"
+        " bytes; it stays in the child environment while that is retained"
+    )
+
+
+def largest_left(steps: dict[str, str]) -> str:
+    """The files a hand-back left out for their size, largest first, as a clause of the
+    retained child environment's message; empty when it left none for that."""
+    found: list[tuple[int, str]] = []
+    for step, record in steps.items():
+        if not step.startswith("copy-"):
+            continue
+        copied = _Copied.model_validate_json(record)
+        if copied.left is not None and copied.size is not None:
+            found.append((copied.size, copied.left.path))
+    if not found:
+        return ""
+    found.sort(key=lambda item: (-item[0], item[1]))
+    shown = ", ".join(f"{path} ({size_text(size)})" for size, path in found[:LARGEST_SHOWN])
+    more = f" and {len(found) - LARGEST_SHOWN} more" if len(found) > LARGEST_SHOWN else ""
+    return (
+        f"; {len(found)} too large to copy (over {size_text(MAX_FILE_WRITE_BYTES)} a file,"
+        f" or past the hand-back's bytes), the largest {shown}{more}"
+    )
 
 
 class _PrepareError(Exception):
@@ -671,7 +721,11 @@ class ChildEnvironments:
         try:
             data, digest = await read_whole(self._port(), child, source, budget)
         except TooLargeError as error:
-            return leave(str(error))
+            # Writes into a sandbox take 100 MiB at most, and the worker has no ranged
+            # write yet (JS's delivery step 4): the file stays in the child environment,
+            # which is retained, and the reason names its size and the limit.
+            left = leave(too_large(error))
+            return left.model_copy(update={"size": error.size})
         except WorkerError as error:
             return leave(error.message)
         try:
@@ -738,8 +792,9 @@ class ChildEnvironments:
             "no hand-back was made before its delegation ended"
             if manifest is None
             else f"its hand-back left {len(manifest.not_collected)} files behind"
+            + largest_left(self.records.steps(environment_id))
         )
-        return await self._retain(environment_id, why)
+        return await self._retain(environment_id, why[:1000])
 
     async def _fail(self, environment_id: str, failure: ChildFailure, message: str) -> None:
         _log.warning("child environment %s failed (%s): %s", environment_id, failure, message)
