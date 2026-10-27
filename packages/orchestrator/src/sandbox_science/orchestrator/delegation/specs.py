@@ -25,6 +25,8 @@ from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
+from .narrowing import MAX_ENTRIES as MAX_CONNECTORS
+from .narrowing import MAX_ENTRY as MAX_CONNECTOR
 from .references import MAX_SPAN, SCHEMA, References
 
 MAX_NOTE: Final = 500
@@ -132,6 +134,11 @@ class TaskBrief(Contract):
     profile: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     """A child profile of the worker's, by name, for a task in its own environment (CE-3);
     the project's otherwise. Never a size or a node."""
+    connectors: tuple[Annotated[str, Field(min_length=1, max_length=MAX_CONNECTOR)], ...] | None = (
+        Field(default=None, max_length=MAX_CONNECTORS)
+    )
+    """The connectors the task may use, some of its parent's (DA-6,
+    ``narrowing``); ``None`` for all of them."""
 
 
 class CheckBrief(Contract):
@@ -149,6 +156,12 @@ def brief_of(args: dict[str, Any]) -> CheckBrief | TaskBrief:
     check; a brief that names both is refused."""
     if "task" in args and "check" in args:
         raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "a brief is a check or a task, not both")
+    if "task" not in args and "connectors" in args:
+        raise WorkerAPIError(
+            ErrorKind.POLICY_DENIED,
+            "not_permitted_for_role: a check's connectors are the platform's, the tools "
+            "that only read; only a task's brief narrows them (DA-1, DA-6)",
+        )
     if "task" not in args and "references" in args:
         raise WorkerAPIError(
             ErrorKind.POLICY_DENIED,
@@ -194,7 +207,10 @@ SPECS: Final = (
         "it end. A check that returned confirmed counts as the entry's independent check "
         "once you add it as evidence: role independent_check, delegation its ID, checked "
         "the revision it checked; one of the same material that refuted it, or completed "
-        "inconclusive, keeps any from counting.",
+        "inconclusive, keeps any from counting. "
+        "Where the project gives tasks environments of their own, a task in one starts "
+        "once it is ready, about one to five minutes; give a small task environment: "
+        "shared.",
         {
             "type": "object",
             "properties": {
@@ -284,6 +300,15 @@ SPECS: Final = (
                     "type": "string",
                     "description": "For a task in its own environment, optional: a child "
                     "profile of the project's by name",
+                },
+                "connectors": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": MAX_CONNECTOR},
+                    "maxItems": MAX_CONNECTORS,
+                    "description": "For a task, optional: the connectors it may use, some of "
+                    "yours: each a server, SERVER/BEHIND as mcp_tools' index names it, "
+                    "SERVER/TOOL, or SERVER/PATTERN such as "
+                    "crypto-research-mcp/e-print-mcp_search_*. Without it, it gets all of yours",
                 },
                 "references": {
                     **SCHEMA,

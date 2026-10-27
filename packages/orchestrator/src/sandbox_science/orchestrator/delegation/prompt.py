@@ -85,7 +85,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-16"
+TASK_VERSION: Final = "sandbox-delegated-task-17"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Your tokens, turns, active time and cost have "
@@ -106,7 +106,10 @@ TASK_PROMPT: Final = (
     "persistent python or sage kernel, which keeps variables and loaded data between "
     "calls, and use shell for commands, builds and installs. When mcp_tools is offered, "
     "it loads tools of the project's MCP servers (connectors), which run on their servers "
-    "through the platform under the project's policy. A call that needs the user's "
+    "through the platform under the project's policy. Your brief may narrow your "
+    "connectors: mcp_tools then lists only the ones it names; any other is not permitted "
+    "to you, and if the work needs one, tell your parent with message_parent. "
+    "A call that needs the user's "
     "approval waits in place while the user decides it in the session's chat, where its "
     "card names you and your brief, and your parent is told; a denial is the user's "
     "decision: never reach the same content another way (another tool, server or host). "
@@ -180,7 +183,10 @@ TASK_PROMPT: Final = (
     "your earlier messages and results, with the parent's message as its next input, in "
     "the same kernels, whose variables are still there, and the same files: do not "
     "repeat work you already did, address the message, and return your whole result "
-    "again, every deliverable accounted for, as your result replaces the earlier one."
+    "again, every deliverable accounted for, as your result replaces the earlier one. "
+    "In an environment of your own, its disk is working memory, gone once your task "
+    "closes: what you keep, record or publish, and name your results in result_files, "
+    "which come back to your parent with the files the platform could not keep."
 )
 TASK: Final = Section("delegated-task", TASK_VERSION, TASK_PROMPT)
 

@@ -817,8 +817,16 @@ class Toolbox:
         if before:
             answer["already_loaded"] = before
         harness = [name for name in unknown if name in HARNESS_TOOL_NAMES]
-        if unknown := [name for name in unknown if name not in harness]:
+        refused = [name for name in unknown if name in connectors.narrowed]
+        if unknown := [name for name in unknown if name not in harness and name not in refused]:
             answer["unknown"] = unknown
+        if refused:
+            # A delegated task's brief left them out (DA-6).
+            answer["not_permitted"] = refused
+            notes.append(
+                "not_permitted_for_role: your brief's connectors do not include these tools; "
+                "tell your parent if the work needs them"
+            )
         if harness:
             answer["harness_tools"] = harness
             notes.append(

@@ -328,8 +328,9 @@ async def _with_children(
 ) -> list[PendingApproval]:
     """The middleware's held calls with the delegated run and its brief, where the call's
     run is a delegated one of this session (DA-9). The middleware keeps no words of the
-    child's; the card shows the brief alone. A main run, or one the session's records do
-    not list, asks as itself."""
+    child's: the child's run records them as it waits (``child_requests``, which
+    ``_child_of`` reads), and a call whose wait it did not record shows the brief alone. A
+    main run, or one the session's records do not list, asks as itself."""
     runs = [item.run for item in items if item.run and item.session == session]
     if not runs:
         return items

@@ -24,7 +24,14 @@ from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerProtocolError
 
-from .context import CONTEXT, identifier, json_answer, no_query, session_record
+from .context import (
+    CONTEXT,
+    WorkspaceContext,
+    identifier,
+    json_answer,
+    no_query,
+    session_record,
+)
 from .errors import json_error, log_worker_failure
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/kernels"
@@ -52,6 +59,14 @@ async def observed(request: web.Request) -> web.Response:
     scope = ExecutionContext(
         project_id=project, session_id=session, environment_id=found.environment_id
     )
+    return await observe(context, scope)
+
+
+async def observe(context: WorkspaceContext, scope: ExecutionContext) -> web.Response:
+    """The worker's observation of ``scope``'s kernels, for the panel: the session's
+    environment, or one of its child environments (``child_environments``)."""
+    if context.worker is None:
+        raise ProjectError(ErrorKind.UNSUPPORTED, "kernel observations need a configured worker")
     try:
         async with asyncio.timeout(context.timeouts.call):
             observation = await context.worker.observe_kernels(scope)
@@ -67,5 +82,5 @@ async def observed(request: web.Request) -> web.Response:
             ErrorKind.UNSUPPORTED if unsupported else ErrorKind.UNAVAILABLE,
             "kernel observation is unavailable or unsupported",
         ) from error
-    answer = WorkspaceObservation(project_id=project, **observation.model_dump())
+    answer = WorkspaceObservation(project_id=scope.project_id, **observation.model_dump())
     return json_answer(answer.model_dump_json())
