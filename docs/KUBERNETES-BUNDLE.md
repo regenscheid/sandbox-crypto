@@ -184,7 +184,9 @@ AWS_PROFILE = "artifact-reader"
 
 Only paths and the profile name appear in the rendered manifest. The credential
 file holds the actual keys; do not put them in this TOML. Select a suitable writer
-profile separately under `control.environment`, and use another prefix-limited
+profile separately under `control.environment` (control and the workspace both need
+write on the artifacts bucket: control for publications, the workspace for upload
+originals), and use another prefix-limited
 principal for an operator's checkpoint transport. The renderer validates file
 selection, not the permissions, certificate contents or SDK profile correctness.
 

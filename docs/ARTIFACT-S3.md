@@ -128,7 +128,7 @@ policy from a ConfigMap, one pass at a time
 ([cache trimming](KUBERNETES-BUNDLE.md#cache-trimming-opt-in)); the operator enables it,
 nothing starts it otherwise.
 
-New user-upload originals also use this store and its verified S3 backing. Their
+New user-upload originals also use this store and its verified S3 backing. The workspace writes them, so its credentials need write access to the artifact bucket as well as read; with read-only credentials every upload fails as unavailable. Per component: control and the workspace read and write the artifact bucket; any other reader gets read only. Their
 immutable metadata and references live in schema 74; existing inline originals are
 read without rewriting their rows. Archive/evict includes the new upload references,
 so removing a verified local cache copy preserves the original in object storage.
