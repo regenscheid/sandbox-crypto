@@ -39,7 +39,9 @@ runtime's sandbox (``mcp_direct``). The MCP proxy that stood there before retire
 - offered to main and delegated runs alike (DA-3, DA-7), through one client: every
   request names the session in ``Sandbox-Science-Session`` and the run that made it in
   ``Sandbox-Science-Run`` (DA-4), which the policy middleware records as attribution
-  only. A delegated check is offered only the tools classed ``read`` (DA-1, PD-33);
+  only. A delegated check is offered only the tools classed ``read`` (DA-1, PD-33), and a
+  task only those its brief's narrowing and every one above it admit (DA-6,
+  ``delegation.narrowing``): a server none of them names is not listed;
 - what a server says about a tool is untrusted. Its description loses control and
   invisible characters, is bounded and is framed as the server's. Its input schema is
   rebuilt from structural keywords only, with no text but property names and bounded
@@ -70,6 +72,7 @@ from typing import Any, Final, Protocol, cast
 from sandbox_science.policy.mcp_answers import binary_contents, withhold_binary
 
 from .delegation.effects import EFFECT_CLASSES, connector_reach
+from .delegation.narrowing import Narrowing
 from .documents.agent_text import hidden_characters
 from .effects import UnknownEffectError
 from .mcp_binaries import BinarySink
@@ -271,8 +274,17 @@ class Connectors:
         disabled: Callable[[], frozenset[str]] | None = None,
         on_approval: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
         binaries: BinarySink | None = None,
+        narrowing: Narrowing | None = None,
     ) -> None:
-        self.client, self.servers, self.session = client, tuple(dict.fromkeys(servers)), session
+        self.narrowing = narrowing
+        """A delegated task's narrowing (DA-6): only the tools every level admits are
+        offered, and a server no level names is not listed."""
+        self.client, self.session = client, session
+        self.servers = tuple(
+            server
+            for server in dict.fromkeys(servers)
+            if narrowing is None or narrowing.admits_server(server)
+        )
         self.run = run
         """The run whose calls these are, named on every request (DA-4)."""
         self.reads_only = reads_only
@@ -311,6 +323,8 @@ class Connectors:
         """The servers a later listing reached, after the run's start."""
         self.taken: set[str] = set()
         self.retried = False
+        self.narrowed: set[str] = set()
+        """Listed tools the narrowing leaves out: loading one is ``not_permitted``."""
 
     @property
     def specs(self) -> list[ToolSpec]:
@@ -409,6 +423,11 @@ class Connectors:
                 )
                 if self.reads_only and offered_tool.effect_class != "read":
                     continue  # a check changes nothing outside the session (DA-1, PD-33)
+                if self.narrowing is not None and not self.narrowing.admits(
+                    server, name, offered_tool.group
+                ):
+                    self.narrowed.add(name)  # its brief does not name it (DA-6)
+                    continue
                 if (
                     offered >= MAX_TOOLS_PER_SERVER
                     or len(self.tools) >= MAX_TOOLS
@@ -466,6 +485,11 @@ class Connectors:
         for name, tool in self.tools.items():
             by.setdefault(tool.group, []).append(name)
         lines: list[str] = []
+        if self.narrowing is not None:
+            lines.append(
+                f"Your brief narrows your connectors to: {self.narrowing.described}. Other "
+                "connector tools are not permitted to you (not_permitted_for_role)"
+            )
         groups: Counter[str] = Counter()
         unlisted_groups: Counter[str] = Counter()
         unlisted = used = 0
@@ -562,6 +586,9 @@ class Connectors:
             found["unavailable"] = dict(self.failed)
         if self.relisted:
             found["relisted"] = list(self.relisted)
+        if self.narrowing is not None:
+            found["narrowing"] = self.narrowing.recorded()
+            found["not_permitted"] = len(self.narrowed)
         return found
 
     async def _list(self, server: str) -> list[dict[str, Any]]:

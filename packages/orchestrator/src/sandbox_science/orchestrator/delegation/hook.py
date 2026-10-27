@@ -54,7 +54,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from itertools import islice
-from typing import Any, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 
 from pydantic import JsonValue
 
@@ -79,6 +79,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .environments import NOT_OFFERED, ChildPlacement, placement, reconcile, waiting_notice
 from .models import Choice, ModelChoice
+from .narrowing import narrow
 from .outcome import Asked, Target, asked_of, proof_reads
 from .prompt import REOPENED_TASK, brief_text, check_task, evidence_line, task_text
 from .records import (
@@ -95,6 +96,9 @@ from .references import ReferenceInput, resolve
 from .review import Closer
 from .specs import Accepting, CheckBrief, Named, TaskBrief, WaitRequest, brief_of, offered
 from .work import record_work
+
+if TYPE_CHECKING:
+    from sandbox_science.orchestrator.connectors import Connectors
 
 _log = logging.getLogger(__name__)
 
@@ -333,6 +337,11 @@ class Delegations(TurnHook):
         child shares the session's environment."""
         self.release_kernel = release_kernel
         self.notify = notify
+        self.connectors: Connectors | None = None
+        """The run's own connectors, which a task brief's narrowing must stay within
+        (DA-6): the harness sets them with the run's toolbox; ``None`` without any."""
+        self.configured: tuple[str, ...] = ()
+        """The project's configured connector servers, which a brief may name."""
         self.fence: Callable[[str], Awaitable[Refusal | None]] | None = None
         """The run's gates, asked of a reopening as of a ``delegate`` call (PD-46): the
         harness sets it once the run's hooks are assembled."""
@@ -592,6 +601,15 @@ class Delegations(TurnHook):
                 "list them as deliverables in a new brief.",
                 "outputs": list[JsonValue](outputs),
             }
+        if brief.connectors is not None:
+            # Only narrows: some of the parent's own connectors, checked now (DA-6).
+            named = narrow(brief.connectors, configured=self.configured, offered=self.connectors)
+            written["connectors"] = list[JsonValue](named)
+            shown["connectors"] = list[JsonValue](named)
+        inherited = self.connectors.narrowing if self.connectors is not None else None
+        if inherited is not None:
+            # A narrowed parent's children stay within its narrowing too (DA-2).
+            written["inherited_connectors"] = inherited.recorded()
         if brief.references:
             # Checked where the parent may read (PD-11, PD-13): its own run and its
             # descendants, or a main run's session; the brief keeps them as resolved.

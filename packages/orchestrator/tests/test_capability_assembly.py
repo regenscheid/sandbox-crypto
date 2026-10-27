@@ -99,9 +99,9 @@ def test_offered_schemas_effects_and_entry_flags(role: str) -> None:
         sort_keys=True,
     )
     expected = {
-        "main": "c7951072da448406e87759faf3b425f9207350bc86a1491f1f3a62a2a1a21f81",
-        "task": "197d090706e213790e6f60f334cad5ed6ac4f33b88de74c1f6f9c1f08c7b8ced",
-        "check": "c31ff4f203550983d2b79b7b411facc08709387a15f6249f266e1f5cf9739040",
+        "main": "c42d4192e84ed70b99abc838de7f9b708fca4304cfac85611b37980eed062f32",
+        "task": "49e7712ea0de35f5e0dbafd29f758dd319d0bbf45bd5689d822a21953c476f94",
+        "check": "1c4b233218e9a1e001050ccfce07aadcd764bb27bd065489e7ed730dcdb1561d",
     }
     assert hashlib.sha256(encoded.encode()).hexdigest() == expected[role]
     # Each as the model is offered it, with the required purpose_note (Purpose 1).
