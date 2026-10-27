@@ -3,6 +3,7 @@
   import { onMount, untrack } from 'svelte';
   import type { Project } from '../lib/api';
   import { onSignOut } from '../lib/session';
+  import ChildEnvironments from './ChildEnvironments.svelte';
   import { formatTime } from '../lib/format';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { holdReason, pageBack, pageForward, phaseLabel } from '../lib/provisionView';
@@ -41,6 +42,16 @@
     initialDetail?: PollState<ProvisionData>;
   } = $props();
   const choices = $derived(environmentChoices(projectId, project));
+  /** The selected environment's open sessions that have run: theirs are the child
+   * environments made from it (CE-11); a closed session's are released. */
+  const openSessions = $derived(
+    project.sessions
+      .filter(
+        (s) =>
+          s.closed_at === null && s.runs > 0 && selected?.sessions.includes(s.session_id) === true,
+      )
+      .map((s) => s.session_id),
+  );
   let selectedId = $state<string | null>(null);
   const selected = $derived(
     choices.find((e) => e.scope.environmentId === selectedId) ??
@@ -290,6 +301,13 @@
         ', ',
       ) || 'none recorded'}.
     </p>
+    {#each openSessions as session (session)}
+      <ChildEnvironments
+        {projectId}
+        sessionId={session}
+        heading={`Child environments of session ${session}`}
+      />
+    {/each}
     {#if phaseLabel(view.phase, selected.ran)}<p role="status">
         {phaseLabel(view.phase, selected.ran)}
       </p>{/if}

@@ -13,6 +13,8 @@
     projectId,
     sessionId,
     environmentId,
+    child = false,
+    heading = 'Session kernels',
     initialState = initialPoll(),
     onobserve,
     detail,
@@ -20,6 +22,9 @@
     projectId: string;
     sessionId: string;
     environmentId: string;
+    /** One of the session's child environments (CE-8): its kernels, by its own route. */
+    child?: boolean;
+    heading?: string;
     initialState?: PollState<KernelObservation>;
     /** Told of each observation as the panel reads it, so a page can join it with its own. */
     onobserve?: (state: PollState<KernelObservation>) => void;
@@ -40,7 +45,7 @@
   });
   $effect(() => {
     if (!mounted) return;
-    const scope = { projectId, sessionId, environmentId: environment };
+    const scope = { projectId, sessionId, environmentId: environment, child };
     viewState = initialPoll();
     const poller = new Poller(
       (signal) => readKernels(scope, signal),
@@ -53,10 +58,11 @@
   });
 </script>
 
-<section aria-label="Session kernels">
-  <h2>Session kernels</h2>
+<section aria-label={heading}>
+  {#if child}<h4>{heading}</h4>{:else}<h2>{heading}</h2>{/if}
   <p class="muted">
-    Passive observations for this session. Revisions do not prove which modules are loaded.
+    Passive observations for this {child ? 'child environment' : 'session'}. Revisions do not prove
+    which modules are loaded.
   </p>
   {#if viewState.phase === 'loading'}
     <p role="status">Observing existing kernels…</p>
@@ -65,7 +71,11 @@
   {:else if viewState.phase === 'signed_out'}
     <p role="status">Kernel observations stopped for sign-out. Reload after signing in.</p>
   {:else if viewState.phase === 'missing'}
-    <p role="status">This session is absent or closed. Kernel observations stopped.</p>
+    <p role="status">
+      {child
+        ? 'This child environment is not ready or no longer exists.'
+        : 'This session is absent or closed.'} Kernel observations stopped.
+    </p>
   {:else if viewState.phase === 'unsupported'}
     <p role="status">
       Kernel observations unavailable: the worker is unconfigured or does not support passive
