@@ -24,6 +24,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from sandbox_science.contracts import new_id
 from sandbox_science.event_store import EventStore
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
+from sandbox_science.orchestrator.delegation.requests import ChildRequests
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
@@ -293,6 +294,53 @@ async def test_a_delegated_runs_direct_call_names_the_child_and_its_brief(
     body = {"decision": "once", "kind": "mcp", "source": "worker"}
     await post(client, ANSWER.format(child), body)
     assert middleware.call({"id": "m-2"}, run="child-1") == ""
+
+
+async def test_a_withdrawn_child_request_is_denied_at_the_middleware(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    middleware: Middleware,
+    worker_url: str,
+) -> None:
+    """DA-10 on the direct path: the request the child's wait recorded for a call the
+    middleware holds, once its parent withdraws it, is no longer a card, cannot be
+    approved, and the relay denies it at the middleware, so the child's retry is refused.
+    The root's held call of the same tool is untouched."""
+    delegation = new_id("dlg")
+    main = request_of(middleware.call({"id": "w-1"}))
+    child = request_of(middleware.call({"id": "w-2"}, run="child-1"))
+    store = ProjectStore(state_dir)
+    try:
+        DelegationRecords(store.control).start(
+            "p1",
+            "a",
+            Delegation(
+                delegation_id=delegation, parent="main-1", run="child-1", kind="task",
+                brief={"task": "Watch the page."}, started_at=datetime.now(UTC),
+            ),
+        )  # fmt: skip
+        requests = ChildRequests(store.control)
+        requests.record(
+            "p1", "a", run="child-1", delegation=delegation, request=child,
+            server=SERVER, tool=WRITE_TOOL, words="A monitor tells us of changes.",
+        )  # fmt: skip
+        requests.withdraw("p1", "a", parent="main-1", delegation=delegation, request=child)
+    finally:
+        store.close()
+    client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=worker_url)
+    await until(
+        lambda: middleware.call({"id": "w-2"}, run="child-1") == f"approval_denied_r{child}"
+    )
+    cards = await shown(client)
+    assert child not in cards
+    assert (cards[main]["run"], cards[main]["child"]) == ("main-1", None)
+    body = {"decision": "once", "kind": "mcp", "source": "worker"}
+    await post(client, ANSWER.format(child), body, 409)
+    # The root's call is still the user's: approved, it goes through.
+    assert middleware.call({"id": "w-1"}) == f"approval_required_r{main}"
+    await post(client, ANSWER.format(main), body)
+    assert middleware.call({"id": "w-1"}) == ""
 
 
 READ_TOOL = "attack-catalog-mcp_search_attacks"

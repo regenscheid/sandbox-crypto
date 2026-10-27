@@ -18,6 +18,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,9 +29,18 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.event_store import EventStore, StoreReader
 from sandbox_science.orchestrator import connectors as connectors_module
+from sandbox_science.orchestrator.agent_messages import (
+    WITHDRAW_SPEC,
+    AgentMailbox,
+    AgentMessageStore,
+)
+from sandbox_science.orchestrator.chat import RunChat
 from sandbox_science.orchestrator.connectors import ConnectorError, Connectors
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
+from sandbox_science.orchestrator.delegation.requests import ChildApproval, ChildRequests
 from sandbox_science.orchestrator.mcp_direct import (
     DirectClient,
     DirectServer,
@@ -38,6 +48,8 @@ from sandbox_science.orchestrator.mcp_direct import (
     RequestCheck,
     WorkerRequestCheck,
 )
+from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.mcp_answers import Withheld
@@ -96,6 +108,9 @@ class Gateway:
 
     def approve(self, request: int) -> None:
         assert main(["approve", "--settings", str(self.settings), "--request", str(request)]) == 0
+
+    def deny(self, request: int) -> None:
+        assert main(["deny", "--settings", str(self.settings), "--request", str(request)]) == 0
 
     def records(self, kind: str) -> list[dict[str, Any]]:
         with StoreReader(self.events.path) as reader:
@@ -623,3 +638,115 @@ def test_a_stream_the_middleware_cut_answers_its_error() -> None:
         _result(200, "text/event-stream", cut, 1)
     assert raised.value.kind == "server_error"
     assert "answer_blocked_exfil" in raised.value.message
+
+
+class ChildChat:
+    """A child's chat as ``ChildApproval`` uses it: its waiting events and its words."""
+
+    def __init__(self, run: str, said: str) -> None:
+        self.run, self.said = run, said
+        self.waits: list[dict[str, object] | None] = []
+
+    async def approval(self, wait: dict[str, object] | None) -> None:
+        self.waits.append(wait)
+
+
+async def test_a_childs_held_call_tells_its_parent_and_a_withdrawal_denies_it(
+    gateway: Gateway, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DA-10 on the direct path: a delegated run's call the middleware holds is recorded as
+    the child's request, with the middleware's number, and its parent is told; the parent's
+    withdrawal is denied at the middleware, so the child's call ends denied. The root's
+    held call of the same tool is untouched: no child record, still the user's."""
+    monkeypatch.setattr(connectors_module, "APPROVAL_POLL", (0.05, 0.05))
+    projects = ProjectStore(tmp_path / "control")
+    projects.create("crypto", "minimal", "sha256:" + "a" * 64)
+    session = projects.open_session("crypto", "s-1", dedicated=False)
+    control = projects.control
+    RunState(control).acquire("crypto", "s-1", "main-1", "holder")
+    delegation = new_id("dlg")
+    DelegationRecords(control).start(
+        "crypto",
+        "s-1",
+        Delegation(
+            delegation_id=delegation, parent="main-1", run="child-2", kind="task",
+            brief={"task": "Watch the SNOVA page for changes."}, started_at=datetime.now(UTC),
+        ),
+    )  # fmt: skip
+    context = ExecutionContext(
+        project_id="crypto", session_id="s-1", environment_id=session.environment_id
+    )
+    chat = ChildChat("child-2", "A monitor tells us when the page changes.")
+    heard: list[dict[str, object] | None] = []
+
+    async def root_waits(wait: dict[str, object] | None) -> None:
+        heard.append(wait)
+
+    direct = client(gateway)
+    root = Connectors(direct, [SERVER], session="s-1", run="main-1", on_approval=root_waits)
+    child = Connectors(
+        direct,
+        [SERVER],
+        session="s-1",
+        run="child-2",
+        on_approval=ChildApproval(
+            cast(RunChat, chat),
+            ChildRequests(control),
+            AgentMessageStore(control),
+            context,
+            delegation=delegation,
+        ),
+    )
+    try:
+        await root.load()
+        await child.load()
+        child_call = asyncio.create_task(child.call(ESCALATED_TOOL, {"url": "https://a.example"}))
+        root_call = asyncio.create_task(root.call(ESCALATED_TOOL, {"url": "https://b.example"}))
+        mailbox = AgentMessageStore(control)
+        while not heard or not mailbox.pending("crypto", "s-1", None):
+            await asyncio.sleep(0.01)
+        assert chat.waits[0] is not None
+        assert heard[0] is not None
+        held = {
+            "child-2": cast(int, chat.waits[0]["permission_request"]),
+            "main-1": cast(int, heard[0]["permission_request"]),
+        }
+        runs = {item["run"] for item in gateway.records("escalation")}
+        assert runs == {"child-2", "main-1"}
+        # The child's request is the middleware's, attributed to the child.
+        (request,) = ChildRequests(control).in_session("crypto", "s-1").values()
+        assert (request.request, request.run, request.parent) == (
+            held["child-2"], "child-2", "main-1",
+        )  # fmt: skip
+        assert (request.server, request.tool) == (SERVER, ESCALATED_TOOL)
+        assert request.brief == "Watch the SNOVA page for changes."
+        assert request.words == "A monitor tells us when the page changes."
+        # The parent is told, as the child; the root's own wait is no child's.
+        (notice,) = mailbox.pending("crypto", "s-1", None)
+        assert (notice.sender_run, notice.sender_delegation) == ("child-2", delegation)
+        assert f"permission request {held['child-2']}" in notice.body
+        assert heard == [
+            {"permission_request": held["main-1"], "server": SERVER, "tool": ESCALATED_TOOL}
+        ]
+        # The parent withdraws; the relay denies exactly the withdrawn request.
+        parent = AgentMailbox(
+            AgentMessageStore(control), context, run="main-1", delegation=None,
+            may_message_child=True, requests=ChildRequests(control),
+        )  # fmt: skip
+        arguments = {"delegation_id": delegation, "permission_request": held["child-2"]}
+        await parent.call(WITHDRAW_SPEC.name, arguments, "op-withdraw")
+        withdrawn = ChildRequests(control).withdrawn("crypto", list(held.values()))
+        assert withdrawn == {held["child-2"]}
+        gateway.deny(held["child-2"])
+        text, record = await asyncio.wait_for(child_call, 10)
+        assert json.loads(text)["error"]["kind"] == "approval_denied"
+        assert record["permission_request"] == held["child-2"]
+        assert ChildRequests(control).in_session("crypto", "s-1") == {}
+        assert not root_call.done()
+        gateway.approve(held["main-1"])
+        text, _ = await asyncio.wait_for(root_call, 10)
+        assert text == f"{ESCALATED_TOOL} ran"
+    finally:
+        await direct.close()
+        projects.close()
+    assert gateway.reached == [ESCALATED_TOOL]  # the root's call only
